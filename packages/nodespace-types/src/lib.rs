@@ -7,10 +7,26 @@
 //! All re-use these types directly, eliminating the hand-synced mirror that
 //! previously lived in `src-tauri/src/types.rs`.
 //!
+//! # TypeScript
+//!
+//! The frontend's wire types are generated from this crate (ADR-086 §8). Every
+//! serialized type derives `ts_rs::TS` behind the `ts` feature, and the
+//! `gen-ts` binary (`bun run gen:types`) writes one TypeScript file per type.
+//! A new wire type needs the derive and an entry in that binary's list;
+//! `bun run gen:types` fails until it has both.
+//!
+//! A field's TypeScript optionality follows what serde writes:
+//! - `#[ts(optional_fields)]` on a struct makes each `Option` field `t?: T`,
+//!   for structs whose `Option` fields are all skipped when `None`.
+//! - `#[ts(optional = nullable)]` on a field makes it omittable while keeping
+//!   its type: a `Vec` or `bool` that is skipped when empty or false, or an
+//!   `Option` a reader may also send as `null`.
+//!
 //! # Dependencies
 //!
 //! Intentionally minimal: `serde`, `serde_json`, `chrono`, `uuid`,
-//! `thiserror`. No database, HTTP, or NLP dependencies.
+//! `thiserror`. No database, HTTP, or NLP dependencies. `ts-rs` is compiled
+//! only with the `ts` feature, which no other crate enables.
 
 mod ai_chat;
 mod convert;
@@ -26,11 +42,14 @@ mod schema;
 mod skill;
 mod task;
 
-pub use ai_chat::{AiChatMessage, AiChatNode};
+pub use ai_chat::{
+    AiChatCompletedWrite, AiChatMessage, AiChatNode, AiChatPendingDeletion, AiChatResolvedEntity,
+    AiChatTurnOutcome,
+};
 pub use convert::{
     core_promoted_fields, flat_properties_view, flatten_namespaced_properties,
     flatten_namespaced_properties_at_scope, node_to_typed_value, nodes_to_typed_values,
-    promoted_fields, typed_update_fields,
+    promoted_fields, typed_update_fields, PromotedField, PromotedShape,
 };
 pub use core_type::{
     ChildrenRule, ContentRole, CoreNodeType, CoreTypeInfo, CoreTypeKind, ParentRule,

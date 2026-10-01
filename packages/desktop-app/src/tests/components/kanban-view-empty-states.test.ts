@@ -34,6 +34,8 @@ function schemaWithEnum(): SchemaNode {
     version: 1,
     isCore: false,
     schemaVersion: 1,
+    description: '',
+    relationships: [],
     fields: [
       {
         name: 'status',
@@ -60,6 +62,8 @@ function schemaWithoutEnum(): SchemaNode {
     version: 1,
     isCore: false,
     schemaVersion: 1,
+    description: '',
+    relationships: [],
     fields: [
       { name: 'note', friendlyName: 'Note', type: 'text', protection: 'user', indexed: false }
     ]

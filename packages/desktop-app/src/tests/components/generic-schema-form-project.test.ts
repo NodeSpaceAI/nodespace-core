@@ -70,6 +70,8 @@ const PROJECT_SCHEMA: SchemaNode = {
   version: 1,
   isCore: true,
   schemaVersion: 1,
+  description: '',
+  relationships: [],
   fields: [
     enumField(
       'status',

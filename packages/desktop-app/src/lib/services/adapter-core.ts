@@ -30,6 +30,7 @@ import type {
   TaskNode,
   TaskNodeUpdate
 } from '$lib/types';
+import type { DeleteResult, NodeQuery } from '$lib/types/generated';
 import type { SchemaNode } from '$lib/types/schema-node';
 import type { QueryFilter, SortConfig } from '$lib/types/query';
 // Type-only: relationship-grouping is a pure module (no Tauri/DOM/$lib value
@@ -71,25 +72,13 @@ export interface UpdateNodeInput {
   mentions?: string[];
 }
 
-export interface DeleteResult {
-  existed: boolean;
-  deletedCount: number;
-}
+export type { DeleteResult, NodeQuery };
 
 export interface EdgeRecord {
   id: string;
   in: string;
   out: string;
   order: number;
-}
-
-export interface NodeQuery {
-  id?: string;
-  mentionedBy?: string;
-  contentContains?: string;
-  titleContains?: string;
-  nodeType?: string;
-  limit?: number;
 }
 
 /**

@@ -43,6 +43,7 @@ function createMockSchemaNode(
     // Typed top-level fields (not in properties)
     isCore: options.isCore ?? false,
     schemaVersion: options.schemaVersion ?? 1,
+    relationships: [],
     description: options.description ?? '',
     fields: []
   };

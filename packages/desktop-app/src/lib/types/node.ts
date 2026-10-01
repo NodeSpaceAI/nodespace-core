@@ -1,36 +1,15 @@
 /**
- * Unified Node Type System
+ * The generic node.
  *
- * This is the ONLY node schema in the codebase.
- * Matches Rust backend EXACTLY - no other Node interfaces should exist.
- *
- * Philosophy: Single source of truth, zero schema drift.
+ * The wire shapes (`NodeEnvelope`, `NodeReference`, `NodeUpdate`) are generated
+ * from Rust's `nodespace-types` (`./generated`, ADR-086 §8). This module adds
+ * the frontend's own types and helpers around them.
  */
 
+import type { NodeEnvelope, RelationshipDirection } from './generated';
 import { isExactly } from './core-node-types';
 
-/**
- * Lightweight reference to a node for backlinks display
- *
- * Contains minimal data needed to show a link: id, title, and type.
- * Used by the `mentionedIn` field to provide backlinks without N+1 queries.
- */
-export interface NodeReference {
-  /** Node ID */
-  id: string;
-  /** Display title (markdown-stripped content for root/task nodes) */
-  title: string | null;
-  /** Node type (e.g., "text", "task", "date") */
-  nodeType: string;
-}
-
-/**
- * Direction of a relationship relative to a node
- *
- * - `out`: The relationship points FROM this node TO another (outgoing)
- * - `in`: The relationship points FROM another node TO this node (incoming)
- */
-export type RelationshipDirection = 'out' | 'in';
+export type { NodeEnvelope, NodeReference, NodeUpdate, RelationshipDirection } from './generated';
 
 /**
  * Represents a relationship with another node, including direction
@@ -57,173 +36,13 @@ export interface NodeRelationship {
   relationshipType: string;
 }
 
-/** Lifecycle status of a node: governance state, never a type-specific flag. */
-export type LifecycleStatus = 'active' | 'archived';
-
-/**
- * NodeEnvelope - the fields every node carries on the wire
- *
- * Mirrors Rust's `NodeEnvelope` (`packages/nodespace-types/src/node.rs`). The
- * generic `Node` and every typed node interface extend it, so no node
- * interface restates or omits a universal field.
- *
- * Fields:
- * - Persisted: Stored in database
- * - Computed: Calculated on-demand, not stored
- */
-export interface NodeEnvelope {
-  // ============================================================================
-  // Persisted Fields (stored in database)
-  // ============================================================================
-
-  /** Unique identifier (UUID or deterministic like YYYY-MM-DD for dates) */
-  id: string;
-
-  /** Node type (e.g., "text", "task", "date") */
-  nodeType: string;
-
-  /** Primary content/text of the node */
-  content: string;
-
-  /** Creation timestamp (ISO 8601) - backend sets this */
-  createdAt: string;
-
-  /** Last modification timestamp (ISO 8601) - backend auto-updates this */
-  modifiedAt: string;
-
-  /**
-   * Optimistic Concurrency Control (OCC) version counter
-   *
-   * This field enables safe concurrent modifications by multiple clients (Frontend UI,
-   * MCP servers, AI assistants) without database locks.
-   *
-   * ## How OCC Works
-   *
-   * 1. **Read**: Client fetches node with current version (e.g., `version: 5`)
-   * 2. **Modify**: Client makes local changes while holding version reference
-   * 3. **Write**: Client submits update with expected version (`version: 5`)
-   * 4. **Verify**: Backend atomically checks if current version still matches
-   *    - Match → Update succeeds, version increments to 6
-   *    - Mismatch → Update fails with VERSION_CONFLICT error
-   *
-   * ## Version Lifecycle
-   *
-   * - **Initial value**: 1 (when node is first created)
-   * - **Increments**: On every successful update/move/reorder operation
-   * - **Never decrements**: Monotonically increasing
-   * - **Survives**: All modification types (content, properties, hierarchy)
-   *
-   * ## Usage Requirements
-   *
-   * **CRITICAL**: Always provide this field when calling update/delete/move/reorder:
-   *
-   * ```typescript
-   * // ✅ CORRECT: Provide version from latest read
-   * const node = await getNode(nodeId);
-   * await updateNode(nodeId, node.version, { content: 'New content' });
-   *
-   * // ❌ WRONG: Don't use stale version from cache
-   * await updateNode(nodeId, cachedVersion, { content: 'New content' });
-   *
-   * // ❌ WRONG: Never hardcode version numbers
-   * await updateNode(nodeId, 1, { content: 'New content' });
-   * ```
-   *
-   * ## Conflict Handling
-   *
-   * When you receive a VERSION_CONFLICT error:
-   *
-   * 1. Error includes current node state for merge reference
-   * 2. Frontend shows conflict resolution UI (auto-merge or manual)
-   * 3. MCP clients implement domain-specific merge logic
-   * 4. Retry with merged changes and fresh version
-   *
-   * Example conflict response:
-   * ```typescript
-   * {
-   *   error: "VERSION_CONFLICT",
-   *   expectedVersion: 5,
-   *   actualVersion: 7,
-   *   currentNode: { ...latestState }
-   * }
-   * ```
-   *
-   * ## Performance Impact
-   *
-   * - Overhead: < 5ms per operation (empirically validated)
-   * - No database locks required (optimistic approach)
-   * - Scales linearly with concurrent clients
-   *
-   * ## Security Notes
-   *
-   * - Version parameter is **mandatory** (not optional) to prevent TOCTOU attacks
-   * - Clients cannot bypass version checks (enforced by backend)
-   * - Version spoofing is impossible (must match current exactly)
-   */
-  version: number;
-
-  /**
-   * Governance state, always present on the wire (ADR-087). Never read for a
-   * type-specific meaning: `archived` is not "done" or "retired" for any type.
-   */
-  lifecycleStatus: LifecycleStatus;
-
-  /** All entity-specific fields (Pure JSON schema) */
-  properties: Record<string, unknown>;
-
-  /**
-   * Indexed title for efficient @mention autocomplete search
-   *
-   * Contains markdown-stripped content for clean display and search.
-   * Populated only for:
-   * - Root nodes (no parent) - excludes date and schema types
-   * - Task nodes (always, regardless of hierarchy)
-   *
-   * For other nodes (child text, headers, etc.), this field is undefined.
-   */
-  title?: string | null;
-
-  // ============================================================================
-  // Computed Fields (NOT persisted, calculated on-demand)
-  // ============================================================================
-
-  /**
-   * Extracted mentions from content (e.g., @node-id)
-   * Derived from content by ReactiveNodeService.updateNodeMentions
-   * NOT stored in database
-   */
-  mentions?: string[];
-
-  /**
-   * Nodes that mention this node (backlinks) with preview data
-   *
-   * Populated during root fetch (get_children_tree) for efficient UI display.
-   * Contains {id, title, nodeType} for each mentioning node's container (root or task).
-   *
-   * This eliminates N+1 queries - backlink data comes with the initial node fetch.
-   * The SharedNodeStore caches this data, and domain events trigger refetch on changes.
-   *
-   * ## Usage in BacklinksPanel
-   *
-   * ```typescript
-   * let node = $derived(sharedNodeStore.getNode(nodeId));
-   * let backlinks = $derived(node?.mentionedIn ?? []);
-   *
-   * {#each backlinks as backlink}
-   *   <a href="nodespace://{backlink.id}">{backlink.title || backlink.id}</a>
-   * {/each}
-   * ```
-   */
-  mentionedIn?: NodeReference[];
-}
-
 /**
  * Node - the generic node: the envelope, with every field of its type inside
  * `properties`. A primitive type has no fields, so this is also its whole
  * wire shape.
  *
  * All services and components use this type for a node of any type; a type
- * with its own fields has a typed interface that extends `NodeEnvelope`.
+ * with its own fields has a generated typed shape that includes the envelope.
  */
 export type Node = NodeEnvelope;
 
@@ -353,36 +172,6 @@ export function parseCollectionPath(path: string): CollectionPathSegment[] {
  */
 export function formatCollectionPath(segments: CollectionPathSegment[]): string {
   return segments.map((s) => s.name).join(':');
-}
-
-/**
- * NodeUpdate - Partial updates for PATCH operations
- *
- * All fields optional to support partial updates.
- * Only provided fields will be updated.
- *
- * Note: created_at and modified_at are NOT updatable.
- * Backend automatically sets modified_at on updates.
- */
-/**
- * NodeUpdate - Partial node update interface
- *
- * Maps to Rust's `NodeUpdate` struct. An omitted field is left unchanged.
- *
- * ```typescript
- * // Update content only
- * updateNode('node-1', { content: 'New content' });
- * ```
- */
-export interface NodeUpdate {
-  /** Update node type */
-  nodeType?: string;
-
-  /** Update primary content */
-  content?: string;
-
-  /** Update or merge properties */
-  properties?: Record<string, unknown>;
 }
 
 /**

@@ -7,7 +7,19 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Derives `ts_rs::TS` on every wire type and builds the `gen-ts` binary, which
+# writes the frontend's generated TypeScript (`bun run gen:types`, ADR-086 §8).
+# Off by default, so no other build compiles `ts-rs`.
+ts = ["dep:ts-rs"]
+
+[[bin]]
+name = "gen-ts"
+path = "src/bin/gen_ts.rs"
+required-features = ["ts"]
+
 [dependencies]
+ts-rs = { version = "12.0.1", optional = true, default-features = false, features = ["serde-compat", "no-serde-warnings"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

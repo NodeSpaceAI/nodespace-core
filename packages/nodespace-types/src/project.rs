@@ -20,6 +20,8 @@ pub const DEFAULT_PROJECT_STATUS: &str = "planning";
 /// schema, not this struct, owns the vocabulary — the service layer validates
 /// writes against it. `priority` is the scale `task` shares.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectNode {
     /// The fields every node carries. `properties` holds extension fields
@@ -42,6 +44,8 @@ pub struct ProjectNode {
 /// sets it. Dates accept `YYYY-MM-DD` or RFC 3339 and are stored as
 /// `YYYY-MM-DD`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectNodeUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]

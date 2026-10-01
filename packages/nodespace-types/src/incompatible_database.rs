@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 /// not migrate databases, so the only way forward is to move the file aside
 /// and start with a fresh one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct IncompatibleDatabase {
     /// Absolute path of the database file the daemon refused to open.

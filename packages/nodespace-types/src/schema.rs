@@ -86,6 +86,8 @@ pub fn derive_friendly_name(name: &str) -> String {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnumValue {
     pub value: String,
@@ -121,6 +123,7 @@ impl EnumValue {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum SchemaProtectionLevel {
     Core,
@@ -149,6 +152,8 @@ impl std::fmt::Display for SchemaProtectionLevel {
 /// `text` is the string type. `string` is not a field type and is refused,
 /// with a message that names `text`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(rename_all = "lowercase"))]
 pub enum SchemaFieldType {
     #[default]
     Text,
@@ -227,6 +232,8 @@ impl<'de> Deserialize<'de> for SchemaFieldType {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaField {
     /// Unique key within the schema: storage/query key, CEL selector,
@@ -257,6 +264,7 @@ pub struct SchemaField {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extensible: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "unknown"))]
     pub default: Option<serde_json::Value>,
     /// What the field is for: meaning, purpose, usage, an example where
     /// helpful. Consumed by the model for schema comprehension (schema
@@ -295,6 +303,7 @@ pub struct SchemaField {
     /// by the sync engine, which consults this classification when building the
     /// push payload and when applying a pull.
     #[serde(default, skip_serializing_if = "is_false")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub local_only: bool,
 }
 
@@ -305,6 +314,8 @@ fn is_false(b: &bool) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EdgeField {
     pub name: String,
@@ -326,6 +337,7 @@ pub struct EdgeField {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "unknown"))]
     pub default: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_type: Option<String>,
@@ -334,6 +346,7 @@ pub struct EdgeField {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub enum RelationshipDirection {
     Out,
@@ -341,6 +354,7 @@ pub enum RelationshipDirection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum RelationshipCardinality {
     One,
@@ -348,6 +362,8 @@ pub enum RelationshipCardinality {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaRelationship {
     pub name: String,
@@ -394,6 +410,8 @@ pub struct SchemaRelationship {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaNode {
     /// The fields every node carries. A schema's stored properties are all
@@ -406,6 +424,7 @@ pub struct SchemaNode {
     /// its `node_type` or retyped into it. It stays a valid `extends` target
     /// and query scope (ADR-086 §6).
     #[serde(default, rename = "abstract", skip_serializing_if = "is_false")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub is_abstract: bool,
     /// The schema id of the type this one extends (ADR-078), so a client can
     /// resolve a user-defined subtype to the type whose rules it takes.

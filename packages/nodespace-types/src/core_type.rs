@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// A type NodeSpace ships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "kebab-case")]
 pub enum CoreNodeType {
     Text,
@@ -41,6 +42,7 @@ pub enum CoreNodeType {
 
 /// Which of the three kinds of core type a variant is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum CoreTypeKind {
     /// A core type with no core parent.
@@ -54,6 +56,7 @@ pub enum CoreTypeKind {
 /// What "strongly typed" amounts to for a type, computed over its whole
 /// `extends` chain (ADR-086 §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum TypeCategory {
     /// The chain declares no fields; the data is `content` (or the id).
@@ -66,6 +69,7 @@ pub enum TypeCategory {
 
 /// What a node's `content` means for its type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "snake_case")]
 pub enum ContentRole {
     /// Markup body; any attributes are derived from it.

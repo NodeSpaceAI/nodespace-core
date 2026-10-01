@@ -1,33 +1,16 @@
 /**
- * Type-Safe Person Node Interface
+ * Person node helpers.
  *
- * Flat structure matching the Rust `PersonNode` wire shape
- * (`packages/nodespace-types/src/person.rs`): the person schema's core fields
- * travel at the top level. `properties` carries only extension fields
- * (`custom:…`), never `first_name`/`last_name`/`email`.
+ * `PersonNode` and `PersonNodeUpdate` are generated from Rust's
+ * `nodespace-types` (`./generated`): the person schema's core fields travel at
+ * the top level, and `properties` carries only extension fields (`custom:…`).
  */
 
-import type { Node, NodeEnvelope } from './node';
+import type { Node } from './node';
+import type { PersonNode } from './generated';
 import { isExactly } from './core-node-types';
 
-/** `properties` carries extension fields only — core fields are the typed fields below. */
-export interface PersonNode extends NodeEnvelope {
-  nodeType: 'person';
-
-  firstName?: string;
-  lastName?: string;
-  email?: string;
-}
-
-/**
- * Partial update for a person's core fields. Mirrors the Rust
- * `PersonNodeUpdate`: absent = no change, `null` = clear, a string = set.
- */
-export interface PersonNodeUpdate {
-  firstName?: string | null;
-  lastName?: string | null;
-  email?: string | null;
-}
+export type { PersonNode, PersonNodeUpdate } from './generated';
 
 export function isPersonNode(node: Node | PersonNode): node is PersonNode {
   return isExactly(node.nodeType, 'person');
@@ -41,7 +24,7 @@ export function isPersonNode(node: Node | PersonNode): node is PersonNode {
  */
 export function nodeToPersonNode(node: Node): PersonNode {
   return {
-    ...(node as unknown as PersonNode),
+    ...(node as PersonNode),
     nodeType: 'person',
     properties: node.properties ?? {}
   };

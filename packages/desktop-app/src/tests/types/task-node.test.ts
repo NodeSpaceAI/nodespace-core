@@ -211,7 +211,7 @@ describe('getTaskDueDate', () => {
       modifiedAt: new Date().toISOString(),
       version: 1,
       status: 'open',
-      dueDate: null
+      dueDate: undefined
     };
 
     expect(getTaskDueDate(node)).toBeUndefined();
@@ -254,7 +254,7 @@ describe('setTaskDueDate', () => {
 
     const updated = setTaskDueDate(original, undefined);
 
-    expect(updated.dueDate).toBeNull();
+    expect(updated.dueDate).toBeUndefined();
   });
 });
 
@@ -430,7 +430,7 @@ describe('TaskNodeHelpers', () => {
       expect(task.nodeType).toBe('task');
       expect(task.status).toBe('open');
       expect(task.priority).toBeUndefined();
-      expect(task.dueDate).toBeNull();
+      expect(task.dueDate).toBeUndefined();
       expect(task.id).toMatch(/^task-/);
     });
 

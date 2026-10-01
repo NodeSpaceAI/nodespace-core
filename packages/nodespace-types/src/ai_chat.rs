@@ -6,6 +6,8 @@ use crate::node::NodeEnvelope;
 ///
 /// Mirrors `nodespace_core::models::AiChatCompletedWrite`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatCompletedWrite {
     pub tool: String,
@@ -16,6 +18,7 @@ pub struct AiChatCompletedWrite {
     /// Edges the write evicted, rendered `"from -[type]-> to"`. Only a
     /// cardinality-one `create_relationship` populates it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub replaced: Vec<String>,
     /// The write's identity for the cross-turn duplicate guard: canonical JSON
     /// verbatim, or `sha256:<hex>` of it when too large to store. Always
@@ -29,6 +32,8 @@ pub struct AiChatCompletedWrite {
 ///
 /// Mirrors `nodespace_core::models::AiChatResolvedEntity`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatResolvedEntity {
     pub node_id: String,
@@ -42,6 +47,7 @@ pub struct AiChatResolvedEntity {
 ///
 /// Mirrors `nodespace_core::models::AiChatPendingDeletion`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatPendingDeletion {
     pub node_id: String,
@@ -53,6 +59,8 @@ pub struct AiChatPendingDeletion {
 
 /// A single message in an ai-chat conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatMessage {
     pub role: String,
@@ -63,9 +71,11 @@ pub struct AiChatMessage {
     pub reasoning: Option<String>,
     /// Graph writes this assistant turn completed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub completed_writes: Vec<AiChatCompletedWrite>,
     /// Graph entities this assistant turn's reads surfaced.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub resolved_entities: Vec<AiChatResolvedEntity>,
 
     /// The clarifying question, when this message is a `route_clarify` turn
@@ -78,10 +88,12 @@ pub struct AiChatMessage {
     /// Concrete options offered alongside `question`. Only meaningful when
     /// `question` is `Some`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub options: Vec<String>,
 
     /// Deletes this assistant turn is asking the user to confirm.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub pending_deletions: Vec<AiChatPendingDeletion>,
 
     /// How this assistant turn ended, when an agent turn produced it.
@@ -94,6 +106,7 @@ pub struct AiChatMessage {
 ///
 /// Mirrors `nodespace_core::models::AiChatTurnOutcome`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum AiChatTurnOutcome {
     Acted,
@@ -106,6 +119,8 @@ pub enum AiChatTurnOutcome {
 /// Produced by `node_to_typed_value` for `node_type == "ai-chat"`. Fields map
 /// directly to the TypeScript `AiChatNode` interface.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatNode {
     /// The fields every node carries. `properties` holds extension fields

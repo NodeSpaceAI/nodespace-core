@@ -31,6 +31,8 @@ function schema(): SchemaNode {
     version: 1,
     isCore: false,
     schemaVersion: 1,
+    description: '',
+    relationships: [],
     fields: [
       {
         name: 'status',

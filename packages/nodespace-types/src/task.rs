@@ -5,12 +5,16 @@ use crate::node::NodeEnvelope;
 use crate::priority::Priority;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(rename_all = "snake_case"))]
 pub enum TaskStatus {
     #[default]
     Open,
     InProgress,
     Done,
     Cancelled,
+    // Serialized as the bare string, like the core values.
+    #[cfg_attr(feature = "ts", ts(untagged))]
     User(String),
 }
 
@@ -61,6 +65,8 @@ impl<'de> Deserialize<'de> for TaskStatus {
 /// Produced by `node_to_typed_value` for `node_type == "task"`. Fields map
 /// directly to the TypeScript `TaskNode` interface.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct TaskNode {
     /// The fields every node carries. `properties` holds extension fields
@@ -89,6 +95,8 @@ pub struct TaskNode {
 /// an envelope field and extension fields (`custom:…`) live in `properties`;
 /// both are written through the generic node update.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskNodeUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]

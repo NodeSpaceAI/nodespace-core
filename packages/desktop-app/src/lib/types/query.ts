@@ -1,63 +1,30 @@
 /**
- * Query Node Type Definitions
+ * Query node helpers.
  *
- * `QueryNode` matches the Rust `QueryNode` wire shape
- * (`packages/nodespace-types/src/query.rs`): the query schema's fields travel
- * as typed top-level fields (`targetType`, `filters`, `viewConfig`, …).
- * `properties` carries only extension fields (`custom:…`), never a query
- * field. Storage uses the schema's snake_case names (`target_type`,
- * `view_config`, …) under `properties.query` — the shape a query is created
- * with (see `buildMaterializedProperties`), and nothing else reads it.
+ * `QueryNode`, `QueryNodeUpdate`, `QueryFilter` and `SortConfig` are generated
+ * from Rust's `nodespace-types` (`./generated`): the query schema's fields
+ * travel as typed top-level fields (`targetType`, `filters`, `viewConfig`, …),
+ * and `properties` carries only extension fields (`custom:…`). Storage uses the
+ * schema's snake_case names (`target_type`, `view_config`, …) under
+ * `properties.query`, the shape a query is created with (see
+ * `buildMaterializedProperties`); nothing else reads it.
+ *
+ * `viewConfig`'s keys (`lastView`, `kanban.groupBy`) are the viewer's own
+ * vocabulary; `parseViewConfig` in `query-node-model.ts` is their reader.
  *
  * Node content is the query's name (e.g. "All open high-priority tasks").
  */
 
-import type { Node, NodeEnvelope } from './node';
+import type { Node } from './node';
+import type { QueryFilter, QueryNode, SortConfig } from './generated';
 
-/** `properties` carries extension fields only — query fields are the typed fields below. */
-export interface QueryNode extends NodeEnvelope {
-  nodeType: 'query';
-
-  /** Target node type, or '*' for all types */
-  targetType: string;
-  /** Filter conditions to apply */
-  filters: QueryFilter[];
-  sorting?: SortConfig[];
-  limit?: number;
-  /** Who created this query */
-  generatedBy: QueryGeneratedBy;
-  /** Parent chat ID for AI-generated queries */
-  generatorContext?: string;
-  /** System-managed */
-  executionCount: number;
-  /** ISO timestamp of last execution (system-managed) */
-  lastExecuted?: string;
-  /**
-   * How the query renders. Its keys (`lastView`, `kanban.groupBy`) are the
-   * viewer's own vocabulary — `parseViewConfig` in `query-node-model.ts` is
-   * their reader.
-   */
-  viewConfig?: Record<string, unknown>;
-}
-
-export type QueryGeneratedBy = 'ai' | 'user';
-
-/**
- * Partial update for a query's fields. Mirrors the Rust `QueryNodeUpdate`:
- * absent = no change, `null` = clear, a value = set. `targetType`, `filters`
- * and `generatedBy` cannot be cleared (the schema requires them);
- * `viewConfig` is replaced whole. The system-managed fields are not
- * writable.
- */
-export interface QueryNodeUpdate {
-  targetType?: string;
-  filters?: QueryFilter[];
-  sorting?: SortConfig[] | null;
-  limit?: number | null;
-  generatedBy?: QueryGeneratedBy;
-  generatorContext?: string | null;
-  viewConfig?: Record<string, unknown> | null;
-}
+export type {
+  QueryFilter,
+  QueryGeneratedBy,
+  QueryNode,
+  QueryNodeUpdate,
+  SortConfig
+} from './generated';
 
 /**
  * Convert a node received over any transport to a `QueryNode`. The backend
@@ -66,7 +33,7 @@ export interface QueryNodeUpdate {
  * defaults.
  */
 export function nodeToQueryNode(node: Node): QueryNode {
-  const query = node as unknown as QueryNode;
+  const query = node as Node & Partial<QueryNode>;
   return {
     ...query,
     nodeType: 'query',
@@ -76,45 +43,6 @@ export function nodeToQueryNode(node: Node): QueryNode {
     generatedBy: query.generatedBy ?? 'user',
     executionCount: query.executionCount ?? 0
   };
-}
-
-/**
- * Individual filter condition
- *
- * Filters can target properties, content, relationships, or metadata.
- */
-export interface QueryFilter {
-	/** Filter category */
-	type: 'property' | 'content' | 'relationship' | 'metadata';
-
-	/** Comparison operator */
-	operator: 'equals' | 'contains' | 'gt' | 'lt' | 'gte' | 'lte' | 'in' | 'exists';
-
-	/** Property key for property filters */
-	property?: string;
-
-	/** Expected value */
-	value?: unknown;
-
-	/** Case sensitivity for text comparisons */
-	caseSensitive?: boolean;
-
-	/** Relationship type for relationship filters */
-	relationshipType?: 'parent' | 'children' | 'mentions' | 'mentioned_by';
-
-	/** Target node ID for relationship filters */
-	nodeId?: string;
-}
-
-/**
- * Sorting configuration
- */
-export interface SortConfig {
-	/** Property or field to sort by */
-	field: string;
-
-	/** Sort direction */
-	direction: 'asc' | 'desc';
 }
 
 /**

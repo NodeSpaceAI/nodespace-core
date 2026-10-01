@@ -192,9 +192,9 @@ fn flatten_properties_for_api(node: &mut Node) {
     node.properties = flatten_namespaced_properties(&node.properties, &node.node_type);
 }
 
-/// The core fields a typed conversion promotes out of `properties`, as
-/// `(storage key, wire key)` pairs: `due_date` is stored in the `task` bucket
-/// and travels as the top-level `dueDate`.
+/// The core fields a typed conversion promotes out of `properties`:
+/// `due_date` is stored in the `task` bucket and travels as the top-level
+/// `dueDate`.
 ///
 /// Promotion is a move, not a copy — [`node_to_typed_value`] removes these keys
 /// from `properties`, so each core field has exactly one home on the wire and
@@ -202,10 +202,65 @@ fn flatten_properties_for_api(node: &mut Node) {
 /// storage-keyed view back (the CLI's snake_case node shape, the agent's
 /// model-facing property map) rebuild it with [`flat_properties_view`] rather
 /// than hard-coding these lists.
-pub fn promoted_fields(node_type: &str) -> &'static [(&'static str, &'static str)] {
+pub fn promoted_fields(node_type: &str) -> &'static [PromotedField] {
     match CoreNodeType::from_id(node_type) {
         Some(core) => core_promoted_fields(core),
         None => &[],
+    }
+}
+
+/// The JSON shape a promoted field's stored value has. A stored value of any
+/// other shape is dropped to the field's default rather than promoted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotedShape {
+    /// A string, promoted as stored.
+    Text,
+    /// A string holding a date, normalized to `YYYY-MM-DD` on read.
+    Date,
+    Number,
+    Array,
+    Object,
+}
+
+/// One core field a typed conversion promotes out of `properties`.
+///
+/// This is the one definition of the mapping. The frontend's
+/// `TYPED_CORE_FIELDS` is generated from it (ADR-086 §8), and the core schemas
+/// are pinned to it by `typed_wire_shapes_promote_their_schemas_fields`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PromotedField {
+    /// The schema field name, as stored in the type's bucket (`due_date`).
+    pub storage: &'static str,
+    /// The top-level key on the typed node (`dueDate`).
+    pub wire: &'static str,
+    pub shape: PromotedShape,
+    /// System-managed: read on the wire, never set by a typed update.
+    pub read_only: bool,
+}
+
+impl PromotedField {
+    const fn new(storage: &'static str, wire: &'static str, shape: PromotedShape) -> Self {
+        Self {
+            storage,
+            wire,
+            shape,
+            read_only: false,
+        }
+    }
+
+    const fn text(storage: &'static str, wire: &'static str) -> Self {
+        Self::new(storage, wire, PromotedShape::Text)
+    }
+
+    const fn date(storage: &'static str, wire: &'static str) -> Self {
+        Self::new(storage, wire, PromotedShape::Date)
+    }
+
+    const fn read_only(self) -> Self {
+        Self {
+            read_only: true,
+            ..self
+        }
     }
 }
 
@@ -215,37 +270,55 @@ pub fn promoted_fields(node_type: &str) -> &'static [(&'static str, &'static str
 /// `ai-chat` and `schema` have typed wire structs but promote nothing through
 /// this list: their structs are built field by field from properties that the
 /// flat property view never carries back.
-pub fn core_promoted_fields(core: CoreNodeType) -> &'static [(&'static str, &'static str)] {
+pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
+    use PromotedField as F;
+    use PromotedShape::{Array, Number, Object};
     match core {
-        CoreNodeType::Task => &[
-            ("status", "status"),
-            ("priority", "priority"),
-            ("due_date", "dueDate"),
-            ("started_at", "startedAt"),
-            ("completed_at", "completedAt"),
-        ],
-        CoreNodeType::Person => &[
-            ("first_name", "firstName"),
-            ("last_name", "lastName"),
-            ("email", "email"),
-        ],
-        CoreNodeType::Project => &[
-            ("status", "status"),
-            ("priority", "priority"),
-            ("start_date", "startDate"),
-            ("end_date", "endDate"),
-        ],
-        CoreNodeType::Query => &[
-            ("target_type", "targetType"),
-            ("filters", "filters"),
-            ("sorting", "sorting"),
-            ("limit", "limit"),
-            ("generated_by", "generatedBy"),
-            ("generator_context", "generatorContext"),
-            ("execution_count", "executionCount"),
-            ("last_executed", "lastExecuted"),
-            ("view_config", "viewConfig"),
-        ],
+        CoreNodeType::Task => {
+            const {
+                &[
+                    F::text("status", "status"),
+                    F::text("priority", "priority"),
+                    F::date("due_date", "dueDate"),
+                    F::date("started_at", "startedAt"),
+                    F::date("completed_at", "completedAt"),
+                ]
+            }
+        }
+        CoreNodeType::Person => {
+            const {
+                &[
+                    F::text("first_name", "firstName"),
+                    F::text("last_name", "lastName"),
+                    F::text("email", "email"),
+                ]
+            }
+        }
+        CoreNodeType::Project => {
+            const {
+                &[
+                    F::text("status", "status"),
+                    F::text("priority", "priority"),
+                    F::date("start_date", "startDate"),
+                    F::date("end_date", "endDate"),
+                ]
+            }
+        }
+        CoreNodeType::Query => {
+            const {
+                &[
+                    F::text("target_type", "targetType"),
+                    F::new("filters", "filters", Array),
+                    F::new("sorting", "sorting", Array),
+                    F::new("limit", "limit", Number),
+                    F::text("generated_by", "generatedBy"),
+                    F::text("generator_context", "generatorContext"),
+                    F::new("execution_count", "executionCount", Number).read_only(),
+                    F::text("last_executed", "lastExecuted").read_only(),
+                    F::new("view_config", "viewConfig", Object),
+                ]
+            }
+        }
         CoreNodeType::Text
         | CoreNodeType::Header
         | CoreNodeType::CodeBlock
@@ -270,7 +343,7 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [(&'static str, &'st
 /// rather than the generic one: the promoted fields of a core type that has a
 /// typed update (ADR-086 §7). Empty for every other type, whose fields have no
 /// typed write path to prefer.
-pub fn typed_update_fields(core: CoreNodeType) -> &'static [(&'static str, &'static str)] {
+pub fn typed_update_fields(core: CoreNodeType) -> &'static [PromotedField] {
     match core.wire() {
         crate::core_type::WireShape::Typed { update: true } => core_promoted_fields(core),
         crate::core_type::WireShape::Typed { update: false }
@@ -282,8 +355,8 @@ pub fn typed_update_fields(core: CoreNodeType) -> &'static [(&'static str, &'sta
 /// Remove a type's promoted core fields from its flat `properties`.
 fn without_promoted(mut properties: serde_json::Value, core: CoreNodeType) -> serde_json::Value {
     if let Some(obj) = properties.as_object_mut() {
-        for (storage_key, _wire_key) in core_promoted_fields(core) {
-            obj.remove(*storage_key);
+        for field in core_promoted_fields(core) {
+            obj.remove(field.storage);
         }
     }
     properties
@@ -303,10 +376,10 @@ pub fn flat_properties_view(typed: &serde_json::Value) -> serde_json::Value {
         .cloned()
         .unwrap_or_default();
     if let Some(node_type) = typed.get("nodeType").and_then(|v| v.as_str()) {
-        for (storage_key, wire_key) in promoted_fields(node_type) {
-            if let Some(value) = typed.get(*wire_key).filter(|v| !v.is_null()) {
+        for field in promoted_fields(node_type) {
+            if let Some(value) = typed.get(field.wire).filter(|v| !v.is_null()) {
                 props
-                    .entry(storage_key.to_string())
+                    .entry(field.storage.to_string())
                     .or_insert_with(|| value.clone());
             }
         }

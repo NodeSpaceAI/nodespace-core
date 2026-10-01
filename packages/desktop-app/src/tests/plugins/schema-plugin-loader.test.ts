@@ -52,6 +52,7 @@ function createMockSchemaNode(
     version: 1,
     isCore: options.isCore ?? false,
     schemaVersion: options.schemaVersion ?? 1,
+    relationships: [],
     description: options.description ?? '',
     fields: []
   };

@@ -1983,8 +1983,11 @@ mod tests {
         }
     }
 
-    /// A type that travels typed promotes exactly its schema's fields, and a
-    /// type whose update is typed has promoted fields to write.
+    /// A type that travels typed promotes exactly its schema's fields, in the
+    /// shape and with the writability the schema declares, and a type whose
+    /// update is typed has promoted fields to write. The frontend's
+    /// `TYPED_CORE_FIELDS` is generated from the promoted fields, so this is
+    /// also what keeps it true to the schemas.
     #[test]
     fn typed_wire_shapes_promote_their_schemas_fields() {
         for core in CoreNodeType::ALL {
@@ -1995,9 +1998,32 @@ mod tests {
                     let mut declared: Vec<&str> =
                         schema.fields.iter().map(|f| f.name.as_str()).collect();
                     declared.sort_unstable();
-                    let mut storage: Vec<&str> = promoted.iter().map(|(s, _)| *s).collect();
+                    let mut storage: Vec<&str> = promoted.iter().map(|f| f.storage).collect();
                     storage.sort_unstable();
                     assert_eq!(storage, declared, "{core}: promoted fields");
+                    for promoted in promoted {
+                        use crate::models::SchemaFieldType as T;
+                        use nodespace_types::PromotedShape as S;
+                        let field = schema.get_field(promoted.storage).expect("declared above");
+                        let shape = match field.field_type {
+                            T::Text | T::Enum | T::Datetime => S::Text,
+                            T::Date => S::Date,
+                            T::Number => S::Number,
+                            T::Array => S::Array,
+                            T::Object => S::Object,
+                            T::Boolean => panic!(
+                                "{core}.{}: a boolean field needs a promoted shape",
+                                field.name
+                            ),
+                        };
+                        assert_eq!(promoted.shape, shape, "{core}.{}: shape", field.name);
+                        assert_eq!(
+                            promoted.read_only,
+                            field.protection == SchemaProtectionLevel::System,
+                            "{core}.{}: a system field is read-only",
+                            field.name
+                        );
+                    }
                     assert_eq!(nodespace_types::typed_update_fields(core), promoted);
                 }
                 WireShape::Typed { update: false } | WireShape::Generic | WireShape::Envelope => {
@@ -2478,8 +2504,8 @@ mod tests {
     /// list the conversion, the CLI and the agent use, so a field added to a
     /// core schema without it would travel in `properties` and be invisible
     /// to every typed reader, and a stale entry would strip a field that no
-    /// longer exists. (The frontend's `TYPED_CORE_FIELDS` is pinned to this
-    /// same list by `typed-core-fields.test.ts`.)
+    /// longer exists. (The frontend's `TYPED_CORE_FIELDS` is generated from this
+    /// same list.)
     #[test]
     fn promoted_fields_match_each_typed_core_schema() {
         let schemas = get_core_schemas();
@@ -2491,7 +2517,7 @@ mod tests {
             let mut declared: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
             let mut promoted: Vec<&str> = crate::models::promoted_fields(node_type)
                 .iter()
-                .map(|(storage, _)| *storage)
+                .map(|field| field.storage)
                 .collect();
             declared.sort_unstable();
             promoted.sort_unstable();

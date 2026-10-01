@@ -8,7 +8,6 @@
 export type {
   Node,
   NodeEnvelope,
-  LifecycleStatus,
   NodeUpdate,
   NodeUIState,
   CollectionNode,
@@ -47,7 +46,7 @@ export type {
   TaskNode,
   TaskNodeUpdate,
   TaskStatus,
-  TaskPriority,
+  Priority,
   CoreTaskStatus,
   CoreTaskPriority
 } from './task-node';
@@ -65,7 +64,7 @@ export {
 export type { PersonNode, PersonNodeUpdate } from './person-node';
 export { isPersonNode, nodeToPersonNode } from './person-node';
 
-export type { ProjectNode, ProjectNodeUpdate, ProjectStatus } from './project-node';
+export type { ProjectNode, ProjectNodeUpdate } from './project-node';
 export { isProjectNode, nodeToProjectNode } from './project-node';
 
 export type { QueryNode, QueryNodeUpdate, QueryGeneratedBy } from './query';
@@ -75,7 +74,7 @@ export type {
   SchemaNode,
   SchemaField,
   SchemaFieldType,
-  ProtectionLevel,
+  SchemaProtectionLevel,
   EnumValue
 } from './schema-node';
 // Only isSchemaNode remains - type guard for runtime checking

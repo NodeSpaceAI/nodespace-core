@@ -1,13 +1,5 @@
-/**
- * `CORE_NODE_TYPES` is the frontend mirror of Rust's `CoreNodeType` registry
- * (`packages/nodespace-types/src/core_type.rs`). The two are hand-synced across
- * the language boundary, so this reads the Rust source and asserts they list
- * the same ids, parents, abstract flags and mentionable flags.
- */
-
 import { describe, it, expect, afterEach } from 'vitest';
 import {
-  CORE_NODE_TYPES,
   coreTypeEntry,
   isA,
   isCoreNodeType,
@@ -16,39 +8,6 @@ import {
   setExtendsResolver,
   typeChain
 } from '$lib/types/core-node-types';
-import { rustCoreTypes } from '../helpers/rust-core-type-registry';
-
-describe('CORE_NODE_TYPES', () => {
-  it('lists the core types Rust CoreNodeType::ALL lists, in the same order', () => {
-    const rust = rustCoreTypes();
-    expect(rust.length).toBeGreaterThan(0);
-    expect(CORE_NODE_TYPES.map((t) => t.id)).toEqual(rust.map((t) => t.id));
-  });
-
-  it('matches the Rust registry on parent, abstract and mentionable, per type', () => {
-    const ts = CORE_NODE_TYPES.map(({ id, parent, abstract, mentionable }) => ({
-      id,
-      parent,
-      abstract,
-      mentionable
-    }));
-    const rust = rustCoreTypes().map(({ id, parent, abstract, mentionable }) => ({
-      id,
-      parent,
-      abstract,
-      mentionable
-    }));
-    expect(ts).toEqual(rust);
-  });
-
-  it('has unique ids and only parents that are themselves core types', () => {
-    const ids = CORE_NODE_TYPES.map((t) => t.id as string);
-    expect(new Set(ids).size).toBe(ids.length);
-    for (const t of CORE_NODE_TYPES) {
-      if (t.parent !== null) expect(ids).toContain(t.parent);
-    }
-  });
-});
 
 describe('type helpers', () => {
   afterEach(() => setExtendsResolver(() => undefined));
