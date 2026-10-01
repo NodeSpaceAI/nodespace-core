@@ -122,33 +122,40 @@ Core is the complete free product, with no sync, collaboration or access-control
 
 ## Node Type System & Schema Architecture (CRITICAL)
 
-Read before implementing any node type or property:
-- [`node-behavior-system.md`](../nodespace-docs/components/node-behavior-system.md) — hybrid Core (hardcoded) vs Extension (schema-driven) architecture
-- [`schema-management.md`](../nodespace-docs/components/schema-management.md) — namespace enforcement, protection levels
+**Any change that adds or changes a node type, field, relationship, structural rule or subtype MUST follow the [node type sequence](../nodespace-docs/development/node-type-sequence.md), the same way the startup sequence is followed.** No exceptions, not even for a single field or enum value. If you started without it, STOP, follow it, and restart.
+
+Read first: [ADR-086](../nodespace-docs/decisions/086-core-node-types-defined-once-typed-by-category.md) (defined once, registry, categories), [ADR-087](../nodespace-docs/decisions/087-lifecycle-status-is-governance-and-one-participation-rule.md) (lifecycle is governance), [ADR-089](../nodespace-docs/decisions/089-structural-rules-children-and-parent.md) (structural rules), [ADR-088](../nodespace-docs/decisions/088-ai-chat-subtypes-and-message-nodes.md) for AI chats, and [`node-types.md`](../nodespace-docs/components/node-types.md). `node-types.md` is the one per-type reference, and it is updated in the same change. Recipes are in [`creating-node-types.md`](../nodespace-docs/components/creating-node-types.md).
 
 **Decision tree:**
 
 ```
-Adding a property to a core node type?
-  Core property the UI depends on → Edit hardcoded behavior in packages/core/src/behaviors/mod.rs
-  Everything else → Use schema system with NAMESPACE PREFIX (custom:propertyName)
-
-Adding a field to a type the user defined (Venue, Invoice, …)?
-  Use a BARE property name (capacity) — no prefix
-
-Creating a new node type?
-  Built-in type everyone needs → Hardcoded behavior + schema (requires issue approval)
-  Everything else → Schema-only type
+Shipping a new kind of node?
+  No fields (data is content)           → primitive core type
+  Scalar fields                         → flat core type
+  Nested fields                         → structured core type
+  Specializes a shipped type            → core subtype (extends it; inherits all its rules)
+  Shared base never created directly    → abstract base (abstract: true)
+Adding state to a core type?
+  It belongs to the type                → declare a field in its (closed) schema
+  It belongs to a specialization        → a subtype's field, bare name, own bucket
+  It links nodes                        → a declared relationship, not a list of ids
+  It's "hidden / retired"               → lifecycle_status via governance; never a type field
+User extending a core type?             → custom:/org:/plugin: prefix (ADR-063)
+User-defined type's field?              → bare name
+Another build's data?                   → its own extends subtype (ADR-082/083); never on a core type
 ```
 
-**Rules** (see [ADR-063](../nodespace-docs/decisions/063-namespace-prefixes-scope.md)):
-- ✅ Extending a core type (`task`, `text`, `date`, …) requires a prefix: `custom:`, `org:`, `plugin:`. `update_schema` rejects a bare name there — a future release may claim it as a core property
-- ✅ Fields of a user-defined type are stored bare. Both `create_schema` routes store the name they are given, so the same intent yields the same key either way
-- ✅ Stored names are user-visible keys: they appear in `titleTemplate` tokens, CEL selectors, query filters and frontend lookups. Changing one is a breaking change to every call site
-- ✅ Avoid user-defined-type field names that shadow core properties (`status`, `priority`, `due_date`, …) — `create_schema` warns rather than renaming the field for you
-- ❌ No unprefixed user properties on core types — conflicts with future core properties
-- ❌ No deleting core properties from schemas — breaks UI
-- ❌ No hardcoded behaviors for plugin/custom types
+**Rules:**
+- ✅ One definition per wire type, in `nodespace-types`. TypeScript is generated (ts-rs), never hand-copied
+- ✅ Every field is declared. The schema `default` is the only default. Field names are snake_case
+- ✅ Rules resolve through the `extends` chain via the registry. Subtypes add rules; they never relax them
+- ✅ Ids are UUIDs, except `date`, `schema` and `database-settings-singleton`. Seeded nodes use fixed literal UUIDs
+- ✅ Stored names are user-visible keys. They appear in `titleTemplate` tokens, CEL selectors, query filters and frontend lookups, so changing one breaks every call site
+- ✅ Avoid user-defined field names that shadow core properties (`status`, `priority`, `due_date`, …). `create_schema` warns but doesn't rename the field
+- ❌ No `node_type == "<literal>"` comparisons (Rust, SQL or TypeScript)
+- ❌ No reads of `lifecycle_status` outside the governance participation check, and no type-specific meaning for `archived`
+- ❌ No undeclared property keys, wrapper structs, `default_metadata`, hierarchy flags or compatibility shims
+- ❌ No unprefixed user properties on core types. No deleting core fields from schemas without the sequence and an ADR
 
 ## Component Architecture (CRITICAL)
 

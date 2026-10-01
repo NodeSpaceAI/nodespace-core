@@ -26,6 +26,14 @@ You will analyze code changes using this prioritized checklist:
 - Identify unnecessary complexity - could a simpler solution achieve the same goal?
 - Verify the change is atomic (single, cohesive purpose) not bundling unrelated changes
 - Check for appropriate abstraction levels and separation of concerns
+- **Node-type changes:** a change that adds or changes a node type, field, relationship, structural rule or subtype must follow `../nodespace-docs/development/node-type-sequence.md`. Check every layer (registry, closed schema, behaviour, wire type in `nodespace-types`, regenerated TypeScript, typed write path, tests) and that `components/node-types.md` changes in the same PR. Flag as Critical any of these:
+  - an undeclared key or edge property;
+  - a literal `node_type` comparison;
+  - a `lifecycle_status` read outside the governance check;
+  - a second definition of a wire type, or hand-copied generated TypeScript;
+  - ids stored where a relationship belongs;
+  - a non-UUID id outside `date` / `schema` / `database-settings-singleton`;
+  - compatibility code for an older shape.
 
 ### 2. Functionality & Correctness (Critical)
 - Verify the code correctly implements the intended business logic
