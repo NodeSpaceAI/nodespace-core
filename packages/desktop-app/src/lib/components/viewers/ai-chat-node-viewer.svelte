@@ -112,7 +112,6 @@
   const isMessageProvider = $derived(
     provider !== undefined && (MESSAGE_PROVIDERS as readonly string[]).includes(provider)
   );
-  const lifecycleStatus = $derived(node?.lifecycleStatus ?? 'active');
 
   /** True while the daemon is processing an inference turn for this node. */
   const isProcessing = $derived(node?.turnStatus === 'processing');
@@ -645,15 +644,11 @@
       <div class="send-error" role="alert">{sendError}</div>
     {/if}
 
-    {#if lifecycleStatus !== 'archived'}
-      <ChatInput
-        onSend={handleSend}
-        disabled={isProcessing}
-        placeholder={isProcessing ? 'AI is responding...' : 'Type a message...'}
-      />
-    {:else}
-      <div class="archived-notice">This conversation is archived and read-only.</div>
-    {/if}
+    <ChatInput
+      onSend={handleSend}
+      disabled={isProcessing}
+      placeholder={isProcessing ? 'AI is responding...' : 'Type a message...'}
+    />
   {/if}
 
   <!-- Model-load overlay: shown while ensureModelReady is running (covers downloads too). -->
@@ -874,15 +869,6 @@
     border: 1px solid hsl(0 72% 51% / 0.3);
     color: hsl(0 72% 51%);
     font-size: 0.8125rem;
-  }
-
-  .archived-notice {
-    padding: 0.75rem 1rem;
-    text-align: center;
-    font-size: 0.8125rem;
-    color: hsl(var(--muted-foreground));
-    background: hsl(var(--muted) / 0.5);
-    border-top: 1px solid hsl(var(--border));
   }
 
   /* Model-load overlay */

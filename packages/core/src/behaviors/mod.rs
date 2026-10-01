@@ -4128,7 +4128,7 @@ mod tests {
                         "protection": "user",
                         "coreValues": [
                             { "value": "active", "label": "Active" },
-                            { "value": "archived", "label": "Archived" }
+                            { "value": "completed", "label": "Completed" }
                         ],
                         "userValues": [
                             { "value": "on_hold", "label": "On Hold" }

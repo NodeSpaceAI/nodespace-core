@@ -285,7 +285,6 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                         EnumValue::new("planning".to_string(), "Planning".to_string()),
                         EnumValue::new("active".to_string(), "Active".to_string()),
                         EnumValue::new("completed".to_string(), "Completed".to_string()),
-                        EnumValue::new("archived".to_string(), "Archived".to_string()),
                         EnumValue::new("cancelled".to_string(), "Cancelled".to_string()),
                     ]),
                     user_values: Some(vec![]),
@@ -294,10 +293,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: Some(true),
                     default: Some(serde_json::json!("planning")),
                     description: Some(
-                        "Current lifecycle stage of the project: planning (not yet started), \
-                         active (underway), completed (finished successfully), archived (no \
-                         longer active but retained for reference), or cancelled (abandoned). \
-                         Distinct from an individual task's status."
+                        "Current stage of the project: planning (not yet started), active \
+                         (underway), completed (finished successfully), or cancelled \
+                         (abandoned). Distinct from an individual task's status."
                             .to_string(),
                     ),
                     item_type: None,
@@ -1652,6 +1650,23 @@ mod tests {
         assert!(task.get_field("status").is_some());
         assert!(task.get_field("priority").is_some());
         assert!(task.get_field("due_date").is_some());
+    }
+
+    #[test]
+    fn test_project_status_values() {
+        let schemas = get_core_schemas();
+        let project = schemas.iter().find(|s| s.id == "project").unwrap();
+        let status = project.get_field("status").unwrap();
+
+        // No `archived`: retiring a project is archiving the node (ADR-087).
+        let values: Vec<&str> = status
+            .core_values
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|v| v.value.as_str())
+            .collect();
+        assert_eq!(values, ["planning", "active", "completed", "cancelled"]);
     }
 
     #[test]

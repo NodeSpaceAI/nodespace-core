@@ -1885,6 +1885,47 @@ mod typed_update_tests {
         assert!(err.to_string().contains("Invalid value 'someday'"), "{err}");
     }
 
+    /// `archived` is governance vocabulary, not a project status (ADR-087):
+    /// both write paths reject it.
+    #[tokio::test]
+    async fn project_status_archived_is_rejected() {
+        let (service, _t) = create_test_service().await;
+        let project = create(&service, "project", json!({})).await;
+
+        let err = service
+            .update_project_node(
+                &project.id,
+                project.version,
+                ProjectNodeUpdate {
+                    status: Some("archived".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid value 'archived'"),
+            "{err}"
+        );
+
+        let err = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "project".to_string(),
+                content: "Retired".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({ "status": "archived" }),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid value 'archived'"),
+            "{err}"
+        );
+    }
+
     fn saved_query_properties() -> serde_json::Value {
         json!({
             "target_type": "task",

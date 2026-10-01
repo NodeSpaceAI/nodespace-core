@@ -10,7 +10,7 @@
 import type { Node } from './node';
 
 /** Project status — the schema's core values plus any user-added value. */
-export type ProjectStatus = 'planning' | 'active' | 'completed' | 'archived' | 'cancelled' | string;
+export type ProjectStatus = 'planning' | 'active' | 'completed' | 'cancelled' | string;
 
 export interface ProjectNode {
   id: string;
