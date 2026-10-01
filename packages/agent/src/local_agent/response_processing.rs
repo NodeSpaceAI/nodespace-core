@@ -142,7 +142,7 @@ pub fn normalize_response_traced(text: &str) -> (String, Vec<&'static str>) {
 ///
 /// A titled link, `[Node Title](nodespace://abc-123)`, is the reference form
 /// the agent is told to write and passes through untouched: the chat renderer
-/// turns it into a card. A URI label carries no title, and the renderer wraps
+/// shows it as a link to the node. A URI label carries no title, and the renderer wraps
 /// every bare URI in a link of its own, so one left inside a label would nest.
 fn collapse_uri_labelled_links(text: &str) -> String {
     let re = markdown_uri_re();

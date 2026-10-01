@@ -9,6 +9,9 @@
   link: a rename shows everywhere, and a stale or wrong label can't pass as the
   node's name. The label shows only while the node loads or when it can't be
   found.
+
+  Colour and underline come from the chat message's link style in
+  chat-markdown.svelte, which also styles the missing state.
 -->
 
 <script lang="ts">
@@ -64,6 +67,9 @@
    * The resolved node's own title: the same value tabs and search show
    * (a computed title for title-template types, a plugin's own title for
    * dates), as one line without a header's leading `#` markers.
+   *
+   * Not `formatTabTitle`: that cuts a title to the width of a tab, and this
+   * text sits inline in a message, where it wraps.
    */
   function liveTitle(resolved: Node): string {
     const firstLine = (pluginRegistry.getNodeTitle(resolved) ?? '').split('\n')[0].trim();
@@ -80,10 +86,3 @@
   class:ns-node-card-inline--missing={missing}
   data-node-id={nodeId}>{title}</a
 >
-
-<style>
-  /* Colour and underline come from the chat message's own link style. */
-  .ns-node-card-inline--missing {
-    color: hsl(var(--muted-foreground));
-  }
-</style>

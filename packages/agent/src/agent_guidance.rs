@@ -61,9 +61,9 @@ pub const TOOL_STRATEGY_RULES: &str = "TOOL STRATEGY:\n\
 /// Node reference formatting rule.
 ///
 /// Single-line directive that every node named in agent output is a markdown
-/// link to its `nodespace://` URI. The chat renderer turns that link into a
-/// card showing the node's live title, so the label is only what shows while
-/// the node loads or when it cannot be found. Designed to be inlined into a
+/// link to its `nodespace://` URI. The chat renderer shows that link with the
+/// node's live title, so the label is only what shows while the node loads or
+/// when it cannot be found. Designed to be inlined into a
 /// larger response-formatting rules section.
 pub const NODE_REFERENCE_FORMAT: &str =
     "Link every node you name, as a markdown link: [Title](nodespace://abc-123) (no bare URI, no backticks)";

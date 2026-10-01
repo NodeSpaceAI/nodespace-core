@@ -34,20 +34,30 @@
     return createDOMPurify(document.defaultView ?? undefined);
   }
 
+  /** Escape text for use inside a double-quoted HTML attribute value. */
+  function escapeAttribute(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
   // Custom renderer that handles nodespace:// URIs
   const chatRenderer = new Renderer();
   chatRenderer.link = function (token: Tokens.Link): string {
     const href = token.href ?? '';
-    const text = this.parser.parseInline(token.tokens);
 
-    // Detect nodespace:// URIs and render as placeholders for rich node cards
+    // Detect nodespace:// URIs and render as placeholders for node links
     const nsMatch = href.match(/^nodespace:\/\/(.+)$/);
     if (nsMatch) {
-      const nodeId = nsMatch[1];
-      const safeText = text.replace(/"/g, '&quot;');
-      return `<span class="ns-node-card-placeholder" data-node-id="${nodeId}" data-display-text="${safeText}"></span>`;
+      // The label is shown as plain text, so it is rendered without inline
+      // markup: `[**Data** Layer](…)` reads "Data Layer", not its HTML.
+      const label = this.parser.parseInline(token.tokens, this.parser.textRenderer);
+      return `<span class="ns-node-card-placeholder" data-node-id="${escapeAttribute(nsMatch[1])}" data-display-text="${escapeAttribute(label)}"></span>`;
     }
 
+    const text = this.parser.parseInline(token.tokens);
     return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
   };
 
@@ -271,6 +281,12 @@
   .chat-markdown :global(a) {
     color: hsl(var(--primary));
     text-decoration: underline;
+  }
+
+  /* A reference to a node that does not exist. The rule lives here, not in the
+     link's own component, because it has to outrank the link colour above. */
+  .chat-markdown :global(a.ns-node-card-inline--missing) {
+    color: hsl(var(--muted-foreground));
   }
 
   .chat-markdown :global(.ns-node-card-placeholder) {
