@@ -6,16 +6,26 @@
 //! fixture, and the check that keeps the Rust and TypeScript API versions in
 //! step watches it.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use futures::future::BoxFuture;
+use futures::FutureExt;
 use tauri::plugin::{Builder as PluginBuilder, Plugin, TauriPlugin};
-use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, MockRuntime};
+use tauri::test::{
+    get_ipc_response, mock_app, mock_builder, mock_context, noop_assets, MockRuntime,
+};
 use tauri::utils::acl::ExecutionContext;
 use tauri::webview::InvokeRequest;
-use tauri::{App, Manager, Runtime};
+use tauri::{App, AppHandle, Manager, Runtime};
+use tokio::sync::{mpsc, oneshot};
 
-use super::{assemble, core_plugin_names, AppExtensions, EXTENSION_API_VERSION};
+use super::{
+    assemble, core_plugin_names, run_channel_rebuilt_hooks, spawn_daemon_ready_tasks,
+    AppExtensions, CancellationToken, Channel, CHANNEL_REBUILT_HOOK_TIMEOUT, EXTENSION_API_VERSION,
+};
+use crate::services::GrpcClient;
 
 /// Name of the fixture plugin, which is also its command namespace.
 const FIXTURE: &str = "fixture";
@@ -258,4 +268,314 @@ fn none_registers_nothing() {
             );
         }
     }
+}
+
+/// How long a test waits for something that should happen at once before it
+/// fails instead of hanging.
+const PROMPTLY: Duration = Duration::from_secs(10);
+
+/// A channel that never connects, for tests that do not reach a daemon. Needs
+/// a tokio runtime.
+async fn idle_channel() -> Channel {
+    GrpcClient::connect_lazy().channel().await
+}
+
+/// Calls `spawn_daemon_ready_tasks` on a thread of its own and fails the test
+/// when it does not return, so a call that waited for a task shows up as a
+/// failure and not as a hang.
+async fn spawn_tasks(app: &App<MockRuntime>, grpc: GrpcClient, shutdown: &CancellationToken) {
+    let handle = app.handle().clone();
+    let shutdown = shutdown.clone();
+    tokio::time::timeout(
+        PROMPTLY,
+        tokio::task::spawn_blocking(move || spawn_daemon_ready_tasks(&handle, grpc, &shutdown)),
+    )
+    .await
+    .expect("spawn_daemon_ready_tasks must return without waiting for a task")
+    .expect("spawn_daemon_ready_tasks must not panic");
+}
+
+/// A channel-rebuilt hook that waits `delay`, then records `name`.
+fn recording_hook(
+    order: &Arc<Mutex<Vec<&'static str>>>,
+    name: &'static str,
+    delay: Duration,
+) -> impl Fn(AppHandle<MockRuntime>, Channel) -> BoxFuture<'static, ()> + Send + Sync + 'static {
+    let order = Arc::clone(order);
+    move |_app, _channel| {
+        let order = Arc::clone(&order);
+        async move {
+            tokio::time::sleep(delay).await;
+            order.lock().unwrap().push(name);
+        }
+        .boxed()
+    }
+}
+
+/// State a daemon-ready task can find through the app handle it is given.
+struct AppMarker;
+
+#[tokio::test]
+async fn daemon_ready_tasks_are_spawned_not_awaited() {
+    let (release, released) = oneshot::channel::<()>();
+    let (finish, finished) = oneshot::channel::<()>();
+    let app = build_app(
+        AppExtensions::none().on_daemon_ready(move |_ready| async move {
+            // Parked until the test releases it, which it does only after
+            // `spawn_daemon_ready_tasks` has returned.
+            released.await.expect("the test releases the task");
+            finish.send(()).expect("the test waits for the task");
+        }),
+    );
+
+    spawn_tasks(&app, GrpcClient::connect_lazy(), &CancellationToken::new()).await;
+    release.send(()).expect("the task is waiting");
+
+    tokio::time::timeout(PROMPTLY, finished)
+        .await
+        .expect("the task ran once it was released")
+        .expect("the task finished");
+}
+
+#[tokio::test]
+async fn daemon_ready_task_gets_the_app_the_client_and_a_child_shutdown_token() {
+    let (tx, rx) = oneshot::channel::<(bool, GrpcClient, CancellationToken)>();
+    let app = build_app(
+        AppExtensions::none().on_daemon_ready(move |ready| async move {
+            let has_marker = ready.app.try_state::<AppMarker>().is_some();
+            let _ = tx.send((has_marker, ready.grpc, ready.shutdown));
+        }),
+    );
+    app.manage(AppMarker);
+    let grpc = GrpcClient::connect_lazy();
+    let core_shutdown = CancellationToken::new();
+
+    spawn_tasks(&app, grpc.clone(), &core_shutdown).await;
+    let (has_marker, task_grpc, task_shutdown) = tokio::time::timeout(PROMPTLY, rx)
+        .await
+        .expect("the task ran")
+        .expect("the task reported back");
+
+    assert!(has_marker, "the task gets the running app's handle");
+
+    // Both clients share one state, so a switch through one reaches the other.
+    let switches = task_grpc.subscribe_active_database();
+    grpc.set_active_database(Some("other".to_string())).await;
+    assert!(
+        switches.has_changed().expect("the sender is alive"),
+        "the task's client is a clone of the one core passed"
+    );
+
+    assert!(!task_shutdown.is_cancelled());
+    core_shutdown.cancel();
+    assert!(
+        task_shutdown.is_cancelled(),
+        "cancelling core's token cancels the task's"
+    );
+}
+
+#[tokio::test]
+async fn daemon_ready_tasks_each_get_their_own_shutdown_token() {
+    let (tx, mut rx) = mpsc::unbounded_channel::<CancellationToken>();
+    let (first_tx, second_tx) = (tx.clone(), tx);
+    let app = build_app(
+        AppExtensions::none()
+            .on_daemon_ready(move |ready| async move {
+                let _ = first_tx.send(ready.shutdown);
+            })
+            .on_daemon_ready(move |ready| async move {
+                let _ = second_tx.send(ready.shutdown);
+            }),
+    );
+    let core_shutdown = CancellationToken::new();
+
+    spawn_tasks(&app, GrpcClient::connect_lazy(), &core_shutdown).await;
+    let mut tokens = Vec::new();
+    for _ in 0..2 {
+        tokens.push(
+            tokio::time::timeout(PROMPTLY, rx.recv())
+                .await
+                .expect("both tasks ran")
+                .expect("a task reported its token"),
+        );
+    }
+
+    tokens[0].cancel();
+    assert!(
+        !tokens[1].is_cancelled(),
+        "cancelling one task's token must not cancel another's"
+    );
+    assert!(
+        !core_shutdown.is_cancelled(),
+        "cancelling a task's token must not cancel core's"
+    );
+}
+
+#[tokio::test]
+async fn a_panicking_daemon_ready_task_does_not_stop_the_others() {
+    let (tx, rx) = oneshot::channel::<()>();
+    let app = build_app(
+        AppExtensions::none()
+            .on_daemon_ready(|_ready| async move { panic!("a daemon-ready task panics") })
+            // Panics before it returns a future at all.
+            .on_daemon_ready(|_ready| -> std::future::Ready<()> {
+                panic!("a daemon-ready task panics before its first await")
+            })
+            .on_daemon_ready(move |_ready| async move {
+                let _ = tx.send(());
+            }),
+    );
+
+    spawn_tasks(&app, GrpcClient::connect_lazy(), &CancellationToken::new()).await;
+
+    tokio::time::timeout(PROMPTLY, rx)
+        .await
+        .expect("the task after the panicking ones ran")
+        .expect("the task reported back");
+}
+
+#[tokio::test]
+async fn daemon_ready_tasks_run_once() {
+    let runs = Arc::new(AtomicUsize::new(0));
+    let (done, mut finished) = mpsc::unbounded_channel::<()>();
+    let task = |runs: &Arc<AtomicUsize>, done: &mpsc::UnboundedSender<()>| {
+        let (runs, done) = (Arc::clone(runs), done.clone());
+        move |_ready| async move {
+            runs.fetch_add(1, Ordering::SeqCst);
+            let _ = done.send(());
+        }
+    };
+    let app = build_app(
+        AppExtensions::none()
+            .on_daemon_ready(task(&runs, &done))
+            .on_daemon_ready(task(&runs, &done)),
+    );
+    let grpc = GrpcClient::connect_lazy();
+    let core_shutdown = CancellationToken::new();
+
+    spawn_tasks(&app, grpc.clone(), &core_shutdown).await;
+    // A second call, such as one from a second window, runs nothing.
+    spawn_tasks(&app, grpc, &core_shutdown).await;
+
+    for _ in 0..2 {
+        tokio::time::timeout(PROMPTLY, finished.recv())
+            .await
+            .expect("each task ran")
+            .expect("a task reported back");
+    }
+    assert_eq!(runs.load(Ordering::SeqCst), 2, "each task ran exactly once");
+    assert!(finished.try_recv().is_err(), "no task ran a second time");
+}
+
+#[tokio::test(start_paused = true)]
+async fn channel_rebuilt_hooks_run_in_registration_order() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    // The first hook is the slowest, so hooks that ran side by side would
+    // finish in the opposite order.
+    let app = build_app(
+        AppExtensions::none()
+            .on_channel_rebuilt(recording_hook(&order, "first", Duration::from_millis(100)))
+            .on_channel_rebuilt(recording_hook(&order, "second", Duration::from_millis(10)))
+            .on_channel_rebuilt(recording_hook(&order, "third", Duration::ZERO)),
+    );
+
+    run_channel_rebuilt_hooks(app.handle(), idle_channel().await).await;
+
+    assert_eq!(*order.lock().unwrap(), ["first", "second", "third"]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_hanging_channel_rebuilt_hook_times_out_and_the_next_still_runs() {
+    /// Records that the future holding it was dropped.
+    struct DropFlag(Arc<AtomicBool>);
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let hung_future_dropped = Arc::new(AtomicBool::new(false));
+    let next_ran = Arc::new(AtomicBool::new(false));
+    let app = build_app(
+        AppExtensions::none()
+            .on_channel_rebuilt({
+                let dropped = Arc::clone(&hung_future_dropped);
+                move |_app, _channel| {
+                    let guard = DropFlag(Arc::clone(&dropped));
+                    async move {
+                        let _guard = guard;
+                        std::future::pending::<()>().await;
+                    }
+                }
+            })
+            .on_channel_rebuilt({
+                let next_ran = Arc::clone(&next_ran);
+                move |_app, _channel| {
+                    let next_ran = Arc::clone(&next_ran);
+                    async move { next_ran.store(true, Ordering::SeqCst) }
+                }
+            }),
+    );
+    let channel = idle_channel().await;
+
+    let started = tokio::time::Instant::now();
+    // The outer bound turns a runner that never gives up on the hanging hook
+    // into a failure, since the paused clock would otherwise never move on.
+    tokio::time::timeout(
+        CHANNEL_REBUILT_HOOK_TIMEOUT * 10,
+        run_channel_rebuilt_hooks(app.handle(), channel),
+    )
+    .await
+    .expect("a hanging hook must not hold recovery up beyond its timeout");
+    let waited = started.elapsed();
+
+    assert!(
+        waited >= CHANNEL_REBUILT_HOOK_TIMEOUT,
+        "the hook gets its whole timeout, waited {waited:?}"
+    );
+    assert!(
+        waited < CHANNEL_REBUILT_HOOK_TIMEOUT * 2,
+        "recovery waits for the hanging hook once, waited {waited:?}"
+    );
+    assert!(
+        next_ran.load(Ordering::SeqCst),
+        "the hook after the hanging one still runs"
+    );
+    // The aborted task is dropped the next time the runtime schedules it.
+    tokio::task::yield_now().await;
+    assert!(
+        hung_future_dropped.load(Ordering::SeqCst),
+        "the hanging hook is aborted, not left running"
+    );
+}
+
+#[tokio::test]
+async fn a_panicking_channel_rebuilt_hook_does_not_stop_recovery() {
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let app = build_app(
+        AppExtensions::none()
+            .on_channel_rebuilt(|_app, _channel| async move { panic!("a hook panics") })
+            // Panics before it returns a future at all.
+            .on_channel_rebuilt(|_app, _channel| -> std::future::Ready<()> {
+                panic!("a hook panics before its first await")
+            })
+            .on_channel_rebuilt(recording_hook(&order, "after", Duration::ZERO)),
+    );
+
+    run_channel_rebuilt_hooks(app.handle(), idle_channel().await).await;
+
+    assert_eq!(
+        *order.lock().unwrap(),
+        ["after"],
+        "the hook after the panicking ones still runs"
+    );
+}
+
+#[tokio::test]
+async fn hooks_are_a_no_op_without_extension_state() {
+    // `mock_app` is not built through `assemble`, so it has no hook state.
+    let app = mock_app();
+
+    run_channel_rebuilt_hooks(app.handle(), idle_channel().await).await;
+    spawn_tasks(&app, GrpcClient::connect_lazy(), &CancellationToken::new()).await;
 }
