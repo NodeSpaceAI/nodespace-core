@@ -947,7 +947,7 @@ describe("CLI", () => {
     const source = readFileSync(CHECKER_PATH, "utf8");
     expect(source).toMatch(declaration);
     const replaced = `export const ALLOWLIST: readonly { file: string; exempt: string }[] = ${JSON.stringify(entries)};`;
-    writeFileSync(join(dir, "scripts/check-pro-boundary.ts"), source.replace(declaration, replaced));
+    writeFileSync(join(dir, "scripts/check-pro-boundary.ts"), source.replace(declaration, () => replaced));
     return runCopy(args);
   }
 
