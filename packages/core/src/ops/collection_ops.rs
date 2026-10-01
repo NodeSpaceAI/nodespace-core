@@ -299,22 +299,21 @@ pub async fn get_collection_by_name(
 /// derives the same id) instead of minting a random UUID that becomes a
 /// duplicate.
 ///
-/// It is independent of lifecycle_status — any existing node at that id, active
-/// OR archived, already occupies the row the INSERT needs. So the check is by
-/// id, not by `CollectionService::get_collection_by_name` (which — correctly,
-/// for its own callers — only matches active collections): an archived
-/// collection would pass that check, then fail the INSERT with an opaque
-/// primary-key-constraint error, since `NodeService::create_node` has no
-/// get-or-create/upsert semantics for collections (unlike, e.g., the
-/// `database-settings` singleton).
+/// Two checks, in this order:
 ///
-/// The name is checked as well, because a renamed collection keeps the id of
-/// its first name: without it, creating a collection under the new name of a
-/// renamed one would make a second active collection of that name. For the
-/// same reason the id of a renamed collection's first name stays taken.
-///
-/// The error names the collection in the way and its id, which is what the
-/// caller needs to update that collection instead.
+/// 1. **The id.** It is independent of lifecycle_status — any existing node at
+///    that id, active OR archived, already occupies the row the INSERT needs.
+///    A name lookup alone would miss an archived collection
+///    (`CollectionService::get_collection_by_name` — correctly, for its own
+///    callers — only matches active ones), and the INSERT would then fail with
+///    an opaque primary-key-constraint error, since `NodeService::create_node`
+///    has no get-or-create/upsert semantics for collections (unlike, e.g., the
+///    `database-settings` singleton).
+/// 2. **The active name.** A renamed collection keeps the id of its first
+///    name, so the id of its new name is free: without this check, a create
+///    under that new name would make a second active collection of the name.
+///    For the same reason the id of a renamed collection's first name stays
+///    taken.
 pub(crate) async fn new_collection_id(
     node_service: &Arc<NodeService>,
     name: &str,
@@ -322,18 +321,26 @@ pub(crate) async fn new_collection_id(
     let deterministic_id = deterministic_collection_id(name);
     let in_the_way = match node_service.get_node(&deterministic_id).await? {
         Some(holder) => Some(holder),
+        // Trimmed, as the id is, so a padded name cannot slip past.
         None => {
             CollectionService::new(node_service.store(), node_service)
-                .get_collection_by_name(name)
+                .get_collection_by_name(name.trim())
                 .await?
         }
     };
-    if let Some(existing) = in_the_way {
-        return Err(OpsError::AlreadyExists {
-            id: format!("collection '{}' (id {})", existing.content, existing.id),
-        });
+    match in_the_way {
+        Some(existing) => Err(collection_in_the_way(&existing)),
+        None => Ok(deterministic_id),
     }
-    Ok(deterministic_id)
+}
+
+/// The refusal for a collection name that `existing` already holds. It names
+/// that collection and its id, which is what the caller needs to act on it
+/// instead.
+fn collection_in_the_way(existing: &Node) -> OpsError {
+    OpsError::AlreadyExists {
+        id: format!("collection '{}' (id {})", existing.content, existing.id),
+    }
 }
 
 pub async fn create_collection(
@@ -376,9 +383,7 @@ pub async fn rename_collection(
         .map_err(OpsError::from)?
     {
         if existing.id != input.collection_id {
-            return Err(OpsError::AlreadyExists {
-                id: input.new_name.clone(),
-            });
+            return Err(collection_in_the_way(&existing));
         }
     }
 
@@ -655,7 +660,8 @@ mod tests {
         .await
         .unwrap();
 
-        for name in ["Accounts", "Clients"] {
+        // Padded and differently-cased spellings are the same name.
+        for name in ["Accounts", "Clients", " accounts "] {
             let err = node_ops::create_node(&svc, generic_create(name, serde_json::json!({})))
                 .await
                 .unwrap_err();
@@ -831,7 +837,7 @@ mod tests {
     async fn rename_collection_to_existing_name_returns_already_exists() {
         let (svc, _tmp) = make_service().await;
 
-        create_collection(
+        let alpha = create_collection(
             &svc,
             CreateCollectionInput {
                 name: "alpha".to_string(),
@@ -862,10 +868,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(
-            matches!(err, OpsError::AlreadyExists { ref id } if id == "alpha"),
-            "expected AlreadyExists, got {:?}",
-            err
-        );
+        assert_already_exists(&err, "alpha", &alpha.collection_id);
     }
 }
