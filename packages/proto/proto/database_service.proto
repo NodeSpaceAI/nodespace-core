@@ -48,6 +48,10 @@ enum DatabaseStatus {
   DATABASE_STATUS_OPEN = 1;
   // The registry entry points at a path with no database file present.
   DATABASE_STATUS_MISSING = 2;
+  // The database lists, in its settings node's `required_extensions`, an
+  // extension this daemon does not support, so the daemon refuses to open it
+  // (ADR-083 §2). `DatabaseInfo.unsupported_extensions` names them.
+  DATABASE_STATUS_REQUIRES_EXTENSION = 3;
 }
 
 // A registered database and its current runtime status.
@@ -64,11 +68,14 @@ message DatabaseInfo {
   optional string last_opened_at = 5;
   // Whether this is the daemon's default (routing-header-less) database.
   bool is_default = 6;
-  // Current open/closed/missing status.
+  // Current open/closed/missing/requires-extension status.
   DatabaseStatus status = 7;
   // Per-database keys the registry stores for extensions, copied verbatim.
   // Core interprets none of them.
   map<string, string> extensions = 10;
+  // The required extensions this daemon does not support, when `status` is
+  // DATABASE_STATUS_REQUIRES_EXTENSION; empty otherwise.
+  repeated string unsupported_extensions = 11;
 }
 
 message ListDatabasesRequest {}

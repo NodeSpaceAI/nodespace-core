@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 tonic = "0.12"
 prost = "0.13"
+serde_json = { workspace = true }
 
 [build-dependencies]
 tonic-build = "0.12"

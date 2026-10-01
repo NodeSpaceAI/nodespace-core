@@ -1,3 +1,5 @@
+pub mod extension_names;
+pub mod requires_extension;
 pub mod socket;
 
 /// Generated gRPC types for the `nodespace` proto package.
