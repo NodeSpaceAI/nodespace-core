@@ -1,10 +1,9 @@
 /**
- * Core node type registry — the frontend mirror of Rust's `CoreNodeType`
- * (`packages/nodespace-types/src/core_type.rs`, ADR-086 §3).
+ * Core node type registry helpers (ADR-086 §3).
  *
- * The list is hand-synced across the language boundary and pinned to the Rust
- * source by `tests/types/core-node-types.test.ts`, so a type added on one side
- * only fails a test instead of drifting.
+ * `CORE_NODE_TYPES` is generated from Rust's `CoreNodeType` registry
+ * (`./generated`, `packages/nodespace-types/src/core_type.rs`), so the two
+ * cannot list different types.
  *
  * This module is the one place that spells a core type id out as a literal in
  * a comparison. Everywhere else asks a question of it:
@@ -17,47 +16,14 @@
  *   extend.
  */
 
-export interface CoreTypeEntry {
-  /** The stored `node_type`. */
-  id: string;
-  /** The core type this one `extends`. */
-  parent: string | null;
-  /** Whether nodes of exactly this type may exist. */
-  abstract: boolean;
-  /** Offered by the `@` mention picker (the effective rule: it narrows down the chain). */
-  mentionable: boolean;
-}
+import { CORE_NODE_TYPES } from './generated';
+import type { CoreNodeType, CoreTypeEntry } from './generated';
 
-function entry<Id extends string>(id: Id, mentionable = true): CoreTypeEntry & { id: Id } {
-  return { id, parent: null, abstract: false, mentionable };
-}
+export { CORE_NODE_TYPES };
+export type { CoreTypeEntry };
 
-/** Every core type, in registry order. */
-export const CORE_NODE_TYPES = [
-  entry('text'),
-  entry('header'),
-  entry('code-block'),
-  entry('quote-block'),
-  entry('ordered-list'),
-  entry('checkbox'),
-  entry('horizontal-line'),
-  entry('table'),
-  entry('date'),
-  entry('agent-guidance'),
-  entry('task'),
-  entry('project'),
-  entry('person'),
-  entry('collection', false),
-  entry('skill'),
-  entry('database-settings'),
-  entry('query'),
-  entry('schema', false),
-  entry('play'),
-  entry('ai-chat', false),
-  entry('tool')
-] as const satisfies readonly CoreTypeEntry[];
-
-export type CoreNodeTypeId = (typeof CORE_NODE_TYPES)[number]['id'];
+/** The stored `node_type` of a type NodeSpace itself ships. */
+export type CoreNodeTypeId = CoreNodeType;
 
 const CORE_ENTRIES: ReadonlyMap<string, CoreTypeEntry> = new Map(
   CORE_NODE_TYPES.map((t) => [t.id, t])

@@ -829,7 +829,7 @@ class MockAdapter implements BackendAdapter {
     return {} as QueryNode;
   }
   async deleteNode(_id: string, _version: number): Promise<DeleteResult> {
-    return { existed: true, deletedCount: 0 };
+    return { existed: true, deleted_count: 0 };
   }
   async getChildren(_parentId: string): Promise<Node[]> {
     return [];
@@ -910,6 +910,7 @@ class MockAdapter implements BackendAdapter {
       // Typed schema fields at top level (not in properties)
       isCore: false,
       schemaVersion: 1,
+      relationships: [],
       description: '',
       fields: []
     };

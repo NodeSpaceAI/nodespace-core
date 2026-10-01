@@ -43,6 +43,8 @@ function taskSchema(): SchemaNode {
     version: 1,
     isCore: true,
     schemaVersion: 1,
+    description: '',
+    relationships: [],
     fields: [
       {
         name: 'status',

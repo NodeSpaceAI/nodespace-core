@@ -100,7 +100,7 @@ describe('Backend Adapter - MockAdapter (Test Environment)', () => {
 
       expect(result).toEqual({
         existed: true,
-        deletedCount: 0
+        deleted_count: 0
       });
     });
   });
@@ -454,7 +454,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
 
       const mockResult: DeleteResult = {
         existed: true,
-        deletedCount: 3
+        deleted_count: 3
       };
 
       mockFetch.mockResolvedValueOnce({
@@ -915,6 +915,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
           modifiedAt: '2025-01-01T00:00:00Z',
           isCore: true,
           schemaVersion: 1,
+          relationships: [],
           description: 'Test schema',
           fields: []
         }
@@ -950,6 +951,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
         modifiedAt: '2025-01-01T00:00:00Z',
         isCore: false,
         schemaVersion: 1,
+        relationships: [],
         description: 'Test schema',
         fields: []
       };
@@ -1388,7 +1390,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
 
       const mockResult: DeleteResult = {
         existed: true,
-        deletedCount: 5
+        deleted_count: 5
       };
 
       mockInvoke.mockResolvedValueOnce(mockResult);
@@ -1731,6 +1733,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
           modifiedAt: '2025-01-01T00:00:00Z',
           isCore: true,
           schemaVersion: 1,
+          relationships: [],
           description: 'Test schema',
           fields: []
         }
@@ -1759,6 +1762,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
         modifiedAt: '2025-01-01T00:00:00Z',
         isCore: false,
         schemaVersion: 1,
+        relationships: [],
         description: 'Test schema',
         fields: []
       };

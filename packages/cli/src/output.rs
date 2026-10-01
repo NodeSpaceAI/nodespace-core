@@ -315,8 +315,8 @@ pub fn related_node_to_json(node: &serde_json::Value) -> serde_json::Value {
     // values win: a key already in `properties` is the real one.
     let flat = nodespace_types::flat_properties_view(node);
     if let Some(node_type) = obj.get("nodeType").and_then(|v| v.as_str()) {
-        for (_, wire_key) in nodespace_types::promoted_fields(node_type) {
-            promoted.remove(*wire_key);
+        for field in nodespace_types::promoted_fields(node_type) {
+            promoted.remove(field.wire);
         }
     }
     out.insert("properties".to_string(), flat);

@@ -40,6 +40,7 @@ function schema(fields: SchemaNode['fields']): SchemaNode {
     version: 1,
     isCore: false,
     schemaVersion: 1,
+    relationships: [],
     description: '',
     fields
   };

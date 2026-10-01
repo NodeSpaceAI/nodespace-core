@@ -58,6 +58,8 @@ const TICKET_SCHEMA: SchemaNode = {
   version: 1,
   isCore: false,
   schemaVersion: 1,
+  description: '',
+  relationships: [],
   fields: [stringField('severity', 'Severity'), stringField('subject', 'Subject')],
   titleTemplate: '{severity}: {subject}'
 };

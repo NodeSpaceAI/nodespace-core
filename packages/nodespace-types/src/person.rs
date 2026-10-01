@@ -9,6 +9,8 @@ use crate::node::NodeEnvelope;
 /// schema's core fields (`first_name`, `last_name`, `email`) are promoted to
 /// the top level; they map directly to the TypeScript `PersonNode` interface.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct PersonNode {
     /// The fields every node carries. `properties` holds extension fields
@@ -28,6 +30,8 @@ pub struct PersonNode {
 /// Each field is tri-state: absent leaves it unchanged, `null` clears it, and
 /// a string sets it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PersonNodeUpdate {
     #[serde(

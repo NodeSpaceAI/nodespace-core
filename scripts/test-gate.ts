@@ -10,8 +10,9 @@
  *   changes main, and the merge gate tests it. Test the tiers a change
  *   reaches while developing, with `bun run test:changed`.
  * - `merge` (`--mode=merge`, run by `bun run merge <PR#>`): lint, then the
- *   full pyramid — every unit tier, the daemon build, the SKILL.md drift
- *   check, e2e and the Tauri-seam tests — unscoped, on the PR rebased onto
+ *   full pyramid — every unit tier, the daemon build, the SKILL.md and
+ *   generated-TypeScript drift checks, e2e and the Tauri-seam tests —
+ *   unscoped, on the PR rebased onto
  *   current main. The only automated test run a change gets.
  *
  * The merge gate holds the machine slot (gate-lock.ts) from its first compile
@@ -270,6 +271,10 @@ await run(TIERS.skillInstaller);
 // Rust tests both read its output.
 await Promise.all([
   (async () => {
+    // First in this lane: it builds one small crate, so a Rust wire-type change
+    // without its regenerated TypeScript fails here in seconds. In this lane
+    // because cargo allows one build in a target directory at a time.
+    await run(TIERS.typesCheck);
     await run({ label: "compile Rust test binaries", command: "bun run rust:test:build", timeoutMs: 60 * MINUTE });
     await run({
       label: "compile nodespaced and the Tauri-seam test binary",

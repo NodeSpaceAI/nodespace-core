@@ -21,7 +21,10 @@ export interface GateScope {
   fullReason: string | null;
   /** Happy-DOM unit tests and the Chromium browser tier. */
   frontend: boolean;
-  /** The Rust workspace's tests (nextest) and nodespace-app-lib's unit tests. */
+  /**
+   * The Rust workspace's tests (nextest), nodespace-app-lib's unit tests and
+   * the generated-TypeScript drift check.
+   */
   rust: boolean;
   /** The skill package's tests. */
   skill: boolean;
@@ -53,6 +56,18 @@ const RUST_ROOT_FILES = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rus
  * asserted by packages/agent's golden tests, so a change there must run Rust.
  */
 const RUST_READ_SCRIPT_DIRS = ["scripts/eval/"];
+
+/**
+ * What the generated-TypeScript drift check reads besides the Rust wire types:
+ * the committed output, the script that writes it and the Prettier config it
+ * formats with. The check runs in the Rust tier (it compiles nodespace-types),
+ * so a change to any of these reaches that tier.
+ */
+const GENERATED_TYPES_INPUTS = [
+  "packages/desktop-app/src/lib/types/generated/",
+  "packages/desktop-app/.prettierrc",
+  "scripts/gen-types.ts",
+];
 
 /**
  * The gate's own machinery. A change here can alter what any stage does, so
@@ -91,6 +106,7 @@ export function classify(files: string[]): GateScope {
       return { fullReason: `the gate's own machinery changed (${file})`, ...ALL };
     }
     if (isInert(file)) continue;
+    if (GENERATED_TYPES_INPUTS.some((g) => (g.endsWith("/") ? file.startsWith(g) : file === g))) scope.rust = true;
     if (RUST_ROOT_FILES.includes(file) || file.startsWith(".cargo/") || RUST_DIRS.some((d) => file.startsWith(d))) {
       scope.rust = true;
       continue;

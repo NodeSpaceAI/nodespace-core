@@ -37,6 +37,8 @@ const schema: SchemaNode = {
   version: 1,
   isCore: false,
   schemaVersion: 1,
+  description: '',
+  relationships: [],
   fields: [
     field({ name: 'description', friendlyName: 'Description', type: 'text', required: true }),
     field({ name: 'notes', friendlyName: 'Notes', type: 'text' })

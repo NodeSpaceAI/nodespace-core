@@ -307,6 +307,7 @@ describe('TauriSyncListener', () => {
         version: 2,
         isCore: false,
         schemaVersion: 2,
+        relationships: [],
         description: '',
         fields: [],
         titleTemplate
@@ -1217,6 +1218,7 @@ describe('TauriSyncListener', () => {
         version: 1,
         isCore: false,
         schemaVersion: 1,
+        relationships: [],
         description: '',
         fields: []
       };

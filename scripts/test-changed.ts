@@ -66,6 +66,7 @@ if (scope.rust) {
     process.exit(1);
   }
   registerLockRelease(slot);
+  await run(TIERS.typesCheck);
   // Unlike the merge gate's, this tier compiles as well as tests, in this
   // worktree's own incremental build — a cold one can take many minutes.
   await run({ ...TIERS.rust, timeoutMs: 60 * MINUTE });

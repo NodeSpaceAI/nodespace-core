@@ -129,7 +129,7 @@ impl NodeService {
         for key in named {
             if typed
                 .iter()
-                .any(|(storage, wire)| key == storage || key == wire)
+                .any(|field| key == field.storage || key == field.wire)
             {
                 return Err(NodeServiceError::invalid_update(format!(
                     "'{key}' is a field of the core type '{core}' and is written through the \

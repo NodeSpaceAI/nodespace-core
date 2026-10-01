@@ -15,13 +15,17 @@ use crate::core_type::CoreNodeType;
 /// (`user_values`, e.g. "critical") is `User(String)`. There is no default:
 /// a node without a priority has none.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(rename_all = "snake_case"))]
 pub enum Priority {
     Highest,
     High,
     Medium,
     Low,
     Lowest,
-    /// User-defined priority (extended via schema)
+    /// User-defined priority (extended via schema). Serialized as the bare
+    /// string, like the core values.
+    #[cfg_attr(feature = "ts", ts(untagged))]
     User(String),
 }
 

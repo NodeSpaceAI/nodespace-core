@@ -1,39 +1,17 @@
 /**
- * Type-Safe Project Node Interface
+ * Project node helpers.
  *
- * Flat structure matching the Rust `ProjectNode` wire shape
- * (`packages/nodespace-types/src/project.rs`): the project schema's core
- * fields travel at the top level. `properties` carries only extension fields
- * (`custom:…`), never `status`/`priority`/`start_date`/`end_date`.
+ * `ProjectNode` and `ProjectNodeUpdate` are generated from Rust's
+ * `nodespace-types` (`./generated`): the project schema's core fields travel
+ * at the top level, and `properties` carries only extension fields
+ * (`custom:…`).
  */
 
-import type { Node, NodeEnvelope } from './node';
+import type { Node } from './node';
+import type { ProjectNode } from './generated';
 import { isExactly } from './core-node-types';
 
-/** Project status — the schema's core values plus any user-added value. */
-export type ProjectStatus = 'planning' | 'active' | 'completed' | 'cancelled' | string;
-
-/** `properties` carries extension fields only — core fields are the typed fields below. */
-export interface ProjectNode extends NodeEnvelope {
-  nodeType: 'project';
-
-  status: ProjectStatus;
-  priority?: string;
-  startDate?: string;
-  endDate?: string;
-}
-
-/**
- * Partial update for a project's core fields. Mirrors the Rust
- * `ProjectNodeUpdate`: absent = no change, `null` = clear, a value = set.
- * `status` cannot be cleared (the schema requires it).
- */
-export interface ProjectNodeUpdate {
-  status?: ProjectStatus;
-  priority?: string | null;
-  startDate?: string | null;
-  endDate?: string | null;
-}
+export type { ProjectNode, ProjectNodeUpdate } from './generated';
 
 export function isProjectNode(node: Node | ProjectNode): node is ProjectNode {
   return isExactly(node.nodeType, 'project');
@@ -46,7 +24,7 @@ export function isProjectNode(node: Node | ProjectNode): node is ProjectNode {
  * default.
  */
 export function nodeToProjectNode(node: Node): ProjectNode {
-  const project = node as unknown as ProjectNode;
+  const project = node as Node & Partial<ProjectNode>;
   return {
     ...project,
     nodeType: 'project',

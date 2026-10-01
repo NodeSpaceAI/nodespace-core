@@ -1,10 +1,9 @@
 /**
- * Type-Safe Task Node Interface
+ * Task node helpers.
  *
- * Flat structure matching Rust backend serialization.
- *
- * The Rust backend serializes TaskNode as a flat JSON structure with type-specific fields
- * at the top level, not nested under properties.task. This interface matches that output.
+ * `TaskNode`, `TaskNodeUpdate`, `TaskStatus` and `Priority` are generated
+ * from Rust's `nodespace-types` (`./generated`): the task schema's core fields
+ * travel at the top level, not nested under `properties.task`.
  *
  * @example
  * ```typescript
@@ -21,8 +20,11 @@
  * ```
  */
 
-import type { Node, NodeEnvelope } from './node';
+import type { Node } from './node';
+import type { TaskNode, Priority, TaskStatus } from './generated';
 import { isExactly } from './core-node-types';
+
+export type { TaskNode, TaskNodeUpdate, Priority, TaskStatus } from './generated';
 
 /**
  * Core task status values (protected, cannot be removed)
@@ -31,64 +33,10 @@ import { isExactly } from './core-node-types';
 export type CoreTaskStatus = 'open' | 'in_progress' | 'done' | 'cancelled';
 
 /**
- * Task status - core values plus any user-defined extensions
- * Use CoreTaskStatus when you need to check against known values
- */
-export type TaskStatus = CoreTaskStatus | string;
-
-/**
  * Core task priority values (user-extensible)
  * Rust backend now uses string enum format
  */
 export type CoreTaskPriority = 'highest' | 'high' | 'medium' | 'low' | 'lowest';
-
-/**
- * Task priority - string enum format
- * Core values: 'highest', 'high', 'medium', 'low', 'lowest'
- * User-defined values allowed via schema extension
- */
-export type TaskPriority = CoreTaskPriority | string;
-
-/**
- * TaskNode - The canonical type-safe interface for task nodes
- *
- * Use this interface instead of the generic `Node` type when you need type-safe
- * access to task-specific fields (status, priority, dueDate).
- *
- * The generic `Node` interface does NOT include these fields - they are promoted
- * to the top level of the node by the backend and accessed through `TaskNode`.
- *
- * Flat structure matching Rust backend serialization:
- * ```json
- * {
- *   "id": "task-123",
- *   "nodeType": "task",
- *   "content": "Fix the bug",
- *   "version": 1,
- *   "createdAt": "2025-01-01T00:00:00Z",
- *   "modifiedAt": "2025-01-01T00:00:00Z",
- *   "status": "open",
- *   "priority": "medium",
- *   "dueDate": null
- * }
- * ```
- *
- * @see isTaskNode - Type guard to check if a node is a TaskNode
- * @see nodeToTaskNode - Convert a generic Node to TaskNode
- */
-export interface TaskNode extends NodeEnvelope {
-  nodeType: 'task';
-
-  // `properties` carries extension fields only (`custom:…`); core fields are
-  // the typed fields below.
-
-  // Type-specific fields (flat, at top level)
-  status: TaskStatus;
-  priority?: TaskPriority;
-  dueDate?: string | null;
-  startedAt?: string | null;
-  completedAt?: string | null;
-}
 
 /**
  * Type guard to check if a node is a task node
@@ -133,7 +81,7 @@ export function setTaskStatus(node: TaskNode, status: TaskStatus): TaskNode {
  * @param node - Task node
  * @returns Task priority or undefined if not set
  */
-export function getTaskPriority(node: TaskNode): TaskPriority | undefined {
+export function getTaskPriority(node: TaskNode): Priority | undefined {
   return node.priority;
 }
 
@@ -144,7 +92,7 @@ export function getTaskPriority(node: TaskNode): TaskPriority | undefined {
  * @param priority - New priority value
  * @returns New node with updated priority
  */
-export function setTaskPriority(node: TaskNode, priority: TaskPriority): TaskNode {
+export function setTaskPriority(node: TaskNode, priority: Priority): TaskNode {
   return {
     ...node,
     priority
@@ -171,46 +119,8 @@ export function getTaskDueDate(node: TaskNode): string | undefined {
 export function setTaskDueDate(node: TaskNode, dueDate: string | undefined): TaskNode {
   return {
     ...node,
-    dueDate: dueDate ?? null
+    dueDate
   };
-}
-
-/**
- * Partial update structure for task nodes
- *
- * Carries the task schema's fields and nothing else: `content` and extension
- * fields (`custom:…`) are written through the generic node update. All fields
- * are optional - only include fields to update.
- *
- * This interface matches the Rust `TaskNodeUpdate` struct for type-safe CRUD operations.
- *
- * @example
- * ```typescript
- * // Update only status
- * const update: TaskNodeUpdate = { status: 'in_progress' };
- *
- * // Update status and clear due date
- * const update: TaskNodeUpdate = {
- *   status: 'done',
- *   dueDate: null  // Explicitly clear the field
- * };
- * ```
- */
-export interface TaskNodeUpdate {
-  /** Update task status (type-specific field) */
-  status?: TaskStatus;
-
-  /** Update task priority (type-specific field) - null to clear */
-  priority?: TaskPriority | null;
-
-  /** Update due date (type-specific field) - null to clear */
-  dueDate?: string | null;
-
-  /** Update started_at date (type-specific field) - null to clear */
-  startedAt?: string | null;
-
-  /** Update completed_at date (type-specific field) - null to clear */
-  completedAt?: string | null;
 }
 
 /**
@@ -227,16 +137,18 @@ export interface TaskNodeUpdate {
  * @returns TaskNode with flat type-specific fields
  */
 export function nodeToTaskNode(node: Node): TaskNode {
-  const task = node as unknown as Partial<TaskNode>;
+  const task = node as Node & Partial<TaskNode>;
+  // Every typed key is written, set or not, so a merge over an older copy of
+  // the node clears a field the backend no longer carries.
   return {
-    ...(node as unknown as TaskNode),
+    ...task,
     nodeType: 'task',
     properties: node.properties ?? {},
     status: task.status ?? 'open',
     priority: task.priority,
-    dueDate: task.dueDate ?? null,
-    startedAt: task.startedAt ?? null,
-    completedAt: task.completedAt ?? null
+    dueDate: task.dueDate,
+    startedAt: task.startedAt,
+    completedAt: task.completedAt
   };
 }
 
@@ -284,7 +196,7 @@ export const TaskNodeHelpers = {
   /**
    * Check if priority is a core (protected) priority
    */
-  isCorePriority(priority: TaskPriority): priority is CoreTaskPriority {
+  isCorePriority(priority: Priority): priority is CoreTaskPriority {
     return ['highest', 'high', 'medium', 'low', 'lowest'].includes(priority as string);
   },
 
@@ -313,7 +225,7 @@ export const TaskNodeHelpers = {
   /**
    * Get display-friendly priority name
    */
-  getPriorityDisplayName(priority: TaskPriority): string {
+  getPriorityDisplayName(priority: Priority): string {
     const coreDisplayNames: Record<CoreTaskPriority, string> = {
       highest: 'Highest',
       high: 'High',
@@ -344,7 +256,7 @@ export const TaskNodeHelpers = {
     content: string,
     options: {
       status?: TaskStatus;
-      priority?: TaskPriority;
+      priority?: Priority;
       dueDate?: string;
     } = {}
   ): TaskNode {
@@ -359,7 +271,7 @@ export const TaskNodeHelpers = {
       properties: {},
       status: options.status ?? 'open',
       priority: options.priority,
-      dueDate: options.dueDate ?? null
+      dueDate: options.dueDate
     };
   }
 };

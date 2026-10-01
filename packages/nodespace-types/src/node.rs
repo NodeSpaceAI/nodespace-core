@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::helpers::{default_lifecycle_status, default_version};
+use crate::helpers::{default_lifecycle_status, default_version, deserialize_clearable};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct NodeReference {
     pub id: String,
@@ -24,6 +25,8 @@ pub struct NodeReference {
 /// and a reader that had to infer `active` from an absent key could not tell
 /// that from a shape that never carried the field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct NodeEnvelope {
     pub id: String,
@@ -31,14 +34,22 @@ pub struct NodeEnvelope {
     pub content: String,
     #[serde(default = "default_version")]
     pub version: i64,
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub created_at: DateTime<Utc>,
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub modified_at: DateTime<Utc>,
+    #[cfg_attr(feature = "ts", ts(type = "Record<string, unknown>"))]
     pub properties: serde_json::Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub mentions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub mentioned_in: Vec<NodeReference>,
+    // Nullable as well as omittable in TypeScript: this struct is also read
+    // back, and a reader takes `null` for no title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub title: Option<String>,
     #[serde(default = "default_lifecycle_status")]
     pub lifecycle_status: String,
@@ -117,6 +128,7 @@ impl NodeEnvelope {
 
 /// Sort order specification for query results
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub enum OrderBy {
     /// Sort by creation time, oldest first
     CreatedAsc,
@@ -137,6 +149,8 @@ pub enum OrderBy {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct NodeQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -205,6 +219,8 @@ impl NodeQuery {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct NodeUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,8 +228,13 @@ pub struct NodeUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "Record<string, unknown>"))]
     pub properties: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_clearable"
+    )]
     pub title: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lifecycle_status: Option<String>,
@@ -259,6 +280,7 @@ impl NodeUpdate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 pub struct DeleteResult {
     pub existed: bool,
     pub deleted_count: u64,
@@ -294,4 +316,19 @@ pub enum ValidationError {
     InvalidRoot(String),
     #[error("Properties validation failed: {0}")]
     InvalidProperties(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_update_title_is_tri_state() {
+        let absent: NodeUpdate = serde_json::from_str("{}").unwrap();
+        assert_eq!(absent.title, None);
+        let cleared: NodeUpdate = serde_json::from_str(r#"{"title": null}"#).unwrap();
+        assert_eq!(cleared.title, Some(None));
+        let set: NodeUpdate = serde_json::from_str(r#"{"title": "Plan"}"#).unwrap();
+        assert_eq!(set.title, Some(Some("Plan".to_string())));
+    }
 }

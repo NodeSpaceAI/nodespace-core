@@ -66,6 +66,14 @@ export const TIERS = {
   scripts: { label: "test:scripts (tooling)", command: "bun run test:scripts", timeoutMs: 10 * MINUTE },
   skill: { label: "test:skill (skill package)", command: "bun run test:skill", timeoutMs: 5 * MINUTE },
   rust: { label: "rust:test (Rust workspace, nextest)", command: "bun run rust:test", timeoutMs: 20 * MINUTE },
+  // Regenerates the frontend's wire types from nodespace-types and fails when
+  // the committed files differ (ADR-086 section 8). Part of the Rust tier: it
+  // compiles that crate with its `ts` feature.
+  typesCheck: {
+    label: "types:check (generated TypeScript drift)",
+    command: "bun run types:check",
+    timeoutMs: 15 * MINUTE,
+  },
   // The browser tier: real focus/blur, drag-and-drop and layout that Happy-DOM
   // can't model. About five seconds. The install is a no-op once Chromium is
   // present and fetches it once on a fresh machine.

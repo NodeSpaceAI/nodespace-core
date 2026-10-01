@@ -22,6 +22,7 @@ pub const ALL_TYPES_TARGET: &str = "*";
 
 /// Filter type category
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum FilterType {
     #[default]
@@ -38,6 +39,7 @@ pub enum FilterType {
 
 /// Comparison operator for filters
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum FilterOperator {
     #[default]
@@ -57,6 +59,7 @@ pub enum FilterOperator {
 
 /// Relationship type for graph traversal
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum RelationshipType {
     Parent,
@@ -68,6 +71,7 @@ pub enum RelationshipType {
 
 /// Sort direction
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum SortDirection {
     #[serde(rename = "asc")]
@@ -78,6 +82,8 @@ pub enum SortDirection {
 
 /// Individual filter condition
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields = nullable))]
 #[serde(rename_all = "camelCase")]
 pub struct QueryFilter {
     /// Filter category
@@ -88,6 +94,7 @@ pub struct QueryFilter {
     /// Property key for property filters
     pub property: Option<String>,
     /// Expected value
+    #[cfg_attr(feature = "ts", ts(optional, type = "unknown"))]
     pub value: Option<serde_json::Value>,
     /// Case sensitivity for text comparisons
     pub case_sensitive: Option<bool>,
@@ -154,6 +161,7 @@ pub struct ResolvedRelationship {
 
 /// Sorting configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct SortConfig {
     /// Property or field to sort by
@@ -165,6 +173,7 @@ pub struct SortConfig {
 /// Who created a saved query — the query schema's `generated_by` enum, which
 /// is not user-extensible.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum QueryGeneratedBy {
     Ai,
@@ -185,6 +194,8 @@ pub enum QueryGeneratedBy {
 /// carries. On the wire the same fields travel camelCase at the top level of
 /// a [`QueryNode`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct QueryFields {
     /// The node type the query selects, or [`ALL_TYPES_TARGET`].
@@ -207,6 +218,7 @@ pub struct QueryFields {
     /// viewer's own vocabulary, not schema field names, so the object is
     /// carried as-is rather than typed here.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional, type = "Record<string, unknown>"))]
     pub view_config: Option<Value>,
 }
 
@@ -291,6 +303,7 @@ fn invalid(key: &str, detail: &str) -> ValidationError {
 /// [`QueryFields`]) and `properties` keeps only extension fields. Maps
 /// directly to the TypeScript `QueryNode` interface.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct QueryNode {
     /// The fields every node carries. `properties` holds extension fields
@@ -309,6 +322,8 @@ pub struct QueryNode {
 /// replaced whole, never merged. The system-managed `execution_count` and
 /// `last_executed` are not client-writable.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueryNodeUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -340,6 +355,7 @@ pub struct QueryNodeUpdate {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_clearable"
     )]
+    #[cfg_attr(feature = "ts", ts(optional, type = "Record<string, unknown> | null"))]
     pub view_config: Option<Option<Value>>,
 }
 

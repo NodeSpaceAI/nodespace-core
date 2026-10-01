@@ -47,6 +47,8 @@ function makeSchema(id: string, isCore: boolean): SchemaNode {
     version: 1,
     isCore,
     schemaVersion: 1,
+    description: '',
+    relationships: [],
     fields: []
   };
 }

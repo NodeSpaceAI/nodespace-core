@@ -33,6 +33,7 @@ import { isTauri } from '@tauri-apps/api/core';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { createLogger } from '$lib/utils/logger';
+import type { IncompatibleDatabase } from '$lib/types/generated';
 
 const log = createLogger('DaemonStatus');
 
@@ -80,15 +81,7 @@ export interface DaemonStatusState {
   incompatibleDatabase: boolean;
 }
 
-/** The daemon's record of the database it refused. */
-export interface IncompatibleDatabase {
-  /** Absolute path of the refused database file. */
-  databasePath: string;
-  /** Which tables differ and how — for support, not the headline. */
-  detail: string;
-  /** When the daemon refused it, RFC 3339. */
-  detectedAt: string;
-}
+export type { IncompatibleDatabase };
 
 export interface ResetIncompatibleDatabaseResult {
   /** Where the refused database was moved to; `null` if it was already gone. */

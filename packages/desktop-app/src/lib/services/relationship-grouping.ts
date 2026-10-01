@@ -21,28 +21,20 @@
  *   be edited here (`groupSupportsEdgeEditing`).
  */
 
-import type { EnumValue } from '$lib/types/schema-node';
+import type {
+  EdgeField,
+  RelationshipCardinality,
+  RelationshipDirection
+} from '$lib/types/generated';
 
-export type RelationshipDirection = 'out' | 'in';
-export type RelationshipCardinality = 'one' | 'many';
+export type { RelationshipCardinality, RelationshipDirection };
 
-/** An edge field definition as declared on the schema relationship. */
-export interface RawEdgeField {
-  name: string;
-  type: string;
-  /**
-   * The closed value set of an `enum` edge field. Present only when
-   * `type === 'enum'`; the backend rejects a declaration that pairs one
-   * without the other. Edge enums have no user-extensible half, so there is
-   * no `userValues` counterpart here.
-   */
-  coreValues?: EnumValue[];
-  indexed?: boolean;
-  required?: boolean;
-  default?: unknown;
-  targetType?: string;
-  description?: string;
-}
+/**
+ * An edge field definition as declared on the schema relationship. Its
+ * `coreValues` is the closed value set of an `enum` edge field, present only
+ * when `type === 'enum'`; edge enums have no user-extensible half.
+ */
+export type RawEdgeField = EdgeField;
 
 /** A related node plus the connecting edge's stored properties. */
 export interface RawRelatedNode {
