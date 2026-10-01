@@ -1,10 +1,14 @@
-// Covers the Pro-boundary ratchet (scripts/check-pro-boundary.ts). Pattern
+// Covers the Pro-boundary hard ban (scripts/check-pro-boundary.ts). Pattern
 // tests run each marker's regex against tables of lines that must and must
-// not match. Discovery, exemption and layout tests build a throwaway git
+// not match. Discovery, allowlist and CLI tests build a throwaway git
 // repository per test, because the behavior under test is git's: what it
-// tracks, what it ignores, and how it replays commits. The real-repo block at
+// tracks, what it ignores, and what a branch changed. The real-repo block at
 // the bottom is the enforcement path (`bun run test:scripts`, so every merge
 // gate) and throws the same actionable message the CLI prints.
+//
+// Every needle is assembled at run time from fragments with `j(...)`, so the
+// needles are not in this file's text: a repository search for them lists only
+// real hits. Marker names and a few non-matching examples ("M2 Pro") remain.
 //
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
@@ -13,25 +17,22 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import * as checker from "./check-pro-boundary";
 import {
-  BASELINES,
+  ALLOWLIST,
   EXCLUDED_FILES,
-  EXEMPTIBLE_NON_TEST_FILES,
-  EXEMPTIONS,
   MARKERS,
-  TEST_PATH,
-  baselineFailures,
-  baselineNotices,
+  MARKER_NAMES,
+  allowlistProblems,
   changedFilesSinceMain,
   countMarkers,
-  exemptionProblems,
-  formatBaselines,
+  hitFailures,
   isProNamedFile,
   listScannedFiles,
-  type Exemption,
+  type AllowlistEntry,
   type LineMarkerName,
   type MarkerCounts,
-  type MarkerName,
+  type MarkerHits,
 } from "./check-pro-boundary";
 
 // Many tests spawn git or bun processes. Bun's 5s default per-test timeout is
@@ -41,7 +42,18 @@ setDefaultTimeout(30_000);
 
 const CHECKER_PATH = join(dirname(new URL(import.meta.url).pathname), "check-pro-boundary.ts");
 const LINE_MARKERS = Object.keys(MARKERS) as LineMarkerName[];
-const ALL_MARKERS: MarkerName[] = [...LINE_MARKERS, "proNamedFiles"];
+
+/** Joins fragments into one needle. */
+const j = (...parts: string[]): string => parts.join("");
+
+// Sample hits, each for a known marker.
+const TEN = j("ten", "ant");
+const CMD = j("pro", "_tier"); // proCommands
+const CMD2 = j("pro", "_signout"); // proCommands
+const WORD = j("P", "ro"); // proWording
+const PRODUCT = j("NodeSpace", " ", "P", "ro"); // productName and proWording
+const BOUND = j("bound ", TEN); // cloudAccountWording
+const DAEMON = j("the ", WORD, " daemon"); // cloudWording and proWording
 
 let dir: string;
 
@@ -103,8 +115,12 @@ function repoWithOriginMain(): void {
   expect(git(dir, "update-ref", "refs/remotes/origin/main", "HEAD").status).toBe(0);
 }
 
-function countsWith(overrides: Partial<MarkerCounts> = {}): MarkerCounts {
-  return { ...BASELINES, ...overrides };
+function noHits(): MarkerHits {
+  return Object.fromEntries(MARKER_NAMES.map((name) => [name, []])) as unknown as MarkerHits;
+}
+
+function zeroCounts(): MarkerCounts {
+  return Object.fromEntries(MARKER_NAMES.map((name) => [name, 0])) as MarkerCounts;
 }
 
 // ---------------------------------------------------------------------------
@@ -112,85 +128,212 @@ function countsWith(overrides: Partial<MarkerCounts> = {}): MarkerCounts {
 // as a string, never through a shell.
 // ---------------------------------------------------------------------------
 
+// The Pro Tauri commands of ADR-081 section 4, every one by name.
+const PRO_COMMAND_NAMES = [
+  "accept_invite",
+  "activate_database",
+  "approve_admission",
+  "approve_request",
+  j("bind_", TEN),
+  "create_invite",
+  "current_person",
+  "current_status",
+  "enable_sync",
+  "initiate_admission",
+  "initiate_oauth",
+  "join_collection",
+  "leave_collection",
+  "list_invites",
+  "list_joinable_collections",
+  "list_members",
+  "list_requests",
+  j("list_", TEN, "_members"),
+  j("list_", TEN, "_memberships"),
+  j("remove_from_", TEN),
+  "remove_member",
+  "request_join",
+  "revoke_invite",
+  "set_member",
+  "signout",
+  "subscribe_sync_status",
+  "tier",
+].map((suffix) => j("pro", "_", suffix));
+
 const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[] }> = {
   proCommands: {
-    match: ["invoke('pro_list_members')", "commands::pro_sync::pro_tier,", "pub mod pro_client;"],
-    noMatch: ["is_pro_build()", "approve_request", "macro_rules!"],
+    match: [
+      ...PRO_COMMAND_NAMES,
+      j("invoke('", "pro", "_list_members')"),
+      j("commands::", "pro", "_sync::", "pro", "_tier,"),
+      j("pub mod ", "pro", "_client;"),
+    ],
+    // Whole identifiers only: a core name that merely starts with the prefix is not a hit.
+    noMatch: ["pro_env", j("pro", "_tier_extra"), j("pro", "_sync_status"), "approve_request", "macro_rules!", "use nodespace_proto::socket;"],
   },
   proSyncModule: {
     match: [
-      "import { proSync } from '$lib/stores/pro-sync.svelte'",
-      "resolveProSyncVariant()",
-      "isProSyncActive()",
-      "import { x } from './pro-sync.svelte'",
-      "type ProSyncState = {};",
+      j("import { pro", "Sync } from '$lib/stores/pro", "-sync.svelte'"),
+      j("resolvePro", "SyncVariant()"),
+      j("isPro", "SyncActive()"),
+      j("type Pro", "SyncState = {};"),
     ],
     noMatch: ["project-sync", "prosync"],
   },
   proProtocol: {
     match: [
-      'tonic::include_proto!("nodespace.pro.v1")',
-      "CloudSyncServiceClient",
-      "app.try_state::<ProClient>()",
-      "let tier: ProTier = x;",
-      '"https://pro.nodespace.ai"',
-      "http://127.0.0.1:8787/v1",
-      "// see nodespace_pro.proto",
+      j('tonic::include_proto!("nodespace', '.pro.v1")'),
+      j("Cloud", "Sync", "ServiceClient"),
+      j("app.try_state::<", "Pro", "Client>()"),
+      j("let tier: ", "Pro", "Tier = x;"),
+      j('"https://pro', '.nodespace.ai"'),
+      j("http://127.0.0.1", ":8787/v1"),
+      j("// see nodespace", "_pro.proto"),
+      j("use nodespace", "_pro::x;"),
     ],
-    noMatch: ["use nodespace_proto::socket;", "ProcessTier", "ProClientele"],
+    noMatch: ["use nodespace_proto::socket;", "nodespace_protocol", "ProcessTier", "ProClientele"],
   },
   proEvents: {
-    match: ["listen('pro:tier-detected', cb)", 'app.emit("sync:status", p)', "listen(`sync:error`, cb)", "listen('sync:status', cb)", 'emit("sync:error")'],
+    match: [j("listen('pro", ":tier-detected', cb)"), j('app.emit("sync', ':status", p)'), j("listen(`sync", ":error`, cb)"), j('emit("sync', ':error")')],
     noMatch: ["sync:status updates", "the sync:error path", "sync:statuses"],
   },
   membershipService: {
-    match: [
-      "import { membershipService } from '$lib/services/membership-service'",
-      "class MembershipService {}",
-      "import { svc } from '$lib/services/membership-service';",
-      "const x = membershipService.list();",
-    ],
+    match: [j("membership", "Service.list()"), j("class Membership", "Service {}"), j("from '$lib/services/membership", "-service'")],
     noMatch: ["collection membership", "member_of"],
   },
   editionBranching: {
     match: [
-      "is_pro_build()",
-      "fn f(is_debug: bool, is_pro: bool)",
-      'option_env!("NODESPACE_PRO_SUPABASE_URL")',
-      "NODESPACED_PRO_ANON_KEY",
-      'cfg!(feature = "pro")',
-      '"daemon-dev-pro.sock"',
-      '"ui-pro.pid"',
-      '"incompatible-database-pro.json"',
-      "app.nodespace.daemon.pro",
-      "app.nodespace.daemon.dev.pro",
-      "tauri.pro.conf.json",
-      "nodespaced --edition",
-      "NODESPACE_FORCE_COMMUNITY",
-      "nodespaced-pro-aarch64",
-      "PRO_DAEMON_BINARY_NAME",
+      j("is_", "pro_build()"),
+      j("fn f(is_debug: bool, is_", "pro: bool)"),
+      j('option_env!("NODESPACE', '_PRO_SERVER_URL")'),
+      j("NODESPACED", "_PRO_ANON_KEY"),
+      j('cfg!(feature = "', 'pro")'),
+      j('"daemon', '-pro.sock"'),
+      j('"daemon-dev', '-pro.sock"'),
+      j('"ui', '-pro.pid"'),
+      j('"incompatible-database', '-pro.json"'),
+      j("app.nodespace.daemon", ".pro"),
+      j("app.nodespace.daemon.dev", ".pro"),
+      j("tauri.pro", ".conf.json"),
+      j("nodespaced --edi", "tion"),
+      j("nodespaced", "-pro-aarch64"),
+      j("PRO_DAEMON", "_BINARY_NAME"),
     ],
-    noMatch: ["rustfmt --edition 2021", 'edition = "2021"', '"daemon-dev.sock"', "app.nodespace.daemon.dev", "rustfmt --edition=2024", "is_production"],
+    // ADR-084 section 5: core's preinstall honours the force variable, so it is not a marker.
+    noMatch: [
+      "rustfmt --edition 2021",
+      'edition = "2021"',
+      "rustfmt --edition=2024",
+      '"daemon-dev.sock"',
+      "app.nodespace.daemon.dev",
+      "is_production",
+      "NODESPACE_FORCE_COMMUNITY=1",
+    ],
   },
-  cloudBindState: {
-    match: ["bound_tenant_schema", "boundTenantCollection", "sync_enabled", "labsFlags.syncEnabled", "auth_status", "authStatus"],
-    noMatch: ["synced", "authenticate"],
-  },
-  cloudSyncHooks: {
-    match: ["apply_remote_embeddings", "embeddings_modified_since", "get_multi_membership_edges"],
-    noMatch: ["upsert_embeddings"],
+  proDataModel: {
+    match: [
+      j("bound_", TEN, "_schema"),
+      j("bound", "Ten", "antCollection"),
+      j("setBound", "Ten", "ant()"),
+      j("sync", "_enabled"),
+      j("labsFlags.sync", "Enabled"),
+      j("isSync", "Enabled"),
+      j("auth", "_status"),
+      j("auth", "Status"),
+      j("restrictedTo", "Members"),
+      j("restricted_to", "_members"),
+      j("personal_collection", "_id"),
+      j("play-core-ai-chat", "-privacy"),
+      j("AI_CHAT_PRIVACY", "_PLAY_ID"),
+      j("ConflictKind::Superseded", "Edit"),
+      j('"superseded', '_edit"'),
+      j("Duplicate", "ReactiveCreate"),
+      j("duplicate_reactive", "_create"),
+      j("node.sync", "_seq"),
+      j("apply_remote", "_embeddings"),
+      j("embeddings_modified", "_since"),
+      j("db_sync", "_enabled"),
+      j("seed_personal_ai_chat", "_collection_if_needed"),
+      j("set_ai_chat_personal", "_collection_default"),
+      j("idx_emb", "_modified"),
+      j("upsert_embeddings", "_with_origin"),
+      j("subscribe_for", "_push"),
+      j("set_push_excluded", "_origin"),
+      j("get_multi_membership", "_edges"),
+    ],
+    // Anchored: a word that merely ends in the same letters is not a hit.
+    noMatch: [
+      "synced",
+      "authenticate",
+      "personal_collection_ids",
+      "sync_sequence",
+      "UniqueFieldCollision",
+      "local_only",
+      "fsync_enabled",
+      "async_enabled",
+      "oauth_status",
+      "OAuthStatus",
+      "member_of_edges",
+      "subscribe_to_events_excluding_origin",
+    ],
   },
   cloudWording: {
-    match: ["Supabase", "supabase", "Postgres RLS", "pgvector", "nodespace-sync", "nodespace_sync::", "the Pro daemon", "the pro daemon"],
-    noMatch: ["URLS", "sync service"],
+    match: [
+      j("Supa", "base"),
+      j("supa", "base"),
+      j("SUPA", "BASE_URL"),
+      j("Postgres R", "LS"),
+      j("pg", "vector"),
+      j("PG", "VECTOR"),
+      j("nodespace", "-sync"),
+      j("nodespace", "_sync::"),
+      j("NodeSpace", "-Sync"),
+      j("NODESPACE", "_SYNC_DIR"),
+      DAEMON,
+      j("the pro", " daemon"),
+    ],
+    noMatch: ["URLS", "CURLS", "sync service"],
   },
-  tenantWording: {
-    match: ["tenant", "TENANT_ADMIN_ROLES", "boundTenant"],
-    noMatch: ["maintenance"],
+  cloudAccountWording: {
+    match: [
+      BOUND,
+      j("cloud ", TEN),
+      j("sync ", TEN),
+      j("workspace ", TEN),
+      j("per-", TEN),
+      j("one schema per ", TEN),
+      j(TEN, " schema"),
+      j(TEN, "_collection"),
+      j(TEN, "Id"),
+      j(TEN, " root"),
+      j(TEN, " binding"),
+      j(TEN, " admission"),
+      j(TEN, " members"),
+      j("TEN", "ANT_ADMIN_ROLES"),
+      j("Syncs to ", TEN),
+      // The word inside an identifier.
+      j(TEN, "_slug"),
+      j("Ten", "antRole"),
+      j("list_", TEN, "s"),
+      j("struct ", "Ten", "ants {"),
+      j(TEN, "-scoped"),
+      j("multi-", TEN),
+      j("TEN", "ANT_ID"),
+    ],
+    // The agent's lease-agreement fixture uses the word in its ordinary sense.
+    noMatch: [j("the landlord finds a replacement ", TEN, " sooner"), j("the ", TEN, " pays rent"), "maintenance"],
+  },
+  syncVocabulary: {
+    match: [j("cloud", " sync"), j("cloud", "-sync"), j("cloud", "_sync"), j("Cloud", "Sync"), j("cloud", " push"), j("cloud", "-pull"), j("upload to", " cloud"), j("pro", "-gated")],
+    noMatch: ["sync to disk", "cloudflare", "to cloudflare", "progated", j("iCloud", " sync")],
   },
   proWording: {
-    match: ["// the Pro build", "NodeSpace Pro", "Pro-only", "Pro"],
+    match: [j("// the ", WORD, " build"), PRODUCT, j(WORD, "-only"), WORD],
     noMatch: ["M2 Pro", "DeepSeek V4 Pro", "MacBook Pro", "iPad Pro", "iPhone Pro", "Protocol", "Provider", "pro", "NodeSpaceProduct"],
+  },
+  productName: {
+    match: [PRODUCT, j("This database needs ", PRODUCT), j(PRODUCT, "'s sync")],
+    // Case-sensitive and whole-word.
+    noMatch: ["NodeSpace prompt", "NodeSpace Protocol", "NodeSpace Product", "nodespace pro", "NodeSpaceProduct"],
   },
 };
 
@@ -214,6 +357,10 @@ describe("MARKERS patterns", () => {
     });
   }
 
+  test("the command table names all 27 Pro Tauri commands", () => {
+    expect(new Set(PRO_COMMAND_NAMES).size).toBe(27);
+  });
+
   test("no pattern is global or sticky, so a single test() per line is stateless", () => {
     for (const name of LINE_MARKERS) {
       expect(MARKERS[name].pattern.global).toBe(false);
@@ -227,17 +374,36 @@ describe("MARKERS patterns", () => {
       expect(MARKERS[name].summary).not.toContain("\n");
     }
   });
+
+  // ADR-081 sections 2b and 2d, ADR-084 sections 1 and 5: the coexistence
+  // checks and the contact entry point name no other product, so they need
+  // no allowlist entry. These lines must stay clean under every marker.
+  test("the copy core keeps at the boundary matches no marker", () => {
+    const lines = [
+      "Want team collaboration? Contact us",
+      "mailto:developer@nodespace.ai",
+      "For team collaboration, contact [developer@nodespace.ai](mailto:developer@nodespace.ai).",
+      'product=$(/usr/libexec/PlistBuddy -c "Print :NodeSpaceProduct" "$APP/Contents/Info.plist")',
+      'if [ "$product" != "community" ] && [ "${NODESPACE_FORCE_COMMUNITY:-}" != "1" ]; then',
+      "Another NodeSpace product is installed on this Mac. Uninstall it with its own uninstaller first. Your databases stay on this Mac.",
+      "The NodeSpace app on this Mac is a different NodeSpace product, or an older NodeSpace that does not say which product it is.",
+      "Use that product's own uninstaller, or update NodeSpace first; this command removes only the free NodeSpace.",
+    ];
+    for (const line of lines) {
+      for (const name of LINE_MARKERS) expect({ line, name, hit: MARKERS[name].pattern.test(line) }).toEqual({ line, name, hit: false });
+    }
+  });
 });
 
 describe("isProNamedFile", () => {
   for (const path of [
-    "pro-plugin.ts",
-    "pro_sync.rs",
-    "tauri.pro.conf.json",
-    "nodespace_pro.proto",
-    "first-pro-consent-modal.svelte",
-    "pro-sync.svelte.ts",
-    "packages/desktop-app/src/lib/plugins/pro-plugin.ts",
+    j("pro", "-plugin.ts"),
+    j("pro", "_sync.rs"),
+    j("tauri.pro", ".conf.json"),
+    j("nodespace", "_pro.proto"),
+    j("first-pro", "-consent-modal.svelte"),
+    j("pro", "-sync.svelte.ts"),
+    j("packages/desktop-app/src/lib/plugins/pro", "-plugin.ts"),
     "pro",
   ]) {
     test(`matches ${path}`, () => {
@@ -253,7 +419,7 @@ describe("isProNamedFile", () => {
     "project-sync.ts",
     "approve.ts",
     "repro.ts",
-    // Only the basename counts: a directory named for a Pro segment does not.
+    // Only the basename counts: a directory with a pro segment does not.
     "packages/pro/lib.ts",
     "packages/pro-tools/index.ts",
   ]) {
@@ -282,14 +448,15 @@ describe("listScannedFiles", () => {
     initRepo();
     // As in the real repo: the ignore file sits in src-tauri/, and its
     // patterns are relative to that directory.
-    write("packages/desktop-app/src-tauri/.gitignore", "resources/skill/\nbinaries/nodespaced-pro-*\n");
-    write("packages/desktop-app/src-tauri/resources/skill/SKILL.md", "NodeSpace Pro\n");
-    write("packages/desktop-app/src-tauri/binaries/nodespaced-pro-x", "binary\n");
+    const binary = j("binaries/nodespaced", "-pro-x");
+    write("packages/desktop-app/src-tauri/.gitignore", j("resources/skill/\n", "binaries/nodespaced", "-pro-*\n"));
+    write("packages/desktop-app/src-tauri/resources/skill/SKILL.md", `${PRODUCT}\n`);
+    write(`packages/desktop-app/src-tauri/${binary}`, "binary\n");
     write("packages/desktop-app/src-tauri/src/lib.rs", "// clean\n");
     const files = listScannedFiles(dir);
     expect(files).toEqual(["packages/desktop-app/src-tauri/.gitignore", "packages/desktop-app/src-tauri/src/lib.rs"]);
     const { counts } = countMarkers(files, dir);
-    expect(counts.proWording).toBe(0);
+    expect(counts.productName).toBe(0);
     expect(counts.proNamedFiles).toBe(0);
   });
 
@@ -308,7 +475,7 @@ describe("listScannedFiles", () => {
 
   test("a CLAUDE.md full of markers counts 0", () => {
     initRepo();
-    write("CLAUDE.md", "pro_x tenant NodeSpace Pro Supabase is_pro_build proSync\n");
+    write("CLAUDE.md", `${CMD} ${BOUND} ${PRODUCT} ${j("Supa", "base")} ${j("is_pro", "_build")} ${j("pro", "Sync")}\n`);
     const { counts } = countMarkers(listScannedFiles(dir), dir);
     expect(Object.values(counts).every((n) => n === 0)).toBe(true);
   });
@@ -330,7 +497,7 @@ describe("listScannedFiles", () => {
       "packages/a/x.html",
       "packages/a/x.py",
       "packages/a/x.d.ts",
-      "scripts/pkg-resources/postinstall",
+      "scripts/pkg-resources/preinstall",
       "packages/a/.gitignore",
       "packages/a/.eslintrc.json",
     ];
@@ -341,8 +508,8 @@ describe("listScannedFiles", () => {
 
   test("skips the checker's own two files", () => {
     initRepo();
-    write("scripts/check-pro-boundary.ts", "pro_x\n");
-    write("scripts/check-pro-boundary.test.ts", "pro_x\n");
+    write("scripts/check-pro-boundary.ts", `${CMD}\n`);
+    write("scripts/check-pro-boundary.test.ts", `${CMD}\n`);
     write("scripts/other.ts", "x\n");
     expect(EXCLUDED_FILES).toEqual(["scripts/check-pro-boundary.ts", "scripts/check-pro-boundary.test.ts"]);
     expect(listScannedFiles(dir)).toEqual(["scripts/other.ts"]);
@@ -350,22 +517,23 @@ describe("listScannedFiles", () => {
 
   test("a file deleted from the working tree but still in the index does not throw", () => {
     initRepo();
-    write("packages/a/gone.ts", "pro_x\n");
-    write("packages/a/pro-gone.ts", "x\n");
-    write("packages/a/kept.ts", "pro_y\n");
+    const proNamed = j("packages/a/pro", "-gone.ts");
+    write("packages/a/gone.ts", `${CMD}\n`);
+    write(proNamed, "x\n");
+    write("packages/a/kept.ts", `${CMD2}\n`);
     expect(git(dir, "add", "packages").status).toBe(0);
     unlinkSync(join(dir, "packages/a/gone.ts"));
-    unlinkSync(join(dir, "packages/a/pro-gone.ts"));
+    unlinkSync(join(dir, proNamed));
     const files = listScannedFiles(dir);
     expect(files).toContain("packages/a/gone.ts");
     const { counts, hits } = countMarkers(files, dir);
     expect(counts.proCommands).toBe(1);
-    expect(hits.proCommands).toEqual(["packages/a/kept.ts:1: pro_y"]);
+    expect(hits.proCommands).toEqual([`packages/a/kept.ts:1: ${CMD2}`]);
     expect(counts.proNamedFiles).toBe(0);
   });
 
   test("a directory that is not a git repository throws a clear error, never an empty list", () => {
-    write("packages/a/lib.rs", "pro_x\n");
+    write("packages/a/lib.rs", `${CMD}\n`);
     withEnv({ GIT_CEILING_DIRECTORIES: dirname(dir) }, () => {
       expect(() => listScannedFiles(dir)).toThrow(/needs a git checkout/);
     });
@@ -391,271 +559,162 @@ describe("listScannedFiles", () => {
 
 describe("countMarkers", () => {
   test("a line counts once per marker, however many times it matches", () => {
-    write("packages/a/lib.rs", "pro_a(); pro_b(); pro_c();\n");
+    write("packages/a/lib.rs", `${CMD}(); ${CMD}(); ${CMD2}();\n`);
     const { counts } = countMarkers(["packages/a/lib.rs"], dir);
     expect(counts.proCommands).toBe(1);
   });
 
   test("one line can count under several markers, once each", () => {
-    write("packages/a/lib.rs", "invoke('pro_x'); // the tenant sees NodeSpace Pro\n");
+    write("packages/a/lib.rs", `invoke('${CMD}'); // the ${BOUND} sees ${PRODUCT}\n`);
     const { counts } = countMarkers(["packages/a/lib.rs"], dir);
     expect(counts.proCommands).toBe(1);
-    expect(counts.tenantWording).toBe(1);
+    expect(counts.cloudAccountWording).toBe(1);
     expect(counts.proWording).toBe(1);
+    expect(counts.productName).toBe(1);
     expect(counts.cloudWording).toBe(0);
   });
 
   test("counts one hit per matching line across lines and files", () => {
-    write("packages/a/one.rs", "pro_a\nclean\npro_b\n");
-    write("packages/a/two.rs", "pro_c\n");
+    write("packages/a/one.rs", `${CMD}\nclean\n${CMD2}\n`);
+    write("packages/a/two.rs", `${CMD}\n`);
     const { counts } = countMarkers(["packages/a/one.rs", "packages/a/two.rs"], dir);
     expect(counts.proCommands).toBe(3);
   });
 
   test("hits are repo-relative path:line: trimmed text", () => {
-    write("packages/a/lib.rs", "clean\n    pro_x();   \n// tenant\n");
+    write("packages/a/lib.rs", `clean\n    ${CMD}();   \n// ${BOUND}\n`);
     const { hits } = countMarkers(["packages/a/lib.rs"], dir);
-    expect(hits.proCommands).toEqual(["packages/a/lib.rs:2: pro_x();"]);
-    expect(hits.tenantWording).toEqual(["packages/a/lib.rs:3: // tenant"]);
+    expect(hits.proCommands).toEqual([`packages/a/lib.rs:2: ${CMD}();`]);
+    expect(hits.cloudAccountWording).toEqual([`packages/a/lib.rs:3: // ${BOUND}`]);
   });
 
   test("proNamedFiles counts Pro-named paths, and its hits are the paths", () => {
-    write("packages/a/pro-plugin.ts", "clean\n");
+    const plugin = j("packages/a/pro", "-plugin.ts");
+    const overlay = j("packages/a/tauri.pro", ".conf.json");
+    write(plugin, "clean\n");
     write("packages/a/provider.ts", "clean\n");
-    write("packages/a/tauri.pro.conf.json", "{}\n");
-    const { counts, hits } = countMarkers(["packages/a/pro-plugin.ts", "packages/a/provider.ts", "packages/a/tauri.pro.conf.json"], dir);
+    write(overlay, "{}\n");
+    const { counts, hits } = countMarkers([plugin, "packages/a/provider.ts", overlay], dir);
     expect(counts.proNamedFiles).toBe(2);
-    expect(hits.proNamedFiles).toEqual(["packages/a/pro-plugin.ts", "packages/a/tauri.pro.conf.json"]);
+    expect(hits.proNamedFiles).toEqual([plugin, overlay]);
   });
 
   test("returns every marker, at 0 for a clean file", () => {
     write("packages/a/lib.rs", "fn main() {}\n");
     const { counts, hits } = countMarkers(["packages/a/lib.rs"], dir);
-    expect(Object.keys(counts)).toEqual(ALL_MARKERS);
-    expect(Object.keys(hits)).toEqual(ALL_MARKERS);
-    expect(Object.values(counts).every((n) => n === 0)).toBe(true);
+    expect(Object.keys(counts)).toEqual([...MARKER_NAMES]);
+    expect(Object.keys(hits)).toEqual([...MARKER_NAMES]);
+    expect(counts).toEqual(zeroCounts());
   });
 });
 
 // ---------------------------------------------------------------------------
-// Exemptions
+// The allowlist
 // ---------------------------------------------------------------------------
 
-describe("EXEMPTIONS", () => {
-  test("holds exactly the agent fixture, exempt from tenantWording only", () => {
-    expect(EXEMPTIONS).toHaveLength(1);
-    expect(EXEMPTIONS[0].file).toBe("packages/agent/tests/it/live_embedding_prefix_measurement.rs");
-    expect(EXEMPTIONS[0].markers).toEqual(["tenantWording"]);
-    expect(EXEMPTIONS[0].reason.trim()).not.toBe("");
+describe("countMarkers — allowlist", () => {
+  const MODULE = "packages/x/src/extension-names.ts";
+  const entry: AllowlistEntry = { file: MODULE, exempt: PRODUCT };
+
+  test("an entry removes its exact string from its file's lines before the markers are tested", () => {
+    write(MODULE, `  pro: "${PRODUCT}",\n`);
+    const { counts } = countMarkers([MODULE], dir, [entry]);
+    expect(counts).toEqual(zeroCounts());
   });
-});
 
-describe("countMarkers — exemptions", () => {
-  const exempt: Exemption = { file: "packages/x/tests/a.rs", markers: ["tenantWording"], reason: "fixture prose" };
+  test("every other marker on the same line still counts", () => {
+    write(MODULE, `"${PRODUCT}" via ${DAEMON} or ${CMD}\n`);
+    const { counts } = countMarkers([MODULE], dir, [entry]);
+    expect(counts.productName).toBe(0);
+    expect(counts.cloudWording).toBe(1);
+    expect(counts.proWording).toBe(1);
+    expect(counts.proCommands).toBe(1);
+  });
 
-  test("an entry hides only its own markers in its own file", () => {
-    write("packages/x/tests/a.rs", "a tenant\nNodeSpace Pro\n");
-    write("packages/x/tests/b.rs", "a tenant\n");
-    const { counts } = countMarkers(["packages/x/tests/a.rs", "packages/x/tests/b.rs"], dir, [exempt]);
-    // a.rs: its tenant line is hidden but its Pro line still counts; b.rs: the same marker still counts.
-    expect(counts.tenantWording).toBe(1);
+  test("the removal is exact: a different spelling in the same file still counts", () => {
+    write(MODULE, `"${PRODUCT}"\n${j("NodeSpace", " ", WORD, "!")}\n${j("nodespace ", WORD)}\n`);
+    const { hits } = countMarkers([MODULE], dir, [{ file: MODULE, exempt: `"${PRODUCT}"` }]);
+    expect(hits.productName).toEqual([`${MODULE}:2: ${j("NodeSpace", " ", WORD, "!")}`]);
+    expect(hits.proWording).toHaveLength(2);
+  });
+
+  test("an entry applies only to its own file", () => {
+    write(MODULE, `"${PRODUCT}"\n`);
+    write("packages/x/src/other.ts", `"${PRODUCT}"\n`);
+    const { hits } = countMarkers([MODULE, "packages/x/src/other.ts"], dir, [entry]);
+    expect(hits.productName).toEqual([`packages/x/src/other.ts:1: "${PRODUCT}"`]);
+  });
+
+  test("without the entry the same file counts", () => {
+    write(MODULE, `  pro: "${PRODUCT}",\n`);
+    const { counts } = countMarkers([MODULE], dir, []);
+    expect(counts.productName).toBe(1);
     expect(counts.proWording).toBe(1);
   });
-
-  test("without the entry the same files count the hidden line", () => {
-    write("packages/x/tests/a.rs", "a tenant\nNodeSpace Pro\n");
-    write("packages/x/tests/b.rs", "a tenant\n");
-    const { counts } = countMarkers(["packages/x/tests/a.rs", "packages/x/tests/b.rs"], dir, []);
-    expect(counts.tenantWording).toBe(2);
-  });
-
-  test("two entries for one file both apply", () => {
-    write("packages/x/tests/a.rs", "a tenant\nNodeSpace Pro\n");
-    const { counts } = countMarkers(["packages/x/tests/a.rs"], dir, [exempt, { file: exempt.file, markers: ["proWording"], reason: "prose" }]);
-    expect(counts.tenantWording).toBe(0);
-    expect(counts.proWording).toBe(0);
-  });
 });
 
-describe("exemptionProblems", () => {
+describe("allowlistProblems", () => {
+  const MODULE = "packages/x/src/extension-names.ts";
+  const valid: AllowlistEntry = { file: MODULE, exempt: PRODUCT };
+
   function fixture(files: Record<string, string>): void {
     initRepo();
     for (const [path, content] of Object.entries(files)) write(path, content);
   }
 
-  const valid: Exemption = { file: "packages/x/tests/a.rs", markers: ["tenantWording"], reason: "fixture prose" };
-
-  test("is empty for a live entry", () => {
-    fixture({ "packages/x/tests/a.rs": "a tenant\n" });
-    expect(exemptionProblems([valid], dir)).toEqual([]);
+  test("an empty allowlist has no problem, and needs no git checkout", () => {
+    withEnv({ GIT_CEILING_DIRECTORIES: dirname(dir) }, () => {
+      expect(allowlistProblems([], dir)).toEqual([]);
+    });
   });
 
-  test("reports a file that is missing from the scan", () => {
-    fixture({ "packages/x/tests/other.rs": "a tenant\n" });
-    const problems = exemptionProblems([valid], dir);
+  test("a live entry has no problem", () => {
+    fixture({ [MODULE]: `pro: "${PRODUCT}",\n` });
+    expect(allowlistProblems([valid], dir)).toEqual([]);
+  });
+
+  test("several entries for the one file are allowed", () => {
+    fixture({ [MODULE]: `pro: "${PRODUCT}", // ${WORD}\n` });
+    expect(allowlistProblems([valid, { file: MODULE, exempt: WORD }], dir)).toEqual([]);
+  });
+
+  test("entries for a second file are reported: ADR-081 section 8 allows exactly one", () => {
+    fixture({ [MODULE]: `"${PRODUCT}"\n`, "packages/x/src/other.ts": `"${PRODUCT}"\n` });
+    const problems = allowlistProblems([valid, { file: "packages/x/src/other.ts", exempt: PRODUCT }], dir);
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("missing from the scan");
-    expect(problems[0]).toContain(valid.file);
+    expect(problems[0]).toContain("names 2 files");
+    expect(problems[0]).toContain("exactly one");
   });
 
-  test("reports a file that git ignores as missing from the scan", () => {
-    fixture({ ".gitignore": "packages/x/tests/\n", "packages/x/tests/a.rs": "a tenant\n" });
-    expect(exemptionProblems([valid], dir).join("\n")).toContain("missing from the scan");
-  });
-
-  test("reports a path that is not a test path", () => {
-    fixture({ "packages/x/src/lib.rs": "a tenant\n" });
-    const problems = exemptionProblems([{ ...valid, file: "packages/x/src/lib.rs" }], dir);
+  test("reports an empty string", () => {
+    fixture({ [MODULE]: `"${PRODUCT}"\n` });
+    const problems = allowlistProblems([{ file: MODULE, exempt: "" }], dir);
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("only test files");
+    expect(problems[0]).toContain("empty");
   });
 
-  describe("installer recognition points", () => {
-    const RECOGNITION_POINTS = [
-      "scripts/update-homebrew-cask.ts",
-      "scripts/pkg-resources/preinstall",
-      "scripts/pkg-resources/postinstall",
-      "scripts/build-pkg.sh",
-    ];
-    const installer = (file: string): Exemption => ({ file, markers: ["proWording"], reason: "names the other NodeSpace product it refuses to install over" });
-
-    test("the allowlist is exactly the four installer recognition points", () => {
-      expect([...EXEMPTIBLE_NON_TEST_FILES].sort()).toEqual([...RECOGNITION_POINTS].sort());
-      for (const file of EXEMPTIBLE_NON_TEST_FILES) expect(TEST_PATH.test(file)).toBe(false);
-    });
-
-    for (const file of RECOGNITION_POINTS) {
-      test(`accepts a live entry on ${file}, which is not a test path`, () => {
-        fixture({ [file]: "refuse to install over NodeSpace Pro\n" });
-        expect(exemptionProblems([installer(file)], dir)).toEqual([]);
-      });
-
-      test(`the entry on ${file} hides only its own marker`, () => {
-        write(file, "refuse to install over NodeSpace Pro\na tenant\n");
-        const { counts } = countMarkers([file], dir, [installer(file)]);
-        expect(counts.proWording).toBe(0);
-        expect(counts.tenantWording).toBe(1);
-      });
-    }
-
-    test("an allowlisted file still needs a live hit, a reason and a marker", () => {
-      const file = "scripts/update-homebrew-cask.ts";
-      fixture({ [file]: "a plain installer line\n" });
-      expect(exemptionProblems([installer(file)], dir).join("\n")).toContain("proWording has no hit left");
-      expect(exemptionProblems([{ ...installer(file), reason: "" }], dir).join("\n")).toContain("reason is empty");
-      expect(exemptionProblems([{ ...installer(file), markers: [] }], dir).join("\n")).toContain("names no marker");
-    });
-
-    test("does not cover a same-named file in another directory: the match is on the whole path", () => {
-      const others = ["packages/x/scripts/update-homebrew-cask.ts", "scripts/other/update-homebrew-cask.ts", "scripts/pkg-resources/other/postinstall"];
-      fixture(Object.fromEntries(others.map((file) => [file, "refuse to install over NodeSpace Pro\n"])));
-      for (const file of others) {
-        const problems = exemptionProblems([installer(file)], dir);
-        expect({ file, problems: problems.length }).toEqual({ file, problems: 1 });
-        expect(problems[0]).toContain("only test files");
-      }
-    });
-
-    test("any other non-test file is still rejected, including a sibling installer script", () => {
-      // The two "-old" names are extensionless, so they are scanned, and each begins with an allowlisted path: a prefix match would let them through.
-      const others = [
-        "scripts/build-pkg.ts",
-        "scripts/pkg-resources/app.nodespace.daemon.plist",
-        "scripts/refresh-pro-proto.ts",
-        "packages/x/src/lib.rs",
-        "scripts/pkg-resources/preinstall-old",
-        "scripts/pkg-resources/postinstall-old",
-      ];
-      fixture(Object.fromEntries(others.map((file) => [file, "refuse to install over NodeSpace Pro\n"])));
-      for (const file of others) {
-        const problems = exemptionProblems([installer(file)], dir);
-        expect({ file, problems: problems.length }).toEqual({ file, problems: 1 });
-        expect(problems[0]).toContain("EXEMPTIBLE_NON_TEST_FILES");
-      }
-    });
+  test("reports a string that matches no marker", () => {
+    fixture({ [MODULE]: `"${PRODUCT}" and community\n` });
+    const problems = allowlistProblems([{ file: MODULE, exempt: "community" }], dir);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("matches no marker");
   });
 
-  test("reports an empty reason, including a whitespace-only one", () => {
-    fixture({ "packages/x/tests/a.rs": "a tenant\n" });
-    for (const reason of ["", "   "]) {
-      const problems = exemptionProblems([{ ...valid, reason }], dir);
-      expect(problems).toHaveLength(1);
-      expect(problems[0]).toContain("reason is empty");
+  test("reports a file that is missing from the scan: absent, ignored, or out of scope", () => {
+    fixture({ ".gitignore": "packages/x/ignored/\n", "packages/x/ignored/names.ts": `"${PRODUCT}"\n`, "docs/names.ts": `"${PRODUCT}"\n` });
+    for (const file of [MODULE, "packages/x/ignored/names.ts", "docs/names.ts"]) {
+      const problems = allowlistProblems([{ file, exempt: PRODUCT }], dir);
+      expect({ file, problems: problems.length }).toEqual({ file, problems: 1 });
+      expect(problems[0]).toContain("missing from the scan");
     }
   });
 
-  test("reports an entry that names no marker", () => {
-    fixture({ "packages/x/tests/a.rs": "a tenant\n" });
-    const problems = exemptionProblems([{ ...valid, markers: [] }], dir);
+  test("reports a string that no longer occurs in its file as stale", () => {
+    fixture({ [MODULE]: "export const names = {};\n" });
+    const problems = allowlistProblems([valid], dir);
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("names no marker");
-  });
-
-  test("reports an unknown marker", () => {
-    fixture({ "packages/x/tests/a.rs": "a tenant\n" });
-    const problems = exemptionProblems([{ ...valid, markers: ["notAMarker" as LineMarkerName] }], dir);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('"notAMarker" is not a marker that can be exempted');
-  });
-
-  test("reports proNamedFiles, which can't be exempted", () => {
-    fixture({ "packages/x/tests/a.rs": "a tenant\n" });
-    const problems = exemptionProblems([{ ...valid, markers: ["proNamedFiles" as LineMarkerName] }], dir);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain('"proNamedFiles" is not a marker that can be exempted');
-  });
-
-  test("reports a marker with no raw hit left in the file", () => {
-    fixture({ "packages/x/tests/a.rs": "nothing here\n" });
-    const problems = exemptionProblems([valid], dir);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("tenantWording has no hit left");
     expect(problems[0]).toContain("stale");
   });
-
-  test("counts raw hits, so an entry stays live while another exemption hides the line", () => {
-    fixture({ "packages/x/tests/a.rs": "a tenant\n" });
-    // The stale check reads the raw file, not the exempted counts: it must not
-    // call an entry stale merely because exemptions already hide its hit.
-    expect(exemptionProblems([valid, { ...valid, reason: "second entry" }], dir)).toEqual([]);
-  });
-
-  test("checks each marker of an entry separately", () => {
-    fixture({ "packages/x/tests/a.rs": "a tenant\n" });
-    const problems = exemptionProblems([{ ...valid, markers: ["tenantWording", "proWording"] }], dir);
-    expect(problems).toHaveLength(1);
-    expect(problems[0]).toContain("proWording has no hit left");
-  });
-
-  test("an entry with several problems reports each", () => {
-    fixture({ "packages/x/src/lib.rs": "nothing\n" });
-    const problems = exemptionProblems([{ file: "packages/x/src/lib.rs", markers: ["tenantWording"], reason: "" }], dir);
-    expect(problems).toHaveLength(3);
-  });
-});
-
-describe("TEST_PATH", () => {
-  for (const path of [
-    "src/tests/stores/x.test.ts",
-    "packages/core/tests/it/a.rs",
-    "scripts/a.test.ts",
-    "src/models/foo_test.rs",
-    "src/models/foo_tests.rs",
-    "src/x/tests.rs",
-    "src/x.spec.ts",
-    "src/__tests__/x.ts",
-    "packages/agent/tests/it/live_embedding_prefix_measurement.rs",
-  ]) {
-    test(`matches ${path}`, () => {
-      expect(TEST_PATH.test(path)).toBe(true);
-    });
-  }
-
-  for (const path of ["src/lib/stores/x.svelte.ts", "packages/daemon/src/main.rs", "src/contest.rs", "src/latests.rs", "src/protests/x.ts", "src/x.test.svelte"]) {
-    test(`does not match ${path}`, () => {
-      expect(TEST_PATH.test(path)).toBe(false);
-    });
-  }
 });
 
 // ---------------------------------------------------------------------------
@@ -664,21 +723,16 @@ describe("TEST_PATH", () => {
 // ---------------------------------------------------------------------------
 
 describe("absence-test convention", () => {
+  // Source lines as an absence test writes them: the needle is assembled at run time.
   const FRAGMENT_TS = [
     'const needle = ["pro", "tier"].join("_");',
-    'const re = new RegExp(["ten", "ant"].join(""), "i");',
+    'const re = new RegExp(["bound", "ten" + "ant", "schema"].join("_"));',
     'const event = "sync:" + "status";',
   ].join("\n");
-  const FRAGMENT_RS = [
-    'let flag = concat!("--edi", "tion");',
-    'let var = ["NODESPACE", "PRO", "SUPABASE_URL"].join("_");',
-  ].join("\n");
-  const LITERAL_TS = [
-    'const needle = "pro_tier";',
-    'const re = new RegExp("tenant", "i");',
-    'const event = "sync:status";',
-  ].join("\n");
-  const LITERAL_RS = ['let flag = "--edition";', 'let var = "NODESPACE_PRO_SUPABASE_URL";'].join("\n");
+  const FRAGMENT_RS = ['let flag = concat!("--edi", "tion");', 'let var = ["NODESPACE", "PRO", "SERVER_URL"].join("_");'].join("\n");
+  // The same lines with each needle written out, as a test that ignores the convention would.
+  const LITERAL_TS = [`const needle = "${CMD}";`, `const re = new RegExp("${j("bound_", TEN, "_schema")}");`, `const event = "${j("sync", ":status")}";`].join("\n");
+  const LITERAL_RS = [`let flag = "${j("--edi", "tion")}";`, `let var = "${j("NODESPACE", "_PRO_SERVER_URL")}";`].join("\n");
 
   function scan(ts: string, rs: string): MarkerCounts {
     write("packages/x/tests/absence.test.ts", `${ts}\n`);
@@ -687,14 +741,13 @@ describe("absence-test convention", () => {
   }
 
   test("needles built from fragments count 0 for every marker", () => {
-    const counts = scan(FRAGMENT_TS, FRAGMENT_RS);
-    expect(counts).toEqual(Object.fromEntries(ALL_MARKERS.map((name) => [name, 0])) as MarkerCounts);
+    expect(scan(FRAGMENT_TS, FRAGMENT_RS)).toEqual(zeroCounts());
   });
 
-  test("the same needles written literally count (the control that keeps the fragment test honest)", () => {
+  test("the same needles written out count (the control that keeps the fragment test honest)", () => {
     const counts = scan(LITERAL_TS, LITERAL_RS);
     expect(counts.proCommands).toBeGreaterThan(0);
-    expect(counts.tenantWording).toBeGreaterThan(0);
+    expect(counts.proDataModel).toBeGreaterThan(0);
     expect(counts.proEvents).toBeGreaterThan(0);
     expect(counts.editionBranching).toBeGreaterThan(0);
   });
@@ -705,97 +758,6 @@ describe("absence-test convention", () => {
         expect(MARKERS[name].pattern.test(line)).toBe(false);
       }
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// BASELINES layout
-// ---------------------------------------------------------------------------
-
-describe("formatBaselines", () => {
-  test("the checker's source holds formatBaselines(BASELINES) verbatim", () => {
-    expect(readFileSync(CHECKER_PATH, "utf8")).toContain(formatBaselines(BASELINES));
-  });
-
-  test("puts exactly one summary comment line before each value line", () => {
-    const lines = formatBaselines(countsWith()).split("\n");
-    expect(lines[0]).toBe("export const BASELINES = {");
-    expect(lines[lines.length - 1]).toBe("} satisfies Record<MarkerName, number>;");
-    expect(lines).toHaveLength(2 + 2 * ALL_MARKERS.length);
-    ALL_MARKERS.forEach((name, i) => {
-      const comment = lines[1 + 2 * i];
-      const value = lines[2 + 2 * i];
-      expect(comment).toMatch(/^ {2}\/\/ \S.*$/);
-      expect(value).toBe(`  ${name}: ${BASELINES[name]},`);
-    });
-  });
-
-  test("takes each comment from the marker's summary", () => {
-    const lines = formatBaselines(countsWith()).split("\n");
-    LINE_MARKERS.forEach((name, i) => {
-      expect(lines[1 + 2 * i]).toBe(`  // ${MARKERS[name].summary}`);
-    });
-    expect(lines[1 + 2 * LINE_MARKERS.length]).toBe("  // files whose basename has a pro segment");
-  });
-
-  test("renders whatever counts it is given", () => {
-    const text = formatBaselines(countsWith({ proCommands: 1, proNamedFiles: 0 }));
-    expect(text).toContain("  proCommands: 1,");
-    expect(text).toContain("  proNamedFiles: 0,");
-    expect(text).toContain(`  proSyncModule: ${BASELINES.proSyncModule},`);
-  });
-
-  describe("merge-queue replay (cherry-pick)", () => {
-    // Commits the file's text on a detached HEAD forked from `base`.
-    function commitFrom(base: string, text: string, message: string): string {
-      expect(git(dir, "checkout", "--quiet", "--detach", base).status).toBe(0);
-      writeFileSync(join(dir, "baselines.txt"), `${text}\n`);
-      expect(git(dir, "commit", "--quiet", "-am", message).status).toBe(0);
-      return git(dir, "rev-parse", "HEAD").stdout.trim();
-    }
-
-    function setup(render: (counts: MarkerCounts) => string): { base: string } {
-      initRepo();
-      writeFileSync(join(dir, "baselines.txt"), `${render(countsWith())}\n`);
-      expect(git(dir, "add", "baselines.txt").status).toBe(0);
-      expect(git(dir, "commit", "--quiet", "-m", "base").status).toBe(0);
-      return { base: git(dir, "rev-parse", "HEAD").stdout.trim() };
-    }
-
-    function replay(onto: string, pick: string): number {
-      expect(git(dir, "checkout", "--quiet", "--detach", onto).status).toBe(0);
-      return git(dir, "cherry-pick", pick).status;
-    }
-
-    test("PRs that lower different, adjacent markers replay onto each other without conflict", () => {
-      const { base } = setup(formatBaselines);
-      const lowerCommands = commitFrom(base, formatBaselines(countsWith({ proCommands: BASELINES.proCommands - 1 })), "lower proCommands");
-      const lowerSync = commitFrom(base, formatBaselines(countsWith({ proSyncModule: BASELINES.proSyncModule - 1 })), "lower proSyncModule");
-      expect(replay(lowerCommands, lowerSync)).toBe(0);
-      expect(git(dir, "cherry-pick", "--abort").status).not.toBe(0); // nothing left in progress
-      const merged = readFileSync(join(dir, "baselines.txt"), "utf8");
-      expect(merged).toContain(`  proCommands: ${BASELINES.proCommands - 1},`);
-      expect(merged).toContain(`  proSyncModule: ${BASELINES.proSyncModule - 1},`);
-    });
-
-    test("PRs that set the same marker to different values conflict", () => {
-      const { base } = setup(formatBaselines);
-      const first = commitFrom(base, formatBaselines(countsWith({ proCommands: BASELINES.proCommands - 1 })), "first");
-      const second = commitFrom(base, formatBaselines(countsWith({ proCommands: BASELINES.proCommands - 2 })), "second");
-      expect(replay(first, second)).not.toBe(0);
-    });
-
-    test("control: with the comment lines dropped, adjacent markers do conflict", () => {
-      const withoutComments = (counts: MarkerCounts): string =>
-        formatBaselines(counts)
-          .split("\n")
-          .filter((line) => !line.trimStart().startsWith("//"))
-          .join("\n");
-      const { base } = setup(withoutComments);
-      const lowerCommands = commitFrom(base, withoutComments(countsWith({ proCommands: BASELINES.proCommands - 1 })), "lower proCommands");
-      const lowerSync = commitFrom(base, withoutComments(countsWith({ proSyncModule: BASELINES.proSyncModule - 1 })), "lower proSyncModule");
-      expect(replay(lowerCommands, lowerSync)).not.toBe(0);
-    });
   });
 });
 
@@ -857,177 +819,93 @@ describe("changedFilesSinceMain", () => {
     }
   });
 
-  test("a marker added on a branch is listed under \"In files this branch changed\" in the failure", () => {
+  test('a marker added on a branch is listed under "In files this branch changed" in the failure', () => {
     repoWithOriginMain();
-    write("packages/a/new.ts", "await invoke('pro_example');\n");
-    const { counts, hits } = countMarkers(listScannedFiles(dir), dir, []);
-    const zero = Object.fromEntries(ALL_MARKERS.map((name) => [name, 0])) as MarkerCounts;
-    const message = baselineFailures(counts, zero, changedFilesSinceMain(dir), hits)[0];
+    write("packages/a/new.ts", `await invoke('${CMD}');\n`);
+    const { hits } = countMarkers(listScannedFiles(dir), dir, []);
+    const message = hitFailures(hits, changedFilesSinceMain(dir))[0];
     expect(message).toContain("proCommands");
-    expect(message).toContain("In files this branch changed:\npackages/a/new.ts:1: await invoke('pro_example');");
+    expect(message).toContain(`In files this branch changed:\npackages/a/new.ts:1: await invoke('${CMD}');`);
   });
 });
 
 // ---------------------------------------------------------------------------
-// baselineFailures
+// hitFailures: the hard ban
 // ---------------------------------------------------------------------------
 
-describe("baselineFailures", () => {
-  test("is empty when every count equals its baseline", () => {
-    expect(baselineFailures(countsWith())).toEqual([]);
+describe("hitFailures", () => {
+  test("is empty when there is no hit", () => {
+    expect(hitFailures(noHits())).toEqual([]);
   });
 
-  test("above the baseline: names the marker, the counts, the absence convention and the raise classes", () => {
-    const failures = baselineFailures(countsWith({ proCommands: BASELINES.proCommands + 1 }));
-    const message = failures[0];
-    expect(message).toContain("proCommands");
-    expect(message).toContain(`${BASELINES.proCommands + 1}`);
-    expect(message).toContain(`baseline of ${BASELINES.proCommands}`);
-    expect(message).toContain(MARKERS.proCommands.summary);
+  test("a single hit under any marker fails, naming that marker only", () => {
+    for (const name of MARKER_NAMES) {
+      const hit = name === "proNamedFiles" ? "packages/a/x.ts" : "packages/a/x.ts:1: x";
+      const failures = hitFailures({ ...noHits(), [name]: [hit] });
+      expect({ name, failures: failures.length }).toEqual({ name, failures: 1 });
+      expect(failures[0].startsWith(`${name} (`)).toBe(true);
+      expect(failures[0]).toContain("1 hit; the hard ban allows none.");
+    }
+  });
+
+  test("names the marker, its summary and the count, and points at ADR-081, fragments and a pattern fix", () => {
+    const message = hitFailures({ ...noHits(), proCommands: ["packages/a/x.ts:1: a", "packages/a/y.ts:2: b"] })[0];
+    expect(message).toContain(`proCommands (${MARKERS.proCommands.summary}): 2 hits`);
     expect(message).toContain("ADR-081");
-    expect(message).toContain("nodespace-sync");
+    expect(message).toContain("Pro repository");
     expect(message).toContain("fragments");
-    expect(message).toContain("EXEMPTIONS");
-    expect(message).toContain("accepted raise classes in CLAUDE.md ('Pro / Sync Boundary')");
-    expect(message).toContain("PR description must name them");
-    expect(message).toContain(`set \`BASELINES.proCommands\` to ${BASELINES.proCommands + 1}`);
+    expect(message).toContain("narrow, tested fix to the marker's pattern");
   });
 
-  test("above the baseline: lists hits in changed files first, then every hit", () => {
-    const hits = {
-      proCommands: ["packages/a/old.ts:1: pro_old()", "packages/a/new.ts:7: pro_new()", "packages/a/other.ts:3: pro_other()"],
-    };
-    const failures = baselineFailures(countsWith({ proCommands: BASELINES.proCommands + 1 }), BASELINES, ["packages/a/new.ts"], hits);
-    const message = failures[0];
+  test("offers no way around the ban: no baseline to raise and no exemption", () => {
+    const message = hitFailures({ ...noHits(), proWording: ["packages/a/x.ts:1: a"] })[0].toLowerCase();
+    for (const word of ["baseline", "raise", "exemption", "allowlist"]) expect(message).not.toContain(word);
+  });
+
+  test("lists hits in changed files first, then every hit", () => {
+    const all = ["packages/a/old.ts:1: a", "packages/a/new.ts:7: b", "packages/a/other.ts:3: c"];
+    const message = hitFailures({ ...noHits(), proCommands: all }, ["packages/a/new.ts"])[0];
     const changedAt = message.indexOf("In files this branch changed:");
     const allAt = message.indexOf("All hits:");
     expect(changedAt).toBeGreaterThan(-1);
     expect(allAt).toBeGreaterThan(changedAt);
     const changedSection = message.slice(changedAt, allAt);
-    expect(changedSection).toContain("packages/a/new.ts:7: pro_new()");
+    expect(changedSection).toContain("packages/a/new.ts:7: b");
     expect(changedSection).not.toContain("old.ts");
     expect(changedSection).not.toContain("other.ts");
-    const allSection = message.slice(allAt);
-    for (const hit of hits.proCommands) expect(allSection).toContain(hit);
+    for (const hit of all) expect(message.slice(allAt)).toContain(hit);
   });
 
-  test("above the baseline: omits the changed-files section when no hit is in a changed file", () => {
-    const hits = { proCommands: ["packages/a/old.ts:1: pro_old()"] };
-    const message = baselineFailures(countsWith({ proCommands: BASELINES.proCommands + 1 }), BASELINES, ["packages/b/x.ts"], hits)[0];
+  test("omits the changed-files section when no hit is in a changed file", () => {
+    const message = hitFailures({ ...noHits(), proCommands: ["packages/a/old.ts:1: a"] }, ["packages/b/x.ts"])[0];
     expect(message).not.toContain("In files this branch changed:");
     expect(message).toContain("All hits:");
   });
 
-  test("above the baseline: matches proNamedFiles hits, which are bare paths, against changed files", () => {
-    const hits = { proNamedFiles: ["packages/a/pro-old.ts", "packages/a/pro-new.ts"] };
-    const message = baselineFailures(countsWith({ proNamedFiles: BASELINES.proNamedFiles + 1 }), BASELINES, ["packages/a/pro-new.ts"], hits)[0];
+  test("matches proNamedFiles hits, which are bare paths, against changed files", () => {
+    const [oldFile, newFile] = [j("packages/a/pro", "-old.ts"), j("packages/a/pro", "-new.ts")];
+    const message = hitFailures({ ...noHits(), proNamedFiles: [oldFile, newFile] }, [newFile])[0];
     const changedSection = message.slice(message.indexOf("In files this branch changed:"), message.indexOf("All hits:"));
-    expect(changedSection).toContain("packages/a/pro-new.ts");
-    expect(changedSection).not.toContain("pro-old.ts");
+    expect(changedSection).toContain(newFile);
+    expect(changedSection).not.toContain(oldFile);
   });
 
-  test("above a baseline of 0: says the marker is fully removed from core", () => {
-    const zero = { ...BASELINES, proEvents: 0 };
-    const message = baselineFailures(countsWith({ proEvents: 1 }), zero)[0];
-    expect(message).toContain("fully removed from core");
-    expect(baselineFailures(countsWith({ proCommands: BASELINES.proCommands + 1 }))[0]).not.toContain("fully removed");
-  });
-
-  test("below the baseline never fails, however far below", () => {
-    expect(baselineFailures(countsWith({ tenantWording: BASELINES.tenantWording - 3 }))).toEqual([]);
-    expect(baselineFailures(countsWith({ tenantWording: 0, proCommands: 0, proNamedFiles: 0 }))).toEqual([]);
-  });
-
-  test("appends no paste block: raising a baseline is never suggested as a block to paste", () => {
-    const failures = baselineFailures(countsWith({ tenantWording: BASELINES.tenantWording + 3 }));
-    expect(failures).toHaveLength(1);
-    expect(failures.join("\n")).not.toContain("Paste over BASELINES");
-  });
-
-  test("reports one message per marker above its baseline, in MARKERS order, and none for a marker below", () => {
-    const counts = countsWith({ proWording: BASELINES.proWording + 2, proCommands: BASELINES.proCommands - 1, proNamedFiles: BASELINES.proNamedFiles + 1 });
-    const failures = baselineFailures(counts);
-    expect(failures).toHaveLength(2);
-    expect(failures[0]).toContain("proWording");
-    expect(failures[1]).toContain("proNamedFiles");
-    expect(failures.join("\n")).not.toContain("proCommands");
-  });
-
-  test("a baseline of 0 is the strict check: any hit fails, none passes", () => {
-    const zeros = Object.fromEntries(ALL_MARKERS.map((name) => [name, 0])) as MarkerCounts;
-    expect(baselineFailures(zeros, zeros)).toEqual([]);
-    for (const name of ALL_MARKERS) {
-      const failures = baselineFailures({ ...zeros, [name]: 1 }, zeros);
-      expect(failures).toHaveLength(1);
-      expect(failures[0]).toContain(name);
-      expect(failures[0]).toContain("fully removed from core");
-    }
-  });
-
-  test("compares against the baselines it is given, not the checked-in ones", () => {
-    const custom = { ...BASELINES, proCommands: 5 };
-    expect(baselineFailures(countsWith({ proCommands: 5 }), custom)).toEqual([]);
-    expect(baselineFailures(countsWith({ proCommands: 6 }), custom)).not.toEqual([]);
+  test("one message per marker with hits, in marker order", () => {
+    const failures = hitFailures({ ...noHits(), proNamedFiles: ["packages/a/x"], proWording: ["packages/a/x.ts:1: a"], proCommands: ["packages/a/x.ts:2: b"] });
+    expect(failures.map((failure) => failure.slice(0, failure.indexOf(" (")))).toEqual(["proCommands", "proWording", "proNamedFiles"]);
   });
 });
 
-// ---------------------------------------------------------------------------
-// baselineNotices
-// ---------------------------------------------------------------------------
-
-describe("baselineNotices", () => {
-  test("is empty when every count equals its baseline", () => {
-    expect(baselineNotices(countsWith())).toEqual([]);
+describe("hard-ban shape", () => {
+  test("the checker exports no baselines, no exemptions and no tightening helpers", () => {
+    const exported = Object.keys(checker);
+    for (const name of ["BASELINES", "EXEMPTIONS", "EXEMPTIBLE_NON_TEST_FILES", "TEST_PATH", "formatBaselines", "baselineFailures", "baselineNotices", "exemptionProblems"]) {
+      expect(exported).not.toContain(name);
+    }
   });
 
-  test("is empty when counts are above their baselines: raising is a failure's business, not a notice", () => {
-    expect(baselineNotices(countsWith({ proCommands: BASELINES.proCommands + 5 }))).toEqual([]);
-  });
-
-  test("names the marker and both numbers, and says it is optional", () => {
-    const notices = baselineNotices(countsWith({ tenantWording: BASELINES.tenantWording - 3 }));
-    expect(notices[0]).toBe(
-      `\`tenantWording\` is now ${BASELINES.tenantWording - 3}, below its baseline ${BASELINES.tenantWording}. Optional, not a failure: lower \`BASELINES.tenantWording\` to ${BASELINES.tenantWording - 3} in scripts/check-pro-boundary.ts.`,
-    );
-  });
-
-  test("ends with the block to paste, which equals formatBaselines of the tightened counts", () => {
-    const counts = countsWith({ tenantWording: BASELINES.tenantWording - 3 });
-    const notices = baselineNotices(counts);
-    expect(notices).toHaveLength(2);
-    expect(notices[1]).toBe(`To tighten every lowered baseline at once, paste over BASELINES in scripts/check-pro-boundary.ts:\n${formatBaselines(counts)}`);
-  });
-
-  test("one notice per lowered marker, in MARKERS order, then one block", () => {
-    const counts = countsWith({ proWording: BASELINES.proWording - 2, proCommands: BASELINES.proCommands - 1, proNamedFiles: BASELINES.proNamedFiles - 1 });
-    const notices = baselineNotices(counts);
-    expect(notices).toHaveLength(4);
-    expect(notices[0]).toContain("`proCommands` is now");
-    expect(notices[1]).toContain("`proWording` is now");
-    expect(notices[2]).toContain("`proNamedFiles` is now");
-    expect(notices[3]).toContain("paste over BASELINES");
-  });
-
-  test("the block never raises a baseline: a marker above its baseline keeps it while a lowered one is tightened", () => {
-    const counts = countsWith({ proWording: BASELINES.proWording + 4, tenantWording: BASELINES.tenantWording - 3 });
-    const block = baselineNotices(counts).at(-1) ?? "";
-    expect(block).toContain(`  tenantWording: ${BASELINES.tenantWording - 3},`);
-    expect(block).toContain(`  proWording: ${BASELINES.proWording},`);
-    expect(block).not.toContain(`  proWording: ${BASELINES.proWording + 4},`);
-  });
-
-  test("pasting the block changes only the value lines that moved", () => {
-    const counts = countsWith({ tenantWording: BASELINES.tenantWording - 3, proWording: BASELINES.proWording - 1 });
-    const block = (baselineNotices(counts).at(-1) ?? "").split("\n").slice(1); // drop the introduction line
-    const before = formatBaselines(BASELINES).split("\n");
-    const changed = block.filter((line, i) => line !== before[i]);
-    expect(changed).toEqual([`  tenantWording: ${counts.tenantWording},`, `  proWording: ${counts.proWording},`]);
-  });
-
-  test("compares against the baselines it is given, not the checked-in ones", () => {
-    const custom = { ...BASELINES, proCommands: 5 };
-    expect(baselineNotices(countsWith({ proCommands: 5 }), custom)).toEqual([]);
-    expect(baselineNotices(countsWith({ proCommands: 4 }), custom)).not.toEqual([]);
+  test("markers: every line marker, then proNamedFiles", () => {
+    expect([...MARKER_NAMES]).toEqual([...LINE_MARKERS, "proNamedFiles"]);
   });
 });
 
@@ -1041,106 +919,115 @@ describe("CLI", () => {
     return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
   }
 
-  test("with no arguments prints all 12 markers with count and baseline, and exits 0 when no count is above its baseline", () => {
-    const { status, stdout, stderr } = run();
-    expect({ status, stderr }).toEqual({ status: 0, stderr: "" });
-    // The count column is whatever main holds today: it may sit below the
-    // baseline while other changes land, so only the baseline is pinned.
-    for (const name of ALL_MARKERS) expect(stdout).toMatch(new RegExp(`^${name} +\\d+ +${BASELINES[name]}$`, "m"));
-    expect(ALL_MARKERS).toHaveLength(12);
-  });
-
-  test("--list <marker> prints one path per Pro-named file", () => {
-    const { status, stdout } = run("--list", "proNamedFiles");
-    expect(status).toBe(0);
-    const { counts } = countMarkers(listScannedFiles());
-    expect(stdout.split("\n").filter((line) => line !== "")).toHaveLength(counts.proNamedFiles);
-  });
-
-  test("--changed prints a line per marker", () => {
-    const { status, stdout } = run("--changed");
-    expect(status).toBe(0);
-    for (const name of ALL_MARKERS) expect(stdout).toMatch(new RegExp(`^${name}: \\d+$`, "m"));
-  });
-
   // The checker locates its repository from its own path, so a copy placed
-  // in a fixture repository scans that repository. The baselines are the real
-  // ones, so a small fixture is far below them and the default run reports notices.
+  // in a fixture repository scans that repository.
   function runInFixture(...args: string[]): { status: number; stdout: string; stderr: string } {
     mkdirSync(join(dir, "scripts"), { recursive: true });
     copyFileSync(CHECKER_PATH, join(dir, "scripts/check-pro-boundary.ts"));
+    return runCopy(args);
+  }
+
+  // The same, with the copy's ALLOWLIST replaced by `entries`.
+  function runInFixtureWithAllowlist(entries: readonly AllowlistEntry[], ...args: string[]): { status: number; stdout: string; stderr: string } {
+    mkdirSync(join(dir, "scripts"), { recursive: true });
+    const declaration = "export const ALLOWLIST: readonly { file: string; exempt: string }[] = [];";
+    const source = readFileSync(CHECKER_PATH, "utf8");
+    expect(source).toContain(declaration);
+    writeFileSync(join(dir, "scripts/check-pro-boundary.ts"), source.replace(declaration, declaration.replace("= [];", `= ${JSON.stringify(entries)};`)));
+    return runCopy(args);
+  }
+
+  function runCopy(args: readonly string[]): { status: number; stdout: string; stderr: string } {
     // The ceiling keeps git from finding a repository above a fixture that has none.
     const env = { ...gitEnv(), GIT_CEILING_DIRECTORIES: dirname(dir) };
     const result = spawnSync("bun", ["run", join(dir, "scripts/check-pro-boundary.ts"), ...args], { encoding: "utf8", env });
     return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
   }
 
-  // The one exempted file, so a fixture's exemption is live and only the counts are in question.
-  function writeAgentFixture(): void {
-    write("packages/agent/tests/it/live_embedding_prefix_measurement.rs", "a replacement tenant\n");
-  }
+  test("--changed prints a line per marker", () => {
+    const { status, stdout } = run("--changed");
+    expect(status).toBe(0);
+    for (const name of MARKER_NAMES) expect(stdout).toMatch(new RegExp(`^${name}: \\d+$`, "m"));
+  });
 
-  test("exits 0 below the baselines, printing a notice and the tightened block, and nothing on stderr", () => {
+  test("with no hit: prints every marker at 0, exits 0, and prints nothing on stderr", () => {
     repoWithOriginMain();
-    writeAgentFixture();
-    write("packages/a/x.ts", "pro_x();\n");
+    write("packages/a/x.ts", "export const clean = true;\n");
     const { status, stdout, stderr } = runInFixture();
     expect({ status, stderr }).toEqual({ status: 0, stderr: "" });
-    expect(stdout).toMatch(new RegExp(`^proCommands +1 +${BASELINES.proCommands}$`, "m"));
-    expect(stdout).toContain(`\`proCommands\` is now 1, below its baseline ${BASELINES.proCommands}. Optional, not a failure`);
-    expect(stdout).toContain("paste over BASELINES in scripts/check-pro-boundary.ts:");
-    expect(stdout).toContain("  proCommands: 1,");
-    expect(stdout).toContain("No count is above its baseline");
-    expect(stdout).not.toContain("equals its baseline");
+    for (const name of MARKER_NAMES) expect(stdout).toMatch(new RegExp(`^${name} +0$`, "m"));
+    expect(stdout).toContain("No Pro marker in core");
   });
 
-  test("exits 1 on a stale exemption even when every count is below its baseline", () => {
+  test("a single hit exits 1, listing the line under \"In files this branch changed\", with no paste block", () => {
     repoWithOriginMain();
-    write("packages/a/x.ts", "pro_x();\n");
-    const { status, stderr } = runInFixture();
+    write("packages/a/x.ts", `// ${PRODUCT}\n`);
+    const { status, stdout, stderr } = runInFixture();
     expect(status).toBe(1);
-    expect(stderr).toContain("EXEMPTIONS entry for packages/agent/tests/it/live_embedding_prefix_measurement.rs");
+    expect(stdout).toMatch(/^productName +1$/m);
+    expect(stderr).toContain(`In files this branch changed:\npackages/a/x.ts:1: // ${PRODUCT}`);
+    expect(`${stdout}${stderr}`.toLowerCase()).not.toContain("paste");
   });
 
-  test("exits 1 above a baseline, listing the new lines under \"In files this branch changed\"", () => {
+  test("a single Pro-named file exits 1", () => {
     repoWithOriginMain();
-    write("packages/a/big.ts", "pro_x();\n".repeat(BASELINES.proCommands + 25));
+    write(j("packages/a/pro", "-plugin.ts"), "export {};\n");
     const { status, stderr } = runInFixture();
     expect(status).toBe(1);
-    expect(stderr).toContain(`above its baseline of ${BASELINES.proCommands}`);
-    expect(stderr).toContain("In files this branch changed:\npackages/a/big.ts:1: pro_x();");
+    expect(stderr).toContain("proNamedFiles");
+  });
+
+  test("an allowlisted string passes end to end, and every other hit in that file still fails", () => {
+    repoWithOriginMain();
+    const names = "packages/a/extension-names.ts";
+    write(names, `export const NAMES = { pro: "${PRODUCT}" };\n`);
+    expect(runInFixtureWithAllowlist([{ file: names, exempt: PRODUCT }]).status).toBe(0);
+    write(names, `export const NAMES = { pro: "${PRODUCT}" };\n// ${DAEMON}\n`);
+    const { status, stderr } = runInFixtureWithAllowlist([{ file: names, exempt: PRODUCT }]);
+    expect(status).toBe(1);
+    expect(stderr).toContain(`${names}:2: // ${DAEMON}`);
+    expect(stderr).not.toContain(`${names}:1:`);
+  });
+
+  test("an allowlist problem fails the command even with no marker hit", () => {
+    repoWithOriginMain();
+    write("packages/a/extension-names.ts", "export const NAMES = {};\n");
+    const { status, stderr } = runInFixtureWithAllowlist([{ file: "packages/a/extension-names.ts", exempt: PRODUCT }]);
+    expect(status).toBe(1);
+    expect(stderr).toContain("stale");
   });
 
   test("--list <marker> prints a fixture's hits grouped by file", () => {
     repoWithOriginMain();
-    write("packages/a/x.ts", "clean\npro_x();\npro_y();\n");
-    write("packages/a/y.ts", "pro_z();\n");
+    write("packages/a/x.ts", `clean\n${CMD}();\n${CMD2}();\n`);
+    write("packages/a/y.ts", `${CMD}();\n`);
     const { status, stdout } = runInFixture("--list", "proCommands");
     expect(status).toBe(0);
-    expect(stdout).toBe("packages/a/x.ts\n  2: pro_x();\n  3: pro_y();\npackages/a/y.ts\n  1: pro_z();\n");
+    expect(stdout).toBe(`packages/a/x.ts\n  2: ${CMD}();\n  3: ${CMD2}();\npackages/a/y.ts\n  1: ${CMD}();\n`);
   });
 
   test("--list proNamedFiles prints bare paths", () => {
     repoWithOriginMain();
-    write("packages/a/pro-plugin.ts", "clean\n");
+    const plugin = j("packages/a/pro", "-plugin.ts");
+    write(plugin, "clean\n");
     const { status, stdout } = runInFixture("--list", "proNamedFiles");
     expect(status).toBe(0);
-    expect(stdout).toBe("packages/a/pro-plugin.ts\n");
+    expect(stdout).toBe(`${plugin}\n`);
   });
 
   test("--changed prints only the hits in files this branch changed", () => {
     repoWithOriginMain();
-    write("packages/a/old.ts", "pro_committed();\n");
+    write("packages/a/old.ts", `${CMD2}();\n`);
     expect(git(dir, "add", "packages/a/old.ts").status).toBe(0);
     expect(git(dir, "commit", "--quiet", "-m", "before the fork").status).toBe(0);
     expect(git(dir, "update-ref", "refs/remotes/origin/main", "HEAD").status).toBe(0);
-    write("packages/a/new.ts", "pro_added();\nNodeSpace Pro\n");
+    write("packages/a/new.ts", `${CMD}();\n${PRODUCT}\n`);
     const { status, stdout } = runInFixture("--changed");
     expect(status).toBe(0);
-    expect(stdout).toContain("proCommands: 1\n  packages/a/new.ts:1: pro_added();\n");
-    expect(stdout).toContain("proWording: 1\n  packages/a/new.ts:2: NodeSpace Pro\n");
-    expect(stdout).not.toContain("pro_committed");
-    expect(stdout).toMatch(/^tenantWording: 0$/m);
+    expect(stdout).toContain(`proCommands: 1\n  packages/a/new.ts:1: ${CMD}();\n`);
+    expect(stdout).toContain(`productName: 1\n  packages/a/new.ts:2: ${PRODUCT}\n`);
+    expect(stdout).not.toContain(CMD2);
+    expect(stdout).toMatch(/^cloudAccountWording: 0$/m);
   });
 
   test("an unknown marker or option prints usage and exits 2", () => {
@@ -1173,24 +1060,29 @@ describe("CLI", () => {
 // The real repository
 // ---------------------------------------------------------------------------
 
-describe("real-repo ratchet", () => {
-  test("no count is above its checked-in baseline, and every exemption is live", () => {
+describe("real-repo hard ban", () => {
+  test("no Pro marker anywhere in scope, and the allowlist is valid", () => {
     // The enforcement path (bun test scripts/ -> test:scripts -> the merge
-    // gate). A bare toBeLessThanOrEqual() would fail with "Expected: <= N,
-    // Received: M" and no hint of what to do, so this throws the message the
-    // CLI prints. A count below its baseline passes and only logs a notice.
-    const { counts, hits } = countMarkers(listScannedFiles());
-    const messages = [...exemptionProblems(), ...baselineFailures(counts, BASELINES, changedFilesSinceMain(), hits)];
+    // gate). A bare toEqual() would fail with a count diff and no hint of
+    // what to do, so this throws the message the CLI prints.
+    const { hits } = countMarkers(listScannedFiles());
+    const messages = [...allowlistProblems(), ...hitFailures(hits, changedFilesSinceMain())];
     if (messages.length > 0) throw new Error(messages.join("\n\n"));
-    const notices = baselineNotices(counts);
-    if (notices.length > 0) console.log(notices.join("\n\n"));
   });
 
-  test("BASELINES has one entry per marker, in MARKERS order, then proNamedFiles", () => {
-    expect(Object.keys(BASELINES)).toEqual(ALL_MARKERS);
+  test("the command exits 0 with every marker at 0", () => {
+    const result = spawnSync("bun", ["run", CHECKER_PATH], { encoding: "utf8", env: gitEnv() });
+    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: "" });
+    for (const name of MARKER_NAMES) expect(result.stdout).toMatch(new RegExp(`^${name} +0$`, "m"));
   });
 
-  test("scans packages/agent, and leaves out CLAUDE.md and the checker's own files", () => {
+  // The change that adds the display-name module for the Pro-database
+  // refusal replaces this with its one entry.
+  test("the allowlist is empty", () => {
+    expect(ALLOWLIST).toEqual([]);
+  });
+
+  test("scans packages/agent and README.md, and leaves out CLAUDE.md and the checker's own files", () => {
     const files = listScannedFiles();
     expect(files.some((file) => file.startsWith("packages/agent/"))).toBe(true);
     expect(files).toContain("README.md");
@@ -1199,11 +1091,10 @@ describe("real-repo ratchet", () => {
   });
 
   test("gitignored build output never enters the scan", () => {
-    const files = listScannedFiles();
-    for (const file of files) {
+    for (const file of listScannedFiles()) {
       expect(file).not.toMatch(/(^|\/)(node_modules|target|\.svelte-kit)\//);
       expect(file).not.toContain("src-tauri/resources/skill/");
-      expect(file).not.toContain("nodespaced-pro-");
+      expect(file).not.toContain(j("nodespaced", "-pro-"));
     }
   });
 });

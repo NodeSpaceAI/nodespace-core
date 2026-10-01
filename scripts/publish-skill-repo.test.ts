@@ -109,8 +109,9 @@ describe("sharedShimPaths", () => {
   });
 
   // Guidance that only another build's users need never reaches the public
-  // skill repository (ADR-082 section 6). The needle is built from fragments
-  // so this absence test does not itself name the file it looks for.
+  // skill repository (ADR-082 section 6). The exact-list test above already
+  // implies this; this one names the removed file. Its name is built from
+  // fragments, so a search of the repository for it finds no copy here.
   test("does not publish the removed multi-user reference", () => {
     expect(sharedShimPaths()).not.toContain(["references/shared", "workspaces.md"].join("-"));
   });

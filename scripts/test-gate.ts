@@ -190,11 +190,11 @@ await run({
   timeoutMs: 5 * MINUTE,
   nice: !merge,
 });
-// The code-boundary ratchet (ADR-081): fails when a marker count rises above its
-// ceiling. test:changed skips the scripts tier for frontend-only and .md-only
+// The code-boundary hard ban (ADR-081 section 8): fails on any marker hit outside
+// the allowlist. test:changed skips the scripts tier for frontend-only and .md-only
 // diffs, which is where most out-of-place code lands, so a push is the first
 // automated check such a change gets. In merge mode this runs before the machine
-// slot, so a raised count fails in seconds instead of minutes into a gate run.
+// slot, so a hit fails in seconds instead of minutes into a gate run.
 await run({
   label: "check-pro-boundary (ADR-081 code-boundary ratchet)",
   command: "bun run scripts/check-pro-boundary.ts",

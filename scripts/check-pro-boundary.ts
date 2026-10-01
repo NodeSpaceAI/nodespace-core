@@ -1,57 +1,31 @@
 #!/usr/bin/env bun
-// Holds the Pro / sync boundary from ADR-081: core is the complete free
-// product and ships no Pro code, because nodespace-sync builds and owns the
-// Pro app. The existing Pro code is being moved out; until it is gone this
-// check freezes it, and makes every move lower a number.
+// Enforces the Pro / sync boundary of ADR-081: core is the complete free
+// product and ships no Pro code. This is a hard ban (ADR-081 section 8): any
+// line that matches a marker, and any file whose basename has a `pro`
+// segment, fails the check. There are no baselines to raise and no
+// exemptions. A false positive gets a narrow, tested fix to the marker's
+// pattern here.
 //
-// It counts Pro/sync markers (see MARKERS) line by line across `packages/`,
-// `scripts/` and the root README, plus the files whose basename has a `pro`
-// segment. Each count has a ceiling in BASELINES, and the check fails only when
-// a count rises above its ceiling: that is new Pro code. A count below its
-// ceiling does not fail. Many removal changes land in parallel, and failing on
-// a decrease would make every merge force every other open change to rebase
-// just to edit BASELINES. Instead the check prints a notice with the exact
-// tightened block to paste, so anyone can lower the ceilings.
+// Scope: the files git lists (tracked, plus untracked files that are not
+// ignored) under `packages/` and `scripts/`, plus the root `README.md`. This
+// file and its test are excluded, because they name the patterns they scan
+// for. Listing with git, not walking the filesystem, keeps gitignored build
+// output out: the staged skill copy under the Tauri resources, and any
+// binary another build drops next to a sidecar.
 //
-// The one-way ratchet is loose only while Pro code remains: headroom between a
-// count and its ceiling can be spent by new Pro code until someone tightens
-// it, so tighten in the change that removes code whenever it is cheap. At the
-// end state every ceiling is 0, and a ceiling of 0 fails on any hit, which is
-// the strict check. A change that must temporarily raise a ceiling edits
-// BASELINES in its own diff and justifies it in its description; ceilings are
-// never raised to land new Pro code. Headroom below a ceiling is not permission
-// either: a change that adds Pro lines needs an accepted class whether or not
-// the count still fits under its ceiling.
+// ALLOWLIST is the only way a hit passes. ADR-081 section 8 allows exactly one
+// file in it: the module holding core's display names for known extension
+// ids, which maps `pro` to the paid product's name for the Pro-database
+// refusal. An entry removes only its exact string from that file's lines
+// before the markers are tested, so every other marker in the file still
+// counts. The installer and CLI coexistence checks (ADR-081 section 2d)
+// compare the installed product with `community` and name no other product,
+// so they need no entry.
 //
-// Only three kinds of change may raise a ceiling, and tests that assert Pro
-// code is absent must build their needle from fragments (or carry a per-file
-// EXEMPTIONS entry) so they do not add the marker they guard against. Both
-// rules live in CLAUDE.md, under "Pro / Sync Boundary". This file only
+// A test that proves Pro code is absent builds its needle from fragments
+// (`["pro", "tier"].join("_")`), so it does not contain the marker it looks
+// for. CLAUDE.md, under "Pro / Sync Boundary", states these rules; this file
 // enforces them.
-//
-// Exemptions are per file and per marker, and only two kinds of file may carry
-// one: test files, and the installer recognition points (EXEMPTIBLE_NON_TEST_FILES).
-// ADR-084 (section 5) lists three such files and ADR-081 (sections 2d and 8)
-// lets core keep them: the installation check in build-pkg.sh, the .pkg
-// preinstall script and the cask preflight. They must name other NodeSpace
-// products to refuse installing over them. The .pkg postinstall script is also
-// allowlisted for now, but ADR-084 does not list it: its old guard moves to the
-// pre-install stage, and the slot goes when that guard does. An exemption on any
-// other non-test file is a problem exemptionProblems reports; such a file builds
-// the name from fragments or drops the wording.
-//
-// Files come from `git ls-files`, not a filesystem walk. A walk also reads
-// gitignored output: the staged copy of the skill package under the Tauri
-// resources directory would add machine-dependent lines, and the Pro daemon
-// binaries that Pro builds drop next to the sidecar would be scanned too.
-// What git tracks, plus untracked files that are not ignored, is what a
-// reviewer sees in a diff.
-//
-// Each baseline sits under its own one-line comment, and the printed block
-// reproduces that layout exactly. The merge queue replays queued PRs with
-// cherry-picks and ejects one that conflicts, and git treats edits on
-// adjacent lines as a conflict. With a comment line between every pair of
-// values, only PRs that change the same marker conflict.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -59,15 +33,14 @@ import { dirname, join } from "node:path";
 
 export const REPO = join(dirname(new URL(import.meta.url).pathname), "..");
 
-// Every path under these prefixes is in scope, so a package added later enters
-// the ratchet automatically. That includes packages/agent, which is counted
-// only; the check never modifies anything.
+// Every path under these prefixes is in scope, so a package added later is
+// scanned automatically.
 export const SCAN_PREFIXES: readonly string[] = ["packages/", "scripts/"];
 export const SCAN_ROOT_FILES: readonly string[] = ["README.md"];
 
-// Pro markers live in more than source code: the vendored proto, the skill
-// docs, Tauri and Cargo config, installer scripts. Paths with no extension
-// (the installer's postinstall) are scanned too.
+// Pro markers can live in more than source code: protos, the skill docs,
+// Tauri and Cargo config, installer scripts. Paths with no extension (the
+// installer's preinstall and postinstall) are scanned too.
 export const SCANNED_EXTENSIONS: ReadonlySet<string> = new Set([
   ".rs",
   ".ts",
@@ -88,43 +61,92 @@ export const SCANNED_EXTENSIONS: ReadonlySet<string> = new Set([
 // for, and the checker's own name has a `pro` segment.
 export const EXCLUDED_FILES: readonly string[] = ["scripts/check-pro-boundary.ts", "scripts/check-pro-boundary.test.ts"];
 
-// Paths an EXEMPTIONS entry may name. Inline Rust test modules in product
-// files do not match, so they use fragments.
-export const TEST_PATH = /(^|\/)(tests?|__tests__)\/|\.(test|spec)\.ts$|_tests?\.rs$|(^|\/)tests\.rs$/;
-
-// The only non-test files an EXEMPTIONS entry may name: the installer
-// recognition points. ADR-084 (section 5) lists build-pkg.sh, preinstall (a new
-// script that work adds) and update-homebrew-cask.ts, and ADR-081 (sections 2d
-// and 8) lets core keep them: the installer and cask guards must be able to name
-// other NodeSpace products in order to refuse installing over them, so that
-// naming is the file's job rather than Pro code. postinstall is not in ADR-084's
-// list: it still carries the old post-payload guard that ADR-084 moves to the
-// pre-install stage, so it is allowlisted only until that guard is gone, and
-// should be dropped from this list then. Whole paths, not basenames, so a file
-// of the same name elsewhere is not covered. Any other non-test file uses
-// fragments or moves the Pro wording out.
-export const EXEMPTIBLE_NON_TEST_FILES: readonly string[] = [
-  "scripts/update-homebrew-cask.ts",
-  "scripts/pkg-resources/preinstall",
-  "scripts/pkg-resources/postinstall",
-  "scripts/build-pkg.sh",
+// The Tauri commands of the removed Pro layer, by full name, and its two
+// modules. Whole identifiers, so a core name that merely starts with `pro_`
+// (`pro_env`) is not a hit. Entries are regular-expression sources.
+const PRO_COMMANDS: readonly string[] = [
+  "pro_accept_invite",
+  "pro_activate_database",
+  "pro_approve_admission",
+  "pro_approve_request",
+  "pro_bind_[t]enant",
+  "pro_create_invite",
+  "pro_current_person",
+  "pro_current_status",
+  "pro_enable_sync",
+  "pro_initiate_admission",
+  "pro_initiate_oauth",
+  "pro_join_collection",
+  "pro_leave_collection",
+  "pro_list_invites",
+  "pro_list_joinable_collections",
+  "pro_list_members",
+  "pro_list_requests",
+  "pro_list_[t]enant_members",
+  "pro_list_[t]enant_memberships",
+  "pro_remove_from_[t]enant",
+  "pro_remove_member",
+  "pro_request_join",
+  "pro_revoke_invite",
+  "pro_set_member",
+  "pro_signout",
+  "pro_subscribe_sync_status",
+  "pro_tier",
+  "pro_sync",
+  "pro_client",
 ];
 
-// The pattern is tested once per line, so a line counts at most once per
-// marker, and one line can count under several markers. The summary is the
-// one-line comment printed above the marker's baseline.
+// The data-model identifiers ADR-083 removes or renames, and the
+// cloud-embedding hooks of ADR-081 section 4 B2. Entries are
+// regular-expression sources. The field names are anchored so that a word
+// ending in the same letters (`async_enabled`, `oauth_status`) is not a hit,
+// while a camelCase use (`isSyncEnabled`) is.
+const REMOVED_IDENTIFIERS: readonly string[] = [
+  "[bB]ound_?[Tt]enant",
+  "(?<![A-Za-z])sync_?[eE]nabled",
+  "(?<![Aa])Sync_?[eE]nabled",
+  "(?<![A-Za-z])auth_?[sS]tatus",
+  "(?<![Oo])Auth_?[sS]tatus",
+  "restrictedToMembers",
+  "restricted_to_members",
+  "\\bpersonal_collection_id\\b",
+  "\\bseed_personal_ai_chat_collection_if_needed\\b",
+  "\\bset_ai_chat_personal_collection_default\\b",
+  "play-core-ai-chat-privacy",
+  "\\bAI_CHAT_PRIVACY_PLAY_ID\\b",
+  "\\bSupersededEdit\\b",
+  "\\bsuperseded_edit\\b",
+  "\\bDuplicateReactiveCreate\\b",
+  "\\bduplicate_reactive_create\\b",
+  "\\bsync_seq\\b",
+  "\\bidx_emb_modified\\b",
+  "\\bupsert_embeddings_with_origin\\b",
+  "\\bapply_remote_embeddings\\b",
+  "\\bembeddings_modified_since\\b",
+  "\\bsubscribe_for_push\\b",
+  "\\bset_push_excluded_origin\\b",
+  "\\bget_multi_membership_edges\\b",
+];
+
+// Each pattern is tested once per line, so a line counts at most once per
+// marker, and one line can count under several markers. Markers match whole
+// identifiers or exact strings, never bare prefixes (ADR-081 section 8).
+//
+// A few words are spelled with a one-character class ([t]enant, [S]upabase,
+// [S]ync) so that a plain-text search of the repository for those words lists
+// only real hits, not this file.
 export const MARKERS = {
   proCommands: {
-    pattern: /\bpro_[a-z][a-z0-9_]*/,
-    summary: "pro_* Tauri commands, the pro_sync / pro_client modules, pro_env",
+    pattern: new RegExp(`\\b(?:${PRO_COMMANDS.join("|")})\\b`),
+    summary: "the Pro Tauri commands by name, and the pro_sync / pro_client modules",
   },
   proSyncModule: {
     pattern: /[pP]roSync|pro-sync/,
-    summary: "the proSync store, resolveProSyncVariant, isProSyncActive, pro-sync imports",
+    summary: "proSync and pro-sync: the Pro sync store, its variant resolver and their imports",
   },
   proProtocol: {
-    pattern: /nodespace_pro\b|nodespace\.pro\.v1|CloudSyncService|\bPro(?:Client|Tier)\b|pro\.nodespace\.ai|127\.0\.0\.1:8787/,
-    summary: "the Pro proto, CloudSyncService, ProClient / ProTier, Pro Worker URLs",
+    pattern: /\bnodespace_pro\b|nodespace\.pro\.v1|Cloud[S]yncService|\bPro(?:Client|Tier)\b|pro\.nodespace\.ai|127\.0\.0\.1:8787/,
+    summary: "the Pro proto and its cloud service, ProClient / ProTier, the Pro Worker URLs",
   },
   proEvents: {
     pattern: /pro:tier-detected|['"`]sync:(?:status|error)['"`]/,
@@ -136,28 +158,35 @@ export const MARKERS = {
   },
   editionBranching: {
     pattern:
-      /\bis_pro(?:_build)?\b|NODESPACED?_PRO_|feature\s*=\s*"pro"|nodespaced-pro|(?:daemon|ui|incompatible-database)(?:-dev)?-pro\.(?:sock|pid|json)|PRO_DAEMON_BINARY_NAME|tauri\.pro\.conf|\.daemon(?:\.dev)?\.pro\b|--edition\b(?!\s*=?\s*20\d\d)|FORCE_COMMUNITY/,
-    summary: "Pro build, daemon, socket, launchd and installer branching",
+      /\bis_pro(?:_build)?\b|NODESPACED?_PRO_|feature\s*=\s*"pro"|nodespaced-pro|(?:daemon|ui)(?:-dev)?-pro\.(?:sock|pid)|incompatible-database-pro|app\.nodespace\.daemon(?:\.dev)?\.pro\b|PRO_DAEMON_BINARY_NAME|tauri\.pro\.conf|--edition\b(?!\s*=?\s*20\d\d)/,
+    summary: "Pro edition switches: is_pro, NODESPACE_PRO_*, the pro feature, Pro binary, socket, pid, marker and launchd names, the Pro Tauri overlay, --edition",
   },
-  cloudBindState: {
-    pattern: /bound_?[tT]enant|[bB]oundTenant|sync_?[eE]nabled|[sS]yncEnabled|auth_?[sS]tatus|[aA]uthStatus/,
-    summary: "tenant binding, sync_enabled and auth_status state",
-  },
-  cloudSyncHooks: {
-    pattern: /apply_remote_embeddings|embeddings_modified_since|get_multi_membership_edges/,
-    summary: "cloud embedding and membership-edge sync hooks",
+  proDataModel: {
+    pattern: new RegExp(REMOVED_IDENTIFIERS.join("|")),
+    summary:
+      "data-model identifiers ADR-083 removed or renamed: binding, sync and auth fields, restriction, AI-chat privacy, sync-only conflict kinds, sync_seq, cloud-embedding hooks, the old change-feed and membership-query names",
   },
   cloudWording: {
-    pattern: /[Ss]upabase|\bRLS\b|pgvector|nodespace[-_]sync|[Pp]ro daemon/,
-    summary: 'Supabase, RLS, pgvector, nodespace-sync and "Pro daemon" wording',
+    pattern: /[Ss]upabase|S[U]PABASE|[Pp]gvector|PGVECTOR|[Nn]ode[Ss]pace[-_][Ss]ync|NODESPACE[-_]SYNC|\bRLS\b|[Pp]ro daemon/,
+    summary: '[S]upabase, row-level security, pgvector, the nodespace[-_]sync repository, "Pro daemon", including upper-case spellings',
   },
-  tenantWording: {
-    pattern: /tenant/i,
-    summary: "the word tenant (one fixture exempt, see EXEMPTIONS)",
+  cloudAccountWording: {
+    pattern:
+      /(?:bound|cloud|sync|workspace)[-_ ]?[t]enant|\bper[- ][t]enant|[t]enants?[-_ ]?(?:schema|collection|id|root|binding|admission|member|admin)|syncs to [t]enant|\w[t]enant|[t]enants?(?=[\w-])|multi-[t]enant/i,
+    summary:
+      'Pro-sense [t]enant wording: bound / cloud / per- / sync / workspace [t]enant, [t]enant schema / collection / id / root / binding / admission / member / admin, "syncs to [t]enant", and the word inside an identifier',
+  },
+  syncVocabulary: {
+    pattern: /(?<!i)cloud[-_ ]?[s]ync|cloud[- ](?:push|pull)|\bto cloud\b|pro-gated/i,
+    summary: 'cloud push / pull / [s]ync wording, "to cloud", pro-gated',
   },
   proWording: {
     pattern: /(?<!\b(?:M\d|V\d|MacBook|iPad|iPhone) )\bPro\b/,
     summary: 'the word Pro, except chip and model names such as "M2 Pro", "DeepSeek V4 Pro"',
+  },
+  productName: {
+    pattern: /\bNodeSpace[ ]Pro\b/,
+    summary: "the paid product's name, NodeSpace[ ]Pro (case-sensitive, whole word)",
   },
 } satisfies Record<string, { pattern: RegExp; summary: string }>;
 
@@ -165,7 +194,7 @@ export type LineMarkerName = keyof typeof MARKERS;
 export type MarkerName = LineMarkerName | "proNamedFiles";
 
 const LINE_MARKER_NAMES = Object.keys(MARKERS) as LineMarkerName[];
-const MARKER_NAMES: readonly MarkerName[] = [...LINE_MARKER_NAMES, "proNamedFiles"];
+export const MARKER_NAMES: readonly MarkerName[] = [...LINE_MARKER_NAMES, "proNamedFiles"];
 
 const PRO_NAMED_FILE = /(^|[-_.])pro([-_.]|$)/;
 const PRO_NAMED_SUMMARY = "files whose basename has a pro segment";
@@ -174,62 +203,18 @@ function summaryOf(marker: MarkerName): string {
   return marker === "proNamedFiles" ? PRO_NAMED_SUMMARY : MARKERS[marker].summary;
 }
 
-function isLineMarker(name: string): name is LineMarkerName {
-  return Object.hasOwn(MARKERS, name);
-}
-
 /** Whether the file's basename has a `pro` segment, as in `pro-plugin.ts` or `tauri.pro.conf.json`. */
 export function isProNamedFile(path: string): boolean {
   return PRO_NAMED_FILE.test(path.slice(path.lastIndexOf("/") + 1));
 }
 
-// One narrow, per-file, per-marker exemption for a test file, or an installer
-// recognition point (EXEMPTIBLE_NON_TEST_FILES), whose Pro-looking text is not
-// Pro code. It hides only its own markers, only in its own file.
-// `proNamedFiles` can't be exempted: an absence test must not have a
-// Pro-named file name.
-export type Exemption = { file: string; markers: readonly LineMarkerName[]; reason: string };
+// See the file-level comment. Empty until the display-name module for the
+// Pro-database refusal exists; that change adds its one entry.
+export const ALLOWLIST: readonly { file: string; exempt: string }[] = [];
 
-export const EXEMPTIONS: readonly Exemption[] = [
-  {
-    file: "packages/agent/tests/it/live_embedding_prefix_measurement.rs",
-    markers: ["tenantWording"],
-    reason: 'lease-agreement fixture prose ("a replacement tenant"), not tenant code',
-  },
-];
-
-// Ratchet ceilings. See the file-level comment: a count above its ceiling fails,
-// a count below it prints a notice, and a ceiling is never raised to land Pro
-// code. The layout is formatBaselines(BASELINES); a test holds it there.
-export const BASELINES = {
-  // pro_* Tauri commands, the pro_sync / pro_client modules, pro_env
-  proCommands: 275,
-  // the proSync store, resolveProSyncVariant, isProSyncActive, pro-sync imports
-  proSyncModule: 368,
-  // the Pro proto, CloudSyncService, ProClient / ProTier, Pro Worker URLs
-  proProtocol: 95,
-  // quoted pro:tier-detected, sync:status and sync:error event names
-  proEvents: 81,
-  // the Pro membership service
-  membershipService: 54,
-  // Pro build, daemon, socket, launchd and installer branching
-  editionBranching: 113,
-  // tenant binding, sync_enabled and auth_status state
-  cloudBindState: 203,
-  // cloud embedding and membership-edge sync hooks
-  cloudSyncHooks: 4,
-  // Supabase, RLS, pgvector, nodespace-sync and "Pro daemon" wording
-  cloudWording: 72,
-  // the word tenant (one fixture exempt, see EXEMPTIONS)
-  tenantWording: 463,
-  // the word Pro, except chip and model names such as "M2 Pro", "DeepSeek V4 Pro"
-  proWording: 281,
-  // files whose basename has a pro segment
-  proNamedFiles: 18,
-} satisfies Record<MarkerName, number>;
-
-export type MarkerCounts = Record<MarkerName, number>;
+export type AllowlistEntry = (typeof ALLOWLIST)[number];
 export type MarkerHits = Record<MarkerName, string[]>;
+export type MarkerCounts = Record<MarkerName, number>;
 
 // Git exports the location of the repository it is running in to hooks (a
 // pre-push hook in a linked worktree gets GIT_DIR). Inherited, that would
@@ -272,7 +257,7 @@ export function listScannedFiles(repoRoot: string = REPO): string[] {
     output = git(repoRoot, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
   } catch (err) {
     throw new Error(
-      `check-pro-boundary needs a git checkout: it lists files with git so that gitignored build output stays out of the counts (${err instanceof Error ? err.message : String(err)})`,
+      `check-pro-boundary needs a git checkout: it lists files with git so that gitignored build output stays out of the scan (${err instanceof Error ? err.message : String(err)})`,
     );
   }
   return [...new Set(output.split("\0").filter((path) => path !== "" && isScanned(path)))].sort();
@@ -290,32 +275,33 @@ function emptyHits(): MarkerHits {
   return Object.fromEntries(MARKER_NAMES.map((name) => [name, []])) as unknown as MarkerHits;
 }
 
-function exemptMarkers(exemptions: readonly Exemption[], file: string): ReadonlySet<string> {
-  return new Set(exemptions.filter((entry) => entry.file === file).flatMap((entry) => entry.markers));
+/** The line with every allowlisted string for its file removed. */
+function withoutAllowed(line: string, allowed: readonly string[]): string {
+  return allowed.reduce((text, exempt) => text.split(exempt).join(""), line);
 }
 
 /**
- * Counts every marker over the given files. A pure function of the files'
- * contents, with no baseline comparison, so it is testable against fixtures.
- * A file that can't be read (still in the index, deleted from the working
- * tree) is skipped entirely, `proNamedFiles` included.
+ * Every marker hit over the given files: `path:line: trimmed text` for a line
+ * marker, the bare path for `proNamedFiles`. A pure function of the files'
+ * contents and the allowlist, so it is testable against fixtures. A file that
+ * can't be read (still in the index, deleted from the working tree) is
+ * skipped entirely, `proNamedFiles` included.
  */
 export function countMarkers(
   files: readonly string[],
   repoRoot: string = REPO,
-  exemptions: readonly Exemption[] = EXEMPTIONS,
+  allowlist: readonly AllowlistEntry[] = ALLOWLIST,
 ): { counts: MarkerCounts; hits: MarkerHits } {
   const hits = emptyHits();
   for (const file of files) {
     const text = readText(repoRoot, file);
     if (text === null) continue;
     if (isProNamedFile(file)) hits.proNamedFiles.push(file);
-    const exempt = exemptMarkers(exemptions, file);
-    const active = LINE_MARKER_NAMES.filter((name) => !exempt.has(name));
-    if (active.length === 0) continue;
+    const allowed = allowlist.filter((entry) => entry.file === file).map((entry) => entry.exempt);
     text.split("\n").forEach((line, index) => {
-      for (const name of active) {
-        if (MARKERS[name].pattern.test(line)) hits[name].push(`${file}:${index + 1}: ${line.trim()}`);
+      const tested = withoutAllowed(line, allowed);
+      for (const name of LINE_MARKER_NAMES) {
+        if (MARKERS[name].pattern.test(tested)) hits[name].push(`${file}:${index + 1}: ${line.trim()}`);
       }
     });
   }
@@ -324,33 +310,31 @@ export function countMarkers(
 }
 
 /**
- * One message per problem with an EXEMPTIONS entry. An entry that has stopped
- * hiding anything is a problem: left in place, it would silently hide the next
- * real hit in that file.
+ * One message per problem with the allowlist. ADR-081 section 8 allows one
+ * file. An entry must hide something real: its string is non-empty, matches a
+ * marker on its own, and still occurs in a file that is in the scan. A stale
+ * entry left in place would hide the next real hit of that string.
  */
-export function exemptionProblems(exemptions: readonly Exemption[] = EXEMPTIONS, repoRoot: string = REPO): string[] {
-  const scanned = new Set(listScannedFiles(repoRoot));
+export function allowlistProblems(allowlist: readonly AllowlistEntry[] = ALLOWLIST, repoRoot: string = REPO): string[] {
   const problems: string[] = [];
-  for (const entry of exemptions) {
-    const label = `EXEMPTIONS entry for ${entry.file}`;
-    const inScan = scanned.has(entry.file);
-    if (!inScan) {
+  const files = [...new Set(allowlist.map((entry) => entry.file))];
+  if (files.length > 1) {
+    problems.push(`ALLOWLIST names ${files.length} files (${files.join(", ")}); ADR-081 section 8 allows exactly one, the extension display-name module.`);
+  }
+  const scanned = allowlist.length > 0 ? new Set(listScannedFiles(repoRoot)) : new Set<string>();
+  for (const entry of allowlist) {
+    const label = `ALLOWLIST entry ${JSON.stringify(entry.exempt)} for ${entry.file}`;
+    if (entry.exempt === "") {
+      problems.push(`${label}: the exempt string is empty.`);
+      continue;
+    }
+    if (!LINE_MARKER_NAMES.some((name) => MARKERS[name].pattern.test(entry.exempt))) {
+      problems.push(`${label}: the string matches no marker, so the entry hides nothing. Remove it.`);
+    }
+    if (!scanned.has(entry.file)) {
       problems.push(`${label}: the file is missing from the scan (deleted, ignored, or outside the scanned paths). Remove the entry.`);
-    }
-    if (!TEST_PATH.test(entry.file) && !EXEMPTIBLE_NON_TEST_FILES.includes(entry.file)) {
-      problems.push(
-        `${label}: only test files (TEST_PATH) and the installer recognition points (EXEMPTIBLE_NON_TEST_FILES) may be exempted. Use fragments in anything else.`,
-      );
-    }
-    if (entry.reason.trim() === "") problems.push(`${label}: the reason is empty.`);
-    if (entry.markers.length === 0) problems.push(`${label}: it names no marker.`);
-    const lines = inScan ? (readText(repoRoot, entry.file)?.split("\n") ?? []) : [];
-    for (const marker of entry.markers) {
-      if (!isLineMarker(marker)) {
-        problems.push(`${label}: "${String(marker)}" is not a marker that can be exempted.`);
-      } else if (inScan && !lines.some((line) => MARKERS[marker].pattern.test(line))) {
-        problems.push(`${label}: ${marker} has no hit left in the file, so the exemption is stale. Remove it.`);
-      }
+    } else if (!(readText(repoRoot, entry.file) ?? "").includes(entry.exempt)) {
+      problems.push(`${label}: the string no longer occurs in the file, so the entry is stale. Remove it.`);
     }
   }
   return problems;
@@ -374,25 +358,10 @@ export function changedFilesSinceMain(repoRoot: string = REPO): string[] {
   }
 }
 
-/**
- * The BASELINES literal for any set of counts: one summary comment line and
- * one value line per marker, in MARKERS order, then `proNamedFiles`. The
- * source of this file holds `formatBaselines(BASELINES)` verbatim, so pasting
- * a printed block changes only the numbers that moved.
- */
-export function formatBaselines(counts: MarkerCounts): string {
-  const lines = ["export const BASELINES = {"];
-  for (const name of MARKER_NAMES) {
-    lines.push(`  // ${summaryOf(name)}`, `  ${name}: ${counts[name]},`);
-  }
-  lines.push("} satisfies Record<MarkerName, number>;");
-  return lines.join("\n");
-}
-
-const RAISE_GUIDANCE =
-  "Pro and sync code belongs in nodespace-sync (ADR-081); core may only expose a generic extension point. " +
-  "A test that asserts Pro code is absent builds its needle from fragments or gets an EXEMPTIONS entry. " +
-  "Only the accepted raise classes in CLAUDE.md ('Pro / Sync Boundary') may raise a baseline, and the PR description must name them.";
+const GUIDANCE =
+  "Core ships no Pro code (ADR-081): Pro features and Pro fixes belong in the Pro repository (ADR-081 section 5), and core may only expose a generic extension point (ADR-082). " +
+  "A test that proves something is absent builds its needle from fragments. " +
+  "A false positive gets a narrow, tested fix to the marker's pattern in scripts/check-pro-boundary.ts.";
 
 /** The file a hit belongs to: `path:line: text` for a line marker, the bare path for `proNamedFiles`. */
 function hitFile(hit: string): string {
@@ -400,71 +369,28 @@ function hitFile(hit: string): string {
 }
 
 /**
- * One actionable message per marker whose count is above its ceiling; a count
- * at or below its ceiling never fails. `hits` is what `countMarkers` returns
- * beside the counts; it feeds the hit listing, which puts hits in changed
- * files first.
+ * One actionable message per marker with any hit; empty when there is none.
+ * Hits in files this branch changed are listed first, then every hit.
  */
-export function baselineFailures(
-  counts: MarkerCounts,
-  baselines: MarkerCounts = BASELINES,
-  changedFiles: readonly string[] = [],
-  hits: Partial<Record<MarkerName, readonly string[]>> = {},
-): string[] {
+export function hitFailures(hits: MarkerHits, changedFiles: readonly string[] = []): string[] {
   const changed = new Set(changedFiles);
   const failures: string[] = [];
   for (const name of MARKER_NAMES) {
-    const count = counts[name];
-    const baseline = baselines[name];
-    if (count <= baseline) continue;
-    const lines = [`${name} (${summaryOf(name)}): ${count}, above its baseline of ${baseline}.`];
-    if (baseline === 0) lines.push(`${name} is fully removed from core, so no hit may appear.`);
-    lines.push(RAISE_GUIDANCE);
-    lines.push(
-      `Under an accepted raise class only, set \`BASELINES.${name}\` to ${count} in scripts/check-pro-boundary.ts in this change and justify it in the PR description.`,
-    );
-    const all = hits[name] ?? [];
+    const all = hits[name];
+    if (all.length === 0) continue;
+    const lines = [`${name} (${summaryOf(name)}): ${all.length} hit${all.length === 1 ? "" : "s"}; the hard ban allows none.`, GUIDANCE];
     const inChangedFiles = all.filter((hit) => changed.has(hitFile(hit)));
     if (inChangedFiles.length > 0) lines.push("In files this branch changed:", ...inChangedFiles);
-    if (all.length > 0) lines.push("All hits:", ...all);
+    lines.push("All hits:", ...all);
     failures.push(lines.join("\n"));
   }
   return failures;
 }
 
-/** Each ceiling lowered to its count where the count is below it. A ceiling is never raised. */
-function tightenedBaselines(counts: MarkerCounts, baselines: MarkerCounts): MarkerCounts {
-  return Object.fromEntries(MARKER_NAMES.map((name) => [name, Math.min(counts[name], baselines[name])])) as MarkerCounts;
-}
-
-/**
- * The non-failing counterpart of `baselineFailures`: one notice per marker
- * whose count is below its ceiling, then the exact block to paste over
- * BASELINES. The block lowers only the markers that are below, and leaves every
- * other ceiling as it is, so pasting it can never raise one. Empty when no
- * count is below its ceiling.
- */
-export function baselineNotices(counts: MarkerCounts, baselines: MarkerCounts = BASELINES): string[] {
-  const notices: string[] = [];
-  for (const name of MARKER_NAMES) {
-    if (counts[name] < baselines[name]) {
-      notices.push(
-        `\`${name}\` is now ${counts[name]}, below its baseline ${baselines[name]}. Optional, not a failure: lower \`BASELINES.${name}\` to ${counts[name]} in scripts/check-pro-boundary.ts.`,
-      );
-    }
-  }
-  if (notices.length > 0) {
-    notices.push(`To tighten every lowered baseline at once, paste over BASELINES in scripts/check-pro-boundary.ts:\n${formatBaselines(tightenedBaselines(counts, baselines))}`);
-  }
-  return notices;
-}
-
 function printTable(counts: MarkerCounts): void {
   const width = Math.max(...MARKER_NAMES.map((name) => name.length));
-  console.log(`${"marker".padEnd(width)}  ${"count".padStart(6)}  ${"baseline".padStart(8)}`);
-  for (const name of MARKER_NAMES) {
-    console.log(`${name.padEnd(width)}  ${String(counts[name]).padStart(6)}  ${String(BASELINES[name]).padStart(8)}`);
-  }
+  console.log(`${"marker".padEnd(width)}  ${"hits".padStart(6)}`);
+  for (const name of MARKER_NAMES) console.log(`${name.padEnd(width)}  ${String(counts[name]).padStart(6)}`);
 }
 
 /** Prints hits grouped by file. A line marker's hit is `path:line: text`; `proNamedFiles` hits are bare paths. */
@@ -486,7 +412,7 @@ function usage(): never {
   console.error(
     [
       "Usage: bun run scripts/check-pro-boundary.ts [--list <marker> | --changed]",
-      "  (no arguments)   print counts against baselines; exit 1 if any is above, notice if any is below",
+      "  (no arguments)   print the hits per marker; exit 1 if there is any",
       "  --list <marker>  print every hit for one marker, grouped by file",
       "  --changed        print, per marker, the hits in files this branch changed",
       `Markers: ${MARKER_NAMES.join(", ")}`,
@@ -525,11 +451,9 @@ if (import.meta.main) {
     }
   } else {
     printTable(counts);
-    const problems = [...exemptionProblems(), ...baselineFailures(counts, BASELINES, changedFilesSinceMain(), hits)];
+    const problems = [...allowlistProblems(), ...hitFailures(hits, changedFilesSinceMain())];
     for (const problem of problems) console.error(`\n❌ ${problem}`);
-    const notices = baselineNotices(counts);
-    for (const notice of notices) console.log(`\nℹ️  ${notice}`);
     if (problems.length > 0) process.exit(1);
-    console.log(notices.length > 0 ? "\n✅ No count is above its baseline (some are below: see the notice above)." : "\n✅ Every Pro-boundary count equals its baseline.");
+    console.log("\n✅ No Pro marker in core (ADR-081 section 8 hard ban).");
   }
 }

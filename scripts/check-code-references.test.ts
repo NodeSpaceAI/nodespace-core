@@ -142,15 +142,17 @@ describe("countReferences — doc-path patterns", () => {
 });
 
 describe("countReferences — file discovery", () => {
-  test("only scans the requested extensions (.rs/.ts/.svelte/.js)", () => {
+  test("only scans the requested extensions (.rs/.ts/.svelte/.js/.proto)", () => {
     writeFixture("scripts/a.ts", "core#1\n");
     writeFixture("scripts/a.rs", "core#2\n");
     writeFixture("scripts/a.svelte", "core#3\n");
     writeFixture("scripts/a.js", "core#4\n");
+    writeFixture("scripts/a.proto", "core#7\n");
     writeFixture("scripts/a.md", "core#5\n"); // not scanned
     writeFixture("scripts/a.json", "core#6\n"); // not scanned
     const result = countReferences(["scripts"], fixtureDir);
-    expect(result.issueNumberReferences).toBe(4);
+    expect(result.issueNumberReferences).toBe(5);
+    expect(result.issueNumberHits).toContain("scripts/a.proto:1: core#7");
   });
 
   test("skips excluded directory names (node_modules, target)", () => {
