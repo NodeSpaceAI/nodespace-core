@@ -306,12 +306,15 @@ class DatabaseStore {
       return null;
     } catch (err) {
       if (isRequiresExtension(err)) return err.requiresExtension;
-      if (typeof err === 'object' && err !== null && 'code' in err) {
-        if (err.code === 'REQUIRES_EXTENSION') {
-          // The daemon refuses the database, but with a payload this build
-          // cannot render, so the workspace shows and every read in it fails.
-          log.warn('Ignoring a REQUIRES_EXTENSION error with a malformed payload', err);
-        }
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        err.code === 'REQUIRES_EXTENSION'
+      ) {
+        // The daemon refuses the database, but with a payload this build
+        // cannot render, so the workspace shows and every read in it fails.
+        log.warn('Ignoring a REQUIRES_EXTENSION error with a malformed payload', err);
       }
       return null;
     }
