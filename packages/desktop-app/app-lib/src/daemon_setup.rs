@@ -1458,7 +1458,8 @@ fn write_plist(
     let ui_binary = xml_escape(&current_exe_canonical()?.to_string_lossy());
 
     // The profile's extra environment, rendered as `<key>`/`<string>` pairs after
-    // core's own two. Empty for a profile with none.
+    // core's own two, the variables of `daemon_profile::CORE_SERVICE_ENV`, which
+    // a profile may not repeat. Empty for a profile with none.
     let service_env: String = profile
         .service_env
         .iter()
@@ -1492,9 +1493,9 @@ fn write_plist(
 {launcher_args}    </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>NODESPACED_SOCKET</key>
+        <key>{socket_key}</key>
         <string>{socket}</string>
-        <key>NODESPACE_UI_BINARY</key>
+        <key>{ui_binary_key}</key>
         <string>{ui_binary}</string>
 {service_env}    </dict>
     <key>RunAtLoad</key>
@@ -1514,7 +1515,9 @@ fn write_plist(
         label = label_escaped,
         bin = bin_escaped,
         launcher_args = launcher_args,
+        socket_key = nodespace_proto::socket::SOCKET_ENV_VAR,
         socket = socket_path,
+        ui_binary_key = daemon_profile::UI_BINARY_ENV_VAR,
         ui_binary = ui_binary,
         service_env = service_env,
         log_out = log_out,
@@ -2649,6 +2652,7 @@ mod macos_codesign_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod macos_plist_keepalive_tests {
     use super::{write_plist, DaemonProfile};
+    use crate::daemon_profile::CORE_SERVICE_ENV;
     use nodespace_proto::socket::LAUNCHER_ARGS;
     use std::path::{Path, PathBuf};
 
@@ -2814,9 +2818,11 @@ mod macos_plist_keepalive_tests {
 
     /// A profile with no extra environment must leave the daemon's environment
     /// exactly as it was before profiles existed: the socket it binds and the
-    /// GUI its tray relaunches, nothing else.
+    /// GUI its tray relaunches, nothing else. Those are the variables a profile
+    /// may not repeat, so the list that refuses them must name exactly what
+    /// the plist writes.
     #[test]
-    fn community_plist_environment_holds_only_the_two_core_variables() {
+    fn community_plist_environment_holds_only_the_core_variables() {
         let (home, plist_path, _contents) =
             write_with_profile("envdict", &DaemonProfile::community());
 
@@ -2827,6 +2833,12 @@ mod macos_plist_keepalive_tests {
         let mut keys: Vec<&str> = env.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, ["NODESPACED_SOCKET", "NODESPACE_UI_BINARY"]);
+        let mut reserved = CORE_SERVICE_ENV;
+        reserved.sort_unstable();
+        assert_eq!(
+            keys, reserved,
+            "the variables core writes itself are the ones a profile may not repeat"
+        );
 
         let _ = std::fs::remove_dir_all(&home);
     }

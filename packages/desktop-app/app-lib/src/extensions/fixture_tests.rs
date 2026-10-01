@@ -117,6 +117,102 @@ fn extension_api_version_is_one_zero() {
     assert_eq!(EXTENSION_API_VERSION, (1, 0));
 }
 
+/// The fixture naming a daemon of its own. `run` installs the profile into
+/// the process-wide cell, which these tests never write: they check what an
+/// extension carries to `run`, and that `assemble` leaves the profile alone.
+mod daemon_profile {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use tauri::test::MockRuntime;
+    use tauri::Manager;
+
+    use super::{build_app, fixture_plugin, FixtureState};
+    use crate::daemon_profile::{active, DaemonProfile};
+    use crate::daemon_setup::profile_for_this_build;
+    use crate::extensions::AppExtensions;
+
+    /// A daemon with its own binary, service environment and product.
+    fn fixture_daemon_profile() -> DaemonProfile {
+        DaemonProfile {
+            binary_name: "fixture-daemon",
+            service_env: vec![("FIXTURE_DAEMON_MODE".to_string(), "fixture".to_string())],
+            product: "fixture",
+        }
+    }
+
+    #[test]
+    fn none_carries_no_daemon_profile() {
+        assert_eq!(
+            AppExtensions::<MockRuntime>::none().take_daemon_profile(),
+            None,
+            "with no profile, run installs the build's default"
+        );
+    }
+
+    #[test]
+    fn a_named_daemon_profile_is_carried_to_run_and_the_last_call_wins() {
+        let first = DaemonProfile {
+            binary_name: "first-daemon",
+            ..fixture_daemon_profile()
+        };
+        let mut extensions = AppExtensions::<MockRuntime>::none()
+            .daemon_profile(first)
+            .daemon_profile(fixture_daemon_profile());
+
+        assert_eq!(
+            extensions.take_daemon_profile(),
+            Some(fixture_daemon_profile())
+        );
+        assert_eq!(
+            extensions.take_daemon_profile(),
+            None,
+            "taking the profile leaves none behind"
+        );
+    }
+
+    /// Both of core's own variables are refused, each by name, so a profile
+    /// can never replace the socket or the GUI binary the launcher sets.
+    #[test]
+    fn a_service_env_key_core_sets_itself_is_refused() {
+        for key in ["NODESPACED_SOCKET", "NODESPACE_UI_BINARY"] {
+            let mut profile = fixture_daemon_profile();
+            profile
+                .service_env
+                .push((key.to_string(), "/elsewhere".to_string()));
+
+            let refused = catch_unwind(AssertUnwindSafe(|| {
+                AppExtensions::<MockRuntime>::none().daemon_profile(profile)
+            }));
+            let message = refused
+                .err()
+                .and_then(|panic| panic.downcast::<String>().ok())
+                .unwrap_or_else(|| panic!("a profile setting `{key}` must be refused"));
+            assert!(
+                message.contains(key),
+                "the refusal names the variable: {message}"
+            );
+        }
+    }
+
+    /// `assemble` builds an app whose extension names a daemon, and leaves the
+    /// process's profile alone: installing it is `run`'s job alone.
+    #[test]
+    fn assemble_builds_with_a_daemon_profile_and_does_not_install_it() {
+        let app = build_app(
+            AppExtensions::none()
+                .plugin(fixture_plugin())
+                .daemon_profile(fixture_daemon_profile()),
+        );
+
+        assert!(app.try_state::<FixtureState>().is_some());
+        assert_eq!(
+            active(),
+            &profile_for_this_build(),
+            "assemble must not install the extension's profile"
+        );
+    }
+}
+
 #[test]
 fn extension_plugin_setup_runs_and_its_state_is_managed() {
     let app = build_app(AppExtensions::none().plugin(fixture_plugin()));
