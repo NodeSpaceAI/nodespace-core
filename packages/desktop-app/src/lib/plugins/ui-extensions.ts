@@ -148,8 +148,9 @@ export type SettingsSlotContributionFor<S extends SettingsSlot> = Extract<
  * Names the collections the sidebar collection tree treats as invisible
  * containers. A root is never shown: a collection whose only parent is a root
  * is shown at the top level instead of nested under it, and the root's own row
- * is dropped. The host takes the union of every extension's list with core's
- * own root, and with no extension contributing the tree is unchanged.
+ * is dropped. The host takes the union of every extension's list and has no
+ * root of its own, so with no extension contributing, no collection is hidden
+ * as a root.
  *
  * It is presentation only. The host evaluates it inside a derivation, so it
  * must read only reactive sources and have no side effects (ADR-049). One that
