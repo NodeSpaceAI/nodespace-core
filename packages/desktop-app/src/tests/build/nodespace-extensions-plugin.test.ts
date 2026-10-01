@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * The build-time extension seam (ADR-082 §2.1): the entry helpers, the Vite
+ * The build-time extension seam (ADR-082 §3.1): the entry helpers, the Vite
  * plugin's hooks, and the wiring that registers what the build injects.
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

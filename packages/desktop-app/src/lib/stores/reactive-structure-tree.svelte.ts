@@ -115,7 +115,8 @@ export class ReactiveStructureTree {
    * Get parent of a node (reactive).
    *
    * O(1) via the reverse child→parent index — a full-edge scan here made a
-   * cloud-sync relationship burst O(N²) on the main thread. Each hit is
+   * large relationship burst (a folder import, a bulk CLI write) O(N²) on the
+   * main thread. Each hit is
    * verified against the children map (and a stale entry dropped) so the
    * index can never disagree with the tree an observer sees.
    */
@@ -178,13 +179,13 @@ export class ReactiveStructureTree {
 
     // Child already under a DIFFERENT parent → REPARENT (move it), don't reject.
     // A node has exactly one parent, so a new has_child edge under a different
-    // parent means the node moved (indent/outdent/drag). Cloud sync delivers the
-    // new-parent edge and the old-parent edge-delete as independent events that can
-    // arrive in either order — and a move applied on the receiver's daemon emits a
-    // RelationshipCreated for the new parent but no delete for the old (the daemon
-    // reparents in one step). Rejecting here left the node stranded under its old
-    // parent on every OTHER window (indent/outdent not
-    // reflected across windows / cloud sync). Prune the old parent, then add below.
+    // parent means the node moved (indent/outdent/drag). Another writer (a second
+    // window, the CLI, the agent) delivers the new-parent edge and the old-parent
+    // edge-delete as independent events that can arrive in either order — and a
+    // move the daemon applies emits a RelationshipCreated for the new parent but no
+    // delete for the old (the daemon reparents in one step). Rejecting here left the
+    // node stranded under its old parent on every OTHER window (indent/outdent not
+    // reflected across windows). Prune the old parent, then add below.
     const currentParent = this.getParent(childId);
     if (currentParent && currentParent !== parentId) {
       const oldChildren = this.children.get(currentParent);

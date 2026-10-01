@@ -131,11 +131,11 @@ describe('aiChatsData', () => {
     });
 
     // Unlike every other cross-switch read in the codebase
-    // (loadChildrenForParent, doLoadChildrenTree, refreshDatabaseSettings,
-    // createChat, createCollection), loadAiChats committed its fetched array
-    // into state without re-checking the store generation after the await — a
-    // response issued against the previous database could land after a switch
-    // and get committed as if it belonged to the new one.
+    // (loadChildrenForParent, doLoadChildrenTree, createChat,
+    // createCollection), loadAiChats committed its fetched array into state
+    // without re-checking the store generation after the await — a response
+    // issued against the previous database could land after a switch and get
+    // committed as if it belonged to the new one.
     describe('stale-response guard across a database switch', () => {
       it('discards a load that resolves after invalidateForDatabaseSwitch, without writing into the list', async () => {
         let resolveLoad: (nodes: Node[]) => void = () => {};

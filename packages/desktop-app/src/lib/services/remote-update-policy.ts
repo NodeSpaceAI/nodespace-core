@@ -30,13 +30,13 @@
  * echo of a write made through the SAME gRPC connection. No content
  * comparison is needed or performed here anymore.
  *
- * Sync-service echoes are a separate case the daemon-side fix above does not
- * cover: `nodespace-sync` writes to the local DB in-process via
- * `NodeService::with_client("sync-service")` (ADR-027), not over the gRPC
+ * In-process writers are a separate case the daemon-side fix above does not
+ * cover: a writer running inside the daemon writes to the local DB through
+ * its own `NodeService::with_client(...)` (ADR-027), not over the gRPC
  * connection the desktop app's `x-ns-client-id` header scopes — so a stale
- * sync-service replay (e.g. during reconnect reconciliation) can still reach
- * this module as a `database`-sourced event whose version is not ahead of
- * the local optimistic version. The `incomingIsNewer` check below guards
+ * replay from such a writer can still reach this module as a
+ * `database`-sourced event whose version is not ahead of the local
+ * optimistic version. The `incomingIsNewer` check below guards
  * against exactly that: only a version genuinely ahead of local is treated
  * as a real conflict.
  */

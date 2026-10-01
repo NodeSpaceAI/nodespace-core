@@ -25,6 +25,7 @@ import {
   uiExtensionRegistry,
   type ChromeContribution,
   type NodespaceExtension,
+  type ReplaceableSlotContribution,
   type SettingsSectionContribution,
   type SettingsSlotContribution,
   type ViewerTabContribution
@@ -34,6 +35,7 @@ import {
   getActiveSettingsSections,
   getActiveSettingsSlot,
   getActiveViewerTabs,
+  getReplaceableSlot,
   isContributionActive
 } from '$lib/plugins/ui-extensions.svelte';
 import {
@@ -71,8 +73,15 @@ function slotContribution(
   return { id, slot, load: noComponent, ...extra } as SettingsSlotContribution;
 }
 
+function entry(
+  id: string,
+  extra: Partial<ReplaceableSlotContribution> = {}
+): ReplaceableSlotContribution {
+  return { id, slot: 'collaboration.entry', load: noComponent, ...extra };
+}
+
 function ext(id: string, rest: Partial<NodespaceExtension> = {}): NodespaceExtension {
-  return { id, apiVersion: 1, ...rest };
+  return { id, apiVersion: 2, ...rest };
 }
 
 const keysOf = (list: { key: string }[]) => list.map((c) => c.key);
@@ -139,7 +148,8 @@ describe('UiExtensionRegistry registration', () => {
   });
 
   it('does not register an extension whose apiVersion is not the supported major, and logs', () => {
-    const wrong = { ...ext('a', { chrome: [chrome('one')] }), apiVersion: 2 } as never;
+    const unsupported = EXTENSION_API_VERSION.major + 1;
+    const wrong = { ...ext('a', { chrome: [chrome('one')] }), apiVersion: unsupported } as never;
     registry.register(wrong);
 
     expect(registry.has('a')).toBe(false);
@@ -147,7 +157,11 @@ describe('UiExtensionRegistry registration', () => {
     expect(log.error).toHaveBeenCalledTimes(1);
     expect(log.error).toHaveBeenCalledWith(
       expect.stringContaining('apiVersion mismatch'),
-      expect.objectContaining({ id: 'a', apiVersion: 2, supported: EXTENSION_API_VERSION.major })
+      expect.objectContaining({
+        id: 'a',
+        apiVersion: unsupported,
+        supported: EXTENSION_API_VERSION.major
+      })
     );
   });
 
@@ -209,11 +223,11 @@ describe('UiExtensionRegistry registration', () => {
       undefined,
       'a string',
       {},
-      { id: '', apiVersion: 1 },
-      { id: 'no-list', apiVersion: 1, chrome: 'not an array' },
+      { id: '', apiVersion: 2 },
+      { id: 'no-list', apiVersion: 2, chrome: 'not an array' },
       {
         id: 'bad-entries',
-        apiVersion: 1,
+        apiVersion: 2,
         chrome: [
           null,
           { id: 'no-load', slot: 'app-shell-modal' },
@@ -236,7 +250,7 @@ describe('UiExtensionRegistry registration', () => {
   it('never throws when a contribution getter throws', () => {
     const hostile = {
       id: 'hostile',
-      apiVersion: 1,
+      apiVersion: 2,
       get chrome(): ChromeContribution[] {
         throw new Error('getter failed');
       }
@@ -365,7 +379,7 @@ describe('UiExtensionRegistry settings contributions', () => {
   it('drops malformed entries and non-array lists without throwing', () => {
     const malformed = {
       id: 'bad',
-      apiVersion: 1,
+      apiVersion: 2,
       settingsSections: [null, { id: 'no-load', label: 'x' }, { label: 'no-id', load: noComponent }],
       settingsSlots: 'not an array'
     } as unknown as NodespaceExtension;
@@ -717,6 +731,165 @@ describe('active settings accessors over the fixture extension', () => {
     } finally {
       uiExtensionRegistry.unregister('throwing-section');
     }
+  });
+});
+
+describe('UiExtensionRegistry replaceable slots', () => {
+  let registry: UiExtensionRegistry;
+
+  beforeEach(() => {
+    registry = new UiExtensionRegistry();
+  });
+
+  it('is empty with nothing registered for the slot', () => {
+    registry.register(ext('a', { chrome: [chrome('one')] }));
+
+    expect(registry.replaceableSlotFor('collaboration.entry')).toEqual([]);
+  });
+
+  it('keys a contribution as <extension id>/<contribution id> and carries the extension id', () => {
+    registry.register(ext('ext', { replaceableSlots: [entry('one')] }));
+
+    expect(registry.replaceableSlotFor('collaboration.entry')[0]).toMatchObject({
+      id: 'one',
+      key: 'ext/one',
+      extensionId: 'ext',
+      slot: 'collaboration.entry'
+    });
+  });
+
+  it('orders by descending priority, ties in registration order', () => {
+    registry.register(
+      ext('a', { replaceableSlots: [entry('a-plain'), entry('a-boosted', { priority: 3 })] })
+    );
+    registry.register(
+      ext('b', {
+        replaceableSlots: [entry('b-boosted', { priority: 3 }), entry('b-plain')]
+      })
+    );
+
+    expect(keysOf(registry.replaceableSlotFor('collaboration.entry'))).toEqual([
+      'a/a-boosted',
+      'b/b-boosted',
+      'a/a-plain',
+      'b/b-plain'
+    ]);
+  });
+
+  it('treats a contribution id as unique across the extension’s lists', () => {
+    registry.register(
+      ext('a', { chrome: [chrome('shared')], replaceableSlots: [entry('shared'), entry('own')] })
+    );
+
+    expect(keysOf(registry.replaceableSlotFor('collaboration.entry'))).toEqual(['a/own']);
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining('Duplicate contribution id'),
+      expect.objectContaining({ extensionId: 'a', contributionId: 'shared' })
+    );
+  });
+
+  it('drops a contribution whose key another extension already holds', () => {
+    registry.register(ext('a', { replaceableSlots: [entry('b/x')] }));
+    // `a/b` + `x` makes the key `a/b/x`, which `a` + `b/x` already holds.
+    registry.register(ext('a/b', { replaceableSlots: [entry('x'), entry('y')] }));
+
+    expect(keysOf(registry.replaceableSlotFor('collaboration.entry'))).toEqual([
+      'a/b/x',
+      'a/b/y'
+    ]);
+    expect(registry.replaceableSlotFor('collaboration.entry')[0].extensionId).toBe('a');
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining('already held'),
+      expect.objectContaining({ key: 'a/b/x' })
+    );
+  });
+
+  it('drops malformed entries and a non-array list without throwing', () => {
+    const bad = {
+      id: 'bad',
+      apiVersion: 2,
+      replaceableSlots: [{ id: 'no-load', slot: 'collaboration.entry' }, entry('fine')]
+    } as unknown as NodespaceExtension;
+    const notArray = {
+      id: 'not-array',
+      apiVersion: 2,
+      replaceableSlots: 'nope'
+    } as unknown as NodespaceExtension;
+
+    expect(() => {
+      registry.register(bad);
+      registry.register(notArray);
+    }).not.toThrow();
+    expect(keysOf(registry.replaceableSlotFor('collaboration.entry'))).toEqual(['bad/fine']);
+  });
+
+  it('forgets an extension’s contributions when it is unregistered', () => {
+    registry.register(ext('a', { replaceableSlots: [entry('one')] }));
+    registry.unregister('a');
+
+    expect(registry.replaceableSlotFor('collaboration.entry')).toEqual([]);
+  });
+
+  it('never evaluates when()', () => {
+    const when = vi.fn(() => false);
+    registry.register(ext('a', { replaceableSlots: [entry('one', { when })] }));
+
+    expect(keysOf(registry.replaceableSlotFor('collaboration.entry'))).toEqual(['a/one']);
+    expect(when).not.toHaveBeenCalled();
+  });
+});
+
+describe('getReplaceableSlot over the fixture extension', () => {
+  afterEach(() => {
+    uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+    uiExtensionRegistry.unregister('second');
+    resetTestExtension();
+  });
+
+  it('reports nothing registered and nothing active with no contribution', () => {
+    expect(getReplaceableSlot('collaboration.entry')).toEqual({ registered: false, active: null });
+  });
+
+  it('reports a registered slot with nothing active while every contribution is hidden', () => {
+    uiExtensionRegistry.register(createTestExtension());
+
+    expect(getReplaceableSlot('collaboration.entry')).toEqual({ registered: true, active: null });
+  });
+
+  it('picks the visible contribution with the highest priority', () => {
+    uiExtensionRegistry.register(createTestExtension());
+    testExtensionFlags.collaborationEntry = true;
+    expect(getReplaceableSlot('collaboration.entry').active?.key).toBe(
+      `${TEST_EXTENSION_ID}/collaboration-entry`
+    );
+
+    testExtensionFlags.collaborationEntrySecondary = true;
+    expect(getReplaceableSlot('collaboration.entry').active?.key).toBe(
+      `${TEST_EXTENSION_ID}/collaboration-entry-secondary`
+    );
+  });
+
+  it('breaks a priority tie by registration order', () => {
+    uiExtensionRegistry.register(createTestExtension());
+    uiExtensionRegistry.register(ext('second', { replaceableSlots: [entry('entry')] }));
+    testExtensionFlags.collaborationEntry = true;
+
+    expect(getReplaceableSlot('collaboration.entry').active?.key).toBe(
+      `${TEST_EXTENSION_ID}/collaboration-entry`
+    );
+  });
+
+  it('treats a throwing when() as hidden, and warns once', () => {
+    uiExtensionRegistry.register(createTestExtension());
+    testExtensionFlags.collaborationEntryThrowingWhen = true;
+
+    expect(getReplaceableSlot('collaboration.entry')).toEqual({ registered: true, active: null });
+    getReplaceableSlot('collaboration.entry');
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('when() threw'),
+      expect.objectContaining({ key: `${TEST_EXTENSION_ID}/collaboration-entry-throwing-when` })
+    );
   });
 });
 

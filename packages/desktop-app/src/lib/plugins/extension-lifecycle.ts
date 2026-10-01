@@ -2,7 +2,7 @@
  * Extension Lifecycle
  * ===================
  *
- * Dispatch for the hooks an extension can carry (ADR-082 §2.5): `lifecycle.start`,
+ * Dispatch for the hooks an extension can carry (ADR-082 §3.5): `lifecycle.start`,
  * `lifecycle.onDatabaseActivated` and the top-level `debugDump`. The registry in
  * `ui-extensions.ts` only stores extensions; this module is what the host calls
  * to run their hooks. It is plain TypeScript (no runes) and imports only the

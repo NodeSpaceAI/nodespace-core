@@ -1,6 +1,6 @@
 /**
  * The Settings category list: core's own categories plus the sections
- * extensions contribute (ADR-082 §2.2, §2.3).
+ * extensions contribute (ADR-082 §3.2, §3.3).
  *
  * `settingsCategories()` is what the sidebar renders. The pane asks
  * `isSettingsCategoryVisible` whether the category it is showing still exists
@@ -31,13 +31,10 @@ export interface CoreSettingsCategory {
 /**
  * Core's categories in display order. "AI Models" is gated behind the Labs "AI
  * Chat" toggle and "Playbooks" behind the Labs "Playbooks" toggle (both default
- * off); the flags gate the UI only. "Account" is gated behind the Labs "Team
- * synchronization" toggle (default off): the entry itself, not just its content,
- * stays hidden until a user opts in.
+ * off); the flags gate the UI only.
  */
 export const CORE_SETTINGS_CATEGORIES: readonly CoreSettingsCategory[] = [
   { id: 'database', label: 'Database' },
-  { id: 'account', label: 'Account', visible: () => labsFlags.syncEnabled },
   { id: 'display', label: 'Display' },
   { id: 'ai-models', label: 'AI Models', visible: () => labsFlags.aiChatEnabled },
   { id: 'import', label: 'Import Sources' },

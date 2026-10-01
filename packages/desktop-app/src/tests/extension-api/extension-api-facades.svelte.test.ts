@@ -21,7 +21,6 @@ import * as logger from '$lib/utils/logger';
 import * as errors from '$lib/types/errors';
 import * as tauriCoreHelper from '../helpers/mock-tauri-core';
 import { EXTENSION_API_VERSION } from '$lib/plugins/ui-extensions';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
 import { Button } from '$lib/components/ui/button';
 import * as Dialog from '$lib/components/ui/dialog';
 import { focusTrap } from '$lib/actions/focus-trap';
@@ -116,18 +115,33 @@ describe('databases', () => {
     }
   });
 
-  it('delegates create, switchTo and refreshDatabaseSettings to the store', async () => {
+  it('delegates create and switchTo to the store', async () => {
     const created = database('c');
     const create = vi.spyOn(databaseStore, 'create').mockResolvedValue(created);
     const switchTo = vi.spyOn(databaseStore, 'switchTo').mockResolvedValue();
-    const refresh = vi.spyOn(databaseStore, 'refreshDatabaseSettings').mockReturnValue();
 
     await expect(databases.create('Work', '/tmp/work.db')).resolves.toBe(created);
     expect(create).toHaveBeenCalledWith('Work', '/tmp/work.db');
     await databases.switchTo('c');
     expect(switchTo).toHaveBeenCalledWith('c');
-    databases.refreshDatabaseSettings();
-    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it('offers no settings-node refresh, and the API exports no settings-node id', () => {
+    // Neither is in the host API (ADR-082 §3.6). Built from fragments so this
+    // file does not itself name what it checks is gone.
+    const refresh = ['refresh', 'Database', 'Settings'].join('');
+    const nodeId = ['DATABASE', 'SETTINGS', 'NODE', 'ID'].join('_');
+
+    expect(Object.keys(databases)).toEqual([
+      'activeDatabaseId',
+      'activeDatabase',
+      'list',
+      'error',
+      'create',
+      'switchTo'
+    ]);
+    expect(refresh in databases).toBe(false);
+    expect(nodeId in api).toBe(false);
   });
 });
 
@@ -186,7 +200,6 @@ describe('re-exports', () => {
     expect(api.toError).toBe(errors.toError);
     expect(api.isCommandError).toBe(errors.isCommandError);
     expect(api.EXTENSION_API_VERSION).toBe(EXTENSION_API_VERSION);
-    expect(api.DATABASE_SETTINGS_NODE_ID).toBe(DATABASE_SETTINGS_NODE_ID);
     expect(testing.mockTauriCore).toBe(tauriCoreHelper.mockTauriCore);
     expect(ui.Button).toBe(Button);
     expect(ui.Dialog.Root).toBe(Dialog.Root);

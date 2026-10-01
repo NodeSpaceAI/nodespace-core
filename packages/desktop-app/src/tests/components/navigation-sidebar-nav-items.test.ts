@@ -31,8 +31,6 @@ function setActiveDatabaseStatus(status: string) {
     status,
     createdAt: '2026-01-01T00:00:00Z',
     lastOpenedAt: null,
-    boundTenantSchema: null,
-    boundTenantCollection: null,
     extensions: {}
   };
   databaseStore.databases = [db];

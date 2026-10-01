@@ -99,8 +99,7 @@ describe('daemon-reconnect retry wiring', () => {
 
       await goHealthy();
 
-      // The registry load runs, which also hydrates the DatabaseSettingsNode —
-      // the Pro-sync variant machine's axis-2 feed.
+      // The registry load runs and resolves the active database.
       expect(mockInvoke).toHaveBeenCalledWith('list_databases');
     } finally {
       delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;

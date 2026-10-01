@@ -18,32 +18,12 @@ vi.mock('@tauri-apps/api/core', () =>
 
 // Collaborators exercised by switchTo — stubbed so we can assert the flush →
 // switch → clear → reset → reload orchestration without their real behavior.
-// `epochValue` backs currentEpoch() so tests can simulate a database switch
-// landing while a settings refetch is in flight.
 const flushAllPendingSaves = vi.fn((..._a: unknown[]) => Promise.resolve(new Set<string>()));
 const clearAll = vi.fn((..._a: unknown[]) => undefined);
-const setNode = vi.fn((..._a: unknown[]) => undefined);
-// refreshDatabaseSettings() pins DATABASE_SETTINGS_NODE_ID reachable on
-// every call (it backs always-mounted Pro-sync chrome with no structureTree
-// relationship to any open tab — see database.svelte.ts's doc comment).
-const pinNodes = vi.fn((..._a: unknown[]) => undefined);
-let epochValue = 0;
 vi.mock('$lib/services/shared-node-store.svelte', () => ({
   sharedNodeStore: {
     flushAllPendingSaves: (...a: unknown[]) => flushAllPendingSaves(...a),
-    clearAll: (...a: unknown[]) => clearAll(...a),
-    setNode: (...a: unknown[]) => setNode(...a),
-    pinNodes: (...a: unknown[]) => pinNodes(...a),
-    currentEpoch: () => epochValue
-  }
-}));
-
-// The settings-node refetch goes through the backend adapter directly (it must
-// bypass the cache-first ensureNode path).
-const mockGetNode = vi.fn((..._a: unknown[]) => Promise.resolve<unknown>(null));
-vi.mock('$lib/services/backend-adapter', () => ({
-  backendAdapter: {
-    getNode: (...a: unknown[]) => mockGetNode(...a)
+    clearAll: (...a: unknown[]) => clearAll(...a)
   }
 }));
 
@@ -73,13 +53,6 @@ vi.mock('$lib/stores/schemas.svelte', () => ({
   schemasData: {
     loadSchemas: (...a: unknown[]) => loadSchemas(...a),
     invalidateForDatabaseSwitch: (...a: unknown[]) => schemasInvalidateForDatabaseSwitch(...a)
-  }
-}));
-
-const membershipInvalidateForDatabaseSwitch = vi.fn((..._a: unknown[]) => undefined);
-vi.mock('$lib/stores/membership.svelte', () => ({
-  membership: {
-    invalidateForDatabaseSwitch: (...a: unknown[]) => membershipInvalidateForDatabaseSwitch(...a)
   }
 }));
 
@@ -125,9 +98,7 @@ import {
   isActiveDatabaseEvent,
   type DatabaseInfo
 } from '$lib/stores/database.svelte';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
 import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
-import type { Node } from '$lib/types';
 import { TEST_EXTENSION_ID, createTestExtension } from '../fixtures/test-extension';
 import { createTestLifecycleParts } from '../fixtures/test-extension/lifecycle';
 
@@ -140,31 +111,9 @@ function db(id: string, overrides: Partial<DatabaseInfo> = {}): DatabaseInfo {
     status: 'closed',
     createdAt: '2026-01-01T00:00:00Z',
     lastOpenedAt: null,
-    boundTenantSchema: null,
-    boundTenantCollection: null,
     extensions: {},
     ...overrides
   };
-}
-
-function settingsNode(): Node {
-  return {
-    id: DATABASE_SETTINGS_NODE_ID,
-    nodeType: 'database-settings',
-    content: '',
-    properties: { 'database-settings': { sync_enabled: false, auth_status: 'connected' } },
-    mentions: [],
-    createdAt: '2026-01-01T00:00:00Z',
-    modifiedAt: '2026-01-01T00:00:00Z',
-    version: 1
-  };
-}
-
-/** Let the fire-and-forget settings refetch (`.then` chain) settle. */
-async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
 }
 
 describe('Database Store', () => {
@@ -174,12 +123,9 @@ describe('Database Store', () => {
     // the file. clearAllMocks only clears recorded calls.
     mockInvoke.mockReset();
     vi.clearAllMocks();
-    mockGetNode.mockReset();
-    mockGetNode.mockResolvedValue(null);
     // The remembered-database id is read from localStorage at load(); a value
     // left behind by one test silently steers the next one.
     localStorage.clear();
-    epochValue = 0;
     // The store gates `load()` on the Tauri bridge; present it so these tests
     // exercise the invoke path. The browser-mode describe removes it.
     (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
@@ -348,7 +294,6 @@ describe('Database Store', () => {
       expect(loadAiChats).toHaveBeenCalledOnce();
       expect(conflictsInvalidateForDatabaseSwitch).toHaveBeenCalledOnce();
       expect(loadConflicts).toHaveBeenCalledOnce();
-      expect(mockGetNode).toHaveBeenCalledWith(DATABASE_SETTINGS_NODE_ID);
       // Startup keeps the restored tabs; only a switch resets the workspace.
       expect(clearAllTabs).not.toHaveBeenCalled();
     });
@@ -364,7 +309,27 @@ describe('Database Store', () => {
       expect(mockInvoke).toHaveBeenCalledWith('set_active_database', { id: 'b' });
       expect(clearAll).not.toHaveBeenCalled();
       expect(loadCollections).not.toHaveBeenCalled();
-      expect(mockGetNode).toHaveBeenCalledWith(DATABASE_SETTINGS_NODE_ID);
+    });
+
+    it('sends only the registry, launch-selection, routing and window-pin commands', async () => {
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === 'list_databases') {
+          return Promise.resolve({
+            databases: [db('a'), db('b', { isDefault: true })],
+            defaultDatabaseId: 'b'
+          });
+        }
+        return Promise.resolve(undefined);
+      });
+
+      await databaseStore.load();
+
+      expect(mockInvoke.mock.calls.map(([cmd]) => cmd)).toEqual([
+        'list_databases',
+        'initial_database_id',
+        'set_active_database',
+        'pin_window_database'
+      ]);
     });
 
     it('lets a tray switch that lands while load() is routing win', async () => {
@@ -468,19 +433,12 @@ describe('Database Store', () => {
     });
 
     it('flushes, switches, clears caches, resets tabs, and reloads', async () => {
-      mockInvoke.mockResolvedValue(undefined); // set_active_database + pro_activate_database
+      mockInvoke.mockResolvedValue(undefined); // set_active_database, pin_window_database
 
       await databaseStore.switchTo('b');
 
       expect(flushAllPendingSaves).toHaveBeenCalledOnce();
       expect(mockInvoke).toHaveBeenCalledWith('set_active_database', { id: 'b' });
-      // The switch also re-targets Pro cloud-sync to the new database (ADR-053).
-      // Dispatched via a serialized chain (prevents a rapid A->B->A switch
-      // from resolving out of send order) rather than synchronously within
-      // switchTo, so it lands a microtask or two after switchTo resolves.
-      await vi.waitFor(() =>
-        expect(mockInvoke).toHaveBeenCalledWith('pro_activate_database', { databaseId: 'b' })
-      );
       expect(databaseStore.activeDatabaseId).toBe('b');
       expect(clearAll).toHaveBeenCalledOnce();
       expect(structureTreeClear).toHaveBeenCalledOnce();
@@ -523,9 +481,6 @@ describe('Database Store', () => {
       // the new database can't render the previous database's cached members.
       expect(invalidateAllMembers).toHaveBeenCalledOnce();
       expect(collectionsStateReset).toHaveBeenCalledOnce();
-      // The Pro membership roster/invites/requests cache has the
-      // same id-collision hazard (has_role edges are per-database, ADR-053).
-      expect(membershipInvalidateForDatabaseSwitch).toHaveBeenCalledOnce();
       // The schema plugin registry (hasTitleTemplate/titleTemplate)
       // must re-sync against the newly-active database's schemas.
       expect(resyncSchemaPluginsForDatabaseSwitch).toHaveBeenCalledOnce();
@@ -538,56 +493,18 @@ describe('Database Store', () => {
       expect(databaseStore.error).toBeNull();
     });
 
-    it('completes the switch even if the Pro sync re-target fails', async () => {
-      mockInvoke
-        .mockResolvedValueOnce(undefined) // set_active_database
-        .mockRejectedValueOnce(new Error('daemon unavailable')); // pro_activate_database
+    it('sends only the routing and window-pin commands', async () => {
+      mockInvoke.mockResolvedValue(undefined);
 
       await databaseStore.switchTo('b');
+      // Give any fire-and-forget command a chance to be sent.
+      await Promise.resolve();
+      await Promise.resolve();
 
-      // A sync re-target failure is best-effort: the already-committed routing
-      // switch still lands (caches cleared, tabs reset), never left half-done.
-      expect(databaseStore.activeDatabaseId).toBe('b');
-      expect(clearAll).toHaveBeenCalledOnce();
-      expect(clearAllTabs).toHaveBeenCalledOnce();
-      // Dispatched via a serialized chain, so it lands a microtask or two
-      // after switchTo resolves — and its rejection must not surface.
-      await vi.waitFor(() =>
-        expect(mockInvoke).toHaveBeenCalledWith('pro_activate_database', { databaseId: 'b' })
-      );
-      expect(databaseStore.error).toBeNull();
-    });
-
-    it('does not dispatch a later pro_activate_database call until an earlier one settles, so a rapid switch sequence cannot land out of send order', async () => {
-      databaseStore.databases = [db('a'), db('b'), db('c')];
-      databaseStore.activeDatabaseId = 'a';
-
-      let resolveActivateB: (() => void) | null = null;
-      const activateCalls: string[] = [];
-      mockInvoke.mockImplementation((cmd: string, args?: { databaseId?: string }) => {
-        if (cmd === 'pro_activate_database') {
-          activateCalls.push(args!.databaseId!);
-          if (args!.databaseId === 'b') {
-            return new Promise<void>((resolve) => {
-              resolveActivateB = () => resolve();
-            });
-          }
-        }
-        return Promise.resolve(undefined);
-      });
-
-      await databaseStore.switchTo('b');
-      // switchTo('b') has resolved, but its fire-and-forget pro_activate_database('b')
-      // call is still pending (deliberately unresolved above).
-      await databaseStore.switchTo('c');
-
-      // 'c'’s pro_activate_database call must not be dispatched yet — it's
-      // queued behind 'b'’s still-unsettled one, so a slow-to-resolve 'b' can
-      // never have its eventual response applied AFTER 'c'’s on the Rust side.
-      expect(activateCalls).toEqual(['b']);
-
-      resolveActivateB!();
-      await vi.waitFor(() => expect(activateCalls).toEqual(['b', 'c']));
+      expect(mockInvoke.mock.calls).toEqual([
+        ['set_active_database', { id: 'b' }],
+        ['pin_window_database', { id: 'b' }]
+      ]);
     });
 
     it('no-ops when switching to the already-active database', async () => {
@@ -634,7 +551,7 @@ describe('Database Store', () => {
             defaultDatabaseId: ''
           });
         }
-        return Promise.resolve(undefined); // set_active_database, pro_activate_database
+        return Promise.resolve(undefined); // set_active_database, pin_window_database
       });
 
       await databaseStore.switchTo('work');
@@ -711,7 +628,7 @@ describe('Database Store', () => {
     it('switches to the pending selection when one was stashed', async () => {
       mockInvoke.mockImplementation((cmd: string) => {
         if (cmd === 'take_pending_tray_database_selection') return Promise.resolve('b');
-        return Promise.resolve(undefined); // set_active_database, pro_activate_database
+        return Promise.resolve(undefined); // set_active_database, pin_window_database
       });
 
       await databaseStore.applyPendingTraySelection();
@@ -752,110 +669,6 @@ describe('Database Store', () => {
       await databaseStore.applyPendingTraySelection();
 
       expect(mockInvoke).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('refreshDatabaseSettings', () => {
-    it('force-refetches the settings node via the adapter and lands it in the shared store', async () => {
-      const node = settingsNode();
-      mockGetNode.mockResolvedValueOnce(node);
-
-      databaseStore.refreshDatabaseSettings();
-      await flushMicrotasks();
-
-      // Bypasses the cache-first ensureNode path: always a fresh backend read.
-      expect(mockGetNode).toHaveBeenCalledWith(DATABASE_SETTINGS_NODE_ID);
-      expect(setNode).toHaveBeenCalledWith(
-        node,
-        { type: 'database', reason: 'refresh-database-settings' },
-        true
-      );
-    });
-
-    it('pins DATABASE_SETTINGS_NODE_ID reachable, unconditionally and before the fetch resolves', () => {
-      // The settings node backs always-mounted Pro-sync chrome (the sync
-      // pill, membership gating) with no structureTree relationship to any
-      // open tab, so SharedNodeStore's eviction feature can't see it as
-      // reachable on its own — without this pin call it would be evicted
-      // ~30s after the app's first tab-state report regardless of how often
-      // it's refreshed. Asserted synchronously (no await): the pin must
-      // happen up front, not only after the async fetch settles.
-      databaseStore.refreshDatabaseSettings();
-
-      expect(pinNodes).toHaveBeenCalledWith(expect.any(String), [DATABASE_SETTINGS_NODE_ID]);
-    });
-
-    it('re-pins on every refresh, so a database switch (which clears every pin) gets it back', async () => {
-      mockGetNode.mockResolvedValue(settingsNode());
-
-      databaseStore.refreshDatabaseSettings();
-      await flushMicrotasks();
-      pinNodes.mockClear();
-
-      // Simulates the pin having been wiped by clearAll() during a switch —
-      // the next refresh must re-establish it, not assume it's still there.
-      databaseStore.refreshDatabaseSettings();
-
-      expect(pinNodes).toHaveBeenCalledWith(expect.any(String), [DATABASE_SETTINGS_NODE_ID]);
-    });
-
-    it('load() hydrates the settings node through the same forced refetch', async () => {
-      mockInvoke.mockResolvedValueOnce({
-        databases: [db('a', { isDefault: true })],
-        defaultDatabaseId: 'a'
-      });
-      mockGetNode.mockResolvedValueOnce(settingsNode());
-
-      await databaseStore.load();
-      await flushMicrotasks();
-
-      expect(mockGetNode).toHaveBeenCalledWith(DATABASE_SETTINGS_NODE_ID);
-      expect(setNode).toHaveBeenCalledOnce();
-    });
-
-    it('a missing settings node (older database) leaves the store untouched', async () => {
-      mockGetNode.mockResolvedValueOnce(null);
-
-      databaseStore.refreshDatabaseSettings();
-      await flushMicrotasks();
-
-      expect(setNode).not.toHaveBeenCalled();
-    });
-
-    it('drops the fetched node when the database epoch changed mid-flight', async () => {
-      // The fetch resolves only after a database switch bumped the epoch — the
-      // row belongs to the previous database and must not land.
-      mockGetNode.mockImplementationOnce(async () => {
-        epochValue = 1;
-        return settingsNode();
-      });
-
-      databaseStore.refreshDatabaseSettings();
-      await flushMicrotasks();
-
-      expect(setNode).not.toHaveBeenCalled();
-    });
-
-    it('is fire-and-forget: a failed refetch is swallowed at debug level', async () => {
-      mockGetNode.mockRejectedValueOnce(new Error('daemon unavailable'));
-
-      expect(() => databaseStore.refreshDatabaseSettings()).not.toThrow();
-      await flushMicrotasks();
-
-      expect(setNode).not.toHaveBeenCalled();
-    });
-
-    it('switchTo re-pulls the new database settings after the caches are cleared', async () => {
-      databaseStore.databases = [db('a'), db('b')];
-      databaseStore.activeDatabaseId = 'a';
-      mockInvoke.mockResolvedValueOnce(undefined); // set_active_database
-      mockGetNode.mockResolvedValueOnce(settingsNode());
-
-      await databaseStore.switchTo('b');
-      await flushMicrotasks();
-
-      expect(mockGetNode).toHaveBeenCalledWith(DATABASE_SETTINGS_NODE_ID);
-      expect(setNode).toHaveBeenCalledOnce();
     });
   });
 
@@ -901,13 +714,14 @@ describe('Database Store', () => {
       expect(onDatabaseActivated).toHaveBeenCalledOnce();
       expect(onDatabaseActivated).toHaveBeenCalledWith('a');
       // The selection is committed before the hook, and the whole eviction has
-      // run: `pinNodes` is the last step of `evictAndReloadActiveDatabase`.
+      // run: the schema-plugin resync is the last step of
+      // `evictAndReloadActiveDatabase`.
       expect(activeAtHook).toEqual(['a']);
       expect(clearAll).toHaveBeenCalledOnce();
       expect(clearAll.mock.invocationCallOrder[0]).toBeLessThan(
         onDatabaseActivated.mock.invocationCallOrder[0]
       );
-      expect(pinNodes.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(resyncSchemaPluginsForDatabaseSwitch.mock.invocationCallOrder[0]).toBeLessThan(
         onDatabaseActivated.mock.invocationCallOrder[0]
       );
     });
@@ -1112,7 +926,7 @@ describe('Database Store', () => {
   });
 
   describe('isActiveDatabaseEvent', () => {
-    it('passes events with no database id (single-database / Pro daemon)', () => {
+    it('passes events with no database id (an impl not opened through the registry)', () => {
       databaseStore.activeDatabaseId = 'a';
       expect(isActiveDatabaseEvent(undefined)).toBe(true);
       expect(isActiveDatabaseEvent('')).toBe(true);

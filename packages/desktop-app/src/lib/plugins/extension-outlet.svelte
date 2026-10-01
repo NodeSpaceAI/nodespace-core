@@ -7,9 +7,9 @@
   component directly. The dynamic import runs once per `load`
   value, and callers key their {#each} by the contribution key
   (`<extension id>/<contribution id>`) so a contribution that goes away, or
-  changes, mounts a fresh outlet (ADR-082 §2.3).
+  changes, mounts a fresh outlet (ADR-082 §3.3).
 
-  Isolation (ADR-082 §2.4): a `load()` that rejects, throws synchronously, returns
+  Isolation (ADR-082 §3.4): a `load()` that rejects, throws synchronously, returns
   a non-promise, or resolves to a module with no default component renders nothing
   and is logged; it is retried only on the next mount, so nothing loops. A component that throws
   while rendering, or in an effect, is caught by the boundary and removes only

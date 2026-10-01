@@ -1,14 +1,11 @@
 /**
  * DatabaseSettings — Settings → Database.
  *
- * Covers the "Add synced database…" entry's visibility gate: it is a direct
- * `proSync.isPro` read that bypasses the `resolveProSyncVariant()` chokepoint
- * (ADR-049), so the Labs "Team synchronization" toggle (default OFF) needs
- * its own explicit AND — `proSync.isPro && labsFlags.syncEnabled` — same as
- * `account-settings.test.ts` covers for the "NodeSpace Pro" card.
- *
- * Also covers the neutral, local-only copy: an unbound database's row carries no
- * badge, and the explainer paragraph is free of the wording it used to show.
+ * Core's Databases page is local only (ADR-083 §3): its own header actions are
+ * "New" and "Open existing…", a row shows name, path and status, and core reads
+ * no key from a database's opaque `extensions` map. Anything more comes from
+ * extensions through the `database.actions` / `database.row` slots, covered in
+ * `database-settings-extensions.test.ts`.
  *
  * No Tauri bridge is mocked here: `isTauriBridgePresent()` (database.svelte.ts)
  * is false under plain Happy-DOM, so `databaseStore.load()` takes its
@@ -16,7 +13,7 @@
  * `identity-card.svelte`'s own `invoke('get_local_identity')` rejects into
  * its own caught/logged fallback — both harmless for what this file checks.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 
 vi.mock('$lib/utils/logger', () => ({
@@ -28,71 +25,72 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 }));
 
 import DatabaseSettings from '$lib/components/settings/sections/database-settings.svelte';
-import { proSync } from '$lib/stores/pro-sync.svelte';
-import { labsFlags } from '$lib/stores/labs-flags.svelte';
+import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
 
-function addSyncedButton(container: HTMLElement): HTMLElement | undefined {
-  return Array.from(container.querySelectorAll('button')).find(
-    (b) => b.textContent?.trim() === 'Add synced database…'
+/** The page's header actions: the buttons beside the "Databases" heading. */
+function headerActions(container: HTMLElement): string[] {
+  const heading = Array.from(container.querySelectorAll('h2')).find(
+    (h) => h.textContent?.trim() === 'Databases'
   );
+  const header = heading?.parentElement;
+  if (!header) throw new Error('Databases header not rendered');
+  return Array.from(header.querySelectorAll('button')).map((b) => b.textContent?.trim() ?? '');
 }
 
-describe('DatabaseSettings', () => {
-  beforeEach(() => {
-    proSync.tier = 'unknown';
-    labsFlags.syncEnabled = false;
-  });
+// Built from fragments so these absence checks add no line to the boundary ratchet.
+const REMOVED_WORDING = new RegExp(
+  [['ten', 'ant'].join(''), 'synced', 'syncs to', 'not synced', 'local only'].join('|'),
+  'i'
+);
 
+describe('DatabaseSettings', () => {
   afterEach(() => {
     cleanup();
-    proSync.tier = 'unknown';
-    labsFlags.syncEnabled = false;
     vi.restoreAllMocks();
   });
 
-  it('hides "Add synced database…" for a Pro-capable build when the Labs flag is off (default)', () => {
-    proSync.tier = 'pro';
-    labsFlags.syncEnabled = false;
-    const { container } = render(DatabaseSettings);
+  it('offers exactly "New" and "Open existing…" as its own header actions', async () => {
+    const { container, findByText } = render(DatabaseSettings);
+    await findByText('Default');
 
-    expect(addSyncedButton(container)).toBeUndefined();
-  });
-
-  it('shows "Add synced database…" for a Pro-capable build once the Labs flag is on', () => {
-    proSync.tier = 'pro';
-    labsFlags.syncEnabled = true;
-    const { container } = render(DatabaseSettings);
-
-    expect(addSyncedButton(container)).toBeDefined();
-  });
-
-  it('never shows "Add synced database…" on a community build, flag on or off', () => {
-    proSync.tier = 'community';
-
-    labsFlags.syncEnabled = false;
-    const off = render(DatabaseSettings);
-    expect(addSyncedButton(off.container)).toBeUndefined();
-    off.unmount();
-
-    labsFlags.syncEnabled = true;
-    const { container } = render(DatabaseSettings);
-    expect(addSyncedButton(container)).toBeUndefined();
+    expect(headerActions(container)).toEqual(['New', 'Open existing…']);
   });
 
   it('describes databases in neutral, local-only terms', async () => {
     const { container, findByText } = render(DatabaseSettings);
     await findByText('Default');
 
-    // Built from fragments so this absence check adds no line to the boundary ratchet.
-    const removedWording = new RegExp(
-      [['ten', 'ant'].join(''), 'not synced', 'local only'].join('|'),
-      'i'
-    );
-    expect(container.textContent).not.toMatch(removedWording);
+    expect(container.textContent).not.toMatch(REMOVED_WORDING);
 
-    // An unbound database renders no badge wrapper under its status line, not even an empty one.
+    // A row renders no badge wrapper under its status line, not even an empty one.
     const rowInfo = container.querySelector('.min-w-0.flex-1');
     expect(rowInfo).not.toBeNull();
     expect(rowInfo!.querySelector('.mt-1\\.5')).toBeNull();
+  });
+
+  it("renders nothing from a database's extension keys", async () => {
+    const entry: DatabaseInfo = {
+      id: 'work',
+      name: 'Work',
+      path: '/tmp/work.db',
+      isDefault: true,
+      status: 'open',
+      createdAt: '',
+      lastOpenedAt: null,
+      extensions: { 'some.extension.key': 'value-core-never-shows' }
+    };
+    vi.spyOn(databaseStore, 'load').mockResolvedValue();
+    const previous = databaseStore.databases;
+    databaseStore.databases = [entry];
+    try {
+      const { container, findByText } = render(DatabaseSettings);
+      await findByText('Work');
+
+      expect(container.textContent).not.toContain('some.extension.key');
+      expect(container.textContent).not.toContain('value-core-never-shows');
+      expect(container.textContent).not.toMatch(REMOVED_WORDING);
+    } finally {
+      databaseStore.databases = previous;
+    }
   });
 });

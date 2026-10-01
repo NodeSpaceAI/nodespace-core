@@ -1,8 +1,8 @@
 /**
  * Unit tests for the Labs flags store — a minimal, localStorage-backed,
- * per-device visibility gate for experimental surfaces (AI Chat, and the
- * companion "Team synchronization" toggle). No daemon round-trip: reading
- * and writing are both synchronous against localStorage.
+ * per-device visibility gate for experimental surfaces (AI Chat, Playbooks).
+ * No daemon round-trip: reading and writing are both synchronous against
+ * localStorage.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -31,8 +31,13 @@ describe('Labs flags store', () => {
     const { labsFlags } = await import('$lib/stores/labs-flags.svelte');
 
     expect(labsFlags.aiChatEnabled).toBe(false);
-    expect(labsFlags.syncEnabled).toBe(false);
     expect(labsFlags.playbooksEnabled).toBe(false);
+  });
+
+  it('holds exactly the AI Chat and Playbooks flags; Team synchronization is no flag', async () => {
+    const { labsFlags } = await import('$lib/stores/labs-flags.svelte');
+
+    expect(Object.keys(labsFlags.flags).sort()).toEqual(['aiChatEnabled', 'playbooksEnabled']);
   });
 
   it('setting playbooksEnabled updates state, persists, and survives a fresh module load', async () => {
@@ -63,23 +68,26 @@ describe('Labs flags store', () => {
     const { labsFlags } = await import('$lib/stores/labs-flags.svelte');
 
     labsFlags.aiChatEnabled = true;
-    labsFlags.syncEnabled = true;
+    labsFlags.playbooksEnabled = true;
 
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
-    expect(stored).toEqual({ aiChatEnabled: true, syncEnabled: true });
+    expect(stored).toEqual({ aiChatEnabled: true, playbooksEnabled: true });
 
     labsFlags.aiChatEnabled = false;
     const storedAfter = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}');
-    expect(storedAfter).toEqual({ aiChatEnabled: false, syncEnabled: true });
+    expect(storedAfter).toEqual({ aiChatEnabled: false, playbooksEnabled: true });
   });
 
   it('a fresh module load picks up a previously persisted true value (survives reload/restart)', async () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ aiChatEnabled: true, syncEnabled: false }));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ aiChatEnabled: true, playbooksEnabled: false })
+    );
 
     const { labsFlags } = await import('$lib/stores/labs-flags.svelte');
 
     expect(labsFlags.aiChatEnabled).toBe(true);
-    expect(labsFlags.syncEnabled).toBe(false);
+    expect(labsFlags.playbooksEnabled).toBe(false);
   });
 
   it('falls back to defaults when localStorage holds corrupt JSON', async () => {
@@ -88,7 +96,7 @@ describe('Labs flags store', () => {
     const { labsFlags } = await import('$lib/stores/labs-flags.svelte');
 
     expect(labsFlags.aiChatEnabled).toBe(false);
-    expect(labsFlags.syncEnabled).toBe(false);
+    expect(labsFlags.playbooksEnabled).toBe(false);
   });
 
   it('does not collide with the existing settings.svelte.ts localStorage key', async () => {

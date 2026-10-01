@@ -21,7 +21,7 @@
   import { toError } from '$lib/types/errors';
 
   // The extensions import is static and registration is synchronous, so every
-  // contribution exists before AppShell renders (ADR-082 §2.1). Core registers
+  // contribution exists before AppShell renders (ADR-082 §3.1). Core registers
   // none: the list is whatever the build injected, empty by default.
   registerExtensions(extensions);
 

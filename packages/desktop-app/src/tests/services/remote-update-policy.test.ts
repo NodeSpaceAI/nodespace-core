@@ -92,8 +92,8 @@ describe('decideRemoteUpdate', () => {
 
   it('does not notify for a stale broadcast whose version is not ahead of the local version', () => {
     // The daemon-side echo suppression covers same-connection writes, but not
-    // a stale sync-service replay (nodespace-sync writes in-process via
-    // NodeService::with_client("sync-service"), a separate path — see this
+    // a stale replay from a writer running inside the daemon (it writes through
+    // its own NodeService::with_client(...), a separate path — see this
     // module's doc comment). A broadcast whose version is not strictly ahead
     // of the local optimistic version can still arrive from that path and
     // must be dropped silently instead of raising a phantom conflict

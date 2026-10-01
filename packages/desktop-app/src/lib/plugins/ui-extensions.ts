@@ -4,11 +4,12 @@
  *
  * The registry behind NodeSpace's frontend extension API (ADR-082). An
  * extension is a plain object, `{ id, apiVersion, chrome?, viewerTabs?,
- * settingsSections?, settingsSlots? }`, whose contributions each carry an `id`,
- * an optional `when()` predicate, an optional `priority` and a lazy `load()` for
- * the component they mount. Shared hosts (`app-shell.svelte`,
- * `collection-node-viewer.svelte`, the Settings pane and Databases page) import
- * nothing from an extension; they render whatever the registry contributes.
+ * settingsSections?, settingsSlots?, replaceableSlots? }`, whose contributions
+ * each carry an `id`, an optional `when()` predicate, an optional `priority` and
+ * a lazy `load()` for the component they mount. Shared hosts
+ * (`app-shell.svelte`, `collection-node-viewer.svelte`, the Settings pane,
+ * Databases page and Labs page) import nothing from an extension; they render
+ * whatever the registry contributes.
  *
  * Registration:
  *   - `registerExtensions([...])` is what a build entry calls with the
@@ -52,9 +53,9 @@ import { createLogger } from '$lib/utils/logger';
 const log = createLogger('UiExtensionRegistry');
 
 /** The extension API version this build implements. */
-export const EXTENSION_API_VERSION = { major: 1, minor: 0 } as const;
+export const EXTENSION_API_VERSION = { major: 2, minor: 0 } as const;
 
-// --- Lifecycle hooks (ADR-082 §2.5) ---------------------------------------------
+// --- Lifecycle hooks (ADR-082 §3.5) ---------------------------------------------
 
 /**
  * Callbacks the host invokes at fixed points in the app's life. Where exactly,
@@ -108,7 +109,7 @@ export type ViewerTabContribution = Contribution<{ nodeId: string }> & {
   label: string;
 };
 
-// --- Settings extension points (ADR-082 §2.2) --------------------------------
+// --- Settings extension points (ADR-082 §3.2) --------------------------------
 
 /**
  * A category in the Settings sidebar and the pane it opens. Its `id` is also its
@@ -142,7 +143,31 @@ export type SettingsSlotContributionFor<S extends SettingsSlot> = Extract<
 
 // --- End of settings extension points -----------------------------------------
 
-// --- Collection-tree roots (ADR-082 §2.2) --------------------------------------
+// --- Replaceable slots (ADR-082 §3.2) ------------------------------------------
+
+/**
+ * A place where core renders default content that an extension can replace.
+ * `collaboration.entry` sits on the Settings Labs page, where core's default is
+ * its contact card.
+ */
+export type ReplaceableSlot = 'collaboration.entry';
+
+/**
+ * Content that replaces core's default in a {@link ReplaceableSlot}. It takes no
+ * props.
+ *
+ * Core renders its default only while no contribution is registered for the
+ * slot. Once one is registered, the default does not return, even while that
+ * contribution is hidden, its `when()` throws, its `load()` rejects or its
+ * component throws; the place stays empty instead (ADR-082 §3.4). At most one
+ * contribution renders: the visible one with the highest priority, then the
+ * first registered.
+ */
+export type ReplaceableSlotContribution = Contribution & { slot: ReplaceableSlot };
+
+// --- End of replaceable slots --------------------------------------------------
+
+// --- Collection-tree roots (ADR-082 §3.2) --------------------------------------
 
 /**
  * Names the collections the sidebar collection tree treats as invisible
@@ -154,7 +179,7 @@ export type SettingsSlotContributionFor<S extends SettingsSlot> = Extract<
  *
  * It is presentation only. The host evaluates it inside a derivation, so it
  * must read only reactive sources and have no side effects (ADR-049). One that
- * throws counts as an empty list and is logged once (ADR-082 §2.4).
+ * throws counts as an empty list and is logged once (ADR-082 §3.4).
  */
 export type CollectionTreeRootsContribution = () => readonly string[];
 
@@ -175,6 +200,7 @@ export interface NodespaceExtension {
   viewerTabs?: ViewerTabContribution[];
   settingsSections?: SettingsSectionContribution[];
   settingsSlots?: SettingsSlotContribution[];
+  replaceableSlots?: ReplaceableSlotContribution[];
   /** Collections the sidebar tree hides as containers; see {@link CollectionTreeRootsContribution}. */
   collectionTreeRoots?: CollectionTreeRootsContribution;
 }
@@ -188,6 +214,7 @@ interface RegisteredExtension {
   viewerTabs: Keyed<ViewerTabContribution>[];
   settingsSections: Keyed<SettingsSectionContribution>[];
   settingsSlots: Keyed<SettingsSlotContribution>[];
+  replaceableSlots: Keyed<ReplaceableSlotContribution>[];
 }
 
 function priorityOf(c: { priority?: number }): number {
@@ -315,7 +342,20 @@ export class UiExtensionRegistry {
         seenIds,
         takenKeys
       ),
-      settingsSlots: keyContributions(ext.id, ext.settingsSlots, 'settingsSlots', seenIds, takenKeys)
+      settingsSlots: keyContributions(
+        ext.id,
+        ext.settingsSlots,
+        'settingsSlots',
+        seenIds,
+        takenKeys
+      ),
+      replaceableSlots: keyContributions(
+        ext.id,
+        ext.replaceableSlots,
+        'replaceableSlots',
+        seenIds,
+        takenKeys
+      )
     });
     log.debug('Registered extension', { id: ext.id });
   }
@@ -328,6 +368,7 @@ export class UiExtensionRegistry {
       for (const t of entry.viewerTabs) keys.add(t.key);
       for (const s of entry.settingsSections) keys.add(s.key);
       for (const s of entry.settingsSlots) keys.add(s.key);
+      for (const r of entry.replaceableSlots) keys.add(r.key);
     }
     return keys;
   }
@@ -403,7 +444,23 @@ export class UiExtensionRegistry {
     return byPriority(out) as Keyed<SettingsSlotContributionFor<S>>[];
   }
 
-  // --- Collection-tree roots (ADR-082 §2.2) ----------------------------------
+  /**
+   * Every contribution registered for the replaceable `slot`, across all
+   * extensions, in descending priority with ties in registration order. Does
+   * NOT evaluate `when`: a hidden contribution is still registered, and that
+   * alone keeps core's default out of the slot.
+   */
+  replaceableSlotFor(slot: ReplaceableSlot): Keyed<ReplaceableSlotContribution>[] {
+    const out: Keyed<ReplaceableSlotContribution>[] = [];
+    for (const entry of this.extensions.values()) {
+      for (const r of entry.replaceableSlots) {
+        if (r.slot === slot) out.push(r);
+      }
+    }
+    return byPriority(out);
+  }
+
+  // --- Collection-tree roots (ADR-082 §3.2) ----------------------------------
 
   /**
    * The union of every extension's {@link CollectionTreeRootsContribution}, in

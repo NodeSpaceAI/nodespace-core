@@ -2,9 +2,8 @@
  * collection-sub-panel component.
  *
  * The fly-out that previews a collection's members. Clicking the panel title
- * opens the collection's own page (Contents / Collaboration tabs) — the
- * reachable path to the collaboration/admin UI — while clicking a member row
- * opens that member node.
+ * opens the collection's own page, while clicking a member row opens that
+ * member node.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
@@ -31,7 +30,10 @@ describe('CollectionSubPanel', () => {
     const props = baseProps();
     const { getByRole } = render(CollectionSubPanel, { props });
 
-    await fireEvent.click(getByRole('button', { name: /Architecture/i }));
+    const title = getByRole('button', { name: /Architecture/i });
+    expect(title.getAttribute('title')).toBe('Open collection');
+
+    await fireEvent.click(title);
 
     expect(props.onOpenCollection).toHaveBeenCalledTimes(1);
     expect(props.onNodeClick).not.toHaveBeenCalled();

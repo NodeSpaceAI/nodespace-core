@@ -131,10 +131,10 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
     // First time the local store sees this node — the guard's "existingNode"
     // check ensures we still accept the new state.
     focusManager.focusNode('n5', 'default'); // even with focus on the id
-    const incoming = makeNode('n5', 'fresh from cloud', 1);
+    const incoming = makeNode('n5', 'fresh from daemon', 1);
     store.setNode(incoming, databaseSource);
 
-    expect(store.getNode('n5')?.content).toBe('fresh from cloud');
+    expect(store.getNode('n5')?.content).toBe('fresh from daemon');
   });
 
   it('preserves the optimistic content AND leaves local version untouched (no reactive mutation)', () => {
@@ -142,7 +142,7 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
     store.setNode(optimistic, viewerSource);
     focusManager.focusNode('n6', 'default');
 
-    const broadcast = makeNode('n6', 'cloud-older', 7);
+    const broadcast = makeNode('n6', 'daemon-older', 7);
     store.setNode(broadcast, databaseSource);
 
     const after = store.getNode('n6');
@@ -218,10 +218,10 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
     // User blurs. Subsequent database event no longer matches the guard;
     // the normal setNode path runs and writes the new state.
     focusManager.clearEditing();
-    store.setNode(makeNode('n7', 'cloud-current', 15), databaseSource);
+    store.setNode(makeNode('n7', 'daemon-current', 15), databaseSource);
 
     const after = store.getNode('n7');
-    expect(after?.content).toBe('cloud-current');
+    expect(after?.content).toBe('daemon-current');
     expect(after?.version).toBe(15);
   });
 

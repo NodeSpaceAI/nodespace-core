@@ -121,12 +121,22 @@ describe('External Links Utility - openUrl', () => {
   });
 
   describe('URL validation', () => {
-    it('throws error for non-http/https URLs', async () => {
+    it('throws error for URLs that are not http, https or mailto', async () => {
       await expect(openUrl('nodespace://abc')).rejects.toThrow('Invalid URL protocol');
       await expect(openUrl('file:///path')).rejects.toThrow('Invalid URL protocol');
-      await expect(openUrl('mailto:user@example.com')).rejects.toThrow('Invalid URL protocol');
+      await expect(openUrl('tel:+15550100')).rejects.toThrow('Invalid URL protocol');
       await expect(openUrl('/relative/path')).rejects.toThrow('Invalid URL protocol');
       await expect(openUrl('not-a-url')).rejects.toThrow('Invalid URL protocol');
+    });
+
+    it('accepts mailto URLs', async () => {
+      const mockOpen = vi.fn();
+      globalThis.window = {
+        open: mockOpen,
+      } as unknown as typeof globalThis.window;
+
+      await openUrl('mailto:user@example.com');
+      expect(mockOpen).toHaveBeenCalledWith('mailto:user@example.com', '_blank', 'noopener,noreferrer');
     });
 
     it('accepts http URLs', async () => {

@@ -897,7 +897,7 @@ describe('ReactiveStructureTree', () => {
     });
   });
 
-  describe('addChild reparents across parents (cloud-sync indent/outdent)', () => {
+  describe('addChild reparents across parents (indent/outdent from another writer)', () => {
     it('moves a child to the new parent when addChild names a different parent', () => {
       // A node already under `old` parent (e.g. a line under today's date page).
       structureTree.addChild({ parentId: 'old', childId: 'n', order: 1 });

@@ -33,7 +33,6 @@
     extractNodeIdFromHref
   } from '$lib/utils/external-links';
   import OnboardingWizard from '$lib/components/onboarding/onboarding-wizard.svelte';
-  import { proSync } from '$lib/stores/pro-sync.svelte';
   import { startExtensions } from '$lib/plugins/extension-lifecycle';
   import ChromeSlotOutlet from '$lib/plugins/chrome-slot-outlet.svelte';
   import ConflictToast from '$lib/components/conflict-toast.svelte';
@@ -71,9 +70,9 @@
   // first-launch wizard — see the `identityOnly` prop on OnboardingWizard.
   let onboardingIdentityOnly = $state(false);
 
-  // Conflict journal (ADR-068): load on every startup, whatever the tier —
-  // unlike the deleted Recovered Items log, this is NOT Pro-gated; the
-  // journal is designed to work on a purely local-only install. The inline
+  // Conflict journal (ADR-068): load on every startup. The journal works on a
+  // purely local install, where windows, the CLI and the agent write
+  // concurrently. The inline
   // per-node indicator and the Conflicts view both read `conflictsStore`
   // directly; this only decides whether a one-time startup nudge is worth
   // showing when open conflicts already exist.
@@ -246,7 +245,6 @@
     let unlistenSkillInstallFailed: Promise<() => void> | null = null;
     let cleanupMCP: (() => Promise<void>) | null = null;
     let staleNodesInterval: ReturnType<typeof setInterval> | null = null;
-    let cleanupProSync: (() => void) | null = null;
     let stopExtensions: (() => void) | null = null;
     let unlistenDataPlaneReady: Promise<() => void> | null = null;
     let unlistenSelectDatabase: Promise<() => void> | null = null;
@@ -255,15 +253,6 @@
       typeof window !== 'undefined' &&
       (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     ) {
-      // Pro-tier sync listener. The pill component returns null
-      // when the daemon's capability probe says community-tier, so
-      // starting the listener unconditionally is safe and lets the
-      // tier-detected event update the store reactively.
-      proSync
-        .start()
-        .then((stop) => (cleanupProSync = stop))
-        .catch((e) => log.warn('proSync.start failed', { error: e }));
-
       // Extension lifecycle: start every registered extension's `start()` hook.
       stopExtensions = startExtensions();
 
@@ -607,7 +596,6 @@
       if (unlistenSelectDatabase) {
         (await unlistenSelectDatabase)();
       }
-      cleanupProSync?.();
       stopExtensions?.();
       if (cleanupMCP) {
         await cleanupMCP();

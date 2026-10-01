@@ -43,18 +43,18 @@ import { isActiveDatabaseEvent } from '$lib/stores/database.svelte';
 const log = createLogger('TauriSync');
 
 // ---------------------------------------------------------------------------
-// Burst render coalescing (all tiers)
+// Burst render coalescing
 //
-// Any large burst of node events — a folder import, a reconnect replay, an
-// initial cloud pull — applied one-by-one makes each `node:created/updated`
+// Any large burst of node events — a folder import, a reconnect replay, a bulk
+// CLI or agent write — applied one-by-one makes each `node:created/updated`
 // trigger its own async fetch + `setNode` → one re-render per node, freezing the
 // webview main thread and queueing every other IPC reply (an import command's
 // completion included) behind the flood. To render the burst in one pass we
 // collect the node ids over a tiny window, fetch them in bounded chunks, then
 // apply each chunk in a SYNCHRONOUS `setNode` loop — Svelte batches synchronous
-// store mutations into a single render. The path is tier-independent: it only
-// reorders when already-received local events are applied (one frame later),
-// never what is applied, and delete-wins ordering is preserved below.
+// store mutations into a single render. It only reorders when already-received
+// local events are applied (one frame later), never what is applied, and
+// delete-wins ordering is preserved below.
 // ---------------------------------------------------------------------------
 
 /** How long to gather a burst before flushing. One frame (~16ms) is enough to
@@ -259,10 +259,10 @@ function maybeRefreshSavedQueries(node: Node): void {
 }
 
 // ---------------------------------------------------------------------------
-// has_child relationship-event coalescing (all tiers)
+// has_child relationship-event coalescing
 //
-// A large import or the initial cloud-sync pull of a populated tenant floods the event stream
-// with tens of thousands of relationship events. Applied one-by-one, each
+// A large import or a bulk CLI or agent write floods the event stream with tens
+// of thousands of relationship events. Applied one-by-one, each
 // `relationship:*` synchronously mutates the structure tree and triggers a
 // full reactive invalidation on the webview main thread, freezing the UI
 // (and backing up the daemon's WatchNodes stream until it drops events).

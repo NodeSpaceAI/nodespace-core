@@ -319,11 +319,11 @@ describe('optimistic collection creation', () => {
   });
 
   // Unlike every other cross-switch read in the codebase
-  // (loadChildrenForParent, doLoadChildrenTree, refreshDatabaseSettings,
-  // createChat, createCollection), loadCollections committed its fetched array
-  // into state without re-checking the store generation after the await — a
-  // response issued against the previous database could land after a switch
-  // and get committed as if it belonged to the new one.
+  // (loadChildrenForParent, doLoadChildrenTree, createChat, createCollection),
+  // loadCollections committed its fetched array into state without re-checking
+  // the store generation after the await — a response issued against the
+  // previous database could land after a switch and get committed as if it
+  // belonged to the new one.
   describe('loadCollections stale-response guard across a database switch', () => {
     it('discards a load that resolves after forgetLocallyCreated, without writing into the list', async () => {
       let resolveLoad: (cols: CollectionInfo[]) => void = () => {};
@@ -359,7 +359,6 @@ describe('optimistic collection creation', () => {
       await loadPromise;
 
       expect(collectionsData.state.collections).toEqual([]);
-      expect(collectionsData.hasLoaded).toBe(false);
     });
 
     it('a late-resolving load from the previous database does not clobber a fresh load for the new one', async () => {

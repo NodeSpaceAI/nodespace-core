@@ -127,15 +127,6 @@ class CollectionsDataStore {
   });
 
   /**
-   * True once `loadCollections` has completed at least one successful fetch.
-   * Lets consumers distinguish "not fetched yet" (empty because unloaded) from
-   * "fetched, genuinely empty" — e.g. the invitations prompt only concludes a
-   * signed-in user has no collection access after a real load has resolved,
-   * never during the pre-load window.
-   */
-  hasLoaded = $state(false);
-
-  /**
    * Bumped whenever the store stops representing the data it did — `reset()`
    * and `forgetLocallyCreated()` (the database switch). An in-flight
    * `createCollection` captures this before awaiting and abandons its reconcile
@@ -188,7 +179,6 @@ class CollectionsDataStore {
         collections: [...fetched, ...unconfirmed],
         loading: false,
       };
-      this.hasLoaded = true;
     } catch (err) {
       if (generation !== this.#generation) return;
       const message = err instanceof Error ? err.message : 'Failed to load collections';
@@ -364,7 +354,6 @@ class CollectionsDataStore {
       locallyCreatedIds: new Set(),
       pendingIds: new Set(),
     };
-    this.hasLoaded = false;
   }
 
   /** Set test data directly (for testing purposes only) */
@@ -381,7 +370,6 @@ class CollectionsDataStore {
       locallyCreatedIds,
       pendingIds: new Set(),
     };
-    this.hasLoaded = true;
   }
 }
 
@@ -523,21 +511,18 @@ export interface SelectedCollectionInfo {
 }
 
 /**
- * Recursively prune collections that have no member nodes visible to the
- * current user. A collection is kept if it has its own members OR any of its
- * descendants does — so a populated collection nested under an empty parent
- * still surfaces. Returns a new array of new items (pure — the input items are
- * not mutated).
+ * Recursively prune collections that have no member nodes. A collection is kept
+ * if it has its own members OR any of its descendants does — so a populated
+ * collection nested under an empty parent still surfaces. Returns a new array of
+ * new items (pure — the input items are not mutated).
  *
- * `memberCount` is sourced from the local per-user store, so it already
- * reflects RBAC visibility: the local DB only holds member edges the signed-in
- * user can see. This filter therefore hides collections that are empty *for
- * this user*, not just globally empty ones.
+ * An empty collection is clutter in the sidebar: it holds nothing to open, and
+ * one is left behind whenever its last member is moved out or deleted.
  *
  * Collections in `exempt` are always kept regardless of member count: these are
  * the ones the user created in this session, and hiding a just-created
  * collection because it is still empty is the bug this exemption exists to
- * prevent, not the RBAC-emptiness case the filter is for.
+ * prevent, not the leftover-emptiness case the filter is for.
  */
 function pruneEmptyCollections(
   items: CollectionItem[],

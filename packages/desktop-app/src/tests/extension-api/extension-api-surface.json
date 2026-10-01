@@ -1,6 +1,6 @@
 {
   "version": {
-    "major": 1,
+    "major": 2,
     "minor": 0
   },
   "entries": {
@@ -10,12 +10,13 @@
       "CollectionTreeRootsContribution",
       "CommandError",
       "Contribution",
-      "DATABASE_SETTINGS_NODE_ID",
       "DatabaseInfo",
       "EXTENSION_API_VERSION",
       "ExtensionDatabases",
       "ExtensionLifecycle",
       "NodespaceExtension",
+      "ReplaceableSlot",
+      "ReplaceableSlotContribution",
       "SettingsSectionContribution",
       "SettingsSlot",
       "SettingsSlotContribution",
@@ -73,5 +74,5 @@
       "focusTrap"
     ]
   },
-  "typesHash": "5462a7187f9129c168ea196bca118e8b59a9105a599bc0899928c36461892d16"
+  "typesHash": "3a796eabe63dd1b96e2d3bfa3a503f11da935b4d6156ddafd72f3195f7a4fde9"
 }

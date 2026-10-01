@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 import { createLogger } from '$lib/utils/logger';
-import { backendAdapter } from '$lib/services/backend-adapter';
 import { onDaemonReconnect } from '$lib/services/daemon-status';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
@@ -9,7 +8,6 @@ import { schemasData } from '$lib/stores/schemas.svelte';
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
 import { conflictsStore } from '$lib/stores/conflicts.svelte';
-import { membership } from '$lib/stores/membership.svelte';
 import { resyncSchemaPluginsForDatabaseSwitch } from '$lib/plugins/schema-plugin-loader';
 import { notifyDatabaseActivated } from '$lib/plugins/extension-lifecycle';
 import {
@@ -19,7 +17,6 @@ import {
   DEFAULT_PANE_ID
 } from '$lib/stores/navigation.svelte';
 import { formatDateISO } from '$lib/utils/date-formatting';
-import { DATABASE_SETTINGS_NODE_ID } from '$lib/constants/database-settings';
 import { toError } from '$lib/types/errors';
 
 const log = createLogger('DatabaseStore');
@@ -34,16 +31,10 @@ export interface DatabaseInfo {
   name: string;
   path: string;
   isDefault: boolean;
-  /** "closed" | "open" | "missing" | "unknown". */
+  /** "closed" | "open" | "missing" | "requires_extension" | "unknown". */
   status: string;
   createdAt: string;
   lastOpenedAt: string | null;
-  /** Cloud tenant schema this database syncs to (ADR-053); null/empty when the
-   * database is local-only (not bound to any tenant). */
-  boundTenantSchema: string | null;
-  /** The bound tenant's default (landing) collection id (ADR-053), a
-   * per-install root. */
-  boundTenantCollection: string | null;
   /** Opaque per-database keys the registry stores for extensions. Core never
    * reads them; an extension that owns a key reads it from here. */
   extensions: Record<string, string>;
@@ -80,8 +71,6 @@ const IMPLICIT_BROWSER_DATABASE: DatabaseInfo = {
   status: 'open',
   createdAt: '',
   lastOpenedAt: null,
-  boundTenantSchema: null,
-  boundTenantCollection: null,
   extensions: {}
 };
 
@@ -92,18 +81,6 @@ const IMPLICIT_BROWSER_DATABASE: DatabaseInfo = {
  * snapping back to the daemon's registry default.
  */
 const ACTIVE_DB_STORAGE_KEY = 'nodespace.activeDatabaseId';
-
-/**
- * Owner key `DATABASE_SETTINGS_NODE_ID` is pinned reachable under (see
- * SharedNodeStore.pinNodes) — never unpinned, since the singleton backs
- * always-mounted Pro-sync chrome (pro-sync-variant.svelte.ts's
- * resolveProSyncVariant/activeDatabaseSettings, membership.svelte.ts,
- * collaboration-locked.svelte) that has nothing to do with which tab/pane is
- * open. It has no structureTree relationship to any open tab and isn't
- * itself a tab root, so without an explicit pin it's unreachable — and thus
- * evictable — the instant it's cached.
- */
-const DATABASE_SETTINGS_PIN_OWNER = 'database-settings-node';
 
 function rememberActiveDatabaseId(id: string): void {
   try {
@@ -181,7 +158,6 @@ class DatabaseStore {
       this.defaultDatabaseId = IMPLICIT_BROWSER_DATABASE.id;
       if (this.activeDatabaseId === null) {
         this.activeDatabaseId = IMPLICIT_BROWSER_DATABASE.id;
-        this.refreshDatabaseSettings();
       }
       this.loading = false;
       return;
@@ -231,10 +207,7 @@ class DatabaseStore {
         if (superseded()) return;
 
         this.activeDatabaseId = resolved;
-        if (resolved !== null) {
-          this.pinWindowDatabase(resolved);
-          this.activateProSync(resolved);
-        }
+        if (resolved !== null) this.pinWindowDatabase(resolved);
 
         if (resolved !== null && resolved !== this.defaultDatabaseId) {
           // The sidebar's boot-time loads went out before routing was set, so
@@ -242,10 +215,6 @@ class DatabaseStore {
           // restored database. Workspace panes mount only once a database is
           // selected, so restored tabs never read before this point.
           this.evictAndReloadActiveDatabase();
-        } else {
-          // Hydrate the active database's DatabaseSettingsNode so the Pro-sync
-          // variant machine can read sync_enabled/auth_status.
-          this.refreshDatabaseSettings();
         }
 
         // The first resolution is a committed activation: tell extensions once
@@ -284,53 +253,6 @@ class DatabaseStore {
     } catch (err) {
       log.debug('Failed to pin window to database', { id, error: err });
     }
-  }
-
-  /**
-   * Serializes `activateProSync` calls so a rapid A -> B -> A switch sequence
-   * can never have its underlying `pro_activate_database` invokes resolve out
-   * of send order. Each call is chained to start only once the previous one
-   * has settled, guaranteeing arrival order on the Rust side matches send
-   * order — without this, the daemon (and the Rust-tracked
-   * `active_database_id` every subsequent unscoped `sync:status` event is
-   * attributed against) could end up pointed at a stale target if an earlier
-   * call's RPC happens to complete after a later one's.
-   */
-  private proActivateChain: Promise<void> = Promise.resolve();
-
-  /**
-   * Resolves once every `pro_activate_database` re-target queued so far has
-   * settled (never rejects). A view that queries the daemon's CURRENT tenant
-   * right after a switch — e.g. the workspace-members card, which re-mounts
-   * on `activeDatabaseId` — awaits this first; otherwise its query can reach
-   * the daemon while it still points at the previous database's tenant.
-   */
-  proSyncSettled(): Promise<void> {
-    return this.proActivateChain.catch(() => {});
-  }
-
-  /**
-   * Re-target the Pro cloud-sync session to `id` (ADR-053 single-active sync).
-   * Called both from `load()`'s first resolution (so a fresh launch's default
-   * selection is the daemon's sync target from the start, not just after the
-   * first manual switch) and from `switchTo()`. No-ops in community mode (the
-   * Tauri command returns early without a `ProClient`). Best-effort and
-   * fire-and-forget from the CALLER's perspective (same contract as
-   * `pinWindowDatabase` above — a failure here must never destabilize the
-   * caller), but internally serialized via `proActivateChain` — see there.
-   */
-  private activateProSync(id: string): void {
-    if (!isTauriBridgePresent()) return;
-    this.proActivateChain = this.proActivateChain
-      // A previous call's rejection must not abort this one's turn in the chain.
-      .catch(() => {})
-      .then(async () => {
-        try {
-          await invoke('pro_activate_database', { databaseId: id });
-        } catch (err) {
-          log.warn('Failed to re-target sync to the database', { id, error: err });
-        }
-      });
   }
 
   /**
@@ -454,12 +376,6 @@ class DatabaseStore {
       rememberActiveDatabaseId(id);
       this.pinWindowDatabase(id);
 
-      // Re-target Pro cloud-sync to follow the newly-active database (ADR-053
-      // single-active sync): switching database in the app switches which tenant
-      // syncs, not just which one is read/written. Best-effort — a re-target
-      // failure must not abort the already-committed routing switch.
-      this.activateProSync(id);
-
       this.evictAndReloadActiveDatabase();
 
       // Extensions clear their own per-database caches here: the previous
@@ -524,10 +440,6 @@ class DatabaseStore {
     // members against DB-B, including for a DB-B collection that happens to
     // share the id.
     collectionsState.reset();
-    // Same id-collision hazard as the member cache above, for the Pro
-    // membership roster/invites/requests cache (has_role edges are
-    // per-database — ADR-053).
-    membership.invalidateForDatabaseSwitch();
     // As with collectionsData.forgetLocallyCreated() above: invalidate any
     // in-flight loadSchemas before reloading, so its result can't land in
     // a store that now represents a different database.
@@ -551,55 +463,6 @@ class DatabaseStore {
     // type unique to the new database, via no template at all) until the
     // next app restart.
     void resyncSchemaPluginsForDatabaseSwitch();
-    // Re-hydrate the new database's DatabaseSettingsNode (the previous one was
-    // evicted by clearAll) so the Pro-sync variant re-resolves for it.
-    this.refreshDatabaseSettings();
-  }
-
-  /**
-   * Force-refetch the active database's `DatabaseSettingsNode` into the shared
-   * store (bypassing the cache-first `ensureNode` path) so the Pro-sync variant
-   * machine re-resolves from fresh `sync_enabled`/`auth_status` values.
-   *
-   * The node is otherwise read once per app life and then kept fresh only by
-   * `node:updated` watch events, which have unrecoverable loss modes (watcher
-   * reconnect backoff, broadcast lag drops, failed coalescer refetch) — miss one
-   * and the variant is stuck stale, e.g. at `sign-in` after the daemon already
-   * flipped `auth_status` to connected. Callers re-pull on the
-   * transitions that matter: sync-status edges, the consent decision, database
-   * switch, and initial load.
-   *
-   * Fire-and-forget: callers must not block on it, and a missing node (older
-   * database not yet backfilled) simply leaves the variant at its default.
-   *
-   * Also (re-)pins the singleton reachable, unconditionally and up front —
-   * not only inside the fetch's `.then()` — so there is no window where the
-   * node is cached but not pinned regardless of fetch timing, and so a
-   * database switch's `clearAll()` (which wipes every pin along with every
-   * cached node) gets its pin re-established the moment this runs again, the
-   * same call that re-hydrates the node itself. See
-   * `DATABASE_SETTINGS_PIN_OWNER`'s doc comment for why this needs pinning
-   * at all: nothing about it is reachable via the structureTree walk.
-   */
-  refreshDatabaseSettings(): void {
-    sharedNodeStore.pinNodes(DATABASE_SETTINGS_PIN_OWNER, [DATABASE_SETTINGS_NODE_ID]);
-
-    const epoch = sharedNodeStore.currentEpoch();
-    backendAdapter
-      .getNode(DATABASE_SETTINGS_NODE_ID)
-      .then((node) => {
-        // The active database switched while the read was in flight — the row
-        // belongs to the previous database, so drop it (see `currentEpoch()`).
-        if (!node || sharedNodeStore.currentEpoch() !== epoch) return;
-        sharedNodeStore.setNode(
-          node,
-          { type: 'database', reason: 'refresh-database-settings' },
-          true
-        );
-      })
-      .catch((err: unknown) => {
-        log.debug('Could not refresh DatabaseSettingsNode', { error: err });
-      });
   }
 
   /**
@@ -668,8 +531,8 @@ export const databaseStore = new DatabaseStore();
 
 // Retry the initial registry load once the daemon becomes reachable, mirroring
 // the collections/schemas stores: a `load()` that ran while the daemon was
-// still starting fails and leaves `activeDatabaseId` null (and the settings
-// node unhydrated) until a manual reload. Guarded on the not-yet-loaded state
+// still starting fails and leaves `activeDatabaseId` null until a manual
+// reload. Guarded on the not-yet-loaded state
 // so a background reconnect never re-runs against an established selection.
 onDaemonReconnect(() => {
   if (databaseStore.activeDatabaseId === null) {

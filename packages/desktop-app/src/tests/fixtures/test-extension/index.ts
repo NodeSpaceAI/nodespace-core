@@ -10,6 +10,11 @@
  * Register it with `uiExtensionRegistry.register(createTestExtension())` and
  * `unregister(TEST_EXTENSION_ID)` in `afterEach`, then call
  * `resetTestExtension()`.
+ *
+ * Its `collaboration.entry` contributions are registered even while every flag
+ * is off, and registration alone keeps core's default out of that slot (the
+ * Labs contact card). A test that needs the default with the fixture registered
+ * passes `{ replaceableSlots: undefined }` as an override.
  */
 import type { NodespaceExtension } from '@nodespace/extension-api';
 import { testExtensionFlags } from './flags.svelte';
@@ -41,7 +46,7 @@ export function createTestExtension(
   const section = options.section ?? {};
   return {
     id: TEST_EXTENSION_ID,
-    apiVersion: 1,
+    apiVersion: 2,
     chrome: [
       {
         id: 'overlay',
@@ -124,6 +129,45 @@ export function createTestExtension(
         slot: 'database.row',
         when: () => testExtensionFlags.databaseRowThrowing,
         load: () => import('./test-throwing-row.svelte')
+      }
+    ],
+    replaceableSlots: [
+      {
+        id: 'collaboration-entry',
+        slot: 'collaboration.entry',
+        when: () => testExtensionFlags.collaborationEntry,
+        load: () => import('./test-collaboration-entry.svelte')
+      },
+      {
+        id: 'collaboration-entry-secondary',
+        slot: 'collaboration.entry',
+        priority: 10,
+        when: () => testExtensionFlags.collaborationEntrySecondary,
+        load: () => import('./test-collaboration-entry-secondary.svelte')
+      },
+      {
+        // `when()` throws while `collaborationEntryThrowingWhen` is set, and is otherwise false.
+        id: 'collaboration-entry-throwing-when',
+        slot: 'collaboration.entry',
+        when: () => {
+          if (testExtensionFlags.collaborationEntryThrowingWhen) {
+            throw new Error('collaboration-entry-throwing-when: when() failed');
+          }
+          return false;
+        },
+        load: () => import('./test-collaboration-entry.svelte')
+      },
+      {
+        id: 'collaboration-entry-failing-load',
+        slot: 'collaboration.entry',
+        when: () => testExtensionFlags.collaborationEntryFailingLoad,
+        load: () => Promise.reject(new Error('collaboration-entry-failing-load: load() failed'))
+      },
+      {
+        id: 'collaboration-entry-throwing',
+        slot: 'collaboration.entry',
+        when: () => testExtensionFlags.collaborationEntryThrowing,
+        load: () => import('./test-throwing.svelte')
       }
     ],
     // Contributes `testExtensionFlags.collectionTreeRoots`, empty until a test sets it.
