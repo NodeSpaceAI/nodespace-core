@@ -179,14 +179,18 @@ const METADATA_FIELDS: Readonly<Record<string, (node: Node) => unknown>> = {
   modified_at: (node) => node.modifiedAt,
   node_type: (node) => node.nodeType,
   content: (node) => node.content,
-  title: (node) => node.title
+  title: (node) => node.title,
 };
 
 /** The value a non-relationship filter compares against. */
 function filterSubject(node: Node, filter: QueryFilter): unknown {
   if (filter.type === 'content') return node.content;
   if (!filter.property) return undefined;
-  if (filter.type === 'metadata') return METADATA_FIELDS[filter.property]?.(node);
+  if (filter.type === 'metadata') {
+    return Object.hasOwn(METADATA_FIELDS, filter.property)
+      ? METADATA_FIELDS[filter.property](node)
+      : undefined;
+  }
   return resolveFieldValue(node, filter.property);
 }
 

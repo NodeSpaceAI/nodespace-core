@@ -356,7 +356,7 @@ describe('matchesFilter', () => {
           type: 'metadata',
           operator: 'contains',
           property: 'title',
-          value: 'acme inv',
+          value: 'Acme inv',
         })
       ).toBe(true);
       expect(
@@ -364,20 +364,19 @@ describe('matchesFilter', () => {
           type: 'metadata',
           operator: 'contains',
           property: 'content',
-          value: 'corp',
+          value: 'Corp',
         })
       ).toBe(true);
     });
 
     it('does not read a schema field or an unknown column', () => {
       const withProp = node('m2', { properties: { status: 'open' } });
-      expect(
-        matchesFilter(withProp, {
-          type: 'metadata',
-          operator: 'exists',
-          property: 'status',
-        })
-      ).toBe(false);
+      // `constructor` and `__proto__` are inherited object keys, not columns.
+      for (const property of ['status', 'constructor', '__proto__']) {
+        expect(matchesFilter(withProp, { type: 'metadata', operator: 'exists', property })).toBe(
+          false
+        );
+      }
     });
   });
 
