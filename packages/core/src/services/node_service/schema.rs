@@ -3,18 +3,6 @@
 use super::*;
 use crate::models::schema::RelationshipDirection;
 
-/// Result of [`NodeService::update_task_node_in_tx`] — the task-node twin of
-/// `crud.rs`'s `VersionCheckedUpdateOutcome`. See that type's own doc for why
-/// a version conflict is `Ok` rather than `Err`. `Updated` is boxed simply
-/// because `TaskNode` is a large, non-`Copy` struct worth keeping off the
-/// stack when this variant is passed around — unlike `VersionCheckedUpdateOutcome`,
-/// there's no zero-size sibling variant here for the boxing to protect from
-/// paying `TaskNode`'s size (`VersionConflict(i64)` is already small).
-pub(crate) enum TaskVersionCheckedUpdateOutcome {
-    VersionConflict(i64),
-    Updated(Box<crate::models::TaskNode>),
-}
-
 impl NodeService {
     /// Query nodes by type with optional lifecycle_status filter.
     ///
@@ -156,314 +144,24 @@ impl NodeService {
             .map_err(NodeServiceError::from_store)
     }
 
-    /// Get a task node with strong typing
-    ///
-    /// Returns strongly-typed `TaskNode` instead of generic `Node`.
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The task node ID
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Some(TaskNode))` - Task found with strongly-typed fields
-    /// * `Ok(None)` - Task not found
-    /// * `Err(_)` - Service error
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::SqliteStore;
-    /// # use std::path::PathBuf;
-    /// # use std::sync::Arc;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut db = Arc::new(SqliteStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(&mut db).await?;
-    /// if let Some(task) = service.get_task_node("my-task-id").await? {
-    ///     // Direct field access - no JSON parsing
-    ///     println!("Status: {:?}", task.status);
-    ///     println!("Content: {}", task.content);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn get_task_node(
-        &self,
-        id: &str,
-    ) -> Result<Option<crate::models::TaskNode>, NodeServiceError> {
-        self.store.get_task_node(id).await.map_err(|e| {
-            NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
-                context: format!("Failed to get task node '{}': {}", id, e),
-            })
-        })
-    }
-
-    /// Update a task node with type-safe field updates
-    ///
-    /// Updates task-specific fields (status, priority, due_date).
-    /// Uses optimistic concurrency control (OCC) to prevent lost updates.
-    ///
-    /// # Type Safety
-    ///
-    /// This method provides end-to-end type safety for task updates:
-    /// - Frontend sends strongly-typed `TaskNodeUpdate` (not generic NodeUpdate)
-    /// - Backend updates task fields directly (not via JSON properties)
-    /// - Returns strongly-typed `TaskNode` with updated fields
-    ///
-    /// # Arguments
-    ///
-    /// * `id` - The task node ID
-    /// * `expected_version` - Version for OCC check (prevents lost updates)
-    /// * `update` - TaskNodeUpdate with fields to update
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(TaskNode)` - Updated task with new version
-    /// * `Err(VersionMismatch)` - Version conflict, refresh and retry
-    /// * `Err(NodeNotFound)` - Task doesn't exist
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::models::{TaskNodeUpdate, TaskStatus};
-    /// # use nodespace_core::db::SqliteStore;
-    /// # use std::path::PathBuf;
-    /// # use std::sync::Arc;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut db = Arc::new(SqliteStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(&mut db).await?;
-    /// // Update task status
-    /// let update = TaskNodeUpdate::new().with_status(TaskStatus::InProgress);
-    /// let task = service.update_task_node("task-123", 1, update).await?;
-    /// println!("New status: {:?}", task.status);
-    /// println!("New version: {}", task.version);
-    /// # Ok(())
-    /// # }
-    /// ```
-    /// Validate a `TaskStatus` against `task.status`'s declared vocabulary
-    /// (`core_values` + `user_values`), mirroring `validate_node_with_fields`'s
-    /// enum check (`crud.rs`). `TaskStatus::from_str` is infallible by
-    /// construction — any unrecognized string becomes `TaskStatus::User(_)` —
-    /// so this is the only place `update_task_node` actually rejects a value
-    /// the schema hasn't declared.
-    async fn validate_task_status(
-        &self,
-        status: &crate::models::TaskStatus,
-    ) -> Result<(), NodeServiceError> {
-        let schema = self
-            .get_schema_node("task")
-            .await?
-            .ok_or_else(|| NodeServiceError::invalid_update("Schema 'task' not found"))?;
-
-        let valid_values = schema.get_enum_values("status").unwrap_or_default();
-        let status_str = status.as_str();
-        let is_valid = valid_values.iter().any(|ev| ev.value == status_str);
-
-        if !is_valid {
-            let valid_labels: Vec<_> = valid_values
-                .iter()
-                .map(|ev| format!("{} ({})", ev.label, ev.value))
-                .collect();
-            return Err(NodeServiceError::invalid_update(format!(
-                "Invalid value '{}' for enum field 'status'. Valid values: {}",
-                status_str,
-                valid_labels.join(", ")
-            )));
-        }
-
-        Ok(())
-    }
-
+    /// Update a task node's core fields (`status`, `priority`, `due_date`,
+    /// `started_at`, `completed_at`) with optimistic concurrency control. See
+    /// [`Self::update_person_node`] for why this delegates to the generic
+    /// pipeline; `status`/`priority` are validated there against the
+    /// schema's declared vocabulary (core + user values).
     pub async fn update_task_node(
         &self,
         id: &str,
         expected_version: i64,
         update: crate::models::TaskNodeUpdate,
-    ) -> Result<crate::models::TaskNode, NodeServiceError> {
+    ) -> Result<Node, NodeServiceError> {
         if update.is_empty() {
             return Err(NodeServiceError::invalid_update(
                 "TaskNodeUpdate contains no changes",
             ));
         }
-
-        // Enforce `status` against the schema's declared vocabulary
-        // (core_values + user_values) — the same check `validate_node_with_fields`
-        // already performs for schema-only types (ADR-076). `update_task_node`
-        // is the sole call path into the store-layer write (confirmed: no other
-        // caller reaches it directly), and the store layer trusts this having
-        // already run rather than re-validating itself. Read-only and schema-scoped
-        // (not node-scoped), so it's safe to run before the transaction opens below —
-        // same posture as `update_with_version_check_returning_node`'s own pre-tx checks.
-        if let Some(ref status) = update.status {
-            self.validate_task_status(status).await?;
-        }
-
-        let service = self.clone();
-        let service_for_tx = service.clone();
-        let id_for_tx = id.to_string();
-        let outcome = service
-            .with_transaction(move |tx| {
-                Box::pin(async move {
-                    service_for_tx
-                        .update_task_node_in_tx(tx, &id_for_tx, expected_version, update)
-                        .await
-                })
-            })
-            .await?;
-
-        match outcome {
-            TaskVersionCheckedUpdateOutcome::Updated(task) => Ok(*task),
-            TaskVersionCheckedUpdateOutcome::VersionConflict(actual_version) => {
-                Err(NodeServiceError::VersionConflict {
-                    node_id: id.to_string(),
-                    expected_version,
-                    actual_version,
-                })
-            }
-        }
-    }
-
-    /// Tx-scoped twin of [`Self::update_task_node`] (ADR-060 §2) — the
-    /// `update_task_node` counterpart to `crud.rs`'s
-    /// `update_with_version_check_returning_node_in_tx`. Same
-    /// read-existing → compute title → version-checked write → diff →
-    /// buffer event → synchronous invariant dispatch → re-read final state
-    /// pipeline as that method; see its own doc for why each step is
-    /// ordered the way it is (in particular, why the event is buffered
-    /// *before* dispatch, and why the final state is re-read rather than
-    /// returning the pre-dispatch snapshot — an invariant rule's action can
-    /// self-referentially write back to this same node).
-    ///
-    /// Reads `existing` and computes `title_update` from it here, inside
-    /// `tx`, rather than reusing a pre-transaction snapshot — the same
-    /// posture `update_with_version_check_returning_node_in_tx` takes, so a
-    /// concurrent write landing between a hypothetical pre-tx read and this
-    /// tx's write can never leave the title computed against stale content.
-    pub(crate) async fn update_task_node_in_tx(
-        &self,
-        tx: &NodeServiceTx<'_>,
-        id: &str,
-        expected_version: i64,
-        update: crate::models::TaskNodeUpdate,
-    ) -> Result<TaskVersionCheckedUpdateOutcome, NodeServiceError> {
-        let existing = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
+        self.update_typed_fields(id, "task", expected_version, update.to_properties_patch())
             .await
-            .map_err(NodeServiceError::from_store)?
-            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
-
-        // Sync the indexed `title` column, mirroring the generic update path's guard
-        // (`content_changed || properties_changed`, see crud.rs). A task-schema
-        // `title_template` makes the title depend on task properties as well as
-        // content, so recomputing on content alone would leave the title stale after
-        // a property-only change, and a combined content+property update must compute
-        // from the *fully-merged* node (not a pre-update snapshot) or the title lands
-        // one write behind. We build the post-update node with the same shared merge
-        // the store performs and compute the title from it. When no template is set
-        // (the built-in "task" schema today), compute_title falls through to
-        // `strip_markdown(content)`, so a property-only update recomputes to the same
-        // value — a harmless no-op write, not a behavior change.
-        let content_changed = update
-            .content
-            .as_ref()
-            .is_some_and(|new_content| new_content != &existing.content);
-
-        let title_update = if content_changed || update.has_property_fields() {
-            let mut merged = existing.clone();
-            if let Some(ref new_content) = update.content {
-                merged.content = new_content.clone();
-            }
-            if content_changed {
-                self.validate_templated_content(&merged).await?;
-            }
-            update.apply_to_properties(&mut merged.properties);
-            self.compute_title(&merged, None).await?
-        } else {
-            None
-        };
-
-        let result = crate::db::SqliteStore::update_task_node_with_version_check_in_tx(
-            tx.store_tx(),
-            id,
-            expected_version,
-            update,
-            title_update,
-        )
-        .await
-        .map_err(NodeServiceError::from_store)?;
-
-        let updated_node = match result {
-            Ok(node) => node,
-            Err(actual_version) => {
-                return Ok(TaskVersionCheckedUpdateOutcome::VersionConflict(
-                    actual_version,
-                ))
-            }
-        };
-
-        // Real changed_properties, diffed from the namespaced `properties.task.*`
-        // storage shape — see `compute_property_changes`'s own doc. Required here
-        // for the same reason it's required in the generic update path: an
-        // `_in_tx` store write bypasses the store's own notifier, so this is the
-        // only source of an accurate diff for property_changed-triggered plays
-        // (reactive or invariant) and WatchNodes consumers.
-        let changed_properties =
-            compute_property_changes(&existing.properties, &updated_node.properties);
-
-        // Buffered on `tx`, not broadcast yet — only
-        // flushed if this whole transaction commits.
-        self.emit_event_in_tx(
-            tx,
-            DomainEvent::NodeUpdated {
-                node_id: updated_node.id.clone(),
-                node_type: updated_node.node_type.clone(),
-                node: updated_node.clone(),
-                changed_properties: changed_properties.clone(),
-            },
-        );
-
-        // ADR-060 §2: synchronous invariant-rule dispatch for property_changed
-        // triggers, inside this same transaction — the exact gap this issue
-        // closes (a Task's `status` change is the motivating example). A
-        // rejecting rule's `Err` propagates out through the `?` below, through
-        // this whole function, and through the caller's `with_transaction`,
-        // rolling back everything above — including the buffered event.
-        self.dispatch_invariant_rules_for_update_in_tx(tx, &updated_node, &changed_properties)
-            .await?;
-
-        // Re-read the trigger node's final state, tx-consistent, rather than
-        // converting `updated_node` directly — an invariant rule's own action
-        // can be a self-referential `update_node` on the SAME node, writing a
-        // second time inside this same transaction (see
-        // `update_with_version_check_returning_node_in_tx`'s identical
-        // re-read for the full rationale).
-        let final_node = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
-            .await
-            .map_err(NodeServiceError::from_store)?
-            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
-
-        // An invariant rule's action is a generic `update_node` with no
-        // guard against changing `node_type` — unlike the rest of this
-        // pipeline, which is task-shape-preserving by construction. If a
-        // rule's own self-referential action retypes the trigger node away
-        // from "task" (a deliberately unusual thing for a rule to do, and
-        // not the shape any known rule uses today), this conversion fails
-        // and the whole transaction rolls back via the `?` below — a safe,
-        // no-partial-write outcome, just surfaced as a generic
-        // `invalid_update` rather than an invariant-specific error variant.
-        let task_node = crate::db::SqliteStore::node_to_task_node(final_node).ok_or_else(|| {
-            NodeServiceError::invalid_update(format!(
-                "Node '{}' is no longer a task node after update",
-                id
-            ))
-        })?;
-
-        Ok(TaskVersionCheckedUpdateOutcome::Updated(Box::new(
-            task_node,
-        )))
     }
 
     /// Update a person node's core fields (`first_name`, `last_name`, `email`)
@@ -1686,7 +1384,9 @@ impl NodeService {
 mod typed_update_tests {
     use super::*;
     use crate::db::SqliteStore;
-    use crate::models::{PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate};
+    use crate::models::{
+        PersonNodeUpdate, Priority, ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
+    };
     use crate::services::{CreateNodeParams, InsertPositionOwned};
     use serde_json::json;
     use tempfile::TempDir;
@@ -1832,6 +1532,176 @@ mod typed_update_tests {
 
         assert!(service
             .update_person_node(&person.id, person.version, PersonNodeUpdate::default())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn task_update_writes_fields_and_leaves_others() {
+        let (service, _t) = create_test_service().await;
+        let task = create(
+            &service,
+            "task",
+            json!({ "priority": "low", "custom:estimate": 3 }),
+        )
+        .await;
+
+        let updated = service
+            .update_task_node(
+                &task.id,
+                task.version,
+                TaskNodeUpdate {
+                    status: Some(TaskStatus::InProgress),
+                    due_date: set("2026-03-01"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("typed task update succeeds");
+
+        assert_eq!(updated.version, task.version + 1);
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert_eq!(typed["status"], "in_progress");
+        assert_eq!(typed["dueDate"], "2026-03-01");
+        assert_eq!(
+            typed["priority"], "low",
+            "an absent priority is left unchanged"
+        );
+        assert_eq!(typed["properties"], json!({ "custom:estimate": 3 }));
+    }
+
+    #[tokio::test]
+    async fn task_update_null_clears_priority_and_dates() {
+        let (service, _t) = create_test_service().await;
+        let task = create(
+            &service,
+            "task",
+            json!({ "priority": "high", "due_date": "2026-03-01" }),
+        )
+        .await;
+
+        let updated = service
+            .update_task_node(
+                &task.id,
+                task.version,
+                TaskNodeUpdate {
+                    priority: Some(None),
+                    due_date: Some(None),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert!(typed.get("priority").is_none(), "{typed}");
+        assert!(typed.get("dueDate").is_none(), "{typed}");
+        assert_eq!(typed["status"], "open", "status is untouched");
+    }
+
+    /// The typed update returns the node as stored: an archived task stays
+    /// archived in the response, and its extension field is still there.
+    #[tokio::test]
+    async fn task_update_response_keeps_lifecycle_status_and_extension_fields() {
+        let (service, _t) = create_test_service().await;
+        let id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Retired task".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({ "custom:estimate": 3 }),
+                lifecycle_status: Some("archived".to_string()),
+            })
+            .await
+            .unwrap();
+        let task = service.get_node(&id).await.unwrap().unwrap();
+
+        let updated = service
+            .update_task_node(
+                &id,
+                task.version,
+                TaskNodeUpdate {
+                    status: Some(TaskStatus::Done),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.lifecycle_status, "archived");
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert_eq!(typed["lifecycleStatus"], "archived");
+        assert_eq!(typed["status"], "done");
+        assert_eq!(typed["properties"], json!({ "custom:estimate": 3 }));
+    }
+
+    #[tokio::test]
+    async fn task_update_rejects_a_priority_outside_the_schema_vocabulary() {
+        let (service, _t) = create_test_service().await;
+        let task = create(&service, "task", json!({})).await;
+
+        let err = service
+            .update_task_node(
+                &task.id,
+                task.version,
+                TaskNodeUpdate {
+                    priority: Some(Some(Priority::User("someday".to_string()))),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Invalid value 'someday'"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn task_update_on_a_stale_version_conflicts() {
+        let (service, _t) = create_test_service().await;
+        let task = create(&service, "task", json!({})).await;
+
+        let err = service
+            .update_task_node(
+                &task.id,
+                task.version + 5,
+                TaskNodeUpdate {
+                    status: Some(TaskStatus::Done),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, NodeServiceError::VersionConflict { .. }),
+            "{err:?}"
+        );
+    }
+
+    /// The typed task shape is `task`'s own: another type's node, and an empty
+    /// update, are both refused.
+    #[tokio::test]
+    async fn task_update_rejects_another_type_and_an_empty_update() {
+        let (service, _t) = create_test_service().await;
+        let project = create(&service, "project", json!({})).await;
+        let err = service
+            .update_task_node(
+                &project.id,
+                project.version,
+                TaskNodeUpdate {
+                    status: Some(TaskStatus::Done),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not a task node"), "{err}");
+
+        let task = create(&service, "task", json!({})).await;
+        assert!(service
+            .update_task_node(&task.id, task.version, TaskNodeUpdate::default())
             .await
             .is_err());
     }

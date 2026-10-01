@@ -1,5 +1,4 @@
 use chrono::{DateTime, NaiveDate, Utc};
-use std::str::FromStr;
 
 use crate::ai_chat::{AiChatMessage, AiChatNode};
 use crate::core_type::CoreNodeType;
@@ -8,7 +7,8 @@ use crate::person::PersonNode;
 use crate::project::{ProjectNode, DEFAULT_PROJECT_STATUS};
 use crate::query::{QueryFields, QueryNode};
 use crate::schema::SchemaNode;
-use crate::task::{TaskNode, TaskPriority, TaskStatus};
+use crate::priority::priority_prop;
+use crate::task::{TaskNode, TaskStatus};
 
 fn normalize_date_field(s: &str) -> String {
     if NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok() {
@@ -323,10 +323,7 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         .and_then(|s| s.parse().ok())
         .unwrap_or_default();
 
-    let priority = props
-        .get("priority")
-        .and_then(|v| v.as_str())
-        .map(|s| TaskPriority::from_str(s).unwrap_or_default());
+    let priority = priority_prop(props);
 
     let due_date = props
         .get("due_date")
@@ -386,7 +383,7 @@ fn person_node_to_value(node: Node) -> Result<serde_json::Value, String> {
 fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     let props = &node.properties;
     let status = string_prop(props, "status").unwrap_or_else(|| DEFAULT_PROJECT_STATUS.to_string());
-    let priority = string_prop(props, "priority");
+    let priority = priority_prop(props);
     let start_date = props
         .get("start_date")
         .and_then(|v| v.as_str())

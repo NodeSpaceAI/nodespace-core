@@ -4,8 +4,8 @@
 //! raw `serde_json::Value` path lookups that the daemon previously used to read
 //! and write chat messages, status, model, and provider.
 //!
-//! Mirrors the [`TaskNode`](crate::models::TaskNode) pattern: data is stored in
-//! the node's `properties` under a type namespace (`properties["ai-chat"]`), and
+//! Data is stored in the node's `properties` under a type namespace
+//! (`properties["ai-chat"]`), and
 //! `from_node` / `into_node` convert between the universal [`Node`] and this
 //! strongly-typed struct.
 //!
@@ -306,8 +306,7 @@ impl AiChatNode {
     ///
     /// Reads ai-chat fields from the `properties["ai-chat"]` namespace, falling
     /// back to flat `properties` when the namespace is absent (e.g. after
-    /// `flatten_properties_for_api` has promoted them). Mirrors the dual
-    /// nested/flat handling in [`TaskNode::from_node`](crate::models::TaskNode).
+    /// `flatten_properties_for_api` has promoted them).
     ///
     /// Reads ONLY the canonical snake_case schema names (`turn_status`,
     /// `session_status`) — deliberately not dual-cased. An earlier version of

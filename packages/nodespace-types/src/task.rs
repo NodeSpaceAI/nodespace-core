@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+use crate::helpers::deserialize_clearable;
 use crate::node::NodeEnvelope;
+use crate::priority::Priority;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TaskStatus {
@@ -37,6 +39,12 @@ impl TaskStatus {
             Self::User(s) => s.as_str(),
         }
     }
+
+    /// Whether this is one of the core statuses rather than a user-defined
+    /// one.
+    pub fn is_core(&self) -> bool {
+        !matches!(self, Self::User(_))
+    }
 }
 
 impl Serialize for TaskStatus {
@@ -46,58 +54,6 @@ impl Serialize for TaskStatus {
 }
 
 impl<'de> Deserialize<'de> for TaskStatus {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        Ok(Self::from_str(&s).unwrap())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub enum TaskPriority {
-    Highest,
-    High,
-    #[default]
-    Medium,
-    Low,
-    Lowest,
-    User(String),
-}
-
-impl FromStr for TaskPriority {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "highest" => Self::Highest,
-            "high" => Self::High,
-            "medium" => Self::Medium,
-            "low" => Self::Low,
-            "lowest" => Self::Lowest,
-            other => Self::User(other.to_string()),
-        })
-    }
-}
-
-impl TaskPriority {
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Highest => "highest",
-            Self::High => "high",
-            Self::Medium => "medium",
-            Self::Low => "low",
-            Self::Lowest => "lowest",
-            Self::User(s) => s.as_str(),
-        }
-    }
-}
-
-impl Serialize for TaskPriority {
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for TaskPriority {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = String::deserialize(d)?;
         Ok(Self::from_str(&s).unwrap())
@@ -117,7 +73,7 @@ pub struct TaskNode {
     pub envelope: NodeEnvelope,
     pub status: TaskStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<TaskPriority>,
+    pub priority: Option<Priority>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -126,14 +82,27 @@ pub struct TaskNode {
     pub completed_at: Option<String>,
 }
 
-/// Partial update for task-specific properties, received from the frontend.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Partial update for a task's core fields, received from the frontend.
+///
+/// `status` has no clear path (the schema requires it); the other fields are
+/// tri-state: absent leaves the field unchanged, `null` clears it, and a value
+/// sets it. Dates accept `YYYY-MM-DD` or RFC 3339 and are stored as
+/// `YYYY-MM-DD`.
+///
+/// The update carries the task schema's fields and nothing else. `content` is
+/// an envelope field and extension fields (`custom:…`) live in `properties`;
+/// both are written through the generic node update.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskNodeUpdate {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<TaskStatus>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<Option<TaskPriority>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_clearable"
+    )]
+    pub priority: Option<Option<Priority>>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -152,8 +121,40 @@ pub struct TaskNodeUpdate {
         deserialize_with = "flexible_date::deserialize_with_null"
     )]
     pub completed_at: Option<Option<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+}
+
+impl TaskNodeUpdate {
+    /// True when the update changes nothing.
+    pub fn is_empty(&self) -> bool {
+        self.status.is_none()
+            && self.priority.is_none()
+            && self.due_date.is_none()
+            && self.started_at.is_none()
+            && self.completed_at.is_none()
+    }
+
+    /// The flat, bare-key properties patch this update writes (`{"status":
+    /// "done"}`); a cleared field is written as `null`. The service layer
+    /// moves the keys into the `task` storage bucket.
+    pub fn to_properties_patch(&self) -> serde_json::Value {
+        let mut patch = serde_json::Map::new();
+        if let Some(status) = &self.status {
+            patch.insert("status".to_string(), serde_json::json!(status));
+        }
+        if let Some(priority) = &self.priority {
+            patch.insert("priority".to_string(), serde_json::json!(priority));
+        }
+        for (key, value) in [
+            ("due_date", &self.due_date),
+            ("started_at", &self.started_at),
+            ("completed_at", &self.completed_at),
+        ] {
+            if let Some(value) = value {
+                patch.insert(key.to_string(), serde_json::json!(value));
+            }
+        }
+        serde_json::Value::Object(patch)
+    }
 }
 
 /// Flexible date deserializer: accepts ISO8601 full timestamps, date-only
@@ -163,10 +164,6 @@ pub struct TaskNodeUpdate {
 /// - Field absent from JSON → `None` (don't change)
 /// - Field present as `null` → `Some(None)` (clear the value)
 /// - Field present as a string → `Some(Some(dt))` (set to this value)
-///
-/// Note: The old `src-tauri/types.rs` mirror used `Option<Option<String>>` as
-/// the intermediate which caused JSON `null` to map to `None` (no-op) instead
-/// of `Some(None)` (clear). This is the corrected implementation.
 pub(crate) mod flexible_date {
     use chrono::{DateTime, NaiveDate, Utc};
     use serde::{Deserialize, Deserializer};
@@ -205,44 +202,69 @@ pub(crate) mod flexible_date {
 mod tests {
     use super::*;
 
-    /// This crate carries its own `TaskPriority` copy because it cannot depend
-    /// on `nodespace-core`, and it is the one that serializes onto the wire.
-    /// The core-side bidirectional drift test guards the *core* copy against
-    /// `task.priority`'s schema seed; nothing links this copy to either, so a
-    /// value added to the scale but missed here would degrade to
-    /// `TaskPriority::User(_)` at the frontend boundary while every suite
-    /// stayed green. Pinning the literals here is the cheapest available
-    /// stand-in for that missing link.
     #[test]
-    fn task_priority_core_scale_parses_to_named_variants() {
-        let scale = [
-            ("highest", TaskPriority::Highest),
-            ("high", TaskPriority::High),
-            ("medium", TaskPriority::Medium),
-            ("low", TaskPriority::Low),
-            ("lowest", TaskPriority::Lowest),
-        ];
+    fn task_node_update_null_clears_priority() {
+        let update: TaskNodeUpdate = serde_json::from_str(r#"{"priority": null}"#).unwrap();
+        assert_eq!(update.priority, Some(None));
+        assert!(!update.is_empty());
+    }
 
-        for (literal, expected) in &scale {
-            let parsed: TaskPriority = literal.parse().expect("from_str is infallible");
-            assert_eq!(
-                parsed, *expected,
-                "'{}' must parse to the named TaskPriority variant, not TaskPriority::User(_) — \
-                 keep this copy in step with task.priority's core_values in core_schemas.rs.",
-                literal
-            );
+    #[test]
+    fn task_node_update_absent_priority_is_unchanged() {
+        let update: TaskNodeUpdate = serde_json::from_str(r#"{"status": "done"}"#).unwrap();
+        assert_eq!(update.priority, None);
+        assert_eq!(update.status, Some(TaskStatus::Done));
+    }
+
+    #[test]
+    fn task_node_update_sets_core_and_user_priorities() {
+        let update: TaskNodeUpdate = serde_json::from_str(r#"{"priority": "high"}"#).unwrap();
+        assert_eq!(update.priority, Some(Some(Priority::High)));
+        let update: TaskNodeUpdate = serde_json::from_str(r#"{"priority": "urgent"}"#).unwrap();
+        assert_eq!(
+            update.priority,
+            Some(Some(Priority::User("urgent".to_string())))
+        );
+    }
+
+    /// `content` is an envelope field and `properties` holds extension
+    /// fields; neither is part of the typed update, and naming one is an
+    /// error rather than a silently dropped write.
+    #[test]
+    fn task_node_update_rejects_content_and_properties() {
+        for json in [
+            r#"{"content": "Renamed"}"#,
+            r#"{"status": "done", "properties": {"custom:estimate": 3}}"#,
+        ] {
             assert!(
-                !matches!(parsed, TaskPriority::User(_)),
-                "'{}' fell through to the user-defined catch-all",
-                literal
-            );
-            assert_eq!(
-                parsed.as_str(),
-                *literal,
-                "'{}' must round-trip through as_str()",
-                literal
+                serde_json::from_str::<TaskNodeUpdate>(json).is_err(),
+                "{json} must not deserialize as a TaskNodeUpdate"
             );
         }
+    }
+
+    #[test]
+    fn empty_task_node_update_is_empty() {
+        let update: TaskNodeUpdate = serde_json::from_str("{}").unwrap();
+        assert!(update.is_empty());
+    }
+
+    #[test]
+    fn patch_carries_only_the_fields_the_update_names() {
+        let update = TaskNodeUpdate {
+            status: Some(TaskStatus::InProgress),
+            priority: Some(None),
+            due_date: Some(Some("2026-03-01".to_string())),
+            ..Default::default()
+        };
+        assert_eq!(
+            update.to_properties_patch(),
+            serde_json::json!({
+                "status": "in_progress",
+                "priority": null,
+                "due_date": "2026-03-01"
+            })
+        );
     }
 
     #[test]

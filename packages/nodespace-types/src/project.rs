@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::helpers::deserialize_clearable;
 use crate::node::NodeEnvelope;
+use crate::priority::Priority;
 use crate::task::flexible_date;
 
 /// Default `status` for a project that has none stored, matching the project
@@ -15,9 +16,9 @@ pub const DEFAULT_PROJECT_STATUS: &str = "planning";
 /// promoted to the top level; they map directly to the TypeScript
 /// `ProjectNode` interface.
 ///
-/// `status` and `priority` stay strings rather than enums: both are
-/// user-extensible (`user_values`), and the schema, not this struct, owns the
-/// vocabulary — the service layer validates writes against it.
+/// `status` stays a string: it is user-extensible (`user_values`), and the
+/// schema, not this struct, owns the vocabulary — the service layer validates
+/// writes against it. `priority` is the scale `task` shares.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectNode {
@@ -27,7 +28,7 @@ pub struct ProjectNode {
     pub envelope: NodeEnvelope,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<String>,
+    pub priority: Option<Priority>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -50,7 +51,7 @@ pub struct ProjectNodeUpdate {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_clearable"
     )]
-    pub priority: Option<Option<String>>,
+    pub priority: Option<Option<Priority>>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -82,8 +83,10 @@ impl ProjectNodeUpdate {
         if let Some(status) = &self.status {
             patch.insert("status".to_string(), serde_json::json!(status));
         }
+        if let Some(priority) = &self.priority {
+            patch.insert("priority".to_string(), serde_json::json!(priority));
+        }
         for (key, value) in [
-            ("priority", &self.priority),
             ("start_date", &self.start_date),
             ("end_date", &self.end_date),
         ] {
@@ -121,6 +124,16 @@ mod tests {
         assert_eq!(
             update.to_properties_patch(),
             serde_json::json!({ "status": "active", "end_date": null })
+        );
+    }
+
+    #[test]
+    fn priority_is_the_shared_scale() {
+        let update: ProjectNodeUpdate = serde_json::from_str(r#"{"priority": "highest"}"#).unwrap();
+        assert_eq!(update.priority, Some(Some(Priority::Highest)));
+        assert_eq!(
+            update.to_properties_patch(),
+            serde_json::json!({ "priority": "highest" })
         );
     }
 

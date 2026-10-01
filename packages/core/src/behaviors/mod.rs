@@ -704,9 +704,8 @@ impl NodeBehavior for ProjectNodeBehavior {
 
         // Typed fields live under `properties.project.*` — `project` is a
         // schema-typed node type, so NodeService hoists its schema-defined
-        // fields there on write, the same as `task` under `properties.task.*`
-        // (see `TaskNode::from_node`, which uses the same nested-first/
-        // flat-fallback lookup for the same reason). Falling back to the flat
+        // fields there on write, the same as `task` under `properties.task.*`.
+        // Falling back to the flat
         // top level keeps this correct for a node that was constructed
         // directly. TYPE checks only — the schema system validates enum
         // membership and allowed values.
@@ -2539,7 +2538,6 @@ impl Default for NodeBehaviorRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::TaskNode;
     use serde_json::json;
 
     #[test]
@@ -3015,8 +3013,8 @@ mod tests {
         assert!(behavior.validate(&complete_node).is_ok());
 
         // Priority is a string enum. A non-string priority is not a supported
-        // format: `from_node` reads it with `as_str()`, so it is ignored and the
-        // task falls back to having no priority rather than failing validation.
+        // format: the typed conversion reads it as a string, so it is ignored and
+        // the task falls back to having no priority rather than failing validation.
         let integer_priority_node = Node::new(
             "task".to_string(),
             "Task with non-string priority".to_string(),
@@ -3026,9 +3024,9 @@ mod tests {
         // any task-typed node validates. The assertion below is the load-bearing
         // one: the value is dropped, not interpreted.
         assert!(behavior.validate(&integer_priority_node).is_ok());
-        let parsed = TaskNode::from_node(integer_priority_node).unwrap();
+        let typed = crate::models::node_to_typed_value(integer_priority_node).unwrap();
         assert!(
-            parsed.priority.is_none(),
+            typed.get("priority").is_none(),
             "non-string priority should be ignored, not interpreted as a legacy format"
         );
 
@@ -3055,8 +3053,8 @@ mod tests {
             "Task".to_string(),
             json!({"task": {"status": 123}}), // number instead of string
         );
-        // Note: TaskNode::from_node() ignores invalid status and uses default (Open)
-        // This is graceful degradation - it passes validation
+        // The typed conversion ignores an invalid status and uses the default
+        // (open). This is graceful degradation - it passes validation
         assert!(behavior.validate(&bad_status_type).is_ok());
 
         // Priority is now a string enum (highest, high, medium, low, lowest) with user-extensibility
@@ -4512,95 +4510,6 @@ mod tests {
             Err(NodeValidationError::InvalidProperties(ref msg))
                 if msg.contains("nonexistent")
         ));
-    }
-
-    // =========================================================================
-    // TaskNode from_node Format Tests
-    // =========================================================================
-
-    #[test]
-    fn test_task_node_from_node_nested_format() {
-        use crate::models::{Priority, TaskNode};
-
-        // Test that TaskNode::from_node handles nested format
-        // Priority now uses string enum format
-        let nested_node = Node::new(
-            "task".to_string(),
-            "Nested format task".to_string(),
-            json!({
-                "task": {
-                    "status": "in_progress",
-                    "priority": "medium"
-                }
-            }),
-        );
-
-        let task = TaskNode::from_node(nested_node).unwrap();
-        assert_eq!(task.content, "Nested format task");
-        assert_eq!(task.status.as_str(), "in_progress");
-        assert_eq!(task.priority, Some(Priority::Medium));
-    }
-
-    #[test]
-    fn test_task_node_from_node_flat_format() {
-        use crate::models::{Priority, TaskNode};
-
-        // Test flat format (old property structure, but string priority)
-        let flat_node = Node::new(
-            "task".to_string(),
-            "Flat format task".to_string(),
-            json!({
-                "status": "done",
-                "priority": "low"
-            }),
-        );
-
-        let task = TaskNode::from_node(flat_node).unwrap();
-        assert_eq!(task.content, "Flat format task");
-        assert_eq!(task.status.as_str(), "done");
-        assert_eq!(task.priority, Some(Priority::Low));
-    }
-
-    #[test]
-    fn test_task_node_from_node_string_priority() {
-        use crate::models::{Priority, TaskNode};
-
-        // Test string priority - now the canonical format
-        let string_priority_node = Node::new(
-            "task".to_string(),
-            "High priority task".to_string(),
-            json!({
-                "task": {
-                    "status": "open",
-                    "priority": "high"
-                }
-            }),
-        );
-
-        let task = TaskNode::from_node(string_priority_node).unwrap();
-        assert_eq!(task.priority, Some(Priority::High));
-
-        // Test core string priorities
-        let low_node = Node::new(
-            "task".to_string(),
-            "Low".to_string(),
-            json!({"priority": "low"}),
-        );
-        let low_task = TaskNode::from_node(low_node).unwrap();
-        assert_eq!(low_task.priority, Some(Priority::Low));
-
-        // Test user-defined priority (schema extensibility)
-        let urgent_node = Node::new(
-            "task".to_string(),
-            "Urgent".to_string(),
-            json!({"priority": "urgent"}),
-        );
-        let urgent_task = TaskNode::from_node(urgent_node).unwrap();
-        assert_eq!(
-            urgent_task.priority,
-            Some(Priority::User("urgent".to_string())),
-            "Unknown priorities become User-defined"
-        );
     }
 
     #[test]

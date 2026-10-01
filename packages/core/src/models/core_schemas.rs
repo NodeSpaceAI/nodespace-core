@@ -2391,7 +2391,7 @@ mod tests {
             assert!(
                 parsed.is_core(),
                 "task.status's core_values entry '{}' does not parse to a named TaskStatus \
-                 variant (got TaskStatus::User(_)) — add a matching variant in task_node.rs \
+                 variant (got TaskStatus::User(_)) — add a matching variant to nodespace-types' TaskStatus \
                  or remove the stray core_values entry.",
                 value
             );
@@ -2444,7 +2444,7 @@ mod tests {
             assert_eq!(
                 core_value_strings, expected,
                 "{}.priority's core_values must be exactly the named Priority variants \
-                 in rank order — update core_schemas.rs or models/priority.rs so they agree.",
+                 in rank order — update core_schemas.rs or nodespace-types' Priority so they agree.",
                 node_type
             );
         }
