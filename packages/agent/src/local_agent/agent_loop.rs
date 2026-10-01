@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_types::{
     AgentSession, AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ChatMessage,
     ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage, LocalAgentStatus, PriorTurn,
-    Role, StreamingChunk, ToolCallRaw, ToolExecutionRecord,
+    Role, StreamingChunk, ToolCallRaw, ToolDefinition, ToolExecutionRecord,
 };
 use crate::local_agent::decisions;
 use crate::local_agent::otlp_tracer::TRACER_NAME;
@@ -36,13 +36,14 @@ use crate::prompt_assembler::{PromptAssembler, TemplateContext, EMERGENCY_FALLBA
 /// Maximum number of tool-call iterations per turn.
 const MAX_TOOL_ITERATIONS: usize = 5;
 
-/// Consecutive tool calls with unparseable JSON arguments tolerated before the
-/// turn gives up and produces a final response from what it already has.
+/// Consecutive malformed tool calls — arguments that are not JSON, or not an
+/// object of named parameters — tolerated before the turn gives up and
+/// produces a final response from what it already has.
 ///
 /// Two, not one: a single malformed call followed by a correct retry is normal
 /// recovery and observed in practice, so tripping on the first would abort turns
 /// that were about to succeed.
-const MAX_CONSECUTIVE_PARSE_FAILURES: usize = 2;
+const MAX_CONSECUTIVE_MALFORMED_CALLS: usize = 2;
 
 /// Token ceiling for the Stage-1 routing turn.
 ///
@@ -286,6 +287,11 @@ fn normalize_param_aliases(args: &mut serde_json::Value) {
 /// boundary (via [`repair_tool_call_arguments`]) and the execution site's
 /// backstop — go through here, so a repair added for a newly observed
 /// malformation reaches both without having to be remembered twice.
+///
+/// The two key repairs are a backstop on the native Gemma 4 path, whose
+/// tool-call grammar restricts a key to a name (`constrain_gemma4_argument_keys`
+/// in `nodespace-nlp-engine`), and the live repair for an engine that applies
+/// no grammar — the OpenAI-compatible one.
 fn repair_parsed_tool_arguments(args: &mut serde_json::Value) {
     repair_over_quoted_keys(args);
     repair_leaked_special_token_keys(args);
@@ -307,10 +313,11 @@ fn repair_parsed_tool_arguments(args: &mut serde_json::Value) {
 /// one tool where it was first observed. The cause is not tool-specific: a
 /// rejected call stays in the conversation as an assistant turn, and the model
 /// reproduces the malformed shape it reads there on every subsequent retry. That
-/// was measured against `gemma-4-e4b-q4km` — a well-formed prior call yields a
-/// well-formed retry in 8 of 8 trials, and a malformed one yields a malformed
-/// retry in 8 of 8 — so the shape, not the tool, is what propagates. Any tool
-/// taking an array of objects is reachable the same way.
+/// was measured against `gemma-4-e4b-q4km` under llama.cpp's own grammar — a
+/// well-formed prior call yields a well-formed retry in 8 of 8 trials, and a
+/// malformed one yields a malformed retry in 8 of 8 — so the shape, not the
+/// tool, is what propagates. Any tool taking an array of objects is reachable
+/// the same way.
 ///
 /// Deliberately recurses where [`normalize_param_aliases`] deliberately does
 /// not. That function stays top-level because a nested `field_values` blob is
@@ -450,6 +457,93 @@ pub fn repair_tool_call_arguments(arguments_json: &mut String) {
     if value != before {
         *arguments_json = value.to_string();
     }
+}
+
+/// `error` code on the result of a tool call that was never run because what
+/// the model sent could not be read as arguments at all.
+const MALFORMED_CALL_ERROR: &str = "malformed_tool_call";
+
+/// The result recorded, and fed back to the model, for a malformed call.
+///
+/// Flagged as an error, with a code rather than only prose so the turn-end
+/// guards can tell "the call was malformed" apart from "the tool failed"
+/// ([`is_malformed_call`]) without matching on wording.
+fn malformed_call_result(message: String) -> serde_json::Value {
+    serde_json::json!({
+        "error": MALFORMED_CALL_ERROR,
+        "message": message,
+    })
+}
+
+/// Whether `record` is a call that was refused as malformed rather than run.
+fn is_malformed_call(record: &ToolExecutionRecord) -> bool {
+    record.is_error
+        && record.result.get("error").and_then(|v| v.as_str()) == Some(MALFORMED_CALL_ERROR)
+}
+
+/// Whether `key` could be the name of a tool parameter.
+///
+/// Every tool declares its top-level parameters in snake_case, so anything else
+/// in that position is not a misspelt parameter but text that was never one.
+fn is_parameter_name(key: &str) -> bool {
+    !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Why parsed, repaired arguments cannot be a tool call's arguments, or `None`
+/// when they can.
+///
+/// Arguments that parse as JSON can still not be arguments. Two shapes have
+/// been observed, and both are valid JSON, so no parse guard fires:
+///
+/// - a whole Python-style argument list as one key —
+///   `{"query=\"\",node_type=\"schema\",limit=50,sorting=[{\"field\"": null}`;
+/// - the model's answer to the user where the arguments belong, as a key or as
+///   the entire value.
+///
+/// Dispatching either hands the tool text it reads as field names. A tool that
+/// rejects unknown fields answers with an error quoting that text back; one
+/// that does not runs with it. Neither is the model's call, so it is reported
+/// as malformed instead of being run.
+///
+/// Only the top level is checked. Keys further down are a tool's own business:
+/// `field_values` holds the fields of a user-defined type, whose names are
+/// whatever the user chose.
+fn unusable_arguments(args: &serde_json::Value) -> Option<&'static str> {
+    match args {
+        serde_json::Value::Object(obj) => obj
+            .keys()
+            .any(|key| !is_parameter_name(key))
+            .then_some("a key that is not a parameter name"),
+        serde_json::Value::String(_) => Some("text instead of an object"),
+        serde_json::Value::Array(_) => Some("a list instead of an object"),
+        serde_json::Value::Null => Some("null instead of an object"),
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            Some("a bare value instead of an object")
+        }
+    }
+}
+
+/// What the model is told when its call's arguments are [`unusable_arguments`].
+///
+/// Worded after the error a tool gives for an unknown field, which the model is
+/// measured to retry from. The offending text is deliberately not quoted back:
+/// the model copies the shape of what it reads in its own history.
+fn unusable_arguments_message(tool: &str, definition: Option<&ToolDefinition>) -> String {
+    let names: Vec<String> = definition
+        .and_then(|d| d.parameters_schema.get("properties"))
+        .and_then(|p| p.as_object())
+        .map(|props| props.keys().map(|name| format!("`{name}`")).collect())
+        .unwrap_or_default();
+    let expected = if names.is_empty() {
+        String::new()
+    } else {
+        format!(", expected only {}", names.join(", "))
+    };
+    format!(
+        "invalid arguments for tool {tool}: the arguments must be an object of named \
+         parameters{expected}. Re-send the call with the same intent. Anything meant for the \
+         user goes in your reply, not in a tool call."
+    )
 }
 
 /// Recover the intended value from a string that swallowed the JSON delimiters
@@ -1619,6 +1713,82 @@ fn humanize_tool_name(tool_name: &str) -> &'static str {
         .unwrap_or("the requested action")
 }
 
+/// What the user is told when tools failed and the model's reply does not say
+/// so: which action failed, and why, in plain terms.
+///
+/// One sentence per action, decided by its last failure in the turn — the same
+/// "the last call of a name decides" rule [`summarize_executions`] applies.
+fn describe_unsurfaced_failures(failed: &[&ToolExecutionRecord]) -> String {
+    let mut by_label: Vec<(&'static str, &ToolExecutionRecord)> = Vec::new();
+    for &record in failed {
+        let label = humanize_tool_name(&record.name);
+        match by_label.iter_mut().find(|(l, _)| *l == label) {
+            Some(entry) => entry.1 = record,
+            None => by_label.push((label, record)),
+        }
+    }
+
+    let sentences: Vec<String> = by_label
+        .into_iter()
+        .map(|(label, record)| {
+            // Every registry label is a bare noun phrase; the fallback for an
+            // unknown tool already carries its article.
+            let action = if label.starts_with("the ") {
+                label.to_string()
+            } else {
+                format!("the {label}")
+            };
+            match failure_reason(record) {
+                FailureReason::NotRun(why) => format!("I couldn't run {action}: {why}."),
+                FailureReason::Failed(Some(why)) => format!("I couldn't complete {action}: {why}."),
+                FailureReason::Failed(None) => format!("I couldn't complete {action}."),
+            }
+        })
+        .collect();
+    format!("⚠️ {}", sentences.join(" "))
+}
+
+/// Why a failed tool call failed, as [`describe_unsurfaced_failures`] words it.
+enum FailureReason {
+    /// The call never reached the tool's own logic.
+    NotRun(&'static str),
+    /// The tool ran and reported an error, with its own account when it gave
+    /// one.
+    Failed(Option<String>),
+}
+
+fn failure_reason(record: &ToolExecutionRecord) -> FailureReason {
+    if is_malformed_call(record) {
+        return FailureReason::NotRun("the tool call was malformed");
+    }
+    let Some(text) = ["error", "message"]
+        .iter()
+        .find_map(|key| record.result.get(*key).and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+    else {
+        return FailureReason::Failed(None);
+    };
+    // The `ToolError` prefixes: the first two mean the tool's logic never ran.
+    if text.starts_with("invalid arguments for tool") {
+        return FailureReason::NotRun("it was called with arguments it doesn't accept");
+    }
+    if text.starts_with("unknown tool") {
+        return FailureReason::NotRun("that tool isn't available");
+    }
+    let text = text.strip_prefix("tool execution failed: ").unwrap_or(text);
+    let text = text
+        .strip_prefix(record.name.as_str())
+        .and_then(|rest| rest.strip_prefix(" failed: "))
+        .unwrap_or(text);
+    let (preview, truncated) = char_preview(text.trim_end_matches('.'), 200);
+    FailureReason::Failed(Some(if truncated {
+        format!("{preview}…")
+    } else {
+        preview
+    }))
+}
+
 /// Detect whether a response text contains claims of completed actions.
 ///
 /// Used by the anti-fabrication guard to catch responses where the model
@@ -1816,9 +1986,10 @@ const FIELD_COUNT_REPORTING_WRITES: &[&str] = &["create_schema", "create_node", 
 ///
 /// Extends the terminator set `response_processing::replace_status_outside_special`
 /// already treats as ending a bare URI (whitespace, `)`, `]`) with sentence
-/// punctuation (`.`, `,`, `!`, `?`, `;`, `:`, backtick) and a double quote — a
-/// guard comparing extracted ids against tool results by exact string match
-/// must not let "...nodespace://abc." (end of sentence) or
+/// punctuation (`.`, `,`, `!`, `?`, `;`, `:`, backtick), a double quote and the
+/// `*` of markdown emphasis — a guard comparing extracted ids against tool
+/// results by exact string match must not let "...nodespace://abc." (end of
+/// sentence), `**nodespace://abc**` (a bolded list entry) or
 /// `"id":"nodespace://abc"` (this regex also scans raw serialized tool-result
 /// JSON from session history, see `grounded_node_uris_from_history`) fail to
 /// match the grounded "nodespace://abc" a tool actually returned. Real ids
@@ -1826,7 +1997,7 @@ const FIELD_COUNT_REPORTING_WRITES: &[&str] = &["create_schema", "create_node", 
 /// legitimately part of one.
 fn node_uri_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r#"nodespace://[^\s)\]`".,!?;:]+"#).unwrap())
+    RE.get_or_init(|| Regex::new(r#"nodespace://[^\s)\]`".,!?;:*]+"#).unwrap())
 }
 
 /// Every `nodespace://<id>` reference in `text`, in first-seen order, deduped.
@@ -2591,7 +2762,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // malformed *differently*, so no two canonical arg strings match and the
         // model can burn every iteration without executing a single tool. Reset
         // on any successful parse, so only an unbroken run trips it.
-        let mut consecutive_parse_failures = 0usize;
+        let mut consecutive_malformed_calls = 0usize;
         // Whether this turn has already been re-prompted for replying in prose
         // after an answered clarification. Once only: a model that declines
         // twice has its reply accepted, and the turn is recorded as one that
@@ -3047,7 +3218,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // Tool-failure surfacing: if any tool failed and the model's response
                 // doesn't acknowledge the error, replace the response with an honest
                 // error message. Appending to a success claim would produce contradictory
-                // output ("The node was updated. ⚠️ Note: ... encountered an error.").
+                // output ("The node was updated. ⚠️ I couldn't complete the node update.").
+                // The message says which action failed and why, so the user has
+                // something to act on (`describe_unsurfaced_failures`).
                 //
                 // A failure is excluded when a LATER execution of the same tool name
                 // (by chronological position in `all_tool_executions`, which is pushed
@@ -3057,7 +3230,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // `any_real_tool_calls` narrowing already applied to the neighboring
                 // anti-fabrication guard above: scope to what actually grounds the
                 // final answer, not everything that happened anywhere in the turn.
-                let failed_tools: Vec<&str> = all_tool_executions
+                let failed_tools: Vec<&ToolExecutionRecord> = all_tool_executions
                     .iter()
                     .enumerate()
                     .filter(|(i, r)| {
@@ -3070,7 +3243,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 .iter()
                                 .any(|later| later.name == r.name && !later.is_error)
                     })
-                    .map(|(_, r)| r.name.as_str())
+                    .map(|(_, r)| r)
                     .collect();
                 let normalized = if !failed_tools.is_empty() && !normalized.is_empty() {
                     let lower = normalized.to_ascii_lowercase();
@@ -3080,23 +3253,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         || lower.contains("could not")
                         || lower.contains("unable");
                     if !mentions_error {
-                        let unique_labels: Vec<String> = {
-                            let mut seen = std::collections::HashSet::new();
-                            failed_tools
-                                .iter()
-                                .map(|n| humanize_tool_name(n).to_string())
-                                .filter(|l| seen.insert(l.clone()))
-                                .collect()
-                        };
                         tracing::warn!(
                             session_id = %session.id,
-                            failed_tools = %failed_tools.join(", "),
+                            failed_tools = %failed_tools.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "),
                             "Tool failures not surfaced in model response — replacing with error message"
                         );
-                        format!(
-                            "⚠️ {} encountered an error. Please try again or check the details and retry.",
-                            unique_labels.join(", ")
-                        )
+                        describe_unsurfaced_failures(&failed_tools)
                     } else {
                         normalized
                     }
@@ -3306,17 +3468,71 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // missing required field — describing the substitute rather than
                 // the malformed JSON that actually caused it, and pointing the
                 // model's repair attempt at the wrong problem.
-                let parsed_args = if tc.arguments_json.trim().is_empty() {
+                //
+                // The same goes for arguments that parse but are not an object
+                // of named parameters (see `unusable_arguments`). `Err` carries
+                // what the model is told in either case.
+                let parsed_args: Result<serde_json::Value, String> = if tc
+                    .arguments_json
+                    .trim()
+                    .is_empty()
+                {
                     // No arguments emitted at all: an empty object is the faithful
                     // reading, and the tool's own required-field error is correct.
                     Ok(serde_json::json!({}))
                 } else {
-                    serde_json::from_str::<serde_json::Value>(&tc.arguments_json)
+                    match serde_json::from_str::<serde_json::Value>(&tc.arguments_json) {
+                        Ok(mut args) => {
+                            // Repaired first: a key the repairs can restore
+                            // is not a malformed call.
+                            repair_parsed_tool_arguments(&mut args);
+                            match unusable_arguments(&args) {
+                                None => Ok(args),
+                                Some(problem) => {
+                                    let (args_preview, args_preview_truncated) =
+                                        char_preview(&tc.arguments_json, 300);
+                                    tracing::warn!(
+                                        session_id = %session.id,
+                                        tool = %tc.function_name,
+                                        iteration = iteration,
+                                        problem,
+                                        args_preview = %args_preview,
+                                        args_preview_truncated,
+                                        "Model emitted arguments that are not named parameters — reporting to model instead of dispatching"
+                                    );
+                                    Err(unusable_arguments_message(
+                                        &tc.function_name,
+                                        all_tools.iter().find(|t| t.name == tc.function_name),
+                                    ))
+                                }
+                            }
+                        }
+                        Err(parse_err) => {
+                            let (args_preview, args_preview_truncated) =
+                                char_preview(&tc.arguments_json, 300);
+                            tracing::warn!(
+                                session_id = %session.id,
+                                tool = %tc.function_name,
+                                iteration = iteration,
+                                error = %parse_err,
+                                args_preview = %args_preview,
+                                args_preview_truncated,
+                                "Model emitted unparseable tool arguments — reporting to model instead of substituting an empty object"
+                            );
+                            Err(format!(
+                                "The arguments for {} were not valid JSON, so the call could \
+                                     not be made. Re-send the call with the same intent and \
+                                     syntactically valid JSON arguments.",
+                                tc.function_name
+                            ))
+                        }
+                    }
                 };
 
+                let mut malformed_message = None;
                 let (args, tool_result) = match parsed_args {
                     Ok(mut args) => {
-                        consecutive_parse_failures = 0;
+                        consecutive_malformed_calls = 0;
                         // Repair the model's malformed encodings before the tool
                         // sees them. The arguments parse as valid JSON — the keys
                         // or values are simply wrong — so no parse-failure guard
@@ -3522,20 +3738,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                             }
                         }
                     }
-                    Err(parse_err) => {
-                        consecutive_parse_failures += 1;
-                        let (args_preview, args_preview_truncated) =
-                            char_preview(&tc.arguments_json, 300);
-                        tracing::warn!(
-                            session_id = %session.id,
-                            tool = %tc.function_name,
-                            iteration = iteration,
-                            error = %parse_err,
-                            consecutive_parse_failures,
-                            args_preview = %args_preview,
-                            args_preview_truncated,
-                            "Model emitted unparseable tool arguments — reporting to model instead of substituting an empty object"
-                        );
+                    Err(message) => {
+                        consecutive_malformed_calls += 1;
+                        malformed_message = Some(message);
                         (serde_json::json!({}), None)
                     }
                 };
@@ -3546,14 +3751,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     Some(Ok(tr)) => (tr.result, tr.is_error),
                     Some(Err(e)) => (serde_json::json!({"error": e.to_string()}), true),
                     None => (
-                        serde_json::json!({
-                            "error": format!(
-                                "The arguments for {} were not valid JSON, so the call could not \
-                                 be made. Re-send the call with the same intent and syntactically \
-                                 valid JSON arguments.",
-                                tc.function_name
-                            )
-                        }),
+                        malformed_call_result(malformed_message.unwrap_or_default()),
                         true,
                     ),
                 };
@@ -3680,16 +3878,16 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 ));
             }
 
-            // A model that cannot emit valid JSON is not making progress, and each
-            // attempt is malformed differently so the duplicate guard never fires.
+            // A model that cannot emit a well-formed call is not making progress, and
+            // each attempt is malformed differently so the duplicate guard never fires.
             // Break after a short unbroken run — the error results are already in
             // history, so the final-inference path can still answer from them.
-            if consecutive_parse_failures >= MAX_CONSECUTIVE_PARSE_FAILURES {
+            if consecutive_malformed_calls >= MAX_CONSECUTIVE_MALFORMED_CALLS {
                 tracing::warn!(
                     session_id = %session.id,
                     iteration = iteration,
-                    consecutive_parse_failures,
-                    "Model repeatedly emitted unparseable tool arguments — breaking to force final response"
+                    consecutive_malformed_calls,
+                    "Model repeatedly emitted malformed tool calls — breaking to force final response"
                 );
                 break;
             }
@@ -5418,6 +5616,194 @@ mod tests {
     // The former `humanize_tool_name_covers_all_registered_tools` drift detector
     // is gone: `humanize_tool_name` now derives from `Tool`, whose `humanized()`
     // arm is exhaustive over the registry, so coverage holds by construction.
+
+    // -- describe_unsurfaced_failures --------------------------------------
+
+    fn failed_record(name: &str, result: serde_json::Value) -> ToolExecutionRecord {
+        ToolExecutionRecord {
+            tool_call_id: "tc".into(),
+            name: name.into(),
+            args: json!({}),
+            result,
+            is_error: true,
+            duration_ms: 0,
+        }
+    }
+
+    #[test]
+    fn an_unsurfaced_failure_is_described_by_what_failed_and_why() {
+        let malformed = failed_record("search_nodes", malformed_call_result("re-send it".into()));
+        assert_eq!(
+            describe_unsurfaced_failures(&[&malformed]),
+            "⚠️ I couldn't run the node search: the tool call was malformed."
+        );
+
+        let rejected = failed_record(
+            "search_nodes",
+            json!({"error": "invalid arguments for tool search_nodes: unknown field `direction`, expected one of `query`, `node_type`, `filters`, `sorting`, `limit`"}),
+        );
+        assert_eq!(
+            describe_unsurfaced_failures(&[&rejected]),
+            "⚠️ I couldn't run the node search: it was called with arguments it doesn't accept."
+        );
+
+        // The tool's own account, without the wrapper `ToolError` and
+        // `ops_error_to_tool` put around it.
+        let failed = failed_record(
+            "update_node",
+            json!({"error": "tool execution failed: update_node failed: Node not found: abc."}),
+        );
+        assert_eq!(
+            describe_unsurfaced_failures(&[&failed]),
+            "⚠️ I couldn't complete the node update: Node not found: abc."
+        );
+
+        let unexplained = failed_record("update_node", json!({"ok": false}));
+        assert_eq!(
+            describe_unsurfaced_failures(&[&unexplained]),
+            "⚠️ I couldn't complete the node update."
+        );
+
+        // An internal tool name never reaches the user.
+        let unknown = failed_record(
+            "some_future_tool",
+            json!({"error": "unknown tool: some_future_tool"}),
+        );
+        assert_eq!(
+            describe_unsurfaced_failures(&[&unknown]),
+            "⚠️ I couldn't run the requested action: that tool isn't available."
+        );
+    }
+
+    #[test]
+    fn unsurfaced_failures_get_one_sentence_per_action_decided_by_its_last_failure() {
+        let first = failed_record(
+            "search_nodes",
+            json!({"error": "tool execution failed: boom"}),
+        );
+        let last = failed_record("search_nodes", malformed_call_result("re-send it".into()));
+        let other = failed_record("create_node", json!({"error": "Unknown node_type: venue"}));
+
+        assert_eq!(
+            describe_unsurfaced_failures(&[&first, &other, &last]),
+            "⚠️ I couldn't run the node search: the tool call was malformed. \
+             I couldn't complete the node creation: Unknown node_type: venue."
+        );
+    }
+
+    #[test]
+    fn a_long_tool_error_is_cut_short_and_marked() {
+        let long = failed_record("update_node", json!({"error": "x".repeat(500)}));
+        let described = describe_unsurfaced_failures(&[&long]);
+        assert!(described.ends_with("…."), "{described}");
+        assert!(described.chars().count() < 260, "{described}");
+    }
+
+    // -- unusable_arguments ------------------------------------------------
+
+    /// The reported payload, through the repairs the loop applies first: no
+    /// repair can restore a key that was never one parameter.
+    #[test]
+    fn the_reported_kwargs_arguments_are_unusable_after_repair() {
+        let mut args: serde_json::Value = serde_json::from_str(KWARGS_SHAPED_ARGS).unwrap();
+        repair_parsed_tool_arguments(&mut args);
+        assert_eq!(
+            unusable_arguments(&args),
+            Some("a key that is not a parameter name")
+        );
+    }
+
+    #[test]
+    fn arguments_that_are_not_an_object_of_named_parameters_are_unusable() {
+        for args in [
+            json!({"I found a few schemas. The available ones are 'plan', and 'spec'": null}),
+            json!({"query = ''": null}),
+            json!({"": 1}),
+            json!("I found a few schemas."),
+            json!(["schema"]),
+            json!(null),
+            json!(50),
+        ] {
+            assert!(
+                unusable_arguments(&args).is_some(),
+                "{args} must not be dispatched"
+            );
+        }
+    }
+
+    #[test]
+    fn named_parameters_are_usable_whatever_they_hold() {
+        for args in [
+            json!({}),
+            json!({"query": "", "node_type": "schema", "limit": 50}),
+            // Not a declared parameter, but a name: the tool's own
+            // unknown-field error is the right answer to it.
+            json!({"direction": false}),
+            // A user-defined type's field names are the user's.
+            json!({"node_type": "venue", "field_values": {"Booking date": "2026-01-01", "a=b": 1}}),
+            json!({"content": "query=\"\", node_type=\"schema\""}),
+        ] {
+            assert_eq!(unusable_arguments(&args), None, "{args} must be dispatched");
+        }
+    }
+
+    /// A key the repairs restore is not a malformed call: the over-quoted and
+    /// leaked-token shapes must still reach the tool repaired.
+    #[test]
+    fn repairable_keys_are_usable_once_repaired() {
+        for raw in [
+            r#"{"\"node_type\"":"task","query":null}"#,
+            r#"{"<|\"|>node_type<|\"|>":"task"}"#,
+        ] {
+            let mut args: serde_json::Value = serde_json::from_str(raw).unwrap();
+            assert!(unusable_arguments(&args).is_some(), "{raw} before repair");
+            repair_parsed_tool_arguments(&mut args);
+            assert_eq!(unusable_arguments(&args), None, "{raw} after repair");
+        }
+    }
+
+    /// The check treats anything but a snake_case name as text that was never
+    /// a parameter, so every tool must declare its parameters that way.
+    #[test]
+    fn every_tool_declares_its_parameters_as_names_the_malformed_check_accepts() {
+        for tool in crate::local_agent::tools::all_tool_definitions() {
+            let properties = tool
+                .parameters_schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .cloned()
+                .unwrap_or_default();
+            for name in properties.keys() {
+                assert!(
+                    is_parameter_name(name),
+                    "{}'s parameter {name:?} would be refused as a malformed call",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_malformed_call_message_names_the_parameters_and_not_the_offending_text() {
+        let search = crate::local_agent::tools::all_tool_definitions()
+            .into_iter()
+            .find(|t| t.name == "search_nodes")
+            .unwrap();
+        assert_eq!(
+            unusable_arguments_message("search_nodes", Some(&search)),
+            "invalid arguments for tool search_nodes: the arguments must be an object of named \
+             parameters, expected only `filters`, `limit`, `node_type`, `query`, `sorting`. \
+             Re-send the call with the same intent. Anything meant for the user goes in your \
+             reply, not in a tool call."
+        );
+        // A tool the executor does not describe still gets a usable message.
+        assert_eq!(
+            unusable_arguments_message("mystery", None),
+            "invalid arguments for tool mystery: the arguments must be an object of named \
+             parameters. Re-send the call with the same intent. Anything meant for the user \
+             goes in your reply, not in a tool call."
+        );
+    }
 
     #[tokio::test]
     async fn cancellation_stops_generation() {
@@ -7830,6 +8216,12 @@ mod tests {
             extract_node_uris("`nodespace://abc-123`"),
             vec!["nodespace://abc-123"]
         );
+        // A bolded list entry: a real id read with its closing `**` is not the
+        // id a tool returned, so the reply naming it was replaced as fabricated.
+        assert_eq!(
+            extract_node_uris("*   **nodespace://ordered-list**: Schema for Ordered List"),
+            vec!["nodespace://ordered-list"]
+        );
     }
 
     #[test]
@@ -8409,10 +8801,10 @@ mod tests {
 
     // -- Tool-failure surfacing tests ----------------------------------------
 
-    /// When a tool fails and the model doesn't mention the error, an error
-    /// note should be appended to the response.
+    /// When a tool fails and the model doesn't mention the error, the reply is
+    /// replaced by one saying which action failed and why.
     #[tokio::test]
-    async fn tool_failure_appended_when_model_ignores_error() {
+    async fn tool_failure_replaces_a_reply_that_ignores_it() {
         // Tool executor that always reports an error
         struct ErrorToolExecutor;
 
@@ -8466,11 +8858,9 @@ mod tests {
             result.tool_calls_made[0].is_error,
             "tool execution should be marked as error"
         );
-        // Error note should be appended since model didn't mention the failure.
-        assert!(
-            result.response.contains("⚠️") || result.response.to_lowercase().contains("error"),
-            "error note should be present: {:?}",
-            result.response
+        assert_eq!(
+            result.response,
+            "⚠️ I couldn't complete the node update: node not found."
         );
     }
 
@@ -8478,7 +8868,7 @@ mod tests {
     /// called `search_nodes` with malformed args (error), self-corrected with
     /// valid args in the next iteration (success), and the final answer is
     /// grounded in the successful retry. The guard must NOT replace this with
-    /// the generic error message — the earlier failure is superseded.
+    /// the failure message — the earlier failure is superseded.
     #[tokio::test]
     async fn tool_failure_superseded_by_later_success_does_not_trip_guard() {
         struct FailThenSucceedExecutor {
@@ -9143,15 +9533,247 @@ mod tests {
             "no tool should ever execute — every call had invalid JSON"
         );
         assert!(
-            result.tool_calls_made.len() <= MAX_CONSECUTIVE_PARSE_FAILURES,
+            result.tool_calls_made.len() <= MAX_CONSECUTIVE_MALFORMED_CALLS,
             "the turn must stop after {} consecutive parse failures, got {} attempts",
-            MAX_CONSECUTIVE_PARSE_FAILURES,
+            MAX_CONSECUTIVE_MALFORMED_CALLS,
             result.tool_calls_made.len()
         );
         assert!(
             result.tool_calls_made.iter().all(|r| r.is_error),
             "every recorded attempt must be marked as an error"
         );
+    }
+
+    /// The arguments a live turn sent to `search_nodes`, verbatim: a whole
+    /// Python-style argument list as one key.
+    const KWARGS_SHAPED_ARGS: &str = r#"{"direction":false,"query=\"\",node_type=\"schema\",limit=50,sorting=[{\"field\"":null}"#;
+
+    /// An executor offering the real `search_nodes` definition that counts how
+    /// often it is asked to run anything.
+    struct CountingSearchExecutor {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl AgentToolExecutor for CountingSearchExecutor {
+        async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+            Ok(crate::local_agent::tools::all_tool_definitions()
+                .into_iter()
+                .filter(|t| t.name == "search_nodes")
+                .collect())
+        }
+
+        async fn execute(
+            &self,
+            name: &str,
+            _args: serde_json::Value,
+        ) -> Result<ToolResult, ToolError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(ToolResult {
+                tool_call_id: "tc".into(),
+                name: name.into(),
+                result: json!({"count": 0, "nodes": []}),
+                is_error: false,
+            })
+        }
+    }
+
+    /// Run one turn in which the model calls `search_nodes` with `args`, then
+    /// answers `final_text`. Returns the turn, the session and how many calls
+    /// reached the executor.
+    async fn run_search_turn(
+        args: &str,
+        final_text: &str,
+    ) -> (AgentTurnResult, AgentSession, usize) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let engine = Arc::new(MockEngine::tool_then_text("search_nodes", args, final_text));
+        let executor = Arc::new(CountingSearchExecutor {
+            calls: calls.clone(),
+        });
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "What schemas do we have here?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let executed = calls.load(std::sync::atomic::Ordering::SeqCst);
+        (result, session, executed)
+    }
+
+    /// The reported turn: the kwargs-shaped call is valid JSON, so it used to
+    /// be dispatched, rejected by the tool for an unknown field, and papered
+    /// over by an answer from context. It must not reach the tool, the model
+    /// must be told how to re-send it, and the user must be told what failed.
+    #[tokio::test]
+    async fn kwargs_shaped_arguments_are_reported_as_a_malformed_call() {
+        let (result, session, executed) = run_search_turn(
+            KWARGS_SHAPED_ARGS,
+            "The schemas we currently have are 'plan' and 'spec'.",
+        )
+        .await;
+
+        assert_eq!(executed, 0, "a malformed call must not be dispatched");
+        assert_eq!(result.tool_calls_made.len(), 1);
+        assert!(
+            is_malformed_call(&result.tool_calls_made[0]),
+            "the call must be recorded as malformed: {:?}",
+            result.tool_calls_made[0].result
+        );
+
+        let fed_back = session
+            .messages
+            .iter()
+            .find(|m| matches!(m.role, Role::Tool))
+            .expect("the model must get a tool result for the call")
+            .content
+            .clone();
+        for expected in ["`query`", "`node_type`", "`sorting`", "`limit`"] {
+            assert!(
+                fed_back.contains(expected),
+                "the model must be told the parameter names; {expected} missing from {fed_back}"
+            );
+        }
+        assert!(
+            !fed_back.contains("query=") && !fed_back.contains("direction"),
+            "the malformed text must not be quoted back for the model to copy: {fed_back}"
+        );
+
+        assert_eq!(
+            result.response,
+            "⚠️ I couldn't run the node search: the tool call was malformed."
+        );
+    }
+
+    /// The model's answer to the user, written where the arguments belong —
+    /// as a key, and as the whole value. Either used to be dispatched as field
+    /// names.
+    #[tokio::test]
+    async fn prose_in_place_of_arguments_is_reported_as_a_malformed_call() {
+        for args in [
+            r#"{"I found a few schemas in your workspace. The available ones are 'plan', and 'spec'":null}"#,
+            r#""I found a few schemas in your workspace. The available ones are 'plan', and 'spec'.""#,
+        ] {
+            let (result, _session, executed) =
+                run_search_turn(args, "The schemas we currently have are 'plan' and 'spec'.").await;
+
+            assert_eq!(
+                executed, 0,
+                "prose must not be dispatched as arguments: {args}"
+            );
+            assert!(
+                is_malformed_call(&result.tool_calls_made[0]),
+                "the call must be recorded as malformed for {args}"
+            );
+            assert_eq!(
+                result.response,
+                "⚠️ I couldn't run the node search: the tool call was malformed."
+            );
+        }
+    }
+
+    /// Unparseable arguments are the same failure to the user, and carry the
+    /// same record.
+    #[tokio::test]
+    async fn unparseable_arguments_are_recorded_as_a_malformed_call() {
+        let (result, _session, executed) = run_search_turn(
+            // A string closed with a plain quote: generation stops at the
+            // call's close marker and the arguments arrive unterminated.
+            r#"{"node_type":"schema\",query=\"\"}<tool_call|>"#,
+            "The schemas we currently have are 'plan' and 'spec'.",
+        )
+        .await;
+
+        assert_eq!(executed, 0);
+        assert!(is_malformed_call(&result.tool_calls_made[0]));
+        assert_eq!(
+            result.response,
+            "⚠️ I couldn't run the node search: the tool call was malformed."
+        );
+    }
+
+    /// Arguments that are named parameters reach the tool, whatever a nested
+    /// object's keys look like: those are a tool's own data.
+    #[tokio::test]
+    async fn well_formed_arguments_are_dispatched() {
+        for args in [
+            r#"{"query":"","node_type":"schema","limit":50}"#,
+            r#"{"node_type":"schema","sorting":[{"field":"title","direction":"asc"}]}"#,
+            "{}",
+        ] {
+            let (result, _session, executed) = run_search_turn(args, "I found no schemas.").await;
+            assert_eq!(executed, 1, "{args} must be dispatched");
+            assert!(!result.tool_calls_made[0].is_error);
+        }
+    }
+
+    /// Malformed calls that parse count toward the same breaker as ones that
+    /// do not: a model alternating between the two is still not making
+    /// progress.
+    #[tokio::test]
+    async fn repeated_malformed_calls_of_either_kind_break_the_turn() {
+        let malformed = [
+            KWARGS_SHAPED_ARGS,
+            r#"{"node_type":"schema\",query=\"\"}<tool_call|>"#,
+            r#"{"query = '' , node_type = 'schema'":null}"#,
+            r#""every schema in the workspace""#,
+        ];
+        let rounds: Vec<Vec<StreamingChunk>> = malformed
+            .iter()
+            .enumerate()
+            .map(|(i, args)| {
+                vec![
+                    StreamingChunk::ToolCallStart {
+                        id: format!("tc_{i}"),
+                        name: "search_nodes".to_string(),
+                        provider_extra: None,
+                    },
+                    StreamingChunk::ToolCallArgs {
+                        id: format!("tc_{i}"),
+                        args_json: (*args).to_string(),
+                    },
+                    StreamingChunk::Done {
+                        usage: InferenceUsage {
+                            prompt_tokens: 10,
+                            completion_tokens: 5,
+                        },
+                    },
+                ]
+            })
+            .collect();
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let engine = Arc::new(MockEngine::new(rounds));
+        let executor = Arc::new(CountingSearchExecutor {
+            calls: calls.clone(),
+        });
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "What schemas do we have here?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            result.tool_calls_made.len(),
+            MAX_CONSECUTIVE_MALFORMED_CALLS,
+            "the turn must stop after {MAX_CONSECUTIVE_MALFORMED_CALLS} consecutive malformed calls"
+        );
+        assert!(result.tool_calls_made.iter().all(is_malformed_call));
     }
 
     /// A tool call carrying no arguments at all is a different case: `{}` is the

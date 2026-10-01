@@ -625,6 +625,9 @@ fn def_search_nodes() -> ToolDefinition {
             do not expect '*' to do a wildcard substring match, it means \"no keyword filter\" just like ''); \
             (3) filtering by typed properties with operators (status='in_dev', a date field before a given date) — \
             pass 'filters' for these. Combine as needed (e.g. node_type + a property filter). \
+            To answer which types or schemas exist, call this with node_type='schema': it returns every type, \
+            built-in and custom. The EXISTING SCHEMAS block is not that list — it holds only the custom types \
+            related to the current message. \
             A count of 0 means nothing in the workspace matches — it does not mean the query was wrong. \
             When a type-scoped search returns no matches, the result carries 'filterable_properties' — the fields that \
             type actually defines, with allowed values where they are constrained. Use it to check the filter you sent: \
