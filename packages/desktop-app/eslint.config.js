@@ -116,6 +116,18 @@ export default [
     }
   },
   {
+    // Svelte compiles runes in `*.svelte.test.ts`, so a test can run code inside a
+    // real `$effect.root` / `$derived`.
+    files: ['src/tests/**/*.svelte.test.ts'],
+    languageOptions: {
+      globals: {
+        $state: 'readonly',
+        $derived: 'readonly',
+        $effect: 'readonly'
+      }
+    }
+  },
+  {
     files: ['**/*.svelte.ts'],
     languageOptions: {
       parser: tsParser,

@@ -19,6 +19,7 @@ import type { Node } from '$lib/types';
 import { mockCollections, mockMembers } from '../fixtures/collections-fixtures';
 import { pluginRegistry } from '$lib/plugins/index';
 import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
+import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
 import {
   TEST_EXTENSION_ID,
   createTestExtension,
@@ -910,6 +911,43 @@ describe('Collections Store', () => {
       // The legacy root is neither a row nor a parent of `hr`.
       expect(treeIds()).not.toContain(ROOT_COLLECTION_ID);
       expect(treeIds()).toContain('hr');
+    });
+
+    it("hides the active database's root together with the extension root", () => {
+      const BOUND_ROOT = 'bound-root';
+      // Only what the getter reads: the active database's id and its root.
+      const database = { id: 'bound-db', boundTenantCollection: BOUND_ROOT } as DatabaseInfo;
+      const previousDatabases = databaseStore.databases;
+      const previousActiveId = databaseStore.activeDatabaseId;
+      try {
+        databaseStore.databases = [database];
+        databaseStore.activeDatabaseId = database.id;
+        collectionsData._setTestData(
+          [
+            ...collections,
+            {
+              ...createTestCollectionInfo({ id: BOUND_ROOT, name: 'Bound root', memberCount: 2 }),
+              parentCollectionIds: []
+            },
+            {
+              ...createTestCollectionInfo({ id: 'design', name: 'Design', memberCount: 2 }),
+              parentCollectionIds: [BOUND_ROOT]
+            }
+          ],
+          new Map()
+        );
+        testExtensionFlags.collectionTreeRoots = [EXTENSION_ROOT];
+        uiExtensionRegistry.register(createTestExtension());
+
+        // The database's root replaces the legacy root as core's root, so the
+        // legacy root is an ordinary row again, holding `hr`. The database's root
+        // and the extension root are hidden, and their members are top-level.
+        expect(treeIds()).toEqual([ROOT_COLLECTION_ID, 'design', 'engineering']);
+        expect(collectionsData.collectionsTree[0].children?.map((c) => c.id)).toEqual(['hr']);
+      } finally {
+        databaseStore.databases = previousDatabases;
+        databaseStore.activeDatabaseId = previousActiveId;
+      }
     });
 
     it('follows the reactive state the extension reads on each read', () => {

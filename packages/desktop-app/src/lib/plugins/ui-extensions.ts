@@ -258,11 +258,17 @@ function keyContributions<C extends { id: string; load: unknown }>(
 
 /**
  * Holds registered extensions. Pure data + lookups — no `$state`, no
- * reactivity (that is layered on in `ui-extensions.svelte.ts`). Mirrors the
- * structural shape of `PluginRegistry` (plain class, `Map`, register/unregister).
+ * reactivity (that is layered on in `ui-extensions.svelte.ts`). The one lookup
+ * that runs extension code is `collectionTreeRoots()`: it calls each
+ * extension's function, so a caller's derivation tracks the state that function
+ * reads. Mirrors the structural shape of `PluginRegistry` (plain class, `Map`,
+ * register/unregister).
  */
 export class UiExtensionRegistry {
   private extensions = new Map<string, RegisteredExtension>();
+
+  /** Extensions whose `collectionTreeRoots` failed and has not returned normally since. */
+  private failingTreeRoots = new WeakSet<NodespaceExtension>();
 
   /** Register an extension. Never throws; see the module doc for what is skipped. */
   register(ext: NodespaceExtension): void {
@@ -397,9 +403,6 @@ export class UiExtensionRegistry {
   }
 
   // --- Collection-tree roots (ADR-082 §2.2) ----------------------------------
-
-  /** Extensions whose `collectionTreeRoots` failed and has not returned normally since. */
-  private failingTreeRoots = new WeakSet<NodespaceExtension>();
 
   /**
    * The union of every extension's {@link CollectionTreeRootsContribution}, in
