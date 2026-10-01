@@ -3759,3 +3759,90 @@ async fn routing_with_no_selection_pins_the_resolved_default_database_id() {
 
     let _ = shutdown.send(());
 }
+
+/// `node create --type collection` makes the collection the name identifies:
+/// the same id an import or the app's create derives, with the description in
+/// the collection bucket. `node update --property description=…` changes it.
+#[tokio::test]
+async fn node_create_and_update_set_a_collection_description() {
+    use nodespace_core::services::collection_service::deterministic_collection_id;
+
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let create = |name: &str| {
+        commands::node::NodeAction::Create(commands::node::CreateArgs {
+            node_type: "collection".into(),
+            content: Some(name.into()),
+            parent: None,
+            properties: vec![("description".into(), serde_json::json!("Accounts we bill"))],
+            collections: vec![],
+            collection_ids: vec![],
+        })
+    };
+    commands::node::run(&mut client, create("Clients"), true)
+        .await
+        .expect("create collection");
+
+    let id = deterministic_collection_id("Clients");
+    let stored_description = |raw: &mut NodeClient| {
+        let mut raw = raw.clone();
+        let id = id.clone();
+        async move {
+            let node = raw
+                .get_node(GetNodeRequest { node_id: id })
+                .await
+                .expect("the collection exists at its deterministic id")
+                .into_inner()
+                .node_data
+                .expect("node_data");
+            let props: serde_json::Value =
+                serde_json::from_str(&node.properties).expect("parse properties");
+            assert!(
+                props.get("description").is_none(),
+                "no flat description key: {props}"
+            );
+            props["collection"]["description"].clone()
+        }
+    };
+    assert_eq!(stored_description(&mut raw).await, "Accounts we bill");
+
+    // A second create of the same name is the same collection, so it is
+    // refused rather than stored as a duplicate under another id.
+    let err = commands::node::run(&mut client, create("clients"), true)
+        .await
+        .expect_err("a duplicate collection name is refused");
+    assert!(
+        format!("{err:#}").contains("Already exists"),
+        "expected an already-exists error, got: {err:#}"
+    );
+
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            id: id.clone(),
+            content: None,
+            properties: vec![(
+                "description".into(),
+                serde_json::json!("Accounts we bill, one page each"),
+            )],
+            collections: vec![],
+            collection_ids: vec![],
+            remove_collection_ids: vec![],
+        }),
+        true,
+    )
+    .await
+    .expect("update description");
+    assert_eq!(
+        stored_description(&mut raw).await,
+        "Accounts we bill, one page each"
+    );
+
+    let _ = shutdown.send(());
+}

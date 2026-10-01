@@ -121,7 +121,9 @@ use nodespace_core::db::ResolvedEntity;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate, PreparedNode};
 use nodespace_core::models::schema::EnumValue;
 use nodespace_core::models::{Node, SchemaField, SchemaProtectionLevel, SkillNode};
-use nodespace_core::ops::context_ops::{EntityResolution, PlaybookInfo, WorkspaceContext};
+use nodespace_core::ops::context_ops::{
+    CollectionSummary, EntityResolution, PlaybookInfo, WorkspaceContext,
+};
 use nodespace_core::ops::entity_types_block::EntityTypeDescriptor;
 use nodespace_core::services::render_subtree_markdown;
 
@@ -287,7 +289,14 @@ fn fixture_schema_release() -> nodespace_core::models::SchemaNode {
 
 fn fixture_workspace_context() -> WorkspaceContext {
     WorkspaceContext {
-        collections: vec!["Engineering".to_string(), "Q3 Planning".to_string()],
+        collections: vec![
+            CollectionSummary {
+                name: "Engineering".to_string(),
+                description: "Design notes, ADRs and tickets for the product team".to_string(),
+            },
+            // Exercises the no-description rendering branch.
+            CollectionSummary::named("Q3 Planning"),
+        ],
         active_playbooks: vec![
             PlaybookInfo {
                 name: "Sprint Close-Out".to_string(),

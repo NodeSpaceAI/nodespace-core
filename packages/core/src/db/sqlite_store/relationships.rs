@@ -1142,13 +1142,22 @@ impl SqliteStore {
         Ok(member_ids)
     }
 
-    pub async fn get_all_collection_names(&self) -> Result<Vec<String>> {
+    /// Every collection's name and description, sorted by name. The
+    /// description is `None` when the collection has none.
+    ///
+    /// Only a text value is read as a description. Nothing type-checks a text
+    /// field on write, and reading a stored number or boolean as a `String`
+    /// panics in the driver rather than returning an error.
+    pub async fn get_all_collection_descriptions(&self) -> Result<Vec<(String, Option<String>)>> {
         let mut rows = self
             .read()
             .await?
             .query(
                 &format!(
-                    "SELECT content FROM node WHERE {} ORDER BY content ASC",
+                    "SELECT content, \
+                     CASE WHEN json_type(properties, '$.collection.description') = 'text' \
+                          THEN json_extract(properties, '$.collection.description') END \
+                     FROM node WHERE {} ORDER BY content ASC",
                     crate::db::schema::is_a_sql(
                         "node_type",
                         &[crate::models::CoreNodeType::Collection]
@@ -1157,13 +1166,13 @@ impl SqliteStore {
                 (),
             )
             .await
-            .context("Failed to get all collection names")?;
+            .context("Failed to get all collection descriptions")?;
 
-        let mut names = Vec::new();
+        let mut collections = Vec::new();
         while let Some(row) = rows.next().await? {
-            names.push(row.get(0)?);
+            collections.push((row.get(0)?, row.get(1)?));
         }
-        Ok(names)
+        Ok(collections)
     }
 
     pub async fn get_all_collections_with_member_counts(

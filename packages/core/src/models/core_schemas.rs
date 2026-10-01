@@ -2221,6 +2221,22 @@ mod tests {
     }
 
     #[test]
+    fn test_collection_declares_only_an_optional_description() {
+        // A collection is grouping only (ADR-083 §5): its one field says what
+        // the collection is for, and it carries no access-control fields.
+        let schemas = get_core_schemas();
+        let collection = schemas.iter().find(|s| s.id == "collection").unwrap();
+
+        let names: Vec<&str> = collection.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["description"]);
+
+        let description = collection.get_field("description").unwrap();
+        assert_eq!(description.field_type, crate::models::SchemaFieldType::Text);
+        assert_eq!(description.required, Some(false));
+        assert_eq!(description.default, None);
+    }
+
+    #[test]
     fn test_person_email_field_is_optional() {
         // The description is seeded into every new database and shown to users
         // and agents, so it must describe the field alone.

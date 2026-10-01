@@ -4,7 +4,10 @@
 //! MCP and local agent tools share the same logic.
 
 use crate::db::ChildPlacement;
-use crate::models::{FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter};
+use crate::models::{
+    CoreNodeType, FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter,
+};
+use crate::ops::collection_ops::new_collection_id;
 use crate::ops::OpsError;
 use crate::services::{CollectionService, InsertPositionOwned, NodeService};
 use serde::Deserialize;
@@ -186,6 +189,23 @@ pub async fn create_node(
         ));
     }
 
+    // A collection's id is derived from its name, so a collection created
+    // here is the same node as one created by the collection op or an import.
+    // A subtype of collection is named the same way (ADR-086 §5).
+    let id = match input.id {
+        Some(id) => Some(id),
+        None => {
+            if node_service
+                .type_is_a(&input.node_type, CoreNodeType::Collection)
+                .await?
+            {
+                Some(new_collection_id(node_service, &input.content).await?)
+            } else {
+                None
+            }
+        }
+    };
+
     // ADR-069 §5/F6: lifecycle_status is passed into the create itself
     // rather than applied via a separate update afterward. The old
     // two-write shape had a real gap — a failure on the second write left a
@@ -195,7 +215,7 @@ pub async fn create_node(
     // of the one write that creates the row.
     let (node_id, placement) = node_service
         .create_placed_node(crate::services::CreateNodeParams {
-            id: input.id,
+            id,
             node_type: input.node_type,
             content: input.content,
             parent_id: input.parent_id,
