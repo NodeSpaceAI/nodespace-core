@@ -18,7 +18,7 @@ use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::ChildPlacement;
 use nodespace_core::models::{
     AiChatPendingDeletion, Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, Priority,
-    ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
+    ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -1603,7 +1603,7 @@ impl GrpcNodeService for NodeServiceImpl {
         let req = request.into_inner();
 
         let update = ProjectNodeUpdate {
-            status: req.status,
+            status: req.status.as_deref().map(ProjectStatus::from_value),
             priority: optional_priority_clear(req.priority),
             start_date: parse_optional_timestamp(req.start_date, "start_date")
                 .map_err(Status::invalid_argument)?,

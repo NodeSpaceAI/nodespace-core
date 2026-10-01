@@ -64,7 +64,7 @@ pub use nodespace_types::{PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate, 
 
 // The vocabularies of the task and project fields: `task.status`, and the
 // priority scale the two types share.
-pub use nodespace_types::{Priority, TaskStatus};
+pub use nodespace_types::{Priority, ProjectStatus, TaskStatus};
 
 // The stored query's typed fields — the only reader of a query node's
 // properties (see `QueryDefinition::from_fields` for the execution mapping).

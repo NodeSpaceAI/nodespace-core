@@ -5,7 +5,7 @@ use crate::core_type::CoreNodeType;
 use crate::node::{Node, NodeEnvelope};
 use crate::person::PersonNode;
 use crate::priority::priority_prop;
-use crate::project::{ProjectNode, DEFAULT_PROJECT_STATUS};
+use crate::project::{ProjectNode, ProjectStatus};
 use crate::query::{QueryFields, QueryNode};
 use crate::schema::SchemaNode;
 use crate::task::{TaskNode, TaskStatus};
@@ -455,7 +455,11 @@ fn person_node_to_value(node: Node) -> Result<serde_json::Value, String> {
 
 fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     let props = &node.properties;
-    let status = string_prop(props, "status").unwrap_or_else(|| DEFAULT_PROJECT_STATUS.to_string());
+    let status = props
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(ProjectStatus::from_value)
+        .unwrap_or_default();
     let priority = priority_prop(props);
     let start_date = props
         .get("start_date")

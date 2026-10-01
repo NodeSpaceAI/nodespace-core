@@ -25,6 +25,7 @@ export type { PersonNodeUpdate } from './person-node-update';
 export type { Priority } from './priority';
 export type { ProjectNode } from './project-node';
 export type { ProjectNodeUpdate } from './project-node-update';
+export type { ProjectStatus } from './project-status';
 export type { QueryFields } from './query-fields';
 export type { QueryFilter } from './query-filter';
 export type { QueryGeneratedBy } from './query-generated-by';

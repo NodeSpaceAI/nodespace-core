@@ -1385,7 +1385,8 @@ mod typed_update_tests {
     use super::*;
     use crate::db::SqliteStore;
     use crate::models::{
-        PersonNodeUpdate, Priority, ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
+        PersonNodeUpdate, Priority, ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate,
+        TaskNodeUpdate, TaskStatus,
     };
     use crate::services::{CreateNodeParams, InsertPositionOwned};
     use serde_json::json;
@@ -1721,7 +1722,7 @@ mod typed_update_tests {
                 &project.id,
                 project.version,
                 ProjectNodeUpdate {
-                    status: Some("active".to_string()),
+                    status: Some(ProjectStatus::Active),
                     start_date: set("2026-03-01"),
                     ..Default::default()
                 },
@@ -1745,7 +1746,7 @@ mod typed_update_tests {
                 &project.id,
                 project.version,
                 ProjectNodeUpdate {
-                    status: Some("someday".to_string()),
+                    status: Some(ProjectStatus::from_value("someday")),
                     ..Default::default()
                 },
             )
@@ -1767,7 +1768,7 @@ mod typed_update_tests {
                 &project.id,
                 project.version,
                 ProjectNodeUpdate {
-                    status: Some("archived".to_string()),
+                    status: Some(ProjectStatus::from_value("archived")),
                     ..Default::default()
                 },
             )

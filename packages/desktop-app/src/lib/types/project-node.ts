@@ -11,7 +11,7 @@ import type { Node } from './node';
 import type { ProjectNode } from './generated';
 import { isExactly } from './core-node-types';
 
-export type { ProjectNode, ProjectNodeUpdate } from './generated';
+export type { ProjectNode, ProjectNodeUpdate, ProjectStatus } from './generated';
 
 export function isProjectNode(node: Node | ProjectNode): node is ProjectNode {
   return isExactly(node.nodeType, 'project');

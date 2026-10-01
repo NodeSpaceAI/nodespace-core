@@ -1,5 +1,6 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { Priority } from './priority';
+import type { ProjectStatus } from './project-status';
 
 /**
  * Partial update for a project's core fields, received from the frontend.
@@ -10,7 +11,7 @@ import type { Priority } from './priority';
  * `YYYY-MM-DD`.
  */
 export type ProjectNodeUpdate = {
-  status?: string;
+  status?: ProjectStatus;
   priority?: Priority | null;
   startDate?: string | null;
   endDate?: string | null;
