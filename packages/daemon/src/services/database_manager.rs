@@ -1727,6 +1727,30 @@ plugin_label = "blue"
         assert!(mgr.list().await.databases[0].entry.extensions.is_empty());
     }
 
+    /// A key that is not a bare TOML key (one with a dot or a space, or an
+    /// empty one) is written quoted, so it loads back as the same flat key.
+    /// Written bare, a dotted key would load as a nested table and fail the
+    /// load.
+    #[tokio::test]
+    async fn set_extensions_round_trips_keys_that_need_quoting() {
+        let (mgr, _dir, registry_path, id) = manager_with_one_database().await;
+
+        mgr.set_extensions(
+            &id,
+            &[set("ext.key", "a"), set("ext key", "b"), set("", "c")],
+        )
+        .await
+        .unwrap();
+
+        let reloaded = DatabaseManager::load(registry_path, test_context())
+            .await
+            .unwrap();
+        assert_eq!(
+            reloaded.list().await.databases[0].entry.extensions,
+            string_map(&[("", "c"), ("ext key", "b"), ("ext.key", "a")])
+        );
+    }
+
     /// An unregistered id fails as not found, and nothing is written or
     /// announced.
     #[tokio::test]
