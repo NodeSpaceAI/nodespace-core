@@ -695,7 +695,12 @@ async fn an_extension_update_source_decides_the_version_and_the_download() {
 
     // The mock context's bundle version.
     assert_eq!(status.current, "0.1.0");
-    assert_eq!(status.latest.as_deref(), Some("v99.0.0"));
+    assert_eq!(
+        status.latest.as_deref(),
+        Some("v99.0.0"),
+        "no answer from the local endpoint (is HTTP_PROXY or ALL_PROXY set without \
+         NO_PROXY covering 127.0.0.1?)"
+    );
     assert!(status.update_available);
     assert_eq!(
         status.download_url.as_deref(),

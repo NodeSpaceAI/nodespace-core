@@ -12,8 +12,9 @@
 //! The update source is managed state: [`assemble`](crate::assemble) stores the
 //! one an app crate supplies through
 //! [`AppExtensions::update_source`](crate::AppExtensions::update_source), or the
-//! built-in source when it supplies none. The built-in source reads the public core repository's
-//! GitHub releases and downloads from its releases page.
+//! built-in source when it supplies none. In a default build the built-in source
+//! reads the public core repository's GitHub releases and downloads from its
+//! releases page.
 //!
 //! The check is best-effort and must never affect startup: any failure — offline,
 //! timeout, rate limit, a malformed or missing tag — resolves to "no update
@@ -63,7 +64,8 @@ pub const UPDATE_AVAILABLE_EVENT: &str = "update://available";
 ///
 /// An app crate supplies one through
 /// [`AppExtensions::update_source`](crate::AppExtensions::update_source); an app
-/// that supplies none uses the built-in source, [`UpdateSource::community`].
+/// that supplies none uses the built-in source, which in a default build is
+/// [`UpdateSource::community`].
 /// The source is fixed when the app is built and stays the same for the life
 /// of the process. The running version it is compared with is always the one
 /// in the app's bundle config (`tauri.conf.json`), never one the source names.
@@ -73,6 +75,10 @@ pub struct UpdateSource {
     pub latest: LatestVersionSource,
     /// The page the banner's Download button opens when an update is found.
     /// `None` hides Download, leaving the banner with only its dismiss action.
+    ///
+    /// Use an `http` or `https` URL. The banner opens it through the opener
+    /// plugin, whose default scope refuses other schemes, so Download would
+    /// then do nothing.
     pub download_url: Option<&'static str>,
 }
 
@@ -231,6 +237,10 @@ pub async fn check_for_update_for_app<R: Runtime>(app: &AppHandle<R>) -> UpdateS
     let current = app.package_info().version.to_string();
     let source = update_source_for_app(app);
     let latest = fetch_latest_version(&source.latest).await;
+    if latest.is_none() {
+        // Expected when offline, but also what a mistyped source looks like.
+        tracing::debug!(source = ?source.latest, "update check found no latest version");
+    }
     status_from(&current, latest, source.download_url)
 }
 
@@ -421,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_source_is_community_outside_pro_builds() {
+    fn builtin_source_without_the_edition_flag_is_community() {
         assert_eq!(builtin_update_source_for(false), UpdateSource::community());
     }
 

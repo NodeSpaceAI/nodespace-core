@@ -251,7 +251,7 @@ impl<R: Runtime> AppExtensions<R> {
     /// Sets where the app's update check looks for the latest version and
     /// what the update banner's Download button opens. If it is called more
     /// than once, the last call wins. Without it the app uses core's built-in
-    /// source, [`UpdateSource::community`].
+    /// source, which in a default build is [`UpdateSource::community`].
     ///
     /// * **Fixed for the process.** [`assemble`] stores the source when the app
     ///   is built. The check at startup and every on-demand check from the
@@ -267,7 +267,8 @@ impl<R: Runtime> AppExtensions<R> {
     ///   means "no update known", and the banner does not appear.
     /// * **`download_url: None` hides Download.** The banner then shows the
     ///   update without a way to fetch it, so a source that names no page
-    ///   leaves getting the update to the app crate.
+    ///   leaves getting the update to the app crate. A page it does name must
+    ///   be an `http` or `https` URL, the only schemes the banner can open.
     #[must_use]
     pub fn update_source(mut self, source: UpdateSource) -> Self {
         self.update_source = Some(source);
