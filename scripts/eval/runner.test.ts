@@ -28,6 +28,7 @@ import {
   parseTurnOutput,
   partitionExcluded,
   readBaselineReliability,
+  setupLeftStateMissing,
 } from "./runner.ts";
 import { assertExpectation } from "./fixtures/agent-matrix.ts";
 import { EnvironmentError } from "./preflight.ts";
@@ -125,6 +126,47 @@ describe("partitionExcluded", () => {
     expect(scored.map((r) => r.id)).toEqual(["11c"]);
     expect(excludedCount).toBe(1);
     expect(setupCount).toBe(0);
+  });
+});
+
+describe("setupLeftStateMissing", () => {
+  // A setup turn that failed its assertion by doing nothing at all.
+  const didNothing = { toolsCalled: [], routingDecision: "query" };
+
+  test("a turn that did nothing, with its state present, does not block its group", () => {
+    // The second group of a rep: the type exists, the model created nothing.
+    expect(setupLeftStateMissing(didNothing, () => true)).toBe(false);
+  });
+
+  test("a turn that did nothing, with its state absent, blocks its group", () => {
+    expect(setupLeftStateMissing(didNothing, () => false)).toBe(true);
+  });
+
+  test("a turn the fixture cannot check blocks its group", () => {
+    // Unknown is treated as missing: scoring a scenario against state nobody
+    // confirmed is the failure the exclusion exists to prevent.
+    expect(setupLeftStateMissing(didNothing, () => undefined)).toBe(true);
+  });
+
+  test("a turn that did something else blocks its group whatever the state", () => {
+    // The state check sees the workspace, not the conversation. A clarifying
+    // question leaves the next prompt to be read as its answer; another tool
+    // changed the workspace the scenarios assume; a failed send did neither
+    // and proves nothing. None is the correct no-op, so the check is not asked.
+    let asked = false;
+    const present = () => {
+      asked = true;
+      return true;
+    };
+    for (const turn of [
+      { toolsCalled: [], routingDecision: "clarify" },
+      { toolsCalled: ["route_clarify"], routingDecision: "query" },
+      { toolsCalled: ["create_node"], routingDecision: "query" },
+      { toolsCalled: [], routingDecision: "query", sendFailed: true },
+    ]) {
+      expect(setupLeftStateMissing(turn, present)).toBe(true);
+    }
+    expect(asked).toBe(false);
   });
 });
 

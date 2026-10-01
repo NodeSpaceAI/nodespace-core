@@ -102,6 +102,12 @@ type Expected =
 interface DecisionScenario extends Scenario {
   expected: Expected;
   /**
+   * On a setup scenario: which custom type its turn exists to establish. The
+   * runner asks whether that type is present when the turn itself created
+   * nothing (see `setupStatePresent`).
+   */
+  establishes?: "company" | "venue";
+  /**
    * Reproduces a failure ADR-056 records against the locked model. These are
    * the cases with a known-bad baseline, so a regression here is unambiguous.
    */
@@ -168,6 +174,7 @@ const SETUP: DecisionScenario[] = [
     prompt:
       "Set up a new type for the companies we sell to, with a name and the date we signed them.",
     setup: true,
+    establishes: "company",
     expected: { decision: "operation", oneOf: ["create_schema"] },
   },
   {
@@ -182,6 +189,7 @@ const SETUP: DecisionScenario[] = [
     prompt:
       "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
     setup: true,
+    establishes: "venue",
     expected: { decision: "operation", oneOf: ["create_schema"] },
   },
 ];
@@ -227,6 +235,30 @@ const COMPANY_TYPE_HINTS = ["compan", "client", "customer", "account"];
 /// pick it up if the model phrased it as "client venue" or similar.
 const VENUE_TYPE_HINTS = ["venue", "event", "place"];
 
+/** The two types the setup turns establish. */
+type SetupType = "company" | "venue";
+
+/**
+ * Whether `id` is the custom type a setup turn of this kind establishes.
+ *
+ * A venue-ish id is never the company type, whatever else it mentions: the
+ * model has named the venue type "client venue" before.
+ */
+function isSetupType(kind: SetupType, id: string): boolean {
+  const lower = id.toLowerCase();
+  const venue = VENUE_TYPE_HINTS.some((h) => lower.includes(h));
+  if (kind === "venue") return venue;
+  return !venue && COMPANY_TYPE_HINTS.some((h) => lower.includes(h));
+}
+
+/**
+ * Whether the workspace's custom types include the one a setup turn of this
+ * kind establishes. Pure over the ids, so it is testable without a daemon.
+ */
+export function setupTypePresent(kind: SetupType, customTypeIds: string[]): boolean {
+  return customTypeIds.some((id) => isSetupType(kind, id));
+}
+
 function runNs(env: EvalEnv, args: string[]): unknown {
   const r = Bun.spawnSync([env.nsBin, "--socket", env.socket, "--json", ...args], {
     stdout: "pipe",
@@ -262,9 +294,9 @@ function runNs(env: EvalEnv, args: string[]): unknown {
  * with no instance in it — looking exactly like a model result.
  *
  * Because it runs before the setup turns, it CREATES the company type rather
- * than discovering one. The setup turns still run and are still scored; a
- * `create_schema` against an existing type is idempotent at the store, so
- * `setup-company` asserting on that operation is unaffected either way.
+ * than discovering one. The setup turns still run; a `create_schema` against
+ * an existing type is refused and changes nothing, and `setup-company` asserts
+ * on the operation chosen, not on its result, so it is unaffected either way.
  *
  * The type id is fixed here rather than model-derived, which is the one place
  * this fixture may name one: everything downstream (the schema assertions)
@@ -284,11 +316,7 @@ function seedNorthwind(env: EvalEnv): void {
   const candidates = (schemas?.nodes ?? []).filter(
     (s) => s?.id && s.properties?.isCore !== true,
   );
-  let company = candidates.find((s) => {
-    const id = (s.id ?? "").toLowerCase();
-    if (VENUE_TYPE_HINTS.some((h) => id.includes(h))) return false;
-    return COMPANY_TYPE_HINTS.some((h) => id.includes(h));
-  });
+  let company = candidates.find((s) => isSetupType("company", s.id ?? ""));
 
   // Cold rep: no company type exists yet, so create the one this fixture's
   // instances hang off. Reusing a model-created type when present keeps a
@@ -847,10 +875,11 @@ const fixture: EvalFixture = {
   // length being scored as decision quality: the scenarios at the end of the
   // list were never measured on their own merits.
   //
-  // The setup turns are cheap to repeat and idempotent in effect — `schema
-  // list` is consulted before creating, and a second `create_schema` for an
-  // existing type is a no-op — so paying them per group buys scenario
-  // isolation without changing what any scenario is asked.
+  // The setup turns are cheap to repeat and leave the workspace as it was: a
+  // second `create_schema` for an existing type is refused, and a model that
+  // sees the type and creates nothing changes nothing either. Paying them per
+  // group buys scenario isolation without changing what any scenario is asked.
+  // `setupStatePresent` is what keeps the second case from excluding the group.
   //
   // This makes the fixture's numbers NOT comparable to any run recorded before
   // the split: each scenario now starts from a short conversation rather than
@@ -864,6 +893,33 @@ const fixture: EvalFixture = {
   // make it unrepresentable.
   seedRun(env: EvalEnv) {
     seedNorthwind(env);
+  },
+  // Groups share the rep's database, so every group after the first runs its
+  // setup turns against types that already exist. The model sometimes sees
+  // that and creates nothing, which is correct and fails the turn's
+  // `create_schema` assertion. What the scenarios after it need is the type,
+  // so that is what decides whether the group is scored.
+  setupStatePresent(env: EvalEnv, scenario) {
+    const kind = (scenario as DecisionScenario).establishes;
+    if (kind === undefined) return undefined;
+    let schemas: {
+      nodes?: Array<{ id?: string; properties?: { isCore?: boolean } }>;
+    } | null;
+    try {
+      schemas = runNs(env, ["schema", "list"]) as typeof schemas;
+    } catch (err) {
+      // The check could not be made, which is not the same as the state being
+      // there: unknown blocks the group. Logged so a daemon failure can be
+      // told apart from a setup that established nothing.
+      console.error(
+        `[decisions]     setup state check failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return undefined;
+    }
+    const customTypeIds = (schemas?.nodes ?? [])
+      .filter((s) => s?.id && s.properties?.isCore !== true)
+      .map((s) => s.id as string);
+    return setupTypePresent(kind, customTypeIds);
   },
   score(scenario, turns) {
     return assertFixture(scenario as DecisionScenario, turns);

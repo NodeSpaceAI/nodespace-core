@@ -17,7 +17,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { TurnRecord } from "../types.ts";
-import fixture from "./decisions.ts";
+import fixture, { setupTypePresent } from "./decisions.ts";
 
 describe("decision fixture assembly", () => {
   test("every scored scenario gets its own group", () => {
@@ -75,6 +75,43 @@ describe("decision fixture assembly", () => {
       .flatMap((g) => g.filter((s) => s.setup !== true))
       .map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("setup state", () => {
+  test("every setup scenario names the type it establishes", () => {
+    // A setup scenario without it cannot be checked, so a turn that rightly
+    // creates nothing would exclude its whole group again.
+    const setups = fixture.groups[0].filter((s) => s.setup === true);
+    expect(setups.map((s) => s.establishes)).toEqual(["company", "venue"]);
+  });
+
+  test("a type is present under whatever id the model gave it", () => {
+    expect(setupTypePresent("company", ["company_sold_to"])).toBe(true);
+    expect(setupTypePresent("company", ["client_company"])).toBe(true);
+    expect(setupTypePresent("venue", ["event_location"])).toBe(true);
+    expect(setupTypePresent("venue", ["event_place"])).toBe(true);
+  });
+
+  test("the other setup type does not stand in for a missing one", () => {
+    expect(setupTypePresent("venue", ["company_sold_to"])).toBe(false);
+    expect(setupTypePresent("company", ["event_location"])).toBe(false);
+    // A venue named after its clients is still the venue type.
+    expect(setupTypePresent("company", ["client_venue"])).toBe(false);
+    expect(setupTypePresent("venue", ["client_venue"])).toBe(true);
+  });
+
+  test("the match is by word, so an unrelated type sharing one reads as present", () => {
+    // The limit of matching on a hint rather than an id: a later scenario's
+    // `event_log` would stand in for the venue type. The ids the setup turns
+    // produce are not predictable, so the match cannot be tighter.
+    expect(setupTypePresent("venue", ["event_log"])).toBe(true);
+    expect(setupTypePresent("company", ["customer_feedback"])).toBe(true);
+  });
+
+  test("an empty workspace has neither", () => {
+    expect(setupTypePresent("company", [])).toBe(false);
+    expect(setupTypePresent("venue", [])).toBe(false);
   });
 });
 

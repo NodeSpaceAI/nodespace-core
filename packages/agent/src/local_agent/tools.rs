@@ -273,7 +273,7 @@ const BODY_TRUNCATE_FULL: usize = 2000;
 const BODY_TRUNCATE_SUMMARY: usize = 500;
 
 /// Default search result limit.
-const DEFAULT_SEARCH_LIMIT: usize = 50;
+pub(crate) const DEFAULT_SEARCH_LIMIT: usize = 50;
 
 /// Default semantic search result limit.
 const DEFAULT_SEMANTIC_LIMIT: usize = 5;
@@ -618,10 +618,9 @@ fn search_result_summary(node: &Value) -> Value {
         .and_then(|v| v.as_str())
         .filter(|t| !t.is_empty())
         .unwrap_or(content);
-    // `nodeType` is the wire spelling: `Node` is camelCase-serialized. A schema
-    // node has no such field, so a type row reports no type.
+    // `nodeType` is the wire spelling: `Node` is camelCase-serialized.
     let node_type = node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("");
-    json!({
+    let mut summary = json!({
         "id": node_uri(node.get("id").and_then(|v| v.as_str()).unwrap_or("")),
         "title": truncate(title, 100),
         "type": node_type,
@@ -629,7 +628,44 @@ fn search_result_summary(node: &Value) -> Value {
         // The flat, storage-keyed map (core fields folded back in) — the same
         // bare keys the model writes with update_node.
         "properties": nodespace_core::models::flat_properties_view(node),
-    })
+    });
+    // A row carries only what it has. A type's row is otherwise an id beside
+    // an empty property map and a snippet repeating its title, twenty-odd
+    // times over, and a list padded that way is one the model summarises
+    // instead of reading out: measured on `gemma-4-e4b-q4km` over three
+    // workspaces, a reply naming every type went from 0 of 3 to 2 of 3.
+    if let Some(row) = summary.as_object_mut() {
+        if row.get("type").and_then(|v| v.as_str()) == Some("") {
+            row.remove("type");
+        }
+        if row
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .is_some_and(|p| p.is_empty())
+        {
+            row.remove("properties");
+        }
+        if row.get("snippet") == row.get("title") {
+            row.remove("snippet");
+        }
+    }
+    summary
+}
+
+/// `resolve_query`'s answer for the one node a request resolved to, built from
+/// that node's [`search_result_summary`] row.
+///
+/// The row carries only what the node has, so this copies the keys that are
+/// there rather than indexing ones that may not be: a node with no properties
+/// set resolves with no `properties` key, not with `"properties": null`.
+fn resolved_payload(row: &Value) -> Value {
+    let mut payload = json!({ "resolved": true });
+    for key in ["id", "title", "type", "properties"] {
+        if let Some(value) = row.get(key) {
+            payload[key] = value.clone();
+        }
+    }
+    payload
 }
 
 // ---------------------------------------------------------------------------
@@ -2978,16 +3014,7 @@ impl GraphToolExecutor {
                 "reason": "no_match",
                 "node_type": params.node_type,
             }),
-            1 => {
-                let node = &matches[0];
-                json!({
-                    "resolved": true,
-                    "id": node["id"],
-                    "title": node["title"],
-                    "type": node["type"],
-                    "properties": node["properties"],
-                })
-            }
+            1 => resolved_payload(&matches[0]),
             _ => json!({
                 "resolved": false,
                 "reason": "multiple_matches",
@@ -8080,10 +8107,82 @@ mod tests {
         let node = json!({"id": "person", "content": "Person", "title": ""});
         let summary = search_result_summary(&node);
         assert_eq!(summary["title"], "Person");
-        assert_eq!(summary["type"], "");
 
         let untitled = json!({"id": "person", "content": "Person"});
         assert_eq!(search_result_summary(&untitled)["title"], "Person");
+    }
+
+    /// A row carries only what it has: no empty type, no empty property map,
+    /// no snippet that repeats the title.
+    #[test]
+    fn a_search_result_row_omits_what_it_does_not_have() {
+        let type_row = search_result_summary(
+            &json!({"id": "person", "nodeType": "schema", "content": "Person"}),
+        );
+        assert_eq!(
+            type_row,
+            json!({"id": "nodespace://person", "title": "Person", "type": "schema"})
+        );
+
+        // A node with no type field at all reports none, not an empty one.
+        let untyped = search_result_summary(&json!({"id": "x", "content": "X"}));
+        assert_eq!(untyped, json!({"id": "nodespace://x", "title": "X"}));
+
+        // What a row does have stays: properties with values, and a snippet
+        // that says more than the title.
+        let task = search_result_summary(&json!({
+            "id": "abc-123",
+            "nodeType": "task",
+            "title": "Renew the venue contract",
+            "content": "Renew the venue contract\nCall the venue before Friday.",
+            "status": "open",
+        }));
+        assert_eq!(task["type"], "task");
+        assert_eq!(
+            task["snippet"],
+            "Renew the venue contract\nCall the venue before Friday."
+        );
+        assert!(
+            task["properties"]
+                .as_object()
+                .is_some_and(|p| !p.is_empty()),
+            "a node's properties stay on its row: {task}"
+        );
+    }
+
+    /// `resolve_query` answers from the same row, so what the row leaves out
+    /// must be left out of the answer too, not turned into a null.
+    #[test]
+    fn a_resolved_node_carries_only_what_its_row_has() {
+        let with_properties = search_result_summary(&json!({
+            "id": "abc-123",
+            "nodeType": "invoice",
+            "title": "Invoice 12",
+            "content": "Invoice 12",
+            "properties": {"invoice": {"amount": 500}},
+        }));
+        let resolved = resolved_payload(&with_properties);
+        assert_eq!(resolved["resolved"], true);
+        assert_eq!(resolved["id"], "nodespace://abc-123");
+        assert_eq!(resolved["title"], "Invoice 12");
+        assert_eq!(resolved["type"], "invoice");
+        assert!(resolved["properties"].is_object());
+
+        let without = search_result_summary(&json!({
+            "id": "def-456",
+            "nodeType": "invoice",
+            "title": "Invoice 13",
+            "content": "Invoice 13",
+        }));
+        assert_eq!(
+            resolved_payload(&without),
+            json!({
+                "resolved": true,
+                "id": "nodespace://def-456",
+                "title": "Invoice 13",
+                "type": "invoice",
+            })
+        );
     }
 
     // -- Parity test: def_search_semantic schema vs SearchSemanticParams fields --

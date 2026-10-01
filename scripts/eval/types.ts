@@ -325,6 +325,14 @@ export interface ScenarioResult {
    * missing, so a red here would describe the fixture, not the model.
    */
   excludedAsSetupFailed?: boolean;
+  /**
+   * On a `setup: true` turn that failed its own assertion: the turn did
+   * nothing and the fixture showed the state it establishes already present
+   * (see `EvalFixture.setupStatePresent`), so the scenarios after it were
+   * scored rather than excluded. Recorded so a results file shows which groups
+   * were scored on that basis.
+   */
+  setupStateAlreadyPresent?: boolean;
 }
 
 /**
@@ -407,6 +415,19 @@ export interface EvalFixture {
    * was never established.
    */
   seedRun?(env: EvalEnv): void;
+  /**
+   * Whether the state a `setup` scenario exists to establish is present in the
+   * workspace, asked of the daemon after the setup turn has run.
+   *
+   * Consulted only when the setup turn fails its own assertion by doing
+   * nothing at all. Groups in a rep share a database, so a setup turn can find
+   * its state already there and rightly do nothing; without this the runner
+   * reads that as a failed setup and excludes every scenario after it.
+   *
+   * Return `undefined` for a scenario this fixture cannot check, or when the
+   * check itself fails; the runner then keeps the turn's own verdict.
+   */
+  setupStatePresent?(env: EvalEnv, scenario: Scenario): boolean | undefined;
   /**
    * Score one scenario from its turns. `turns` excludes prior-context turns,
    * which the runner strips before calling this.
