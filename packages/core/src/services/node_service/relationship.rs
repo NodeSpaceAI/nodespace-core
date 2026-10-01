@@ -1957,17 +1957,16 @@ impl NodeService {
     }
 
     /// Bulk-create `member_of` edges AND emit a `RelationshipCreated` event for
-    /// each newly created edge, so the cloud-sync push consumer replicates them.
+    /// each newly created edge, so every event subscriber learns of them.
     ///
     /// The raw `store.bulk_add_to_collections` inserts the rows directly and
-    /// emits nothing. That is fine for a purely local write, but the edges then
-    /// never reach cloud: they join nodes that are *already* synced, so the
-    /// node-oriented "unsynced push sweep" skips them, and every other device
-    /// (and any first-time puller) sees those collections empty. Routing the
-    /// batch importer's collection assignment through here puts each membership
-    /// on the exact same event path as [`Self::create_relationship`], so bulk
-    /// import and single-file import replicate identically. Returns the number of
-    /// edges actually created (idempotent hits are skipped and not re-emitted).
+    /// emits nothing, so without this no subscriber learns of the edges: not
+    /// other windows, not CLI watchers, not a host that mirrors changes.
+    /// Routing the batch importer's collection assignment through here puts
+    /// each membership on the exact same event path as
+    /// [`Self::create_relationship`], so bulk import and single-file import
+    /// notify subscribers identically. Returns the number of edges actually
+    /// created (idempotent hits are skipped and not re-emitted).
     pub async fn bulk_add_to_collections_notify(
         &self,
         memberships: &[(String, String)],
@@ -1978,12 +1977,12 @@ impl NodeService {
             .await
             .map_err(NodeServiceError::from_store)?;
 
-        // The domain-event broadcast channel is bounded (128 slots). A large
-        // import can create far more `member_of` edges than that; emitting them
-        // all in a tight loop would overflow the channel, making the sync push
-        // consumer lag and DROP edges — which then never reach cloud (defeating
-        // the whole point). Yield every chunk so the consumer drains between
-        // bursts. The chunk stays well under the channel capacity.
+        // The domain-event broadcast channel is bounded
+        // (`DOMAIN_EVENT_CHANNEL_CAPACITY`). A large import can create more
+        // `member_of` edges than the buffer holds; emitting them all in a tight
+        // loop could make a slow subscriber lag and DROP edges. Yield every
+        // chunk so subscribers drain between bursts. The chunk stays well under
+        // the channel capacity.
         const EMIT_CHUNK: usize = 50;
         for (i, (rel_id, node_id, collection_id, order)) in created.iter().enumerate() {
             self.emit_event(DomainEvent::RelationshipCreated {

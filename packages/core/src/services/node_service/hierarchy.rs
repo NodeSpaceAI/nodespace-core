@@ -1045,9 +1045,10 @@ impl NodeService {
         Ok(placement)
     }
 
-    /// Batched sibling of [`Self::create_parent_edge`] for the sync-apply cold-sweep's
-    /// reconnect path: attach many genuinely-unparented children under their parents in
-    /// ONE store transaction, then emit one `RelationshipCreated` per created edge —
+    /// Batched sibling of [`Self::create_parent_edge`] for attaching many
+    /// genuinely-unparented children in one store transaction — for example when
+    /// applying a batch of hierarchy edges written elsewhere. It attaches each child
+    /// under its parent, then emits one `RelationshipCreated` per created edge —
     /// exactly as the per-row `create_parent_edge` does. (Relationship events are not
     /// node-keyed, so `begin_batch_emit` does NOT coalesce them; they broadcast
     /// immediately, one per edge, matching the per-row path — the batching win is the
@@ -1056,8 +1057,8 @@ impl NodeService {
     /// skipped in the store (see `bulk_create_has_child`), so this only attaches
     /// genuinely-unparented children. Returns the number of edges created.
     ///
-    /// Unlike `create_parent_edge` this does NOT reposition — it is intended for the
-    /// from-scratch (cold) sweep where every parent is fresh, so the sender's `order`
+    /// Unlike `create_parent_edge` this does NOT reposition — it is intended for a
+    /// from-scratch batch where every parent is fresh, so the sender's `order`
     /// values are the final sibling order. Repositioning / non-fresh parents stay on
     /// the per-row path.
     pub async fn bulk_create_has_child_edges(

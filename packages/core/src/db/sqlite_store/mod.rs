@@ -1644,8 +1644,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_bulk_root_only_membership_is_enforced() -> Result<()> {
-        // The bulk path (`bulk_add_to_collections`) is what the sync-apply
-        // cold-sweep calls directly, so the same rule must gate incoming edges.
+        // The bulk path (`bulk_add_to_collections`) is what a batched caller
+        // calls directly, so the same rule must gate incoming edges.
         let (store, _t) = create_test_store().await?;
 
         let coll = Node::new("collection".to_string(), "Coll".to_string(), json!({}));
@@ -1668,7 +1668,7 @@ mod tests {
             .await?;
         assert_eq!(created.len(), 2, "both root memberships must be created");
 
-        // A batch containing ONE interior node is refused (cold-sweep parity): an
+        // A batch containing ONE interior node is refused (bulk-path parity): an
         // incoming non-root membership edge cannot slip in via the bulk path.
         let interior = store
             .create_child_node_atomic(&r1_id, "text", "interior child", json!({}), None)
@@ -1692,8 +1692,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_bulk_add_skips_collection_hierarchy_cycle() -> Result<()> {
-        // The bulk path is the sync-apply cold-sweep's direct entry point, and a
-        // cyclic collection pair (concurrently written by two devices) can land
+        // The bulk path is a batched caller's direct entry point, and a cyclic
+        // collection pair (concurrently written by two devices) can land
         // there. It must skip the cycle-forming edge — never write a collection as a
         // descendant of itself — while still applying the batch's valid edges.
         let (store, _t) = create_test_store().await?;
@@ -1755,8 +1755,8 @@ mod tests {
     async fn test_reparent_guard_rejects_moving_a_member_under_a_parent() -> Result<()> {
         // ADR-059 §2 (reparent side): the store's `move_node` chokepoint rejects
         // giving a `has_child` parent to a node that holds a `member_of` edge, so
-        // the service `move_node` reparent path is covered (the sync-apply
-        // `bulk_create_has_child` sweep calls the same guard). Non-members move
+        // the service `move_node` reparent path is covered (the bulk path,
+        // `bulk_create_has_child`, calls the same guard). Non-members move
         // freely; move-to-root is allowed; collection and person nodes are exempt.
         let (store, _t) = create_test_store().await?;
 
@@ -1821,7 +1821,7 @@ mod tests {
             "person-node membership is exempt from the reparent rule"
         );
 
-        // The sync cold-sweep bulk attach path (`bulk_create_has_child`) is gated
+        // The bulk attach path (`bulk_create_has_child`) is gated
         // too, symmetric with the forward `bulk_add_to_collections` guard: a batch
         // that would give a parent to a root member is rejected.
         let bulk_member = Node::new("text".to_string(), "bulk member".to_string(), json!({}));

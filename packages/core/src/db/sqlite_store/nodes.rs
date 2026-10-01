@@ -320,13 +320,12 @@ impl SqliteStore {
         // Collection-name collisions are suggest-don't-block (ADR-065 posture),
         // never a hard rejection: NodeSpace is local-first, and two offline
         // devices can each validly create a collection with the same name. A
-        // hard rejection here used to propagate straight out of the sync-apply
-        // `create_node` call (`nodespace-sync`'s `apply_node_upsert`), and per
-        // that function's own contract the cursor never advances past a failed
-        // row — a benign duplicate collection name could wedge a sync cursor
-        // permanently. Detect the collision (if any) BEFORE the insert below so
-        // it unambiguously identifies the pre-existing OTHER node, then let the
-        // write proceed unconditionally and mark both sides afterward.
+        // hard rejection here would propagate straight out of any caller
+        // applying another device's writes through `create_node`, and stall it
+        // permanently on a benign duplicate. Detect the collision (if any)
+        // BEFORE the insert below so it unambiguously identifies the
+        // pre-existing OTHER node, then let the write proceed unconditionally
+        // and mark both sides afterward.
         let colliding_collection = if node.node_type == "collection" {
             self.get_collection_by_name(&node.content).await?
         } else {
@@ -373,9 +372,8 @@ impl SqliteStore {
 
         if let Some(existing) = colliding_collection {
             // Best-effort and non-blocking: the node above is already durably
-            // written. A marker-write failure must never fail node creation —
-            // mirrors the swallow-errors posture of nodespace-sync's own
-            // `mark_possible_duplicate` (ADR-065).
+            // written. A marker-write failure must never fail node creation
+            // (ADR-065).
             self.mark_collection_name_collision(&node.id, &existing.id)
                 .await;
         }
@@ -2827,7 +2825,7 @@ impl SqliteStore {
     /// `member_of` write for the store's forward guard to catch. Called at every
     /// store-level site that attaches an *existing* node to a parent — `move_node`
     /// (the service `move_node` reparent path), `bulk_create_has_child` (the
-    /// sync-apply cold-sweep), and the relationship API's `has_child` inserts
+    /// bulk attach path), and the relationship API's `has_child` inserts
     /// (`append_child_edge`, `create_generic_relationship` and its `_in_tx`
     /// twin) — so every reparent path is covered, symmetrically with the
     /// forward guard `assert_root_only_membership` on the `member_of` INSERT
@@ -2844,7 +2842,7 @@ impl SqliteStore {
     /// `collection_is_root_*` / `schema_is_root_*` triggers back this up on
     /// every write path; checking here gives the reparent paths a readable error.
     /// One chunked query finds every kind of offender, keeping the
-    /// bulk/cold-sweep path a single round trip per chunk.
+    /// bulk path a single round trip per chunk.
     pub(crate) async fn assert_may_gain_parent(&self, node_ids: &[&str]) -> Result<()> {
         for chunk in may_gain_parent_chunks(node_ids) {
             let (sql, params) = may_gain_parent_query(&chunk);

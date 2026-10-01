@@ -508,9 +508,9 @@ impl SqliteStore {
     /// three `member_of` INSERT sites (`add_to_collection`,
     /// `bulk_add_to_collections`, and the generic `create_generic_relationship`
     /// when its `rel_type` is `member_of`), so every write path is covered without
-    /// a per-path check: CLI, graph import, play `add_relationship`, and the
-    /// sync-apply cold-sweep (which calls `bulk_add_to_collections` directly). A
-    /// batched, chunked query keeps the bulk/cold-sweep path a single round trip.
+    /// a per-path check: CLI, graph import, play `add_relationship`, and any
+    /// batched caller of `bulk_add_to_collections`. A batched, chunked query keeps
+    /// the bulk path a single round trip.
     /// Members that don't exist yet are left to the INSERT's foreign-key check.
     async fn assert_root_only_membership(&self, member_ids: &[&str]) -> Result<()> {
         if member_ids.is_empty() {
@@ -1220,13 +1220,13 @@ impl SqliteStore {
         .await
     }
 
-    /// Bulk-create `has_child` edges (parent → child) in ONE transaction, for the
-    /// sync-apply cold-sweep's batched reconnect path. Each tuple is `(parent, child,
-    /// order)` where `order` is the sender's sibling order; `get_children` sorts by
-    /// `json_extract(properties, '$.order')` ASC, so a fresh parent's children
-    /// reproduce that order exactly.
+    /// Bulk-create `has_child` edges (parent → child) in ONE transaction, for a
+    /// batched attach of hierarchy edges written elsewhere. Each tuple is
+    /// `(parent, child, order)` where `order` is the sender's sibling order;
+    /// `get_children` sorts by `json_extract(properties, '$.order')` ASC, so a
+    /// fresh parent's children reproduce that order exactly.
     ///
-    /// Idempotent and safe for a from-scratch sweep: a child that ALREADY has a
+    /// Idempotent and safe for a from-scratch batch: a child that ALREADY has a
     /// parent `has_child` edge is skipped (a node has at most one parent), so this
     /// only ever attaches genuinely-unparented children — it never re-parents.
     /// Direction matches `move_node`/`get_children`: `in_node = parent, out_node =
@@ -1240,7 +1240,7 @@ impl SqliteStore {
             return Ok(Vec::new());
         }
 
-        // ADR-059 §2 (reparent side): this cold-sweep attach path must not give a
+        // ADR-059 §2 (reparent side): this bulk attach path must not give a
         // `has_child` parent to a node that holds a `member_of` edge — symmetric
         // with the forward guard on `bulk_add_to_collections`. Run under the
         // write guard (it reads through reader connections, so it doesn't
@@ -1288,12 +1288,6 @@ impl SqliteStore {
         Ok(created)
     }
 
-    /// Bulk-insert `member_of` edges, returning the edges actually created
-    /// (skipping ones that already existed) as `(rel_id, node_id, collection_id,
-    /// order)`. Callers that need cloud sync route through
-    /// [`crate::services::NodeService::bulk_add_to_collections_notify`], which
-    /// emits a `RelationshipCreated` event per returned edge — this raw store
-    /// method emits nothing, so on its own the edges never push to cloud.
     /// The subset of `ids` whose node is a `collection`, chunked under SQLite's
     /// bound-parameter ceiling. Used to limit the cycle check in
     /// `bulk_add_to_collections` to members that can actually form a hierarchy.
@@ -1360,6 +1354,10 @@ impl SqliteStore {
         Ok(rows.next().await?.is_some())
     }
 
+    /// Bulk-insert `member_of` edges, returning the edges actually created
+    /// (skipping existing ones) as `(rel_id, node_id, collection_id, order)`.
+    /// Emits no events; callers whose writes must reach event subscribers use
+    /// [`crate::services::NodeService::bulk_add_to_collections_notify`].
     pub async fn bulk_add_to_collections(
         &self,
         memberships: &[(String, String)],

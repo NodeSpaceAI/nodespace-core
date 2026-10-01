@@ -7,25 +7,24 @@
 //! `person_duplicate_convergence_test.rs`, which explicitly scopes itself
 //! OUT of this check). Before the fix under test, `SqliteStore::create_node`
 //! called `bail!` on a collection-name collision; that error propagated
-//! straight out of `nodespace-sync`'s `apply_node_upsert`, and per that
-//! function's own contract the sync cursor never advances past a failed row
-//! — a benign duplicate collection name could wedge a sync cursor
-//! permanently.
+//! straight out of `create_node`, so any caller applying another device's
+//! node through `create_node` could never get past that row — a benign
+//! duplicate collection name could stall it permanently.
 //!
 //! The core invariant under test: NodeSpace is local-first, so collection-name
 //! uniqueness can never be *enforced* at creation — two offline devices can
 //! each validly create a collection named "Work", and the conflict only
 //! becomes visible once both copies land in one database (sync convergence).
-//! Hard rejection anywhere in that path would turn an ordinary benign
-//! duplicate into a stuck sync. That must never happen.
+//! Hard rejection anywhere on that path would turn an ordinary benign
+//! duplicate into an apply that can never get past it. That must never happen.
 //!
 //! Like its person-duplicate counterpart, this test does not mock the
 //! two-device scenario: it stands up fully independent `SqliteStore` +
 //! `NodeService` pairs (separate temp directories, no shared state, no
 //! coordination) to play the role of independent offline devices, and only
 //! performs "convergence" by applying a peer's fully-formed node into another
-//! device's store via the real `NodeService::create_node` path
-//! `nodespace-sync`'s `apply_node_upsert` also uses.
+//! device's store via the real `NodeService::create_node` path that applies a
+//! peer's node.
 //!
 //! Collections are created here via `Node::new` (a fresh random UUID id) —
 //! deliberately NOT via `CollectionService::create_collection` /
@@ -129,7 +128,7 @@ mod collection_name_convergence_tests {
         assert!(device_a.service.get_node(&work_a_id).await?.is_some());
         assert!(device_b.service.get_node(&work_b_id).await?.is_some());
 
-        // --- Convergence: Device A pulls Device B's node in (sync-apply) ---
+        // --- Convergence: Device A pulls Device B's node in (replicated apply) ---
         // Fetch B's fully-formed node exactly as a sync pull would receive it
         // over the wire, then apply it into A's store, id and all.
         let bs_node = device_b
@@ -426,10 +425,10 @@ mod collection_name_convergence_tests {
     }
 
     /// Rename-path collision marking (closes the gap the previous version of
-    /// this test documented): a sync-applied rename — `apply_node_upsert`'s
-    /// "node already exists locally" branch, which calls `NodeService::update_node`
-    /// (backed by `SqliteStore::update_node_with_version_check`) directly,
-    /// never `create_node` — that introduces a fresh name collision with a
+    /// this test documented): a replicated rename — an apply whose node already
+    /// exists locally, which calls `NodeService::update_node` (backed by
+    /// `SqliteStore::update_node_with_version_check`) directly, never
+    /// `create_node` — that introduces a fresh name collision with a
     /// different local collection is now detected and marks BOTH sides, the
     /// same as create_node's collision handling.
     #[tokio::test]
@@ -454,9 +453,9 @@ mod collection_name_convergence_tests {
             .await?;
         let renamed_before = hub.service.get_node(&renamed_id).await?.unwrap();
 
-        // Simulate a sync-applied rename (apply_node_upsert's "node already
-        // exists locally" branch, which calls `update_node` directly) that
-        // introduces a collision with `existing_id`'s name.
+        // Simulate a replicated rename (an apply whose node already exists
+        // locally, which calls `update_node` directly) that introduces a
+        // collision with `existing_id`'s name.
         let updated = hub
             .service
             .update_node(

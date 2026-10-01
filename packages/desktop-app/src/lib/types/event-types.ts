@@ -29,8 +29,8 @@ export interface NodeEventData {
   nodeType?: string;
   /**
    * ADR-053: the database this event originated from. Empty/absent when the
-   * daemon serves a single unregistered database. Lets the frontend drop events
-   * from a database it is no longer viewing.
+   * serving impl was not opened through the registry. Lets the frontend drop
+   * events from a database it is no longer viewing.
    */
   databaseId?: string;
 }

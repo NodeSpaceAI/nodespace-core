@@ -23,8 +23,7 @@
 //! production callers): `create_node`/`update_node` themselves run
 //! `detect_unique_field_collisions` post-commit, best-effort, so a collision
 //! is journaled as a `UniqueFieldCollision` `ConflictRecord` the moment both
-//! copies land in one database — reachable on a purely local-only install,
-//! with no `nodespace-sync` involved anywhere in this file.
+//! copies land in one database — reachable on a purely local-only install.
 //!
 //! These tests are sequential (`await` at every step); they prove correctness
 //! under sequential convergence, not under concurrent convergence. A dedicated
@@ -36,8 +35,8 @@
 //! no shared state, no coordination) to play the role of independent offline
 //! devices, and only performs "convergence" — applying a peer's fully-formed
 //! node into another device's store, via the real `NodeService::create_node` /
-//! `update_node` paths `nodespace-sync`'s `apply_node_upsert` also uses — after
-//! each device's own write has already succeeded independently.
+//! `update_node` paths a replicated apply uses — after each device's own write
+//! has already succeeded independently.
 
 #[cfg(test)]
 mod offline_convergence_tests {
@@ -132,7 +131,7 @@ mod offline_convergence_tests {
             .await?
             .is_empty());
 
-        // --- Convergence: Device A pulls Device B's node in (sync-apply) ---
+        // --- Convergence: Device A pulls Device B's node in (replicated apply) ---
         // Fetch B's fully-formed node exactly as a sync pull would receive it
         // over the wire, then apply it into A's store, id and all.
         let bs_node = device_b
@@ -365,10 +364,10 @@ mod offline_convergence_tests {
         Ok(())
     }
 
-    /// `apply_node_upsert` in `nodespace-sync` has three branches: create
-    /// (node absent locally), update (node already present locally), and an
-    /// already-exists fallback to update. The tests above only exercise the
-    /// first. This exercises the update branch: a node already present in the
+    /// Applying a peer's node has three branches: create (node absent
+    /// locally), update (node already present locally), and an already-exists
+    /// fallback to update. The tests above only exercise the first. This
+    /// exercises the update branch: a node already present in the
     /// hub (as if pulled by an earlier sync cycle) receives an incoming update
     /// — applied via `NodeService::update_node`, not `create_node` — that
     /// introduces a fresh collision with a different existing node. The update
