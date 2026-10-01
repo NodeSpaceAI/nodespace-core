@@ -15,9 +15,10 @@ impl SqliteStore {
         // A schema is titled by its type name, but a type is not something to
         // @mention — only its instances are. An ai-chat can never be a mention
         // target (ADR-061 §8), so it is not offered either. Date pages
-        // stay: a date link is a real mention.
+        // stay: a date link is a real mention. An archived node participates
+        // in nothing (ADR-087 §2), so only active nodes are offered.
         let sql = format!(
-            "SELECT * FROM node WHERE title IS NOT NULL AND node_type NOT IN ('collection', 'schema', 'ai-chat') AND LOWER(title) LIKE ?1 ESCAPE '\\' LIMIT {}",
+            "SELECT * FROM node WHERE title IS NOT NULL AND lifecycle_status = 'active' AND node_type NOT IN ('collection', 'schema', 'ai-chat') AND LOWER(title) LIKE ?1 ESCAPE '\\' LIMIT {}",
             effective_limit
         );
         self.query_nodes_from_sql(&sql, libsql::params![search_lower])

@@ -4795,6 +4795,43 @@ mod title_contains_stem_fallback_tests {
         Ok(())
     }
 
+    /// An archived node participates in nothing (ADR-087 §2), so the @-mention
+    /// picker offers only the active one of two matching titles — and offers
+    /// the other again once it is unarchived.
+    #[tokio::test]
+    async fn mention_autocomplete_skips_archived_nodes_until_unarchived() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        let active = make_task(&store, "Quarterly planning").await?;
+        let archived = make_task(&store, "Quarterly retro").await?;
+        let set_status = |status: &str| NodeUpdate {
+            lifecycle_status: Some(status.to_string()),
+            ..Default::default()
+        };
+        let offered = || async {
+            let mut ids: Vec<String> = store
+                .mention_autocomplete("quarterly", None)
+                .await?
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            ids.sort();
+            Ok::<_, anyhow::Error>(ids)
+        };
+
+        store
+            .update_node(&archived, set_status("archived"), None)
+            .await?;
+        assert_eq!(offered().await?, vec![active.clone()]);
+
+        store
+            .update_node(&archived, set_status("active"), None)
+            .await?;
+        let mut both = vec![active, archived];
+        both.sort();
+        assert_eq!(offered().await?, both);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn exact_substring_still_matches_without_fallback() -> Result<()> {
         let (store, _t) = bare_store().await?;
