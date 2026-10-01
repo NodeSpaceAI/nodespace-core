@@ -1,0 +1,91 @@
+name = "current-user-my-email"
+reps = 5
+
+notes = """
+PRODUCTION-SHAPED resident prompt; tool surface trimmed to the three read
+tools. See current-user-my-name.toml for what the three current-user probes
+measure and why they are separate files.
+
+Scenario: the user asks for a fact about themself that the `Current user:`
+line already states. Two outcomes are both right — reading the person node by
+the id on the line, or answering from the line — and one is wrong: searching
+for a person the prompt has already identified.
+"""
+
+[[turn]]
+label = "whats-my-email"
+system = """
+You are NodeSpace's assistant, acting on a user's workspace.
+Call exactly one tool. Do not answer the user in prose when a tool applies.
+
+Current date: 2026-06-15
+Active model: gemma-4-E4B-it-Q4_K_M
+Current user: Ada Lovelace <ada@example.com> (person node 5c1e9a47-2d83-4b6f-8e10-7a3f9d2c4b65). "me", "my" and "I" refer to this person.
+
+COLLECTIONS:
+- Engineering — Design notes, ADRs and tickets for the product team
+- Q3 Planning
+
+EXISTING SCHEMAS (do not recreate these; do not copy their fields onto a new type):
+- ticket "Ticket" -> title: text, required; status: enum {ready_for_dev, in_dev, ready_for_review, in_review, done}, required; assignee: text; sprint: text [title_template: {title}]
+"""
+user = "What's my email?"
+expect = """
+get_node(id="5c1e9a47-2d83-4b6f-8e10-7a3f9d2c4b65") — the person node id \
+copied from the Current user line — or a prose answer giving \
+ada@example.com. The miss is a search ("my email", "email address") for a \
+person already identified, or asking the user who they are.
+"""
+
+  [turn.tool_results]
+  get_node = """
+  {"id": "5c1e9a47-2d83-4b6f-8e10-7a3f9d2c4b65", "title": "Ada Lovelace", "node_type": "person", "properties": {"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com"}}
+  """
+
+  [[turn.tool]]
+  name = "search_nodes"
+  description = """
+  Find, list, and filter nodes by title, type, or stored field value. Returns \
+  each node's id and fields. Use when the node you need is not already \
+  identified in this conversation.
+  """
+
+    [turn.tool.parameters_schema]
+    type = "object"
+    required = ["query"]
+
+      [turn.tool.parameters_schema.properties.query]
+      type = "string"
+      description = "Free-text title match. Empty string lists every node of node_type."
+
+      [turn.tool.parameters_schema.properties.node_type]
+      type = "string"
+      description = "Restrict to one type id."
+
+  [[turn.tool]]
+  name = "search_semantic"
+  description = """
+  Find nodes semantically related to a natural-language query. Use only for \
+  meaning-based or fuzzy questions; prefer search_nodes when you know the \
+  name or type.
+  """
+
+    [turn.tool.parameters_schema]
+    type = "object"
+    required = ["query"]
+
+      [turn.tool.parameters_schema.properties.query]
+      type = "string"
+      description = "Natural-language description of what to find."
+
+  [[turn.tool]]
+  name = "get_node"
+  description = "Get a node by ID. Returns the node's current values in 'properties'."
+
+    [turn.tool.parameters_schema]
+    type = "object"
+    required = ["id"]
+
+      [turn.tool.parameters_schema.properties.id]
+      type = "string"
+      description = "Node ID to retrieve"

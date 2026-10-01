@@ -2682,11 +2682,6 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         });
 
         let model_name = session.model_id.as_deref().unwrap_or("unknown");
-        let template_ctx = TemplateContext {
-            current_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
-            model_name: model_name.to_string(),
-            workspace_context: dynamic_ctx.to_string(),
-        };
 
         // Build the system prompt: test override > graph assembler > emergency.
         // `session_prompt_override` returns `None` in production builds (see
@@ -2696,6 +2691,15 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         let base_system_content = if let Some(override_prompt) = session_prompt_override(session) {
             override_prompt.to_string()
         } else if let Some(ref assembler) = self.prompt_assembler {
+            let template_ctx = TemplateContext {
+                current_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                model_name: model_name.to_string(),
+                workspace_context: dynamic_ctx.to_string(),
+                // Resolved here, on every turn, rather than held on the
+                // session: an identity edited mid-session applies to the
+                // next turn.
+                current_user: assembler.current_user().await,
+            };
             assembler
                 .assemble(&template_ctx, tools.clone())
                 .await
