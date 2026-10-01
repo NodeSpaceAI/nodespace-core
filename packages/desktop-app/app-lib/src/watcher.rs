@@ -240,8 +240,8 @@ fn forward<R: Runtime>(app: &AppHandle<R>, event: nodespace_proto::nodespace::No
             emit_routed(app, "node:deleted", &payload, target.as_deref());
         }
         // Relationship variants — so hierarchy changes made by any other writer
-        // (another window, the CLI, an agent, an in-process writer) reach the
-        // frontend's reactiveStructureTree.
+        // (another window, the CLI, an agent, a writer inside the daemon) reach
+        // the frontend's reactiveStructureTree.
         // `properties` arrives JSON-encoded on the wire (proto schema is
         // stable); re-parse it here before emitting so the frontend gets a
         // real object (the `has_child` listener reads `properties.order`).

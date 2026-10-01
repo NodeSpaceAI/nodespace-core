@@ -1383,7 +1383,7 @@ pub struct NodeService {
     /// Pre-delete subtree access gate (ADR-041). Defaults to [`access_gate::AlwaysAllowGate`],
     /// which keeps the unconditional cascade. A host injects its own gate via
     /// `set_subtree_access_gate` after construction (ADR-082). It is held behind a `OnceLock`
-    /// so it can be set once it is ready.
+    /// so the gate can be set once it is ready.
     pub(crate) subtree_access_gate:
         Arc<std::sync::OnceLock<Arc<dyn access_gate::SubtreeAccessGate>>>,
 

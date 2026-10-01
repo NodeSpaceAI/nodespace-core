@@ -915,11 +915,11 @@ fn run_skill_installer_subcommand(
 /// the next one).
 ///
 /// Deliberately does NOT test this via a mutated process-global `$PATH`:
-/// `cargo test` runs the whole suite in one process, so a test that narrows a
-/// process-global setting (`$PATH`, `umask`), even if restored afterward, races
-/// every other test in the same process. Passing absolute paths as the
-/// "runtime" strings sidesteps `$PATH` resolution entirely, so the test stays
-/// deterministic under parallel execution.
+/// `cargo test` runs the whole suite in one process, so a test that changes a
+/// process-global setting (`$PATH`, `umask`), even if restored afterward, can
+/// race any other test in the process that reads it concurrently. Passing
+/// absolute paths as the "runtime" strings sidesteps `$PATH` resolution
+/// entirely, so the test stays deterministic under parallel execution.
 fn run_installer_with_runtimes(
     installer_path: &Path,
     subcommand: &str,

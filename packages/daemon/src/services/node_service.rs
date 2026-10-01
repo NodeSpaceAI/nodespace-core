@@ -118,8 +118,8 @@ pub struct NodeServiceImpl {
     embedding_state: Arc<RwLock<Option<EmbeddingReady>>>,
     /// Registry id of the database this impl serves (ADR-053), stamped onto
     /// `WatchNodes` events. Empty when the impl was not opened through the
-    /// registry: a host serving one database without `DbManagerLayer`, or a test
-    /// constructing the impl directly.
+    /// registry: one a host builds itself rather than through `DatabaseManager`,
+    /// or one a test constructs directly.
     database_id: String,
     /// Process-global embedding scheduler (ADR-053). A live `WatchNodes` stream
     /// marks this database active so its embedding batches take priority.
@@ -174,9 +174,8 @@ impl NodeServiceImpl {
     }
 
     /// Tag this database's `WatchNodes` events with its registry id (ADR-053).
-    /// Set by [`crate::build_database_services`] when a database is opened
-    /// through the registry; left empty when the impl is not opened through the
-    /// registry.
+    /// Set by [`crate::build_database_services`] when `DatabaseManager` opens a
+    /// database; an impl built any other way keeps the empty default.
     pub fn with_database_id(mut self, database_id: String) -> Self {
         self.database_id = database_id;
         self

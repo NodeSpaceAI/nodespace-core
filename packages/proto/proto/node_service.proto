@@ -565,11 +565,11 @@ message NodeEvent {
     NodeData updated = 2;
     NodeDeleted deleted = 3;
     // Relationship events, so hierarchy changes made by another writer
-    // (another window, the CLI, an agent, an in-process writer) reach the
-    // frontend's structureTree — without these, a node created by another
+    // (another window, the CLI, an agent, a writer inside the daemon) reach
+    // the frontend's structureTree — without these, a node created by another
     // writer arrives but never attaches to its parent's children list and
-    // the outliner can't render it. Mirrors the in-process
-    // DomainEventForwarder's `relationship:*` Tauri events.
+    // the outliner can't render it. The desktop watcher forwards them as the
+    // `relationship:*` Tauri events.
     RelationshipPayload relationship_created = 4;
     RelationshipPayload relationship_updated = 5;
     RelationshipDeletedPayload relationship_deleted = 6;
