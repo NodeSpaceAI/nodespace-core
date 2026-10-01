@@ -1052,6 +1052,8 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   // POST /api/nodes/:id/collections  (add to the collection at a path)
+  // Returns the path's leaf collection id, which the node update's response
+  // (the updated node) does not name.
   const nodeCollectionsMatch = pathname.match(/^\/api\/nodes\/([^/]+)\/collections$/);
   if (method === 'POST' && nodeCollectionsMatch) {
     const nodeId = decodeURIComponent(nodeCollectionsMatch[1]);
@@ -1065,8 +1067,6 @@ async function handleRequest(req: Request): Promise<Response> {
         (nodeClient as unknown as Record<string, Function>).addNodeToCollectionByPath,
         request
       );
-      // The leaf collection of the path, which the node update's response
-      // (the updated node) does not name.
       return json(res.collectionId);
     } catch (err) {
       return grpcError(err as grpc.ServiceError);

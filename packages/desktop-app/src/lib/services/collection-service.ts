@@ -224,12 +224,29 @@ class MockCollectionService implements CollectionServiceInterface {
 
 const DEV_PROXY_URL = 'http://localhost:3001';
 
+/**
+ * Why a dev-proxy request failed: the `message` of the proxy's error body
+ * (the daemon's own message), or the status text when the body has none.
+ */
+async function failureReason(response: Response): Promise<string> {
+  try {
+    const body: unknown = await response.json();
+    if (typeof body === 'object' && body !== null && 'message' in body) {
+      const { message } = body;
+      if (typeof message === 'string' && message !== '') return message;
+    }
+  } catch {
+    // No JSON body; the status text is all there is.
+  }
+  return response.statusText;
+}
+
 class HttpCollectionService implements CollectionServiceInterface {
   async getAllCollections(): Promise<CollectionInfo[]> {
     log.debug('Fetching all collections via HTTP');
     const response = await fetch(`${DEV_PROXY_URL}/api/collections`);
     if (!response.ok) {
-      throw new Error(`Failed to fetch collections: ${response.statusText}`);
+      throw new Error(`Failed to fetch collections: ${await failureReason(response)}`);
     }
     return response.json();
   }
@@ -238,7 +255,7 @@ class HttpCollectionService implements CollectionServiceInterface {
     log.debug('Fetching collection members via HTTP', { collectionId });
     const response = await fetch(`${DEV_PROXY_URL}/api/collections/${encodeURIComponent(collectionId)}/members`);
     if (!response.ok) {
-      throw new Error(`Failed to fetch collection members: ${response.statusText}`);
+      throw new Error(`Failed to fetch collection members: ${await failureReason(response)}`);
     }
     return response.json();
   }
@@ -279,7 +296,7 @@ class HttpCollectionService implements CollectionServiceInterface {
       }
     );
     if (!response.ok) {
-      throw new Error(`Failed to add node to collection path: ${response.statusText}`);
+      throw new Error(`Failed to add node to collection path: ${await failureReason(response)}`);
     }
     return response.json();
   }
@@ -305,7 +322,7 @@ class HttpCollectionService implements CollectionServiceInterface {
       body: JSON.stringify(change)
     });
     if (!response.ok) {
-      throw new Error(`Failed to ${action}: ${response.statusText}`);
+      throw new Error(`Failed to ${action}: ${await failureReason(response)}`);
     }
   }
 

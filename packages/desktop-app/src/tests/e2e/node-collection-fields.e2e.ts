@@ -262,6 +262,20 @@ describe('Add a node to a collection path (HTTP → gRPC → SQLite)', () => {
     expect(body.code).toBe('NOT_FOUND');
   });
 
+  it('rejects a path with an empty segment', async () => {
+    const nodeId = await createTextNode('sends a trailing colon');
+    const name = `path-invalid-${crypto.randomUUID()}`;
+
+    for (const collectionPath of ['', `${name}:`]) {
+      const res = await addToCollectionPath(nodeId, { collectionPath });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as ErrorBody;
+      expect(body.code).toBe('INVALID_ARGUMENT');
+    }
+    expect(await collectionIdByName(name)).toBeUndefined();
+  });
+
   it('rejects a collection path that is not a string', async () => {
     const nodeId = await createTextNode('sends a list');
 

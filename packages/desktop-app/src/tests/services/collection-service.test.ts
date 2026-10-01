@@ -482,6 +482,30 @@ describe('HttpCollectionService', () => {
     );
   });
 
+  it("a failure reports the proxy's error message over the status text", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        statusText: 'Not Found',
+        json: () => Promise.resolve({ code: 'NOT_FOUND', message: 'Node not found: missing' })
+      })
+    );
+
+    const svc = await loadHttpService();
+
+    await expect(svc.addNodeToCollectionPath('missing', 'hr:policy')).rejects.toThrow(
+      'Failed to add node to collection path: Node not found: missing'
+    );
+    await expect(svc.addNodeToCollection('missing', 'c1')).rejects.toThrow(
+      'Failed to add node to collection: Node not found: missing'
+    );
+    await expect(svc.getCollectionMembers('c1')).rejects.toThrow(
+      'Failed to fetch collection members: Node not found: missing'
+    );
+  });
+
   it('stub methods return their documented placeholder values without throwing', async () => {
     const svc = await loadHttpService();
 
