@@ -14,7 +14,7 @@
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as checker from "./check-pro-boundary";
@@ -933,20 +933,21 @@ describe("CLI", () => {
   }
 
   // The checker locates its repository from its own path, so a copy placed
-  // in a fixture repository scans that repository.
+  // in a fixture repository scans that repository. The copy's allowlist is
+  // empty: the real entry names a file a fixture does not have, which would
+  // fail every fixture run as a missing allowlisted file.
   function runInFixture(...args: string[]): { status: number; stdout: string; stderr: string } {
-    mkdirSync(join(dir, "scripts"), { recursive: true });
-    copyFileSync(CHECKER_PATH, join(dir, "scripts/check-pro-boundary.ts"));
-    return runCopy(args);
+    return runInFixtureWithAllowlist([], ...args);
   }
 
   // The same, with the copy's ALLOWLIST replaced by `entries`.
   function runInFixtureWithAllowlist(entries: readonly AllowlistEntry[], ...args: string[]): { status: number; stdout: string; stderr: string } {
     mkdirSync(join(dir, "scripts"), { recursive: true });
-    const declaration = "export const ALLOWLIST: readonly { file: string; exempt: string }[] = [];";
+    const declaration = /export const ALLOWLIST: readonly \{ file: string; exempt: string \}\[\] = \[[^\]]*\];/;
     const source = readFileSync(CHECKER_PATH, "utf8");
-    expect(source).toContain(declaration);
-    writeFileSync(join(dir, "scripts/check-pro-boundary.ts"), source.replace(declaration, declaration.replace("= [];", `= ${JSON.stringify(entries)};`)));
+    expect(source).toMatch(declaration);
+    const replaced = `export const ALLOWLIST: readonly { file: string; exempt: string }[] = ${JSON.stringify(entries)};`;
+    writeFileSync(join(dir, "scripts/check-pro-boundary.ts"), source.replace(declaration, replaced));
     return runCopy(args);
   }
 
@@ -1089,10 +1090,33 @@ describe("real-repo hard ban", () => {
     for (const name of MARKER_NAMES) expect(result.stdout).toMatch(new RegExp(`^${name} +0$`, "m"));
   });
 
-  // The change that adds the display-name module for the Pro-database
-  // refusal replaces this with its one entry.
-  test("the allowlist is empty", () => {
-    expect(ALLOWLIST).toEqual([]);
+  // ADR-081 section 8: exactly one file, the display-name module for the
+  // Pro-database refusal, and in it only the product name.
+  const NAMES_MODULE = "packages/proto/src/extension_names.rs";
+
+  test("the allowlist is the one entry ADR-081 section 8 allows", () => {
+    expect(ALLOWLIST).toEqual([{ file: NAMES_MODULE, exempt: PRODUCT }]);
+  });
+
+  test("the entry is what keeps the display-name module clean: without it the module counts", () => {
+    expect(countMarkers([NAMES_MODULE]).counts).toEqual(zeroCounts());
+    const without = countMarkers([NAMES_MODULE], undefined, []).counts;
+    expect(without.productName).toBeGreaterThan(0);
+  });
+
+  test("in the display-name module the entry hides only the product name: any other marker still counts", () => {
+    write(NAMES_MODULE, `"${PRODUCT}"\n// ${WORD}\n"${PRODUCT}" via ${DAEMON}\nfn ${CMD}() {}\n`);
+    const { hits } = countMarkers([NAMES_MODULE], dir, ALLOWLIST);
+    expect(hits.productName).toEqual([]);
+    expect(hits.proWording).toEqual([`${NAMES_MODULE}:2: // ${WORD}`, `${NAMES_MODULE}:3: "${PRODUCT}" via ${DAEMON}`]);
+    expect(hits.cloudWording).toEqual([`${NAMES_MODULE}:3: "${PRODUCT}" via ${DAEMON}`]);
+    expect(hits.proCommands).toEqual([`${NAMES_MODULE}:4: fn ${CMD}() {}`]);
+  });
+
+  test("the entry applies to no other file", () => {
+    write("packages/proto/src/lib.rs", `"${PRODUCT}"\n`);
+    const { hits } = countMarkers(["packages/proto/src/lib.rs"], dir, ALLOWLIST);
+    expect(hits.productName).toEqual([`packages/proto/src/lib.rs:1: "${PRODUCT}"`]);
   });
 
   test("scans packages/agent and README.md, and leaves out CLAUDE.md and the checker's own files", () => {
