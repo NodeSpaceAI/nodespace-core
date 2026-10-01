@@ -408,6 +408,19 @@ export interface EvalFixture {
    */
   seedRun?(env: EvalEnv): void;
   /**
+   * Whether the state a `setup` scenario exists to establish is present in the
+   * workspace, asked of the daemon after the setup turn has run.
+   *
+   * Consulted only when the setup turn fails its own assertion. Groups in a
+   * rep share a database, so a setup turn can find its state already there and
+   * rightly do nothing; without this the runner reads that as a failed setup
+   * and excludes every scenario after it.
+   *
+   * Return `undefined` for a scenario this fixture cannot check; the runner
+   * then keeps the turn's own verdict.
+   */
+  setupStatePresent?(env: EvalEnv, scenario: Scenario): boolean | undefined;
+  /**
    * Score one scenario from its turns. `turns` excludes prior-context turns,
    * which the runner strips before calling this.
    *

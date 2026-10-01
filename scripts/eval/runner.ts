@@ -472,6 +472,27 @@ async function compareToBaseline(
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether a setup turn left its group without the state later scenarios need.
+ *
+ * A setup turn is judged by what it did — it asked for a type to be created,
+ * so it passes when `create_schema` was called. Groups in one rep share a
+ * database, so from the second group on that type already exists, and a model
+ * that sees it and creates nothing has done the right thing while failing the
+ * turn's assertion. The state the group needs is there either way.
+ *
+ * So a failed setup turn blocks its group only when the fixture cannot show
+ * the state present. A fixture with no way to check keeps the turn's own
+ * verdict: unknown is treated as missing.
+ */
+export function setupLeftStateMissing(
+  turnPassed: boolean,
+  statePresent: () => boolean | undefined,
+): boolean {
+  if (turnPassed) return false;
+  return statePresent() !== true;
+}
+
+/**
  * The status marker for one result: ⊘ excluded, ⊙ setup, ✓ pass, ✗ fail.
  *
  * Shared by the per-turn line and the summary list so the two cannot drift
@@ -1184,11 +1205,22 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       // A setup turn that failed to establish its state makes every scenario
       // after it unwinnable. It is not scored, but it must not pass silently.
       if (scenario.setup && !verdict.passed) {
-        console.error(
-          `[${fixture.name}]     ⚠ setup did not establish its state — ` +
-            `later scenarios in this group are excluded, not scored`,
-        );
-        setupFailed ??= scenario.id;
+        if (
+          setupLeftStateMissing(verdict.passed, () =>
+            fixture.setupStatePresent?.(env, scenario),
+          )
+        ) {
+          console.error(
+            `[${fixture.name}]     ⚠ setup did not establish its state — ` +
+              `later scenarios in this group are excluded, not scored`,
+          );
+          setupFailed ??= scenario.id;
+        } else {
+          console.error(
+            `[${fixture.name}]     ↳ the state this setup establishes is already ` +
+              `present, so later scenarios in this group are scored`,
+          );
+        }
       }
     }
   }

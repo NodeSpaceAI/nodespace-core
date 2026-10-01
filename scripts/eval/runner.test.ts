@@ -28,6 +28,7 @@ import {
   parseTurnOutput,
   partitionExcluded,
   readBaselineReliability,
+  setupLeftStateMissing,
 } from "./runner.ts";
 import { assertExpectation } from "./fixtures/agent-matrix.ts";
 import { EnvironmentError } from "./preflight.ts";
@@ -125,6 +126,35 @@ describe("partitionExcluded", () => {
     expect(scored.map((r) => r.id)).toEqual(["11c"]);
     expect(excludedCount).toBe(1);
     expect(setupCount).toBe(0);
+  });
+});
+
+describe("setupLeftStateMissing", () => {
+  test("a setup turn that passed never blocks its group", () => {
+    // The state check is not consulted: asking the daemon costs a round-trip,
+    // and the turn's own verdict already answers the question.
+    let asked = false;
+    const blocked = setupLeftStateMissing(true, () => {
+      asked = true;
+      return false;
+    });
+    expect(blocked).toBe(false);
+    expect(asked).toBe(false);
+  });
+
+  test("a failed setup turn whose state is present does not block its group", () => {
+    // The second group of a rep: the type exists, the model created nothing.
+    expect(setupLeftStateMissing(false, () => true)).toBe(false);
+  });
+
+  test("a failed setup turn whose state is absent blocks its group", () => {
+    expect(setupLeftStateMissing(false, () => false)).toBe(true);
+  });
+
+  test("a failed setup turn the fixture cannot check blocks its group", () => {
+    // Unknown is treated as missing: scoring a scenario against state nobody
+    // confirmed is the failure the exclusion exists to prevent.
+    expect(setupLeftStateMissing(false, () => undefined)).toBe(true);
   });
 });
 

@@ -1020,6 +1020,156 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
     });
 }
 
+/// How many of a listing's types a reply must link before it counts as a
+/// listing of them. One link is an answer about that one type ("yes, there is
+/// a Person type"); two is a list.
+const TYPE_LISTING_MIN_LINKED: usize = 2;
+
+/// The types a tool call returned when it listed every type in the workspace,
+/// as `(uri, title)` pairs, or `None` for any other call.
+///
+/// That is a successful `search_nodes` scoped to schema nodes with no keyword
+/// and no filter, whose result was not cut off at the limit. A search narrowed
+/// by a keyword answers a narrower question, and a truncated one is not the
+/// whole list, so neither can say which types a reply left out.
+fn complete_type_listing(record: &ToolExecutionRecord) -> Option<Vec<(String, String)>> {
+    if record.is_error
+        || crate::local_agent::tools::Tool::from_name(&record.name)
+            != Some(crate::local_agent::tools::Tool::SearchNodes)
+    {
+        return None;
+    }
+    let args = &record.args;
+    let node_type = args.get("node_type")?.as_str()?;
+    if !nodespace_core::models::CoreNodeType::Schema.is_exactly(node_type) {
+        return None;
+    }
+    let unfiltered_query = match args.get("query") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(q)) => matches!(q.trim(), "" | "*"),
+        Some(_) => false,
+    };
+    let unfiltered = args
+        .get("filters")
+        .is_none_or(|f| f.is_null() || f.as_array().is_some_and(|a| a.is_empty()));
+    if !unfiltered_query || !unfiltered {
+        return None;
+    }
+    let limit = args
+        .get("limit")
+        .and_then(|l| l.as_u64())
+        .map_or(crate::local_agent::tools::DEFAULT_SEARCH_LIMIT, |l| {
+            l as usize
+        });
+    let nodes = record.result.get("nodes")?.as_array()?;
+    if nodes.len() >= limit {
+        return None;
+    }
+    let types: Vec<(String, String)> = nodes
+        .iter()
+        .filter_map(|node| {
+            let uri = node.get("id")?.as_str()?;
+            let title = node.get("title")?.as_str()?;
+            (!uri.is_empty() && !title.is_empty()).then(|| (uri.to_string(), title.to_string()))
+        })
+        .collect();
+    // A row without an id or a name cannot be linked, so the list could not be
+    // completed from it.
+    (types.len() == nodes.len()).then_some(types)
+}
+
+/// Complete a reply that lists some of the workspace's types and not the rest.
+///
+/// Applied to every completed turn. Asked which types exist, the model runs
+/// the search, gets every type back, and then names the custom ones and waves
+/// at the rest: "…and several built-in types like task, text, date, etc." The
+/// reply rules ask for short answers and the list is twenty-odd rows, so the
+/// model shortens it. Measured on `gemma-4-e4b-q4km` over three workspaces: a
+/// clause in the tool description, a note on the result and a completeness
+/// flag each left the reply partial in at least two of the three; trimming the
+/// result rows got two of the three complete.
+///
+/// So the list is completed here. When the turn ran a complete type listing
+/// ([`complete_type_listing`]) and the reply links at least
+/// [`TYPE_LISTING_MIN_LINKED`] of its types but not all, the ones it left out
+/// are appended as links. The model's own wording stands; nothing is removed.
+///
+/// A reply that links fewer is answering something else off the same search —
+/// whether one particular type exists, say — and is left alone.
+///
+/// When the turn has no reply of the model's to complete — only the stand-in
+/// for an empty or suppressed one — the whole list is written out in its
+/// place, provided the turn wrote nothing.
+fn type_listing_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
+    if result.clarify.is_some() {
+        return;
+    }
+    let Some(types) = result
+        .tool_calls_made
+        .iter()
+        .rev()
+        .find_map(complete_type_listing)
+    else {
+        return;
+    };
+    let links = |types: &[&(String, String)]| {
+        types
+            .iter()
+            .map(|(uri, title)| format!("[{title}]({uri})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    // The model's reply did not survive: it wrote nothing after the search, or
+    // one slip among twenty-odd links (a space inside an id) had the
+    // fabricated-id guard replace the lot with a request to confirm. Either
+    // way the user is looking at a stand-in while the answer sits in the tool
+    // result, so the list is written out from it. Only on a turn that wrote
+    // nothing: after a write, the stand-in reports the write, and that stays.
+    let read_only = !result
+        .tool_calls_made
+        .iter()
+        .any(|r| super::tools::is_write_tool(&r.name));
+    let stand_in = result.response == CONFIRMATION_REQUEST
+        || result.response == summarize_executions(&result.tool_calls_made);
+    if read_only && stand_in {
+        tracing::info!(
+            session_id = %session.id,
+            types = types.len(),
+            "Type listing ended without a usable reply — writing the list out"
+        );
+        let listed = format!(
+            "This workspace has {} types: {}.",
+            types.len(),
+            links(&types.iter().collect::<Vec<_>>())
+        );
+        replace_turn_reply(session, &listed);
+        result.response = listed;
+        return;
+    }
+
+    let linked: HashSet<&str> = extract_node_uris(&result.response).into_iter().collect();
+    let (named, missing): (Vec<_>, Vec<_>) = types
+        .iter()
+        .partition(|(uri, _)| linked.contains(uri.as_str()));
+    if named.len() < TYPE_LISTING_MIN_LINKED || missing.is_empty() {
+        return;
+    }
+    let rest = links(&missing);
+    tracing::info!(
+        session_id = %session.id,
+        linked = named.len(),
+        appended = missing.len(),
+        "Type listing left types out — appending the rest"
+    );
+    let completed = format!(
+        "{}\n\nThe other types in this workspace: {rest}.",
+        result.response.trim_end()
+    );
+    replace_turn_reply(session, &completed);
+    result.response = completed;
+}
+
 /// How `run_turn_unguarded` ended, for the guards applied over the finished
 /// turn.
 #[derive(Clone, Copy, Default)]
@@ -2449,6 +2599,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         if !confirm_held_deletions(session, &mut result) {
             duplicate_entity_backstop(session, &mut result);
             cut_off_turn_backstop(session, &mut result, end, intent_clarified);
+            type_listing_backstop(session, &mut result);
         }
         // Recorded after the guards above, which can turn a reply into a
         // question: the outcome is what the user was finally shown.
@@ -9634,6 +9785,259 @@ mod tests {
             .unwrap();
         let executed = calls.load(std::sync::atomic::Ordering::SeqCst);
         (result, session, executed)
+    }
+
+    // -- type_listing_backstop ---------------------------------------------
+
+    /// What `search_nodes` returns for an unfiltered listing of schema nodes:
+    /// two custom types and three built-in ones.
+    fn type_listing_result() -> serde_json::Value {
+        json!({
+            "count": 5,
+            "nodes": [
+                {"id": "nodespace://plan", "title": "plan", "type": "schema"},
+                {"id": "nodespace://spec", "title": "spec", "type": "schema"},
+                {"id": "nodespace://task", "title": "Task", "type": "schema"},
+                {"id": "nodespace://person", "title": "Person", "type": "schema"},
+                {"id": "nodespace://project", "title": "Project", "type": "schema"},
+            ]
+        })
+    }
+
+    /// An executor whose `search_nodes` answers with [`type_listing_result`].
+    struct TypeListingExecutor;
+
+    #[async_trait]
+    impl AgentToolExecutor for TypeListingExecutor {
+        async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+            Ok(crate::local_agent::tools::all_tool_definitions()
+                .into_iter()
+                .filter(|t| t.name == "search_nodes")
+                .collect())
+        }
+
+        async fn execute(
+            &self,
+            name: &str,
+            _args: serde_json::Value,
+        ) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult {
+                tool_call_id: "tc".into(),
+                name: name.into(),
+                result: type_listing_result(),
+                is_error: false,
+            })
+        }
+    }
+
+    /// Run one turn in which the model lists types with `args` and answers
+    /// `reply`. Returns the final reply and the session.
+    async fn run_type_listing_turn(args: &str, reply: &str) -> (String, AgentSession) {
+        let engine = Arc::new(MockEngine::tool_then_text("search_nodes", args, reply));
+        let agent_loop = LocalAgentLoop::new(engine, Arc::new(TypeListingExecutor));
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "What schemas do we have here?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        (result.response, session)
+    }
+
+    const UNFILTERED_TYPE_LISTING: &str = r#"{"node_type":"schema","query":"*"}"#;
+
+    /// The measured reply: the custom types, one built-in, and a wave at the
+    /// rest. Every type the search returned must end up linked, and the reply
+    /// the session records must be the completed one.
+    #[tokio::test]
+    async fn a_partial_type_listing_is_completed_with_the_types_it_left_out() {
+        let partial = "The schemas available are: [plan](nodespace://plan), \
+                       [spec](nodespace://spec), and several built-in types like \
+                       [task](nodespace://task) and text.";
+        let (reply, session) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, partial).await;
+
+        assert_eq!(
+            reply,
+            format!(
+                "{partial}\n\nThe other types in this workspace: \
+                 [Person](nodespace://person), [Project](nodespace://project)."
+            )
+        );
+        let recorded = session
+            .messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, Role::Assistant))
+            .expect("the turn recorded a reply");
+        assert_eq!(
+            recorded.content, reply,
+            "history must hold what the user saw"
+        );
+    }
+
+    const EVERY_TYPE_LISTED: &str = "This workspace has 5 types: [plan](nodespace://plan), \
+        [spec](nodespace://spec), [Task](nodespace://task), [Person](nodespace://person), \
+        [Project](nodespace://project).";
+
+    /// The model wrote nothing after the search. The stand-in for that is a
+    /// bullet saying a search ran; the list it found is written out instead.
+    #[tokio::test]
+    async fn a_type_listing_with_no_reply_is_written_out() {
+        let (reply, _) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, "").await;
+        assert_eq!(reply, EVERY_TYPE_LISTED);
+    }
+
+    /// One slip in a long list of links — a space inside an id — reads as an
+    /// invented node, and the fabricated-id guard replaces the whole reply
+    /// with a request to confirm. The list is written out instead.
+    #[tokio::test]
+    async fn a_type_listing_lost_to_one_bad_link_is_written_out() {
+        let slipped = "The types are [plan](nodespace://plan), [spec](nodespace://spec) \
+                       and [Code Block](nodespace://code block).";
+        let (reply, _) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, slipped).await;
+        assert_eq!(reply, EVERY_TYPE_LISTED);
+    }
+
+    /// The same stand-ins are left alone when the search was not a listing of
+    /// every type: there is no list to write out.
+    #[tokio::test]
+    async fn a_stand_in_reply_is_kept_when_the_search_was_narrowed() {
+        let (reply, _) = run_type_listing_turn(r#"{"node_type":"schema","query":"pl"}"#, "").await;
+        assert_eq!(reply, "• node search completed");
+    }
+
+    /// After a write, the stand-in is what tells the user the write happened.
+    #[test]
+    fn a_stand_in_reply_is_kept_on_a_turn_that_wrote() {
+        let record =
+            |name: &str, args: serde_json::Value, result: serde_json::Value| ToolExecutionRecord {
+                tool_call_id: "tc".into(),
+                name: name.into(),
+                args,
+                result,
+                is_error: false,
+                duration_ms: 0,
+            };
+        let tool_calls_made = vec![
+            record(
+                "search_nodes",
+                json!({"node_type": "schema", "query": "*"}),
+                type_listing_result(),
+            ),
+            record(
+                "create_node",
+                json!({"node_type": "plan", "content": "Q4"}),
+                json!({"id": "nodespace://abc", "property_count": 1}),
+            ),
+        ];
+        let stand_in = summarize_executions(&tool_calls_made);
+        let mut result = AgentTurnResult {
+            response: stand_in.clone(),
+            reasoning: None,
+            tool_calls_made,
+            usage: InferenceUsage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+            },
+            clarify: None,
+        };
+        let mut session = new_session();
+        type_listing_backstop(&mut session, &mut result);
+        assert_eq!(result.response, stand_in);
+    }
+
+    #[tokio::test]
+    async fn a_complete_type_listing_is_left_as_written() {
+        let complete = "We have [plan](nodespace://plan), [spec](nodespace://spec), \
+                        [Task](nodespace://task), [Person](nodespace://person) and \
+                        [Project](nodespace://project).";
+        let (reply, _) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, complete).await;
+        assert_eq!(reply, complete);
+    }
+
+    /// One link is an answer about that type, not a list of types.
+    #[tokio::test]
+    async fn a_reply_about_one_type_is_not_turned_into_a_listing() {
+        let about_one = "Yes, there is a [Person](nodespace://person) type.";
+        let (reply, _) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, about_one).await;
+        assert_eq!(reply, about_one);
+    }
+
+    /// A keyword, a filter or another node type answers a narrower question,
+    /// so what the search returned is not the list of every type.
+    #[tokio::test]
+    async fn a_narrowed_search_is_not_a_type_listing() {
+        let partial = "Matching: [plan](nodespace://plan) and [spec](nodespace://spec).";
+        for args in [
+            r#"{"node_type":"schema","query":"pl"}"#,
+            r#"{"node_type":"schema","filters":[{"type":"property","operator":"exists","property":"title"}]}"#,
+            r#"{"node_type":"task","query":"*"}"#,
+            r#"{"query":"*"}"#,
+        ] {
+            let (reply, _) = run_type_listing_turn(args, partial).await;
+            assert_eq!(reply, partial, "{args} must not be completed");
+        }
+    }
+
+    /// A result cut off at the limit is not every type, so the reply cannot be
+    /// completed from it.
+    #[tokio::test]
+    async fn a_truncated_type_listing_is_not_completed() {
+        let partial = "Some of them: [plan](nodespace://plan) and [spec](nodespace://spec).";
+        let (reply, _) =
+            run_type_listing_turn(r#"{"node_type":"schema","query":"","limit":5}"#, partial).await;
+        assert_eq!(reply, partial);
+    }
+
+    #[test]
+    fn a_type_listing_is_read_only_from_a_successful_unfiltered_schema_search() {
+        let record = |name: &str, args: serde_json::Value, is_error: bool| ToolExecutionRecord {
+            tool_call_id: "tc".into(),
+            name: name.into(),
+            args,
+            result: type_listing_result(),
+            is_error,
+            duration_ms: 0,
+        };
+
+        let listing = complete_type_listing(&record(
+            "search_nodes",
+            json!({"node_type": "schema", "query": null}),
+            false,
+        ))
+        .expect("an unfiltered schema search lists every type");
+        assert_eq!(listing.len(), 5);
+        assert_eq!(
+            listing[2],
+            ("nodespace://task".to_string(), "Task".to_string())
+        );
+
+        // No arguments beyond the type, and an empty filter list, are unfiltered.
+        assert!(complete_type_listing(&record(
+            "search_nodes",
+            json!({"node_type": "schema", "filters": []}),
+            false
+        ))
+        .is_some());
+
+        // Another tool, a failed call.
+        assert!(complete_type_listing(&record(
+            "search_semantic",
+            json!({"node_type": "schema"}),
+            false
+        ))
+        .is_none());
+        assert!(complete_type_listing(&record(
+            "search_nodes",
+            json!({"node_type": "schema"}),
+            true
+        ))
+        .is_none());
     }
 
     /// The reported turn: the kwargs-shaped call is valid JSON, so no parse
