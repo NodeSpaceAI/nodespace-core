@@ -167,7 +167,10 @@ fn collection_description_line(description: &str) -> String {
 /// description it is one collection per line, `name — description`, so that a
 /// comma inside a description cannot read as the start of another name; a
 /// collection without a description stays a bare name.
-fn render_collections_section(collections: &[CollectionSummary], max_chars: usize) -> Option<String> {
+fn render_collections_section(
+    collections: &[CollectionSummary],
+    max_chars: usize,
+) -> Option<String> {
     if collections.is_empty() {
         return None;
     }
@@ -1611,7 +1614,11 @@ mod tests {
             MAX_CHARS_PER_COLLECTION_DESCRIPTION + 1,
             "the cap, plus the ellipsis"
         );
-        assert_eq!(output.lines().count(), 2, "the description stays on one line");
+        assert_eq!(
+            output.lines().count(),
+            2,
+            "the description stays on one line"
+        );
     }
 
     #[test]
@@ -1640,7 +1647,8 @@ mod tests {
 
         assert_eq!(
             described,
-            max_chars / COLLECTION_DESCRIPTIONS_BUDGET_DIVISOR
+            max_chars
+                / COLLECTION_DESCRIPTIONS_BUDGET_DIVISOR
                 / MAX_CHARS_PER_COLLECTION_DESCRIPTION
         );
         assert_eq!(

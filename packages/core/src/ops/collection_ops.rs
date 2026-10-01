@@ -576,10 +576,9 @@ mod tests {
     #[tokio::test]
     async fn generic_update_sets_changes_and_clears_a_collection_description() {
         let (svc, _tmp) = make_service().await;
-        let created =
-            node_ops::create_node(&svc, generic_create("Clients", serde_json::json!({})))
-                .await
-                .unwrap();
+        let created = node_ops::create_node(&svc, generic_create("Clients", serde_json::json!({})))
+            .await
+            .unwrap();
 
         let update = |properties: serde_json::Value| node_ops::UpdateNodeInput {
             node_id: created.node_id.clone(),
@@ -600,9 +599,12 @@ mod tests {
                 .properties
         };
 
-        node_ops::update_node(&svc, update(serde_json::json!({ "description": "Accounts" })))
-            .await
-            .unwrap();
+        node_ops::update_node(
+            &svc,
+            update(serde_json::json!({ "description": "Accounts" })),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             stored().await,
             serde_json::json!({ "collection": { "description": "Accounts" } })
@@ -657,10 +659,7 @@ mod tests {
         assert_eq!(
             listed,
             [
-                (
-                    "Clients".to_string(),
-                    Some("Accounts we bill".to_string())
-                ),
+                ("Clients".to_string(), Some("Accounts we bill".to_string())),
                 ("Research".to_string(), None),
             ]
         );
