@@ -1,7 +1,7 @@
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate, OrderBy};
 use anyhow::{Context, Result};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Utc};
 use connections::{Connections, ReadConn, WriteGuard};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -10,22 +10,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tx::Tx;
-
-/// Normalise a stored date string to YYYY-MM-DD on read.
-/// Accepts YYYY-MM-DD (pass-through) or RFC 3339 (extract date portion).
-/// Returns the original string for unrecognised values so callers can surface them.
-fn normalize_date_field(s: &str) -> String {
-    if NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok() {
-        return s.to_string();
-    }
-    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return dt.format("%Y-%m-%d").to_string();
-    }
-    if let Ok(dt) = s.parse::<DateTime<Utc>>() {
-        return dt.format("%Y-%m-%d").to_string();
-    }
-    s.to_string()
-}
 
 const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 128;
 /// KNN over-fetch factor: vec0 returns top-k *chunks*, but search results are grouped

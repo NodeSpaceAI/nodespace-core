@@ -92,7 +92,6 @@ describe('Adapter contract: shape parity (no daemon required)', () => {
       dueDate: { clear: true },
       startedAt: undefined,
       completedAt: undefined,
-      content: undefined,
     });
   });
 

@@ -26,7 +26,7 @@ use nodespace_core::db::events::{
     REPLICATED_APPLY_CLIENT_ID,
 };
 use nodespace_core::db::SqliteStore;
-use nodespace_core::models::{Node, NodeUpdate, Priority, TaskNodeUpdate, TaskStatus};
+use nodespace_core::models::{Node, NodeUpdate, TaskNodeUpdate, TaskStatus};
 use nodespace_core::playbook::types::MAX_CHAIN_DEPTH;
 use nodespace_core::services::{NodeService, NodeServiceError};
 use nodespace_core::PlaybookEngine;
@@ -2136,16 +2136,12 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
 }
 
 // ---------------------------------------------------------------------------
-// `update_task_node` wiring (ADR-060 §2, closing the gap the generic
-// `update_node` coverage above doesn't reach): `NodeService::update_task_node`
-// is a separate write path from `update_node` — it calls
-// `SqliteStore::update_task_node_with_version_check_in_tx` directly rather
-// than composing `update_node`'s own `_in_tx` pipeline — so it needs its own
-// synchronous-dispatch coverage, not just a generic-`update_node` inference.
-// Uses the real, seeded built-in "task" schema (no `create_schema` call,
-// unlike the generic tests above) since `update_task_node` requires the
-// target node's `node_type` to literally be `"task"` (see
-// `NodeService::validate_task_status` and `SqliteStore::node_to_task_node`).
+// The typed task update (ADR-060 §2, ADR-086 §4): `NodeService::update_task_node`
+// lowers into the same update pipeline as `update_node`, so invariant rules
+// dispatch synchronously for it and its events are buffered on the same
+// transaction. Uses the real, seeded built-in "task" schema (no
+// `create_schema` call, unlike the generic tests above), since the typed
+// update is for `task` nodes only.
 // Triggers are scoped to `task.status` — the exact property ADR-060's
 // own motivating example turns on ("reject this status change to
 // done/in_progress while sub-issues are open") — and augmenting actions
@@ -2214,18 +2210,21 @@ async fn invariant_task_update_rule_executes_synchronously_in_same_transaction()
         .update_task_node(
             &node_id,
             version,
-            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+            TaskNodeUpdate {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
         )
         .await?;
 
     assert_eq!(
-        updated.priority,
-        Some(Priority::High),
+        user_field(&updated, "task", "priority"),
+        Some(&json!("high")),
         "invariant action must have already run by the time update_task_node returned"
     );
     assert_eq!(
-        updated.status,
-        TaskStatus::InProgress,
+        user_field(&updated, "task", "status"),
+        Some(&json!("in_progress")),
         "the triggering update itself must still have applied"
     );
 
@@ -2275,7 +2274,10 @@ async fn invariant_task_update_rule_reject_prevents_partial_write() -> Result<()
         .update_task_node(
             &node_id,
             before.version,
-            TaskNodeUpdate::new().with_status(TaskStatus::Done),
+            TaskNodeUpdate {
+                status: Some(TaskStatus::Done),
+                ..Default::default()
+            },
         )
         .await
         .unwrap_err();
@@ -2300,7 +2302,7 @@ async fn invariant_task_update_rule_reject_prevents_partial_write() -> Result<()
 }
 
 /// No `DomainEvent` is broadcast for a rejected `update_task_node` call — the
-/// buffered `NodeUpdated` event `update_task_node_in_tx` emits before
+/// buffered `NodeUpdated` event the update pipeline emits before
 /// dispatch is discarded on rollback, never flushed. Mirrors
 /// `invariant_update_rule_reject_emits_no_domain_event` for the generic path.
 #[tokio::test]
@@ -2343,7 +2345,10 @@ async fn invariant_task_update_rule_reject_emits_no_domain_event() -> Result<()>
         .update_task_node(
             &node_id,
             version,
-            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+            TaskNodeUpdate {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
         )
         .await;
     assert!(result.is_err(), "expected the update to be rejected");
@@ -2394,12 +2399,15 @@ async fn invariant_task_update_rule_augmenting_action_commits_and_broadcasts_nor
         .update_task_node(
             &node_id,
             version,
-            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+            TaskNodeUpdate {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
         )
         .await?;
     assert_eq!(
-        updated.priority,
-        Some(Priority::High),
+        user_field(&updated, "task", "priority"),
+        Some(&json!("high")),
         "augmenting action must have run"
     );
 
@@ -2421,10 +2429,9 @@ async fn invariant_task_update_rule_augmenting_action_commits_and_broadcasts_nor
 }
 
 /// A `property_changed` invariant rule scoped to `task.status` must not fire
-/// when a DIFFERENT task property changes via `update_task_node` — proves
-/// `update_task_node_in_tx` reuses the same real exact/wildcard trigger-key
-/// matching as the generic path, not a blanket "any update to this node"
-/// match. Mirrors
+/// when a DIFFERENT task property changes via `update_task_node` — the typed
+/// update gets the same exact/wildcard trigger-key matching as the generic
+/// path, not a blanket "any update to this node" match. Mirrors
 /// `invariant_update_rule_scoped_to_one_property_ignores_a_different_property_change`.
 #[tokio::test]
 async fn invariant_task_update_rule_scoped_to_one_property_ignores_a_different_property_change(
@@ -2456,17 +2463,21 @@ async fn invariant_task_update_rule_scoped_to_one_property_ignores_a_different_p
         .update_task_node(
             &node_id,
             version,
-            TaskNodeUpdate::new().with_due_date(Some("2026-01-01")),
+            TaskNodeUpdate {
+                due_date: Some(Some("2026-01-01".to_string())),
+                ..Default::default()
+            },
         )
         .await?;
 
     assert_eq!(
-        updated.priority, None,
+        user_field(&updated, "task", "priority"),
+        None,
         "a property-key-scoped invariant rule must not fire for an unrelated property change"
     );
     assert_eq!(
-        updated.due_date.as_deref(),
-        Some("2026-01-01"),
+        user_field(&updated, "task", "due_date"),
+        Some(&json!("2026-01-01")),
         "the unrelated update itself must still have applied"
     );
 
@@ -2474,8 +2485,8 @@ async fn invariant_task_update_rule_scoped_to_one_property_ignores_a_different_p
 }
 
 /// `RuleClass::Reactive` rules triggered by `update_task_node`'s
-/// `property_changed` remain completely unaffected by the new synchronous
-/// wiring: still async, post-commit, requiring the real engine loop — unlike
+/// `property_changed` are unaffected by the synchronous invariant
+/// dispatch: still async, post-commit, requiring the real engine loop — unlike
 /// the invariant tests above, which never spawn one. Mirrors
 /// `reactive_update_rule_still_fires_asynchronously_post_commit` for the
 /// generic path.
@@ -2513,12 +2524,16 @@ async fn reactive_task_update_rule_still_fires_asynchronously_post_commit() -> R
         .update_task_node(
             &node_id,
             version,
-            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+            TaskNodeUpdate {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
         )
         .await?;
     // Must NOT be synchronous for a reactive rule.
     assert_eq!(
-        updated.priority, None,
+        user_field(&updated, "task", "priority"),
+        None,
         "a reactive rule's effect must not be visible synchronously"
     );
 
@@ -2594,7 +2609,10 @@ async fn user_edit_to_a_node_stamped_at_max_depth_still_fires_the_reactive_rule(
         .update_task_node(
             &node_id,
             version,
-            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+            TaskNodeUpdate {
+                status: Some(TaskStatus::InProgress),
+                ..Default::default()
+            },
         )
         .await?;
 

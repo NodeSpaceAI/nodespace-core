@@ -209,15 +209,6 @@ describe('SharedNodeStore - Extended Coverage', () => {
       expect(updated?.completedAt).toBe('2025-03-07');
     });
 
-    it('should update task content', () => {
-      store.setNode(taskNode, viewerSource, true);
-
-      store.updateTaskNode('task-1', { content: 'Updated task' }, viewerSource);
-
-      const updated = store.getNode('task-1');
-      expect(updated?.content).toBe('Updated task');
-    });
-
     it('should warn when updating non-existent task node', () => {
       store.updateTaskNode('non-existent', { status: 'done' }, viewerSource);
 

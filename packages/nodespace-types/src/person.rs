@@ -28,7 +28,7 @@ pub struct PersonNode {
 /// Each field is tri-state: absent leaves it unchanged, `null` clears it, and
 /// a string sets it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PersonNodeUpdate {
     #[serde(
         default,
@@ -77,6 +77,13 @@ impl PersonNodeUpdate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The update carries the person schema's fields only; naming anything
+    /// else is an error rather than a silently dropped write.
+    #[test]
+    fn an_unknown_key_is_rejected() {
+        assert!(serde_json::from_str::<PersonNodeUpdate>(r#"{"content": "Ada"}"#).is_err());
+    }
 
     #[test]
     fn absent_null_and_value_are_distinct() {

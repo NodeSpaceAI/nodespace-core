@@ -10664,59 +10664,8 @@ mod tests {
         );
     }
 
-    /// Regression test: unlike the generic update path
-    /// (`update_with_version_check_returning_node`), `NodeService::update_task_node`
-    /// never recomputed the indexed `title` column when `content` changed — it
-    /// delegated straight to `SqliteStore::update_task_node`, which only ever wrote
-    /// `content`/`properties`/`version`/`modified_at`. A task's `title` column could
-    /// go permanently stale relative to its `content`. Title must now track content,
-    /// via the same `compute_title` call the generic path uses.
-    #[tokio::test]
-    async fn update_task_node_recomputes_title_when_content_changes() {
-        use crate::models::TaskNodeUpdate;
-        use crate::services::{CreateNodeParams, InsertPositionOwned};
-
-        let (service, _temp) = create_test_service().await;
-
-        let id = service
-            .create_node_with_parent(CreateNodeParams {
-                id: None,
-                node_type: "task".to_string(),
-                content: "Original task content".to_string(),
-                parent_id: None,
-                position: InsertPositionOwned::End,
-                properties: json!({}),
-                lifecycle_status: None,
-            })
-            .await
-            .unwrap();
-
-        let created = service.get_node(&id).await.unwrap().unwrap();
-        assert_eq!(
-            created.title.as_deref(),
-            Some("Original task content"),
-            "sanity: title must be set on create"
-        );
-
-        let update = TaskNodeUpdate::new().with_content("Updated task content".to_string());
-        let task = service
-            .update_task_node(&id, created.version, update)
-            .await
-            .expect("update_task_node should succeed");
-        assert_eq!(task.content, "Updated task content");
-
-        let refetched = service.get_node(&id).await.unwrap().unwrap();
-        assert_eq!(
-            refetched.title.as_deref(),
-            Some("Updated task content"),
-            "title must be recomputed from the new content, not left stale at the old value"
-        );
-    }
-
-    /// Companion to the above: a status-only update (no `content` in the
-    /// `TaskNodeUpdate`) must NOT recompute or touch `title` — mirrors the generic
-    /// path's change-guard, scoped to what's relevant for tasks (content is the
-    /// only field that affects a task's title).
+    /// A status-only typed update leaves `title` alone: without a
+    /// `title_template`, content is the only thing a task's title depends on.
     #[tokio::test]
     async fn update_task_node_status_only_does_not_change_title() {
         use crate::models::{TaskNodeUpdate, TaskStatus};
@@ -10740,12 +10689,15 @@ mod tests {
         let created = service.get_node(&id).await.unwrap().unwrap();
         assert_eq!(created.title.as_deref(), Some("Stable task content"));
 
-        let update = TaskNodeUpdate::new().with_status(TaskStatus::Done);
+        let update = TaskNodeUpdate {
+            status: Some(TaskStatus::Done),
+            ..Default::default()
+        };
         let task = service
             .update_task_node(&id, created.version, update)
             .await
             .expect("update_task_node should succeed");
-        assert_eq!(task.status, TaskStatus::Done);
+        assert_eq!(task.properties["task"]["status"], "done");
 
         let refetched = service.get_node(&id).await.unwrap().unwrap();
         assert_eq!(
@@ -10756,9 +10708,9 @@ mod tests {
     }
 
     /// ADR-076: `update_task_node` must reject a status string not present in
-    /// `task.status`'s `core_values` + `user_values`, closing the gap where
-    /// `TaskStatus::from_str`'s infallible `User(String)` fallback let any
-    /// string through unvalidated.
+    /// `task.status`'s `core_values` + `user_values`. `TaskStatus` parses any
+    /// string (`User(String)`), so the schema check in the shared update
+    /// pipeline is what rejects an undeclared one.
     #[tokio::test]
     async fn update_task_node_rejects_status_not_in_schema_vocabulary() {
         use crate::models::{TaskNodeUpdate, TaskStatus};
@@ -10780,7 +10732,10 @@ mod tests {
             .unwrap();
         let created = service.get_node(&id).await.unwrap().unwrap();
 
-        let update = TaskNodeUpdate::new().with_status(TaskStatus::User("backlog".to_string()));
+        let update = TaskNodeUpdate {
+            status: Some(TaskStatus::User("backlog".to_string())),
+            ..Default::default()
+        };
         let err = service
             .update_task_node(&id, created.version, update)
             .await
@@ -10834,12 +10789,15 @@ mod tests {
             .unwrap();
         let created = service.get_node(&id).await.unwrap().unwrap();
 
-        let update = TaskNodeUpdate::new().with_status(TaskStatus::User("backlog".to_string()));
+        let update = TaskNodeUpdate {
+            status: Some(TaskStatus::User("backlog".to_string())),
+            ..Default::default()
+        };
         let task = service
             .update_task_node(&id, created.version, update)
             .await
             .expect("a status added via add_field_values must be accepted");
-        assert_eq!(task.status, TaskStatus::User("backlog".to_string()));
+        assert_eq!(task.properties["task"]["status"], "backlog");
     }
 
     /// Set a `title_template` on the built-in "task" schema, preserving its other
@@ -10952,7 +10910,10 @@ mod tests {
         let created = service.get_node(&id).await.unwrap().unwrap();
 
         // Priority-only update (no content) — the template now depends on it.
-        let update = TaskNodeUpdate::new().with_priority(Some(Priority::High));
+        let update = TaskNodeUpdate {
+            priority: Some(Some(Priority::High)),
+            ..Default::default()
+        };
         service
             .update_task_node(&id, created.version, update)
             .await
@@ -10967,10 +10928,9 @@ mod tests {
     }
 
     /// A templated task's title is computed from the *post-merge* node — the
-    /// new property value, not the pre-update one (one write behind) — and the
-    /// typed task update path rejects content on it like every other write.
+    /// new property value, not the pre-update one (one write behind).
     #[tokio::test]
-    async fn update_task_node_templated_title_uses_post_merge_properties_and_rejects_content() {
+    async fn update_task_node_templated_title_uses_post_merge_properties() {
         use crate::models::{Priority, TaskNodeUpdate};
         use crate::services::{CreateNodeParams, InsertPositionOwned};
 
@@ -10996,33 +10956,23 @@ mod tests {
             .update_task_node(
                 &id,
                 created.version,
-                TaskNodeUpdate::new().with_priority(Some(Priority::Low)),
+                TaskNodeUpdate {
+                    priority: Some(Some(Priority::Low)),
+                    ..Default::default()
+                },
             )
             .await
             .unwrap();
 
         let seeded = service.get_node(&id).await.unwrap().unwrap();
-        let err = service
-            .update_task_node(
-                &id,
-                seeded.version,
-                TaskNodeUpdate::new()
-                    .with_content("Ship the spec".to_string())
-                    .with_priority(Some(Priority::High)),
-            )
-            .await
-            .expect_err("content on a templated task must be rejected");
-        assert!(
-            err.to_string()
-                .contains("task takes its name from priority; content is not allowed"),
-            "{err}"
-        );
-
         service
             .update_task_node(
                 &id,
                 seeded.version,
-                TaskNodeUpdate::new().with_priority(Some(Priority::High)),
+                TaskNodeUpdate {
+                    priority: Some(Some(Priority::High)),
+                    ..Default::default()
+                },
             )
             .await
             .expect("update_task_node should succeed");
@@ -11204,7 +11154,10 @@ mod tests {
             .update_task_node(
                 &task_id,
                 task.version,
-                TaskNodeUpdate::new().with_priority(Some(Priority::High)),
+                TaskNodeUpdate {
+                    priority: Some(Some(Priority::High)),
+                    ..Default::default()
+                },
             )
             .await
             .expect("a field-only update must not trip the content rule");

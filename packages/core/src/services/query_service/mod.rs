@@ -44,7 +44,6 @@ use crate::db::SqliteStore;
 use crate::models::{Node, Priority};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
 use std::sync::Arc;
 
 // The filter and sort vocabulary is shared with the stored query
@@ -419,12 +418,7 @@ impl QueryService {
                     (Priority::ABSENT_RANK as i16, String::new())
                 }
                 Some(serde_json::Value::String(s)) => {
-                    // from_str is infallible — every unknown string is User(_)
-                    // — but name that fallback rather than letting Default's
-                    // Medium stand in for an unparseable value.
-                    let priority =
-                        Priority::from_str(s).unwrap_or_else(|_| Priority::User(s.clone()));
-                    (priority.rank() as i16, s.clone())
+                    (Priority::from_value(s).rank() as i16, s.clone())
                 }
                 Some(other) => (Priority::USER_RANK as i16, other.to_string()),
             }

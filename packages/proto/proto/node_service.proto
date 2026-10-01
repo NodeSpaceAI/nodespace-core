@@ -65,11 +65,11 @@ service NodeService {
   rpc GetIncomingMentions(MentionTargetRequest) returns (MentionIdsResponse);
   rpc GetMentioningRoots(MentionTargetRequest) returns (NodeReferenceListResponse);
 
-  // Type-specific updates
+  // Typed core-field updates for task, person, project and query: an unset
+  // field is unchanged, a clearable field can be cleared. The daemon writes
+  // them through the generic update pipeline; the response carries the stored
+  // node.
   rpc UpdateTaskNode(UpdateTaskNodeRequest) returns (NodeResponse);
-  // Typed core-field updates for person, project and query (the same
-  // tri-state semantics as UpdateTaskNode). The daemon writes them through the
-  // generic update pipeline; the response carries the stored node.
   rpc UpdatePersonNode(UpdatePersonNodeRequest) returns (NodeResponse);
   rpc UpdateProjectNode(UpdateProjectNodeRequest) returns (NodeResponse);
   rpc UpdateQueryNode(UpdateQueryNodeRequest) returns (NodeResponse);
@@ -936,8 +936,8 @@ message NodeReferenceListResponse {
 // UpdateTaskNode
 // ---------------------------------------------------------------------------
 
-// TaskNodeUpdate values use a tri-state encoding to match the
-// Option<Option<T>> pattern in packages/core/src/models/task_node.rs:
+// Typed update values use a tri-state encoding to match the
+// Option<Option<T>> fields of the update structs in nodespace-types:
 //   - field unset                  → no change (outer None)
 //   - field present, clear=true    → clear the value (Some(None))
 //   - field present, clear=false,
@@ -957,25 +957,17 @@ message OptionalTimestampClear {
   string value = 2;
 }
 
-// status uses a plain optional string because TaskStatus has no "clear" path
-// in TaskNodeUpdate (the field type is Option<TaskStatus>, not
-// Option<Option<TaskStatus>>).
+// The task schema's fields and nothing else: content and extension fields
+// (`custom:…`) are written through UpdateNode. status has no clear path (the
+// task schema requires it).
 message UpdateTaskNodeRequest {
   string node_id = 1;
   int64 version = 2;
-  optional string status = 3;            // TaskStatus serialized as string
+  optional string status = 3;
   optional OptionalStringClear priority = 4;
   optional OptionalTimestampClear due_date = 5;
-  reserved 6;
-  reserved "assignee";
   optional OptionalTimestampClear started_at = 7;
   optional OptionalTimestampClear completed_at = 8;
-  // Generic content/properties updates also accepted; mirrors the
-  // catch-all fields on the Rust TaskNodeUpdate when it falls back to a
-  // NodeUpdate for content changes.
-  optional string content = 9;
-  // JSON-encoded properties patch; unset = no change.
-  optional string properties = 10;
 }
 
 // ---------------------------------------------------------------------------

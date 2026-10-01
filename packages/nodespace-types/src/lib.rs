@@ -19,6 +19,7 @@ mod helpers;
 mod incompatible_database;
 mod node;
 mod person;
+mod priority;
 mod project;
 mod query;
 mod schema;
@@ -42,6 +43,7 @@ pub use node::{
     ValidationError,
 };
 pub use person::{PersonNode, PersonNodeUpdate};
+pub use priority::Priority;
 pub use project::{ProjectNode, ProjectNodeUpdate, DEFAULT_PROJECT_STATUS};
 pub use query::{
     FilterOperator, FilterType, QueryFields, QueryFilter, QueryGeneratedBy, QueryNode,
@@ -53,4 +55,4 @@ pub use schema::{
     SchemaField, SchemaFieldType, SchemaNode, SchemaProtectionLevel, SchemaRelationship,
 };
 pub use skill::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
-pub use task::{TaskNode, TaskNodeUpdate, TaskPriority, TaskStatus};
+pub use task::{TaskNode, TaskNodeUpdate, TaskStatus};

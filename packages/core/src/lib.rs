@@ -45,7 +45,7 @@ pub use db::{
 };
 pub use models::{
     FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter, SchemaNode,
-    TaskNode, TaskNodeUpdate, TaskStatus, ValidationError,
+    TaskNodeUpdate, TaskStatus, ValidationError,
 };
 pub use playbook::PlaybookEngine;
 pub use services::{

@@ -35,7 +35,7 @@
 mod error;
 pub use error::MarkdownError;
 
-use crate::models::{Node, TaskNode, TaskStatus};
+use crate::models::{CoreNodeType, Node, TaskStatus};
 use crate::services::{CollectionService, CreateNodeParams, NodeService, NodeServiceError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -1916,16 +1916,17 @@ pub async fn handle_get_markdown_from_node_id(
 
 /// Format task node checkbox based on task status
 ///
-/// Uses TaskNode::from_node for strongly-typed status extraction.
-/// Returns "- [x] " for Done tasks, "- [ ] " for all other states.
+/// Returns "- [x] " for a done task and "- [ ] " for every other status.
 fn format_task_checkbox(node: &Node) -> &'static str {
-    if let Ok(task) = TaskNode::from_node(node.clone()) {
-        match task.status() {
-            TaskStatus::Done => "- [x] ",
-            _ => "- [ ] ", // Open, InProgress, Cancelled all render as unchecked
-        }
+    let status = node
+        .properties
+        .get(CoreNodeType::Task.as_str())
+        .and_then(|task| task.get("status"))
+        .and_then(|v| v.as_str());
+    if status == Some(TaskStatus::Done.as_str()) {
+        "- [x] "
     } else {
-        "- [ ] " // Default to unchecked if conversion fails
+        "- [ ] "
     }
 }
 

@@ -295,13 +295,59 @@ export interface TaskNodeUpdatePatch {
   dueDate: ClearableField<string>;
   startedAt: ClearableField<string>;
   completedAt: ClearableField<string>;
-  content?: string;
 }
 
 function clearable(value: string | null | undefined): ClearableField<string> {
   if (value === undefined) return undefined;
   if (value === null) return { clear: true };
   return { clear: false, value };
+}
+
+/**
+ * The fields each per-field typed update carries: its type's schema fields, by
+ * wire name. `satisfies Record<keyof …, true>` makes each list exactly the
+ * update interface's keys, so a field added to one can't be missed here.
+ */
+const TYPED_UPDATE_FIELDS = {
+  task: {
+    status: true,
+    priority: true,
+    dueDate: true,
+    startedAt: true,
+    completedAt: true
+  } satisfies Record<keyof TaskNodeUpdate, true>,
+  person: {
+    firstName: true,
+    lastName: true,
+    email: true
+  } satisfies Record<keyof PersonNodeUpdate, true>,
+  project: {
+    status: true,
+    priority: true,
+    startDate: true,
+    endDate: true
+  } satisfies Record<keyof ProjectNodeUpdate, true>
+} as const;
+
+/** The core types whose typed update travels as one wire field per schema field. */
+export type PerFieldTypedUpdateType = keyof typeof TYPED_UPDATE_FIELDS;
+
+/** The fields `nodeType`'s typed update carries, by wire name. */
+export function typedUpdateFieldNames(nodeType: PerFieldTypedUpdateType): string[] {
+  return Object.keys(TYPED_UPDATE_FIELDS[nodeType]);
+}
+
+/**
+ * The keys of a typed update request body that are not fields of that type's
+ * update (`version` travels beside them). `content` and `properties` are the
+ * ones a caller is likely to send: both belong to the generic node update.
+ */
+export function unknownTypedUpdateKeys(
+  nodeType: PerFieldTypedUpdateType,
+  body: Record<string, unknown>
+): string[] {
+  const fields: Record<string, true> = TYPED_UPDATE_FIELDS[nodeType];
+  return Object.keys(body).filter((key) => key !== 'version' && !Object.hasOwn(fields, key));
 }
 
 /**
@@ -317,7 +363,6 @@ export function buildTaskNodeUpdatePatch(update: TaskNodeUpdate): TaskNodeUpdate
     dueDate: clearable(update.dueDate),
     startedAt: clearable(update.startedAt),
     completedAt: clearable(update.completedAt),
-    content: update.content,
   };
 }
 

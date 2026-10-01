@@ -2381,17 +2381,17 @@ mod tests {
             );
         }
 
-        // Every core_values entry must round-trip through TaskStatus::from_str
+        // Every core_values entry must round-trip through TaskStatus::from_value
         // to a NAMED variant, not fall through to the User(_) catch-all — a
         // core_values entry with no corresponding variant is exactly the
         // reverse drift (schema declares a value the type doesn't know as a
         // first-class variant).
         for value in &core_value_strings {
-            let parsed: TaskStatus = value.parse().expect("TaskStatus::from_str is infallible");
+            let parsed = TaskStatus::from_value(value);
             assert!(
                 parsed.is_core(),
                 "task.status's core_values entry '{}' does not parse to a named TaskStatus \
-                 variant (got TaskStatus::User(_)) — add a matching variant in task_node.rs \
+                 variant (got TaskStatus::User(_)) — add a matching variant to nodespace-types' TaskStatus \
                  or remove the stray core_values entry.",
                 value
             );
@@ -2444,7 +2444,7 @@ mod tests {
             assert_eq!(
                 core_value_strings, expected,
                 "{}.priority's core_values must be exactly the named Priority variants \
-                 in rank order — update core_schemas.rs or models/priority.rs so they agree.",
+                 in rank order — update core_schemas.rs or nodespace-types' Priority so they agree.",
                 node_type
             );
         }

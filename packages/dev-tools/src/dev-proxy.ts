@@ -19,9 +19,11 @@ import {
   buildTaskNodeUpdatePatch,
   encodeInsertPosition,
   HTTP_ROUTE_PATTERNS,
+  unknownTypedUpdateKeys,
   type ChildPlacement,
   type CreatedNode,
   type InsertPosition,
+  type PerFieldTypedUpdateType,
 } from '../../desktop-app/src/lib/services/adapter-core.ts';
 import { storageNodeToApiFields } from '../../desktop-app/src/lib/services/node-normalize.ts';
 import { createNodeSpaceClients, createRunOnceGuard } from './grpc-client.ts';
@@ -237,6 +239,20 @@ function error(code: string, message: string, status = 500, conflictData?: unkno
   const body: Record<string, unknown> = { code, message, details: message };
   if (conflictData !== undefined) body.conflictData = conflictData;
   return json(body, status);
+}
+
+/**
+ * A typed update carries its type's schema fields only; `content` and
+ * `properties` go through PATCH /api/nodes/:id. A body naming anything else
+ * is refused rather than dropped, as the Tauri command refuses it.
+ */
+function refuseUnknownTypedUpdateKeys(
+  nodeType: PerFieldTypedUpdateType,
+  body: Record<string, unknown>
+): Response | null {
+  const unknown = unknownTypedUpdateKeys(nodeType, body);
+  if (unknown.length === 0) return null;
+  return error('INVALID_ARGUMENT', `Not a ${nodeType} update field: ${unknown.join(', ')}`, 400);
 }
 
 /**
@@ -524,6 +540,8 @@ async function handleRequest(req: Request): Promise<Response> {
     const nodeId = decodeURIComponent(taskMatch[1]);
     try {
       const body = await req.json() as Record<string, unknown>;
+      const refused = refuseUnknownTypedUpdateKeys('task', body);
+      if (refused) return refused;
       // buildTaskNodeUpdatePatch is the single authoritative tri-state
       // encoder (packages/desktop-app/src/lib/services/adapter-core.ts) —
       // absent field = no change, null = clear, value = set. Reused here so
@@ -535,7 +553,6 @@ async function handleRequest(req: Request): Promise<Response> {
         dueDate?: string | null;
         startedAt?: string | null;
         completedAt?: string | null;
-        content?: string;
       });
       const request = {
         nodeId,
@@ -544,9 +561,7 @@ async function handleRequest(req: Request): Promise<Response> {
         priority: patch.priority ?? null,
         dueDate: patch.dueDate ?? null,
         startedAt: patch.startedAt ?? null,
-        completedAt: patch.completedAt ?? null,
-        content: patch.content ?? null,
-        properties: body.properties !== undefined ? JSON.stringify(body.properties) : null
+        completedAt: patch.completedAt ?? null
       };
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateTaskNode,
@@ -565,6 +580,8 @@ async function handleRequest(req: Request): Promise<Response> {
     const nodeId = decodeURIComponent(personMatch[1]);
     try {
       const body = await req.json() as Record<string, unknown>;
+      const refused = refuseUnknownTypedUpdateKeys('person', body);
+      if (refused) return refused;
       const patch = buildPersonNodeUpdatePatch(body as PersonNodeUpdate);
       const request = {
         nodeId,
@@ -590,6 +607,8 @@ async function handleRequest(req: Request): Promise<Response> {
     const nodeId = decodeURIComponent(projectMatch[1]);
     try {
       const body = await req.json() as Record<string, unknown>;
+      const refused = refuseUnknownTypedUpdateKeys('project', body);
+      if (refused) return refused;
       const patch = buildProjectNodeUpdatePatch(body as ProjectNodeUpdate);
       const request = {
         nodeId,

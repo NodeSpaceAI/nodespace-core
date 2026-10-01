@@ -3760,8 +3760,8 @@ impl GraphToolExecutor {
         // (`core_schemas.rs`), and ADR-076's `add_field_values` lets a
         // methodology bundle append real values to it at install time
         // (`backlog`, `in_review`, ...). A literal match here would reject
-        // exactly those values while the service layer
-        // (`node_service::schema::validate_task_status`) accepts them —
+        // exactly those values while the service layer (the update
+        // pipeline's enum check) accepts them —
         // leaving the agent unable to write a status the schema declares
         // valid.
         //
