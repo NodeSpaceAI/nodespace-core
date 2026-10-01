@@ -808,21 +808,6 @@ interface Subscription {
 export type TypedNodeType = 'task' | 'person' | 'project' | 'query';
 
 /**
- * The keys `updateTypedNode()` accepts for a type: its writable typed core
- * fields (`TYPED_CORE_FIELDS` minus the read-only system fields, which the
- * typed update rejects), plus `content` for task, whose typed update also
- * carries content.
- */
-function typedUpdateKeys(nodeType: TypedNodeType): string[] {
-  return [...writableTypedCoreKeys(nodeType), ...(TYPED_UPDATE_EXTRA_KEYS[nodeType] ?? [])];
-}
-
-/** Keys a type's typed update carries beyond its typed core fields. */
-const TYPED_UPDATE_EXTRA_KEYS: Partial<Record<TypedNodeType, readonly string[]>> = {
-  task: ['content']
-};
-
-/**
  * Typed fields staged for a node but not yet sent (see `updateTypedNode()`),
  * with the callbacks of every write that staged them — settled by whichever
  * write ends up sending the fields.
@@ -3678,7 +3663,7 @@ export class SharedNodeStore {
       return;
     }
 
-    const allowed = typedUpdateKeys(nodeType);
+    const allowed = writableTypedCoreKeys(nodeType);
     const fields = Object.keys(update).filter(
       (key) => allowed.includes(key) && update[key] !== undefined
     );

@@ -6,7 +6,6 @@
 //! `core_schemas.rs` that keeps the three in step.
 
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
 
 use crate::core_type::CoreNodeType;
 
@@ -24,14 +23,6 @@ pub enum Priority {
     Lowest,
     /// User-defined priority (extended via schema)
     User(String),
-}
-
-impl FromStr for Priority {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from_value(s))
-    }
 }
 
 impl Priority {

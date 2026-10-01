@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
 
 use crate::helpers::deserialize_clearable;
 use crate::node::NodeEnvelope;
@@ -13,14 +12,6 @@ pub enum TaskStatus {
     Done,
     Cancelled,
     User(String),
-}
-
-impl FromStr for TaskStatus {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self::from_value(s))
-    }
 }
 
 impl TaskStatus {

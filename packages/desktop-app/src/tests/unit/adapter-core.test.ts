@@ -5,7 +5,7 @@ import {
   encodeInsertPosition,
   normalizeChildrenTree,
   insertPosition,
-  unknownTaskNodeUpdateKeys,
+  unknownTypedUpdateKeys,
 } from '$lib/services/adapter-core';
 
 describe('adapter-core: buildCreateNodeFields', () => {
@@ -57,13 +57,31 @@ describe('adapter-core: buildTaskNodeUpdatePatch (tri-state clearable encoding)'
     expect(patch.status).toBe('in_progress');
   });
 
-  it('names the keys of a request body that are not task update fields', () => {
+  it('names the keys of a request body that are not fields of the typed update', () => {
     expect(
-      unknownTaskNodeUpdateKeys({ version: 3, status: 'done', priority: null, dueDate: '2026-01-01' })
+      unknownTypedUpdateKeys('task', {
+        version: 3,
+        status: 'done',
+        priority: null,
+        dueDate: '2026-01-01'
+      })
     ).toEqual([]);
     expect(
-      unknownTaskNodeUpdateKeys({ version: 3, content: 'Renamed', properties: { 'custom:x': 1 } })
+      unknownTypedUpdateKeys('task', {
+        version: 3,
+        content: 'Renamed',
+        properties: { 'custom:x': 1 }
+      })
     ).toEqual(['content', 'properties']);
+    expect(unknownTypedUpdateKeys('person', { version: 1, firstName: 'Ada' })).toEqual([]);
+    // A task field is not a person field, and an inherited Object key is not a field.
+    expect(unknownTypedUpdateKeys('person', { dueDate: null, toString: 'x' })).toEqual([
+      'dueDate',
+      'toString'
+    ]);
+    expect(unknownTypedUpdateKeys('project', { endDate: null, content: 'Renamed' })).toEqual([
+      'content'
+    ]);
   });
 
   it('carries the task schema fields only', () => {

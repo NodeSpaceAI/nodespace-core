@@ -303,24 +303,43 @@ function clearable(value: string | null | undefined): ClearableField<string> {
   return { clear: false, value };
 }
 
-/** The fields a typed task update carries: the task schema's, by wire name. */
-const TASK_NODE_UPDATE_FIELDS: readonly string[] = [
-  'status',
-  'priority',
-  'dueDate',
-  'startedAt',
-  'completedAt'
-] satisfies ReadonlyArray<keyof TaskNodeUpdate>;
+/**
+ * The fields each per-field typed update carries: its type's schema fields, by
+ * wire name. `satisfies Record<keyof …, true>` makes each list exactly the
+ * update interface's keys, so a field added to one can't be missed here.
+ */
+const TYPED_UPDATE_FIELDS = {
+  task: {
+    status: true,
+    priority: true,
+    dueDate: true,
+    startedAt: true,
+    completedAt: true
+  } satisfies Record<keyof TaskNodeUpdate, true>,
+  person: {
+    firstName: true,
+    lastName: true,
+    email: true
+  } satisfies Record<keyof PersonNodeUpdate, true>,
+  project: {
+    status: true,
+    priority: true,
+    startDate: true,
+    endDate: true
+  } satisfies Record<keyof ProjectNodeUpdate, true>
+} as const;
 
 /**
- * The keys of a typed task update request body that are not task update
- * fields (`version` travels beside them). `content` and `properties` are the
+ * The keys of a typed update request body that are not fields of that type's
+ * update (`version` travels beside them). `content` and `properties` are the
  * ones a caller is likely to send: both belong to the generic node update.
  */
-export function unknownTaskNodeUpdateKeys(body: Record<string, unknown>): string[] {
-  return Object.keys(body).filter(
-    (key) => key !== 'version' && !TASK_NODE_UPDATE_FIELDS.includes(key)
-  );
+export function unknownTypedUpdateKeys(
+  nodeType: keyof typeof TYPED_UPDATE_FIELDS,
+  body: Record<string, unknown>
+): string[] {
+  const fields: Record<string, true> = TYPED_UPDATE_FIELDS[nodeType];
+  return Object.keys(body).filter((key) => key !== 'version' && !(key in fields));
 }
 
 /**

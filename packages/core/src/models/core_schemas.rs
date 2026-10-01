@@ -2381,13 +2381,13 @@ mod tests {
             );
         }
 
-        // Every core_values entry must round-trip through TaskStatus::from_str
+        // Every core_values entry must round-trip through TaskStatus::from_value
         // to a NAMED variant, not fall through to the User(_) catch-all — a
         // core_values entry with no corresponding variant is exactly the
         // reverse drift (schema declares a value the type doesn't know as a
         // first-class variant).
         for value in &core_value_strings {
-            let parsed: TaskStatus = value.parse().expect("TaskStatus::from_str is infallible");
+            let parsed = TaskStatus::from_value(value);
             assert!(
                 parsed.is_core(),
                 "task.status's core_values entry '{}' does not parse to a named TaskStatus \

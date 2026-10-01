@@ -42,7 +42,7 @@ pub struct ProjectNode {
 /// sets it. Dates accept `YYYY-MM-DD` or RFC 3339 and are stored as
 /// `YYYY-MM-DD`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProjectNodeUpdate {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
@@ -125,6 +125,13 @@ mod tests {
             update.to_properties_patch(),
             serde_json::json!({ "status": "active", "end_date": null })
         );
+    }
+
+    /// The update carries the project schema's fields only; naming anything
+    /// else is an error rather than a silently dropped write.
+    #[test]
+    fn an_unknown_key_is_rejected() {
+        assert!(serde_json::from_str::<ProjectNodeUpdate>(r#"{"content": "Apollo"}"#).is_err());
     }
 
     #[test]

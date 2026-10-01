@@ -317,10 +317,10 @@ pub fn flat_properties_view(typed: &serde_json::Value) -> serde_json::Value {
 fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     let props = &node.properties;
 
-    let status: TaskStatus = props
+    let status = props
         .get("status")
         .and_then(|v| v.as_str())
-        .and_then(|s| s.parse().ok())
+        .map(TaskStatus::from_value)
         .unwrap_or_default();
 
     let priority = priority_prop(props);
