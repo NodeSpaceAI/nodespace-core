@@ -23,6 +23,7 @@ import {
   type ChildPlacement,
   type CreatedNode,
   type InsertPosition,
+  type PerFieldTypedUpdateType,
 } from '../../desktop-app/src/lib/services/adapter-core.ts';
 import { storageNodeToApiFields } from '../../desktop-app/src/lib/services/node-normalize.ts';
 import { createNodeSpaceClients, createRunOnceGuard } from './grpc-client.ts';
@@ -246,7 +247,7 @@ function error(code: string, message: string, status = 500, conflictData?: unkno
  * is refused rather than dropped, as the Tauri command refuses it.
  */
 function refuseUnknownTypedUpdateKeys(
-  nodeType: Parameters<typeof unknownTypedUpdateKeys>[0],
+  nodeType: PerFieldTypedUpdateType,
   body: Record<string, unknown>
 ): Response | null {
   const unknown = unknownTypedUpdateKeys(nodeType, body);

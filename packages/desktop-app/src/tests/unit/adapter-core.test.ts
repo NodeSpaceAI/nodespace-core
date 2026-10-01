@@ -5,8 +5,10 @@ import {
   encodeInsertPosition,
   normalizeChildrenTree,
   insertPosition,
+  typedUpdateFieldNames,
   unknownTypedUpdateKeys,
 } from '$lib/services/adapter-core';
+import { writableTypedCoreKeys } from '$lib/types/typed-core-fields';
 
 describe('adapter-core: buildCreateNodeFields', () => {
   it('defaults optional fields for a minimal input', () => {
@@ -83,6 +85,18 @@ describe('adapter-core: buildTaskNodeUpdatePatch (tri-state clearable encoding)'
       'content'
     ]);
   });
+
+  // The store sends a type's writable typed core keys; the dev-proxy and the
+  // Tauri command refuse anything outside the update's fields. A key in one
+  // list and not the other is a write the backend rejects.
+  it.each(['task', 'person', 'project'] as const)(
+    'the %s update fields are the keys the store sends for it',
+    (nodeType) => {
+      expect(typedUpdateFieldNames(nodeType).sort()).toEqual(
+        [...writableTypedCoreKeys(nodeType)].sort()
+      );
+    }
+  );
 
   it('carries the task schema fields only', () => {
     const patch = buildTaskNodeUpdatePatch({ status: 'done' });

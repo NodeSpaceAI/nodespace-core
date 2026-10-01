@@ -329,13 +329,21 @@ const TYPED_UPDATE_FIELDS = {
   } satisfies Record<keyof ProjectNodeUpdate, true>
 } as const;
 
+/** The core types whose typed update travels as one wire field per schema field. */
+export type PerFieldTypedUpdateType = keyof typeof TYPED_UPDATE_FIELDS;
+
+/** The fields `nodeType`'s typed update carries, by wire name. */
+export function typedUpdateFieldNames(nodeType: PerFieldTypedUpdateType): string[] {
+  return Object.keys(TYPED_UPDATE_FIELDS[nodeType]);
+}
+
 /**
  * The keys of a typed update request body that are not fields of that type's
  * update (`version` travels beside them). `content` and `properties` are the
  * ones a caller is likely to send: both belong to the generic node update.
  */
 export function unknownTypedUpdateKeys(
-  nodeType: keyof typeof TYPED_UPDATE_FIELDS,
+  nodeType: PerFieldTypedUpdateType,
   body: Record<string, unknown>
 ): string[] {
   const fields: Record<string, true> = TYPED_UPDATE_FIELDS[nodeType];
