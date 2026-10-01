@@ -1,5 +1,5 @@
 /**
- * NodeCardInline — on-mount fetch (ADR-049) and the card's title.
+ * NodeCardInline — on-mount fetch (ADR-049) and the link's text.
  *
  * The card previously fetched a missing node from inside a $effect that watched the
  * derived `node` value. After the ADR-049 conversion it fetches once on mount (the card
@@ -96,7 +96,7 @@ describe('NodeCardInline on-mount fetch', () => {
 
 describe('NodeCardInline title', () => {
   function cardTitle(container: HTMLElement): string | null | undefined {
-    return container.querySelector('.node-card-title')?.textContent;
+    return container.querySelector('.ns-node-card-inline')?.textContent;
   }
 
   it("shows the node's live title, not the agent's label", async () => {
@@ -159,10 +159,10 @@ describe('NodeCardInline title', () => {
     await tick();
 
     expect(cardTitle(container)).toBe('Data Layer');
-    expect(container.querySelector('.node-card-type--unknown')).toBeNull();
+    expect(container.querySelector('.ns-node-card-inline--missing')).toBeNull();
   });
 
-  it("keeps the agent's label, marked unknown, when the node does not exist", async () => {
+  it("keeps the agent's label, marked missing, when the node does not exist", async () => {
     getNode.mockReturnValue(undefined);
     fetchNode.mockResolvedValue(undefined);
 
@@ -172,6 +172,24 @@ describe('NodeCardInline title', () => {
     await tick();
 
     expect(cardTitle(container)).toBe('Data Layer');
-    expect(container.querySelector('.node-card-type--unknown')).not.toBeNull();
+    expect(container.querySelector('.ns-node-card-inline--missing')).not.toBeNull();
+  });
+
+  it('is a plain link: no icon, type badge or task status', async () => {
+    getNode.mockReturnValue({
+      id: 'abc-123',
+      nodeType: 'task',
+      content: 'Ship the release',
+      status: 'in_progress',
+      properties: {}
+    });
+
+    const { container } = render(NodeCardInline, { nodeId: 'abc-123' });
+    await tick();
+
+    const link = container.querySelector('a.ns-node-card-inline');
+    expect(link?.getAttribute('href')).toBe('nodespace://abc-123');
+    expect(link?.children).toHaveLength(0);
+    expect(link?.textContent).toBe('Ship the release');
   });
 });

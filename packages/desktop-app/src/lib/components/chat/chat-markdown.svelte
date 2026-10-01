@@ -5,8 +5,8 @@
   Unlike the node MarkdownRenderer, this supports full markdown:
   headings, lists, code blocks, tables, etc.
 
-  nodespace:// URIs are rendered as special node links that can be
-  clicked to navigate and styled with type-specific decorations.
+  nodespace:// URIs are rendered as node links that can be clicked to
+  navigate and that show the node's live title.
 -->
 
 <script lang="ts">
