@@ -108,8 +108,8 @@ fn invoke(app: &App<MockRuntime>, command: &str) -> Result<String, serde_json::V
 }
 
 #[test]
-fn extension_api_version_is_one_one() {
-    assert_eq!(EXTENSION_API_VERSION, (1, 1));
+fn extension_api_version_is_one_zero() {
+    assert_eq!(EXTENSION_API_VERSION, (1, 0));
 }
 
 #[test]
