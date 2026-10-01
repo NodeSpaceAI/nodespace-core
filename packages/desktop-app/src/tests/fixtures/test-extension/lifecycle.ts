@@ -5,7 +5,7 @@
  *
  *   uiExtensionRegistry.register(createTestExtension(createTestLifecycleParts().parts));
  */
-import type { ExtensionLifecycle, NodespaceExtension } from '$lib/plugins/ui-extensions';
+import type { ExtensionLifecycle, NodespaceExtension } from '@nodespace/extension-api';
 
 /** What `debugDump` returns unless an option overrides it. */
 export const TEST_EXTENSION_DUMP = { fixture: 'test-extension' } as const;

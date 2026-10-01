@@ -235,9 +235,20 @@ describe('nodespace extensions build entry', () => {
 
     it('resolves @nodespace/extension-api under the unit-tier config, exposing the registration API', async () => {
       const api = await import('@nodespace/extension-api');
-      // Explicit export list, no `export *`: the runtime surface is exactly the version.
-      // Update this list when the barrel gains a runtime export.
-      expect(Object.keys(api)).toEqual(['EXTENSION_API_VERSION']);
+      // Explicit export list, no `export *`. Update this list when the barrel gains a
+      // runtime export; the surface snapshot in src/tests/extension-api records it too.
+      expect(Object.keys(api).sort()).toEqual([
+        'DATABASE_SETTINGS_NODE_ID',
+        'EXTENSION_API_VERSION',
+        'collections',
+        'createLogger',
+        'databases',
+        'isCommandError',
+        'nodes',
+        'onDaemonReconnect',
+        'schemas',
+        'toError'
+      ]);
       expect(api.EXTENSION_API_VERSION).toBe(EXTENSION_API_VERSION);
     });
 
@@ -257,6 +268,7 @@ describe('nodespace extensions build entry', () => {
       expectTypeOf<api.CollectionTreeRootsContribution>().toEqualTypeOf<
         host.CollectionTreeRootsContribution
       >();
+      expectTypeOf<api.ExtensionLifecycle>().toEqualTypeOf<host.ExtensionLifecycle>();
     });
 
     it('registers the injected extensions synchronously in the root layout', () => {

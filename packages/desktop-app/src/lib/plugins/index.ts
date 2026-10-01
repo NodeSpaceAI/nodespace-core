@@ -3,6 +3,8 @@
  *
  * Export all plugin-related functionality from a single entry point.
  * This replaces the old fragmented registry system.
+ *
+ * Out-of-tree extensions import `@nodespace/extension-api` instead (ADR-082).
  */
 
 export { PluginRegistry, pluginRegistry } from './plugin-registry';

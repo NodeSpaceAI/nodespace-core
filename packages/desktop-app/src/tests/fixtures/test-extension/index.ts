@@ -3,11 +3,15 @@
  * API without importing any edition-specific code. Each contribution is gated by a flag in
  * `flags.svelte.ts`, so a test turns surfaces on and off by flipping state.
  *
+ * Like an out-of-tree extension, it takes its types only from
+ * `@nodespace/extension-api`, so svelte-check fails on an incompatible change to
+ * them.
+ *
  * Register it with `uiExtensionRegistry.register(createTestExtension())` and
  * `unregister(TEST_EXTENSION_ID)` in `afterEach`, then call
  * `resetTestExtension()`.
  */
-import type { NodespaceExtension } from '$lib/plugins/ui-extensions';
+import type { NodespaceExtension } from '@nodespace/extension-api';
 import { testExtensionFlags } from './flags.svelte';
 
 export { testExtensionFlags, testExtensionMounts, resetTestExtension } from './flags.svelte';
