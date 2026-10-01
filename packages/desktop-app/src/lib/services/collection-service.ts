@@ -263,8 +263,9 @@ class HttpCollectionService implements CollectionServiceInterface {
     return null;
   }
 
-  async addNodeToCollection(_nodeId: string, _collectionId: string): Promise<void> {
-    // Not implemented in dev-proxy yet
+  async addNodeToCollection(nodeId: string, collectionId: string): Promise<void> {
+    log.debug('Adding node to collection via HTTP', { nodeId, collectionId });
+    await this.patchMembership(nodeId, { addToCollectionIds: [collectionId] }, 'add node to collection');
   }
 
   async addNodeToCollectionPath(_nodeId: string, _path: string): Promise<string> {
@@ -272,8 +273,29 @@ class HttpCollectionService implements CollectionServiceInterface {
     return '';
   }
 
-  async removeNodeFromCollection(_nodeId: string, _collectionId: string): Promise<void> {
-    // Not implemented in dev-proxy yet
+  async removeNodeFromCollection(nodeId: string, collectionId: string): Promise<void> {
+    log.debug('Removing node from collection via HTTP', { nodeId, collectionId });
+    await this.patchMembership(
+      nodeId,
+      { removeFromCollectionIds: [collectionId] },
+      'remove node from collection'
+    );
+  }
+
+  /** Change a node's memberships through the dev-proxy's node update. */
+  private async patchMembership(
+    nodeId: string,
+    change: { addToCollectionIds?: string[]; removeFromCollectionIds?: string[] },
+    action: string
+  ): Promise<void> {
+    const response = await fetch(`${DEV_PROXY_URL}/api/nodes/${encodeURIComponent(nodeId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(change)
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to ${action}: ${response.statusText}`);
+    }
   }
 
   async createCollection(_name: string, _description?: string): Promise<string> {

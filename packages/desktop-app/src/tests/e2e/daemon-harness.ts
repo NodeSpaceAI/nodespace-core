@@ -342,7 +342,7 @@ export class DaemonTestHarness {
 
   /** SSE endpoint URL for WatchNodes event tests. */
   get sseUrl(): string {
-    return `http://localhost:${this.proxyPort}/api/events`;
+    return `${this.baseUrl}/api/events`;
   }
 
   async stop(): Promise<void> {

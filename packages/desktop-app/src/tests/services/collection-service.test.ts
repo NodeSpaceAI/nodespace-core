@@ -405,15 +405,55 @@ describe('HttpCollectionService', () => {
     expect(result).toEqual(members);
   });
 
+  it('addNodeToCollection sends the collection id on a node update', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, statusText: 'OK' }));
+
+    const svc = await loadHttpService();
+    await svc.addNodeToCollection('n 1', 'c1');
+
+    expect(fetch).toHaveBeenCalledWith('http://localhost:3001/api/nodes/n%201', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ addToCollectionIds: ['c1'] })
+    });
+  });
+
+  it('removeNodeFromCollection sends the collection id on a node update', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, statusText: 'OK' }));
+
+    const svc = await loadHttpService();
+    await svc.removeNodeFromCollection('n1', 'c1');
+
+    expect(fetch).toHaveBeenCalledWith('http://localhost:3001/api/nodes/n1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ removeFromCollectionIds: ['c1'] })
+    });
+  });
+
+  it('a membership change throws a descriptive error on a non-ok response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found' })
+    );
+
+    const svc = await loadHttpService();
+
+    await expect(svc.addNodeToCollection('n1', 'c1')).rejects.toThrow(
+      'Failed to add node to collection: Not Found'
+    );
+    await expect(svc.removeNodeFromCollection('n1', 'c1')).rejects.toThrow(
+      'Failed to remove node from collection: Not Found'
+    );
+  });
+
   it('stub methods return their documented placeholder values without throwing', async () => {
     const svc = await loadHttpService();
 
     await expect(svc.getNodeCollections('n1')).resolves.toEqual([]);
     await expect(svc.findCollectionByPath('some:path')).resolves.toBeNull();
     await expect(svc.getCollectionByName('Test')).resolves.toBeNull();
-    await expect(svc.addNodeToCollection('n1', 'c1')).resolves.toBeUndefined();
     await expect(svc.addNodeToCollectionPath('n1', 'path')).resolves.toBe('');
-    await expect(svc.removeNodeFromCollection('n1', 'c1')).resolves.toBeUndefined();
     await expect(svc.createCollection('Test')).resolves.toBe('');
     await expect(svc.deleteCollection('c1', 1)).resolves.toBeUndefined();
 
