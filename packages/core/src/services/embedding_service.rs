@@ -902,10 +902,11 @@ impl NodeEmbeddingService {
                     .is_some_and(|core| KNOWLEDGE_CORE_TYPES.contains(&core))
                     || user_types.contains(node_type)
             }
-            // ai-chat nodes are no longer embedded (ADR-029, as revised), so no
-            // ai-chat rows exist in the vector index — this scope is effectively
-            // a no-op that returns no results.
-            SearchScope::Conversations => crate::models::CoreNodeType::AiChat.is_exactly(node_type),
+            // Chats are not embedded (ADR-061 §4), so no chat rows exist in the
+            // vector index — this scope is effectively a no-op that returns
+            // no results.
+            SearchScope::Conversations => crate::models::CoreNodeType::from_id(node_type)
+                .is_some_and(|core| core.is_a(crate::models::CoreNodeType::AiChat)),
             SearchScope::Everything => true,
             SearchScope::Custom {
                 include_types,
@@ -1180,6 +1181,8 @@ mod tests {
             "play",
             "database-settings",
             "ai-chat",
+            "ai-chat-native",
+            "ai-chat-pty",
             "invoice", // not a known user type in this set
         ] {
             assert!(!knowledge(t), "{t} must be outside the default scope");
@@ -1523,7 +1526,7 @@ mod tests {
         // --- ai-chat: never embeddable (conversations excluded from vectorization) ---
 
         let chat_node = Node::new(
-            "ai-chat".to_string(),
+            "ai-chat-native".to_string(),
             "Chat about testing".to_string(),
             json!({
                 "messages": [
@@ -1533,7 +1536,7 @@ mod tests {
                 ]
             }),
         );
-        let chat_behavior = behaviors.get("ai-chat").unwrap();
+        let chat_behavior = behaviors.get("ai-chat-native").unwrap();
         assert!(
             chat_behavior.get_embeddable_content(&chat_node).is_none(),
             "ai-chat should never be embeddable, even with messages"

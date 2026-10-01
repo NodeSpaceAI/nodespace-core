@@ -37,6 +37,8 @@ pub enum CoreNodeType {
     Schema,
     Play,
     AiChat,
+    AiChatNative,
+    AiChatPty,
     Tool,
 }
 
@@ -188,7 +190,7 @@ pub struct CoreTypeInfo {
 
 impl CoreNodeType {
     /// Every core type, in registry order.
-    pub const ALL: [CoreNodeType; 21] = [
+    pub const ALL: [CoreNodeType; 23] = [
         CoreNodeType::Text,
         CoreNodeType::Header,
         CoreNodeType::CodeBlock,
@@ -209,6 +211,8 @@ impl CoreNodeType {
         CoreNodeType::Schema,
         CoreNodeType::Play,
         CoreNodeType::AiChat,
+        CoreNodeType::AiChatNative,
+        CoreNodeType::AiChatPty,
         CoreNodeType::Tool,
     ];
 
@@ -316,13 +320,40 @@ impl CoreNodeType {
                 )
             },
             Self::Play => entry("play", Structured, Name, NOT_EMBEDDED, WireShape::Generic),
-            Self::AiChat => entry(
-                "ai-chat",
-                Structured,
-                Title,
-                NOT_EMBEDDED.not_mentionable(),
-                WireShape::Typed { update: false },
-            ),
+            // The chat family (ADR-088). The base is never instantiated; its
+            // rules are the floor both subtypes inherit.
+            Self::AiChat => CoreTypeInfo {
+                is_abstract: true,
+                ..entry(
+                    "ai-chat",
+                    Flat,
+                    Title,
+                    NOT_EMBEDDED.not_mentionable(),
+                    WireShape::Typed { update: false },
+                )
+            },
+            // Structured while a conversation's messages are a nested
+            // `messages[]` field.
+            Self::AiChatNative => CoreTypeInfo {
+                parent: Some(Self::AiChat),
+                ..entry(
+                    "ai-chat-native",
+                    Structured,
+                    Title,
+                    NOT_EMBEDDED,
+                    WireShape::Typed { update: false },
+                )
+            },
+            Self::AiChatPty => CoreTypeInfo {
+                parent: Some(Self::AiChat),
+                ..entry(
+                    "ai-chat-pty",
+                    Flat,
+                    Title,
+                    NOT_EMBEDDED,
+                    WireShape::Typed { update: false },
+                )
+            },
             Self::Tool => entry("tool", Structured, Name, EMBEDDED, WireShape::Generic),
         }
     }
@@ -524,6 +555,8 @@ mod tests {
                 | CoreNodeType::Schema
                 | CoreNodeType::Play
                 | CoreNodeType::AiChat
+                | CoreNodeType::AiChatNative
+                | CoreNodeType::AiChatPty
                 | CoreNodeType::Tool => {}
             }
         }
@@ -592,12 +625,36 @@ mod tests {
             vec![
                 CoreNodeType::Collection,
                 CoreNodeType::Schema,
-                CoreNodeType::AiChat
+                CoreNodeType::AiChat,
+                CoreNodeType::AiChatNative,
+                CoreNodeType::AiChatPty
             ]
         );
         assert_eq!(
             CoreNodeType::always_titled_types(),
             vec![CoreNodeType::Task, CoreNodeType::Collection]
+        );
+    }
+
+    #[test]
+    fn the_chat_family_is_an_abstract_base_with_two_core_subtypes() {
+        assert_eq!(CoreNodeType::AiChat.kind(), CoreTypeKind::AbstractBase);
+        for subtype in [CoreNodeType::AiChatNative, CoreNodeType::AiChatPty] {
+            assert_eq!(subtype.kind(), CoreTypeKind::CoreSubtype);
+            assert_eq!(subtype.parent(), Some(CoreNodeType::AiChat));
+            assert!(subtype.is_a(CoreNodeType::AiChat));
+            assert!(!subtype.is_abstract());
+            // The base's rules reach both: not embedded, not mentionable,
+            // and any child is allowed.
+            assert!(!subtype.participation().embedded);
+            assert!(!subtype.participation().mentionable);
+            assert_eq!(subtype.structure().children, ChildrenRule::Any);
+            assert_eq!(subtype.content_role(), ContentRole::Title);
+        }
+        assert!(!CoreNodeType::AiChatNative.is_a(CoreNodeType::AiChatPty));
+        assert_eq!(
+            CoreNodeType::nearest(&["ai-chat-pty", "ai-chat"]),
+            Some(CoreNodeType::AiChatPty)
         );
     }
 }

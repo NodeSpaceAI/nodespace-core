@@ -28,7 +28,15 @@ async fn create_test_service() -> Result<(NodeService, TempDir)> {
 }
 
 async fn create_typed_node(service: &NodeService, node_type: &str) -> Result<Node> {
-    let node = Node::new(node_type.to_string(), "test".to_string(), json!({}));
+    create_typed_node_with(service, node_type, json!({})).await
+}
+
+async fn create_typed_node_with(
+    service: &NodeService,
+    node_type: &str,
+    properties: serde_json::Value,
+) -> Result<Node> {
+    let node = Node::new(node_type.to_string(), "test".to_string(), properties);
     service
         .with_client(TEST_CLIENT_ID)
         .create_node(node.clone())
@@ -115,25 +123,29 @@ async fn task_source_is_its_own_container_even_when_nested() -> Result<()> {
     Ok(())
 }
 
-/// An `ai-chat` node is likewise its own container — matches the documented
-/// behavior in components/mentions-and-references.md ("Task/AI-chat nodes:
-/// Treated as their own containers").
+/// A chat is likewise its own container — matches the documented behavior in
+/// components/mentions-and-references.md ("Task/AI-chat nodes: Treated as
+/// their own containers"). The rule is the abstract base's, so it holds for
+/// every chat subtype.
 #[tokio::test]
 async fn ai_chat_source_is_its_own_container_even_when_nested() -> Result<()> {
     let (service, _t) = create_test_service().await?;
 
-    let target = create_node(&service).await?;
-    let root = create_node(&service).await?;
-    let ai_chat = create_typed_node(&service, "ai-chat").await?;
+    for (chat_type, agent) in [("ai-chat-native", "nodespace"), ("ai-chat-pty", "codex")] {
+        let target = create_node(&service).await?;
+        let root = create_node(&service).await?;
+        let ai_chat =
+            create_typed_node_with(&service, chat_type, json!({ "agent": agent })).await?;
 
-    place_under(&service, &ai_chat.id, &root.id).await?;
+        place_under(&service, &ai_chat.id, &root.id).await?;
 
-    service.create_mention(&ai_chat.id, &target.id).await?;
+        service.create_mention(&ai_chat.id, &target.id).await?;
 
-    let containers = service.get_mentioning_containers(&target.id).await?;
-    let ids: Vec<&str> = containers.iter().map(|c| c.id.as_str()).collect();
+        let containers = service.get_mentioning_containers(&target.id).await?;
+        let ids: Vec<&str> = containers.iter().map(|c| c.id.as_str()).collect();
 
-    assert_eq!(ids, vec![ai_chat.id.as_str()]);
+        assert_eq!(ids, vec![ai_chat.id.as_str()], "{chat_type}");
+    }
     Ok(())
 }
 

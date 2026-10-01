@@ -47,7 +47,7 @@ use nodespace_agent::agent_types::{
     ChatInferenceEngine, ChatMessage, InferenceRequest, Role, StreamingChunk,
 };
 use nodespace_agent::local_agent::prompt_templates::title_generation_prompt;
-use nodespace_core::models::{AiChatNode, NodeUpdate};
+use nodespace_core::models::{AiChatNativeNode, NodeUpdate};
 use nodespace_core::services::{NodeService, NodeServiceError};
 
 /// The title a new ai-chat node carries until it is titled.
@@ -112,8 +112,8 @@ pub fn is_untitled(content: &str) -> bool {
 }
 
 /// Whether this chat should be titled: enough conversation, and no title yet.
-pub fn needs_title(chat: &AiChatNode) -> bool {
-    is_untitled(&chat.content) && chat.messages.len() >= TITLE_MESSAGE_THRESHOLD
+pub fn needs_title(chat: &AiChatNativeNode) -> bool {
+    is_untitled(&chat.envelope.content) && chat.messages.len() >= TITLE_MESSAGE_THRESHOLD
 }
 
 /// Render the opening of a conversation as the prompt's input block.
@@ -121,7 +121,7 @@ pub fn needs_title(chat: &AiChatNode) -> bool {
 /// Only `user` and `assistant` messages are included: `system` messages carry
 /// workspace scaffolding rather than anything the conversation is about, and
 /// feeding them in produces titles about NodeSpace itself.
-pub fn render_for_title(chat: &AiChatNode) -> String {
+pub fn render_for_title(chat: &AiChatNativeNode) -> String {
     chat.messages
         .iter()
         .filter(|m| m.role == "user" || m.role == "assistant")
@@ -193,7 +193,7 @@ pub fn sanitize_title(raw: &str) -> Option<String> {
 /// Returns `None` when the model produced nothing usable.
 pub async fn generate_title(
     engine: &Arc<dyn ChatInferenceEngine>,
-    chat: &AiChatNode,
+    chat: &AiChatNativeNode,
 ) -> Option<String> {
     let conversation = render_for_title(chat);
     if conversation.trim().is_empty() {
@@ -225,7 +225,7 @@ pub async fn generate_title(
     });
 
     if let Err(e) = engine.generate(request, on_chunk).await {
-        tracing::debug!(chat_id = %chat.id, error = %e, "ai-chat title generation failed");
+        tracing::debug!(chat_id = %chat.envelope.id, error = %e, "ai-chat title generation failed");
         return None;
     }
 
@@ -297,8 +297,8 @@ pub async fn write_title_if_still_untitled(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
     use nodespace_core::models::AiChatMessage;
+    use nodespace_core::models::Node;
 
     fn message(role: &str, content: &str) -> AiChatMessage {
         AiChatMessage {
@@ -315,20 +315,18 @@ mod tests {
         }
     }
 
-    fn chat(content: &str, messages: Vec<AiChatMessage>) -> AiChatNode {
-        AiChatNode {
-            id: "920d4578-c2d0-54ad-8f1a-69c1db594eb9".to_string(),
-            node_type: "ai-chat".to_string(),
-            content: content.to_string(),
-            version: 1,
-            created_at: Utc::now(),
-            modified_at: Utc::now(),
-            turn_status: "idle".to_string(),
-            session_status: "active".to_string(),
-            provider: Some("native".to_string()),
-            model: Some("test-model".to_string()),
-            messages,
-        }
+    fn chat(content: &str, messages: Vec<AiChatMessage>) -> AiChatNativeNode {
+        AiChatNativeNode::from_node(Node::new_with_id(
+            "920d4578-c2d0-54ad-8f1a-69c1db594eb9".to_string(),
+            "ai-chat-native".to_string(),
+            content.to_string(),
+            serde_json::json!({
+                "agent": "nodespace",
+                "model": "test-model",
+                "messages": messages,
+            }),
+        ))
+        .expect("a native chat")
     }
 
     #[test]

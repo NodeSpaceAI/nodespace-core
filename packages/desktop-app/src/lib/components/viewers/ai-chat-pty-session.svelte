@@ -1,13 +1,13 @@
 <!--
-  ai-chat-pty-session — provider mode 2d (pty) sub-view, composed by
-  AiChatNodeViewer. Not a Node/Viewer component (it's an internal helper, named
-  like ChatMessage/ChatInput), so it carries no *Node/*Viewer/*View suffix.
+  ai-chat-pty-session — the terminal sub-view of an `ai-chat-pty` node, composed
+  by AiChatPtyNodeViewer. Not a Node/Viewer component (it's an internal helper,
+  named like ChatMessage/ChatInput), so it carries no *Node/*Viewer/*View suffix.
 
-  Per ADR-034, a PTY agent session IS an ai-chat node (provider: pty). This
-  helper renders that mode: a launch config (harness picker + Launch) when no
-  session is running, the embedded xterm terminal (via pty-terminal.svelte) while
-  it runs, and a read-only summary once it ends. The node already exists; capture
-  backfills it at session end via the node_id passed to launch.
+  A PTY agent session IS an `ai-chat-pty` node (ADR-088). This helper renders a
+  launch config (harness picker + Launch) when no session is running, the
+  embedded xterm terminal (via pty-terminal.svelte) while it runs, and a
+  read-only summary once it ends. The node already exists; capture backfills
+  it at session end via the node_id passed to launch.
 -->
 
 <script lang="ts">
@@ -15,7 +15,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import PtyTerminal from '$lib/components/agent/pty-terminal.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
-  import type { AiChatNode } from '$lib/types/ai-chat-node';
+  import type { AiChatPtyNode } from '$lib/types/ai-chat-node';
   import {
     getCaptureSettings,
     updateCaptureSettings,
@@ -52,22 +52,17 @@
     | 'binary_missing_and_auth_missing'
     | 'unknown';
 
-  const node = $derived(sharedNodeStore.getNode(nodeId));
+  // The typed fields are read from the TOP-LEVEL promoted keys, the same wire
+  // contract the native viewer documents for turnStatus.
+  const node = $derived(sharedNodeStore.getNode(nodeId) as unknown as AiChatPtyNode | undefined);
 
   // A previously-launched session id persisted on the node. While the session
   // is live (sessionStatus 'active') this lets the terminal re-attach on
   // reopen (the daemon owns the PTY and supports multi-client streaming per
-  // ADR-032). Once the session has ended (sessionStatus 'archived', set by
-  // capture backfill) the PTY is gone — re-attaching would just show a blank,
-  // silent terminal — so we render a read-only summary instead.
-  //
-  // sessionStatus is read from the TOP-LEVEL promoted field, not
-  // `properties['ai-chat'].session_status` — the daemon flattens the
-  // namespace before this reaches the frontend, same contract
-  // `ai-chat-node-viewer.svelte` documents for turnStatus.
-  const persistedSessionId = $derived(
-    (node?.properties?.['capture:session_id'] as string | undefined) ?? null
-  );
+  // ADR-032). Once the session has ended (sessionStatus 'ended') the PTY is
+  // gone — re-attaching would just show a blank, silent terminal — so we render
+  // a read-only summary instead.
+  const persistedSessionId = $derived(node?.sessionId ?? null);
 
   // Latches when *this* viewer's just-launched session exits, so the UI flips
   // to the ended state live without waiting for a reload (the daemon's capture
@@ -75,20 +70,15 @@
   let sessionEnded = $state(false);
 
   // Set when the user explicitly chooses "Start new session" from the ended
-  // view, forcing the config step even though a stale `capture:session_id` is
-  // still persisted (capture backfill only overwrites it once the *next*
-  // session ends — see startNewSession()).
+  // view, forcing the config step even though the previous session's id is
+  // still persisted (launch() overwrites it once the next session starts).
   let configuring = $state(false);
 
   let activeSessionId = $state<string | null>(null);
 
-  // The session has ended if capture marked the node archived, or we observed
-  // its exit this session.
-  const isEnded = $derived(
-    !configuring &&
-      (sessionEnded ||
-        (node as unknown as AiChatNode | undefined)?.sessionStatus === 'archived')
-  );
+  // The session has ended if the node is marked ended, or we observed its exit
+  // this session.
+  const isEnded = $derived(!configuring && (sessionEnded || node?.sessionStatus === 'ended'));
   // Only host a live terminal when the session is still running. A session this
   // viewer launched (activeSessionId) always wins; otherwise re-attach to the
   // persisted id — but never while configuring a replacement, since the
@@ -97,15 +87,9 @@
     isEnded || configuring ? activeSessionId : (activeSessionId ?? persistedSessionId)
   );
 
-  const agentType = $derived(
-    (node?.properties?.['capture:agent_type'] as string | undefined) ?? null
-  );
-  const summary = $derived(
-    (node?.properties?.['capture:summary'] as string | undefined) ?? null
-  );
-  const transcript = $derived(
-    (node?.properties?.['capture:transcript'] as string | undefined) ?? null
-  );
+  const agentType = $derived(node?.agent || null);
+  const summary = $derived(node?.summary ?? null);
+  const transcript = $derived(node?.transcript ?? null);
 
   // Listen for the live session's exit so the view flips to the ended state
   // immediately (a re-attached dead session would otherwise render a blank
@@ -134,11 +118,11 @@
   /**
    * Return to the config step to launch a fresh session on this node.
    *
-   * Note: we do NOT clear the persisted `capture:session_id` here. The store's
-   * property merge is additive (it cannot remove a key by omission, and writing
-   * null would persist a literal null), so the stale id is left in place and
-   * launch() overwrites it with the new session id. The `configuring` flag
-   * suppresses re-attach to that stale id in the meantime.
+   * Note: we do NOT clear the persisted `session_id` here. The store's
+   * property merge is additive (it cannot remove a key by omission), so the
+   * stale id is left in place and launch() overwrites it with the new session
+   * id. The `configuring` flag suppresses re-attach to that stale id in the
+   * meantime.
    */
   function startNewSession(): void {
     sessionEnded = false;
@@ -158,12 +142,11 @@
   let availabilityLoading = $state(true);
 
   onMount(async () => {
-    // Pre-select the agent chosen in the header AiChatModelSelector, when one
-    // was already stored on the node; otherwise keep the
-    // 'claude-code' default.
-    const nodeModel = node?.properties?.model as string | undefined;
-    if (nodeModel) {
-      selectedAgent = nodeModel;
+    // Pre-select the harness the node already names (chosen in the header
+    // AiChatModelSelector before the chat became a PTY chat); otherwise keep
+    // the 'claude-code' default.
+    if (node?.agent) {
+      selectedAgent = node.agent;
     }
 
     try {
@@ -224,22 +207,19 @@
       configuring = false;
 
       // Record the chosen agent + session on the node up front so the node
-      // reflects its mode immediately. Capture backfills the rest at session
-      // end (transcript/summary/exit code) via the node_id passed above.
-      const current = sharedNodeStore.getNode(nodeId);
+      // reflects its mode immediately. The daemon records the session's end
+      // (status, exit code) on the node via the node_id passed above, and the
+      // summary and transcript too when capture is on.
+      // Canonical snake_case keys, matching the schema's declared field names:
+      // the chat family has no typed write command, so whatever key this
+      // object uses reaches storage verbatim. A patch, not a rewrite — the
+      // store merges it onto the node's properties.
       sharedNodeStore.updateNode(
         nodeId,
         {
           properties: {
-            ...current?.properties,
-            'capture:agent_type': selectedAgent,
-            'capture:session_id': result.sessionId,
-            // Canonical snake_case key, matching the schema's declared field
-            // name and what capture_service.rs's backfill writes — ai-chat
-            // has no dedicated typed write command, so whatever key this
-            // object uses reaches storage verbatim (see AiChatNode::
-            // from_node's doc comment for why a camelCase key here would be
-            // silently wrong, not just inconsistent).
+            agent: selectedAgent,
+            session_id: result.sessionId,
             session_status: 'active',
           },
         },
@@ -262,14 +242,14 @@
 
 {#if isEnded}
   <!-- Ended session: the PTY is gone. Show a read-only summary of what the
-       session was about (mode 2d capture is a reference, not a transcript a
-       terminal can replay) + an affordance to start a fresh session. -->
+       session was about (capture is a reference, not a transcript a terminal
+       can replay) + an affordance to start a fresh session. -->
   <div class="pty-ended">
     <div class="pty-ended-card">
       <h3 class="pty-ended-title">Session ended</h3>
       <p class="pty-ended-meta">
         {#if agentType}<span class="pty-ended-agent">{agentType}</span>{/if}
-        <span class="pty-ended-badge">archived</span>
+        <span class="pty-ended-badge">ended</span>
       </p>
 
       {#if summary}

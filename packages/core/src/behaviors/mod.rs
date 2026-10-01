@@ -13,7 +13,6 @@ use crate::models::schema::SchemaField;
 use crate::models::CoreNodeType;
 use crate::models::{
     Node, QueryFields, SchemaNode, SkillNode, ValidationError as NodeValidationError,
-    AI_CHAT_PROVIDERS,
 };
 use crate::services::NodeAccessor;
 use serde_json::Value;
@@ -1585,26 +1584,16 @@ impl NodeBehavior for CollectionNodeBehavior {
     }
 }
 
-/// Built-in behavior for AI chat nodes
+/// Behavior for the abstract `ai-chat` base (ADR-088 §1).
 ///
-/// AI chat nodes store conversations (user messages, assistant responses, tool calls)
-/// as nested properties following the same pattern as play `rules[]`.
-/// Conversations are stored as nodes, so they share the node model's identity,
-/// collection membership and development traceability. They are deliberately
-/// NOT embedded (see below).
+/// No node has `ai-chat` as its type, but every chat is validated by this
+/// behaviour first: a subtype's behaviour adds to it and never replaces it.
 ///
-/// # Storage Architecture (ADR-028)
-///
-/// - **Content (`node.content`)**: Chat title (e.g., "Implement webhook handler")
-/// - **Properties**: Provider, model, status, messages[] array
-/// - **Messages**: Nested objects with role, content, timestamp, referenced_nodes
-/// - **Tool calls**: Stored as messages with role "tool_call", result_summary preserved,
-///   full result nulled at write time for storage efficiency
-///
-/// # Embedding (ADR-029, as revised)
-///
-/// `get_embeddable_content()` always returns `None`: ai-chat conversations are
-/// never embedded or made semantically searchable.
+/// - **Content** is the chat's title, and must be supplied. `"Untitled"`
+///   requests automatic titling.
+/// - **Not embedded**, and it contributes nothing to a parent's embedding:
+///   conversations are not general knowledge and must not surface in semantic
+///   search (ADR-061 §4).
 ///
 /// # Examples
 ///
@@ -1615,18 +1604,9 @@ impl NodeBehavior for CollectionNodeBehavior {
 ///
 /// let behavior = AiChatNodeBehavior;
 /// let node = Node::new(
-///     "ai-chat".to_string(),
+///     "ai-chat-native".to_string(),
 ///     "Implement webhook handler".to_string(),
-///     json!({
-///         "provider": "native",
-///         "model": "gemma-4-e4b-q4km",
-///         "turn_status": "idle",
-///         "session_status": "active",
-///         "messages": [
-///             {"role": "user", "content": "Help me implement the webhook handler", "timestamp": "2026-04-03T10:28:00Z"},
-///             {"role": "assistant", "content": "I can help with that.", "timestamp": "2026-04-03T10:28:05Z"}
-///         ]
-///     }),
+///     json!({ "agent": "nodespace", "model": "gemma-4-e4b-q4km" }),
 /// );
 /// assert!(behavior.validate(&node).is_ok());
 /// ```
@@ -1644,9 +1624,9 @@ impl NodeBehavior for AiChatNodeBehavior {
         // titling: the background titler claims a chat only when its content
         // is the literal `"Untitled"` sentinel, so opting in is an explicit
         // act a client performs by writing that value. Were empty content
-        // accepted here, any client that created an ai-chat node without a
-        // title — over the generic `create_node` RPC, say — would be silently
-        // opted into titling behaviour scoped to the desktop UI.
+        // accepted here, any client that created a chat without a title —
+        // over the generic `create_node` RPC, say — would be silently opted
+        // into titling behaviour scoped to the desktop UI.
         //
         // Uses `is_empty_or_whitespace` rather than `trim()`: a title made of
         // zero-width characters is not a title, and would otherwise pass here
@@ -1658,97 +1638,100 @@ impl NodeBehavior for AiChatNodeBehavior {
             ));
         }
 
-        // Validate provider if present
-        if let Some(provider) = node.properties.get("provider") {
-            if let Some(provider_str) = provider.as_str() {
-                // `AI_CHAT_PROVIDERS` also feeds the schema enum, so the two
-                // cannot disagree.
-                if !AI_CHAT_PROVIDERS
-                    .iter()
-                    .any(|(value, _)| *value == provider_str)
-                {
-                    let allowed: Vec<&str> =
-                        AI_CHAT_PROVIDERS.iter().map(|(value, _)| *value).collect();
-                    return Err(NodeValidationError::InvalidProperties(format!(
-                        "Invalid provider '{}': must be one of {}",
-                        provider_str,
-                        allowed.join(", ")
-                    )));
-                }
-            }
-        }
-
-        // Validate turn_status if present — daemon-owned axis, independent of
-        // session_status below (see the module docs on `AiChatNode` for why
-        // these are two properties rather than one shared `status`).
-        if let Some(turn_status) = node.properties.get("turn_status") {
-            if let Some(turn_status_str) = turn_status.as_str() {
-                match turn_status_str {
-                    "idle" | "processing" => {}
-                    _ => {
-                        return Err(NodeValidationError::InvalidProperties(format!(
-                            "Invalid turn_status '{}': must be one of idle, processing",
-                            turn_status_str
-                        )));
-                    }
-                }
-            }
-        }
-
-        // Validate session_status if present — PTY-owned axis, independent of
-        // turn_status above.
-        if let Some(session_status) = node.properties.get("session_status") {
-            if let Some(session_status_str) = session_status.as_str() {
-                match session_status_str {
-                    "active" | "archived" => {}
-                    _ => {
-                        return Err(NodeValidationError::InvalidProperties(format!(
-                            "Invalid session_status '{}': must be one of active, archived",
-                            session_status_str
-                        )));
-                    }
-                }
-            }
-        }
-
-        // Validate messages is an array if present
-        if let Some(messages) = node.properties.get("messages") {
-            if !messages.is_array() && !messages.is_null() {
-                return Err(NodeValidationError::InvalidProperties(
-                    "messages must be an array".to_string(),
-                ));
-            }
-        }
-
         Ok(())
     }
 
+    /// A chat may hold children: its messages, or any other node (ADR-088
+    /// §1). Every subtype inherits the rule.
     fn can_have_children(&self) -> bool {
-        false // Conversations are self-contained; tool-created nodes are siblings, not children
+        true
     }
 
     fn supports_markdown(&self) -> bool {
         false // Chat content is rendered by the chat viewer, not the markdown pipeline
     }
 
-    /// AI-chat nodes are intentionally NOT embedded.
-    ///
-    /// Conversations are not general knowledge and must never surface in
-    /// semantic search, so this always returns `None` — no embedding is ever
-    /// produced for an ai-chat node regardless of its messages. This reverses
-    /// the original ADR-029 decision (which embedded chat text but hid it from
-    /// default search); `SearchScope::Conversations` is consequently a no-op.
+    /// Chats are intentionally NOT embedded, whatever they hold.
     fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
         None
     }
 
-    /// AI chat nodes don't contribute to parent embeddings.
-    ///
-    /// Chat conversations are standalone semantic units; they shouldn't
-    /// pollute the embedding of a parent node (e.g., a date container).
+    /// A chat doesn't contribute to a parent's embedding either: it shouldn't
+    /// pollute the embedding of the page it sits under.
     fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
         None
     }
+}
+
+/// The rules a chat subtype's behaviour takes from the abstract base.
+///
+/// [`NodeBehaviorRegistry::resolve`] answers embedding, markdown and children
+/// questions from the nearest behaviour in a node's chain, which for a chat is
+/// its subtype's. Each subtype behaviour hands these back to
+/// [`AiChatNodeBehavior`] through this macro, so a chat subtype cannot come to
+/// be embedded by leaving a method out.
+macro_rules! inherit_ai_chat_rules {
+    () => {
+        fn can_have_children(&self) -> bool {
+            AiChatNodeBehavior.can_have_children()
+        }
+
+        fn supports_markdown(&self) -> bool {
+            AiChatNodeBehavior.supports_markdown()
+        }
+
+        fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+            AiChatNodeBehavior.get_embeddable_content(node)
+        }
+
+        fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+            AiChatNodeBehavior.get_parent_contribution(node)
+        }
+    };
+}
+
+/// Behavior for `ai-chat-native` nodes: a conversation run by NodeSpace's
+/// agent loop. Adds to [`AiChatNodeBehavior`].
+///
+/// The closed `provider` and `turn_status` vocabularies are the schema's to
+/// enforce; this checks the one shape the schema's field type cannot.
+pub struct AiChatNativeNodeBehavior;
+
+impl NodeBehavior for AiChatNativeNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "ai-chat-native"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        if let Some(messages) = get_namespaced_prop(&node.properties, self.type_name(), "messages")
+        {
+            if !messages.is_array() && !messages.is_null() {
+                return Err(NodeValidationError::InvalidProperties(
+                    "messages must be an array".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    inherit_ai_chat_rules!();
+}
+
+/// Behavior for `ai-chat-pty` nodes: an external coding agent in a terminal.
+/// Adds nothing to [`AiChatNodeBehavior`]: its fields are scalars the schema
+/// validates.
+pub struct AiChatPtyNodeBehavior;
+
+impl NodeBehavior for AiChatPtyNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "ai-chat-pty"
+    }
+
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        Ok(())
+    }
+
+    inherit_ai_chat_rules!();
 }
 
 /// Behavior for agent-guidance nodes (unconditional base system-prompt sections)
@@ -2354,6 +2337,8 @@ impl NodeBehaviorRegistry {
         registry.register_core(Arc::new(HorizontalLineNodeBehavior));
         registry.register_core(Arc::new(TableNodeBehavior));
         registry.register_core(Arc::new(AiChatNodeBehavior));
+        registry.register_core(Arc::new(AiChatNativeNodeBehavior));
+        registry.register_core(Arc::new(AiChatPtyNodeBehavior));
         registry.register_core(Arc::new(AgentGuidanceNodeBehavior));
         registry.register_core(Arc::new(SkillNodeBehavior));
         registry.register_core(Arc::new(ToolNodeBehavior));
@@ -3396,6 +3381,8 @@ mod tests {
         assert!(types.contains(&"horizontal-line".to_string()));
         assert!(types.contains(&"table".to_string()));
         assert!(types.contains(&"ai-chat".to_string()));
+        assert!(types.contains(&"ai-chat-native".to_string()));
+        assert!(types.contains(&"ai-chat-pty".to_string()));
         assert!(types.contains(&"agent-guidance".to_string()));
         assert!(types.contains(&"skill".to_string()));
         assert!(types.contains(&"tool".to_string()));
@@ -4640,279 +4627,156 @@ mod tests {
 
     // ---- AI Chat Node Behavior Tests ----
 
+    /// The behaviours a chat of `node_type` is validated by, base first.
+    fn chat_chain(node_type: &str) -> [&str; 2] {
+        [node_type, "ai-chat"]
+    }
+
     #[test]
     fn test_ai_chat_node_behavior_validation() {
-        let behavior = AiChatNodeBehavior;
+        let registry = NodeBehaviorRegistry::new();
 
-        // Valid ai-chat node with all properties
-        let node = Node::new(
-            "ai-chat".to_string(),
+        let native = Node::new(
+            "ai-chat-native".to_string(),
             "Implement webhook handler".to_string(),
             json!({
+                "agent": "nodespace",
                 "provider": "native",
                 "model": "gemma-4-e4b-q4km",
                 "turn_status": "idle",
-                "session_status": "active",
                 "messages": []
             }),
         );
-        assert!(behavior.validate(&node).is_ok());
+        assert!(registry
+            .validate_node(&native, &chat_chain("ai-chat-native"))
+            .is_ok());
 
-        // Minimal valid node: a title and nothing else. Properties are all
-        // optional; content is not.
-        let minimal = Node::new("ai-chat".to_string(), "Untitled".to_string(), json!({}));
-        assert!(behavior.validate(&minimal).is_ok());
-    }
-
-    /// A chat must carry a title. Omitting one is an error rather than a
-    /// request for automatic titling — the titler claims only the explicit
-    /// `"Untitled"` sentinel, so a client that writes nothing would otherwise
-    /// be silently opted into desktop-UI titling behaviour.
-    #[test]
-    fn test_ai_chat_node_rejects_empty_content() {
-        let behavior = AiChatNodeBehavior;
-
-        for blank in ["", "   ", "\t\n", "\u{200B}"] {
-            let node = Node::new("ai-chat".to_string(), blank.to_string(), json!({}));
-            let err = behavior
-                .validate(&node)
-                .expect_err("an ai-chat node without a title must be rejected");
-            assert!(
-                matches!(err, NodeValidationError::MissingField(ref f) if f.contains("content")),
-                "expected a missing-content error, got {err:?}"
-            );
-            // The message must name the opt-in, so a client hitting this knows
-            // what to send instead.
-            assert!(
-                format!("{err}").contains("Untitled"),
-                "the error must name the \"Untitled\" opt-in, got {err}"
-            );
-        }
-
-        // The sentinel itself is a title, and is accepted.
-        let opted_in = Node::new("ai-chat".to_string(), "Untitled".to_string(), json!({}));
-        assert!(behavior.validate(&opted_in).is_ok());
-    }
-
-    #[test]
-    fn test_ai_chat_node_invalid_provider() {
-        let behavior = AiChatNodeBehavior;
-        let node = Node::new(
-            "ai-chat".to_string(),
-            "Chat".to_string(),
-            json!({"provider": "anthropic"}),
+        let pty = Node::new(
+            "ai-chat-pty".to_string(),
+            "Untitled".to_string(),
+            json!({ "agent": "claude-code", "session_status": "active" }),
         );
-        let err = behavior.validate(&node).unwrap_err();
-        match err {
-            NodeValidationError::InvalidProperties(msg) => {
-                assert!(msg.contains("Invalid provider"));
-                assert!(msg.contains("anthropic"));
+        assert!(registry
+            .validate_node(&pty, &chat_chain("ai-chat-pty"))
+            .is_ok());
+    }
+
+    /// A chat must carry a title, whichever subtype it is: the rule is the
+    /// base's, and a subtype's behaviour adds to it. Omitting one is an error
+    /// rather than a request for automatic titling — the titler claims only
+    /// the explicit `"Untitled"` sentinel, so a client that writes nothing
+    /// would otherwise be silently opted into desktop-UI titling behaviour.
+    #[test]
+    fn test_every_ai_chat_subtype_rejects_empty_content() {
+        let registry = NodeBehaviorRegistry::new();
+
+        for node_type in ["ai-chat-native", "ai-chat-pty"] {
+            for blank in ["", "   ", "\t\n", "\u{200B}"] {
+                let node = Node::new(node_type.to_string(), blank.to_string(), json!({}));
+                let err = registry
+                    .validate_node(&node, &chat_chain(node_type))
+                    .expect_err("a chat without a title must be rejected");
+                assert!(
+                    matches!(err, NodeValidationError::MissingField(ref f) if f.contains("content")),
+                    "{node_type}: expected a missing-content error, got {err:?}"
+                );
+                // The message must name the opt-in, so a client hitting this
+                // knows what to send instead.
+                assert!(
+                    format!("{err}").contains("Untitled"),
+                    "the error must name the \"Untitled\" opt-in, got {err}"
+                );
             }
-            _ => panic!("Expected InvalidProperties error"),
+
+            // The sentinel itself is a title, and is accepted.
+            let opted_in = Node::new(node_type.to_string(), "Untitled".to_string(), json!({}));
+            assert!(registry
+                .validate_node(&opted_in, &chat_chain(node_type))
+                .is_ok());
         }
     }
 
     #[test]
-    fn test_ai_chat_node_invalid_turn_status() {
-        let behavior = AiChatNodeBehavior;
-        let node = Node::new(
-            "ai-chat".to_string(),
-            "Chat".to_string(),
-            json!({"turn_status": "deleted"}),
-        );
-        let err = behavior.validate(&node).unwrap_err();
-        match err {
-            NodeValidationError::InvalidProperties(msg) => {
-                assert!(msg.contains("Invalid turn_status"));
-                assert!(msg.contains("deleted"));
+    fn test_ai_chat_native_node_invalid_messages_type() {
+        let registry = NodeBehaviorRegistry::new();
+        for properties in [
+            json!({ "messages": "not an array" }),
+            json!({ "ai-chat-native": { "messages": "not an array" } }),
+        ] {
+            let node = Node::new("ai-chat-native".to_string(), "Chat".to_string(), properties);
+            let err = registry
+                .validate_node(&node, &chat_chain("ai-chat-native"))
+                .unwrap_err();
+            match err {
+                NodeValidationError::InvalidProperties(msg) => {
+                    assert!(msg.contains("messages must be an array"));
+                }
+                _ => panic!("Expected InvalidProperties error"),
             }
-            _ => panic!("Expected InvalidProperties error"),
         }
     }
 
-    #[test]
-    fn test_ai_chat_node_invalid_session_status() {
-        let behavior = AiChatNodeBehavior;
-        let node = Node::new(
-            "ai-chat".to_string(),
-            "Chat".to_string(),
-            json!({"session_status": "deleted"}),
-        );
-        let err = behavior.validate(&node).unwrap_err();
-        match err {
-            NodeValidationError::InvalidProperties(msg) => {
-                assert!(msg.contains("Invalid session_status"));
-                assert!(msg.contains("deleted"));
-            }
-            _ => panic!("Expected InvalidProperties error"),
-        }
-    }
-
-    /// The whole point of the split: a session archived mid-turn is a legal
-    /// combination now, where a single shared `status` key could never
-    /// represent both axes at once.
-    #[test]
-    fn test_ai_chat_node_archived_while_processing_is_legal() {
-        let behavior = AiChatNodeBehavior;
-        let node = Node::new(
-            "ai-chat".to_string(),
-            "Chat".to_string(),
-            json!({"turn_status": "processing", "session_status": "archived"}),
-        );
-        assert!(
-            behavior.validate(&node).is_ok(),
-            "turn_status and session_status must validate independently"
-        );
-    }
-
-    #[test]
-    fn test_ai_chat_node_invalid_messages_type() {
-        let behavior = AiChatNodeBehavior;
-        let node = Node::new(
-            "ai-chat".to_string(),
-            "Chat".to_string(),
-            json!({"messages": "not an array"}),
-        );
-        let err = behavior.validate(&node).unwrap_err();
-        match err {
-            NodeValidationError::InvalidProperties(msg) => {
-                assert!(msg.contains("messages must be an array"));
-            }
-            _ => panic!("Expected InvalidProperties error"),
-        }
-    }
-
-    #[test]
-    fn test_ai_chat_node_valid_providers() {
-        let behavior = AiChatNodeBehavior;
-        for provider in &["native", "openai-compat", "pty"] {
-            let node = Node::new(
-                "ai-chat".to_string(),
-                "Chat".to_string(),
-                json!({"provider": provider}),
-            );
-            assert!(
-                behavior.validate(&node).is_ok(),
-                "Provider '{}' should be valid",
-                provider
-            );
-        }
-    }
-
-    /// The `provider` schema enum must advertise exactly the values
-    /// validation accepts — no more (a value the schema offers but
-    /// `validate` rejects) and no fewer (a value the app writes that the
-    /// schema omits).
-    #[test]
-    fn test_ai_chat_provider_schema_enum_matches_validation() {
-        use crate::models::core_schemas::get_core_schemas;
-        let schemas = get_core_schemas();
-        let ai_chat = schemas.iter().find(|s| s.id == "ai-chat").unwrap();
-        let field = ai_chat.get_field("provider").unwrap();
-
-        let schema_values: HashSet<&str> = field
-            .core_values
-            .as_ref()
-            .unwrap()
-            .iter()
-            .map(|v| v.value.as_str())
-            .collect();
-        let accepted: HashSet<&str> = ["native", "openai-compat", "pty"].into_iter().collect();
-        assert_eq!(schema_values, accepted);
-
-        // A closed set: nothing may be added that validation would reject.
-        assert_eq!(field.extensible, Some(false));
-        assert!(field.user_values.as_ref().is_none_or(|v| v.is_empty()));
-
-        let behavior = AiChatNodeBehavior;
-        for provider in &schema_values {
-            let node = Node::new(
-                "ai-chat".to_string(),
-                "Chat".to_string(),
-                json!({"provider": provider}),
-            );
-            assert!(
-                behavior.validate(&node).is_ok(),
-                "Schema advertises provider '{}' but validation rejects it",
-                provider
-            );
-        }
-
-        // Former schema-only values and the dead `openai` mode are rejected.
-        for provider in &["anthropic", "gemini", "openai"] {
-            let node = Node::new(
-                "ai-chat".to_string(),
-                "Chat".to_string(),
-                json!({"provider": provider}),
-            );
-            assert!(
-                behavior.validate(&node).is_err(),
-                "Provider '{}' should be rejected",
-                provider
-            );
-        }
-    }
-
+    /// A chat may hold children, and every subtype inherits the rule.
     #[test]
     fn test_ai_chat_node_capabilities() {
-        let behavior = AiChatNodeBehavior;
-        assert_eq!(behavior.type_name(), "ai-chat");
-        assert!(!behavior.can_have_children());
-        assert!(!behavior.supports_markdown());
+        let registry = NodeBehaviorRegistry::new();
+        for node_type in ["ai-chat", "ai-chat-native", "ai-chat-pty"] {
+            let behavior = registry.get(node_type).expect("registered");
+            assert_eq!(behavior.type_name(), node_type);
+            assert!(behavior.can_have_children());
+            assert!(!behavior.supports_markdown());
+        }
     }
 
     #[test]
     fn test_ai_chat_node_never_embeddable() {
-        let behavior = AiChatNodeBehavior;
+        let registry = NodeBehaviorRegistry::new();
 
-        // Rich conversation with user + assistant messages: still not embeddable.
-        let node = Node::new(
-            "ai-chat".to_string(),
-            "Chat about webhooks".to_string(),
-            json!({
-                "messages": [
-                    {"role": "user", "content": "Help me implement the webhook handler"},
-                    {"role": "assistant", "content": "Based on the spec, here is my approach"},
-                    {"role": "user", "content": "Looks good, please proceed"}
-                ]
-            }),
-        );
-        assert!(
-            behavior.get_embeddable_content(&node).is_none(),
-            "ai-chat with messages must not be embeddable"
-        );
+        for node_type in ["ai-chat-native", "ai-chat-pty"] {
+            let behavior = registry.resolve(&chat_chain(node_type));
 
-        // Empty messages array, tool-only messages, and no messages property are
-        // all likewise never embeddable.
-        for props in [
-            json!({"messages": []}),
-            json!({"messages": [
-                {"role": "tool_call", "tool": "search_semantic", "result_summary": "Found 3 nodes"}
-            ]}),
-            json!({}),
-        ] {
-            let node = Node::new("ai-chat".to_string(), "Chat".to_string(), props);
-            assert!(behavior.get_embeddable_content(&node).is_none());
+            // Rich conversation with user + assistant messages: still not
+            // embeddable. Nor is an empty one, or one with a summary.
+            for props in [
+                json!({
+                    "messages": [
+                        {"role": "user", "content": "Help me implement the webhook handler"},
+                        {"role": "assistant", "content": "Based on the spec, here is my approach"}
+                    ]
+                }),
+                json!({ "messages": [] }),
+                json!({ "summary": "Implemented the webhook handler" }),
+                json!({}),
+            ] {
+                let node = Node::new(
+                    node_type.to_string(),
+                    "Chat about webhooks".to_string(),
+                    props,
+                );
+                assert!(
+                    behavior.get_embeddable_content(&node).is_none(),
+                    "{node_type} must not be embeddable"
+                );
+                assert!(behavior.get_parent_contribution(&node).is_none());
+            }
         }
     }
 
     #[test]
-    fn test_ai_chat_node_no_parent_contribution() {
-        let behavior = AiChatNodeBehavior;
-        let node = Node::new(
-            "ai-chat".to_string(),
-            "Chat".to_string(),
-            json!({"messages": [{"role": "user", "content": "Hello"}]}),
-        );
-        assert!(behavior.get_parent_contribution(&node).is_none());
-    }
-
-    #[test]
-    fn test_ai_chat_node_registered_in_registry() {
+    fn test_the_ai_chat_family_is_registered() {
         let registry = NodeBehaviorRegistry::new();
-        let behavior = registry.get("ai-chat");
-        assert!(behavior.is_some(), "ai-chat should be registered");
-        assert_eq!(behavior.unwrap().type_name(), "ai-chat");
+        for node_type in ["ai-chat", "ai-chat-native", "ai-chat-pty"] {
+            let behavior = registry.get(node_type);
+            assert!(behavior.is_some(), "{node_type} should be registered");
+            assert_eq!(behavior.unwrap().type_name(), node_type);
+        }
+        // A subtype is validated by the base's behaviour and then its own.
+        let chain: Vec<&str> = registry
+            .for_chain(&chat_chain("ai-chat-native"))
+            .iter()
+            .map(|b| b.type_name())
+            .collect();
+        assert_eq!(chain, ["ai-chat", "ai-chat-native"]);
     }
 
     // =========================================================================
@@ -5030,7 +4894,7 @@ mod tests {
 
         // ai-chat: conversations are deliberately NOT embedded, even with messages
         let chat_node = Node::new(
-            "ai-chat".to_string(),
+            "ai-chat-native".to_string(),
             "Chat about webhooks".to_string(),
             json!({
                 "messages": [
@@ -5040,7 +4904,7 @@ mod tests {
             }),
         );
         let chat_content = registry
-            .get("ai-chat")
+            .get("ai-chat-native")
             .unwrap()
             .get_embeddable_content(&chat_node);
         assert!(
@@ -5123,10 +4987,10 @@ mod tests {
         );
 
         // --- ai-chat with no messages also returns None (never embeddable) ---
-        let empty_chat = Node::new("ai-chat".to_string(), "Empty".to_string(), json!({}));
+        let empty_chat = Node::new("ai-chat-native".to_string(), "Empty".to_string(), json!({}));
         assert!(
             registry
-                .get("ai-chat")
+                .get("ai-chat-native")
                 .unwrap()
                 .get_embeddable_content(&empty_chat)
                 .is_none(),

@@ -62,7 +62,7 @@ export interface FocusOrOpenOptions {
   /**
    * The `nodeType` written into the tab's content, which selects the viewer.
    * Often the node's own type, but deliberately an override for tabs that route
-   * elsewhere (a schema id opened as `'query'`, a chat as `'ai-chat'`).
+   * elsewhere (a schema id opened as `'query'`).
    */
   nodeType: string;
   /**

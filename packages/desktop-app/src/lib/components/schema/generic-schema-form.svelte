@@ -9,8 +9,8 @@
   - leaf fields (string/text, number, boolean, enum, date) → SchemaFieldLeaf
   - object/array → summary trigger opening the shared NestedPropertyModal
 
-  `protection: 'system'` fields (e.g. ai-chat's `capture:transcript`, never
-  actually reached today since ai-chat has its own dedicated viewer) are
+  `protection: 'system'` fields (e.g. a PTY chat's `transcript`, never
+  actually reached today since the chat types have their own dedicated viewers) are
   filtered out of every list below: system-managed fields must never render
   as a user-editable control.
 
@@ -51,7 +51,7 @@
 
   let { nodeId, schema, autoOpen = false }: { nodeId: string; schema: SchemaNode; autoOpen?: boolean } = $props();
 
-  // System-managed fields (e.g. ai-chat's `capture:transcript`) are never
+  // System-managed fields (e.g. a PTY chat's `transcript`) are never
   // user-editable — filtered out of every list below (rendering, field-count
   // stats) rather than just the one that happened to be reachable when this
   // was written. Not currently reachable in production (the only core types

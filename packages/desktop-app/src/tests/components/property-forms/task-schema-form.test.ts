@@ -490,7 +490,7 @@ describe('TaskSchemaForm — user-defined fields still render dynamically', () =
       required: false
     });
     schema.fields.push({
-      name: 'capture:transcript',
+      name: 'transcript',
       friendlyName: 'Transcript',
       type: 'text',
       protection: 'system',

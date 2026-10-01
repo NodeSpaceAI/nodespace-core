@@ -9061,7 +9061,7 @@ mod tests {
         }
     }
 
-    /// With every seeded Play active, a new ai-chat joins no collection and can
+    /// With every seeded Play active, a new chat joins no collection and can
     /// be placed under a page like any other node.
     #[tokio::test]
     async fn test_a_new_ai_chat_has_no_member_of_edge_and_moves_under_a_page() {
@@ -9070,9 +9070,9 @@ mod tests {
 
         let chat_id = service
             .create_node(Node::new(
-                "ai-chat".to_string(),
+                "ai-chat-native".to_string(),
                 "Untitled".to_string(),
-                serde_json::json!({}),
+                serde_json::json!({ "agent": "nodespace" }),
             ))
             .await
             .unwrap();
@@ -12944,19 +12944,18 @@ mod tests {
         );
     }
 
-    /// A write is checked against the `provider` schema enum as well as the
-    /// behavior, so the two must agree end to end: every provider the app
-    /// writes goes through, and a value only the schema once advertised does
-    /// not.
+    /// A write is checked against the closed `provider` schema enum: every
+    /// provider the app writes goes through, and nothing else does. A
+    /// terminal chat is a type of its own, not a `pty` provider.
     #[tokio::test]
     async fn ai_chat_provider_enum_enforced_on_write() {
         let (service, _temp) = create_test_service().await;
 
-        for provider in ["native", "openai-compat", "pty"] {
+        for provider in ["native", "openai-compat"] {
             let node = Node::new(
-                "ai-chat".to_string(),
+                "ai-chat-native".to_string(),
                 "Chat".to_string(),
-                json!({ "ai-chat": { "provider": provider, "messages": [] } }),
+                json!({ "agent": "nodespace", "provider": provider, "messages": [] }),
             );
             service
                 .create_node(node)
@@ -12964,11 +12963,11 @@ mod tests {
                 .unwrap_or_else(|e| panic!("provider '{provider}' must be accepted: {e}"));
         }
 
-        for provider in ["anthropic", "gemini", "openai"] {
+        for provider in ["anthropic", "gemini", "openai", "pty"] {
             let node = Node::new(
-                "ai-chat".to_string(),
+                "ai-chat-native".to_string(),
                 "Chat".to_string(),
-                json!({ "ai-chat": { "provider": provider, "messages": [] } }),
+                json!({ "agent": "nodespace", "provider": provider, "messages": [] }),
             );
             let err = service
                 .create_node(node)
@@ -12981,8 +12980,7 @@ mod tests {
         }
     }
 
-    /// An ai-chat node's title requirement holds on update, not just on
-    /// create.
+    /// A chat's title requirement holds on update, not just on create.
     ///
     /// The behavior registry is consulted on every write path, so a node
     /// cannot be created with a title and then have it stripped. Without this
@@ -12996,9 +12994,9 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let node = Node::new(
-            "ai-chat".to_string(),
+            "ai-chat-native".to_string(),
             "Deployment runbook".to_string(),
-            json!({ "ai-chat": { "messages": [] } }),
+            json!({ "agent": "nodespace", "messages": [] }),
         );
         let node_id = service.create_node(node).await.unwrap();
         let created = service.get_node(&node_id).await.unwrap().unwrap();

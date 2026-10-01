@@ -52,15 +52,57 @@ export const PERSON_FIELDS: SchemaField[] = [
 export const PERSON_VISIBLE_NAMES = ['first_name', 'last_name', 'email'];
 
 /**
- * `ai-chat`'s top-level fields — 4 visible, 6 system (core_schemas.rs, the
- * `ai-chat` SchemaNode). The worst case for a protection leak: `capture:transcript`
- * is raw PTY scrollback, documented there as possibly containing secrets, tokens
- * and absolute paths.
+ * `ai-chat-native`'s fields, the inherited `ai-chat` base fields first — 5
+ * visible, 3 system (core_schemas.rs, the `ai-chat` and `ai-chat-native`
+ * SchemaNodes).
  */
 export const AI_CHAT_FIELDS: SchemaField[] = [
-  field({ name: 'provider', friendlyName: 'Provider', type: 'enum', protection: 'core' }),
+  field({ name: 'agent', friendlyName: 'Agent', type: 'text', protection: 'core' }),
   field({ name: 'model', friendlyName: 'Model', type: 'text', protection: 'core' }),
-  field({ name: 'status', friendlyName: 'Conversation status', type: 'enum', protection: 'core' }),
+  field({ name: 'summary', friendlyName: 'Summary', type: 'text', protection: 'system' }),
+  field({
+    name: 'last_active',
+    friendlyName: 'Last active',
+    type: 'datetime',
+    protection: 'system'
+  }),
+  field({ name: 'provider', friendlyName: 'Provider', type: 'enum', protection: 'core' }),
+  field({ name: 'turn_status', friendlyName: 'Turn status', type: 'enum', protection: 'core' }),
+  field({
+    name: 'context_tokens',
+    friendlyName: 'Context tokens',
+    type: 'number',
+    protection: 'system'
+  }),
+  field({ name: 'messages', friendlyName: 'Messages', type: 'array', protection: 'core' })
+];
+
+/**
+ * `ai-chat-native`'s field names that should survive a user-visibility filter,
+ * in schema order — `provider` still follows `model` despite two system fields
+ * being removed from between them.
+ */
+export const AI_CHAT_VISIBLE_NAMES = ['agent', 'model', 'provider', 'turn_status', 'messages'];
+
+/** `ai-chat-native`'s system field names, every one of which must be filtered out. */
+export const AI_CHAT_SYSTEM_NAMES = ['summary', 'last_active', 'context_tokens'];
+
+/**
+ * The `friendlyName` of each `ai-chat-native` system field — what a leaked one
+ * would actually read as in a column header or picker, for surfaces that assert
+ * on rendered labels rather than field names.
+ */
+export const AI_CHAT_SYSTEM_LABELS = ['Summary', 'Last active', 'Context tokens'];
+
+/**
+ * `ai-chat-pty`'s fields, the inherited `ai-chat` base fields first. The worst
+ * case for a protection leak: `transcript` is raw PTY scrollback, documented
+ * there as possibly containing secrets, tokens and absolute paths.
+ */
+export const AI_CHAT_PTY_FIELDS: SchemaField[] = [
+  field({ name: 'agent', friendlyName: 'Agent', type: 'text', protection: 'core' }),
+  field({ name: 'model', friendlyName: 'Model', type: 'text', protection: 'core' }),
+  field({ name: 'summary', friendlyName: 'Summary', type: 'text', protection: 'system' }),
   field({
     name: 'last_active',
     friendlyName: 'Last active',
@@ -68,60 +110,21 @@ export const AI_CHAT_FIELDS: SchemaField[] = [
     protection: 'system'
   }),
   field({
-    name: 'context_tokens',
-    friendlyName: 'Context tokens',
-    type: 'number',
-    protection: 'system'
+    name: 'session_status',
+    friendlyName: 'Session status',
+    type: 'enum',
+    protection: 'core'
   }),
-  field({
-    name: 'created_nodes',
-    friendlyName: 'Created nodes',
-    type: 'array',
-    protection: 'system'
-  }),
-  field({ name: 'messages', friendlyName: 'Messages', type: 'array', protection: 'core' }),
-  field({
-    name: 'capture:session_id',
-    friendlyName: 'Session id',
-    type: 'text',
-    protection: 'system'
-  }),
-  field({
-    name: 'capture:transcript',
-    friendlyName: 'Transcript',
-    type: 'text',
-    protection: 'system'
-  }),
-  field({ name: 'capture:summary', friendlyName: 'Summary', type: 'text', protection: 'system' })
+  field({ name: 'session_id', friendlyName: 'Session id', type: 'text', protection: 'system' }),
+  field({ name: 'transcript', friendlyName: 'Transcript', type: 'text', protection: 'system' }),
+  field({ name: 'exit_code', friendlyName: 'Exit code', type: 'number', protection: 'system' })
 ];
 
-/**
- * `ai-chat`'s field names that should survive a user-visibility filter, in
- * schema order — `messages` still follows `status` despite three system fields
- * being removed from between them.
- */
-export const AI_CHAT_VISIBLE_NAMES = ['provider', 'model', 'status', 'messages'];
-
-/** `ai-chat`'s system field names, every one of which must be filtered out. */
-export const AI_CHAT_SYSTEM_NAMES = [
-  'last_active',
-  'context_tokens',
-  'created_nodes',
-  'capture:session_id',
-  'capture:transcript',
-  'capture:summary'
-];
-
-/**
- * The `friendlyName` of each `ai-chat` system field — what a leaked one would
- * actually read as in a column header or picker, for surfaces that assert on
- * rendered labels rather than field names.
- */
-export const AI_CHAT_SYSTEM_LABELS = [
+/** `ai-chat-pty`'s system field labels, every one of which must be filtered out. */
+export const AI_CHAT_PTY_SYSTEM_LABELS = [
+  'Summary',
   'Last active',
-  'Context tokens',
-  'Created nodes',
   'Session id',
   'Transcript',
-  'Summary'
+  'Exit code'
 ];

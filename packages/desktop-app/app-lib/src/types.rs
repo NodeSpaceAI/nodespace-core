@@ -8,11 +8,11 @@
 //! command layer and mirrors the gRPC JSON blob returned by the daemon.
 
 pub use nodespace_types::{
-    node_to_typed_value, nodes_to_typed_values, AiChatMessage, AiChatNode, DeleteResult, EdgeField,
-    EnumValue, Node, NodeQuery, NodeReference, NodeUpdate, OrderBy, PersonNodeUpdate, Priority,
-    ProjectNodeUpdate, QueryNodeUpdate, RelationshipCardinality, RelationshipDirection,
-    SchemaField, SchemaNode, SchemaProtectionLevel, SchemaRelationship, TaskNode, TaskNodeUpdate,
-    TaskStatus, ValidationError,
+    node_to_typed_value, nodes_to_typed_values, AiChatMessage, AiChatNativeNode, AiChatPtyNode,
+    DeleteResult, EdgeField, EnumValue, Node, NodeQuery, NodeReference, NodeUpdate, OrderBy,
+    PersonNodeUpdate, Priority, ProjectNodeUpdate, QueryNodeUpdate, RelationshipCardinality,
+    RelationshipDirection, SchemaField, SchemaNode, SchemaProtectionLevel, SchemaRelationship,
+    TaskNode, TaskNodeUpdate, TaskStatus, ValidationError,
 };
 
 use serde::{Deserialize, Serialize};

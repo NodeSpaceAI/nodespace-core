@@ -86,7 +86,6 @@ impl AgentSessionService for AgentSessionHandler {
         let req = request.into_inner();
 
         let agent_type = parse_agent_type(&req.agent_type).map_err(Status::invalid_argument)?;
-        let agent_type_str = agent_type_to_string(agent_type);
 
         // Defense-in-depth: reject the launch if the agent is not ready.
         // The UI calls CheckAgentAvailability before showing the Launch button,
@@ -169,14 +168,13 @@ impl AgentSessionService for AgentSessionHandler {
             }
         }
 
-        // Spawn a capture task that waits for the session to exit, then
-        // backfills the session's ai-chat node if capture is enabled. This runs
-        // after the launch response is returned — it does not block session
-        // start.
+        // Spawn a task that waits for the session to exit, then marks the
+        // session's `ai-chat-pty` node ended and, if capture is enabled, saves
+        // what the session left behind. This runs after the launch response is
+        // returned — it does not block session start.
         //
-        // The node already exists (created up front, provider mode 2d per
-        // ADR-034); `node_id` identifies it so capture backfills that node
-        // rather than minting a new one.
+        // The node already exists (created up front, ADR-088); `node_id`
+        // identifies it, so that node is written rather than a new one minted.
         //
         // Capture config is read once here (at launch time) so finalize_capture
         // doesn't re-hit the filesystem on every session end. Sessions started
@@ -185,14 +183,13 @@ impl AgentSessionService for AgentSessionHandler {
             let session = session.clone();
             let node_service = this.node_service.clone();
             let config_path = this.config_path.clone();
-            let started_at = session.started_at;
             let node_id = req.node_id.clone();
 
             tokio::spawn(async move {
                 let config = match read_capture_settings(&config_path).await {
                     Ok(c) => c,
                     Err(e) => {
-                        tracing::warn!(error = %e, "capture: failed to read config, skipping");
+                        tracing::warn!(error = %e, "capture: failed to read config, saving no session content");
                         CaptureConfig::default()
                     }
                 };
@@ -213,8 +210,6 @@ impl AgentSessionService for AgentSessionHandler {
                 let completed = CompletedSession {
                     id: session.id,
                     node_id,
-                    agent_type: agent_type_str,
-                    started_at,
                     ended_at: Utc::now(),
                     exit_status,
                 };
@@ -224,7 +219,7 @@ impl AgentSessionService for AgentSessionHandler {
                     tracing::warn!(
                         session_id = %session.id,
                         error = %e,
-                        "session capture failed (non-fatal)"
+                        "failed to record the session's end on its node (non-fatal)"
                     );
                 }
             });

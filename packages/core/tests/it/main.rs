@@ -10,6 +10,7 @@
 //! `cargo test` runs the whole binary's tests as threads of one process.
 
 mod ai_chat_reference_test;
+mod ai_chat_subtypes_test;
 mod bulk_invariant_dispatch_test;
 mod collection_membership_test;
 mod collection_name_convergence_test;

@@ -8,7 +8,7 @@
  * This deliberately replaces an older hand-maintained "core node types" list that was
  * used as a proxy for "has a dedicated frontend integration". The two are unrelated:
  * `project` is a core type with no plugin registration at all, while `person`,
- * `document`, `user` and `ai-chat` are registered plugins that were never in the list.
+ * `document`, `user` and the ai-chat subtypes are registered plugins that were never in the list.
  * Ask the registry, not a list.
  */
 

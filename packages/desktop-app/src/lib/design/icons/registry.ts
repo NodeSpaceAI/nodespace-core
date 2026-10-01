@@ -118,14 +118,17 @@ class IconRegistry {
       hasRingEffect: true // Projects contain child tasks/notes
     });
 
-    // AI Chat nodes - square design with "AI" text
-    this.register('ai-chat', {
-      component: AIIcon,
-      semanticClass: 'ai-icon',
-      colorVar: 'hsl(var(--node-ai-chat))',
-      hasState: false,
-      hasRingEffect: false
-    });
+    // AI Chat nodes (both subtypes; the `ai-chat` base is abstract) - square
+    // design with "AI" text
+    for (const chatType of ['ai-chat-native', 'ai-chat-pty']) {
+      this.register(chatType, {
+        component: AIIcon,
+        semanticClass: 'ai-icon',
+        colorVar: 'hsl(var(--node-ai-chat))',
+        hasState: false,
+        hasRingEffect: false
+      });
+    }
 
     // User nodes - for user-related content
     this.register('user', {

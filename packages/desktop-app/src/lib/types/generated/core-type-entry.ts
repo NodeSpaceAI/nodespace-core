@@ -21,4 +21,10 @@ export type CoreTypeEntry = {
    * Offered by the `@` mention picker (the effective rule: it narrows down the chain).
    */
   mentionable: boolean;
+  /**
+   * Whether the type's typed fields are written through a typed update
+   * command. A type without one writes them as a `properties` patch keyed
+   * by storage name.
+   */
+  typedUpdate: boolean;
 };

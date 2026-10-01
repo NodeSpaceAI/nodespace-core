@@ -2,10 +2,10 @@
  * View-model types for the chat UI components.
  *
  * `DisplayMessage` is the UI-facing message shape rendered by `ChatMessage` and
- * owned by `AiChatNodeViewer`. It is deliberately distinct from the two other
+ * owned by `AiChatNativeNodeViewer`. It is deliberately distinct from the two other
  * message shapes in play (see [[project_frontend_type_layering]]):
  *   - `ChatMessage` (`$lib/types/agent-types`) — the protocol/wire shape.
- *   - the ADR-028 persisted JSON shape on `ai-chat` node properties.
+ *   - the ADR-028 persisted JSON shape in `ai-chat-native` node `messages`.
  * These three do NOT converge; converters bridge them at the viewer boundary.
  */
 

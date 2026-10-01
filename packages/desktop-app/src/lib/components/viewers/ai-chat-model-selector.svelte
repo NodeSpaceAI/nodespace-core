@@ -1,5 +1,5 @@
 <!--
-  AiChatModelSelector — unified single-dropdown model picker for AiChatNodeViewer.
+  AiChatModelSelector — unified single-dropdown model picker for AiChatNativeNodeViewer.
 
   Replaces the two-step provider → model full-page flow with a compact
   dropdown in the chat header. Renders section headers (Local, remote endpoints)
@@ -15,8 +15,13 @@
 <script lang="ts" module>
   import type { AiChatProvider } from '$lib/types/ai-chat-node';
 
+  /**
+   * What the dropdown emits. `pty` is not a provider of a native chat: it
+   * names a terminal harness (`modelId` is the agent id), and choosing it
+   * turns the chat into an `ai-chat-pty` node.
+   */
   export interface ModelSelection {
-    provider: AiChatProvider;
+    provider: AiChatProvider | 'pty';
     modelId: string;
     configId?: string; // for openai-compat
   }

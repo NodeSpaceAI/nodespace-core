@@ -1,10 +1,15 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
+export type { AiChatBase } from './ai-chat-base';
 export type { AiChatCompletedWrite } from './ai-chat-completed-write';
 export type { AiChatMessage } from './ai-chat-message';
-export type { AiChatNode } from './ai-chat-node';
+export type { AiChatNativeNode } from './ai-chat-native-node';
 export type { AiChatPendingDeletion } from './ai-chat-pending-deletion';
+export type { AiChatProvider } from './ai-chat-provider';
+export type { AiChatPtyNode } from './ai-chat-pty-node';
 export type { AiChatResolvedEntity } from './ai-chat-resolved-entity';
+export type { AiChatSessionStatus } from './ai-chat-session-status';
 export type { AiChatTurnOutcome } from './ai-chat-turn-outcome';
+export type { AiChatTurnStatus } from './ai-chat-turn-status';
 export type { ContentRole } from './content-role';
 export type { CoreNodeType } from './core-node-type';
 export type { CoreTypeEntry } from './core-type-entry';

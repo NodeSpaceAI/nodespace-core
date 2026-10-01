@@ -24,6 +24,14 @@ const CORE_TYPES_WITHOUT_PLUGIN: Record<string, string> = {
   tool: 'registered by the agent runtime, never typed in; shown as an entity row'
 };
 
+/**
+ * Abstract core types never have a node of exactly their type, so they have no
+ * plugin; each concrete subtype carries its own.
+ */
+const ABSTRACT_CORE_TYPES_WITHOUT_PLUGIN = CORE_NODE_TYPES.filter((t) => t.abstract).map(
+  (t) => t.id as string
+);
+
 describe('core plugins against the core node type registry', () => {
   it('defines a plugin only for a type in the registry', () => {
     const outside = corePlugins.map((p) => p.id).filter((id) => !isCoreNodeType(id));
@@ -37,10 +45,20 @@ describe('core plugins against the core node type registry', () => {
 
   it('gives every other core type a plugin, naming each type that has none', () => {
     const pluginIds = new Set(corePlugins.map((p) => p.id));
-    const withoutPlugin = CORE_NODE_TYPES.map((t) => t.id as string).filter(
-      (id) => !pluginIds.has(id)
-    );
+    const withoutPlugin = CORE_NODE_TYPES.filter((t) => !t.abstract)
+      .map((t) => t.id as string)
+      .filter((id) => !pluginIds.has(id));
     expect(withoutPlugin.sort()).toEqual(Object.keys(CORE_TYPES_WITHOUT_PLUGIN).sort());
+  });
+
+  it('defines no plugin for an abstract type, and every abstract type is covered by its subtypes', () => {
+    const pluginIds = new Set(corePlugins.map((p) => p.id));
+    expect(ABSTRACT_CORE_TYPES_WITHOUT_PLUGIN).toContain('ai-chat');
+    for (const abstractId of ABSTRACT_CORE_TYPES_WITHOUT_PLUGIN) {
+      expect(pluginIds.has(abstractId), `${abstractId} is abstract`).toBe(false);
+      const subtypes = CORE_NODE_TYPES.filter((t) => t.parent === abstractId);
+      expect(subtypes.length, `${abstractId} has no concrete subtype`).toBeGreaterThan(0);
+    }
   });
 
   it('keeps the list of pluginless types to types in the registry', () => {

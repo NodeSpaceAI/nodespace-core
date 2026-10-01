@@ -34,7 +34,7 @@ function getNodeIcon(nodeType: string): IconName {
     date: 'calendar',
     task: 'circle',
     text: 'text',
-    'ai-chat': 'aiSquare'
+    'ai-chat-native': 'aiSquare'
   };
   return iconMap[nodeType] || 'text';
 }
@@ -84,7 +84,7 @@ describe('BacklinksPanel Utility Functions', () => {
     });
 
     it('should return aiSquare icon for ai-chat nodes', () => {
-      expect(getNodeIcon('ai-chat')).toBe('aiSquare');
+      expect(getNodeIcon('ai-chat-native')).toBe('aiSquare');
     });
 
     it('should default to text icon for unknown node types', () => {

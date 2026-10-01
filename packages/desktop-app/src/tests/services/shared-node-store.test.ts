@@ -69,7 +69,7 @@ describe('SharedNodeStore', () => {
     const aiChatNode: Node = {
       ...mockNode,
       id: 'ai-chat-1',
-      nodeType: 'ai-chat',
+      nodeType: 'ai-chat-native',
       properties: {}
     };
     const taskNode: Node = {
@@ -80,7 +80,7 @@ describe('SharedNodeStore', () => {
     };
     const skip = { skipPersistence: true };
 
-    it('promotes flat ai-chat properties.* to top-level fields synchronously', () => {
+    it('promotes flat native-chat properties.* to top-level fields synchronously', () => {
       store.setNode(aiChatNode, viewerSource);
 
       store.updateNode(
@@ -89,7 +89,6 @@ describe('SharedNodeStore', () => {
           properties: {
             messages: [],
             turn_status: 'idle',
-            session_status: 'active',
             provider: 'native',
             model: 'm1'
           }
@@ -102,7 +101,6 @@ describe('SharedNodeStore', () => {
       expect(node.provider).toBe('native');
       expect(node.model).toBe('m1');
       expect(node.turnStatus).toBe('idle');
-      expect(node.sessionStatus).toBe('active');
       expect(Array.isArray(node.messages)).toBe(true);
     });
 
@@ -115,8 +113,7 @@ describe('SharedNodeStore', () => {
         skip
       );
 
-      // Sending a message writes messages+turn_status but NOT provider/model —
-      // and NOT session_status, which belongs to the PTY path.
+      // Sending a message writes messages+turn_status but NOT provider/model.
       store.updateNode(
         aiChatNode.id,
         { properties: { messages: [{ role: 'user', content: 'hi' }], turn_status: 'processing' } },
@@ -132,9 +129,30 @@ describe('SharedNodeStore', () => {
       expect(node.model).toBe('m1');
     });
 
+    it('promotes the PTY fields of a retype write by the type it converts to', () => {
+      store.setNode(aiChatNode, viewerSource);
+
+      // Choosing a terminal harness retypes the chat and sets its agent.
+      store.updateNode(
+        aiChatNode.id,
+        {
+          nodeType: 'ai-chat-pty',
+          properties: { agent: 'claude-code', model: null, session_status: 'active' }
+        },
+        viewerSource,
+        skip
+      );
+
+      const node = store.getNode(aiChatNode.id) as unknown as Record<string, unknown>;
+      expect(node.nodeType).toBe('ai-chat-pty');
+      expect(node.agent).toBe('claude-code');
+      expect(node.model).toBeNull();
+      expect(node.sessionStatus).toBe('active');
+    });
+
     it('deep-merges properties so a partial write keeps sibling keys', () => {
       store.setNode(
-        { ...aiChatNode, properties: { 'capture:x': 'keep', provider: 'native' } },
+        { ...aiChatNode, properties: { 'custom:x': 'keep', provider: 'native' } },
         viewerSource
       );
 
@@ -146,7 +164,7 @@ describe('SharedNodeStore', () => {
       );
 
       const node = store.getNode(aiChatNode.id) as unknown as Node;
-      expect(node.properties['capture:x']).toBe('keep');
+      expect(node.properties['custom:x']).toBe('keep');
       expect(node.properties.provider).toBe('native');
     });
 

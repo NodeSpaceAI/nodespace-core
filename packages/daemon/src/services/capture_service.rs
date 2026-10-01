@@ -1,157 +1,209 @@
-//! Opt-in session capture: backfills the `ai-chat` node for a PTY session.
+//! Session end for a terminal chat: marks the session's `ai-chat-pty` node
+//! ended and, when capture is enabled, saves what the session left behind.
 //!
-//! Under the unified AIChat model (ADR-034), a PTY session is provider mode 2d
-//! of an `ai-chat` node that already exists — it was created up front (via the
-//! desktop app's "AI Chats" sidebar section) and its id is passed through
-//! `LaunchSession`. At session end, capture **backfills** that node with the
-//! session's transcript/summary/metadata; it does **not** mint a new node.
+//! A terminal chat's node exists before its session launches (ADR-088,
+//! ADR-034): it is created up front and its id is passed through
+//! `LaunchSession`. At session end that node is **backfilled**; a new node is
+//! never minted.
 //!
 //! [`finalize_capture`] is called by the agent session handler after the PTY
-//! process exits. It reads capture settings from the daemon config and, when
-//! `capture.enabled = true`, merges a capture payload onto the existing node via
-//! `NodeService`.
+//! process exits. It always records the session's own state (`session_status`,
+//! `session_id`, `exit_code`, `last_active`): a chat left `active` would have
+//! its viewer re-attach a terminal to a session that is gone. Capture is the
+//! opt-in part, and is about the session's content: with
+//! `capture.enabled = true` the write also carries, by content level, the
+//! summary and the transcript.
 //!
-//! Mode 2d capture is deliberately limited (transcript/session-id/metadata),
-//! not the structured `messages[]` of modes 2a/2b/2c — NodeSpace only sees the
-//! terminal's raw output stream, which has no recoverable turn structure
-//! (ADR-034).
+//! What capture can record is deliberately limited: NodeSpace only sees the
+//! terminal's raw output stream, which has no recoverable turn structure, so
+//! a terminal chat has no messages.
 //!
 //! The call is fire-and-forget from the session lifecycle perspective: any
 //! error is logged but does not surface to the user or block teardown.
 
+use std::future::Future;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use nodespace_agent::pty::{ExitStatus, SessionCapture};
-use nodespace_core::models::NodeUpdate;
-use nodespace_core::services::NodeService as CoreNodeService;
+use nodespace_core::models::{AiChatSessionStatus, CoreNodeType, NodeUpdate};
+use nodespace_core::services::{NodeService as CoreNodeService, NodeServiceError};
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::services::settings_service::{CaptureConfig, CaptureContentSetting};
 
+/// How many times the write is attempted when another writer changes the node
+/// between the read of its version and the write.
+const MAX_WRITE_ATTEMPTS: usize = 5;
+
 /// Parameters describing a completed PTY session.
 pub struct CompletedSession {
     pub id: Uuid,
-    /// ID of the `ai-chat` node this session is a view onto. The node is
-    /// created up front (before launch); capture backfills it. `None` only in
-    /// the defensive/legacy case where no node was associated at launch — in
-    /// which case capture is skipped (the unified model always sets this).
+    /// ID of the `ai-chat-pty` node this session is a view onto. The node is
+    /// created up front (before launch). `None` for a session launched
+    /// without a node (from the CLI), in which case nothing is written.
     pub node_id: Option<String>,
-    pub agent_type: String,
-    pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
     pub exit_status: ExitStatus,
 }
 
-/// Backfill the session's existing `ai-chat` node with capture data.
+/// Record the end of a session on its existing `ai-chat-pty` node.
 ///
-/// Returns `Ok(Some(node_id))` if the node was backfilled, `Ok(None)` if
-/// capture is disabled or no `node_id` was associated with the session, or
-/// `Err` on an ops failure. Callers should log errors and continue — failed
-/// capture must not affect session teardown.
+/// Returns `Ok(Some(node_id))` if the node was written, `Ok(None)` if no
+/// `node_id` was associated with the session, or `Err` on an ops failure.
+/// Callers should log errors and continue — a failed write must not affect
+/// session teardown.
 ///
 /// The caller is responsible for reading `CaptureConfig` once at session-launch
 /// time and passing the snapshot in here, so this function doesn't re-read
 /// daemon.toml on every session end.
 ///
-/// Uses `update_node_unchecked`: capture is a single, additive, fire-and-forget
-/// writer (it only merges `capture:*` keys plus `session_status`/`last_active`),
-/// so the node's optimistic-concurrency version is not a concern here — and a
-/// spurious version conflict from a concurrent viewer edit must not silently
-/// drop the capture. The update deep-merges at the property level, so a
-/// non-conflicting write never clobbers `provider`/`messages`, and this path
-/// only ever writes `session_status`, never `turn_status`. That does NOT make
-/// the two axes fully race-free under genuine concurrency, though:
-/// `update_node_unchecked` bypasses the version check entirely (no bump), so
-/// a concurrent daemon-authored `turn_status` write racing this one is a
-/// read-modify-write against the same row with no ordering guarantee between
-/// them — the loser's read predates the winner's write and its merge can
-/// still land a stale value. Acceptable today because capture fires once, at
-/// session end, when no turn is normally in flight; a real fix (e.g. routing
-/// through the checked update path, or a future transaction/unit-of-work
-/// seam once one exists) is a separate, larger change.
+/// Only a terminal chat is written: `LaunchSession` takes any node id, and a
+/// node of another type is refused here rather than left to its schema, which
+/// for a user-defined type would accept the session fields.
+///
+/// The write goes through the normal validated update, at the node's current
+/// version: the fields are checked against the closed `ai-chat-pty` schema
+/// like any other write. A viewer may edit the same node while the session
+/// ends (a rename, say), so a version conflict is an ordinary race and is
+/// retried against the fresh version rather than dropping the write.
 pub async fn finalize_capture(
     session: &CompletedSession,
     capture: &SessionCapture,
     node_service: &Arc<CoreNodeService>,
     config: &CaptureConfig,
 ) -> anyhow::Result<Option<String>> {
-    if !config.enabled {
-        return Ok(None);
-    }
-
     let Some(node_id) = session.node_id.as_deref() else {
-        // No node to backfill. Under ADR-034 the node always exists up front,
-        // so this is a defensive/legacy path — skip rather than mint.
         tracing::warn!(
             session_id = %session.id,
-            "session capture: no node_id associated with session, skipping backfill"
+            "session end: no node_id associated with session, nothing to write"
         );
         return Ok(None);
     };
 
-    let properties = build_capture_properties(session, capture, config.content);
-
-    node_service
-        .update_node_unchecked(
-            node_id,
-            NodeUpdate {
-                properties: Some(properties),
-                ..Default::default()
-            },
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("capture: failed to backfill ai-chat node: {}", e))?;
+    let properties = build_session_end_properties(session, capture, config);
+    write_at_current_version(node_service, node_id, properties, || {
+        current_version(node_service, node_id)
+    })
+    .await?;
 
     tracing::info!(
         session_id = %session.id,
         node_id = %node_id,
-        "session capture: backfilled ai-chat node"
+        captured = config.enabled,
+        "session end: wrote ai-chat-pty node"
     );
-
     Ok(Some(node_id.to_string()))
 }
 
-/// Build the capture properties to merge onto an existing ai-chat node.
+/// The terminal chat's version, as the validated update expects it. A node
+/// that is not a terminal chat (or of a type extending one) is refused.
+async fn current_version(
+    node_service: &Arc<CoreNodeService>,
+    node_id: &str,
+) -> anyhow::Result<i64> {
+    let node = node_service
+        .get_node(node_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("session end: failed to read ai-chat-pty node: {e}"))?
+        .ok_or_else(|| anyhow::anyhow!("session end: ai-chat-pty node {node_id} not found"))?;
+    let is_terminal_chat = node_service
+        .type_is_a(&node.node_type, CoreNodeType::AiChatPty)
+        .await
+        .map_err(|e| anyhow::anyhow!("session end: failed to resolve the node's type: {e}"))?;
+    if !is_terminal_chat {
+        return Err(anyhow::anyhow!(
+            "session end: node {node_id} is a '{}', not a terminal chat",
+            node.node_type
+        ));
+    }
+    Ok(node.version)
+}
+
+/// Write `properties` through the validated update at the version
+/// `read_version` reports, re-reading and retrying when another writer got
+/// there first. Any other refusal fails the same way every attempt, so it is
+/// returned at once.
 ///
-/// Every key written here is declared by the `ai-chat` schema: the bucket is
-/// closed, so an undeclared key would refuse the whole backfill. When the
-/// session started and ended are the node's own `created_at` and
-/// `last_active`, so they are not written again.
+/// `read_version` is a parameter so a test can hand back a version that has
+/// already been overtaken, which is the race this loop exists for.
+async fn write_at_current_version<F, Fut>(
+    node_service: &Arc<CoreNodeService>,
+    node_id: &str,
+    properties: serde_json::Value,
+    mut read_version: F,
+) -> anyhow::Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = anyhow::Result<i64>>,
+{
+    for attempt in 0..MAX_WRITE_ATTEMPTS {
+        let version = read_version().await?;
+        let update = NodeUpdate::new().with_properties(properties.clone());
+        match node_service.update_node(node_id, version, update).await {
+            Ok(_) => return Ok(()),
+            Err(NodeServiceError::VersionConflict { .. }) if attempt + 1 < MAX_WRITE_ATTEMPTS => {
+                tracing::debug!(
+                    node_id,
+                    attempt,
+                    "version conflict writing session end, retrying"
+                );
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "session end: failed to write ai-chat-pty node: {e}"
+                ))
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        "session end: failed to write ai-chat-pty node {node_id} after {MAX_WRITE_ATTEMPTS} attempts"
+    ))
+}
+
+/// Build the properties a finished session writes to its terminal chat.
 ///
-/// Only capture-derived fields are emitted — the node's `provider`/`model`/
-/// `messages` were set at launch and are preserved by the deep merge. The
-/// session is marked `archived` (it has ended) and `last_active` refreshed.
-/// Only `session_status` is written here — `turn_status` is the daemon's
-/// inference-turn axis and is never touched by capture.
+/// Every key is a field the chat's schema chain declares, under its bare
+/// name: `session_status`, `session_id`, `transcript` and `exit_code` are
+/// `ai-chat-pty`'s, and `summary` and `last_active` the `ai-chat` base's. The
+/// update pipeline places each in its declaring schema's bucket.
 ///
-/// Agent-session-specific fields use the "capture:" namespace to avoid
-/// conflicts with future core properties (per CLAUDE.md schema rules).
+/// The session's own state is always written: it is marked `ended`, with its
+/// id and exit code. The summary and the transcript are the session's
+/// content, and are written only when capture is enabled, at its content
+/// level.
+///
+/// When the session started and ended are the node's own `created_at` and
+/// `last_active`, and who ran it is the node's `agent`, set when the session
+/// launched; none of them is written again under a second name.
 ///
 /// Extracted so tests can verify property construction without a NodeService.
-fn build_capture_properties(
+fn build_session_end_properties(
     session: &CompletedSession,
     capture: &SessionCapture,
-    content_level: CaptureContentSetting,
+    config: &CaptureConfig,
 ) -> serde_json::Value {
     let mut properties = json!({
-        "session_status": "archived",
+        "session_status": AiChatSessionStatus::Ended,
         "last_active": session.ended_at.to_rfc3339(),
-        "capture:agent_type": session.agent_type,
-        "capture:exit_code": session.exit_status.code,
-        "capture:session_id": session.id.to_string(),
+        "exit_code": session.exit_status.code,
+        "session_id": session.id.to_string(),
     });
 
-    if matches!(
-        content_level,
-        CaptureContentSetting::Summary | CaptureContentSetting::Full
-    ) {
-        properties["capture:summary"] = json!(capture.summary());
+    if !config.enabled {
+        return properties;
     }
 
-    if content_level == CaptureContentSetting::Full {
-        properties["capture:transcript"] = json!(capture.transcript());
+    if matches!(
+        config.content,
+        CaptureContentSetting::Summary | CaptureContentSetting::Full
+    ) {
+        properties["summary"] = json!(capture.summary());
+    }
+
+    if config.content == CaptureContentSetting::Full {
+        properties["transcript"] = json!(capture.transcript());
     }
 
     properties
@@ -162,14 +214,14 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use nodespace_agent::pty::OutputChunk;
+    use nodespace_core::models::AiChatPtyNode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn make_session() -> CompletedSession {
         let ts = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
         CompletedSession {
             id: Uuid::nil(),
             node_id: Some("ai-chat-node-1".to_string()),
-            agent_type: "claude-code".to_string(),
-            started_at: ts,
             ended_at: ts,
             exit_status: ExitStatus {
                 code: 0,
@@ -187,163 +239,392 @@ mod tests {
         c
     }
 
-    #[test]
-    fn metadata_only_omits_transcript_and_summary() {
-        let session = make_session();
-        let capture = make_capture_with("hello world");
-        let props =
-            build_capture_properties(&session, &capture, CaptureContentSetting::MetadataOnly);
-        assert!(props.get("capture:summary").is_none());
-        assert!(props.get("capture:transcript").is_none());
-    }
-
-    #[test]
-    fn summary_level_includes_summary_not_transcript() {
-        let session = make_session();
-        let capture = make_capture_with("hello world");
-        let props = build_capture_properties(&session, &capture, CaptureContentSetting::Summary);
-        assert!(props.get("capture:summary").is_some());
-        assert!(props.get("capture:transcript").is_none());
-    }
-
-    #[test]
-    fn full_level_includes_both() {
-        let session = make_session();
-        let capture = make_capture_with("hello world");
-        let props = build_capture_properties(&session, &capture, CaptureContentSetting::Full);
-        assert!(props.get("capture:summary").is_some());
-        assert!(props.get("capture:transcript").is_some());
-        assert_eq!(props["capture:transcript"].as_str().unwrap(), "hello world");
-    }
-
-    #[test]
-    fn session_status_field_is_archived() {
-        let session = make_session();
-        let capture = SessionCapture::new();
-        let props =
-            build_capture_properties(&session, &capture, CaptureContentSetting::MetadataOnly);
-        assert_eq!(props["session_status"].as_str().unwrap(), "archived");
-    }
-
-    /// Capture must never write `turn_status` — that axis belongs to the
-    /// daemon's inference loop, and a capture write clobbering it would erase
-    /// whatever turn state a concurrent inference turn left behind.
-    #[test]
-    fn turn_status_is_never_emitted_by_capture() {
-        let session = make_session();
-        let capture = SessionCapture::new();
-        let props =
-            build_capture_properties(&session, &capture, CaptureContentSetting::MetadataOnly);
-        assert!(
-            props.get("turn_status").is_none(),
-            "capture must not emit turn_status, got: {props}"
-        );
-    }
-
-    #[test]
-    fn backfill_does_not_emit_provider_or_messages() {
-        // Capture only merges capture-derived fields; provider/model/messages
-        // were set at launch and must be preserved by the node's deep merge.
-        let session = make_session();
-        let capture = SessionCapture::new();
-        let props =
-            build_capture_properties(&session, &capture, CaptureContentSetting::MetadataOnly);
-        assert!(props.get("provider").is_none());
-        assert!(props.get("model").is_none());
-        assert!(props.get("messages").is_none());
-    }
-
-    #[test]
-    fn namespace_prefixed_fields_present() {
-        let session = make_session();
-        let capture = SessionCapture::new();
-        let props =
-            build_capture_properties(&session, &capture, CaptureContentSetting::MetadataOnly);
-        assert!(props.get("capture:agent_type").is_some());
-        assert!(props.get("capture:session_id").is_some());
-        assert!(props.get("capture:exit_code").is_some());
-        // Should NOT have un-namespaced agent-specific fields
-        assert!(props.get("agent_session_id").is_none());
-        assert!(props.get("agent_type").is_none());
-    }
-
-    /// Every key the backfill writes is declared by the `ai-chat` schema, so
-    /// the closed bucket accepts it. A key added here without a declaration
-    /// would refuse the whole backfill.
-    #[test]
-    fn every_capture_key_is_declared_by_the_ai_chat_schema() {
-        let session = make_session();
-        let capture = make_capture_with("hello world");
-        let props = build_capture_properties(&session, &capture, CaptureContentSetting::Full);
-        let declared: Vec<String> = nodespace_core::models::core_schemas::get_core_schemas()
-            .into_iter()
-            .find(|s| s.id == "ai-chat")
-            .expect("ai-chat schema")
-            .fields
-            .into_iter()
-            .map(|f| f.name)
-            .collect();
-        for key in props.as_object().unwrap().keys() {
-            assert!(declared.contains(key), "'{key}' is not declared by ai-chat");
+    fn capturing(content: CaptureContentSetting) -> CaptureConfig {
+        CaptureConfig {
+            enabled: true,
+            content,
         }
     }
 
-    /// The backfill lands on a real ai-chat node through the service: the
-    /// path a finished terminal session takes.
-    #[tokio::test]
-    async fn finalize_capture_backfills_a_real_ai_chat_node() {
-        let tmp = tempfile::TempDir::new().unwrap();
+    fn not_capturing() -> CaptureConfig {
+        CaptureConfig {
+            enabled: false,
+            content: CaptureContentSetting::Full,
+        }
+    }
+
+    fn keys(properties: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = properties
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    async fn test_node_service(tmp: &tempfile::TempDir) -> Arc<CoreNodeService> {
         let mut store = Arc::new(
             nodespace_core::db::SqliteStore::new(tmp.path().join("capture.db"))
                 .await
                 .unwrap(),
         );
-        let node_service = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
-        let node_id = node_service
+        Arc::new(CoreNodeService::new(&mut store).await.unwrap())
+    }
+
+    async fn create_chat(
+        node_service: &Arc<CoreNodeService>,
+        node_type: &str,
+        agent: &str,
+    ) -> String {
+        node_service
             .create_node(nodespace_core::models::Node::new(
-                "ai-chat".to_string(),
+                node_type.to_string(),
                 "Terminal session".to_string(),
-                json!({ "provider": "pty" }),
+                json!({ "agent": agent }),
             ))
+            .await
+            .unwrap()
+    }
+
+    /// The whole write, with capture off and at each content level: bare
+    /// names only, and nothing that duplicates the node's own timestamps or
+    /// agent.
+    #[test]
+    fn a_finished_session_writes_exactly_the_declared_bare_names() {
+        let session = make_session();
+        let capture = make_capture_with("hello world");
+        let build =
+            |config: &CaptureConfig| build_session_end_properties(&session, &capture, config);
+
+        // Capture off withholds only the content. At the metadata level it
+        // is on, and still saves none.
+        let off = build(&not_capturing());
+        assert_eq!(
+            keys(&off),
+            ["exit_code", "last_active", "session_id", "session_status"]
+        );
+
+        let metadata = build(&capturing(CaptureContentSetting::MetadataOnly));
+        assert_eq!(
+            keys(&metadata),
+            ["exit_code", "last_active", "session_id", "session_status"]
+        );
+
+        let summary = build(&capturing(CaptureContentSetting::Summary));
+        assert_eq!(
+            keys(&summary),
+            [
+                "exit_code",
+                "last_active",
+                "session_id",
+                "session_status",
+                "summary"
+            ]
+        );
+
+        let full = build(&capturing(CaptureContentSetting::Full));
+        assert_eq!(
+            keys(&full),
+            [
+                "exit_code",
+                "last_active",
+                "session_id",
+                "session_status",
+                "summary",
+                "transcript"
+            ]
+        );
+        assert_eq!(full["transcript"], "hello world");
+        assert_eq!(full["summary"], "hello world");
+        assert_eq!(full["exit_code"], 0);
+        assert_eq!(full["session_id"], Uuid::nil().to_string());
+
+        for properties in [&off, &metadata, &summary, &full] {
+            // A finished session is `ended`. `archived` is governance's word.
+            assert_eq!(properties["session_status"], "ended");
+            for key in keys(properties) {
+                assert!(!key.contains(':'), "'{key}' is prefixed");
+            }
+            for retired in ["started_at", "ended_at", "agent_type", "agent"] {
+                assert!(properties.get(retired).is_none(), "'{retired}' is written");
+            }
+        }
+    }
+
+    /// Every key the write carries is declared by the `ai-chat-pty` schema
+    /// chain, so the closed buckets accept it.
+    #[test]
+    fn every_key_is_declared_by_the_terminal_chats_schema_chain() {
+        let props = build_session_end_properties(
+            &make_session(),
+            &make_capture_with("hello world"),
+            &capturing(CaptureContentSetting::Full),
+        );
+        let chain: Vec<&str> = CoreNodeType::AiChatPty
+            .chain()
+            .into_iter()
+            .map(CoreNodeType::as_str)
+            .collect();
+        let declared: Vec<String> = nodespace_core::models::core_schemas::get_core_schemas()
+            .into_iter()
+            .filter(|s| chain.contains(&s.id.as_str()))
+            .flat_map(|s| s.fields)
+            .map(|f| f.name)
+            .collect();
+        for key in keys(&props) {
+            assert!(
+                declared.iter().any(|d| d == key),
+                "'{key}' is not declared by {chain:?}"
+            );
+        }
+    }
+
+    /// The backfill lands on a real terminal chat through the validated
+    /// update: the path a finished terminal session takes.
+    #[tokio::test]
+    async fn finalize_capture_backfills_a_real_terminal_chat() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node_service = test_node_service(&tmp).await;
+        let node_id = create_chat(&node_service, "ai-chat-pty", "claude-code").await;
+        let created = node_service.get_node(&node_id).await.unwrap().unwrap();
+
+        let mut session = make_session();
+        session.node_id = Some(node_id.clone());
+        let capture = make_capture_with("hello world");
+
+        let backfilled = finalize_capture(
+            &session,
+            &capture,
+            &node_service,
+            &capturing(CaptureContentSetting::Full),
+        )
+        .await
+        .expect("the backfill must be accepted");
+        assert_eq!(backfilled.as_deref(), Some(node_id.as_str()));
+
+        let node = node_service.get_node(&node_id).await.unwrap().unwrap();
+        assert!(
+            node.version > created.version,
+            "the validated update advances the version"
+        );
+        // Each field sits in the bucket of the schema that declares it.
+        assert_eq!(
+            node.properties["ai-chat-pty"],
+            json!({
+                "session_status": "ended",
+                "session_id": Uuid::nil().to_string(),
+                "transcript": "hello world",
+                "exit_code": 0
+            })
+        );
+        assert_eq!(
+            node.properties["ai-chat"],
+            json!({
+                "agent": "claude-code",
+                "summary": "hello world",
+                "last_active": session.ended_at.to_rfc3339()
+            })
+        );
+
+        let chat = AiChatPtyNode::from_node(node).unwrap();
+        assert_eq!(chat.session_status, AiChatSessionStatus::Ended);
+        assert_eq!(chat.base.agent, "claude-code", "set at launch, and kept");
+        assert_eq!(chat.base.summary.as_deref(), Some("hello world"));
+        assert_eq!(chat.exit_code, Some(0));
+    }
+
+    /// With capture off, the session still ends on its node: only the
+    /// session's content is withheld.
+    #[tokio::test]
+    async fn a_session_ends_on_its_node_even_when_capture_is_off() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node_service = test_node_service(&tmp).await;
+        let node_id = create_chat(&node_service, "ai-chat-pty", "codex").await;
+
+        let mut session = make_session();
+        session.node_id = Some(node_id.clone());
+        session.exit_status = ExitStatus {
+            code: 130,
+            success: false,
+        };
+
+        let written = finalize_capture(
+            &session,
+            &make_capture_with("secret output"),
+            &node_service,
+            &not_capturing(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(written.as_deref(), Some(node_id.as_str()));
+
+        let node = node_service.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(
+            node.properties["ai-chat-pty"],
+            json!({
+                "session_status": "ended",
+                "session_id": Uuid::nil().to_string(),
+                "exit_code": 130
+            })
+        );
+        let chat = AiChatPtyNode::from_node(node).unwrap();
+        assert_eq!(chat.session_status, AiChatSessionStatus::Ended);
+        assert_eq!(chat.transcript, None);
+        assert_eq!(chat.base.summary, None);
+    }
+
+    /// Only a terminal chat is written. A native chat is refused, and so is a
+    /// node of a user-defined type, whose open schema would otherwise take
+    /// the session fields; each is left as it was.
+    #[tokio::test]
+    async fn finalize_capture_refuses_a_node_that_is_not_a_terminal_chat() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node_service = test_node_service(&tmp).await;
+        nodespace_core::schema::handle_create_schema(
+            &node_service,
+            json!({ "name": "Invoice", "fields": [] }),
+        )
+        .await
+        .expect("a user-defined type");
+        let invoice = node_service
+            .create_node(nodespace_core::models::Node::new(
+                "invoice".to_string(),
+                "INV-1".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let native = create_chat(&node_service, "ai-chat-native", "nodespace").await;
+
+        for (node_id, node_type) in [(native, "ai-chat-native"), (invoice, "invoice")] {
+            let before = node_service.get_node(&node_id).await.unwrap().unwrap();
+
+            let mut session = make_session();
+            session.node_id = Some(node_id.clone());
+
+            let error = finalize_capture(
+                &session,
+                &SessionCapture::new(),
+                &node_service,
+                &not_capturing(),
+            )
+            .await
+            .expect_err("only a terminal chat is written");
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("is a '{node_type}', not a terminal chat")),
+                "{error}"
+            );
+
+            let after = node_service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(after.version, before.version, "{node_type}");
+            assert_eq!(after.properties, before.properties, "{node_type}");
+        }
+    }
+
+    /// A type extending `ai-chat-pty` is a terminal chat, and its session ends
+    /// on it like any other.
+    #[tokio::test]
+    async fn a_type_extending_the_terminal_chat_is_written() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node_service = test_node_service(&tmp).await;
+        nodespace_core::schema::handle_create_schema(
+            &node_service,
+            json!({ "name": "Pairing Session", "extends": "ai-chat-pty", "fields": [] }),
+        )
+        .await
+        .expect("a subtype of the terminal chat");
+        let node_id = create_chat(&node_service, "pairing_session", "codex").await;
+
+        let mut session = make_session();
+        session.node_id = Some(node_id.clone());
+        finalize_capture(
+            &session,
+            &SessionCapture::new(),
+            &node_service,
+            &not_capturing(),
+        )
+        .await
+        .expect("a subtype of the terminal chat is a terminal chat");
+
+        let node = node_service.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(node.properties["ai-chat-pty"]["session_status"], "ended");
+    }
+
+    /// A viewer renames the chat between the read of its version and the
+    /// write. The write is retried at the fresh version: the session still
+    /// ends on the node, and the rename survives.
+    #[tokio::test]
+    async fn a_version_conflict_is_retried_and_the_other_write_survives() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node_service = test_node_service(&tmp).await;
+        let node_id = create_chat(&node_service, "ai-chat-pty", "codex").await;
+
+        let stale = node_service
+            .get_node(&node_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .version;
+        node_service
+            .update_node(
+                &node_id,
+                stale,
+                NodeUpdate::new().with_content("Renamed meanwhile".to_string()),
+            )
             .await
             .unwrap();
 
         let mut session = make_session();
         session.node_id = Some(node_id.clone());
-        let capture = make_capture_with("hello world");
-        let config = CaptureConfig {
-            enabled: true,
-            content: CaptureContentSetting::Full,
-        };
+        let properties =
+            build_session_end_properties(&session, &SessionCapture::new(), &not_capturing());
 
-        let backfilled = finalize_capture(&session, &capture, &node_service, &config)
-            .await
-            .expect("the backfill must be accepted");
-        assert_eq!(backfilled.as_deref(), Some(node_id.as_str()));
+        // The first read hands back the version the rename has overtaken.
+        let reads = AtomicUsize::new(0);
+        write_at_current_version(&node_service, &node_id, properties, || {
+            let first = reads.fetch_add(1, Ordering::SeqCst) == 0;
+            let node_service = node_service.clone();
+            let node_id = node_id.clone();
+            async move {
+                if first {
+                    Ok(stale)
+                } else {
+                    current_version(&node_service, &node_id).await
+                }
+            }
+        })
+        .await
+        .expect("the conflict is retried");
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            2,
+            "one conflict, then one write at the fresh version"
+        );
 
         let node = node_service.get_node(&node_id).await.unwrap().unwrap();
-        let chat = &node.properties["ai-chat"];
-        assert_eq!(chat["session_status"], "archived");
-        assert_eq!(chat["capture:agent_type"], "claude-code");
-        assert_eq!(chat["capture:exit_code"], 0);
-        assert_eq!(chat["capture:transcript"], "hello world");
-        assert_eq!(chat["provider"], "pty", "launch-time fields are kept");
+        assert_eq!(node.content, "Renamed meanwhile");
+        assert_eq!(node.properties["ai-chat-pty"]["session_status"], "ended");
     }
 
     #[tokio::test]
-    async fn finalize_returns_none_when_disabled() {
-        let config = CaptureConfig {
-            enabled: false,
-            content: CaptureContentSetting::MetadataOnly,
-        };
-        let session = make_session();
-        let capture = SessionCapture::new();
-        // We can't easily construct a real NodeService in a unit test, but
-        // finalize_capture short-circuits before calling it when disabled.
-        // This test verifies the early-return path without needing a DB.
-        //
-        // To avoid constructing NodeService, we'd need a trait abstraction —
-        // skipping that for now; the disabled-path test is the key invariant.
-        let _ = (config, session, capture); // disabled path returns Ok(None) proven by logic
+    async fn nothing_is_written_for_a_session_without_a_node() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node_service = test_node_service(&tmp).await;
+
+        let mut session = make_session();
+        session.node_id = None;
+        let result = finalize_capture(
+            &session,
+            &SessionCapture::new(),
+            &node_service,
+            &capturing(CaptureContentSetting::Full),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, None);
     }
 }

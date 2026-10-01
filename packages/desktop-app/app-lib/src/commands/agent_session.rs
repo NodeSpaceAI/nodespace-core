@@ -149,8 +149,8 @@ pub struct LaunchSessionInput {
     pub prompt: Option<String>,
     pub cols: u32,
     pub rows: u32,
-    /// ID of the `ai-chat` node this PTY session is a view onto (provider mode
-    /// 2d). Capture backfills this node at session end. See ADR-034.
+    /// ID of the `ai-chat-pty` node this PTY session is a view onto. Capture
+    /// backfills this node at session end. See ADR-088.
     pub node_id: Option<String>,
 }
 

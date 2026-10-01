@@ -97,10 +97,22 @@ const UNIVERSAL_RELATIONS = ["member_of", "has_child", "mentions", "has_role"];
  * Chat nodes are the eval's own scaffolding — the runner creates one per group
  * and every turn appends messages to it — so counting them as graph state would
  * fail `noUnexpectedNodes` on every scenario for the harness's own bookkeeping.
+ * The whole chat family is listed: a chat is always one of the subtypes, and a
+ * query for the abstract `ai-chat` base returns them all.
  * `date` nodes are auto-created by the daemon as containers rather than by any
  * model action, and would fail the same clause for the same reason.
  */
-const SCAFFOLDING_TYPES = ["ai-chat", "date"];
+const SCAFFOLDING_TYPES = ["ai-chat", "ai-chat-native", "ai-chat-pty", "date"];
+
+/**
+ * The types a snapshot queries: the caller's predicted types plus every
+ * registered schema, without the harness's own scaffolding.
+ */
+export function snapshotQueryTypes(types: string[], schemas: string[]): string[] {
+  return [...new Set([...types, ...schemas])].filter(
+    (t) => !SCAFFOLDING_TYPES.includes(t),
+  );
+}
 
 /** Max nodes pulled per type. Far above any scenario's footprint. */
 const QUERY_LIMIT = "200";
@@ -270,9 +282,7 @@ export function captureSnapshot(
     // the same value), so the ids double as the list of queryable types.
     const schemas = schemaNodes.map((s) => s.id).sort();
 
-    const queryTypes = [...new Set([...types, ...schemas])].filter(
-      (t) => !SCAFFOLDING_TYPES.includes(t),
-    );
+    const queryTypes = snapshotQueryTypes(types, schemas);
 
     const nodes: SnapshotNode[] = [];
     const seen = new Set<string>();

@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  hasTypedCoreFields,
+  hasTypedUpdate,
   typedCoreField,
   typedCoreKeys,
   writableTypedCoreKeys
@@ -20,10 +20,26 @@ describe('typed core field lookups', () => {
     expect(typedCoreField('invoice', 'status')).toBeUndefined();
   });
 
-  it('knows which types have typed core fields', () => {
-    expect(hasTypedCoreFields('person')).toBe(true);
-    expect(hasTypedCoreFields('text')).toBe(false);
-    expect(hasTypedCoreFields(undefined)).toBe(false);
+  it('knows which types are written through a typed update', () => {
+    for (const type of ['task', 'person', 'project', 'query']) {
+      expect(hasTypedUpdate(type), type).toBe(true);
+    }
+    expect(hasTypedUpdate('text')).toBe(false);
+    expect(hasTypedUpdate(undefined)).toBe(false);
+  });
+
+  it('promotes the chat subtypes\' fields without a typed update', () => {
+    // The chat family travels typed but is written as `properties` patches
+    // keyed by the storage name.
+    for (const type of ['ai-chat-native', 'ai-chat-pty']) {
+      expect(hasTypedUpdate(type), type).toBe(false);
+      expect(typedCoreField(type, 'agent')?.wire, type).toBe('agent');
+    }
+    expect(typedCoreField('ai-chat-native', 'turn_status')?.wire).toBe('turnStatus');
+    expect(typedCoreField('ai-chat-pty', 'session_status')?.wire).toBe('sessionStatus');
+    // A native chat has no session state, and a terminal chat no messages.
+    expect(typedCoreField('ai-chat-native', 'session_status')).toBeUndefined();
+    expect(typedCoreField('ai-chat-pty', 'messages')).toBeUndefined();
   });
 
   it('leaves the system-managed fields out of the writable keys', () => {

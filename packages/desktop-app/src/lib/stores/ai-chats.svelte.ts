@@ -36,6 +36,8 @@ const DISPLAY_LIMIT = 50;
 
 export interface AiChatListItem {
   id: string;
+  /** The chat's subtype (`ai-chat-native` or `ai-chat-pty`), which picks its viewer. */
+  nodeType: string;
   /** Raw node content. Empty until background titling fills it in. */
   content: string;
   modifiedAt: string;
@@ -54,7 +56,7 @@ const initialState: AiChatsState = {
 };
 
 function toListItem(node: Node): AiChatListItem {
-  return { id: node.id, content: node.content, modifiedAt: node.modifiedAt };
+  return { id: node.id, nodeType: node.nodeType, content: node.content, modifiedAt: node.modifiedAt };
 }
 
 class AiChatsStore {
@@ -88,6 +90,9 @@ class AiChatsStore {
       // No `limit` on the fetch: see DISPLAY_LIMIT's comment — the backend
       // query has no order-by, so limiting before the client-side sort could
       // silently exclude the true most-recent chats.
+      //
+      // `ai-chat` is the abstract base: the backend's subtype-aware query
+      // returns both native and PTY chats.
       const nodes = await backendAdapter.queryNodes({ nodeType: 'ai-chat' });
       if (generation !== this.#generation) {
         log.debug('Discarding AI chats load that resolved after the store moved on');
@@ -108,7 +113,7 @@ class AiChatsStore {
   }
 
   /**
-   * Create a new ai-chat node immediately — no name prompt, since a chat's
+   * Create a new ai-chat-native node immediately — no name prompt, since a chat's
    * title comes from its content later rather than being required up front.
    * Prepends the new chat to the local list so it appears without a reload.
    *
@@ -125,7 +130,7 @@ class AiChatsStore {
     this.createError = '';
 
     try {
-      const created = await createSchemaInstance('ai-chat');
+      const created = await createSchemaInstance('ai-chat-native');
       if (generation !== this.#generation) return null;
       // `createSchemaInstance` creates the node directly via `backendAdapter`,
       // bypassing SharedNodeStore entirely — it never lands in `persistedNodeIds`.

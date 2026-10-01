@@ -3,8 +3,7 @@ import {
   normalizeNodeData,
   mergeProperties,
   promoteTypedFields,
-  storageNodeToApiFields,
-  OPTIMISTIC_TYPED_FIELDS
+  storageNodeToApiFields
 } from '$lib/services/node-normalize';
 import type { Node } from '$lib/types/node';
 
@@ -76,8 +75,8 @@ describe('normalizeNodeData', () => {
 
 describe('mergeProperties', () => {
   it('merges one level and keeps sibling keys', () => {
-    const merged = mergeProperties({ 'capture:x': 'keep', provider: 'native' }, { model: 'm1' });
-    expect(merged).toEqual({ 'capture:x': 'keep', provider: 'native', model: 'm1' });
+    const merged = mergeProperties({ 'custom:x': 'keep', provider: 'native' }, { model: 'm1' });
+    expect(merged).toEqual({ 'custom:x': 'keep', provider: 'native', model: 'm1' });
   });
 
   it('treats a missing existing bag as empty', () => {
@@ -86,68 +85,65 @@ describe('mergeProperties', () => {
 });
 
 describe('promoteTypedFields', () => {
-  it('promotes only fields present in a flat ai-chat write', () => {
+  it('promotes only fields present in a flat native-chat write', () => {
     const changes = { messages: [{ role: 'user', content: 'hi' }], turn_status: 'processing' };
-    const promoted = promoteTypedFields('ai-chat', changes, changes);
-    // provider/model/sessionStatus omitted → not promoted (guards against undefined-clobber)
+    const promoted = promoteTypedFields('ai-chat-native', changes, changes);
+    // provider/model omitted → not promoted (guards against undefined-clobber)
     expect(promoted).toEqual({ messages: changes.messages, turnStatus: 'processing' });
     expect('provider' in promoted).toBe(false);
     expect('model' in promoted).toBe(false);
-    expect('sessionStatus' in promoted).toBe(false);
   });
 
-  it('promotes turnStatus and sessionStatus independently', () => {
-    const changes = { session_status: 'archived' };
-    const promoted = promoteTypedFields('ai-chat', changes, changes);
-    expect(promoted).toEqual({ sessionStatus: 'archived' });
-    expect('turnStatus' in promoted).toBe(false);
+  it('promotes a PTY chat\'s session fields and not the native ones', () => {
+    const changes = { session_status: 'ended', session_id: 's-1' };
+    const promoted = promoteTypedFields('ai-chat-pty', changes, changes);
+    expect(promoted).toEqual({ sessionStatus: 'ended', sessionId: 's-1' });
+    expect(promoteTypedFields('ai-chat-native', changes, changes)).toEqual({});
   });
 
-  it('never promotes a typed core type field from a properties write', () => {
+  it('never promotes a typed-update core type field from a properties write', () => {
     // task/person/project core fields have one home, the top level, and are
     // written through the typed update — a properties write can't carry them.
     expect(promoteTypedFields('task', { status: 'done' }, { status: 'done' })).toEqual({});
   });
 
-  it('returns nothing for a node type with no typed-field map', () => {
+  it('returns nothing for a node type with no typed fields', () => {
     expect(promoteTypedFields('text', { foo: 'bar' }, { foo: 'bar' })).toEqual({});
   });
 
   it('promotes an explicit null value (present but null)', () => {
     const changes = { model: null };
-    const promoted = promoteTypedFields('ai-chat', changes, changes);
+    const promoted = promoteTypedFields('ai-chat-native', changes, changes);
     expect('model' in promoted).toBe(true);
     expect(promoted.model).toBeNull();
   });
 
-  it('map stays aligned with the documented promoted types', () => {
-    expect(Object.keys(OPTIMISTIC_TYPED_FIELDS).sort()).toEqual(['ai-chat']);
-    expect(OPTIMISTIC_TYPED_FIELDS['ai-chat']).toEqual([
-      { from: 'turn_status', to: 'turnStatus' },
-      { from: 'session_status', to: 'sessionStatus' },
-      { from: 'provider', to: 'provider' },
-      { from: 'model', to: 'model' },
-      { from: 'messages', to: 'messages' }
-    ]);
-  });
-
-  it('promotes an ai-chat write using the real snake_case payload shape', () => {
-    // Mirrors the actual write in ai-chat-node-viewer.svelte: canonical
+  it('promotes a native-chat write using the real snake_case payload shape', () => {
+    // Mirrors the actual writes in ai-chat-native-node-viewer.svelte: canonical
     // snake_case property keys, promoted to camelCase top-level fields.
     const changes = {
       messages: [{ role: 'user', content: 'hi' }],
       turn_status: 'processing',
-      session_status: 'active',
       provider: 'native',
       model: 'claude-sonnet-5'
     };
-    const promoted = promoteTypedFields('ai-chat', changes, changes);
+    const promoted = promoteTypedFields('ai-chat-native', changes, changes);
     expect(promoted).toEqual({
       messages: changes.messages,
       turnStatus: 'processing',
-      sessionStatus: 'active',
       provider: 'native',
       model: 'claude-sonnet-5'
+    });
+  });
+
+  it('promotes the retype write by the type it converts to', () => {
+    // Choosing a terminal harness retypes a native chat; the optimistic node
+    // must read as a PTY chat immediately, so the PTY field map applies.
+    const changes = { agent: 'claude-code', model: null, session_status: 'active' };
+    expect(promoteTypedFields('ai-chat-pty', changes, changes)).toEqual({
+      agent: 'claude-code',
+      model: null,
+      sessionStatus: 'active'
     });
   });
 });
@@ -207,25 +203,75 @@ describe('storageNodeToApiFields', () => {
     });
   });
 
-  it('flattens and promotes an ai-chat node in real storage shape', () => {
-    const bucket = {
-      context_tokens: 0,
-      created_nodes: [],
-      messages: [],
-      provider: 'native',
-      model: 'gemma-4-e4b-q4km',
-      session_status: 'active',
-      turn_status: 'idle'
-    };
-    const fields = storageNodeToApiFields('ai-chat', { 'ai-chat': bucket });
-    expect(fields).toEqual({
-      properties: bucket,
-      provider: 'native',
-      model: 'gemma-4-e4b-q4km',
-      sessionStatus: 'active',
-      turnStatus: 'idle',
-      messages: []
+  it('merges the subtype and base buckets of a native chat into the wire shape', () => {
+    const fields = storageNodeToApiFields('ai-chat-native', {
+      'ai-chat': {
+        agent: 'nodespace',
+        model: 'gemma-4-e4b-q4km',
+        summary: 'about gemma',
+        last_active: '2026-01-02T00:00:00Z'
+      },
+      'ai-chat-native': {
+        provider: 'native',
+        turn_status: 'processing',
+        context_tokens: 42,
+        messages: [{ role: 'user', content: 'hi' }]
+      }
     });
+    expect(fields).toEqual({
+      agent: 'nodespace',
+      model: 'gemma-4-e4b-q4km',
+      summary: 'about gemma',
+      lastActive: '2026-01-02T00:00:00Z',
+      provider: 'native',
+      turnStatus: 'processing',
+      contextTokens: 42,
+      messages: [{ role: 'user', content: 'hi' }],
+      properties: {}
+    });
+  });
+
+  it('merges the subtype and base buckets of a PTY chat into the wire shape', () => {
+    const fields = storageNodeToApiFields('ai-chat-pty', {
+      'ai-chat': { agent: 'claude-code', summary: 'did a thing' },
+      'ai-chat-pty': {
+        session_status: 'ended',
+        session_id: 's-1',
+        transcript: 'hello',
+        exit_code: 0,
+        'custom:tag': 'x'
+      }
+    });
+    expect(fields).toEqual({
+      agent: 'claude-code',
+      summary: 'did a thing',
+      sessionStatus: 'ended',
+      sessionId: 's-1',
+      transcript: 'hello',
+      exitCode: 0,
+      properties: { 'custom:tag': 'x' }
+    });
+  });
+
+  it('reads the schema defaults for a chat whose buckets store nothing', () => {
+    expect(storageNodeToApiFields('ai-chat-native', {})).toEqual({
+      agent: '',
+      provider: 'native',
+      turnStatus: 'idle',
+      contextTokens: 0,
+      messages: [],
+      properties: {}
+    });
+    expect(storageNodeToApiFields('ai-chat-pty', { 'ai-chat': { agent: 'codex' } })).toEqual({
+      agent: 'codex',
+      sessionStatus: 'active',
+      properties: {}
+    });
+  });
+
+  it('keeps the two chat subtypes\' fields apart', () => {
+    const native = storageNodeToApiFields('ai-chat-native', { 'ai-chat-pty': { session_id: 's' } });
+    expect('sessionId' in native).toBe(false);
   });
 
   it('moves task core fields to typed keys', () => {
@@ -297,16 +343,18 @@ describe('storageNodeToApiFields', () => {
     expect(fields.properties).toEqual({ isCore: true, fields: [{ name: 'a' }] });
   });
 
-  it('omits a typed field absent from storage rather than promoting undefined', () => {
-    const fields = storageNodeToApiFields('ai-chat', {
-      'ai-chat': { messages: [], turn_status: 'idle', session_status: 'active' }
+  it('omits an optional typed field absent from storage rather than promoting undefined', () => {
+    const fields = storageNodeToApiFields('ai-chat-native', {
+      'ai-chat': { agent: 'nodespace' },
+      'ai-chat-native': { messages: [], turn_status: 'idle' }
     });
     expect('model' in fields).toBe(false);
-    expect('provider' in fields).toBe(false);
+    expect('summary' in fields).toBe(false);
+    expect('lastActive' in fields).toBe(false);
   });
 
   it('returns empty properties for missing or non-object input', () => {
-    expect(storageNodeToApiFields('ai-chat', undefined)).toEqual({ properties: {} });
-    expect(storageNodeToApiFields('ai-chat', {})).toEqual({ properties: {} });
+    expect(storageNodeToApiFields('schema', undefined)).toEqual({ properties: {} });
+    expect(storageNodeToApiFields('schema', {})).toEqual({ properties: {} });
   });
 });

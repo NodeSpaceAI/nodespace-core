@@ -38,7 +38,7 @@
 
   // Derive columns from schema fields, skipping system-managed ones — a column
   // for a field the user can never fill (and which may hold internals like
-  // ai-chat's raw `capture:transcript`) is not a user-facing column. Same
+  // a PTY chat's raw `transcript`) is not a user-facing column. Same
   // predicate the detail form uses, so the two views agree.
   const columns = $derived.by(() => {
     const cols: Array<{ field: string; label: string }> = [

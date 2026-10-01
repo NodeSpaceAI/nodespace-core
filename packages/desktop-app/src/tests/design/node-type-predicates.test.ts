@@ -47,7 +47,7 @@ describe('node-type-predicates', () => {
       // This predicate drives five behaviors — open button, arrow-nav skipping, slash-command
       // pane navigation, and viewer routing — so a change here is a UX change. Asserted as a
       // whole so any future registration that flips a type has to update this list knowingly.
-      const entityRows = ['project', 'collection', 'schema', 'ai-chat'];
+      const entityRows = ['project', 'collection', 'schema', 'ai-chat-native'];
       const inlineEditable = [
         'text',
         'task',
@@ -93,10 +93,10 @@ describe('node-type-predicates', () => {
     });
 
     it('does not imply, and is not implied by, rendersAsEntityRow', () => {
-      // ai-chat is an entity row (no inline component) but was never opted into
+      // a chat is an entity row (no inline component) but was never opted into
       // entityNoun — the two predicates are independent, not two views of one flag.
-      expect(rendersAsEntityRow('ai-chat')).toBe(true);
-      expect(hasEntityNounName('ai-chat')).toBe(false);
+      expect(rendersAsEntityRow('ai-chat-native')).toBe(true);
+      expect(hasEntityNounName('ai-chat-native')).toBe(false);
     });
   });
 

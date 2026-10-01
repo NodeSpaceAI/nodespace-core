@@ -52,7 +52,8 @@
       text: 'Text',
       document: 'Document',
       task: 'Task',
-      'ai-chat': 'AI Chat',
+      'ai-chat-native': 'AI Chat',
+      'ai-chat-pty': 'AI Chat',
       user: 'User',
       entity: 'Entity',
       query: 'Query'

@@ -231,13 +231,13 @@ async fn ai_chat_nodes_do_not_leak_across_databases() {
     // Create an ai-chat node targeting the second database.
     let mut create = Request::new(CreateNodeRequest {
         id: None,
-        node_type: "ai-chat".into(),
+        node_type: "ai-chat-native".into(),
         content: "in-second".into(),
         parent_id: None,
         collections: Vec::new(),
         collection_ids: Vec::new(),
         lifecycle_status: None,
-        properties: serde_json::json!({ "ai-chat": { "messages": [] } }).to_string(),
+        properties: serde_json::json!({ "agent": "nodespace", "messages": [] }).to_string(),
         position: None,
     });
     create.extensions_mut().insert(manager.clone());

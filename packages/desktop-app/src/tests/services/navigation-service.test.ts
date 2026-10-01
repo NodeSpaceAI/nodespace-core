@@ -374,14 +374,14 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
     expect(target?.title).toBe('Untitled Person');
   });
 
-  it('generates "Untitled AI Chat" for a brand-new ai-chat with no messages yet', async () => {
-    // ai-chat is already an entity row (no inline component), so it already reached the
+  it('generates "Untitled AI Chat" for a brand-new native chat with no messages yet', async () => {
+    // a chat is already an entity row (no inline component), so it already reached the
     // plugin-name branch before this fix — this pins that the "Untitled " prefix now
     // generically applies there too, not just to person.
     const chatNode: Node = {
       lifecycleStatus: 'active',
       id: 'chat-untitled',
-      nodeType: 'ai-chat',
+      nodeType: 'ai-chat-native',
       content: '',
       version: 1,
       properties: {},

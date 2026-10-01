@@ -35,7 +35,7 @@
 export const UNTITLED_CHAT_TITLE = 'Untitled';
 
 /**
- * Display fallback for an ai-chat node whose `content` is empty or
+ * Display fallback for a chat node whose `content` is empty or
  * whitespace-only.
  *
  * Distinct from {@link UNTITLED_CHAT_TITLE}: that is what gets *stored*, this

@@ -2,8 +2,8 @@
  * TableView column derivation — protection-level filtering.
  *
  * TableView used to iterate `schema.fields` unconditionally, so every
- * `protection: 'system'` field became a user-facing column — surfacing six
- * columns on ai-chat, including `capture:transcript`, raw PTY scrollback
+ * `protection: 'system'` field became a user-facing column — surfacing system
+ * columns on the chats, including a PTY chat's `transcript`, raw PTY scrollback
  * documented as possibly containing secrets, tokens and absolute paths.
  *
  * The detail form already filtered these out (see
@@ -24,7 +24,9 @@ import {
   schemaWith,
   PERSON_FIELDS,
   AI_CHAT_FIELDS,
-  AI_CHAT_SYSTEM_LABELS
+  AI_CHAT_SYSTEM_LABELS,
+  AI_CHAT_PTY_FIELDS,
+  AI_CHAT_PTY_SYSTEM_LABELS
 } from '../helpers/schema-fixtures';
 
 function headerTexts(container: HTMLElement): string[] {
@@ -53,11 +55,11 @@ describe('TableView — protection-level filtering', () => {
     expect(headerTexts(container)).toEqual(['', 'First name', 'Last name', 'Email']);
   });
 
-  it('omits all six of ai-chat’s system fields, transcript included', () => {
+  it('omits all of ai-chat-native’s system fields', () => {
     const { container, queryByText } = render(TableView, {
       props: {
         nodeIds: [],
-        schema: schemaWith('ai-chat', true, AI_CHAT_FIELDS),
+        schema: schemaWith('ai-chat-native', true, AI_CHAT_FIELDS),
         fieldSchemaMap: new Map(),
         onRowClick: vi.fn()
       }
@@ -66,15 +68,32 @@ describe('TableView — protection-level filtering', () => {
     for (const label of AI_CHAT_SYSTEM_LABELS) {
       expect(queryByText(label)).toBeNull();
     }
-    // Non-system fields survive, in schema order — note `messages` still follows
-    // `status` even though three system fields were removed from between them.
+    // Non-system fields survive, in schema order — note `provider` still follows
+    // `model` even though two system fields were removed from between them.
     expect(headerTexts(container)).toEqual([
       '',
-      'Provider',
+      'Agent',
       'Model',
-      'Conversation status',
+      'Provider',
+      'Turn status',
       'Messages'
     ]);
+  });
+
+  it('omits all of ai-chat-pty’s system fields, transcript included', () => {
+    const { container, queryByText } = render(TableView, {
+      props: {
+        nodeIds: [],
+        schema: schemaWith('ai-chat-pty', true, AI_CHAT_PTY_FIELDS),
+        fieldSchemaMap: new Map(),
+        onRowClick: vi.fn()
+      }
+    });
+
+    for (const label of AI_CHAT_PTY_SYSTEM_LABELS) {
+      expect(queryByText(label)).toBeNull();
+    }
+    expect(headerTexts(container)).toEqual(['', 'Agent', 'Model', 'Session status']);
   });
 
   it('applies the same filter to a user-defined (schema-only) type', () => {

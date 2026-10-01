@@ -9,7 +9,7 @@ export interface TreeNodeData {
   id: string;
   title: string;
   content: string;
-  nodeType: 'text' | 'task' | 'ai-chat' | 'entity' | 'query';
+  nodeType: 'text' | 'task' | 'ai-chat-native' | 'entity' | 'query';
   depth: number;
   parentId: string | null;
   children: TreeNodeData[];

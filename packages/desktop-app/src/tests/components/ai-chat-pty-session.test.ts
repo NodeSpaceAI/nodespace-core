@@ -29,7 +29,27 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {})
 }));
 
+import { listen } from '@tauri-apps/api/event';
 import AiChatPtySession from '$lib/components/viewers/ai-chat-pty-session.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import type { Node } from '$lib/types/node';
+
+function seedPtyChat(id: string, fields: Record<string, unknown>): void {
+  const node = {
+    id,
+    nodeType: 'ai-chat-pty',
+    content: 'Terminal chat',
+    version: 1,
+    createdAt: '2026-01-01T00:00:00Z',
+    modifiedAt: '2026-01-01T00:00:00Z',
+    properties: {},
+    lifecycleStatus: 'active',
+    agent: 'claude-code',
+    sessionStatus: 'active',
+    ...fields
+  } as unknown as Node;
+  sharedNodeStore.setNode(node, { type: 'database', reason: 'test' });
+}
 
 describe('AiChatPtySession', () => {
   beforeEach(() => {
@@ -85,5 +105,76 @@ describe('AiChatPtySession', () => {
 
     const banner = await findByRole('alert');
     expect(banner.textContent).toContain('daemon unreachable');
+  });
+
+  describe('typed fields', () => {
+    it('treats sessionStatus "ended" as ended and reads agent, summary and transcript from the typed fields', async () => {
+      seedPtyChat('ended-chat', {
+        sessionStatus: 'ended',
+        sessionId: 'dead-session',
+        summary: 'Refactored the parser',
+        transcript: 'user: hi\nagent: done'
+      });
+
+      const { findByText, getByText, container } = render(AiChatPtySession, {
+        props: { nodeId: 'ended-chat' }
+      });
+
+      expect(await findByText('Session ended')).toBeTruthy();
+      expect(container.querySelector('.pty-ended-agent')?.textContent).toBe('claude-code');
+      expect(container.querySelector('.pty-ended-badge')?.textContent).toBe('ended');
+      expect(getByText('Refactored the parser')).toBeTruthy();
+      expect(container.querySelector('.pty-ended-transcript pre')?.textContent).toContain(
+        'agent: done'
+      );
+      // The PTY is gone: no terminal re-attaches to the stale session id.
+      expect(container.querySelector('.pty-terminal-host')).toBeNull();
+    });
+
+    it('does not treat the old "archived" value as ended', async () => {
+      seedPtyChat('legacy-chat', { sessionStatus: 'archived' });
+
+      const { findByText, queryByText } = render(AiChatPtySession, {
+        props: { nodeId: 'legacy-chat' }
+      });
+
+      expect(await findByText('Launch agent session')).toBeTruthy();
+      expect(queryByText('Session ended')).toBeNull();
+    });
+
+    it('pre-selects the harness from agent, not model', async () => {
+      seedPtyChat('codex-chat', { agent: 'codex', model: 'claude-code' });
+
+      const { container } = render(AiChatPtySession, { props: { nodeId: 'codex-chat' } });
+
+      await vi.waitFor(() => {
+        const select = container.querySelector('#agent-select') as HTMLSelectElement | null;
+        expect(select?.value).toBe('codex');
+      });
+    });
+
+    it('launches by patching agent, session_id and session_status only', async () => {
+      seedPtyChat('launch-chat', { agent: 'codex', properties: { 'custom:tag': 'keep' } });
+      mockInvoke.mockImplementation((cmd: string) => {
+        if (cmd === 'check_agent_availability') return Promise.resolve({ agents: [] });
+        if (cmd === 'launch_session') {
+          return Promise.resolve({ sessionId: 'new-session', createdAt: 1 });
+        }
+        return Promise.resolve(undefined);
+      });
+      // restoreAllMocks in afterEach drops the factory's resolved value.
+      vi.mocked(listen).mockResolvedValue(() => {});
+      const updateNode = vi.spyOn(sharedNodeStore, 'updateNode');
+
+      const { getByText } = render(AiChatPtySession, { props: { nodeId: 'launch-chat' } });
+      await fireEvent.click(getByText('Launch'));
+
+      await vi.waitFor(() => expect(updateNode).toHaveBeenCalled());
+      const [id, changes] = updateNode.mock.calls[0];
+      expect(id).toBe('launch-chat');
+      expect(changes).toEqual({
+        properties: { agent: 'codex', session_id: 'new-session', session_status: 'active' }
+      });
+    });
   });
 });

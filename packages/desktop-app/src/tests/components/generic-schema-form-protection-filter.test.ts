@@ -3,7 +3,7 @@
  *
  * GenericSchemaForm used to iterate `schema.fields` unconditionally, with no
  * filter for `protection: 'system'` fields. Not reachable in production today
- * (the only core types with system-protected fields — `ai-chat`, `collection` —
+ * (the only core types with system-protected fields — the chat types, `collection` —
  * both bypass the generic-form branch via dedicated viewers), but a real gap:
  * if any type with a system field were ever rendered through generic
  * per-field iteration without this filter, the system-managed field would

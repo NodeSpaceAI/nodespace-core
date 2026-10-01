@@ -733,7 +733,7 @@ describe('NodeAutocomplete', () => {
         { id: 'node-1', title: 'Text Node', nodeType: 'text' },
         { id: 'node-2', title: 'Task Node', nodeType: 'task' },
         { id: 'node-3', title: 'Document Node', nodeType: 'document' },
-        { id: 'node-4', title: 'AI Chat Node', nodeType: 'ai-chat' }
+        { id: 'node-4', title: 'AI Chat Node', nodeType: 'ai-chat-native' }
       ];
 
       render(NodeAutocomplete, {

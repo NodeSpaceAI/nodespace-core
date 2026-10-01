@@ -99,7 +99,7 @@ describe('schemasStore.builtInSchemas — sidenav core types', () => {
       makeSchema('table', true),
       makeSchema('collection', true),
       makeSchema('checkbox', true),
-      makeSchema('ai-chat', true),
+      makeSchema('ai-chat-native', true),
       makeSchema('query', true),
       makeSchema('database-settings', true)
     ];

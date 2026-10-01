@@ -9,7 +9,6 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import type { ModelSelection } from '$lib/components/viewers/ai-chat-model-selector.svelte';
-import type { AiChatNode } from '$lib/types/ai-chat-node';
 import { isLocalAgent } from '$lib/stores/agent-store.svelte';
 import type { AcpAgentInfo } from '$lib/types/agent-types';
 
@@ -53,38 +52,6 @@ function handleChangeValue(
     onSelect({ provider: 'pty', modelId: value.slice(PTY_PREFIX.length) });
     return;
   }
-}
-
-/**
- * Mirrors the pty branch of handleModelSelect() from ai-chat-node-viewer.svelte.
- *
- * The write keys are the canonical snake_case schema names (`turn_status`/
- * `session_status`), NOT the camelCase `turnStatus`/`sessionStatus` the
- * confirmed node reads back as. This distinction is load-bearing, not
- * cosmetic: ai-chat has no dedicated typed write command like `task` does,
- * so whatever key this object uses reaches storage verbatim. A prior version
- * of this mirror (and the real component) used camelCase here, which reached
- * storage but was never recognized by anything reading the turn/session
- * axes — a real PTY launch silently never set session_status at all. See
- * `AiChatNode::from_node`'s doc comment (Rust) for the full incident.
- */
-function buildPtyUpdate(
-  current: Partial<AiChatNode> | undefined,
-  agentId: string
-): {
-  messages: unknown[];
-  turn_status: string;
-  session_status: string;
-  provider: string;
-  model: string | null;
-} {
-  return {
-    messages: current?.messages ?? [],
-    turn_status: current?.turnStatus ?? 'idle',
-    session_status: current?.sessionStatus ?? 'active',
-    provider: 'pty',
-    model: agentId || null,
-  };
 }
 
 /** Mirrors the ptyAgents/availablePtyAgents derivations in ai-chat-model-selector.svelte. */
@@ -172,47 +139,5 @@ describe('AiChatModelSelector — PTY agent list derivation', () => {
     const result = ptyAgents(agents);
     const antigravity = result.find((a) => a.id === 'antigravity-cli');
     expect(antigravity?.available).toBe(false);
-  });
-});
-
-describe('AiChatNodeViewer — handleModelSelect PTY branch', () => {
-  it('writes provider "pty" with the selected agent id as model, preserving existing messages/turn_status/session_status', () => {
-    const current: Partial<AiChatNode> = {
-      messages: [{ role: 'user', content: 'hi' }] as AiChatNode['messages'],
-      turnStatus: 'processing',
-      sessionStatus: 'active',
-    };
-
-    const update = buildPtyUpdate(current, 'claude-code');
-
-    expect(update.provider).toBe('pty');
-    expect(update.model).toBe('claude-code');
-    expect(update.messages).toEqual(current.messages);
-    expect(update.turn_status).toBe('processing');
-    expect(update.session_status).toBe('active');
-  });
-
-  it('defaults messages to [], turn_status to "idle", and session_status to "active" for a fresh node', () => {
-    const update = buildPtyUpdate(undefined, 'antigravity-cli');
-
-    expect(update.provider).toBe('pty');
-    expect(update.model).toBe('antigravity-cli');
-    expect(update.messages).toEqual([]);
-    expect(update.turn_status).toBe('idle');
-    expect(update.session_status).toBe('active');
-  });
-
-  it('nulls model when no agent id is provided', () => {
-    const current: Partial<AiChatNode> = {
-      provider: 'native',
-      model: 'gemma-4-e4b-q4km',
-      messages: [],
-      turnStatus: 'idle',
-      sessionStatus: 'active',
-    };
-
-    const update = buildPtyUpdate(current, '');
-
-    expect(update.model).toBeNull();
   });
 });

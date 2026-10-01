@@ -12,7 +12,7 @@
  *
  * <Icon nodeType="text" hasChildren={true} size={20} />
  * <Icon nodeType="task" state="completed" />
- * <Icon nodeType="ai-chat" />
+ * <Icon nodeType="ai-chat-native" />
  * ```
  *
  * Legacy Usage (Backward Compatible):

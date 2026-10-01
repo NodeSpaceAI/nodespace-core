@@ -4798,10 +4798,10 @@ mod tests {
 
     /// A generic-path (non-task) VersionConflict must embed `current_node` in the
     /// FLATTENED wire shape the frontend's typed converters expect — the same shape
-    /// every successful read/write returns. An ai-chat node whose `turnStatus` and
-    /// `messages` sit under `properties["ai-chat"]` instead of at the top level
-    /// hydrates the store with a node whose `turnStatus` is undefined, which
-    /// strands the viewer's typing indicator after a conflict.
+    /// every successful read/write returns. A native chat whose `turnStatus` and
+    /// `messages` sit under `properties["ai-chat-native"]` instead of at the top
+    /// level hydrates the store with a node whose `turnStatus` is undefined,
+    /// which strands the viewer's typing indicator after a conflict.
     #[tokio::test]
     async fn update_node_version_conflict_embeds_flattened_current_node() {
         let (svc, _tmp) = make_service().await;
@@ -4810,8 +4810,8 @@ mod tests {
 
         let create_req = Request::new(crate::nodespace::CreateNodeRequest {
             id: Some(chat_id.to_string()),
-            node_type: "ai-chat".to_string(),
-            // An ai-chat node must carry a title; this test is about the
+            node_type: "ai-chat-native".to_string(),
+            // A chat must carry a title; this test is about the
             // version-conflict payload, not titling, so the sentinel does.
             content: "Untitled".to_string(),
             parent_id: None,
@@ -4819,7 +4819,7 @@ mod tests {
             collection_ids: Vec::new(),
             lifecycle_status: None,
             properties: serde_json::json!({
-                "ai-chat": { "turn_status": "processing", "messages": [] }
+                "agent": "nodespace", "turn_status": "processing", "messages": []
             })
             .to_string(),
             position: None,
@@ -4835,10 +4835,8 @@ mod tests {
                     content: None,
                     node_type: None,
                     properties: Some(serde_json::json!({
-                        "ai-chat": {
-                            "turn_status": "idle",
-                            "messages": [{ "role": "assistant", "content": "hi" }]
-                        }
+                        "turn_status": "idle",
+                        "messages": [{ "role": "assistant", "content": "hi" }]
                     })),
                     title: None,
                     lifecycle_status: None,
@@ -4853,9 +4851,7 @@ mod tests {
             version: Some(1),
             node_type: None,
             content: None,
-            properties: Some(
-                serde_json::json!({ "ai-chat": { "turn_status": "processing" } }).to_string(),
-            ),
+            properties: Some(serde_json::json!({ "turn_status": "processing" }).to_string()),
             add_to_collections: Vec::new(),
             add_to_collection_ids: Vec::new(),
             remove_from_collection_ids: Vec::new(),
@@ -4877,7 +4873,9 @@ mod tests {
         let current = &json["current_node"];
         assert!(!current.is_null(), "current_node must be embedded");
 
-        // The frontend reads these at the TOP level (AiChatNode is a flat shape).
+        // The frontend reads these at the TOP level (the typed chat is a flat
+        // shape), the inherited base fields included.
+        assert_eq!(current["agent"], "nodespace", "got {current}");
         assert_eq!(
             current["turnStatus"], "idle",
             "current_node must carry flattened top-level turnStatus (got {current})"

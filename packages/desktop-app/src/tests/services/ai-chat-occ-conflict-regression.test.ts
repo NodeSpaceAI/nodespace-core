@@ -4,14 +4,14 @@
  *
  * The ai-chat viewer derives its typing indicator / Stop button from the
  * node's TOP-LEVEL `turnStatus`, and renders the reply from TOP-LEVEL `messages`
- * (`AiChatNode` is the flat wire shape the daemon's `node_to_typed_value`
+ * (`AiChatNativeNode` is the flat wire shape the daemon's `node_to_typed_value`
  * guarantees). The OCC conflict payload crosses the same sync boundary as a
  * daemon broadcast, so it has to arrive — and be hydrated — in that same flat
  * shape.
  *
  * Before the fix the daemon serialized the raw storage `Node` into
  * `current_node`, leaving `status`/`messages` buried under
- * `properties['ai-chat']`. Hydrating that into the store gave the viewer a
+ * `properties['ai-chat-native']`. Hydrating that into the store gave the viewer a
  * node with no top-level `turnStatus` and no `messages`, which is what
  * stranded the UI on "processing" after the turn had already completed and
  * persisted.
@@ -22,7 +22,7 @@ import { SharedNodeStore } from '../../lib/services/shared-node-store.svelte';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import type { Node } from '../../lib/types';
-import type { AiChatNode } from '../../lib/types/ai-chat-node';
+import type { AiChatNativeNode } from '../../lib/types/ai-chat-node';
 import { CASCADE_SETTLE_TIMEOUT_MS } from '../utils/test-constants';
 
 const CHAT_ID = 'bf2c1788-76ff-4d79-9c6f-7755d13b0c21';
@@ -31,16 +31,16 @@ const dbSource = { type: 'database' as const, reason: 'test-load' };
 const viewerSource = { type: 'viewer' as const, viewerId: 'ai-chat-viewer' };
 
 /** An ai-chat node in the flat wire shape the daemon actually sends. */
-const makeChatNode = (overrides: Partial<AiChatNode> = {}): Node =>
+const makeChatNode = (overrides: Partial<AiChatNativeNode> = {}): Node =>
   ({
     id: CHAT_ID,
-    nodeType: 'ai-chat',
+    nodeType: 'ai-chat-native',
     content: '',
     createdAt: '2024-01-01T00:00:00.000Z',
     modifiedAt: '2024-01-01T00:00:00.000Z',
     version: 3,
     turnStatus: 'processing',
-    sessionStatus: 'active',
+    agent: 'nodespace',
     provider: 'native',
     model: 'e4b',
     messages: [{ role: 'user', content: 'What is on my plate today?' }],
@@ -60,8 +60,8 @@ const makeVersionConflictError = (currentNode: Node | null) => ({
 });
 
 /** Read the node back the way the viewer does. */
-const readChat = (store: SharedNodeStore): AiChatNode | undefined =>
-  store.getNode(CHAT_ID) as unknown as AiChatNode | undefined;
+const readChat = (store: SharedNodeStore): AiChatNativeNode | undefined =>
+  store.getNode(CHAT_ID) as unknown as AiChatNativeNode | undefined;
 
 describe('ai-chat OCC conflict during an active turn', () => {
   let store: SharedNodeStore;
@@ -155,15 +155,14 @@ describe('ai-chat OCC conflict during an active turn', () => {
     // undefined top-level `turnStatus`.
     const nestedPayload = {
       id: CHAT_ID,
-      nodeType: 'ai-chat',
+      nodeType: 'ai-chat-native',
       content: '',
       createdAt: '2024-01-01T00:00:00.000Z',
       modifiedAt: '2024-01-01T00:00:00.000Z',
       version: 4,
       properties: {
-        'ai-chat': {
+        'ai-chat-native': {
           turn_status: 'idle',
-          session_status: 'active',
           messages: [
             { role: 'user', content: 'What is on my plate today?' },
             { role: 'assistant', content: 'You have two tasks due today.' }

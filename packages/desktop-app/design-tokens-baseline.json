@@ -102,31 +102,6 @@
       "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
-      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Disallowed shadow \"0 8px 32px hsl(0 0% 0% / 0.12)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"0 8px 32px hsl(0 0% 0% / 0.12)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"1px solid hsl(0 72% 51% / 0.3)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"hsl(0 72% 51% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"hsl(0 72% 51%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
       "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"1px solid hsl(0 72% 51% / 0.3)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"

@@ -38,11 +38,11 @@ message LaunchSessionRequest {
   // exactly this size", not "use the default".)
   uint32 cols = 3;
   uint32 rows = 4;
-  // ID of the `ai-chat` node this PTY session is a view onto (provider mode
-  // 2d, per ADR-034). When set, capture backfills *this* node at session end
-  // rather than minting a new one. The desktop app always sets it (the node is
-  // created up front, before launch); other callers (e.g. the CLI) launch a
-  // session not bound to a node and omit it, in which case capture is skipped.
+  // ID of the `ai-chat-pty` node this PTY session is a view onto (ADR-088).
+  // When set, the session's end is recorded on *this* node rather than on a
+  // new one. The desktop app always sets it (the node is created up front,
+  // before launch); other callers (e.g. the CLI) launch a session not bound to
+  // a node and omit it, in which case nothing is written.
   optional string node_id = 5;
 }
 
