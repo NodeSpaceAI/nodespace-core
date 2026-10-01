@@ -1886,7 +1886,7 @@ mod typed_update_tests {
     }
 
     /// `archived` is governance vocabulary, not a project status (ADR-087):
-    /// both write paths reject it.
+    /// the typed update, the generic update and creation all reject it.
     #[tokio::test]
     async fn project_status_archived_is_rejected() {
         let (service, _t) = create_test_service().await;
@@ -1898,6 +1898,22 @@ mod typed_update_tests {
                 project.version,
                 ProjectNodeUpdate {
                     status: Some("archived".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid value 'archived'"),
+            "{err}"
+        );
+
+        let err = service
+            .update_node(
+                &project.id,
+                project.version,
+                NodeUpdate {
+                    properties: Some(json!({ "status": "archived" })),
                     ..Default::default()
                 },
             )
