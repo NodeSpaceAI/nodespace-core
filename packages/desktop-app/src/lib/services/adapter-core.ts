@@ -339,7 +339,7 @@ export function unknownTypedUpdateKeys(
   body: Record<string, unknown>
 ): string[] {
   const fields: Record<string, true> = TYPED_UPDATE_FIELDS[nodeType];
-  return Object.keys(body).filter((key) => key !== 'version' && !(key in fields));
+  return Object.keys(body).filter((key) => key !== 'version' && !Object.hasOwn(fields, key));
 }
 
 /**
