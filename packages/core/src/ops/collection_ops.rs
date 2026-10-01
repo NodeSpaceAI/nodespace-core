@@ -626,6 +626,16 @@ mod tests {
                 "collection": { "description": "Recipes we kept" }
             })
         );
+
+        // The agent's workspace context lists it like any other collection.
+        let listed = CollectionService::new(svc.store(), &svc)
+            .get_all_collection_descriptions()
+            .await
+            .unwrap();
+        assert_eq!(
+            listed,
+            [("Cookbooks".to_string(), Some("Recipes we kept".to_string()))]
+        );
     }
 
     /// A renamed collection keeps the id of its first name, so the id check
