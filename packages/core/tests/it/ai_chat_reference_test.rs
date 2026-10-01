@@ -1,7 +1,5 @@
-//! An ai-chat node can never be the target of a reference.
+//! An ai-chat node can never be the target of a reference (ADR-061 §8).
 //!
-//! Chats are private by default, so a reference *to* one would surface a
-//! private conversation's existence and title to readers who cannot open it.
 //! Rather than render a dangling or "inaccessible" link, every path that
 //! creates a reference refuses an ai-chat target at write time: content
 //! mentions (`@mention` / `[[wikilink]]`), the direct mention API, the generic
@@ -154,7 +152,7 @@ async fn untyped_declared_relationship_rejects_ai_chat_target() -> Result<()> {
 }
 
 /// Retyping an existing node into a chat would carry its inbound references
-/// into the chat and skip the privacy membership a chat gets at creation.
+/// into the chat, and no node may reference an ai-chat node (ADR-061 §8).
 #[tokio::test]
 async fn existing_node_cannot_be_retyped_to_ai_chat() -> Result<()> {
     let (service, _store, _t) = create_test_service().await?;

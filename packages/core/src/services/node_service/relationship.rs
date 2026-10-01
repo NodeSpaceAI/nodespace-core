@@ -70,15 +70,13 @@ impl NodeService {
 
     /// Refuse any edge whose (stored) target is an `ai-chat` node.
     ///
-    /// Chats are private by default, so a reference *to* one — a `mentions`
-    /// edge from an `@mention`/`[[wikilink]]`, a provenance link from a node an
-    /// agent created, or any schema-declared relationship — would surface a
-    /// private conversation's existence and title to readers who cannot open
-    /// it. Blocking the edge at creation means there is never a dangling or
-    /// inaccessible chat reference to render. A chat stays free to be an
-    /// edge's *source* (its own `member_of` into the personal collection), and
-    /// a `has_child` onto one is outline placement — a chat nested under a
-    /// page — not a reference, so it is allowed.
+    /// No node may reference an ai-chat node (ADR-061 §8): a reference *to*
+    /// one — a `mentions` edge from an `@mention`/`[[wikilink]]`, a provenance
+    /// link from a node an agent created, or any schema-declared relationship —
+    /// is refused at creation, so there is never a chat reference to render. A
+    /// chat stays free to be an edge's *source*, and a `has_child` onto one is
+    /// outline placement — a chat nested under a page — not a reference, so it
+    /// is allowed.
     fn refuse_ai_chat_target(
         relationship_name: &str,
         target: &Node,

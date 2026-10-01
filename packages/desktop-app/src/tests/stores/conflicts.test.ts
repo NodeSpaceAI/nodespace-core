@@ -1,11 +1,12 @@
 /**
  * Conflicts store (ADR-068): `load`, `hasOpenFor`, and the resolution
- * actions. Unlike the deleted `recovered-items.svelte.ts`, this store is
- * NOT Pro-gated — the conflict journal is designed to work on a purely
- * local-only install (that's the defect ADR-068 fixes), so `load()` always
- * calls the daemon regardless of `proSync.isPro`.
+ * actions. The conflict journal records conflicts a local install detects
+ * itself, so `load()` always calls the daemon. Also covers the two conflict
+ * kinds end to end: the store's kind union and the Conflicts view's handling
+ * of each.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, expectTypeOf, beforeEach, afterEach, vi } from 'vitest';
+import { render, cleanup } from '@testing-library/svelte';
 
 const mockInvoke = vi.fn();
 import { mockTauriCore } from '../helpers/mock-tauri-core';
@@ -23,7 +24,16 @@ vi.mock('$lib/utils/logger', () => ({
   })
 }));
 
-import { conflictsStore, type ConflictRecord } from '$lib/stores/conflicts.svelte';
+vi.mock('$lib/services/navigation-service', () => ({
+  getNavigationService: () => ({ focusOrOpenNode: vi.fn() })
+}));
+
+import ConflictsPane from '$lib/components/conflicts/conflicts-pane.svelte';
+import {
+  conflictsStore,
+  type ConflictKind,
+  type ConflictRecord
+} from '$lib/stores/conflicts.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import * as collectionRefresh from '$lib/utils/collection-refresh';
@@ -347,5 +357,62 @@ describe('conflicts store', () => {
         conflictId: null
       });
     });
+  });
+});
+
+describe('conflict kinds', () => {
+  const LABELS: Record<string, string> = {
+    a1: 'Alice',
+    a2: 'Alice (dup)',
+    p1: 'People',
+    p2: 'People (dup)'
+  };
+
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    conflictsStore.records = [];
+    conflictsStore.loaded = false;
+    vi.spyOn(backendAdapter, 'getNode').mockImplementation(
+      async (id: string) => ({ id, content: LABELS[id] ?? id, nodeType: 'person' }) as Node
+    );
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('are exactly the two kinds a local install detects', () => {
+    expectTypeOf<ConflictKind>().toEqualTypeOf<
+      'unique_field_collision' | 'collection_name_collision'
+    >();
+  });
+
+  it('each get a labelled group in the Conflicts view, with merge and adopt actions', async () => {
+    const records: ConflictRecord[] = [
+      record({ id: 'field', nodeIds: ['a1', 'a2'], detectedAt: '2026-01-02T00:00:00Z' }),
+      record({
+        id: 'name',
+        kind: 'collection_name_collision',
+        nodeIds: ['p1', 'p2'],
+        detail: { name: 'people' }
+      })
+    ];
+    mockInvoke.mockImplementation(async (cmd: string) =>
+      cmd === 'list_conflicts' ? records : []
+    );
+
+    const view = render(ConflictsPane);
+
+    const headings = await view.findAllByRole('heading', { level: 2 });
+    expect(headings.map((h) => h.textContent)).toEqual([
+      'Duplicate field value',
+      'Duplicate collection name'
+    ]);
+    expect(await view.findByRole('button', { name: 'Keep Alice' })).toBeTruthy();
+    expect(await view.findByRole('button', { name: 'Keep People' })).toBeTruthy();
+    expect(view.getAllByRole('button', { name: 'Adopt existing' })).toHaveLength(2);
+    // Rename is offered for a collection-name collision only.
+    expect(view.getAllByRole('button', { name: 'Rename' })).toHaveLength(1);
   });
 });

@@ -50,7 +50,6 @@ const CONFLICT_ID_NAMESPACE: uuid::Uuid =
 /// |-----------------------------|--------------------------------|
 /// | `UniqueFieldCollision`       | `"{node_type}.{field}"`       |
 /// | `CollectionNameCollision`    | the case-folded collection name |
-/// | `SupersededEdit`             | the superseding write's `modified_at` |
 ///
 /// Sorting `node_ids` before hashing is what makes the id **symmetric**:
 /// whichever of the two colliding nodes is "new" and whichever is
@@ -459,9 +458,6 @@ impl NodeService {
             ConflictKind::CollectionNameCollision => {
                 self.collection_name_collision_still_holds(record).await?
             }
-            // No detection yet for these kinds (S1-S3 scope); nothing to
-            // re-check, so never auto-close one.
-            ConflictKind::SupersededEdit | ConflictKind::DuplicateReactiveCreate => true,
         };
 
         if !still_conflicts {

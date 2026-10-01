@@ -59,20 +59,6 @@ pub use relationship::{CreatedRelationship, StoredEdge};
 /// key off this constant so the node is deterministic and created at most once.
 pub(crate) const DATABASE_SETTINGS_NODE_ID: &str = "database-settings-singleton";
 
-/// The first entry whose key appears in `declared`, the field names core itself
-/// declares on `database-settings`. Pure so it can be tested with a synthetic
-/// declared list: the compiled list is empty today, so no real entry is ever
-/// rejected yet.
-fn first_core_declared_key<'a>(
-    declared: &[String],
-    entries: &'a [(&'a str, Value)],
-) -> Option<&'a str> {
-    entries
-        .iter()
-        .map(|(key, _)| *key)
-        .find(|key| declared.iter().any(|name| name == key))
-}
-
 /// Compute property changes between pre-mutation and post-mutation node properties
 ///
 /// Diffs the top-level keys within each namespace. For namespaced properties
@@ -1624,17 +1610,8 @@ impl NodeService {
         // edge. Must run AFTER the local person seed — the owner edge attaches to it.
         service.seed_database_settings_if_needed().await?;
 
-        // ADR-061 §1: seed the personal AI-chat collection and its admin
-        // membership edge. Must run AFTER the local person seed (the edge
-        // attaches to it) and BEFORE core plays (the ai-chat privacy play's
-        // invariant rule binds to the `personal_collection_id` default this
-        // step stamps onto the `ai-chat` schema).
-        service.seed_personal_ai_chat_collection_if_needed().await?;
-
         // ADR-079: Plays that ship with the product. After the core schemas,
-        // which a play node's own type and its rules' `task` trigger depend on,
-        // and after the personal AI-chat collection (ADR-061 §1), which the
-        // ai-chat privacy play's invariant rule references.
+        // which a play node's own type and its rules' `task` trigger depend on.
         crate::playbook::core_plays::seed_core_plays_if_needed(&service).await?;
 
         Ok(service)
@@ -1657,8 +1634,7 @@ impl NodeService {
     /// ADR-037: seed the DatabaseSettingsNode singleton — the anchor for
     /// database-level configuration — and one `has_role` owner edge from the local
     /// PersonNode to it (role `owner`, status `active`). The singleton carries no
-    /// properties; extensions add their own keys later through
-    /// [`Self::merge_database_settings`]. Idempotent: skips when a
+    /// properties. Idempotent: skips when a
     /// database-settings node already exists, so an existing database is
     /// backfilled on next open too. Must run after the local person seed so the
     /// owner edge always has a person to attach to.
@@ -1748,240 +1724,6 @@ impl NodeService {
         Ok(())
     }
 
-    /// ADR-061 §1: seed the personal AI-chat collection — a `collection`
-    /// node with `restrictedToMembers = true` and exactly one `member_of`
-    /// edge, at `admin`, from the local PersonNode. Every `ai-chat` node's
-    /// transactional membership write (the seeded invariant Play in
-    /// `playbook::core_plays`) targets this collection, so it must exist
-    /// before any chat is created.
-    ///
-    /// The node id is **random** (`Node::new`'s default `Uuid::new_v4`), not
-    /// derived from the username or any other symbolic value — ADR-061 §1 is
-    /// explicit that a guessable or name-derived id would collide across
-    /// installs that later sync into one tenant. Identity comes from the
-    /// person `member_of` admin edge, not from the id, so a fixed anchor like
-    /// [`DATABASE_SETTINGS_NODE_ID`] is not available here; idempotency is
-    /// instead judged by walking the local PersonNode's `member_of` out-edges
-    /// for one already landing on a `restrictedToMembers` collection at
-    /// `admin` — the same edge-existence posture
-    /// `seed_database_settings_if_needed` uses, for the same reason: a partial
-    /// prior failure (collection created, edge write failed) must be
-    /// detected and repaired rather than read back as "already seeded".
-    ///
-    /// Also stamps the freshly minted collection id onto the `ai-chat`
-    /// schema's `personal_collection_id` field default, so every `ai-chat`
-    /// node created afterward picks it up via ordinary schema-default
-    /// stamping (`apply_schema_defaults_with_fields`) and the seeded
-    /// invariant rule can bind to it as `{trigger.node.personal_collection_id}`
-    /// — a same-graph-scope binding, not a literal node id, which invariant
-    /// eligibility validation would otherwise reject
-    /// (`InvariantOutOfScopeTarget`). Schema fields are read live from the
-    /// store on every write (`resolve_field_owners` → `get_schema_node`), so
-    /// this patch takes effect immediately with no separate cache to
-    /// invalidate. That stamped default is also this function's own repair
-    /// anchor (see below) — once seeded once, it is the one stable pointer
-    /// to a collection whose random id nothing else can reconstruct.
-    ///
-    /// Must run after the local person seed (the edge attaches to it) and
-    /// before core Plays are seeded (the ai-chat privacy Play's rule depends
-    /// on the schema default this stamps).
-    ///
-    /// Not transactional across its three writes (collection node, admin
-    /// edge, schema default) — same posture as `seed_database_settings_if_needed`,
-    /// repair-on-next-open rather than atomicity. One narrow case neither
-    /// repair path covers: a crash between creating the collection node and
-    /// writing either the admin edge or the schema default leaves an orphan
-    /// collection with no admin edge AND no schema-default pointer back to
-    /// it, so the repair path (which looks for the collection via the schema
-    /// default) cannot find it and a second collection is minted on next
-    /// open. Acceptable: the orphan is inert (no admin, never targeted by
-    /// the invariant rule) rather than a privacy exposure.
-    async fn seed_personal_ai_chat_collection_if_needed(&self) -> Result<(), NodeServiceError> {
-        let local_person_id = self
-            .query_nodes_by_type("person", None)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                NodeServiceError::InitializationError(
-                    "cannot seed personal AI-chat collection: no local PersonNode".to_string(),
-                )
-            })?
-            .id;
-
-        let existing_admin_collection = self
-            .get_related_nodes_with_edges(&local_person_id, "member_of", "out")
-            .await?
-            .into_iter()
-            .find(|(node, edge)| {
-                node.node_type == "collection"
-                    && node
-                        .properties
-                        .get("collection")
-                        .and_then(|c| c.get("restrictedToMembers"))
-                        .and_then(|v| v.as_bool())
-                        == Some(true)
-                    && edge.get("permission").and_then(|v| v.as_str()) == Some("admin")
-            })
-            .map(|(node, _edge)| node.id);
-
-        // A missing admin edge does not necessarily mean nothing was ever
-        // seeded — the edge write may simply have failed after the
-        // collection node itself was already created and the schema default
-        // already stamped (the same partial-failure shape
-        // `seed_database_settings_if_needed` guards against for its owner
-        // edge). The stamped `ai-chat` schema default is the one stable
-        // pointer back to that collection's random id in that case, so it is
-        // checked before falling back to minting a brand new collection —
-        // otherwise a repair would silently orphan the original and leave
-        // two personal collections behind.
-        let collection_id = match existing_admin_collection {
-            Some(id) => id,
-            None => {
-                let schema_default = self
-                    .get_schema_node("ai-chat")
-                    .await?
-                    .and_then(|schema| schema.get_field("personal_collection_id").cloned())
-                    .and_then(|field| field.default)
-                    .and_then(|v| v.as_str().map(|s| s.to_string()));
-
-                let orphaned_collection = match schema_default {
-                    Some(id) => self
-                        .get_node(&id)
-                        .await?
-                        .filter(|n| n.node_type == "collection"),
-                    None => None,
-                };
-
-                match orphaned_collection {
-                    Some(node) => {
-                        self.create_relationship(
-                            &local_person_id,
-                            "member_of",
-                            &node.id,
-                            serde_json::json!({"permission": "admin"}),
-                        )
-                        .await?;
-
-                        tracing::info!(
-                            node_id = %node.id,
-                            admin = %local_person_id,
-                            "🔧 Repaired missing admin member_of edge on personal AI-chat collection (ADR-061 §1)"
-                        );
-
-                        node.id
-                    }
-                    None => {
-                        let collection = Node::new(
-                            "collection".to_string(),
-                            "AI Chats".to_string(),
-                            serde_json::json!({
-                                "collection": { "restrictedToMembers": true }
-                            }),
-                        );
-                        let collection_id = self.create_node(collection).await?;
-
-                        self.create_relationship(
-                            &local_person_id,
-                            "member_of",
-                            &collection_id,
-                            serde_json::json!({"permission": "admin"}),
-                        )
-                        .await?;
-
-                        tracing::info!(
-                            node_id = %collection_id,
-                            admin = %local_person_id,
-                            "🌱 Seeded personal AI-chat collection with admin member_of edge (ADR-061 §1)"
-                        );
-
-                        collection_id
-                    }
-                }
-            }
-        };
-
-        self.set_ai_chat_personal_collection_default(&collection_id)
-            .await?;
-
-        Ok(())
-    }
-
-    /// Patch the `ai-chat` schema's `personal_collection_id` field default to
-    /// `collection_id`, creating the field on first run.
-    ///
-    /// This is a seed-time internal write, not a user-facing schema edit —
-    /// deliberately bypasses `handle_update_schema` (built for user-driven
-    /// edits under ADR-063 namespace rules, with rename/remove machinery that
-    /// has no bearing here) and writes the schema node directly, the same way
-    /// `seed_core_schemas_if_needed` does for the schemas themselves.
-    async fn set_ai_chat_personal_collection_default(
-        &self,
-        collection_id: &str,
-    ) -> Result<(), NodeServiceError> {
-        let mut schema = self.get_schema_node("ai-chat").await?.ok_or_else(|| {
-            NodeServiceError::InitializationError(
-                "cannot stamp personal_collection_id default: 'ai-chat' schema not seeded"
-                    .to_string(),
-            )
-        })?;
-
-        let default_value = serde_json::json!(collection_id);
-        match schema
-            .fields
-            .iter_mut()
-            .find(|f| f.name == "personal_collection_id")
-        {
-            Some(field) => {
-                if field.default.as_ref() == Some(&default_value) {
-                    return Ok(());
-                }
-                field.default = Some(default_value);
-            }
-            None => {
-                schema.fields.push(crate::models::SchemaField {
-                    name: "personal_collection_id".to_string(),
-                    friendly_name: "Personal collection".to_string(),
-                    field_type: "text".to_string(),
-                    local_only: false,
-                    protection: crate::models::schema::SchemaProtectionLevel::Core,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: Some(default_value),
-                    description: Some(
-                        "Id of this install's private AI-chat collection (ADR-061 §1); \
-                         the seeded privacy Play's invariant rule targets this to give \
-                         every ai-chat node a member_of edge into it at creation."
-                            .to_string(),
-                    ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                });
-            }
-        }
-
-        let node = schema.into_node();
-        self.store
-            .update_node(
-                &node.id,
-                NodeUpdate {
-                    properties: Some(node.properties),
-                    ..Default::default()
-                },
-                None,
-            )
-            .await
-            .map_err(NodeServiceError::from_store)?;
-
-        Ok(())
-    }
-
     /// ADR-037: resolve the seeded local-user PersonNode — the
     /// person with an outgoing `has_role` edge carrying `role: "owner"` to
     /// the DatabaseSettingsNode singleton (the owner edge
@@ -2020,8 +1762,7 @@ impl NodeService {
         let owner = owner_edges.next().map(|(node, _)| node);
         if owner_edges.next().is_some() {
             // Data-integrity anomaly: today's seeding path creates exactly one
-            // owner-role edge, so this should be unreachable. Once multi-role
-            // RBAC lands, a bug there could produce two — warn rather than
+            // owner-role edge, so this should be unreachable. Warn rather than
             // silently resolving to whichever edge SQL happened to return first.
             tracing::warn!(
                 settings_node_id = DATABASE_SETTINGS_NODE_ID,
@@ -2038,9 +1779,8 @@ impl NodeService {
             // Today's only seeding path (`seed_database_settings_if_needed`)
             // always seeds "owner", so this should be unreachable — warn
             // rather than silently falling back to "pick any person node",
-            // which would mask a real anomaly once multi-role RBAC lands.
-            // Zero edges at all is the legitimate pre-ADR-037 fallback case
-            // and stays silent.
+            // which would mask a real anomaly. Zero edges at all is the
+            // legitimate pre-ADR-037 fallback case and stays silent.
             tracing::warn!(
                 settings_node_id = DATABASE_SETTINGS_NODE_ID,
                 "has_role edges found on DatabaseSettingsNode but none has role \"owner\"; \
@@ -2114,121 +1854,6 @@ impl NodeService {
         let update = NodeUpdate::new().with_properties(properties);
 
         self.update_node(&person.id, person.version, update).await
-    }
-
-    /// Read the `database-settings` bucket of the DatabaseSettingsNode singleton,
-    /// keys as stored. Extensions keep their own state here (new keys use the
-    /// `plugin:` prefix, ADR-063), and core neither interprets nor defaults any of
-    /// it: an absent key is the caller's to default.
-    ///
-    /// Returns an empty map when the singleton or the bucket is absent, and
-    /// `InitializationError` when the bucket is not a JSON object.
-    pub async fn database_settings(
-        &self,
-    ) -> Result<serde_json::Map<String, serde_json::Value>, NodeServiceError> {
-        let Some(node) = self
-            .query_nodes_by_type("database-settings", None)
-            .await?
-            .into_iter()
-            .next()
-        else {
-            return Ok(serde_json::Map::new());
-        };
-        let root = node.properties.as_object().ok_or_else(|| {
-            NodeServiceError::InitializationError(
-                "DatabaseSettingsNode properties are not a JSON object".to_string(),
-            )
-        })?;
-        match root.get("database-settings") {
-            None => Ok(serde_json::Map::new()),
-            Some(serde_json::Value::Object(bucket)) => Ok(bucket.clone()),
-            Some(_) => Err(NodeServiceError::InitializationError(
-                "DatabaseSettingsNode `database-settings` is not a JSON object".to_string(),
-            )),
-        }
-    }
-
-    /// Merge entries into the DatabaseSettingsNode singleton's `database-settings`
-    /// bucket as one versioned `update_node`, keeping every other key.
-    ///
-    /// - A JSON `null` is stored as `null`; no key is ever deleted.
-    /// - A missing singleton returns `InitializationError`; it is seeded on
-    ///   database open, so that is an error rather than a silent no-op.
-    /// - A concurrent change to the node returns the ordinary `VersionConflict`;
-    ///   the caller re-reads with [`Self::database_settings`] and retries.
-    /// - An entry whose key core itself declares on `database-settings` is
-    ///   rejected with `InvalidUpdate` and nothing is written.
-    ///
-    /// New extension keys use the `plugin:` prefix (ADR-063).
-    pub async fn merge_database_settings(
-        &self,
-        entries: &[(&str, serde_json::Value)],
-    ) -> Result<(), NodeServiceError> {
-        // The guard reads the COMPILED definition, never the stored schema node.
-        // `seed_core_schemas_if_needed` never rewrites a stored core schema, so a
-        // database created by an older build still declares fields there that
-        // core has since let go of; a guard built on the stored schema would
-        // reject those keys and with them the extension's own writes.
-        let declared: Vec<String> = crate::models::core_schemas::get_core_schemas()
-            .into_iter()
-            .find(|schema| schema.id == "database-settings")
-            .map(|schema| schema.fields.into_iter().map(|f| f.name).collect())
-            .unwrap_or_default();
-        self.merge_database_settings_rejecting(&declared, entries)
-            .await
-    }
-
-    /// [`Self::merge_database_settings`] with the core-declared key list passed
-    /// in, so the rejection can be exercised with a synthetic list.
-    async fn merge_database_settings_rejecting(
-        &self,
-        declared: &[String],
-        entries: &[(&str, serde_json::Value)],
-    ) -> Result<(), NodeServiceError> {
-        if let Some(key) = first_core_declared_key(declared, entries) {
-            return Err(NodeServiceError::InvalidUpdate(format!(
-                "cannot write `{key}` to database settings: core declares that key"
-            )));
-        }
-
-        let node = self
-            .query_nodes_by_type("database-settings", None)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                NodeServiceError::InitializationError(
-                    "cannot update database settings: DatabaseSettingsNode singleton not found"
-                        .to_string(),
-                )
-            })?;
-
-        let mut properties = node.properties.clone();
-        let root = properties.as_object_mut().ok_or_else(|| {
-            NodeServiceError::InitializationError(
-                "DatabaseSettingsNode properties are not a JSON object".to_string(),
-            )
-        })?;
-        let settings = root
-            .entry("database-settings")
-            .or_insert_with(|| serde_json::json!({}))
-            .as_object_mut()
-            .ok_or_else(|| {
-                NodeServiceError::InitializationError(
-                    "DatabaseSettingsNode `database-settings` is not a JSON object".to_string(),
-                )
-            })?;
-        for (key, value) in entries {
-            settings.insert((*key).to_string(), value.clone());
-        }
-
-        self.update_node(
-            &node.id,
-            node.version,
-            NodeUpdate::new().with_properties(properties),
-        )
-        .await?;
-        Ok(())
     }
 
     /// Seed core schema definitions, per-schema, on every start.
@@ -3735,11 +3360,10 @@ mod tests {
     /// time. This pins both load-bearing invariants so a regression (or the
     /// rejected "filter at runtime" alternative) can't silently reopen the leak:
     ///   1. `get_aggregated_content` walks `has_child` only, so content filed into a
-    ///      restricted collection via `member_of` never enters an unrelated open
-    ///      root's vector.
-    ///   2. §2 forbids an embeddable `has_child` descendant from carrying its own
-    ///      restriction (a `member_of` edge), so a boundary cannot appear inside an
-    ///      embeddable root's aggregate.
+    ///      collection via `member_of` never enters an unrelated root's vector.
+    ///   2. §2 forbids an embeddable `has_child` descendant from holding a
+    ///      `member_of` edge, so a boundary cannot appear inside an embeddable
+    ///      root's aggregate.
     #[tokio::test]
     async fn embedding_aggregation_never_spans_an_access_boundary_adr059() {
         use crate::behaviors::{NodeBehavior, TextNodeBehavior};
@@ -3747,15 +3371,15 @@ mod tests {
 
         let (svc, _tmp) = create_test_service().await;
 
-        // A RESTRICTED collection with a member ROOT holding secret content
-        // (filed via member_of — the only legal way, per §2).
+        // A collection with a member ROOT holding its own content (filed via
+        // member_of — the only legal way, per §2).
         svc.create_node_with_parent(CreateNodeParams {
             id: Some("11111111-1111-1111-1111-1111111111c1".into()),
             node_type: "collection".into(),
-            content: "Secret Collection".into(),
+            content: "Filed Collection".into(),
             parent_id: None,
             position: InsertPositionOwned::End,
-            properties: serde_json::json!({ "collection": { "restrictedToMembers": true } }),
+            properties: serde_json::json!({}),
             lifecycle_status: None,
         })
         .await
@@ -3763,7 +3387,7 @@ mod tests {
         svc.create_node_with_parent(CreateNodeParams {
             id: Some("11111111-1111-1111-1111-1111111111c2".into()),
             node_type: "text".into(),
-            content: "SECRET_RESTRICTED_TEXT".into(),
+            content: "FILED_ROOT_TEXT".into(),
             parent_id: None,
             position: InsertPositionOwned::End,
             properties: serde_json::json!({}),
@@ -3778,9 +3402,9 @@ mod tests {
                 &serde_json::json!({}),
             )
             .await
-            .expect("a ROOT node may be filed into a restricted collection");
+            .expect("a ROOT node may be filed into a collection");
 
-        // A separate OPEN embeddable root with a has_child child.
+        // A separate, unfiled embeddable root with a has_child child.
         svc.create_node_with_parent(CreateNodeParams {
             id: Some("11111111-1111-1111-1111-1111111111c3".into()),
             node_type: "text".into(),
@@ -3804,8 +3428,8 @@ mod tests {
         .await
         .unwrap();
 
-        // (1) The open root's aggregate includes its own has_child subtree, and
-        // NEVER the restricted collection's member_of content.
+        // (1) The unfiled root's aggregate includes its own has_child subtree,
+        // and NEVER the collection's member_of content.
         let root = svc
             .get_node("11111111-1111-1111-1111-1111111111c3")
             .await
@@ -3817,15 +3441,15 @@ mod tests {
             .unwrap_or_default();
         assert!(
             aggregated.contains("OPEN_CHILD_TEXT"),
-            "aggregate must include the open has_child subtree"
+            "aggregate must include the root's own has_child subtree"
         );
         assert!(
-            !aggregated.contains("SECRET_RESTRICTED_TEXT"),
-            "aggregate must NOT include content behind a restricted-collection access boundary (ADR-059 §7)"
+            !aggregated.contains("FILED_ROOT_TEXT"),
+            "aggregate must NOT include another root's content reached through member_of (ADR-059 §7)"
         );
 
-        // (2) §2: an embeddable has_child descendant cannot carry its own
-        // restriction, so a boundary can never form inside an aggregate.
+        // (2) §2: an embeddable has_child descendant cannot be filed into a
+        // collection of its own, so a boundary can never form inside an aggregate.
         svc.create_node_with_parent(CreateNodeParams {
             id: Some("11111111-1111-1111-1111-1111111111c5".into()),
             node_type: "text".into(),
@@ -3851,10 +3475,13 @@ mod tests {
         );
     }
 
-    /// ADR-059 §7's defect path: when root-only membership is bypassed and a
-    /// descendant lands behind an access boundary its root does not cross,
-    /// aggregation excludes it and its subtree, logs the violation, and the
-    /// descendant becomes its own embedding root, keeping its embedding.
+    /// ADR-059 §7's defect path (ADR-083 §5): when root-only membership is
+    /// bypassed, a non-person descendant holding a `member_of` edge is left out
+    /// of its root's aggregate with its subtree, the violation is logged, and
+    /// the descendant becomes its own embedding root, keeping its embedding.
+    /// Nothing about the collection decides this. A person's `member_of` edge
+    /// makes it a member, not filed content, so a person descendant and its
+    /// notes stay in the root's aggregate.
     #[tokio::test]
     async fn access_boundary_descendant_is_excluded_and_rerooted_adr059() {
         use crate::behaviors::{NodeBehavior, TextNodeBehavior};
@@ -3874,63 +3501,54 @@ mod tests {
             }
         }
 
-        const RESTRICTED: &str = "22222222-2222-2222-2222-2222222222c1";
-        const OPEN_COLL: &str = "22222222-2222-2222-2222-2222222222c2";
+        const COLL_A: &str = "22222222-2222-2222-2222-2222222222c1";
+        const COLL_B: &str = "22222222-2222-2222-2222-2222222222c2";
         const ROOT: &str = "22222222-2222-2222-2222-2222222222a1";
         const DESC: &str = "22222222-2222-2222-2222-2222222222a2";
         const GRANDCHILD: &str = "22222222-2222-2222-2222-2222222222a3";
         const SIBLING: &str = "22222222-2222-2222-2222-2222222222a4";
-        const FILED_OPEN: &str = "22222222-2222-2222-2222-2222222222a5";
+        const FILED: &str = "22222222-2222-2222-2222-2222222222a5";
+        const PERSON: &str = "22222222-2222-2222-2222-2222222222a6";
+        const PERSON_NOTE: &str = "22222222-2222-2222-2222-2222222222a7";
 
         let (svc, _tmp) = create_test_service().await;
-        let create = |id: &str, node_type: &str, content: &str, parent: Option<&str>, props| {
+        let create = |id: &str, node_type: &str, content: &str, parent: Option<&str>| {
             svc.create_node_with_parent(CreateNodeParams {
                 id: Some(id.into()),
                 node_type: node_type.into(),
                 content: content.into(),
                 parent_id: parent.map(Into::into),
                 position: InsertPositionOwned::End,
-                properties: props,
+                properties: json!({}),
                 lifecycle_status: None,
             })
         };
-        create(
-            RESTRICTED,
-            "collection",
-            "Restricted",
-            None,
-            json!({ "collection": { "restrictedToMembers": true } }),
-        )
-        .await
-        .unwrap();
-        create(OPEN_COLL, "collection", "Open", None, json!({}))
+        create(COLL_A, "collection", "A", None).await.unwrap();
+        create(COLL_B, "collection", "B", None).await.unwrap();
+        create(ROOT, "text", "ROOT_TEXT", None).await.unwrap();
+        create(DESC, "text", "FILED_DESC_TEXT", Some(ROOT))
             .await
             .unwrap();
-        create(ROOT, "text", "OPEN_ROOT_TEXT", None, json!({}))
+        create(GRANDCHILD, "text", "FILED_GRANDCHILD_TEXT", Some(DESC))
             .await
             .unwrap();
-        create(DESC, "text", "RESTRICTED_DESC_TEXT", Some(ROOT), json!({}))
+        create(SIBLING, "text", "SIBLING_TEXT", Some(ROOT))
             .await
             .unwrap();
-        create(
-            GRANDCHILD,
-            "text",
-            "RESTRICTED_GRANDCHILD_TEXT",
-            Some(DESC),
-            json!({}),
-        )
-        .await
-        .unwrap();
-        create(SIBLING, "text", "OPEN_SIBLING_TEXT", Some(ROOT), json!({}))
+        create(FILED, "text", "FILED_SECOND_TEXT", Some(ROOT))
             .await
             .unwrap();
-        create(FILED_OPEN, "text", "FILED_OPEN_TEXT", Some(ROOT), json!({}))
+        // A templated type (`person`) is named by its fields, not content.
+        create(PERSON, "person", "", Some(ROOT)).await.unwrap();
+        create(PERSON_NOTE, "text", "PERSON_NOTE_TEXT", Some(PERSON))
             .await
             .unwrap();
 
         // The violating shape: `member_of` edges on has_child descendants,
-        // written directly so `assert_may_gain_parent` never sees them.
-        for (member, collection) in [(DESC, RESTRICTED), (FILED_OPEN, OPEN_COLL)] {
+        // written directly so `assert_may_gain_parent` never sees them. Two
+        // different collections, neither with any properties; and a person
+        // member, which is not a violation.
+        for (member, collection) in [(DESC, COLL_A), (FILED, COLL_B), (PERSON, COLL_A)] {
             svc.store()
                 .write()
                 .await
@@ -3958,16 +3576,16 @@ mod tests {
                 .unwrap_or_default()
         };
 
-        // The boundary descendant and its subtree stay out of the root's
-        // vector; open content, including a node filed into an OPEN
-        // collection (same access), stays in.
-        assert!(aggregated.contains("OPEN_SIBLING_TEXT"), "{aggregated}");
-        assert!(aggregated.contains("FILED_OPEN_TEXT"), "{aggregated}");
-        assert!(!aggregated.contains("RESTRICTED_DESC_TEXT"), "{aggregated}");
+        // Each filed descendant and its subtree stay out of the root's vector;
+        // unfiled content, and a person member's notes, stay in.
+        assert!(aggregated.contains("SIBLING_TEXT"), "{aggregated}");
+        assert!(aggregated.contains("PERSON_NOTE_TEXT"), "{aggregated}");
+        assert!(!aggregated.contains("FILED_DESC_TEXT"), "{aggregated}");
         assert!(
-            !aggregated.contains("RESTRICTED_GRANDCHILD_TEXT"),
+            !aggregated.contains("FILED_GRANDCHILD_TEXT"),
             "{aggregated}"
         );
+        assert!(!aggregated.contains("FILED_SECOND_TEXT"), "{aggregated}");
 
         // The defect is surfaced at error level, naming both nodes.
         let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
@@ -3977,12 +3595,19 @@ mod tests {
             .unwrap_or_else(|| panic!("no defect logged:\n{logs}"));
         assert!(defect.contains("ERROR"), "{defect}");
         assert!(defect.contains(ROOT) && defect.contains(DESC), "{defect}");
+        assert!(
+            !logs.contains(&format!("descendant_id={PERSON}")),
+            "a person member is not a defect:\n{logs}"
+        );
 
-        // The descendant is its own embedding root, for itself and its subtree.
+        // Each filed descendant is its own embedding root, for itself and its
+        // subtree; the person member and its notes keep the tree root.
         assert_eq!(svc.get_embedding_root_id(DESC).await.unwrap(), DESC);
         assert_eq!(svc.get_embedding_root_id(GRANDCHILD).await.unwrap(), DESC);
+        assert_eq!(svc.get_embedding_root_id(FILED).await.unwrap(), FILED);
         assert_eq!(svc.get_embedding_root_id(SIBLING).await.unwrap(), ROOT);
-        assert_eq!(svc.get_embedding_root_id(FILED_OPEN).await.unwrap(), ROOT);
+        assert_eq!(svc.get_embedding_root_id(PERSON).await.unwrap(), ROOT);
+        assert_eq!(svc.get_embedding_root_id(PERSON_NOTE).await.unwrap(), ROOT);
 
         // The rootness refresh keeps the re-rooted descendant's embedding and
         // still drops an ordinary child's. Checked by content hash: the
@@ -4379,8 +4004,9 @@ mod tests {
         assert_eq!(task.properties.get("isCore"), Some(&json!(true)));
     }
 
-    /// Which descendants count as ADR-059 §7 access boundaries, shape by
-    /// shape. Every shape asserts both `access_boundaries_under` (what
+    /// Which descendants count as ADR-059 §7 boundaries, shape by shape: every
+    /// non-person descendant holding a `member_of` edge, whatever collection it
+    /// is filed into. Every shape asserts both `access_boundaries_under` (what
     /// aggregation excludes) and `embedding_root_id` (where a node's embedding
     /// lives), so the two cannot drift apart.
     #[tokio::test]
@@ -4427,14 +4053,9 @@ mod tests {
                 .await
                 .unwrap();
         };
-        let restricted = || json!({ "collection": { "restrictedToMembers": true } });
 
-        let c1 = create(next_id(), "collection", None, restricted()).await;
-        let c2 = create(next_id(), "collection", None, restricted()).await;
-        let open = create(next_id(), "collection", None, json!({})).await;
-        // An open collection nested (via member_of) inside a restricted one.
-        let open_in_c1 = create(next_id(), "collection", None, json!({})).await;
-        file(open_in_c1.clone(), c1.clone()).await;
+        let c1 = create(next_id(), "collection", None, json!({})).await;
+        let c2 = create(next_id(), "collection", None, json!({})).await;
 
         let boundaries =
             |root: String| async move { svc.store().access_boundaries_under(&root).await.unwrap() };
@@ -4459,8 +4080,8 @@ mod tests {
         assert_eq!(root_of(b2.clone()).await, b2, "(a)");
         assert_eq!(root_of(leaf).await, b2, "(a)");
 
-        // (b) A restricted root: a descendant filed into the SAME collection
-        // has the same access; one filed into a different collection does not.
+        // (b) A filed root: a descendant filed into the root's own collection is
+        // a boundary as much as one filed elsewhere, since §2 forbids both.
         let r = create(next_id(), "text", None, json!({})).await;
         svc.store()
             .add_to_collection(&r, &c1, &json!({}))
@@ -4468,50 +4089,31 @@ mod tests {
             .expect("a root may be filed");
         let same = create(next_id(), "text", Some(r.clone()), json!({})).await;
         let other = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        let unfiled = create(next_id(), "text", Some(r.clone()), json!({})).await;
         file(same.clone(), c1.clone()).await;
         file(other.clone(), c2.clone()).await;
-        assert_eq!(boundaries(r.clone()).await, set(&[&other]), "(b)");
-        assert_eq!(root_of(same).await, r, "(b) same collection");
+        assert_eq!(boundaries(r.clone()).await, set(&[&same, &other]), "(b)");
+        assert_eq!(root_of(same.clone()).await, same, "(b) same collection");
         assert_eq!(root_of(other.clone()).await, other, "(b) other collection");
-
-        // (b') Ties: a root in {c1, c2} and a descendant in {c1} alone differ,
-        // since the root admits c2's members too (ADR-059 §3).
-        let r = create(next_id(), "text", None, json!({})).await;
-        file(r.clone(), c1.clone()).await;
-        file(r.clone(), c2.clone()).await;
-        let narrower = create(next_id(), "text", Some(r.clone()), json!({})).await;
-        file(narrower.clone(), c1.clone()).await;
-        assert_eq!(boundaries(r.clone()).await, set(&[&narrower]), "(b')");
-        assert_eq!(root_of(narrower.clone()).await, narrower, "(b')");
+        assert_eq!(root_of(unfiled).await, r, "(b) unfiled");
 
         // (c) A collection inside an outline cannot be built at all; see
         // `collection_is_always_a_root_adr059`.
 
-        // (d) A person's membership is an RBAC grant, not classification.
+        // (d) A person's `member_of` edge makes it a member, not filed content.
         let r = create(next_id(), "text", None, json!({})).await;
         let person = create(next_id(), "person", Some(r.clone()), json!({})).await;
         file(person.clone(), c1.clone()).await;
         assert!(boundaries(r.clone()).await.is_empty(), "(d)");
-        assert_eq!(root_of(person).await, r, "(d)");
+        assert_eq!(root_of(person.clone()).await, r, "(d)");
 
-        // (e) Filed into an open collection that is itself inside a restricted
-        // one: restricted two steps up, so a boundary.
-        let r = create(next_id(), "text", None, json!({})).await;
-        let deep = create(next_id(), "text", Some(r.clone()), json!({})).await;
-        file(deep.clone(), open_in_c1.clone()).await;
-        assert_eq!(boundaries(r.clone()).await, set(&[&deep]), "(e)");
-        assert_eq!(root_of(deep.clone()).await, deep, "(e)");
-
-        // (f) A same-access candidate (filed into an open collection) is not a
-        // boundary, but one below it still is.
-        let r = create(next_id(), "text", None, json!({})).await;
-        let mid = create(next_id(), "text", Some(r.clone()), json!({})).await;
-        let below = create(next_id(), "text", Some(mid.clone()), json!({})).await;
-        file(mid.clone(), open.clone()).await;
-        file(below.clone(), c1.clone()).await;
-        assert_eq!(boundaries(r.clone()).await, set(&[&below]), "(f)");
-        assert_eq!(root_of(mid).await, r, "(f)");
-        assert_eq!(root_of(below.clone()).await, below, "(f)");
+        // (d') The walk continues through a filed person: a filed node below it
+        // is still a boundary of the root above, and its own root.
+        let note = create(next_id(), "text", Some(person.clone()), json!({})).await;
+        file(note.clone(), c2.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&note]), "(d')");
+        assert_eq!(root_of(note.clone()).await, note, "(d')");
+        assert_eq!(root_of(person).await, r, "(d')");
     }
 
     /// A schema added to `get_core_schemas()` after a database's first run
@@ -9187,9 +8789,11 @@ mod tests {
         );
         let node = &settings[0];
         assert_eq!(node.id, DATABASE_SETTINGS_NODE_ID);
-        assert!(
-            service.database_settings().await.unwrap().is_empty(),
-            "the seeded singleton carries no settings"
+        // Stored under its ADR-078 bucket, which seeding leaves empty.
+        assert_eq!(
+            node.properties,
+            serde_json::json!({ "database-settings": {} }),
+            "seeding writes no settings onto the singleton"
         );
 
         // Exactly one local person, and exactly one has_role owner edge to the singleton.
@@ -9212,6 +8816,14 @@ mod tests {
             .expect("owner has_role edge exists");
         assert_eq!(edge.properties["role"], "owner");
         assert_eq!(edge.properties["status"], "active");
+
+        // The owner edge is how the local user is found.
+        let local = service
+            .get_local_person()
+            .await
+            .unwrap()
+            .expect("the seeded owner resolves");
+        assert_eq!(local.id, person_id);
     }
 
     /// ADR-069 §1a/S5 regression test for F13: the seeding guard must check
@@ -9271,265 +8883,31 @@ mod tests {
         assert_eq!(settings.len(), 1);
     }
 
-    // --- Personal AI-chat collection seeding tests (ADR-061 §1) ---
+    // --- AI chats are plain nodes (ADR-083 §7) ---
 
-    #[tokio::test]
-    async fn test_seed_personal_ai_chat_collection() {
-        let (service, _temp) = create_test_service().await;
-
-        let collections = service
-            .query_nodes_by_type("collection", None)
-            .await
-            .unwrap();
-        assert_eq!(
-            collections.len(),
-            1,
-            "a fresh install must seed exactly one personal AI-chat collection"
-        );
-        let collection = &collections[0];
-        assert_eq!(
-            collection.properties["collection"]["restrictedToMembers"],
-            true
-        );
-
-        let people = service.query_nodes_by_type("person", None).await.unwrap();
-        assert_eq!(people.len(), 1);
-        let person_id = people[0].id.clone();
-
-        let targets = service
-            .get_related_nodes(&person_id, "member_of", "out")
-            .await
-            .unwrap();
-        assert_eq!(
-            targets.len(),
-            1,
-            "exactly one member_of edge to the personal collection must be seeded"
-        );
-        assert_eq!(targets[0].id, collection.id);
-
-        let edge = service
-            .store()
-            .get_relationship_record(&person_id, &collection.id, "member_of")
-            .await
-            .unwrap()
-            .expect("admin member_of edge exists");
-        assert_eq!(edge.properties["permission"], "admin");
-    }
-
-    /// The collection's id is random per install (ADR-061 §1) — this pins
-    /// that it is NOT the deterministic, name-derived id
-    /// `CollectionService::create_collection` would produce for the same
-    /// content, which would be guessable and could collide across installs
-    /// syncing into one tenant.
-    #[tokio::test]
-    async fn test_personal_ai_chat_collection_id_is_not_deterministic() {
-        let (service, _temp) = create_test_service().await;
-
-        let collections = service
-            .query_nodes_by_type("collection", None)
-            .await
-            .unwrap();
-        let collection = &collections[0];
-
-        let deterministic_id =
-            crate::services::collection_service::deterministic_collection_id(&collection.content);
-        assert_ne!(
-            collection.id, deterministic_id,
-            "the personal collection id must be random, not name-derived"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_reopening_database_does_not_duplicate_personal_collection() {
-        let (service, _temp) = create_test_service().await;
-
-        let first_run = service
-            .query_nodes_by_type("collection", None)
-            .await
-            .unwrap();
-        assert_eq!(first_run.len(), 1);
-        let collection_id = first_run[0].id.clone();
-
-        // Re-run the seeding step directly, as a fresh app open would.
-        service
-            .seed_personal_ai_chat_collection_if_needed()
-            .await
-            .unwrap();
-
-        let second_run = service
-            .query_nodes_by_type("collection", None)
-            .await
-            .unwrap();
-        assert_eq!(
-            second_run.len(),
-            1,
-            "re-seeding must not create a second personal collection"
-        );
-        assert_eq!(second_run[0].id, collection_id);
-
-        let person_id = service
-            .query_nodes_by_type("person", None)
-            .await
-            .unwrap()
-            .remove(0)
-            .id;
-        let targets = service
-            .get_related_nodes(&person_id, "member_of", "out")
-            .await
-            .unwrap();
-        assert_eq!(
-            targets.len(),
-            1,
-            "re-seeding must not duplicate the admin member_of edge"
-        );
-    }
-
-    /// ADR-069 §1a/S5-style regression: mirrors
-    /// `test_seed_database_settings_repairs_missing_owner_edge` — the
-    /// idempotency guard must check the admin EDGE's existence, not merely
-    /// the collection node's, so a partial prior failure (collection
-    /// created, edge write failed) is detected and repaired rather than
-    /// permanently read back as "already seeded".
-    #[tokio::test]
-    async fn test_seed_personal_ai_chat_collection_repairs_missing_admin_edge() {
-        let (service, _temp) = create_test_service().await;
-
-        let collection_id = service
-            .query_nodes_by_type("collection", None)
-            .await
-            .unwrap()
-            .remove(0)
-            .id;
-        let person_id = service
-            .query_nodes_by_type("person", None)
-            .await
-            .unwrap()
-            .remove(0)
-            .id;
-
-        service
-            .store()
-            .delete_generic_relationship(&person_id, &collection_id, "member_of")
-            .await
-            .unwrap();
-        assert!(
-            service
-                .store()
-                .get_relationship_record(&person_id, &collection_id, "member_of")
-                .await
-                .unwrap()
-                .is_none(),
-            "precondition: admin edge must be gone before the repair runs"
-        );
-
-        service
-            .seed_personal_ai_chat_collection_if_needed()
-            .await
-            .unwrap();
-
-        let repaired_edge = service
-            .store()
-            .get_relationship_record(&person_id, &collection_id, "member_of")
-            .await
-            .unwrap();
-        assert!(
-            repaired_edge.is_some(),
-            "the missing admin edge must be repaired, not silently left missing \
-             just because the collection node already existed"
-        );
-
-        let collections = service
-            .query_nodes_by_type("collection", None)
-            .await
-            .unwrap();
-        assert_eq!(
-            collections.len(),
-            1,
-            "the repair must not have duplicated the collection via a second create"
-        );
-    }
-
-    /// The seeded `ai-chat` schema field default must carry the actual
-    /// collection id, and — being an ordinary schema default — must be
-    /// stamped onto a freshly created `ai-chat` node exactly the way any
-    /// other default field is.
-    #[tokio::test]
-    async fn test_ai_chat_schema_default_points_at_personal_collection() {
-        let (service, _temp) = create_test_service().await;
-
-        let collection_id = service
-            .query_nodes_by_type("collection", None)
-            .await
-            .unwrap()
-            .remove(0)
-            .id;
-
-        let schema = service.get_schema_node("ai-chat").await.unwrap().unwrap();
-        let field = schema
-            .get_field("personal_collection_id")
-            .expect("ai-chat schema must declare personal_collection_id");
-        assert_eq!(field.default, Some(serde_json::json!(collection_id)));
-
-        let chat = service
-            .create_node(Node::new(
-                "ai-chat".to_string(),
-                "Untitled".to_string(),
-                serde_json::json!({}),
-            ))
-            .await
-            .unwrap();
-        let chat_node = service.get_node(&chat).await.unwrap().unwrap();
-        assert_eq!(
-            chat_node.properties["ai-chat"]["personal_collection_id"],
-            collection_id
-        );
-    }
-
-    /// Activate the ai-chat privacy Play (already seeded into the database
-    /// by `seed_core_plays_if_needed`, part of `create_test_service`) against
-    /// a lifecycle manager, the same way `create_node`'s invariant dispatch
-    /// reaches it in the real app. No running engine loop is needed —
-    /// invariant dispatch is inline in `create_node`, not routed through the
-    /// engine's async event subscriber — but a lifecycle manager must exist
-    /// and hold the play's parsed rule, or `dispatch_invariant_rules_in_tx`
-    /// no-ops by design (see that function's doc: "No invariant rules can
-    /// exist without an engine to have activated them" — exactly why
-    /// `create_test_service` alone, with no lifecycle wired up, is not
-    /// enough for these two tests).
-    async fn activate_ai_chat_privacy_play(service: &NodeService) {
+    /// Wire a playbook lifecycle into `service` and activate every Play the
+    /// database seeded, as the running app does. Invariant rules dispatch
+    /// inline in `create_node`, but only once a lifecycle holds them; without
+    /// this a test would pass whatever the seeded Plays do.
+    async fn activate_seeded_plays(service: &NodeService) {
         let engine = crate::playbook::PlaybookEngine::new(Arc::new(service.clone()));
         service.set_playbook_lifecycle(engine.lifecycle().clone());
-        let play_node = service
-            .get_node(crate::playbook::core_plays::AI_CHAT_PRIVACY_PLAY_ID)
-            .await
-            .unwrap()
-            .expect("ai-chat privacy play must already be seeded");
+        let plays = service.query_nodes_by_type("play", None).await.unwrap();
+        assert!(!plays.is_empty(), "core Plays are seeded on open");
         let lifecycle = engine.lifecycle();
         let mut lm = lifecycle.write().unwrap();
-        lm.activate_play(&play_node)
-            .expect("seeded play must parse and activate");
+        for play in &plays {
+            lm.activate_play(play)
+                .expect("a seeded Play must parse and activate");
+        }
     }
 
-    /// End-to-end: creating a real `ai-chat` node through the ordinary
-    /// `create_node` path must actually produce a `member_of` edge into the
-    /// personal collection — not just a `personal_collection_id` property
-    /// value (covered separately above). This is the seeded invariant Play's
-    /// entire reason to exist (ADR-061 §1/§3): `create_node` dispatches
-    /// invariant rules synchronously, inside the same transaction, via
-    /// `create_node_in_tx`, once a lifecycle manager holding the play is
-    /// wired up — which is exactly what makes it fail-closed rather than
-    /// fail-open.
+    /// With every seeded Play active, a new ai-chat joins no collection and can
+    /// be placed under a page like any other node.
     #[tokio::test]
-    async fn test_creating_an_ai_chat_node_joins_the_personal_collection() {
+    async fn test_a_new_ai_chat_has_no_member_of_edge_and_moves_under_a_page() {
         let (service, _temp) = create_test_service().await;
-        activate_ai_chat_privacy_play(&service).await;
-
-        let collection_id = service
-            .query_nodes_by_type("collection", None)
-            .await
-            .unwrap()
-            .remove(0)
-            .id;
+        activate_seeded_plays(&service).await;
 
         let chat_id = service
             .create_node(Node::new(
@@ -9539,74 +8917,36 @@ mod tests {
             ))
             .await
             .unwrap();
+        let page_id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "A page".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
 
-        let targets = service
+        let memberships = service
             .get_related_nodes(&chat_id, "member_of", "out")
             .await
             .unwrap();
-        assert_eq!(
-            targets.len(),
-            1,
-            "the new ai-chat node must have exactly one member_of edge"
+        assert!(
+            memberships.is_empty(),
+            "a new ai-chat must not be filed in any collection: {memberships:?}"
         );
-        assert_eq!(
-            targets[0].id, collection_id,
-            "the member_of edge must target the personal AI-chat collection"
-        );
-    }
 
-    /// Fail-closed (ADR-060 §1): if the invariant rule's action cannot
-    /// succeed — here, because `personal_collection_id` points at a
-    /// collection id that does not exist, simulating an unreachable
-    /// collection — the whole chat creation must fail, not silently create
-    /// an unrestricted chat. Simulated by corrupting the schema default to
-    /// an id with no backing node, which the schema-default stamping path
-    /// will still apply to the new node exactly as it would a real id.
-    #[tokio::test]
-    async fn test_ai_chat_creation_fails_closed_when_the_collection_is_unreachable() {
-        let (service, _temp) = create_test_service().await;
-        activate_ai_chat_privacy_play(&service).await;
-
-        let mut schema = service.get_schema_node("ai-chat").await.unwrap().unwrap();
-        schema
-            .get_field_mut("personal_collection_id")
-            .unwrap()
-            .default = Some(serde_json::json!("does-not-exist"));
-        let node = schema.into_node();
+        let chat = service.get_node(&chat_id).await.unwrap().unwrap();
         service
-            .store()
-            .update_node(
-                &node.id,
-                NodeUpdate {
-                    properties: Some(node.properties),
-                    ..Default::default()
-                },
-                None,
+            .move_node(
+                &chat_id,
+                chat.version,
+                Some(&page_id),
+                crate::services::InsertPosition::End,
             )
             .await
-            .unwrap();
-
-        let result = service
-            .create_node(Node::new(
-                "ai-chat".to_string(),
-                "Untitled".to_string(),
-                serde_json::json!({}),
-            ))
-            .await;
-
-        assert!(
-            result.is_err(),
-            "chat creation must fail closed when the invariant rule's \
-             add_relationship action cannot succeed, not silently create an \
-             unrestricted chat"
-        );
-
-        let chats = service.query_nodes_by_type("ai-chat", None).await.unwrap();
-        assert!(
-            chats.is_empty(),
-            "no ai-chat node may exist after a failed invariant rule — the \
-             whole transaction must have rolled back"
-        );
+            .expect("an ai-chat can be moved under a page");
+        let parent = service.get_parent(&chat_id).await.unwrap();
+        assert_eq!(parent.map(|p| p.id), Some(page_id));
     }
 
     // --- get_local_person / set_local_person_identity (ADR-037) ---
@@ -10245,119 +9585,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_merge_database_settings_keeps_other_keys() {
-        let (service, _temp) = create_test_service().await;
-
-        service
-            .merge_database_settings(&[("plugin:a", json!(1))])
-            .await
-            .unwrap();
-        service
-            .merge_database_settings(&[("plugin:b", json!("two"))])
-            .await
-            .unwrap();
-        // A null is stored as null; the key is not deleted.
-        service
-            .merge_database_settings(&[("plugin:a", Value::Null)])
-            .await
-            .unwrap();
-
-        let settings = service.database_settings().await.unwrap();
-        assert_eq!(settings.len(), 2, "both keys remain: {settings:?}");
-        assert_eq!(settings.get("plugin:a"), Some(&Value::Null));
-        assert_eq!(settings.get("plugin:b"), Some(&json!("two")));
-    }
-
-    #[tokio::test]
-    async fn test_merge_database_settings_writes_every_entry_of_one_call() {
-        let (service, _temp) = create_test_service().await;
-
-        service
-            .merge_database_settings(&[("plugin:a", json!(1)), ("plugin:b", json!({"n": 2}))])
-            .await
-            .unwrap();
-
-        let settings = service.database_settings().await.unwrap();
-        assert_eq!(settings.get("plugin:a"), Some(&json!(1)));
-        assert_eq!(settings.get("plugin:b"), Some(&json!({"n": 2})));
-        assert_eq!(settings.len(), 2, "no other keys appear: {settings:?}");
-    }
-
-    #[tokio::test]
-    async fn test_merge_database_settings_missing_singleton_is_initialization_error() {
-        let (service, _temp) = create_test_service().await;
-        let singleton = service
-            .get_node(DATABASE_SETTINGS_NODE_ID)
-            .await
-            .unwrap()
-            .expect("seeded singleton exists");
-        service
-            .delete_node(DATABASE_SETTINGS_NODE_ID, singleton.version)
-            .await
-            .unwrap();
-
-        assert!(service.database_settings().await.unwrap().is_empty());
-        let err = service
-            .merge_database_settings(&[("plugin:a", json!(1))])
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, NodeServiceError::InitializationError(_)),
-            "expected InitializationError, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn test_first_core_declared_key_rejects_declared_keys() {
-        let declared = vec!["core_a".to_string(), "core_b".to_string()];
-        let entries = [
-            ("plugin:x", json!(1)),
-            ("core_b", json!(2)),
-            ("core_a", json!(3)),
-        ];
-
-        // The first entry naming a declared key is the one reported.
-        assert_eq!(first_core_declared_key(&declared, &entries), Some("core_b"));
-        // Keys core does not declare pass.
-        assert_eq!(first_core_declared_key(&declared, &entries[..1]), None);
-        // An empty declared list, as core's compiled definition is today, rejects nothing.
-        assert_eq!(first_core_declared_key(&[], &entries), None);
-    }
-
-    #[tokio::test]
-    async fn test_merge_database_settings_rejects_declared_key_and_writes_nothing() {
-        let (service, _temp) = create_test_service().await;
-        let declared = vec!["core_a".to_string()];
-
-        // The clean entry precedes the declared one: neither may land.
-        let err = service
-            .merge_database_settings_rejecting(
-                &declared,
-                &[("plugin:ok", json!(1)), ("core_a", json!(2))],
-            )
-            .await
-            .unwrap_err();
-
-        assert!(
-            matches!(&err, NodeServiceError::InvalidUpdate(msg) if msg.contains("core_a")),
-            "expected InvalidUpdate naming the key, got {err:?}"
-        );
-        assert!(
-            service.database_settings().await.unwrap().is_empty(),
-            "a rejected merge must write nothing"
-        );
-    }
-
-    #[tokio::test]
     async fn test_create_second_database_settings_is_noop() {
         let (service, _temp) = create_test_service().await;
 
-        // Give the singleton some state, so the check below compares against
-        // more than an empty bucket.
-        service
-            .merge_database_settings(&[("plugin:seeded", json!(1))])
-            .await
-            .unwrap();
         let before = service
             .query_nodes_by_type("database-settings", None)
             .await

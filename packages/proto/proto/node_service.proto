@@ -306,7 +306,7 @@ message FindDuplicateRequest {
 // encodes `properties`. `resolution`/`resolved_at` are unset on an open record.
 message ConflictRecord {
   string id = 1;
-  string kind = 2;               // "unique_field_collision" | "collection_name_collision" | "superseded_edit" | "duplicate_reactive_create"
+  string kind = 2;               // "unique_field_collision" | "collection_name_collision"
   repeated string node_ids = 3;  // participants, sorted
   string detail = 4;             // JSON-encoded, kind-specific evidence
   string status = 5;             // "open" | "resolved" | "dismissed"

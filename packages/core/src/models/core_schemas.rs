@@ -522,46 +522,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             modified_at: now,
             is_core: true,
             schema_version: 1,
-            // `restrictedToMembers` (ADR-037 opt-in restriction) is stored at
-            // `properties.collection.restrictedToMembers` as a JSON boolean;
-            // absent or false means open (organizational). Locally it bounds
-            // embedding roots and marks the personal AI-chat collection. This
-            // path and type are a storage contract: access-control layers
-            // outside core read this exact path and treat any value whose text
-            // form is not `true` as unrestricted. Do not rename the field, move
-            // it out of the `collection` bucket, or store a non-boolean.
-            //
-            // A person's `member_of` edge to a collection carries
-            // `properties.permission`, one of `admin`, `modify` or `readOnly`;
-            // a content node's membership edge carries none. Core stores it as
-            // a free-form edge property (no schema field) and does not validate
-            // it; it reads `admin` back to find the personal AI-chat collection.
-            // This path and these values are a storage contract: access-control
-            // layers outside core read them directly and treat an absent value
-            // as `modify`.
-            fields: vec![SchemaField {
-                name: "restrictedToMembers".to_string(),
-                friendly_name: "Restricted to members".to_string(),
-                field_type: "boolean".to_string(),
-                local_only: false,
-                protection: SchemaProtectionLevel::Core,
-                core_values: None,
-                user_values: None,
-                indexed: false,
-                required: Some(false),
-                extensible: None,
-                default: Some(serde_json::json!(false)),
-                description: Some(
-                    "When true, only person members may access this collection's \
-                     nodes (ADR-037 opt-in restriction). Default false = open."
-                        .to_string(),
-                ),
-                item_type: None,
-                fields: None,
-                item_fields: None,
-                unique: None,
-                unique_case_insensitive: None,
-            }],
+            fields: vec![],
             relationships: vec![], // member_of is a native edge, not schema-defined
             title_template: None,
             properties_header_summary_template: None,
@@ -1571,8 +1532,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Database Settings schema — the singleton anchor for database-level
         // configuration and for the owner `has_role` edge (person → this node).
-        // Core declares no fields on it: extensions keep their own namespaced
-        // keys in its bucket (ADR-083, ADR-063).
+        // Core declares no fields on it.
         SchemaNode {
             id: "database-settings".to_string(),
             content: "Database Settings".to_string(),
@@ -1786,6 +1746,8 @@ mod tests {
             "quote-block",
             "ordered-list",
             "checkbox",
+            // A collection is grouping only (ADR-083 §5).
+            "collection",
         ] {
             let schema = schemas.iter().find(|s| s.id == *id).unwrap();
             assert!(
@@ -1794,21 +1756,6 @@ mod tests {
                 id
             );
         }
-    }
-
-    #[test]
-    fn test_collection_has_restricted_to_members_field() {
-        // ADR-037: opt-in restriction is a Core-protected boolean on collection.
-        // Its name, bucket and type are a storage contract (see the schema
-        // comment); this test pins them.
-        let schemas = get_core_schemas();
-        let collection = schemas.iter().find(|s| s.id == "collection").unwrap();
-        let field = collection
-            .get_field("restrictedToMembers")
-            .expect("collection has restrictedToMembers");
-        assert_eq!(field.field_type, "boolean");
-        assert_eq!(field.protection, SchemaProtectionLevel::Core);
-        assert_eq!(field.default, Some(serde_json::json!(false)));
     }
 
     #[test]
@@ -1911,7 +1858,7 @@ mod tests {
     #[test]
     fn test_database_settings_schema_declares_no_fields() {
         // database-settings is a Core singleton anchor. Core declares no fields
-        // on it; extensions store their own namespaced keys in its bucket.
+        // on it.
         let schemas = get_core_schemas();
         let settings = schemas
             .iter()

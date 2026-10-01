@@ -18,9 +18,9 @@ impl NodeService {
     /// descendants. A child has no meaning outside its root, so it never
     /// carries an embedding of its own — including a child of a
     /// non-embeddable root such as a `date` page or a `task`. The one
-    /// exception is a descendant whose access differs from its root's
-    /// (ADR-059 §7): it is cut out of the root's vector and is its own
-    /// embedding root. See [`crate::db::SqliteStore::embedding_root_id`].
+    /// exception is a non-person descendant holding a `member_of` edge
+    /// (ADR-059 §7, ADR-083 §5): it is cut out of the root's vector and is its
+    /// own embedding root. See [`crate::db::SqliteStore::embedding_root_id`].
     pub async fn get_embedding_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
         self.store
             .embedding_root_id(node_id)
@@ -478,11 +478,11 @@ mod former_embedding_root_tests {
     }
 
     /// ADR-059 §7 through a legitimate flow: outdenting a line makes it a root,
-    /// which may then be filed into a restricted collection. The open tree it
-    /// left must be re-embedded, or its vector keeps the line's meaning.
+    /// which may then be filed into a collection. The tree it left must be
+    /// re-embedded, or its vector keeps the line's meaning.
     #[tokio::test]
-    async fn outdent_then_file_into_restricted_collection_requeues_the_open_root() {
-        const RESTRICTED: &str = "22222222-0000-0000-0000-0000000000d1";
+    async fn outdent_then_file_into_collection_requeues_the_old_root() {
+        const COLLECTION: &str = "22222222-0000-0000-0000-0000000000d1";
         const STAYS: &str = "22222222-0000-0000-0000-0000000000c3";
 
         let (svc, _tmp) = two_trees().await;
@@ -490,12 +490,12 @@ mod former_embedding_root_tests {
         embed_fresh(&svc, &[ROOT_A]).await;
         assert!(aggregate(&svc, ROOT_A).await.contains("LINE_TEXT"));
         svc.create_node_with_parent(CreateNodeParams {
-            id: Some(RESTRICTED.into()),
+            id: Some(COLLECTION.into()),
             node_type: "collection".into(),
-            content: "Restricted".into(),
+            content: "Collection".into(),
             parent_id: None,
             position: InsertPositionOwned::End,
-            properties: serde_json::json!({ "collection": { "restrictedToMembers": true } }),
+            properties: serde_json::json!({}),
             lifecycle_status: None,
         })
         .await
@@ -505,13 +505,13 @@ mod former_embedding_root_tests {
             .await
             .unwrap();
         svc.store()
-            .add_to_collection(LINE, RESTRICTED, &serde_json::json!({}))
+            .add_to_collection(LINE, COLLECTION, &serde_json::json!({}))
             .await
             .expect("an outdented line is a root and may be filed");
 
         // The staleness check guards the fix: aggregation reads the tree
         // live, so only a queued root is ever rebuilt from it.
-        assert!(is_stale(&svc, ROOT_A).await, "the open tree LINE left");
+        assert!(is_stale(&svc, ROOT_A).await, "the tree LINE left");
         let rebuilt = aggregate(&svc, ROOT_A).await;
         assert!(
             rebuilt.contains("STAYS_TEXT") && !rebuilt.contains("LINE_TEXT"),

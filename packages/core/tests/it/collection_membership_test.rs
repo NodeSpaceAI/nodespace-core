@@ -448,11 +448,11 @@ mod collection_service_tests {
         let (store, node_service, _temp_dir) = create_test_services().await?;
         let collection_service = CollectionService::new(&store, &node_service);
 
-        let resolved = collection_service.resolve_path("admins-only").await?;
+        let resolved = collection_service.resolve_path("annotated").await?;
         let collection_id = resolved.leaf_id().to_string();
 
-        let node_id = "member-with-permission";
-        create_text_node(&store, node_id, "A privileged member").await?;
+        let node_id = "member-with-note";
+        create_text_node(&store, node_id, "An annotated member").await?;
 
         // No explicit `order` — this is the auto-order path that used to drop
         // every other attribute.
@@ -461,7 +461,7 @@ mod collection_service_tests {
                 node_id,
                 "member_of",
                 &collection_id,
-                serde_json::json!({"permission": "admin"}),
+                serde_json::json!({"note": "kept"}),
             )
             .await?;
 
@@ -474,8 +474,8 @@ mod collection_service_tests {
             .expect("member_of edge to the collection must be readable back");
 
         assert_eq!(
-            edge_properties.get("permission"),
-            Some(&serde_json::json!("admin")),
+            edge_properties.get("note"),
+            Some(&serde_json::json!("kept")),
             "a non-order edge attribute must survive add_to_collection, not be silently dropped"
         );
         assert!(
@@ -508,7 +508,7 @@ mod collection_service_tests {
             .add_to_collection(
                 node_id,
                 &collection_id,
-                &serde_json::json!({ "order": bogus_order, "permission": "viewer" }),
+                &serde_json::json!({ "order": bogus_order, "note": "kept" }),
             )
             .await?
             .expect("first membership insert must return the merged properties");
@@ -523,8 +523,8 @@ mod collection_service_tests {
             "the atomically-computed order must overwrite a caller-supplied order, not defer to it"
         );
         assert_eq!(
-            merged_props.get("permission"),
-            Some(&serde_json::json!("viewer")),
+            merged_props.get("note"),
+            Some(&serde_json::json!("kept")),
             "non-order attributes from edge_data must still survive the merge"
         );
 
@@ -1313,12 +1313,10 @@ mod collection_service_tests {
         // Get all collections with member counts
         let collections_with_counts = collection_service.get_all_collections_with_counts().await?;
 
-        // 4, not 3: every fresh install also seeds one "AI Chats" personal
-        // collection (ADR-061 §1), alongside collection-a/collection-b/empty-collection.
         assert_eq!(
             collections_with_counts.len(),
-            4,
-            "Should have 3 test collections plus the seeded AI Chats collection"
+            3,
+            "Should have exactly the 3 test collections"
         );
 
         // Verify member counts
@@ -1375,12 +1373,10 @@ mod collection_service_tests {
 
         let collections = collection_service.get_all_collections_with_counts().await?;
 
-        // 4, not 3: every fresh install also seeds one "AI Chats" personal
-        // collection (ADR-061 §1), alongside the test's own three.
         assert_eq!(
             collections.len(),
-            4,
-            "should have 3 test collections plus the seeded AI Chats collection"
+            3,
+            "should have exactly the 3 test collections"
         );
 
         let find = |name: &str| -> Option<Vec<String>> {
@@ -1445,12 +1441,10 @@ mod collection_service_tests {
 
         let collections = collection_service.get_all_collections_with_counts().await?;
 
-        // 4, not 3: every fresh install also seeds one "AI Chats" personal
-        // collection (ADR-061 §1), alongside the test's own three.
         assert_eq!(
             collections.len(),
-            4,
-            "should have 3 test collections plus the seeded AI Chats collection"
+            3,
+            "should have exactly the 3 test collections"
         );
 
         let find_parents = |name: &str| -> Option<Vec<String>> {

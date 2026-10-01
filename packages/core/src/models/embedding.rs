@@ -7,8 +7,9 @@
 //!
 //! - **Root-Aggregate**: Only root nodes (no parent) get embedded; the embedding
 //!   captures the semantic meaning of the entire document tree. The exception
-//!   is a descendant whose access differs from its root's (ADR-059 §7): it is
-//!   left out of the root's embedding and embedded as its own root
+//!   is a non-person descendant holding a `member_of` edge (ADR-059 §7,
+//!   ADR-083 §5): it is left out of the root's embedding and embedded as its
+//!   own root
 //! - **Chunking**: Large content is split into overlapping chunks (512 token limit)
 //! - **Staleness**: Embeddings track when they need re-generation
 //! - **Error Tracking**: Failed embedding attempts are logged for diagnostics

@@ -137,12 +137,10 @@ async fn reopening_a_database_does_not_duplicate_the_play() -> Result<()> {
         let mut store = Arc::new(SqliteStore::new(db_path.clone()).await?);
         let service = Arc::new(NodeService::new(&mut store).await?);
         let plays = service.query_nodes_by_type("play", None).await?;
-        // 2, not 1: every fresh install also seeds the ai-chat privacy Play
-        // (ADR-061 §3), alongside the parent-task-completion Play this test
-        // targets.
+        let ids: Vec<&str> = plays.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
-            plays.len(),
-            2,
+            ids,
+            [PARENT_TASK_COMPLETION_PLAY_ID],
             "core Plays must reconcile per id, not re-seed on every open"
         );
     }

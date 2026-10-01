@@ -22,12 +22,6 @@ pub enum ConflictKind {
     UniqueFieldCollision,
     /// Two active collections share a (case-folded) name.
     CollectionNameCollision,
-    /// A local edit was overwritten by last-writer-wins during sync apply.
-    /// Reserved for the Recovered Items fold-in (S2); no writer yet.
-    SupersededEdit,
-    /// N devices independently created a node for the same play trigger.
-    /// Reserved for the ADR-060 play work; no detection yet.
-    DuplicateReactiveCreate,
 }
 
 impl ConflictKind {
@@ -38,8 +32,6 @@ impl ConflictKind {
         match self {
             Self::UniqueFieldCollision => "unique_field_collision",
             Self::CollectionNameCollision => "collection_name_collision",
-            Self::SupersededEdit => "superseded_edit",
-            Self::DuplicateReactiveCreate => "duplicate_reactive_create",
         }
     }
 }
@@ -57,8 +49,6 @@ impl FromStr for ConflictKind {
         match s {
             "unique_field_collision" => Ok(Self::UniqueFieldCollision),
             "collection_name_collision" => Ok(Self::CollectionNameCollision),
-            "superseded_edit" => Ok(Self::SupersededEdit),
-            "duplicate_reactive_create" => Ok(Self::DuplicateReactiveCreate),
             other => Err(format!("unknown ConflictKind: '{other}'")),
         }
     }
@@ -187,10 +177,24 @@ mod tests {
         for kind in [
             ConflictKind::UniqueFieldCollision,
             ConflictKind::CollectionNameCollision,
-            ConflictKind::SupersededEdit,
-            ConflictKind::DuplicateReactiveCreate,
         ] {
             assert_eq!(ConflictKind::from_str(kind.as_str()).unwrap(), kind);
+        }
+    }
+
+    /// Only the kinds core detects locally parse. The two kinds that could
+    /// arise only from replicated writes are not part of the set; their wire
+    /// names are built from fragments so this file does not name them.
+    #[test]
+    fn conflict_kind_parses_only_locally_detected_kinds() {
+        for retired in [
+            ["superseded", "_edit"].concat(),
+            ["duplicate", "_reactive", "_create"].concat(),
+        ] {
+            assert!(
+                ConflictKind::from_str(&retired).is_err(),
+                "{retired} must not parse as a ConflictKind"
+            );
         }
     }
 

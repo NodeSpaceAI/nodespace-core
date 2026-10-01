@@ -663,9 +663,8 @@ impl SqliteStore {
         let title: Option<String> = row.get(4)?;
         let lifecycle_status: String = row.get(5)?;
         let version: i64 = row.get(6)?;
-        // col 7 = sync_seq (ignored)
-        let created_at_str: String = row.get(8)?;
-        let modified_at_str: String = row.get(9)?;
+        let created_at_str: String = row.get(7)?;
+        let modified_at_str: String = row.get(8)?;
 
         let properties: Value =
             serde_json::from_str(&properties_str).unwrap_or(serde_json::json!({}));
@@ -1544,8 +1543,8 @@ mod tests {
         );
 
         // An INTERIOR content node (has a `has_child` parent) is REJECTED. This is
-        // the CLI-path regression: filing an interior node into a (restricted or
-        // any) collection is refused with an actionable, node-naming error.
+        // the CLI-path regression: filing an interior node into any collection is
+        // refused with an actionable, node-naming error.
         let interior = store
             .create_child_node_atomic(&root_id, "text", "an interior child", json!({}), None)
             .await?;
@@ -1588,8 +1587,9 @@ mod tests {
             "the root-only rule must not touch non-member_of generic edges"
         );
 
-        // Person-node membership is EXEMPT (grantee membership, ADR-037 §4) — even
-        // when the person node is interior.
+        // Person-node membership is EXEMPT — it makes the person a member of the
+        // collection rather than filing the person as content — even when the
+        // person node is interior.
         let interior_person = store
             .create_child_node_atomic(&root_id, "person", "", json!({}), None)
             .await?;
@@ -1622,18 +1622,18 @@ mod tests {
             TreeInvariantRule::CollectionNotRoot
         );
 
-        // End-to-end: a restricted task inside an OPEN project still works. The
-        // project ROOT is filed into the open collection; the task lives under it
-        // as an interior node and carries NO membership of its own — its access
-        // rides its root. Creating it must succeed (it is not a membership write).
-        let project = Node::new("project".to_string(), "Open Project".to_string(), json!({}));
+        // End-to-end: a task inside a filed project still works. The project
+        // ROOT is filed into the collection; the task lives under it as an
+        // interior node and carries NO membership of its own — it is grouped with
+        // its root. Creating it must succeed (it is not a membership write).
+        let project = Node::new("project".to_string(), "Project".to_string(), json!({}));
         let project_id = project.id.clone();
         store.create_node(project, None, None).await?;
         store
             .add_to_collection(&project_id, &coll_id, &json!({}))
             .await?; // project root filed
         let task = store
-            .create_child_node_atomic(&project_id, "task", "a restricted task", json!({}), None)
+            .create_child_node_atomic(&project_id, "task", "a task", json!({}), None)
             .await?;
         assert!(
             store.get_node_memberships(&task.id).await?.is_empty(),
@@ -2093,22 +2093,6 @@ mod tests {
         assert_eq!(got[1].chunk_end, Some(200));
         assert_eq!(got[1].content_hash.as_deref(), Some("hash-5"));
 
-        // The legacy `origin` column is not in the insert list, so a new row
-        // takes the column default.
-        let mut rows = store
-            .read()
-            .await?
-            .query(
-                "SELECT origin FROM embedding WHERE node_id = ?1",
-                libsql::params![node.id.clone()],
-            )
-            .await?;
-        let mut origins = Vec::new();
-        while let Some(row) = rows.next().await? {
-            origins.push(row.get::<String>(0)?);
-        }
-        assert_eq!(origins, vec!["local", "local"], "new rows store 'local'");
-
         // A node with no embeddings reads back empty (not an error).
         let other = store
             .create_node(
@@ -2118,6 +2102,41 @@ mod tests {
             )
             .await?;
         assert!(store.get_embeddings(&other.id).await?.is_empty());
+        Ok(())
+    }
+
+    /// `row_to_node` reads the node table by column position, so every column
+    /// must land in its own field. Each column holds a value no other column
+    /// could produce (a title, a non-default lifecycle status and version, and
+    /// two different timestamps), so a shifted or transposed position fails.
+    #[tokio::test]
+    async fn test_row_to_node_round_trips_every_node_column() -> Result<()> {
+        let (store, _tmp) = create_test_store().await?;
+        store
+            .write()
+            .await
+            .execute(
+                "INSERT INTO node (id, node_type, content, properties, title, lifecycle_status, \
+                 version, created_at, modified_at) VALUES ('round-trip', 'text', 'body text', \
+                 '{\"text\":{\"marker\":7}}', 'A title', 'archived', 7, \
+                 '2026-01-02T03:04:05Z', '2026-02-03T04:05:06Z')",
+                (),
+            )
+            .await?;
+
+        let node = store
+            .get_node("round-trip")
+            .await?
+            .expect("the inserted row reads back");
+        assert_eq!(node.id, "round-trip");
+        assert_eq!(node.node_type, "text");
+        assert_eq!(node.content, "body text");
+        assert_eq!(node.properties, json!({"text": {"marker": 7}}));
+        assert_eq!(node.title.as_deref(), Some("A title"));
+        assert_eq!(node.lifecycle_status, "archived");
+        assert_eq!(node.version, 7);
+        assert_eq!(node.created_at.to_rfc3339(), "2026-01-02T03:04:05+00:00");
+        assert_eq!(node.modified_at.to_rfc3339(), "2026-02-03T04:05:06+00:00");
         Ok(())
     }
 
