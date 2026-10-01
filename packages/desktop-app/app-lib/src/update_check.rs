@@ -2,21 +2,25 @@
 //!
 //! Detection only, no auto-update: the running version comes from Tauri's
 //! `PackageInfo` (i.e. `tauri.conf.json`, the version the bundle actually ships
-//! as), the latest published version is read from the release source for this build
-//! variant — the public GitHub Releases API for a community build, or the
-//! cloud-worker `/pro/latest-version` proxy for a Pro build (the Pro app ships from
-//! a private repo it can't read directly) — and the two are compared with semver
-//! semantics (so `0.10.0` correctly beats `0.9.0`, which a lexicographic compare
-//! would get wrong). Sourcing the running
+//! as), the latest published version is read from the app's [`UpdateSource`],
+//! and the two are compared with semver semantics (so `0.10.0` correctly beats
+//! `0.9.0`, which a lexicographic compare would get wrong). Sourcing the running
 //! version from `PackageInfo` rather than `CARGO_PKG_VERSION` avoids a build that
 //! bumped `tauri.conf.json` but not `Cargo.toml` reporting a stale version and
 //! nagging against its own release.
 //!
+//! The update source is managed state: [`assemble`](crate::assemble) stores the
+//! one an app crate supplies through
+//! [`AppExtensions::update_source`](crate::AppExtensions::update_source), or the
+//! built-in source when it supplies none. In a default build the built-in source
+//! reads the public core repository's GitHub releases and downloads from its
+//! releases page.
+//!
 //! The check is best-effort and must never affect startup: any failure — offline,
 //! timeout, rate limit, a malformed or missing tag — resolves to "no update
 //! known" rather than surfacing an error. The pure comparison/parse helpers carry
-//! the logic and are unit-tested without touching the network; [`check_for_update`]
-//! is the thin I/O shell around them.
+//! the logic and are unit-tested without touching the network;
+//! [`check_for_update_for_app`] is the thin I/O shell around them.
 //!
 //! The frontend renders the surfacing (a non-blocking banner) by listening for the
 //! [`UPDATE_AVAILABLE_EVENT`] emitted at startup, or by invoking the
@@ -27,12 +31,10 @@
 
 use serde::Serialize;
 use std::time::Duration;
+use tauri::{AppHandle, Manager, Runtime};
 
-/// GitHub Releases "latest" endpoint for the public core repository. The latest
-/// published (non-draft, non-prerelease) release is what a **community** user can
-/// install.
-const LATEST_RELEASE_URL: &str =
-    "https://api.github.com/repos/NodeSpaceAI/nodespace-core/releases/latest";
+/// The public core repository, whose GitHub releases the built-in source reads.
+const CORE_REPO: &str = "NodeSpaceAI/nodespace-core";
 
 /// The page a user of the public source downloads a new release from.
 const RELEASES_PAGE_URL: &str = "https://github.com/NodeSpaceAI/nodespace-core/releases/latest";
@@ -56,6 +58,96 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// is available. The payload is [`UpdateStatus`]. No event is emitted when the app
 /// is current or the check fails, so the banner only ever appears on a real update.
 pub const UPDATE_AVAILABLE_EVENT: &str = "update://available";
+
+/// Where the app's update check looks for the latest version, and where the
+/// update banner's Download button sends the user.
+///
+/// An app crate supplies one through
+/// [`AppExtensions::update_source`](crate::AppExtensions::update_source); an app
+/// that supplies none uses the built-in source, which in a default build is
+/// [`UpdateSource::community`].
+/// The source is fixed when the app is built and stays the same for the life
+/// of the process. The running version it is compared with is always the one
+/// in the app's bundle config (`tauri.conf.json`), never one the source names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateSource {
+    /// Where the latest published version is read from.
+    pub latest: LatestVersionSource,
+    /// The page the banner's Download button opens when an update is found.
+    /// `None` hides Download, leaving the banner with only its dismiss action.
+    ///
+    /// Use an `http` or `https` URL. The banner opens it through the opener
+    /// plugin, whose default scope refuses other schemes, so Download would
+    /// then do nothing.
+    pub download_url: Option<&'static str>,
+}
+
+/// Where an [`UpdateSource`] reads the latest published version from.
+///
+/// Every failure to read it (offline, a timeout, a non-success status, a body
+/// of the wrong shape, or a version that is not semver) means "no update
+/// known": the check never reports an error and never shows the banner on one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LatestVersionSource {
+    /// The latest release of a GitHub repository, read from the public
+    /// `releases/latest` API, which skips drafts and prereleases. Its
+    /// `tag_name` is the version, with or without a leading `v`.
+    GitHubLatestRelease {
+        /// The repository as `owner/name`.
+        repo: &'static str,
+    },
+    /// An endpoint that answers a GET with a JSON object whose `version`
+    /// string is the latest version, as semver with or without a leading `v`,
+    /// for example `{"version": "v1.4.0"}`. Other fields are ignored.
+    VersionEndpoint {
+        /// The endpoint's full URL.
+        url: &'static str,
+    },
+}
+
+impl UpdateSource {
+    /// The public core repository's latest GitHub release, downloaded from its
+    /// releases page.
+    #[must_use]
+    pub const fn community() -> Self {
+        Self {
+            latest: LatestVersionSource::GitHubLatestRelease { repo: CORE_REPO },
+            download_url: Some(RELEASES_PAGE_URL),
+        }
+    }
+}
+
+/// The update source [`assemble`](crate::assemble) manages when an app crate
+/// supplies none.
+pub(crate) fn builtin_update_source() -> UpdateSource {
+    builtin_update_source_for(crate::daemon_setup::is_pro_build())
+}
+
+/// The built-in update source for a build with or without the in-core edition
+/// flag. Without it this is [`UpdateSource::community`]; with it, the in-core
+/// version endpoint, which names no download page.
+pub(crate) fn builtin_update_source_for(is_pro: bool) -> UpdateSource {
+    if is_pro {
+        UpdateSource {
+            latest: LatestVersionSource::VersionEndpoint {
+                url: PRO_LATEST_URL,
+            },
+            download_url: None,
+        }
+    } else {
+        UpdateSource::community()
+    }
+}
+
+/// The app's update source, in managed state for every update check to read.
+pub(crate) struct UpdateSourceState(pub UpdateSource);
+
+/// The update source managed on `app`, or the built-in one when the app was not
+/// built with [`assemble`](crate::assemble).
+pub(crate) fn update_source_for_app<R: Runtime>(app: &AppHandle<R>) -> UpdateSource {
+    app.try_state::<UpdateSourceState>()
+        .map_or_else(builtin_update_source, |state| state.0.clone())
+}
 
 /// The outcome of an update check. `latest` is `None` when the check could not
 /// determine a published version (offline, timeout, no release, bad payload);
@@ -132,36 +224,53 @@ fn status_from(current: &str, latest: Option<String>, download_url: Option<&str>
     }
 }
 
-/// Check whether a newer release exists than `current` (the running app version,
-/// passed in from Tauri's `PackageInfo`). Best-effort: every failure path resolves
-/// to [`UpdateStatus::no_update`], so the caller can treat the result uniformly and
-/// startup is never blocked or surfaced an error. Returns the current version
-/// always; the latest, the flag and the source's download location only when a
-/// newer version was positively determined.
-pub async fn check_for_update(current: &str) -> UpdateStatus {
-    // A Pro build tracks the PRIVATE nodespace-sync releases through the cloud-worker
-    // proxy (it can't read that repo directly); a community build tracks the public
-    // core repo. The comparison is the same either way; only the download location
-    // differs: the public source names its releases page, the other names none.
-    let (latest, download_url) = if crate::daemon_setup::is_pro_build() {
-        (fetch_pro_latest_version().await, None)
-    } else {
-        (fetch_latest_tag().await, Some(RELEASES_PAGE_URL))
-    };
-    status_from(current, latest, download_url)
+/// Check whether `app`'s update source has a newer release than the running app.
+///
+/// The running version is `app`'s `PackageInfo` version (the shipped
+/// `tauri.conf.json` version), and the source is the one managed on `app`, or
+/// the built-in one when `app` manages none. Best-effort: every failure path
+/// resolves to [`UpdateStatus::no_update`], so the caller can treat the result
+/// uniformly and startup is never blocked or surfaced an error. Returns the
+/// current version always; the latest, the flag and the source's download
+/// location only when a newer version was positively determined.
+pub async fn check_for_update_for_app<R: Runtime>(app: &AppHandle<R>) -> UpdateStatus {
+    let current = app.package_info().version.to_string();
+    let source = update_source_for_app(app);
+    let latest = fetch_latest_version(&source.latest).await;
+    if latest.is_none() {
+        // Expected when offline, but also what a mistyped source looks like.
+        tracing::debug!(source = ?source.latest, "update check found no latest version");
+    }
+    status_from(&current, latest, source.download_url)
 }
 
-/// Fetch the latest release tag from GitHub, swallowing every error to `None`.
-/// GitHub requires a `User-Agent`; the `Accept` header pins the stable v3 media
-/// type. Kept separate from [`check_for_update`] so the comparison logic above can
-/// be tested without the network.
-async fn fetch_latest_tag() -> Option<String> {
+/// Read the latest version from `source`, swallowing every error to `None`.
+async fn fetch_latest_version(source: &LatestVersionSource) -> Option<String> {
+    match source {
+        LatestVersionSource::GitHubLatestRelease { repo } => {
+            fetch_github_latest_release(repo).await
+        }
+        LatestVersionSource::VersionEndpoint { url } => fetch_version_endpoint(url).await,
+    }
+}
+
+/// The GitHub Releases "latest" API endpoint for `repo` (`owner/name`). It
+/// answers with the latest published (non-draft, non-prerelease) release.
+fn github_latest_release_url(repo: &str) -> String {
+    format!("https://api.github.com/repos/{repo}/releases/latest")
+}
+
+/// Fetch the latest release tag of `repo` from GitHub, swallowing every error to
+/// `None`. GitHub requires a `User-Agent`; the `Accept` header pins the stable v3
+/// media type. Kept separate from [`check_for_update_for_app`] so the comparison
+/// logic above can be tested without the network.
+async fn fetch_github_latest_release(repo: &str) -> Option<String> {
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
         .ok()?;
     let resp = client
-        .get(LATEST_RELEASE_URL)
+        .get(github_latest_release_url(repo))
         .header("User-Agent", "nodespace-app")
         .header("Accept", "application/vnd.github+json")
         .send()
@@ -174,12 +283,12 @@ async fn fetch_latest_tag() -> Option<String> {
     latest_tag_from_json(&body)
 }
 
-/// Extract the version from the cloud-worker `/pro/latest-version` body. Pure so the
-/// parsing is unit-tested without a live call. The worker returns
-/// `{ "version": "v0.1.0", … }` on success, or `{ "error": "…" }` (no `version`)
-/// when it is unconfigured or upstream failed — the latter yields `None`, so a Pro
-/// client whose endpoint isn't set up simply sees "no update known".
-fn pro_version_from_json(body: &str) -> Option<String> {
+/// Extract the `version` from a version endpoint's body. Pure so the parsing is
+/// unit-tested without a live call. An endpoint answers `{ "version": "v0.1.0", … }`
+/// when it knows the latest version; any other body (an `{ "error": "…" }`
+/// document, an empty version, not JSON) yields `None`, so an endpoint that is
+/// unconfigured or failing simply means "no update known".
+fn version_from_endpoint_json(body: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     value
         .get("version")?
@@ -188,18 +297,17 @@ fn pro_version_from_json(body: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Fetch the latest Pro release version from the cloud-worker proxy, swallowing
-/// every error to `None` (offline, timeout, 503-unconfigured, 5xx, malformed body).
-/// The worker holds the private-repo token; the client only ever receives a version
-/// string. Kept separate from [`check_for_update`] so [`pro_version_from_json`] is
-/// testable without the network.
-async fn fetch_pro_latest_version() -> Option<String> {
+/// Fetch the latest version from the version endpoint at `url`, swallowing every
+/// error to `None` (offline, timeout, a non-success status, a malformed body).
+/// Kept separate from [`check_for_update_for_app`] so
+/// [`version_from_endpoint_json`] is testable without the network.
+async fn fetch_version_endpoint(url: &str) -> Option<String> {
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
         .ok()?;
     let resp = client
-        .get(PRO_LATEST_URL)
+        .get(url)
         .header("User-Agent", "nodespace-app")
         .header("Accept", "application/json")
         .send()
@@ -209,16 +317,15 @@ async fn fetch_pro_latest_version() -> Option<String> {
         return None;
     }
     let body = resp.text().await.ok()?;
-    pro_version_from_json(&body)
+    version_from_endpoint_json(&body)
 }
 
 /// Tauri command: run an update check on demand (e.g. from a "check for updates"
-/// menu item or on mount). Never errors — returns [`UpdateStatus`]. The running
-/// version is taken from `PackageInfo` (the shipped `tauri.conf.json` version).
+/// menu item or on mount), against the same update source as the startup check.
+/// Never errors — returns [`UpdateStatus`].
 #[tauri::command]
 pub async fn check_for_update_command(app: tauri::AppHandle) -> UpdateStatus {
-    let current = app.package_info().version.to_string();
-    check_for_update(&current).await
+    check_for_update_for_app(&app).await
 }
 
 #[cfg(test)]
@@ -279,26 +386,66 @@ mod tests {
     }
 
     #[test]
-    fn pro_version_parsed_from_worker_json() {
-        // The cloud-worker returns `version` (not GitHub's `tag_name`).
-        let body = r#"{"version":"v0.1.0","name":"NodeSpace Pro v0.1.0","published_at":"2026-08-01T12:00:00Z"}"#;
-        assert_eq!(pro_version_from_json(body).as_deref(), Some("v0.1.0"));
-        // And it feeds the same semver comparison as the community path.
+    fn version_endpoint_body_parsed() {
+        // A version endpoint answers `version` (not GitHub's `tag_name`), and
+        // other fields are ignored.
+        let body =
+            r#"{"version":"v0.1.0","name":"Release v0.1.0","published_at":"2026-08-01T12:00:00Z"}"#;
+        assert_eq!(version_from_endpoint_json(body).as_deref(), Some("v0.1.0"));
+        // And it feeds the same semver comparison as a GitHub release tag.
         assert!(update_available(
             "0.1.0",
-            &pro_version_from_json(r#"{"version":"0.2.0"}"#).unwrap()
+            &version_from_endpoint_json(r#"{"version":"0.2.0"}"#).unwrap()
         ));
     }
 
     #[test]
-    fn pro_unconfigured_or_error_body_yields_none() {
-        // 503-unconfigured / upstream-error bodies carry `error`, not `version`.
+    fn version_endpoint_error_body_yields_none() {
+        // An unconfigured or failing endpoint answers `error`, not `version`.
         assert_eq!(
-            pro_version_from_json(r#"{"error":"pro_release_detection_unconfigured"}"#),
+            version_from_endpoint_json(r#"{"error":"release_detection_unconfigured"}"#),
             None
         );
-        assert_eq!(pro_version_from_json(r#"{"version":""}"#), None);
-        assert_eq!(pro_version_from_json("not json"), None);
+        assert_eq!(version_from_endpoint_json(r#"{"version":""}"#), None);
+        assert_eq!(version_from_endpoint_json("not json"), None);
+    }
+
+    #[test]
+    fn community_source_targets_the_public_release_endpoint() {
+        let LatestVersionSource::GitHubLatestRelease { repo } = UpdateSource::community().latest
+        else {
+            panic!("the community source reads a GitHub release");
+        };
+        assert_eq!(
+            github_latest_release_url(repo),
+            "https://api.github.com/repos/NodeSpaceAI/nodespace-core/releases/latest"
+        );
+    }
+
+    #[test]
+    fn community_source_downloads_from_the_releases_page() {
+        assert_eq!(
+            UpdateSource::community().download_url,
+            Some("https://github.com/NodeSpaceAI/nodespace-core/releases/latest")
+        );
+    }
+
+    #[test]
+    fn builtin_source_without_the_edition_flag_is_community() {
+        assert_eq!(builtin_update_source_for(false), UpdateSource::community());
+    }
+
+    #[test]
+    fn builtin_source_with_the_edition_flag_is_the_in_core_endpoint_without_a_download() {
+        assert_eq!(
+            builtin_update_source_for(true),
+            UpdateSource {
+                latest: LatestVersionSource::VersionEndpoint {
+                    url: PRO_LATEST_URL
+                },
+                download_url: None,
+            }
+        );
     }
 
     #[test]

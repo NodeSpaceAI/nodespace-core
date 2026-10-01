@@ -15,6 +15,9 @@
 //! ([`AppExtensions::on_daemon_ready`]) and react when the shared gRPC channel
 //! is rebuilt ([`AppExtensions::on_channel_rebuilt`]). Both ride the channel
 //! core owns, so an extension never dials the daemon socket itself.
+//!
+//! An extension can also decide where the app's update check looks and what
+//! the update banner's Download button opens ([`AppExtensions::update_source`]).
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -28,7 +31,9 @@ use tauri::plugin::Plugin;
 use tauri::{AppHandle, Builder, Manager, Runtime};
 
 use crate::services::GrpcClient;
+use crate::update_check::{builtin_update_source, UpdateSourceState};
 
+pub use crate::update_check::{LatestVersionSource, UpdateSource};
 pub use tokio_util::sync::CancellationToken;
 pub use tonic::transport::Channel;
 
@@ -111,6 +116,7 @@ pub struct AppExtensions<R: Runtime = tauri::Wry> {
     plugins: Vec<Box<dyn Plugin<R>>>,
     daemon_ready: Vec<DaemonReadyTask<R>>,
     channel_rebuilt: Vec<ChannelRebuiltHook<R>>,
+    update_source: Option<UpdateSource>,
 }
 
 /// What a daemon-ready task receives when core starts it.
@@ -145,6 +151,7 @@ impl<R: Runtime> AppExtensions<R> {
             plugins: Vec::new(),
             daemon_ready: Vec::new(),
             channel_rebuilt: Vec::new(),
+            update_source: None,
         }
     }
 
@@ -240,6 +247,33 @@ impl<R: Runtime> AppExtensions<R> {
             .push(Arc::new(move |app, channel| hook(app, channel).boxed()));
         self
     }
+
+    /// Sets where the app's update check looks for the latest version and
+    /// what the update banner's Download button opens. If it is called more
+    /// than once, the last call wins. Without it the app uses core's built-in
+    /// source, which in a default build is [`UpdateSource::community`].
+    ///
+    /// * **Fixed for the process.** [`assemble`] stores the source when the app
+    ///   is built. The check at startup and every on-demand check from the
+    ///   frontend read that one source, and nothing changes it afterwards.
+    /// * **The running version is the app's own.** The check compares the
+    ///   latest version with the version in the app's bundle config
+    ///   (`tauri.conf.json`), so an app crate that ships its own version
+    ///   numbers sets them there.
+    /// * **A version endpoint's shape is fixed.** A
+    ///   [`LatestVersionSource::VersionEndpoint`] must answer a GET with JSON
+    ///   carrying a `version` string, as semver with or without a leading `v`:
+    ///   `{"version": "1.4.0"}` or `{"version": "v1.4.0"}`. Any other answer
+    ///   means "no update known", and the banner does not appear.
+    /// * **`download_url: None` hides Download.** The banner then shows the
+    ///   update without a way to fetch it, so a source that names no page
+    ///   leaves getting the update to the app crate. A page it does name must
+    ///   be an `http` or `https` URL, the only schemes the banner can open.
+    #[must_use]
+    pub fn update_source(mut self, source: UpdateSource) -> Self {
+        self.update_source = Some(source);
+        self
+    }
 }
 
 // Not derived: `#[derive(Default)]` would require `R: Default`, and a runtime
@@ -255,12 +289,14 @@ impl<R: Runtime> Default for AppExtensions<R> {
 /// This is the extension half of building the app. It registers each extension
 /// plugin, in the order it was added, and manages the daemon-ready tasks and
 /// channel-rebuilt hooks where core's startup and channel recovery find them
-/// (`ExtensionHooks`, which is managed even when there are none). Core's own
-/// plugins, commands and setup are applied by the desktop entry point, `run`,
-/// around this call.
+/// (`ExtensionHooks`, which is managed even when there are none). It also
+/// manages the update source every update check reads: the extension's, or
+/// core's built-in one when the extension sets none. Core's own plugins,
+/// commands and setup are applied by the desktop entry point, `run`, around
+/// this call.
 ///
-/// Call it once per builder: the hook state is managed state, and Tauri
-/// refuses to manage one type twice.
+/// Call it once per builder: the hook state and the update source are managed
+/// state, and Tauri refuses to manage one type twice.
 ///
 /// # Plugins
 ///
@@ -305,6 +341,11 @@ pub fn assemble<R: Runtime>(mut builder: Builder<R>, extensions: AppExtensions<R
         }
         builder = builder.plugin_boxed(plugin);
     }
+    builder = builder.manage(UpdateSourceState(
+        extensions
+            .update_source
+            .unwrap_or_else(builtin_update_source),
+    ));
     builder.manage(ExtensionHooks {
         daemon_ready: Mutex::new(extensions.daemon_ready),
         channel_rebuilt: extensions.channel_rebuilt,
