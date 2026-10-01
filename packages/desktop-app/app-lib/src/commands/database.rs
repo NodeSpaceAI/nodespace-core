@@ -46,13 +46,6 @@ pub struct DatabaseEntry {
     pub status: String,
     pub created_at: String,
     pub last_opened_at: Option<String>,
-    /// The cloud tenant schema this database is bound to (ADR-053); `None` when
-    /// the database is local-only (not bound to any tenant).
-    pub bound_tenant_schema: Option<String>,
-    /// The default (landing) collection id within the bound tenant (ADR-053), a
-    /// per-install root; `None` on the public/legacy tenant, where the
-    /// frontend falls back to the well-known root id for tree filtering.
-    pub bound_tenant_collection: Option<String>,
     /// Opaque per-database keys the registry stores for extensions. Core reads
     /// none of them; they pass through to the frontend unchanged.
     pub extensions: std::collections::BTreeMap<String, String>,
@@ -87,8 +80,6 @@ fn to_entry(info: DatabaseInfo) -> DatabaseEntry {
         status: status_str(info.status),
         created_at: info.created_at,
         last_opened_at: info.last_opened_at,
-        bound_tenant_schema: info.bound_tenant_schema,
-        bound_tenant_collection: info.bound_tenant_collection,
         extensions: info.extensions.into_iter().collect(),
     }
 }
@@ -261,5 +252,45 @@ mod tests {
         let json = serde_json::to_value(&entry).unwrap();
         assert_eq!(json["extensions"]["plugin_state"], "keep");
         assert_eq!(json["extensions"]["plugin_label"], "blue");
+    }
+
+    /// The DTO serializes exactly the registry's own fields and the opaque
+    /// `extensions` map, in camelCase. It carries no binding fields of its
+    /// own; the needle is built from fragments because this is an absence
+    /// test.
+    #[test]
+    fn the_dto_serializes_only_registry_fields_and_extensions() {
+        let entry = to_entry(DatabaseInfo {
+            id: "01J00000000000000000000000".into(),
+            last_opened_at: Some("2026-01-02T03:04:05Z".into()),
+            ..Default::default()
+        });
+
+        let json = serde_json::to_value(&entry).unwrap();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "createdAt",
+                "extensions",
+                "id",
+                "isDefault",
+                "lastOpenedAt",
+                "name",
+                "path",
+                "status",
+            ]
+        );
+        let needle = ["ten", "ant"].concat();
+        assert!(
+            keys.iter().all(|k| !k.to_lowercase().contains(&needle)),
+            "the DTO must carry no binding keys: {keys:?}"
+        );
     }
 }

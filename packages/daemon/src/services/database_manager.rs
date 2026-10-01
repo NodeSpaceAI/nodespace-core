@@ -12,7 +12,7 @@
 //! separate from the `SettingsService`-owned `daemon.toml` so the two writers
 //! never clobber each other's sections.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
@@ -94,20 +94,44 @@ pub struct DatabaseEntry {
     /// Last time the database was opened, if ever.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_opened_at: Option<DateTime<Utc>>,
-    /// The cloud tenant schema this database binds to (ADR-053 per-database cloud
-    /// sync), mirrored from the database's DatabaseSettingsNode so the bound
-    /// tenant can be shown before the database is opened. Empty until bound.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bound_tenant_schema: Option<String>,
-    /// The default collection id within the bound tenant, mirrored alongside
-    /// `bound_tenant_schema`. Empty until bound.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bound_tenant_collection: Option<String>,
-    /// Keys of this entry that the registry does not define, kept verbatim
-    /// through every load and save. Core interprets none of them; an extension
-    /// stores its per-database values here (ADR-083).
-    #[serde(flatten)]
-    pub extensions: toml::Table,
+    /// Keys an extension stores for this database, string to string, written
+    /// beside the fields above and kept verbatim through every load and save.
+    /// Core interprets none of them (ADR-083 §3); they are written through
+    /// [`DatabaseManager::set_extensions`], which refuses the keys above
+    /// ([`DEFINED_ENTRY_KEYS`]).
+    ///
+    /// Values are strings only. An entry carrying any other value (an
+    /// integer, boolean, datetime, array or table) fails the registry load
+    /// with an error naming the key, rather than having the value dropped
+    /// and then erased from the file by the next save: nothing in core
+    /// writes one, so it can only come from editing the file by hand.
+    #[serde(flatten, deserialize_with = "deserialize_string_extensions")]
+    pub extensions: BTreeMap<String, String>,
+}
+
+/// The keys of a `[[databases]]` entry that the registry defines itself, as
+/// opposed to the extension keys stored beside them. An extension key may
+/// not reuse one: on the next load it would be read as the defined field.
+const DEFINED_ENTRY_KEYS: [&str; 5] = ["id", "name", "path", "created_at", "last_opened_at"];
+
+/// Deserialize an entry's extension keys, refusing any value that is not a
+/// string (see [`DatabaseEntry::extensions`]).
+fn deserialize_string_extensions<'de, D>(
+    deserializer: D,
+) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    BTreeMap::<String, toml::Value>::deserialize(deserializer)?
+        .into_iter()
+        .map(|(key, value)| match value {
+            toml::Value::String(value) => Ok((key, value)),
+            other => Err(serde::de::Error::custom(format!(
+                "extension key `{key}` holds a {}, but registry extension keys hold strings only",
+                other.type_str()
+            ))),
+        })
+        .collect()
 }
 
 /// Runtime status of a registered database, derived at read time.
@@ -579,8 +603,8 @@ impl DatabaseManager {
     ///
     /// Every registry mutator below funnels through this one helper so that
     /// property holds everywhere, not just in whichever mutator happened to
-    /// get it right — which is exactly how `set_default`/`set_bound_tenant`
-    /// first shipped without it.
+    /// get it right — which is exactly how `set_default` first shipped
+    /// without it.
     ///
     /// One residual gap this does not close: cancellation *inside*
     /// `candidate.save(..)` itself, below — see the note on
@@ -623,7 +647,7 @@ impl DatabaseManager {
     ///
     /// Removes at most one entry, by `id`'s first match — consistent with
     /// every other lookup in this file (`rename`, `set_default`,
-    /// `set_bound_tenant`, `get_or_open`, `resolve_database_id`, `Registry::find`
+    /// `set_extensions`, `get_or_open`, `resolve_database_id`, `Registry::find`
     /// all resolve `id` to a single entry), and with [`DatabaseId`]'s own
     /// contract as a unique key. A registry file that was hand-edited into
     /// having duplicate ids is already in an unsupported state; leaving a
@@ -704,26 +728,45 @@ impl DatabaseManager {
         .await
     }
 
-    /// Mirror a database's bound cloud tenant into the registry (ADR-053
-    /// per-database cloud sync) so the binding can be shown before the database
-    /// is opened. Pass `None` to clear it on unbind. The authoritative record is
-    /// the database's DatabaseSettingsNode; this registry field is a display
-    /// mirror kept in step with it. Persists via [`Self::mutate_and_save`]:
-    /// the new binding is saved before it ever becomes the live registry, so
-    /// a failed (or cancelled) save leaves the previous binding in place.
-    pub async fn set_bound_tenant(
+    /// Write extension keys on a registered database's entry (ADR-083 §3).
+    ///
+    /// Each `(key, value)` sets `key` to `value`, or removes it when the value
+    /// is `None`. The entries apply in order, so a repeated key ends with its
+    /// last value, and all of them land in one save. Core interprets none of
+    /// the keys or values. A key the registry defines itself
+    /// ([`DEFINED_ENTRY_KEYS`]) is rejected before anything is written, and an
+    /// unregistered `id` fails as not found. Persists via
+    /// [`Self::mutate_and_save`]: a failed (or cancelled) save leaves the
+    /// previous keys in place, and only a successful one notifies
+    /// [`Self::subscribe_changes`] subscribers.
+    pub async fn set_extensions(
         &self,
         id: &DatabaseId,
-        schema: Option<String>,
-        collection: Option<String>,
+        entries: &[(String, Option<String>)],
     ) -> Result<()> {
+        if let Some((key, _)) = entries
+            .iter()
+            .find(|(key, _)| DEFINED_ENTRY_KEYS.contains(&key.as_str()))
+        {
+            return Err(anyhow!(
+                "`{key}` is a key the database registry defines; it cannot be set as an extension key"
+            ));
+        }
         let registry = self.registry.write().await;
         registry.find_or_err(id)?;
         self.mutate_and_save(registry, |registry| {
             let mut next = registry.clone();
             if let Some(entry) = next.databases.iter_mut().find(|e| &e.id == id) {
-                entry.bound_tenant_schema = schema;
-                entry.bound_tenant_collection = collection;
+                for (key, value) in entries {
+                    match value {
+                        Some(value) => {
+                            entry.extensions.insert(key.clone(), value.clone());
+                        }
+                        None => {
+                            entry.extensions.remove(key);
+                        }
+                    }
+                }
             }
             next
         })
@@ -779,9 +822,7 @@ impl DatabaseManager {
                     path,
                     created_at: Utc::now(),
                     last_opened_at: None,
-                    bound_tenant_schema: None,
-                    bound_tenant_collection: None,
-                    extensions: toml::Table::new(),
+                    extensions: BTreeMap::new(),
                 });
                 next.default_database = Some(id.clone());
                 next
@@ -865,9 +906,7 @@ impl DatabaseManager {
                     path: standard_path.clone(),
                     created_at: Utc::now(),
                     last_opened_at: None,
-                    bound_tenant_schema: None,
-                    bound_tenant_collection: None,
-                    extensions: toml::Table::new(),
+                    extensions: BTreeMap::new(),
                 });
                 next.default_database = Some(id.clone());
                 next
@@ -1172,9 +1211,7 @@ impl DatabaseManager {
             path,
             created_at: Utc::now(),
             last_opened_at: None,
-            bound_tenant_schema: None,
-            bound_tenant_collection: None,
-            extensions: toml::Table::new(),
+            extensions: BTreeMap::new(),
         };
         self.mutate_and_save(registry, {
             let entry = entry.clone();
@@ -1473,55 +1510,8 @@ mod tests {
         assert_eq!(mgr.list().await.default_database.as_ref(), Some(&second.id));
     }
 
-    #[tokio::test]
-    async fn set_bound_tenant_mirrors_persists_and_clears() {
-        let (mgr, _dir, path) = temp_manager().await;
-        let id = mgr
-            .ensure_default_registered("Default".into(), PathBuf::from("/tmp/ns.db"))
-            .await
-            .unwrap();
-
-        // Fresh registrations are unbound.
-        let snap = mgr.list().await;
-        assert_eq!(snap.databases[0].entry.bound_tenant_schema, None);
-        assert_eq!(snap.databases[0].entry.bound_tenant_collection, None);
-
-        mgr.set_bound_tenant(&id, Some("tenant_demo".into()), Some("c0".into()))
-            .await
-            .unwrap();
-        let snap = mgr.list().await;
-        assert_eq!(
-            snap.databases[0].entry.bound_tenant_schema.as_deref(),
-            Some("tenant_demo")
-        );
-        assert_eq!(
-            snap.databases[0].entry.bound_tenant_collection.as_deref(),
-            Some("c0")
-        );
-
-        // The binding survives a reload — the mirror is persisted to the registry.
-        drop(mgr);
-        let mgr = DatabaseManager::load(path, test_context()).await.unwrap();
-        let snap = mgr.list().await;
-        assert_eq!(
-            snap.databases[0].entry.bound_tenant_schema.as_deref(),
-            Some("tenant_demo")
-        );
-        assert!(
-            snap.databases[0].entry.extensions.is_empty(),
-            "keys the registry defines must load into their typed fields, not into extensions"
-        );
-
-        // Unbind clears the mirror.
-        mgr.set_bound_tenant(&id, None, None).await.unwrap();
-        let snap = mgr.list().await;
-        assert_eq!(snap.databases[0].entry.bound_tenant_schema, None);
-        assert_eq!(snap.databases[0].entry.bound_tenant_collection, None);
-    }
-
-    /// A `databases.toml` whose one entry carries keys the registry does not
-    /// define: a string, a table sorted before it, and a native TOML datetime.
-    /// They stand in for an extension's per-database values.
+    /// A `databases.toml` whose one entry carries two extension keys beside
+    /// the fields the registry defines.
     const REGISTRY_WITH_EXTENSION_KEYS: &str = r#"
 default_database = "01J00000000000000000000000"
 
@@ -1531,18 +1521,50 @@ name = "Work"
 path = "/tmp/work.db"
 created_at = "2026-01-02T03:04:05Z"
 plugin_state = "keep"
-plugin_seen = 2026-02-03T04:05:06Z
-
-[databases.extra]
-level = 3
-labels = ["a", "b"]
+plugin_label = "blue"
 "#;
 
-    /// An entry may carry keys the registry does not define. They load into
-    /// `extensions` verbatim, leave the defined fields intact, and survive a
-    /// save and reload — a save used to drop them silently.
+    /// A registry file whose one entry carries `line` beside the fields the
+    /// registry defines.
+    fn registry_with_entry_line(line: &str) -> String {
+        format!(
+            "[[databases]]\nid = \"01J00000000000000000000000\"\nname = \"Work\"\n\
+             path = \"/tmp/work.db\"\ncreated_at = \"2026-01-02T03:04:05Z\"\n{line}\n"
+        )
+    }
+
+    /// Register one database and return the manager, its temp dir, the
+    /// registry path and the database's id.
+    async fn manager_with_one_database() -> (DatabaseManager, tempfile::TempDir, PathBuf, DatabaseId)
+    {
+        let (mgr, dir, registry_path) = temp_manager().await;
+        let id = mgr
+            .ensure_default_registered("Default".into(), dir.path().join("db"))
+            .await
+            .unwrap();
+        (mgr, dir, registry_path, id)
+    }
+
+    fn set(key: &str, value: &str) -> (String, Option<String>) {
+        (key.to_string(), Some(value.to_string()))
+    }
+
+    fn unset(key: &str) -> (String, Option<String>) {
+        (key.to_string(), None)
+    }
+
+    fn string_map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// Extension keys load as strings beside the defined fields, survive a
+    /// save and reload, and a second save of what was loaded writes the same
+    /// file.
     #[tokio::test]
-    async fn registry_round_trips_entry_keys_it_does_not_define() {
+    async fn extension_keys_round_trip_through_load_and_save() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("databases.toml");
         std::fs::write(&path, REGISTRY_WITH_EXTENSION_KEYS).unwrap();
@@ -1554,15 +1576,9 @@ labels = ["a", "b"]
         assert_eq!(entry.path, PathBuf::from("/tmp/work.db"));
         assert_eq!(entry.created_at.to_rfc3339(), "2026-01-02T03:04:05+00:00");
         assert_eq!(
-            entry.extensions.get("plugin_state"),
-            Some(&toml::Value::String("keep".into()))
-        );
-        assert_eq!(entry.extensions["extra"]["level"].as_integer(), Some(3));
-        assert!(entry.extensions["plugin_seen"].is_datetime());
-        assert_eq!(
-            entry.extensions.len(),
-            3,
-            "defined keys must not also appear in extensions"
+            entry.extensions,
+            string_map(&[("plugin_label", "blue"), ("plugin_state", "keep")]),
+            "only the keys the registry does not define load into extensions"
         );
 
         loaded.save(&path).await.unwrap();
@@ -1573,13 +1589,250 @@ labels = ["a", "b"]
         assert_eq!(reloaded.databases[0].created_at, entry.created_at);
         assert_eq!(reloaded.default_database, loaded.default_database);
 
-        // A second save of what was just loaded writes the same file.
         reloaded.save(&path).await.unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
     }
 
+    /// A value that is not a string is never carried: the registry fails to
+    /// load, with an error naming the key, for every TOML value type other
+    /// than a string.
+    #[tokio::test]
+    async fn a_non_string_extension_value_fails_the_registry_load() {
+        let cases = [
+            ("plugin_count = 3", "integer"),
+            ("plugin_ratio = 0.5", "float"),
+            ("plugin_flag = true", "boolean"),
+            ("plugin_seen = 2026-02-03T04:05:06Z", "datetime"),
+            ("plugin_labels = [\"a\", \"b\"]", "array"),
+            ("plugin_extra = { level = 3 }", "table"),
+        ];
+        for (line, kind) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("databases.toml");
+            std::fs::write(&path, registry_with_entry_line(line)).unwrap();
+            let key = line.split(' ').next().unwrap();
+
+            let err = format!("{:#}", Registry::load(&path).await.unwrap_err());
+            assert!(
+                err.contains(&format!("extension key `{key}` holds a {kind}"))
+                    && err.contains("strings only"),
+                "a {kind} value must fail the load naming `{key}`, got: {err}"
+            );
+            assert!(
+                DatabaseManager::load(path, test_context()).await.is_err(),
+                "the manager must not start on a registry carrying a {kind} value"
+            );
+        }
+
+        // The same entry with a string value loads, so the failures above
+        // come from the value's type alone.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("databases.toml");
+        std::fs::write(&path, registry_with_entry_line("plugin_count = \"3\"")).unwrap();
+        let loaded = Registry::load(&path).await.unwrap();
+        assert_eq!(
+            loaded.databases[0].extensions,
+            string_map(&[("plugin_count", "3")])
+        );
+    }
+
+    /// `DEFINED_ENTRY_KEYS` is exactly the set of keys a fully populated entry
+    /// serializes, so a field added to `DatabaseEntry` cannot be shadowed by
+    /// an extension key that `set_extensions` failed to refuse.
+    #[test]
+    fn defined_entry_keys_match_the_serialized_entry() {
+        let entry = DatabaseEntry {
+            id: DatabaseId::from("01J00000000000000000000000".to_string()),
+            name: "Work".into(),
+            path: PathBuf::from("/tmp/work.db"),
+            created_at: Utc::now(),
+            last_opened_at: Some(Utc::now()),
+            extensions: BTreeMap::new(),
+        };
+        let table: BTreeMap<String, toml::Value> =
+            toml::from_str(&toml::to_string(&entry).unwrap()).unwrap();
+        let mut serialized: Vec<&str> = table.keys().map(String::as_str).collect();
+        let mut defined = DEFINED_ENTRY_KEYS.to_vec();
+        serialized.sort_unstable();
+        defined.sort_unstable();
+        assert_eq!(serialized, defined);
+    }
+
+    /// Several keys land in one save: subscribers see exactly one change, and
+    /// the keys are on disk afterwards.
+    #[tokio::test]
+    async fn set_extensions_writes_every_entry_in_one_save() {
+        let (mgr, _dir, registry_path, id) = manager_with_one_database().await;
+        let before = *mgr.subscribe_changes().borrow();
+
+        mgr.set_extensions(
+            &id,
+            &[
+                set("plugin_state", "keep"),
+                set("plugin_label", "blue"),
+                set("plugin_mode", "on"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let after = *mgr.subscribe_changes().borrow();
+        assert_eq!(
+            after.wrapping_sub(before),
+            1,
+            "all entries must be written in a single save"
+        );
+        let expected = string_map(&[
+            ("plugin_label", "blue"),
+            ("plugin_mode", "on"),
+            ("plugin_state", "keep"),
+        ]);
+        assert_eq!(mgr.list().await.databases[0].entry.extensions, expected);
+        let on_disk = Registry::load(&registry_path).await.unwrap();
+        assert_eq!(on_disk.databases[0].extensions, expected);
+    }
+
+    /// `None` removes a key and leaves the others; a later entry for the same
+    /// key wins over an earlier one.
+    #[tokio::test]
+    async fn set_extensions_none_removes_a_key() {
+        let (mgr, _dir, registry_path, id) = manager_with_one_database().await;
+        mgr.set_extensions(
+            &id,
+            &[set("plugin_state", "keep"), set("plugin_label", "blue")],
+        )
+        .await
+        .unwrap();
+
+        mgr.set_extensions(
+            &id,
+            &[
+                unset("plugin_state"),
+                set("plugin_label", "red"),
+                unset("plugin_absent"),
+            ],
+        )
+        .await
+        .unwrap();
+        let expected = string_map(&[("plugin_label", "red")]);
+        assert_eq!(mgr.list().await.databases[0].entry.extensions, expected);
+        assert_eq!(
+            Registry::load(&registry_path).await.unwrap().databases[0].extensions,
+            expected
+        );
+
+        mgr.set_extensions(&id, &[set("plugin_label", "green"), unset("plugin_label")])
+            .await
+            .unwrap();
+        assert!(mgr.list().await.databases[0].entry.extensions.is_empty());
+    }
+
+    /// An unregistered id fails as not found, and nothing is written or
+    /// announced.
+    #[tokio::test]
+    async fn set_extensions_for_an_unknown_id_is_not_found() {
+        let (mgr, _dir, registry_path, _id) = manager_with_one_database().await;
+        let file_before = std::fs::read_to_string(&registry_path).unwrap();
+        let changes = mgr.subscribe_changes();
+
+        let unknown = DatabaseId::from("01JUNKNOWN0000000000000000".to_string());
+        let err = mgr
+            .set_extensions(&unknown, &[set("plugin_state", "keep")])
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("no database registered with id 01JUNKNOWN0000000000000000"),
+            "got: {err}"
+        );
+        assert!(!changes.has_changed().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&registry_path).unwrap(),
+            file_before
+        );
+    }
+
+    /// Each key the registry defines is refused, whether set or removed, even
+    /// alongside valid keys: nothing is written, the live entry is unchanged
+    /// and subscribers are not notified.
+    #[tokio::test]
+    async fn set_extensions_rejects_each_key_the_registry_defines() {
+        let (mgr, _dir, registry_path, id) = manager_with_one_database().await;
+        let file_before = std::fs::read_to_string(&registry_path).unwrap();
+        let entry_before = mgr.list().await.databases[0].entry.clone();
+        let changes = mgr.subscribe_changes();
+
+        for key in ["id", "name", "path", "created_at", "last_opened_at"] {
+            for entry in [set(key, "x"), unset(key)] {
+                let err = mgr
+                    .set_extensions(&id, &[set("plugin_state", "keep"), entry])
+                    .await
+                    .unwrap_err();
+                assert!(
+                    err.to_string()
+                        .contains(&format!("`{key}` is a key the database registry defines")),
+                    "`{key}` must be refused, got: {err}"
+                );
+            }
+        }
+
+        assert!(
+            !changes.has_changed().unwrap(),
+            "a refused call must not notify"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&registry_path).unwrap(),
+            file_before
+        );
+        let entry_after = &mgr.list().await.databases[0].entry;
+        assert!(entry_after.extensions.is_empty());
+        assert_eq!(entry_after.name, entry_before.name);
+        assert_eq!(entry_after.path, entry_before.path);
+    }
+
+    /// A failed save leaves the previous keys live and notifies no one; once
+    /// persistence works again the same call succeeds and notifies.
+    #[tokio::test]
+    async fn set_extensions_rolls_back_when_save_fails() {
+        let (mgr, _dir, registry_path, id) = manager_with_one_database().await;
+        mgr.set_extensions(&id, &[set("plugin_state", "a")])
+            .await
+            .unwrap();
+
+        break_registry_persistence(&registry_path).await;
+        let changes = mgr.subscribe_changes();
+
+        mgr.set_extensions(&id, &[set("plugin_state", "b"), set("plugin_label", "c")])
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            mgr.list().await.databases[0].entry.extensions,
+            string_map(&[("plugin_state", "a")]),
+            "the previous keys must stay live after a failed save"
+        );
+        assert!(
+            !changes.has_changed().unwrap(),
+            "a failed save must not notify subscribers"
+        );
+
+        tokio::fs::remove_dir(&registry_path).await.unwrap();
+        mgr.set_extensions(&id, &[set("plugin_state", "b"), set("plugin_label", "c")])
+            .await
+            .unwrap();
+        assert!(
+            changes.has_changed().unwrap(),
+            "a successful set_extensions must notify subscribers"
+        );
+        assert_eq!(
+            mgr.list().await.databases[0].entry.extensions,
+            string_map(&[("plugin_label", "c"), ("plugin_state", "b")])
+        );
+    }
+
     /// A registry mutation rewrites the whole file; the extension keys of the
-    /// entry it touches (and of the others) come through unchanged.
+    /// entry it touches come through unchanged.
     #[tokio::test]
     async fn a_rename_keeps_extension_keys() {
         let dir = tempfile::tempdir().unwrap();
@@ -1600,7 +1853,7 @@ labels = ["a", "b"]
             after.databases[0].extensions,
             before.databases[0].extensions
         );
-        assert_eq!(mgr.list().await.databases[0].entry.extensions.len(), 3);
+        assert_eq!(mgr.list().await.databases[0].entry.extensions.len(), 2);
     }
 
     /// Put a directory at `registry_path`, so any subsequent `Registry::save`
@@ -1819,52 +2072,6 @@ labels = ["a", "b"]
             "a successful set_default must notify subscribers"
         );
         assert_eq!(mgr.list().await.default_database.as_ref(), Some(&second.id));
-    }
-
-    #[tokio::test]
-    async fn set_bound_tenant_rolls_back_when_save_fails() {
-        let (mgr, dir, registry_path) = temp_manager().await;
-        let id = mgr
-            .ensure_default_registered("Default".into(), dir.path().join("db"))
-            .await
-            .unwrap();
-        mgr.set_bound_tenant(&id, Some("tenant_a".into()), Some("c0".into()))
-            .await
-            .unwrap();
-
-        break_registry_persistence(&registry_path).await;
-
-        mgr.set_bound_tenant(&id, Some("tenant_b".into()), Some("c1".into()))
-            .await
-            .unwrap_err();
-
-        // The previous binding must still be reported after a failed save.
-        let snap = mgr.list().await;
-        assert_eq!(
-            snap.databases[0].entry.bound_tenant_schema.as_deref(),
-            Some("tenant_a")
-        );
-        assert_eq!(
-            snap.databases[0].entry.bound_tenant_collection.as_deref(),
-            Some("c0")
-        );
-
-        // With persistence restored, the same call succeeds cleanly and
-        // notifies subscribers (matching insert_entry/rename).
-        tokio::fs::remove_dir(&registry_path).await.unwrap();
-        let changes = mgr.subscribe_changes();
-        mgr.set_bound_tenant(&id, Some("tenant_b".into()), Some("c1".into()))
-            .await
-            .unwrap();
-        assert!(
-            changes.has_changed().unwrap(),
-            "a successful set_bound_tenant must notify subscribers"
-        );
-        let snap = mgr.list().await;
-        assert_eq!(
-            snap.databases[0].entry.bound_tenant_schema.as_deref(),
-            Some("tenant_b")
-        );
     }
 
     #[tokio::test]
