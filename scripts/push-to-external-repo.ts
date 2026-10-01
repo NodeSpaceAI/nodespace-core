@@ -34,12 +34,22 @@ export interface RepoFile {
  * of `files`, and pushes a single commit to main if anything actually
  * changed. Returns whether a push happened, so callers can print an
  * accurate "already in sync" vs "pushed" message without a second network
- * round trip to check. */
+ * round trip to check.
+ *
+ * `managedDir` (relative to the repo root, e.g. "skills/nodespace") names a
+ * directory the caller owns outright: every tracked file under it is removed
+ * before `files` are written, so one that `files` no longer lists is deleted
+ * from the repo instead of staying published. A file written back with the
+ * same content drops out of the staged change, so only real edits and
+ * removals are committed (an executable file would come back non-executable,
+ * a mode change). Nothing outside `managedDir` is removed, and without it
+ * nothing is removed at all. */
 export async function pushFilesToRepo(
   repo: string,
   files: RepoFile[],
   commitMessage: string,
   token: string,
+  managedDir?: string,
 ): Promise<boolean> {
   const workDir = mkdtempSync(join(tmpdir(), "nodespace-external-repo-push-"));
   try {
@@ -54,6 +64,12 @@ export async function pushFilesToRepo(
     try {
       const authUrl = `https://x-access-token:${token}@github.com/${repo}.git`;
       await $`git clone --depth 1 ${authUrl} ${workDir}`.quiet();
+
+      if (managedDir !== undefined) {
+        // --ignore-unmatch: the first publish into a repo that has no
+        // `managedDir` yet removes nothing rather than failing.
+        await $`git -C ${workDir} rm -r --quiet --ignore-unmatch -- ${managedDir}`.quiet();
+      }
 
       for (const file of files) {
         const dest = join(workDir, file.relPath);

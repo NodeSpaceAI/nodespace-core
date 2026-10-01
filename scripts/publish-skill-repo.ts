@@ -43,9 +43,14 @@
  *
  * This is a generated-only repo, same contract as homebrew-nodespace
  * (NodeSpaceAI/nodespace-skill's own README says so): every push here
- * overwrites by rendering fresh from `packages/skill`, never reads back or
- * merges what's already there. Hand edits to NodeSpaceAI/nodespace-skill do
- * not survive the next release.
+ * overwrites by rendering fresh from `packages/skill`, never merges what's
+ * already there. `skills/nodespace/` (`SKILL_PUBLISH_DIR`) is owned
+ * outright: a push removes every file under it that the rendered set no
+ * longer lists, so a reference deleted from `packages/skill` is deleted from
+ * the public repo too instead of staying published. Files outside it (the
+ * repo's own README, and `.claude-plugin/marketplace.json`, which is
+ * rewritten but never pruned) are left alone. Hand edits to
+ * NodeSpaceAI/nodespace-skill do not survive the next release.
  *
  * Alongside the skill content, this also renders and pushes
  * `.claude-plugin/marketplace.json` (see `renderMarketplaceFile`) so
@@ -89,6 +94,10 @@ import { listReferenceFiles } from "../packages/skill/src/installer";
 import { pushFilesToRepo, type RepoFile } from "./push-to-external-repo";
 
 export const SKILL_REPO = "NodeSpaceAI/nodespace-skill";
+
+/** Where the skill lives in SKILL_REPO. The publish owns this directory: it
+ * renders every file under it and removes anything else tracked there. */
+export const SKILL_PUBLISH_DIR = "skills/nodespace";
 
 const REPO_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
 const SKILL_DIR = join(REPO_ROOT, "packages", "skill");
@@ -154,7 +163,7 @@ export function renderPublishFiles(version: string): RepoFile[] {
     const content = readFileSync(join(SKILL_DIR, relSrcPath), "utf8");
     const isSkillMd = relSrcPath === "SKILL.md";
     return {
-      relPath: `skills/nodespace/${relSrcPath}`,
+      relPath: `${SKILL_PUBLISH_DIR}/${relSrcPath}`,
       content: isSkillMd ? frontmatter + "\n" + content : content,
     };
   });
@@ -268,6 +277,7 @@ async function pushSkillUpdate(version: string, files: RepoFile[], token: string
     files,
     `Publish skill for v${v} (automated release sync)`,
     token,
+    SKILL_PUBLISH_DIR,
   );
   console.log(
     pushed
@@ -295,7 +305,7 @@ async function main(): Promise<void> {
   if (push && !token) {
     console.error(
       "SKILL_REPO_TOKEN is not set -- required for --push (a PAT with contents:write on " +
-        `${SKILL_REPO}). Running without --push shows what would change.`,
+        `${SKILL_REPO}). Running without --push prints the files it would publish.`,
     );
     process.exit(1);
   }
@@ -307,7 +317,9 @@ async function main(): Promise<void> {
   }
 
   if (!push) {
-    console.log("(dry run -- pass --push with SKILL_REPO_TOKEN set to publish this)");
+    console.log(
+      `(dry run -- pass --push with SKILL_REPO_TOKEN set to publish this; --push also removes every other file under ${SKILL_PUBLISH_DIR}/)`,
+    );
     return;
   }
   await pushSkillUpdate(command, files, token as string);
