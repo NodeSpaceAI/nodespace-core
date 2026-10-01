@@ -164,7 +164,7 @@ impl PromptAssembler {
     /// Both values are collapsed to single-spaced text. The template gives
     /// the identity one line, and a stored value holding a newline would
     /// otherwise start a line of its own in the system prompt.
-    pub async fn current_user(&self) -> Option<CurrentUser> {
+    async fn current_user(&self) -> Option<CurrentUser> {
         let person = match self.node_service.get_local_person().await {
             Ok(person) => person?,
             Err(e) => {
