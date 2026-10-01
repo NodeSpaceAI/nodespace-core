@@ -384,8 +384,7 @@ fn sprint_transition_gate() -> PlayStep {
                 },
                 "conditions": [
                     "node.sprint_status == 'active'",
-                    "!has(node.start_date) || node.start_date == null \
-                     || !has(node.end_date) || node.end_date == null",
+                    "!has(node.start_date) || !has(node.end_date)",
                 ],
                 "actions": [{
                     "action_type": "reject",
@@ -406,7 +405,7 @@ fn sprint_transition_gate() -> PlayStep {
                 },
                 "conditions": [
                     "(has(node.sprint_status) && node.sprint_status != 'future') \
-                     || (has(node.completed_date) && node.completed_date != null)",
+                     || has(node.completed_date)",
                 ],
                 "actions": [{
                     "action_type": "reject",

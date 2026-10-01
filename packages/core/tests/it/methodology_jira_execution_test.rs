@@ -322,6 +322,16 @@ async fn a_sprint_cannot_start_without_both_dates() -> Result<()> {
         "starting without an end_date must be rejected"
     );
     assert!(h.set(&sprint, json!({ "end_date": "2026-09-14" })).await?);
+
+    // A cleared date is stored as `null`, and is as absent as one never set.
+    assert!(h.set(&sprint, json!({ "end_date": null })).await?);
+    assert_eq!(h.field(&sprint, "end_date").await?, Some(json!(null)));
+    assert!(
+        !h.set(&sprint, json!({ "sprint_status": "active" })).await?,
+        "starting with a cleared end_date must be rejected"
+    );
+
+    assert!(h.set(&sprint, json!({ "end_date": "2026-09-14" })).await?);
     assert!(
         h.set(&sprint, json!({ "sprint_status": "active" })).await?,
         "starting with both dates must be allowed"
@@ -384,6 +394,12 @@ async fn a_sprint_is_created_as_future() -> Result<()> {
     assert!(
         h.try_create("sprint", props).await.is_err(),
         "creating a sprint with a completed_date must be rejected"
+    );
+    let mut props = dates.clone();
+    props["completed_date"] = json!(null);
+    assert!(
+        h.try_create("sprint", props).await.is_ok(),
+        "a null completed_date is no completed_date"
     );
     assert!(h.try_create("sprint", dates).await.is_ok());
 

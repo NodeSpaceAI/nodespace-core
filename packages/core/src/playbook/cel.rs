@@ -24,6 +24,14 @@
 //! but the play stays active. This matches the spec: relationships are built
 //! progressively, so a condition checking `node.story.epic.status` should wait
 //! until the chain exists, not disable itself.
+//!
+//! # Fields With No Value
+//!
+//! A cleared field is stored as `null` in its bucket. It is left out of the
+//! `node` map, so it reads exactly as a field that was never set: a missing
+//! path. `has(node.x)` is the test for "has a value" and `!has(node.x)` for
+//! "has none"; `node.x == null` reads the missing path and fails the
+//! condition.
 
 use cel_interpreter::{Context, ExecutionError, Program, Value};
 use chrono::Utc;
@@ -172,6 +180,29 @@ pub fn json_to_cel(json: &serde_json::Value) -> Value {
                 .collect();
             Value::Map(cel_interpreter::objects::Map { map: Arc::new(map) })
         }
+    }
+}
+
+/// Convert a stored field value to a CEL `Value`.
+///
+/// [`json_to_cel`], except that a `null`-valued key of an object is left out,
+/// at every depth: a cleared nested field reads as absent, the same as a
+/// cleared top-level one. A `null` list element is kept — it is a value in a
+/// list, not a field.
+fn field_to_cel(json: &serde_json::Value) -> Value {
+    match json {
+        serde_json::Value::Array(arr) => {
+            Value::List(arr.iter().map(field_to_cel).collect::<Vec<_>>().into())
+        }
+        serde_json::Value::Object(obj) => {
+            let map: HashMap<cel_interpreter::objects::Key, Value> = obj
+                .iter()
+                .filter(|(_, v)| !v.is_null())
+                .map(|(k, v)| (key(k), field_to_cel(v)))
+                .collect();
+            Value::Map(cel_interpreter::objects::Map { map: Arc::new(map) })
+        }
+        scalar => json_to_cel(scalar),
     }
 }
 
@@ -396,7 +427,8 @@ fn field_is_enum(fields: &[crate::models::SchemaField], name: &str) -> bool {
 /// - `node_type`: String
 /// - `content`: String
 /// - `version`: Int
-/// - All flattened properties as additional keys
+/// - All flattened properties as additional keys, except a `null` one: a
+///   cleared field is left out, at every depth of an object-valued field
 ///
 /// Namespace prefixes on properties are stripped: `custom:status` → `status`.
 /// Internal `_`-prefixed bookkeeping keys (`_seed`, `_schemaVersion`,
@@ -446,7 +478,8 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
     //   {"task": {"status": "open", "priority": "high"}}
     // We unwrap the type namespace so CEL conditions can use `node.status` directly.
     // NOTE: Parallel logic exists in graph_resolver::get_node_property — if the
-    // property storage format changes, both must be updated.
+    // property storage format changes, both must be updated. The two differ
+    // on a cleared (`null`) field by design: see the `retain` below.
     // Also handles colon-prefixed namespaces: "custom:amount" → "amount".
     if let Some(obj) = node.properties.as_object() {
         // Walk the scope chain first, nearest scope wins. Done ahead of the
@@ -472,7 +505,7 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
                         continue;
                     }
                     let bare_key = ik.find(':').map(|i| &ik[i + 1..]).unwrap_or(ik);
-                    map.entry(key(bare_key)).or_insert_with(|| json_to_cel(iv));
+                    map.entry(key(bare_key)).or_insert_with(|| field_to_cel(iv));
                 }
             }
         }
@@ -501,10 +534,23 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
                 //
                 // Strip colon namespace prefix: "custom:amount" → "amount"
                 let bare_key = k.find(':').map(|i| &k[i + 1..]).unwrap_or(k.as_str());
-                map.insert(key(bare_key), json_to_cel(v));
+                map.insert(key(bare_key), field_to_cel(v));
             }
         }
     }
+
+    // A cleared field is stored as `null`, and reads as absent: `has()` tests
+    // key presence, so a `null` left in the map would make `has(node.x)` true
+    // for a field that was cleared and false for one that was never set.
+    // Dropped here, after the precedence above has run, so a cleared field
+    // still occupies its name rather than letting a prefixed field of the
+    // same bare name, or an ancestor bucket's, show through.
+    //
+    // `graph_resolver::get_node_property` keeps the `null`, because an action
+    // binding to a cleared field binds `null`. A `.where(...)` item is built
+    // from this map too and is unaffected: `ItemPredicate::matches` binds a
+    // missing key to `null`.
+    map.retain(|_, value| !matches!(value, Value::Null));
 
     Value::Map(cel_interpreter::objects::Map { map: Arc::new(map) })
 }
@@ -1272,6 +1318,112 @@ mod tests {
             !map.map.contains_key(&key("_seed")),
             "internal bookkeeping key must not leak into the CEL map"
         );
+    }
+
+    // -- Cleared (null) field tests --
+
+    /// A cleared field is stored as `null` in its bucket. A condition must
+    /// read it exactly as it reads a field that was never set.
+    #[tokio::test]
+    async fn cleared_field_reads_as_absent_in_a_condition() {
+        let event = node_created_event("task");
+        let cleared = test_node(
+            "task",
+            json!({"task": {"status": "open", "priority": null}}),
+        );
+        let never_set = test_node("task", json!({"task": {"status": "open"}}));
+        let set = test_node(
+            "task",
+            json!({"task": {"status": "open", "priority": "high"}}),
+        );
+
+        let pass = ConditionResult::Pass;
+        let fail = ConditionResult::Fail { condition_index: 0 };
+        for (expr, without_value, with_value) in [
+            ("has(node.priority)", &fail, &pass),
+            ("!has(node.priority)", &pass, &fail),
+            // A comparison with `null` reads the field, and reading a field
+            // with no value fails the condition whichever way it compares.
+            ("node.priority == null", &fail, &fail),
+            ("node.priority != null", &fail, &pass),
+        ] {
+            let conditions = conds(&[expr]);
+            for (node, expected, which) in [
+                (&cleared, without_value, "cleared"),
+                (&never_set, without_value, "never set"),
+                (&set, with_value, "set"),
+            ] {
+                assert_eq!(
+                    &evaluate_conditions(&conditions, node, &event, None).await,
+                    expected,
+                    "`{expr}` on a task whose priority is {which}"
+                );
+            }
+        }
+    }
+
+    /// The flat-property branch (a field stored outside any type bucket, such
+    /// as a prefixed one on a user-defined type) drops a `null` too.
+    #[test]
+    fn node_to_cel_leaves_out_null_properties_in_every_stored_shape() {
+        for properties in [
+            json!({"task": {"status": "open", "priority": null}}),
+            json!({"task": {"status": "open", "custom:priority": null}}),
+            json!({"status": "open", "priority": null}),
+            json!({"status": "open", "custom:priority": null}),
+        ] {
+            let node = test_node("task", properties.clone());
+            let Value::Map(map) = node_to_cel_value(&node) else {
+                panic!("expected Map");
+            };
+            assert!(!map.map.contains_key(&key("priority")), "{properties}");
+            assert!(map.map.contains_key(&key("status")), "{properties}");
+        }
+    }
+
+    /// A field nested in an object-valued field is cleared to `null` the same
+    /// way, inside a list of objects too. A `null` list element is a value,
+    /// not a field, and stays.
+    #[tokio::test]
+    async fn cleared_nested_field_reads_as_absent_in_a_condition() {
+        let event = node_created_event("customer");
+        let node = test_node(
+            "customer",
+            json!({"customer": {
+                "address": {"city": null, "country": "NZ"},
+                "contacts": [{"email": null, "name": "Ada"}],
+                "scores": [1, null],
+            }}),
+        );
+        for expr in [
+            "!has(node.address.city)",
+            "has(node.address.country)",
+            "node.contacts.all(c, !has(c.email) && has(c.name))",
+            "size(node.scores) == 2",
+        ] {
+            assert_eq!(
+                evaluate_conditions(&conds(&[expr]), &node, &event, None).await,
+                ConditionResult::Pass,
+                "{expr}"
+            );
+        }
+    }
+
+    /// A cleared field still occupies its name: it does not let a prefixed
+    /// field of the same bare name, or an ancestor bucket's, show through.
+    #[test]
+    fn cleared_field_does_not_unshadow_another_field_of_the_same_name() {
+        let node = test_node(
+            "issue",
+            json!({
+                "issue": {"status": null, "custom:status": "shadow"},
+                "task": {"status": "open"},
+            }),
+        );
+        let Value::Map(map) = node_to_cel_value_at_scope(&node, &["issue", "task"]) else {
+            panic!("expected Map");
+        };
+        assert!(!map.map.contains_key(&key("status")));
     }
 
     // -- Condition evaluation tests --
