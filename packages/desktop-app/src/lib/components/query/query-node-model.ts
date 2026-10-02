@@ -147,14 +147,22 @@ function isEmpty(value: unknown): boolean {
   return value === null || value === undefined || value === '';
 }
 
-function equals(actual: unknown, expected: unknown, caseSensitive: boolean): boolean {
+/**
+ * The backend's SQL `=`. It never folds case (`case_sensitive` applies to
+ * `contains` only), and an unset subject equals nothing. A property is
+ * compared as the JSON value it is, so `500` is not `"500"`; a node column
+ * (`metadata`, `content`) is text, and SQL converts the operand to text.
+ */
+function equals(actual: unknown, expected: unknown, sameTypeOnly: boolean): boolean {
+  if (actual === null || actual === undefined) return false;
   if (actual === expected) return true;
-  if (typeof actual === 'number' && typeof expected === 'number') return actual === expected;
-  const a = String(actual);
-  const b = String(expected);
-  return caseSensitive ? a === b : a.toLowerCase() === b.toLowerCase();
+  return !sameTypeOnly && String(actual) === String(expected);
 }
 
+/**
+ * Case-insensitive matching folds every letter here and only ASCII letters in
+ * SQL, so `Élan` matches `élan` here and not there.
+ */
 function contains(actual: unknown, expected: unknown, caseSensitive: boolean): boolean {
   if (isEmpty(actual)) return false;
   const a = String(actual);
@@ -213,7 +221,9 @@ function filterSubject(node: Node, filter: QueryFilter): unknown {
  * nothing to correct it until a reload.
  */
 export function matchesFilter(node: Node, filter: QueryFilter): boolean {
-  const caseSensitive = filter.caseSensitive ?? false;
+  // The backend's default: a `contains` is case-sensitive unless the filter
+  // says otherwise.
+  const caseSensitive = filter.case_sensitive ?? true;
 
   // A related-node filter is a condition on other nodes, which this node
   // alone cannot answer.
@@ -225,26 +235,27 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
     if (more.length > 0 || typeof hop !== 'string') return false;
     switch (hop) {
       case 'mentions':
-        return (node.mentions ?? []).some((id) => id === filter.nodeId);
+        return (node.mentions ?? []).some((id) => id === filter.node_id);
       case 'mentioned_by':
-        return (node.mentionedIn ?? []).some((ref) => ref.id === filter.nodeId);
+        return (node.mentionedIn ?? []).some((ref) => ref.id === filter.node_id);
       default:
         return false;
     }
   }
 
   const actual = filterSubject(node, filter);
+  const sameTypeOnly = filter.type === 'property';
 
   switch (filter.operator) {
     case 'exists':
       return !isEmpty(actual);
     case 'equals':
-      return equals(actual, filter.value, caseSensitive);
+      return equals(actual, filter.value, sameTypeOnly);
     case 'contains':
       return contains(actual, filter.value, caseSensitive);
     case 'in':
       return (
-        Array.isArray(filter.value) && filter.value.some((v) => equals(actual, v, caseSensitive))
+        Array.isArray(filter.value) && filter.value.some((v) => equals(actual, v, sameTypeOnly))
       );
     case 'gt':
       return !isEmpty(actual) && ordered(actual, filter.value) > 0;

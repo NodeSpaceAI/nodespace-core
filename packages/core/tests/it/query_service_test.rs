@@ -108,7 +108,7 @@ fn test_filter_type_relationship() {
         "type": "relationship",
         "operator": "equals",
         "path": ["child_of"],
-        "nodeId": "parent-123"
+        "node_id": "parent-123"
     });
 
     let filter: QueryFilter = serde_json::from_value(json).unwrap();
@@ -217,7 +217,7 @@ fn test_relationship_filter_path_takes_any_relationship_name() {
             "type": "relationship",
             "operator": "equals",
             "path": names,
-            "nodeId": "node-123"
+            "node_id": "node-123"
         });
         let filter: QueryFilter = serde_json::from_value(json).unwrap();
         assert_eq!(
@@ -233,7 +233,7 @@ fn test_relationship_filter_path_hop_may_be_open_ended() {
         "type": "relationship",
         "operator": "equals",
         "path": [{ "name": "child_of", "open_ended": true }],
-        "nodeId": "node-123"
+        "node_id": "node-123"
     });
     let filter: QueryFilter = serde_json::from_value(json.clone()).unwrap();
     assert_eq!(
@@ -313,7 +313,7 @@ fn test_filter_case_sensitive_false() {
         "type": "content",
         "operator": "contains",
         "value": "test",
-        "caseSensitive": false
+        "case_sensitive": false
     });
     let filter: QueryFilter = serde_json::from_value(json).unwrap();
     assert_eq!(filter.case_sensitive, Some(false));
@@ -325,7 +325,7 @@ fn test_filter_case_sensitive_true() {
         "type": "content",
         "operator": "contains",
         "value": "test",
-        "caseSensitive": true
+        "case_sensitive": true
     });
     let filter: QueryFilter = serde_json::from_value(json).unwrap();
     assert_eq!(filter.case_sensitive, Some(true));
@@ -425,7 +425,7 @@ fn test_query_with_all_filter_types() {
             {"type": "property", "operator": "equals", "property": "status", "value": "open"},
             {"type": "content", "operator": "contains", "value": "urgent"},
             {"type": "metadata", "operator": "gte", "property": "created_at", "value": "2025-01-01"},
-            {"type": "relationship", "operator": "equals", "path": ["has_child"], "nodeId": "project-1"}
+            {"type": "relationship", "operator": "equals", "path": ["has_child"], "node_id": "project-1"}
         ],
         "sorting": [{"field": "priority", "direction": "desc"}],
         "limit": 100
@@ -558,5 +558,5 @@ fn test_filter_serialization() {
     let json = serde_json::to_value(&filter).unwrap();
     assert_eq!(json["type"], "content");
     assert_eq!(json["operator"], "contains");
-    assert_eq!(json["caseSensitive"], false);
+    assert_eq!(json["case_sensitive"], false);
 }

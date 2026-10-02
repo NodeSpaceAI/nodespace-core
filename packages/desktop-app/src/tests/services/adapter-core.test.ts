@@ -3,11 +3,9 @@
  *
  * A saved query's filters and ordering are executed by the backend's
  * QueryService — the frontend no longer re-implements them. This encoding is
- * what carries the definition there, so it is the seam where a saved query
- * either reaches the right SQL or silently degrades: a sort field spelled the
- * way the backend does not recognize becomes a NULL json_extract that orders
- * every row equally, which looks like "sorting did nothing" rather than an
- * error.
+ * what carries the definition there. Filters and sorting are sent as written:
+ * their keys and field names have one spelling, the stored snake_case one, so
+ * nothing is respelled here.
  *
  * Pure functions, tested directly (no adapter/transport involved).
  */
@@ -16,7 +14,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { QueryFilter, SortConfig } from '$lib/types/query';
-import { buildExecuteQueryWire, encodeSortField, MAX_QUERY_ROWS } from '$lib/services/adapter-core';
+import { buildExecuteQueryWire, MAX_QUERY_ROWS } from '$lib/services/adapter-core';
 
 describe('MAX_QUERY_ROWS', () => {
   it('matches the row ceiling the daemon actually clamps to', () => {
@@ -45,27 +43,6 @@ describe('MAX_QUERY_ROWS', () => {
   });
 });
 
-describe('encodeSortField', () => {
-  it('renames the metadata fields to the columns resolve_field matches', () => {
-    // QueryService::resolve_field treats exactly these five as top-level SQL
-    // columns, spelled snake_case. A stored definition spells them camelCase.
-    expect(encodeSortField('createdAt')).toBe('created_at');
-    expect(encodeSortField('modifiedAt')).toBe('modified_at');
-    expect(encodeSortField('nodeType')).toBe('node_type');
-    expect(encodeSortField('content')).toBe('content');
-    expect(encodeSortField('title')).toBe('title');
-  });
-
-  it('leaves property names untouched', () => {
-    // Property fields are stored as authored and resolve to
-    // json_extract(properties, '$.<type>.<field>') under that exact spelling,
-    // so renaming them would break the lookup rather than fix it.
-    expect(encodeSortField('dueDate')).toBe('dueDate');
-    expect(encodeSortField('priority')).toBe('priority');
-    expect(encodeSortField('custom:severity')).toBe('custom:severity');
-  });
-});
-
 describe('buildExecuteQueryWire', () => {
   it('carries sorting to the backend rather than dropping it', () => {
     // The whole point of routing through QueryService: a sort the frontend used
@@ -79,19 +56,15 @@ describe('buildExecuteQueryWire', () => {
     ]);
   });
 
-  it('encodes a multi-key sort in order, converting metadata field names', () => {
-    const wire = buildExecuteQueryWire({
-      targetType: 'task',
-      sorting: [
-        { field: 'priority', direction: 'asc' },
-        { field: 'modifiedAt', direction: 'desc' }
-      ]
-    });
-
-    expect(JSON.parse(wire.sortingJson as string)).toEqual([
+  it('sends a multi-key sort in order, field names as written', () => {
+    const sorting: SortConfig[] = [
       { field: 'priority', direction: 'asc' },
-      { field: 'modified_at', direction: 'desc' }
-    ]);
+      { field: 'modified_at', direction: 'desc' },
+      { field: 'due_date', direction: 'asc' }
+    ];
+    const wire = buildExecuteQueryWire({ targetType: 'task', sorting });
+
+    expect(JSON.parse(wire.sortingJson as string)).toEqual(sorting);
   });
 
   it('sends no sorting for an absent or empty sort config', () => {
@@ -101,27 +74,10 @@ describe('buildExecuteQueryWire', () => {
     expect(buildExecuteQueryWire({ targetType: 'task', sorting: [] }).sortingJson).toBeNull();
   });
 
-  it('converts filter keys to the snake_case the ops layer deserializes', () => {
-    // AgentFilterItem is deny_unknown_fields, so a camelCase key is a hard
-    // rejection, not a silently ignored one.
+  it('sends filters as written, nested filters and paths included', () => {
+    // A filter's keys are the ones the ops layer deserializes, so nothing is
+    // respelled on the way out.
     const filters: QueryFilter[] = [
-      {
-        type: 'property',
-        operator: 'equals',
-        property: 'status',
-        value: 'open',
-        caseSensitive: true
-      },
-      {
-        type: 'relationship',
-        operator: 'exists',
-        path: ['mentioned_by'],
-        nodeId: 'n1'
-      }
-    ];
-    const wire = buildExecuteQueryWire({ targetType: 'task', filters });
-
-    expect(JSON.parse(wire.filtersJson)).toEqual([
       {
         type: 'property',
         operator: 'equals',
@@ -134,28 +90,7 @@ describe('buildExecuteQueryWire', () => {
         operator: 'exists',
         path: ['mentioned_by'],
         node_id: 'n1'
-      }
-    ]);
-  });
-
-  it('sends a path as written and encodes a nested filter the same way', () => {
-    const filters: QueryFilter[] = [
-      {
-        type: 'related',
-        operator: 'exists',
-        path: [{ name: 'child_of', open_ended: true }, 'project'],
-        filter: {
-          type: 'property',
-          operator: 'equals',
-          property: 'status',
-          value: 'active',
-          caseSensitive: false
-        }
-      }
-    ];
-    const wire = buildExecuteQueryWire({ targetType: 'task', filters });
-
-    expect(JSON.parse(wire.filtersJson)).toEqual([
+      },
       {
         type: 'related',
         operator: 'exists',
@@ -168,31 +103,10 @@ describe('buildExecuteQueryWire', () => {
           case_sensitive: false
         }
       }
-    ]);
-  });
+    ];
+    const wire = buildExecuteQueryWire({ targetType: 'task', filters });
 
-  it('omits a null path or nested filter', () => {
-    const wire = buildExecuteQueryWire({
-      targetType: 'task',
-      filters: [{ type: 'content', operator: 'contains', value: 'acme', path: null, filter: null }]
-    });
-
-    expect(JSON.parse(wire.filtersJson)).toEqual([
-      { type: 'content', operator: 'contains', value: 'acme' }
-    ]);
-  });
-
-  it('omits absent optional filter keys instead of sending null', () => {
-    // Option<T> deserializes from a missing key, not from an explicit null.
-    const wire = buildExecuteQueryWire({
-      targetType: 'task',
-      filters: [{ type: 'content', operator: 'contains', value: 'acme' }]
-    });
-
-    const [encoded] = JSON.parse(wire.filtersJson);
-    expect(encoded).toEqual({ type: 'content', operator: 'contains', value: 'acme' });
-    expect('property' in encoded).toBe(false);
-    expect('case_sensitive' in encoded).toBe(false);
+    expect(JSON.parse(wire.filtersJson)).toEqual(filters);
   });
 
   it('preserves a filter value that is an array', () => {

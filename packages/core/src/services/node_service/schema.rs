@@ -2123,7 +2123,7 @@ mod typed_update_tests {
                 "target_type": "task",
                 "filters": [{
                     "type": "relationship", "operator": "equals",
-                    "path": path, "nodeId": "some-node"
+                    "path": path, "node_id": "some-node"
                 }]
             })
         };

@@ -78,14 +78,14 @@ describe('parseQueryDefinition', () => {
       queryNode({
         targetType: 'task',
         filters,
-        sorting: [{ field: 'dueDate', direction: 'asc' }],
+        sorting: [{ field: 'due_date', direction: 'asc' }],
         limit: 25,
       })
     );
     expect(def).toEqual({
       targetType: 'task',
       filters,
-      sorting: [{ field: 'dueDate', direction: 'asc' }],
+      sorting: [{ field: 'due_date', direction: 'asc' }],
       limit: 25,
     });
   });
@@ -207,26 +207,57 @@ describe('matchesFilter', () => {
     ).toBe(false);
   });
 
-  it('matches property equals (case-insensitive by default)', () => {
+  it('matches property equals exactly, as the backend does', () => {
     expect(
-      matchesFilter(invoice, { type: 'property', operator: 'equals', property: 'status', value: 'OPEN' })
+      matchesFilter(invoice, { type: 'property', operator: 'equals', property: 'status', value: 'open' })
     ).toBe(true);
+    // The backend compares with SQL `=`; `case_sensitive` does not loosen it.
+    for (const case_sensitive of [undefined, true, false]) {
+      expect(
+        matchesFilter(invoice, {
+          type: 'property',
+          operator: 'equals',
+          property: 'status',
+          value: 'OPEN',
+          case_sensitive
+        })
+      ).toBe(false);
+    }
   });
 
-  it('respects caseSensitive when set', () => {
+  it('compares a property as the JSON value it is, and a node column as text', () => {
+    // `amount` is the number 500: SQL does not convert it to match "500".
+    const amount = { type: 'property', property: 'amount' } as const;
+    expect(matchesFilter(invoice, { ...amount, operator: 'equals', value: 500 })).toBe(true);
+    expect(matchesFilter(invoice, { ...amount, operator: 'equals', value: '500' })).toBe(false);
+    expect(matchesFilter(invoice, { ...amount, operator: 'in', value: ['500'] })).toBe(false);
+    expect(matchesFilter(invoice, { ...amount, operator: 'in', value: [1, 500] })).toBe(true);
+
+    // A column is text, so a number operand is compared as text.
+    const numbered = { ...invoice, content: '500' };
+    expect(matchesFilter(numbered, { type: 'content', operator: 'equals', value: 500 })).toBe(true);
+  });
+
+  it('never equals an unset subject, not even the text "null"', () => {
+    for (const value of ['null', 'undefined', null]) {
+      expect(
+        matchesFilter(invoice, { type: 'property', operator: 'equals', property: 'missing', value })
+      ).toBe(false);
+    }
     expect(
-      matchesFilter(invoice, {
-        type: 'property',
-        operator: 'equals',
-        property: 'status',
-        value: 'OPEN',
-        caseSensitive: true,
-      })
+      matchesFilter(invoice, { type: 'metadata', operator: 'equals', property: 'nope', value: 'undefined' })
     ).toBe(false);
   });
 
+  it('treats contains as case-sensitive unless case_sensitive is false', () => {
+    const upper = { type: 'property', operator: 'contains', property: 'status', value: 'OP' } as const;
+    expect(matchesFilter(invoice, upper)).toBe(false);
+    expect(matchesFilter(invoice, { ...upper, case_sensitive: true })).toBe(false);
+    expect(matchesFilter(invoice, { ...upper, case_sensitive: false })).toBe(true);
+  });
+
   it('matches content contains', () => {
-    expect(matchesFilter(invoice, { type: 'content', operator: 'contains', value: 'acme' })).toBe(
+    expect(matchesFilter(invoice, { type: 'content', operator: 'contains', value: 'Acme' })).toBe(
       true
     );
   });
@@ -396,19 +427,19 @@ describe('matchesFilter', () => {
   it('evaluates node-local relationship filters and declines graph ones', () => {
     const withRels = node('n2', { mentions: ['m1'], mentionedIn: [{ id: 'src', title: null, nodeType: 'text' }] });
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentions'], nodeId: 'm1' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentions'], node_id: 'm1' })
     ).toBe(true);
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentioned_by'], nodeId: 'src' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentioned_by'], node_id: 'src' })
     ).toBe(true);
     // Parent/children need graph traversal the node doesn't carry. Unverifiable
     // is not matching: declining keeps a node the query may exclude out of the
     // view until the next load, where the backend evaluates it in SQL.
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['child_of'], nodeId: 'x' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['child_of'], node_id: 'x' })
     ).toBe(false);
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['has_child'], nodeId: 'x' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['has_child'], node_id: 'x' })
     ).toBe(false);
   });
 
@@ -422,7 +453,7 @@ describe('matchesFilter', () => {
       undefined
     ]) {
       expect(
-        matchesFilter(withRels, { type: 'relationship', operator: 'exists', path, nodeId: 'm1' })
+        matchesFilter(withRels, { type: 'relationship', operator: 'exists', path, node_id: 'm1' })
       ).toBe(false);
     }
   });
