@@ -24,6 +24,10 @@ use serde_json::json;
 /// id (ADR-086 §10).
 pub const PARENT_TASK_COMPLETION_PLAY_ID: &str = "5dc9b580-8840-4d02-b89d-9aa16ac552fd";
 
+/// The id of every Play that ships with the product: the core play table, in
+/// the order the plays are seeded.
+pub const CORE_PLAY_IDS: &[&str] = &[PARENT_TASK_COMPLETION_PLAY_ID];
+
 /// The rollup rule, as shipped (ADR-079).
 ///
 /// Trigger, condition and action in one rule:
@@ -170,6 +174,17 @@ mod tests {
             parent_task_completion_play().id,
             PARENT_TASK_COMPLETION_PLAY_ID
         );
+    }
+
+    /// The id table names exactly the plays that are seeded, in order, and
+    /// each is a UUID: no play id is a slug.
+    #[test]
+    fn the_id_table_matches_the_seeded_plays() {
+        let seeded: Vec<String> = core_plays().into_iter().map(|play| play.id).collect();
+        assert_eq!(seeded, CORE_PLAY_IDS);
+        for id in CORE_PLAY_IDS {
+            assert!(uuid::Uuid::parse_str(id).is_ok(), "{id} is not a UUID");
+        }
     }
 
     mod integration {

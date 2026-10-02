@@ -87,11 +87,14 @@ Skill nodes carrying usage guidance, discovered through the ordinary skill-searc
 
 Create each as below, then add its guidance as markdown children. The properties carry the whole retrieval surface — `description`, and an `exclusion` where the skill has one, which keeps general requests from ranking it above a built-in — so set them verbatim. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/spec_driven/` rather than reproducing them here.
 
+After creating a skill, link it to the types it is about with an `applies_to` edge to each type's schema, as shown under it. Skill search then hands an agent the skill together with exactly those types' definitions. If a type landed under another id (step 1 reported a re-key), link to that id.
+
 **Writing a Spec** — Write a spec before any plan or implementation: capture the objective, testable success criteria and boundaries (always do, ask first, never do). Use when the user says write a spec, spec this out, define requirements, or starts describing a feature or fix that has no spec yet.
 
 ```bash
 nodespace node create --type skill --content 'Writing a Spec' \
   --properties '{"description":"Write a spec before any plan or implementation: capture the objective, testable success criteria and boundaries (always do, ask first, never do). Use when the user says write a spec, spec this out, define requirements, or starts describing a feature or fix that has no spec yet.","max_iterations":3,"tool_whitelist":["create_node","update_node","search_nodes","get_node"]}'
+nodespace relationship create --from <skill-id> --type applies_to --to spec
 ```
 
 **Writing a Plan from a Spec** — Draft the technical plan for an approved spec: approach, components, sequencing and risks, linked back to the spec. Use when the user says plan this out, what's the approach, how should we build this, or asks for a plan for an existing spec.
@@ -99,6 +102,8 @@ nodespace node create --type skill --content 'Writing a Spec' \
 ```bash
 nodespace node create --type skill --content 'Writing a Plan from a Spec' \
   --properties '{"description":"Draft the technical plan for an approved spec: approach, components, sequencing and risks, linked back to the spec. Use when the user says plan this out, what'\''s the approach, how should we build this, or asks for a plan for an existing spec.","max_iterations":3,"tool_whitelist":["create_node","update_node","create_relationship","search_nodes","get_node"]}'
+nodespace relationship create --from <skill-id> --type applies_to --to plan
+nodespace relationship create --from <skill-id> --type applies_to --to spec
 ```
 
 **Creating Implementation Tasks** — Break an approved plan into tasks linked to both the plan and its spec. Use when the user says create tasks for this plan, break this down, let's start implementing, or asks to turn a plan into actionable work.
@@ -106,6 +111,9 @@ nodespace node create --type skill --content 'Writing a Plan from a Spec' \
 ```bash
 nodespace node create --type skill --content 'Creating Implementation Tasks' \
   --properties '{"description":"Break an approved plan into tasks linked to both the plan and its spec. Use when the user says create tasks for this plan, break this down, let'\''s start implementing, or asks to turn a plan into actionable work.","max_iterations":3,"tool_whitelist":["create_node","create_relationship","search_nodes","get_node"]}'
+nodespace relationship create --from <skill-id> --type applies_to --to task
+nodespace relationship create --from <skill-id> --type applies_to --to plan
+nodespace relationship create --from <skill-id> --type applies_to --to spec
 ```
 
 **Completing a Spec-Driven Task** — Close out a spec-driven task by recording how it was verified, then marking it done. Use when the user says a task is finished, wants to close it out, or asks to mark work done that traces to a spec or plan.
@@ -113,6 +121,7 @@ nodespace node create --type skill --content 'Creating Implementation Tasks' \
 ```bash
 nodespace node create --type skill --content 'Completing a Spec-Driven Task' \
   --properties '{"description":"Close out a spec-driven task by recording how it was verified, then marking it done. Use when the user says a task is finished, wants to close it out, or asks to mark work done that traces to a spec or plan.","max_iterations":3,"tool_whitelist":["update_node","update_task_status","get_node"]}'
+nodespace relationship create --from <skill-id> --type applies_to --to task
 ```
 
 ### 5. Saved views
@@ -139,7 +148,12 @@ One more skill, created after everything else because it names what you created.
 
 **Spec-driven Workspace** — What workflow this workspace uses: the Spec-driven Playbook installed here — its spec and plan types, how tasks trace back to them, the approval gates that refuse some changes, its saved views, and the schema ids they were actually created under.
 
-Create it the same way as the guidance skills, and end its body with an "Installed in this workspace" section listing the types, Plays, guidance skills and views above, by id.
+Create it the same way as the guidance skills, and end its body with an "Installed in this workspace" section listing the types, Plays, guidance skills and views above, by id. Link it to the Playbook's types:
+
+```bash
+nodespace relationship create --from <skill-id> --type applies_to --to spec
+nodespace relationship create --from <skill-id> --type applies_to --to plan
+```
 <!-- END GENERATED: spec-driven-playbook -->
 
 ## After installing

@@ -35,7 +35,7 @@
 //! transitions honest. It is `sprint_status` rather than `status` so it never
 //! reads as the task lifecycle to a consumer that knows that name.
 
-use crate::methodology::skills::playbook_skill;
+use crate::methodology::skills::{PlaybookSkill, DEFAULT_TOOLS};
 use crate::methodology::{MethodologyPlaybook, PlayStep, SchemaStep, ViewStep};
 use crate::services::QueryDefinition;
 use serde_json::json;
@@ -54,6 +54,74 @@ pub const EPICS_BY_STATUS_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f04";
 /// The `jira-sprints-by-status` saved view.
 pub const SPRINTS_BY_STATUS_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f05";
 
+/// The guidance skills, in install order.
+const SKILLS: &[PlaybookSkill] = &[
+    PlaybookSkill {
+        // Creating Epics, Stories, and Bugs
+        id: "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f06",
+        title: "Creating Epics, Stories, and Bugs",
+        description: "Create a story, file a bug, open an epic, or group work under an epic; \
+                      set story points or bug severity. Use when the user says file a bug, \
+                      write a user story, create an epic, add this to the epic, or how many \
+                      points is this.",
+        exclusion: Some("Add a task or a reminder."),
+        tools: &[
+            "create_node",
+            "create_relationship",
+            "search_nodes",
+            "get_node",
+        ],
+        applies_to: &["epic", "story", "bug"],
+        body: include_str!("skills/jira/creating-epics-stories-and-bugs.md"),
+    },
+    PlaybookSkill {
+        // Working with Sprints
+        id: "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f07",
+        title: "Working with Sprints",
+        description: "Start, plan or close a sprint, add work to the sprint, carry unfinished \
+                      work into the next sprint, or set a sprint goal. Use when the user says \
+                      start the sprint, close the sprint, what's in this sprint, or move this \
+                      to the next sprint.",
+        exclusion: Some("Add a task or a reminder."),
+        tools: &[
+            "create_node",
+            "update_node",
+            "create_relationship",
+            "search_nodes",
+            "get_node",
+        ],
+        applies_to: &["sprint", "story", "bug"],
+        body: include_str!("skills/jira/working-with-sprints.md"),
+    },
+    PlaybookSkill {
+        // Sprint Validation Rules
+        id: "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f08",
+        title: "Sprint Validation Rules",
+        description: "Why a sprint change was rejected: a sprint won't start, won't reopen, or \
+                      a closed sprint won't take edits or new work. Use when the user says it \
+                      won't let me start the sprint, why can't I reopen this sprint, or why \
+                      can't I add this to the sprint.",
+        exclusion: Some("Link a task to a decision."),
+        tools: DEFAULT_TOOLS,
+        applies_to: &["sprint"],
+        body: include_str!("skills/jira/sprint-validation-rules.md"),
+    },
+];
+
+/// The bundle-level skill.
+const OVERVIEW: PlaybookSkill = PlaybookSkill {
+    // Jira-style Workspace
+    id: "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f09",
+    title: "Jira-style Workspace",
+    description: "What workflow this workspace uses: the Jira-style Playbook installed here — \
+                  its epic, story, bug and sprint types, the Plays that gate sprints, its saved \
+                  views, and the schema ids they were actually created under.",
+    exclusion: None,
+    tools: DEFAULT_TOOLS,
+    applies_to: &["epic", "story", "bug", "sprint"],
+    body: include_str!("skills/jira/jira-style-workspace.md"),
+};
+
 /// The Jira-style playbook.
 pub fn playbook() -> MethodologyPlaybook {
     MethodologyPlaybook {
@@ -70,14 +138,8 @@ pub fn playbook() -> MethodologyPlaybook {
             sprint_completion_stamp(),
             sprint_close_lock(),
         ],
-        skills: vec![
-            playbook_skill(include_str!(
-                "skills/jira/creating-epics-stories-and-bugs.md"
-            )),
-            playbook_skill(include_str!("skills/jira/working-with-sprints.md")),
-            playbook_skill(include_str!("skills/jira/sprint-validation-rules.md")),
-        ],
-        overview: include_str!("skills/jira/jira-style-workspace.md"),
+        skills: SKILLS,
+        overview: OVERVIEW,
         views: vec![epics_by_status_view(), sprints_by_status_view()],
     }
 }
@@ -705,7 +767,7 @@ mod tests {
     fn skills_are_narrow_starter_tier_and_carry_guidance() {
         let skills = playbook().skills;
         assert!(skills.len() >= 3, "expected several narrow skills");
-        for s in &skills {
+        for s in skills.iter().map(PlaybookSkill::template) {
             assert_eq!(s.root_node_type, "skill");
             assert!(matches!(s.tier, SeedTier::Starter), "{}", s.title);
             let skill = crate::models::SkillFields::from_properties(&s.root_properties)
@@ -721,10 +783,9 @@ mod tests {
     #[test]
     fn overview_is_titled_as_skill_md_routes_on() {
         let pb = playbook();
-        let overview = crate::methodology::skills::playbook_overview_skill(
-            pb.overview,
-            &crate::methodology::skills::InstalledIds::default(),
-        );
+        let overview = pb
+            .overview
+            .overview_template(&crate::methodology::skills::InstalledIds::default());
         assert_eq!(overview.title, format!("{} Workspace", pb.name));
     }
 }

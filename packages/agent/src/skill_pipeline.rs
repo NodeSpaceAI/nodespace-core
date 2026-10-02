@@ -1,112 +1,434 @@
-//! Skill and tool node seeding templates.
+//! The seeded skills and tools: one table row per built-in.
 //!
-//! Provides the default skill and tool nodes seeded on first run. Each
-//! [`NodeTemplate`] produces one root node plus any children. Use
-//! [`nodespace_core::markdown::prepare_nodes_from_template`] to expand a
-//! template into a flat list of `PreparedNode`s before inserting them via
-//! `NodeService::bulk_create_hierarchy`.
+//! [`SKILL_SEEDS`] is the built-in skill table. A row holds the skill's fixed
+//! id, its retrieval and dispatch config, and its guidance as a plain
+//! Markdown file under `seeds/skills/`. [`seed_skill_nodes`] turns the rows
+//! into [`NodeTemplate`]s; use
+//! [`nodespace_core::markdown::prepare_nodes_from_template`] to expand one
+//! into the nodes `NodeService::seed_nodes_from_templates` reconciles.
 //!
-//! The previous push-based [`SkillPipeline`] (pre-LLM intent
-//! routing with confidence thresholds + tool whitelist scoping) has been
-//! removed. Skill discovery is now LLM-orchestrated through the
-//! `search_skills` tool exposed by [`crate::local_agent::tools`], so the
-//! agent loop no longer needs a pipeline object — only the seeded skill
-//! nodes themselves remain.
+//! A skill body states its own procedure and includes the rules it shares
+//! with other skills and with the skill external agents install, by id:
+//! `<!-- include: find-then-act -->`. The rule's text lives once, in
+//! `seeds/rules/` (see [`crate::skill_rules`]), so two skills that carry the
+//! same rule cannot drift apart, and neither can the two surfaces.
 //!
-//! Tool nodes (`node_type='tool'`) bridge graph storage to
-//! deterministic Rust handlers. Each tool is seeded as a node carrying its
-//! handler key, typed parameter schema, description, and `source` provenance.
+//! Skill discovery is LLM-orchestrated through the `search_skills` tool
+//! exposed by [`crate::local_agent::tools`]; nothing here routes a turn.
+//!
+//! Tool nodes (`node_type='tool'`) bridge graph storage to deterministic Rust
+//! handlers. Tools stay defined in Rust, each bound to a handler with a typed
+//! parameter schema; [`seed_tool_nodes`] seeds one node per
+//! [`crate::local_agent::tools::Tool`], under that tool's fixed id.
 
-use crate::skill_rules::{
-    ADD_ENUM_VALUES, AMBIGUITY_CLARIFY, BULK_IMPORT_NO_FOLLOWUP_SEARCH, COLLECTION_AT_CREATE_TIME,
-    CREATING_TWO_LINKED_TYPES, DELETE_A_SCHEMA, EDIT_DONT_RECREATE, EXTENDS_SCHEMA_COMPOSITION,
-    FIND_THEN_ACT, GROUPING_IS_COLLECTIONS, NAMED_RECORD_RESOLUTION, ONE_SCHEMA_PER_REQUEST,
-    RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS, SCHEMA_VALIDATION_ERROR_RETRY,
-    SINGLE_ITEM_PER_CALL, SUCCESS_NO_REVERIFY, TARGET_TYPE_MUST_EXIST, TASK_STATUS_DEDICATED_VERB,
-    TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
-};
+use crate::skill_rules::{resolve_includes, RuleForm};
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::SkillFields;
 
-/// Builds the Schema Creation skill's markdown_content.
-///
-/// Argument shape (which fields to omit, enum value casing, the
-/// `title_template` placeholder rule) now lives on `create_schema`'s own
-/// tool-schema descriptions (`local_agent/tools.rs`) — ADR-064 rule 1 — so
-/// the rules that state only that shape (`NO_NAME_TITLE_FIELD`,
-/// `NAME_PLACEHOLDER_EXCEPTION`, `FIELDS_FROM_REQUEST_ONLY`, `ENUM_FORMAT`)
-/// are no longer interpolated here: duplicating a schema-stated rule into
-/// prose is how the two drifted before (the `coreValues`/`core_values`
-/// contradiction ADR-064 records). The worked JSON examples moved the same
-/// way, onto `create_schema`'s own description, per ADR-038 Finding 2 (the
-/// model reproduces the worked example's pattern, so the example belongs
-/// where the model reads it right before calling).
-///
-/// What remains here is procedure: which tool to call, in what order, and
-/// facts about the API's response contract (already-exists, validation-error
-/// retry) that a schema cannot express. These rules are still interpolated
-/// from [`crate::skill_rules`] so they cannot drift from the "Schema
-/// inspection and management" section of `packages/skill/SKILL.md`
-/// (`packages/cli/examples/gen_skill_md.rs` renders the same source in prose
-/// form for that, separate, consumer).
-///
-/// `SCHEMA_RULES_NOT_IN_PROMPT` (test-only, defined below this function) is
-/// the explicit, reviewed record of every `SCHEMA_RULES` entry this function
-/// deliberately does not interpolate — see its own doc comment for why a
-/// hand-maintained list, rather than nothing, is the guard.
-fn schema_creation_guidance() -> String {
-    format!(
-        r#"# Schema Creation & Editing Guidance
-
-CREATING A SCHEMA — call create_schema:
-
-CALL create_schema NOW: your next action is the tool call, not planning text.
-
-{one_schema_per_request}
-
-{creating_two_linked_types}
-
-{schema_already_exists}
-
-{schema_validation_error_retry}
-
-{edit_dont_recreate}
-
-{add_enum_values}
-
-{rename_vs_relabel}
-
-{delete_a_schema}
-
-{extends_schema_composition}
-
-{relationship_vs_field} {target_type_must_exist}
-
-{grouping_is_collections}
-
-{title_template_placeholders}
-
-{unique_field_flags}"#,
-        one_schema_per_request = ONE_SCHEMA_PER_REQUEST.imperative,
-        creating_two_linked_types = CREATING_TWO_LINKED_TYPES.imperative,
-        schema_already_exists = SCHEMA_ALREADY_EXISTS.imperative,
-        schema_validation_error_retry = SCHEMA_VALIDATION_ERROR_RETRY.imperative,
-        edit_dont_recreate = EDIT_DONT_RECREATE.imperative,
-        add_enum_values = ADD_ENUM_VALUES.imperative,
-        grouping_is_collections = GROUPING_IS_COLLECTIONS.imperative,
-        rename_vs_relabel = RENAME_VS_RELABEL.imperative,
-        delete_a_schema = DELETE_A_SCHEMA.imperative,
-        extends_schema_composition = EXTENDS_SCHEMA_COMPOSITION.imperative,
-        relationship_vs_field = RELATIONSHIP_VS_FIELD.imperative,
-        target_type_must_exist = TARGET_TYPE_MUST_EXIST.imperative,
-        title_template_placeholders = TITLE_TEMPLATE_PLACEHOLDERS.imperative,
-        unique_field_flags = UNIQUE_FIELD_FLAGS.imperative,
-    )
+/// One built-in skill, as its table row.
+#[derive(Debug, Clone, Copy)]
+pub struct SkillSeed {
+    /// The skill node's fixed id.
+    pub id: &'static str,
+    /// The skill's name, embedded for retrieval with its description.
+    pub title: &'static str,
+    /// What the skill is for. Only words for what the skill DOES: an
+    /// embedding has no negation.
+    pub description: &'static str,
+    /// Tools a turn that selects this skill may call.
+    pub tools: &'static [&'static str],
+    /// ReAct iteration budget for the skill.
+    pub max_iterations: u32,
+    /// What the skill is not for, scored against the query separately.
+    pub exclusion: Option<&'static str>,
+    /// The guidance, as plain Markdown with rule includes.
+    pub body: &'static str,
 }
 
-/// `SCHEMA_RULES` entries deliberately NOT interpolated into
-/// [`schema_creation_guidance`] — the in-app agent prompt — with the reason
-/// recorded inline.
+impl SkillSeed {
+    /// The seed this row installs, with its rule includes resolved for the
+    /// local agent.
+    pub fn template(&self) -> NodeTemplate {
+        let mut skill = SkillFields::new(self.description, self.tools, self.max_iterations);
+        if let Some(exclusion) = self.exclusion {
+            skill = skill.with_exclusion(exclusion);
+        }
+        NodeTemplate::skill(
+            self.id,
+            self.title,
+            skill,
+            resolve_includes(self.body, RuleForm::Agent),
+        )
+    }
+}
+
+/// The built-in skills.
+///
+/// Each row produces one skill root node plus ordinary markdown children
+/// (header/text, inferred from the guidance markdown's structure) carrying the
+/// guidance body. Tool whitelists and max_iterations are still stored
+/// as properties on the skill node — they're consumed by external (ACP) agents
+/// that prefer the older skill-scoped flow. The local agent ignores them and
+/// just uses the description/name returned by `search_skills`.
+///
+/// None links to a schema through `applies_to`: the built-ins are generic
+/// across every type, so each takes skill search's unlinked fallback.
+pub const SKILL_SEEDS: &[SkillSeed] = &[
+    SkillSeed {
+        // Research & Search
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c01",
+        title: "Research & Search",
+        description: "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.",
+        tools: &["search_semantic", "search_nodes", "get_node"],
+        max_iterations: 4,
+        exclusion: None,
+        body: include_str!("seeds/skills/research-and-search.md"),
+    },
+    SkillSeed {
+        // Node Creation
+        //
+        // The body includes the shared named-record rule, so the external
+        // skill's copy of it (`packages/skill/SKILL.md`) cannot drift from
+        // this one on substance.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c02",
+        title: "Node Creation",
+        description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
+        // `update_node` is whitelisted here as well as on Graph
+        // Editing — deliberately, to remove a single point of failure
+        // rather than because this skill is about editing.
+        //
+        // Every write tool in this seed set except `create_relationship`
+        // was reachable from exactly ONE skill, while read tools sat in
+        // six or seven. With RETRIEVAL_TOP_K = 3, that makes a write
+        // tool's availability a lottery: if its sole owner misses the
+        // window, the tool does not exist for that turn and the model
+        // cannot call it however well it reasons.
+        //
+        // Measured on the locked model, 6 reps of the same seeded chain
+        // on a warm index: the write turn failed 3 times, every failure
+        // being a turn where Graph Editing placed 4th or worse and no
+        // other candidate carried `update_node`. The two outcomes were
+        // exactly:
+        //   pass: Node Creation, Node Deletion, Graph Editing
+        //   fail: Schema Creation, Node Deletion, Research & Search
+        // Node Creation is present on the passing shape and is the
+        // nearest neighbour of an update request in embedding space
+        // ("add a record" and "change that record" are one user intent
+        // expressed two ways), so it is the natural second home.
+        //
+        // Blast radius is UNCHANGED, not merely bounded: this skill
+        // already whitelisted `create_node`, so `skill_is_mutating` was
+        // already true for it and `score_bar_for` already returned
+        // MUTATING. Adding another mutating tool moves nothing. The
+        // destructive rung is untouched either way —
+        // `stage2_permitted_names` admits destructive tools only from
+        // the retrieval winner, and neither added tool is destructive.
+        // `route_clarify` is here so this skill can hand an
+        // already-exists collision back to the user rather than
+        // resolving it by guessing. Without it, the guidance below
+        // ("ask which they meant") would name a tool the turn cannot
+        // reach, and the model's only options are to create a
+        // duplicate or to refuse in prose — measured: "Add Northwind
+        // Trading to the companies we sell to", with Northwind already
+        // in the graph and rendered in MENTIONED ENTITIES, produced
+        // `create_node` and a silent duplicate on 3 of 3 reps.
+        tools: &["create_node", "update_node", "update_task_status", "search_semantic", "search_nodes", "get_node", "route_clarify"],
+        max_iterations: 3,
+        exclusion: None,
+        body: include_str!("seeds/skills/node-creation.md"),
+    },
+    SkillSeed {
+        // Schema Creation
+        //
+        // Argument shape (which fields to omit, enum value casing, the
+        // `title_template` placeholder rule) lives on `create_schema`'s own
+        // tool-schema descriptions (`local_agent/tools.rs`) — ADR-064 rule 1 — so
+        // the rules that state only that shape (`no-name-title-field`,
+        // `name-placeholder-exception`, `fields-from-request-only`, `enum-format`)
+        // are not included in the body: duplicating a schema-stated rule into
+        // prose is how the two drifted before (the `coreValues`/`core_values`
+        // contradiction ADR-064 records). The worked JSON examples moved the same
+        // way, onto `create_schema`'s own description, per ADR-038 Finding 2 (the
+        // model reproduces the worked example's pattern, so the example belongs
+        // where the model reads it right before calling).
+        //
+        // What the body holds is procedure: which tool to call, in what order, and
+        // facts about the API's response contract (already-exists, validation-error
+        // retry) that a schema cannot express. Those rules are included from
+        // [`crate::skill_rules`], so they cannot drift from the "Schema
+        // inspection and management" section of `packages/skill/SKILL.md`, which
+        // renders the same rules in their prose form.
+        //
+        // `SCHEMA_RULES_NOT_IN_PROMPT` (test-only, below this table) is the
+        // explicit, reviewed record of every `SCHEMA_RULES` entry the body
+        // deliberately does not include — see its own doc comment for why a
+        // hand-maintained list, rather than nothing, is the guard.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c03",
+        title: "Schema Creation",
+        description: "Set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
+        tools: &["create_schema", "update_schema", "get_node"],
+        max_iterations: 3,
+        exclusion: None,
+        body: include_str!("seeds/skills/schema-creation.md"),
+    },
+    SkillSeed {
+        // Graph Editing
+        //
+        // The body includes shared interaction rules from
+        // [`crate::skill_rules`] (find-then-act, ambiguity clarification,
+        // dedicated task-status verb, success-means-stop).
+        //
+        // The allowed-values / id-provenance rules are stated in prose there
+        // as well as on `update_node`'s own schema (`local_agent/tools.rs`) — not a
+        // duplication ADR-064 forbids, because this text is procedure (WHEN to
+        // treat a description as already-resolved vs. needing `resolve_query`),
+        // not argument shape. The two invoice worked examples formerly here are
+        // deleted outright rather than reworded: no case exercising this skill
+        // needs a worked clarification example, and a business-domain one taught
+        // nothing this text's own principle didn't already state.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c04",
+        title: "Graph Editing",
+        // Names the completion states users actually say ("mark it
+        // resolved", "mark it paid"). The prior wording ("Modify
+        // existing nodes... update content, properties, titles, and
+        // metadata") missed the top-3 for 5 of 7 such requests on the
+        // locked embedding model, while the conflict skill (then
+        // titled "Conflict Resolution") won them on the shared word
+        // "resolve" and left no write tool on Stage 2's surface. Now
+        // in the top-3 for all 7.
+        //
+        // Kept narrow on purpose. A broader draft listing "closed" and
+        // "paid" as nouns ("the invoice is paid, the ticket is closed")
+        // outranked Node Deletion on "remove the closed tickets",
+        // silently withholding delete_node; "keep it" / "stay" is what
+        // holds deletion requests on Node Deletion. Guarded in
+        // `tests/it/live_skill_retrieval_stability.rs` by
+        // `completion_state_updates_route_graph_editing`,
+        // `control_conflict_requests_still_route_conflict_journal`,
+        // and `control_deletion_requests_are_not_outranked_by_graph_editing`.
+        description: "Update a record that already exists and keep it: mark it resolved, done, or paid, or set or change one of its fields, status, title, or content. Use when the user wants an existing item to stay but move to a new state. For tasks, use update_task_status to change status.",
+        // `create_node` is whitelisted here as the mirror of
+        // `update_node` on Node Creation: "record this" and "change
+        // that" are the same user intent inflected two ways, and either
+        // skill can win retrieval on either phrasing. Pairing them means
+        // whichever one places, the turn can still write. See
+        // `no_write_tool_is_reachable_from_only_one_skill`.
+        tools: &["update_node", "update_task_status", "create_node", "get_node", "search_nodes", "search_semantic", "resolve_query", "route_clarify"],
+        max_iterations: 3,
+        // "remove the resolved tickets" still out-ranked Node Deletion
+        // (0.855 vs 0.841) on "mark it resolved": the two requests
+        // differ only in the verb, which the embedding barely weights.
+        // No description wording separates them — every variant that
+        // lowered this skill on the deletion request lowered it by
+        // the same amount on "mark incident resolved", leaving that
+        // completion-state guard 0.003 from falling out of the top 3.
+        //
+        // An exclusion is scored against the query separately and
+        // costs this skill only on requests closer to it than to the
+        // description (`skill_ops::exclusion_penalized_score`). This
+        // one puts Node Deletion first on "remove the resolved
+        // tickets" by +0.047 and leaves every completion-state score
+        // unchanged. Its one measured cost: "remove the due date from
+        // the launch task" (a field, not a record) loses 0.009 and
+        // stays in the top 3.
+        //
+        // Wording is measured, not intuitive. Two longer drafts ("…or
+        // get rid of records so they no longer exist", "Delete or
+        // remove records.") also lowered "mark the outage report done"
+        // or "record that we decided to use Postgres" by 0.02–0.035;
+        // bare verbs aimed at "them" lowered nothing but deletions.
+        // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
+        // `remove_requests_mentioning_a_state_route_node_deletion`,
+        // `removing_a_field_still_reaches_graph_editing`, and
+        // `graph_editing_exclusion_leaves_completion_state_scores_unchanged`.
+        exclusion: Some("Remove them, delete them, get rid of them, purge them."),
+        body: include_str!("seeds/skills/graph-editing.md"),
+    },
+    SkillSeed {
+        // Relationship Management
+        //
+        // The body of the Relationship Management skill, including
+        // the shared find-then-act and success-means-stop rules.
+        // The DIRECTION rule below is stated in prose here as well as on
+        // `create_relationship`'s own `from_id`/`to_id` parameter descriptions
+        // (`local_agent/tools.rs`) — a deliberate duplication, not a drift risk left
+        // unguarded: `create_relationship` is whitelisted by BOTH this skill and
+        // Organization (this table's "Organization" row), and Organization's
+        // own guidance does not restate it. A turn routed to Organization instead of
+        // here would see `create_relationship` with only the tool schema's copy of
+        // the rule, so the tool schema alone must already carry it — the same
+        // reachability argument the Graph Editing row's comment makes for its
+        // id-provenance rules.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c05",
+        title: "Relationship Management",
+        // The prior wording ("Create connections between nodes,
+        // explore relationships, and traverse the knowledge graph")
+        // never used the verbs a user actually says for linking two
+        // things, so it lost Stage-2 retrieval outright on "point
+        // rebuild task at the decision it has to respect" — this
+        // skill's own score did not even reach the printed top-3
+        // against that query.
+        //
+        // Measured on the locked embedding model against that exact
+        // query plus the seeded control prompts for Node Creation,
+        // Graph Editing, Node Deletion, Schema Creation, and
+        // Organization: an earlier draft leaning on generic
+        // "link"/"connect"/"associate"/"relates to" vocabulary DID
+        // clear RETRIEVAL_TOP_K on the failing query, but that same
+        // generic vocabulary crowded Organization itself out of its
+        // own top-3 on "Add this note to my reading list collection"
+        // — reproducing this exact defect for a different skill,
+        // since Organization also whitelists create_relationship and
+        // its own description already uses "categorize"/"group",
+        // semantically adjacent to "associate"/"relate". Dropping the
+        // generic verbs and leading with "edge" plus the query's own
+        // "depends on"/"must respect"/"points at" phrasing clears the
+        // failing query (Relationship Management: unranked 6th at
+        // ~0.803 -> 2nd at ~0.837) without displacing Organization's
+        // own top-3 on its control prompt.
+        description: "Record an edge between two nodes: a task or note that depends on, must respect, or points at another record. Explore or traverse existing relationships between nodes in the knowledge graph.",
+        tools: &["create_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
+        max_iterations: 3,
+        exclusion: None,
+        body: include_str!("seeds/skills/relationship-management.md"),
+    },
+    SkillSeed {
+        // Node Deletion
+        //
+        // The body of the Node Deletion skill, including the
+        // shared find-then-act, single-item-per-call, and success-means-stop rules.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c06",
+        title: "Node Deletion",
+        // Destructive verbs ONLY. Two rules, both learned from
+        // measurement, and both about what an embedding encodes.
+        //
+        // 1. No generic noun tail. An earlier wording ended "...remove,
+        //    delete, or trash a node or record", and that trailing noun
+        //    made this skill an attractor for anything node-shaped: it
+        //    was retrieved on turns that recorded a decision, marked a
+        //    status, set a due date, and asked a plain question. Every
+        //    one of those prompts is *about* a node or record; only the
+        //    verb distinguishes them.
+        //
+        // 2. NO DISCLAIMER NAMING OTHER OPERATIONS. The fix for (1)
+        //    appended "— not to record, update, mark, or look something
+        //    up", which made things worse in a way prose review cannot
+        //    catch: embeddings have no notion of negation. A sentence
+        //    listing "record, update, mark, look up" embeds NEARER those
+        //    intents, not further from them. The disclaimer meant to
+        //    exclude update requests is what pulled this skill onto them.
+        //
+        //    Measured on the locked model, write turn "The five-day one
+        //    got signed off — mark it that way": this skill was in the
+        //    Stage-2 top-3 on ALL 18 turns of a 6-rep run, including all
+        //    three that then failed for want of `update_node`. The word
+        //    "mark" in the disclaimer is in the user's prompt.
+        //
+        // The rule this encodes: a retrieval description may contain only
+        // words for what the skill DOES. Scoping ("use this only when…")
+        // belongs in the instruction subtree, which the model reads as
+        // text — not in the description, which is what gets embedded.
+        description: "Delete, remove, erase, purge, discard, trash, drop, or get rid of stored content. Take something out of the knowledge graph permanently.",
+        tools: &["delete_node", "get_node", "search_semantic", "search_nodes"],
+        max_iterations: 3,
+        exclusion: None,
+        body: include_str!("seeds/skills/node-deletion.md"),
+    },
+    SkillSeed {
+        // Conflict Journal
+        //
+        // Covers the read tools (`list_conflicts`, `get_conflict`) and the two
+        // non-destructive resolution actions (`dismiss_conflict`,
+        // `adopt_existing_conflict`). `merge_conflict` is deliberately NOT
+        // whitelisted here — it archives a node and re-points its edges, the same
+        // "cannot be undone" shape as `delete_node`, so it stays single-owner (see
+        // `SINGLE_OWNER_BY_DESIGN` in this module's tests) rather than being offered
+        // alongside the lower-stakes actions in this skill.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c07",
+        title: "Conflict Journal",
+        // No form of "resolve" in the title or description. Those two
+        // are what gets embedded (the guidance markdown is not), and
+        // the shared word made this skill the rank-1
+        // attractor for any request mentioning "resolved": "delete
+        // the resolved incidents" ranked it above Node Deletion
+        // (0.978 vs 0.904) on the locked embedding model, and since
+        // `delete_node` is offered only from the top tool-bearing
+        // candidate, the deletion was silently withheld. Rewording
+        // the description alone never fixed it — the title "Conflict
+        // Resolution" carried the pull by itself. Guarded in
+        // `tests/it/live_skill_retrieval_stability.rs` by
+        // `deletion_requests_mentioning_resolved_route_node_deletion`
+        // and `control_conflict_requests_still_route_conflict_journal`.
+        description: "List, inspect, or dismiss conflicts between colliding nodes recorded in the conflict journal: two records that claim the same identity, duplicates, or sync collisions.",
+        tools: &["list_conflicts", "get_conflict", "dismiss_conflict", "adopt_existing_conflict", "search_nodes"],
+        max_iterations: 3,
+        exclusion: None,
+        body: include_str!("seeds/skills/conflict-journal.md"),
+    },
+    SkillSeed {
+        // Node Merge
+        //
+        // The body of the Node Merge skill, including the shared
+        // success-means-stop rule.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c08",
+        title: "Node Merge",
+        // `merge_conflict` is destructive (archives the loser node,
+        // re-points its edges) the same way delete_node is, so this
+        // skill is single-owner by the same ADR-038 reasoning
+        // (`SINGLE_OWNER_BY_DESIGN` in this module's tests) rather
+        // than being folded into Conflict Journal's lower-stakes
+        // whitelist.
+        description: "Merge two nodes that both represent the same real thing into one, combining their data and archiving the loser. Use when the user wants two duplicate or colliding records combined into a single record.",
+        tools: &["merge_conflict", "dismiss_conflict", "adopt_existing_conflict", "get_conflict", "get_node", "search_nodes"],
+        max_iterations: 3,
+        exclusion: None,
+        body: include_str!("seeds/skills/node-merge.md"),
+    },
+    SkillSeed {
+        // Play Workflow State
+        //
+        // Covers only `get_workflow_state` — the one Play/Playbook operation that
+        // needs its own tool (list/logs/enable/disable all reduce to `search_nodes`/
+        // `update_node`, which the model already reaches through other skills, per
+        // ADR-035's capability-parity clause).
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c09",
+        title: "Play Workflow State",
+        description: "Check why a Play automation rule hasn't fired for a node, or what conditions are still unmet, by evaluating that node against every active Play rule that could apply to it. Use when the user asks why an automation, rule, or workflow hasn't triggered, or wants to know what's missing before it will.",
+        tools: &["get_workflow_state", "search_semantic", "search_nodes"],
+        max_iterations: 3,
+        exclusion: None,
+        body: include_str!("seeds/skills/play-workflow-state.md"),
+    },
+    SkillSeed {
+        // Bulk Import
+        //
+        // The body of the Bulk Import skill, including the shared
+        // no-followup-search success rule.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0a",
+        title: "Bulk Import",
+        description: "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
+        tools: &["create_nodes_from_markdown"],
+        max_iterations: 2,
+        exclusion: None,
+        body: include_str!("seeds/skills/bulk-import.md"),
+    },
+    SkillSeed {
+        // Organization
+        //
+        // The body of the Organization skill, including the shared
+        // find-then-act, collection-at-create-time, and success-means-stop rules.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0b",
+        title: "Organization",
+        description: "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.",
+        tools: &["create_relationship", "get_node", "search_semantic", "search_nodes"],
+        max_iterations: 3,
+        exclusion: None,
+        body: include_str!("seeds/skills/organization.md"),
+    },
+];
+
+/// `SCHEMA_RULES` entries deliberately NOT included in the Schema Creation
+/// skill's body — the in-app agent prompt — with the reason recorded inline.
 ///
 /// A rule can be registered in [`crate::skill_rules::SCHEMA_RULES`] and
 /// rendered into the shipped `SKILL.md` prose without ever reaching this
@@ -115,11 +437,11 @@ CALL create_schema NOW: your next action is the tool call, not planning text.
 /// during review of the PR that added it) before anything caught it.
 ///
 /// `schema_rules_are_wired_or_explicitly_excluded` (below) checks every
-/// `SCHEMA_RULES` entry against `schema_creation_guidance()`'s output and
+/// `SCHEMA_RULES` entry against the Schema Creation skill's body and
 /// requires each miss to be named here. A hand-maintained exclusion list is
 /// itself a drift source, but the alternative already produced a shipped
 /// defect: an omission from this list is visible in review, where an
-/// omission from `schema_creation_guidance()` alone was not.
+/// omission from the body alone was not.
 ///
 /// All five entries below are field/enum **shape** rules that ADR-064 says
 /// belong on `create_schema`'s own tool-schema descriptions
@@ -154,555 +476,16 @@ const SCHEMA_RULES_NOT_IN_PROMPT: &[&str] = &[
     "enum-edge-fields",
 ];
 
-/// Builds the Node Creation skill's markdown_content, interpolating the
-/// shared named-record rule so the external skill's copy of it
-/// (`packages/skill/SKILL.md`) cannot drift from this one on substance.
-fn node_creation_guidance() -> String {
-    format!(
-        r#"# Node Creation Guidance
-
-NEW RECORD OR EXISTING ONE? If the user is changing something that already exists — marking it done or signed off, correcting a value, setting a field on a record already in this conversation — call update_node with that record's id, NOT create_node. Creating a second copy leaves the original unchanged and silently duplicates the user's data. If they are adding something that does not exist yet, create_node is right and the rest of this guidance applies.
-
-{named_record_resolution}
-
-CHANGING A TASK'S STATUS: use update_task_status with the task id and the new status string, not update_node — status is not a field_values key on a task. Pick the value from the list on update_task_status's own status parameter: that is the task type's current vocabulary, and it can hold more than the four built-in values.
-
-CALL create_node NOW: your next action is the tool call, not planning text.
-
-THE TYPE: set node_type to the id shown in EXISTING SCHEMAS, copied exactly.
-
-THE VALUES: put every particular the user supplied into field_values. Work through their message value by value and check each against the type's field list before calling. field_values is the ONLY way any value is stored — a value left out is lost silently while the record still reports as saved.
-
-VALUES WITH NO MATCHING FIELD: If the user supplies a particular the listed fields do not cover, still put it in field_values under a key of your own — lowercase, singular, snake_case, named after the user's own noun for it. NEVER drop a value because the type has no field for it: a dropped value is gone silently and the user was told the record was saved. Bare on a type from EXISTING SCHEMAS; `custom:`-prefixed on a built-in type — text, task, date — where unprefixed names are reserved for built-in fields. Do NOT call create_schema or update_schema to add the field first; put the value in this create_node call.
-
-SUCCESS: After create_node returns a node ID, confirm to the user what was created and STOP. Do NOT call get_node or any other tool — the create response is sufficient. The task is complete."#,
-        named_record_resolution = NAMED_RECORD_RESOLUTION.imperative,
-    )
-}
-
-/// Builds the Graph Editing skill's markdown_content, interpolating shared
-/// interaction rules from [`crate::skill_rules`] (find-then-act, ambiguity
-/// clarification, dedicated task-status verb, success-means-stop).
-///
-/// The allowed-values / id-provenance rules below are stated in prose here
-/// as well as on `update_node`'s own schema (`local_agent/tools.rs`) — not a
-/// duplication ADR-064 forbids, because this text is procedure (WHEN to
-/// treat a description as already-resolved vs. needing `resolve_query`),
-/// not argument shape. The two invoice worked examples formerly here are
-/// deleted outright rather than reworded: no case exercising this skill
-/// needs a worked clarification example, and a business-domain one taught
-/// nothing this text's own principle didn't already state.
-fn graph_editing_guidance() -> String {
-    format!(
-        r#"# Graph Editing Guidance
-
-EXISTING RECORD OR A NEW ONE? This skill also carries create_node, and the two are not interchangeable. If the thing the user describes already exists — it was returned by an earlier tool call, or they are marking, correcting, or setting a value on it — call update_node with its id. If it does not exist yet — they are recording, logging, or adding something for the first time — call create_node instead: update_node needs an id, and inventing one writes to a record that is not theirs or fails outright.
-
-When updating an existing node:
-
-CALL update_node NOW: your next action is the tool call, not planning text.
-
-FIND THEN UPDATE: {find_then_act} Then call update_node with the ID and only the fields that need changing.
-
-ALREADY IN THIS CONVERSATION: an indirect reference like "the auth one", "that one", or "the 2400 one" can still name a record already returned by a prior tool result in this conversation — match the description against those records and use that record's id, matching on what the description says, not on which record was discussed last. Never ask the user to supply an id that's already in the conversation.
-
-INDIRECT AND NOT YET FOUND: If the request identifies the target indirectly and no matching record has appeared in this conversation yet — a bare value without naming its field (an amount, a code), a relative date or status word (a weekday, "overdue", "recent"), or a paraphrased description — call resolve_query(request=<the request verbatim>, node_type) FIRST instead of hand-writing a search_nodes query yourself. resolve_query performs the search itself: if it returns resolved:true, act on the returned id directly (e.g. pass it straight to update_node) — do not call search_nodes afterward. If it returns resolved:false with reason:"no_match", tell the user nothing matched. If it returns reason:"multiple_matches", call route_clarify with one specific question naming the candidates as options — do not ask which one in prose.
-
-AN ID ALONE CHANGES NOTHING: a call carrying only an id is a no-op that reports success — every call must also carry the change itself in `field_values`, using a field the type defines, copied character for character. When a field lists allowed values, use one of those values exactly — never a paraphrase of the user's wording, never a capitalised or spaced form of the value.
-
-{ambiguity_clarify}
-
-{task_status_dedicated_verb}
-
-CONTENT vs FIELD VALUES: Use the content field only when the user is renaming the node. Use field_values for typed fields (status, due_date, etc.).
-
-SUCCESS: {success_no_reverify}"#,
-        find_then_act = FIND_THEN_ACT.imperative,
-        ambiguity_clarify = AMBIGUITY_CLARIFY.imperative,
-        task_status_dedicated_verb = TASK_STATUS_DEDICATED_VERB.imperative,
-        success_no_reverify = SUCCESS_NO_REVERIFY.imperative,
-    )
-}
-
-/// Builds the Relationship Management skill's markdown_content, interpolating
-/// the shared find-then-act and success-means-stop rules.
-/// The DIRECTION rule below is stated in prose here as well as on
-/// `create_relationship`'s own `from_id`/`to_id` parameter descriptions
-/// (`local_agent/tools.rs`) — a deliberate duplication, not a drift risk left
-/// unguarded: `create_relationship` is whitelisted by BOTH this skill and
-/// Organization (`seed_skill_nodes`'s "Organization" entry), and Organization's
-/// own guidance does not restate it. A turn routed to Organization instead of
-/// here would see `create_relationship` with only the tool schema's copy of
-/// the rule, so the tool schema alone must already carry it — the same
-/// reachability argument `graph_editing_guidance`'s doc comment makes for its
-/// id-provenance rules.
-fn relationship_management_guidance() -> String {
-    format!(
-        r#"# Relationship Management Guidance
-
-When linking nodes or exploring connections:
-
-CALL create_relationship NOW: your next action is the tool call, not planning text.
-
-CREATING A RELATIONSHIP: both ids come from a prior tool result — copy each exactly, do not ask the user for either. The relationship_type must be one declared on the source record's own type (e.g. "supersedes", "has_task"), or one of the four universal names legal between any two records: member_of, has_child, mentions, has_role. Any other name is rejected — when no declared relation fits, use "mentions".
-
-DIRECTION: from_id is the record that ACTS, to_id is the record acted upon. "A supersedes B" is from_id=A, to_id=B. Reversing them records the opposite fact and still reports success.
-
-TRAVERSING RELATIONSHIPS: Call get_related_nodes with a node ID to fetch its connected nodes. Use the direction parameter ("out", "in", or "both") to control traversal direction. Filter by relationship_type to narrow results.
-
-FIND BEFORE LINK: If the user says "link X to Y" and you don't have both IDs, call search_semantic or search_nodes once per entity to resolve them, then call create_relationship.
-
-SUCCESS: {success_no_reverify}"#,
-        success_no_reverify = SUCCESS_NO_REVERIFY.imperative,
-    )
-}
-
-/// Builds the Node Deletion skill's markdown_content, interpolating the
-/// shared find-then-act, single-item-per-call, and success-means-stop rules.
-fn node_deletion_guidance() -> String {
-    format!(
-        r#"# Node Deletion Guidance
-
-WRONG SKILL? This skill only takes content OUT of the graph. If the user is recording something, updating or marking a value, setting a field, or looking something up, say so and do not call delete_node — deleting a node the user meant to update is the one error here that cannot be undone. (This scoping rule lives here rather than in the skill's description because the description is embedded for retrieval, and an embedding cannot represent "not".)
-
-When deleting a node:
-
-FIND THEN DELETE: {find_then_act} Confirm the title matches what the user described, then call delete_node with the ID.
-
-{single_item_per_call}
-
-SUCCESS: {success_no_reverify}"#,
-        find_then_act = FIND_THEN_ACT.imperative,
-        single_item_per_call = SINGLE_ITEM_PER_CALL.imperative,
-        success_no_reverify = SUCCESS_NO_REVERIFY.imperative,
-    )
-}
-
-/// Builds the Conflict Journal skill's markdown_content.
-///
-/// Covers the read tools (`list_conflicts`, `get_conflict`) and the two
-/// non-destructive resolution actions (`dismiss_conflict`,
-/// `adopt_existing_conflict`). `merge_conflict` is deliberately NOT
-/// whitelisted here — it archives a node and re-points its edges, the same
-/// "cannot be undone" shape as `delete_node`, so it stays single-owner (see
-/// `SINGLE_OWNER_BY_DESIGN` in this module's tests) rather than being offered
-/// alongside the lower-stakes actions in this skill.
-fn conflict_journal_guidance() -> String {
-    r#"# Conflict Journal Guidance
-
-This skill inspects and resolves records from the conflict journal — durable evidence that two nodes collide (e.g. two active nodes share a unique field's value, or two collections share a name). It does not touch ordinary node reads or writes.
-
-FIND THEN ACT: Use list_conflicts (optionally filtered by status/kind/node) or get_conflict to find and confirm the exact conflict record and its participants before resolving anything.
-
-DISMISS vs ADOPT: dismiss_conflict acknowledges a conflict as acceptable without changing either node — use it when the collision is fine as-is (e.g. two people genuinely share a mailbox). adopt_existing_conflict resolves a conflict by continuing with an existing node instead of a newly created one, without deleting or modifying either node — use it when the user means the existing record, not a new one.
-
-Both actions apply immediately when called and are visible everywhere the conflict journal is read (the desktop app included) — only call one once the user's intent about which conflict, and which node to keep, is clear. Do not guess.
-
-MERGING NODES: This skill does not merge nodes — that is a separate, more consequential action reserved for a dedicated skill, since it archives a node and re-points its edges."#
-        .to_string()
-}
-
-/// Builds the Node Merge skill's markdown_content, interpolating the shared
-/// success-means-stop rule.
-fn node_merge_guidance() -> String {
-    format!(
-        r#"# Node Merge Guidance
-
-NOT ALWAYS A MERGE: dismiss_conflict and adopt_existing_conflict are also available here. If the user wants to dismiss a conflict as acceptable, or continue with an existing node without touching the other one, use one of those instead of merge_conflict — neither changes or removes any node.
-
-When merging two nodes:
-
-FIND THEN CONFIRM: Use get_conflict (if a conflict record names both nodes) or get_node to confirm the identity of both participants before merging. Never guess which node is the survivor.
-
-SURVIVOR AND LOSER: Call merge_conflict with survivor_id (the node to keep) and loser_id (the node to archive). If an open conflict record names this pair, pass its id as conflict_id so the record closes as resolved in the same call. The survivor receives the union of both nodes' properties (the survivor's own value wins any overlap) and every relationship edge the loser had.
-
-Only call merge_conflict once the user has explicitly confirmed which node should survive — this is the one action in the conflict journal that changes graph structure immediately and is never performed automatically.
-
-SUCCESS: {success_no_reverify}"#,
-        success_no_reverify = SUCCESS_NO_REVERIFY.imperative,
-    )
-}
-
-/// Builds the Play Workflow State skill's markdown_content.
-///
-/// Covers only `get_workflow_state` — the one Play/Playbook operation that
-/// needs its own tool (list/logs/enable/disable all reduce to `search_nodes`/
-/// `update_node`, which the model already reaches through other skills, per
-/// ADR-035's capability-parity clause).
-fn play_workflow_state_guidance() -> String {
-    r#"# Play Workflow State Guidance
-
-This skill answers "why hasn't this Play rule fired?" or "what's still missing before it will?" for a node governed by NodeSpace's Play automation system (trigger → conditions → actions).
-
-CALL get_workflow_state WITH THE NODE'S ID: it evaluates every active Play rule whose trigger could apply to that node's type against the node's current state, and reports each rule's conditions as one of: satisfied, not yet met (a real, schema-declared relationship or field that just doesn't have a value yet — normal, the Play stays active), or unresolvable (the condition references something that isn't a declared field or relationship on the node's schema at all — almost certainly a typo in how the Play was authored, and will never resolve no matter what the graph looks like).
-
-SCOPE: this reports live condition state computed right now, on this device — it is not an execution history. Whether a rule has already fired is not tracked anywhere in the system today, so never tell the user a rule "already ran" or "hasn't run yet" based on this tool; only report what conditions currently hold.
-
-UNRESOLVABLE MEANS LIKELY MISAUTHORED: if a condition comes back unresolvable and the response's degraded_reasons list is empty, say so plainly and name the specific unresolvable path — don't describe it as "not yet met," which implies waiting will fix it. Waiting will not fix a typo.
-
-NON-EMPTY degraded_reasons MEANS INCOMPLETE: a lookup failed while the response was built, so it may be missing rules and may report a real field or relationship as unresolvable. Call get_workflow_state once more for the same node. If degraded_reasons is still non-empty, report what came back but tell the user the result may be incomplete, and never call a condition a typo or misauthored on the strength of it.
-
-FIND THE NODE FIRST: if you don't already have the node's id, call search_semantic or search_nodes first, then call get_workflow_state with the resolved id."#
-        .to_string()
-}
-
-/// Builds the Bulk Import skill's markdown_content, interpolating the shared
-/// no-followup-search success rule.
-fn bulk_import_guidance() -> String {
-    format!(
-        r#"# Bulk Import Guidance
-
-When importing a document or creating multiple nodes from markdown:
-
-CALL create_nodes_from_markdown ONCE: Pass the markdown content directly. The tool parses headings into a node hierarchy — top-level headings become root nodes, sub-headings become children.
-
-COLLECTION: If the user specifies a collection or folder name, pass it as the collection parameter.
-
-NODE TYPE: Default to node_type="text" for general documents. Use a specific type if the user names one.
-
-SUCCESS: {bulk_import_no_followup_search}"#,
-        bulk_import_no_followup_search = BULK_IMPORT_NO_FOLLOWUP_SEARCH.imperative,
-    )
-}
-
-/// Builds the Organization skill's markdown_content, interpolating the shared
-/// find-then-act, collection-at-create-time, and success-means-stop rules.
-fn organization_guidance() -> String {
-    format!(
-        r#"# Organization Guidance
-
-When organizing nodes into collections or categories:
-
-{collection_at_create_time}
-
-FIND THE NODE: {find_then_act} This applies only to filing a node that already exists — a node you are about to create takes its collection as a create_node argument instead, with no lookup at all.
-
-ADD AN EXISTING NODE: Call update_node with the node ID and the collection path. Fall back to create_relationship with relationship_type="member_of" only when you hold a collection ID rather than a path.
-
-SUCCESS: Once the call returns, confirm to the user that the node has been organized into the collection."#,
-        collection_at_create_time = COLLECTION_AT_CREATE_TIME.imperative,
-        find_then_act = FIND_THEN_ACT.imperative,
-    )
-}
-
-/// Default skill node templates seeded on first run.
-///
-/// Each template produces one skill root node plus ordinary markdown children
-/// (header/text, inferred from the guidance markdown's structure) carrying the
-/// guidance body. Tool whitelists and max_iterations are still stored
-/// as properties on the skill node — they're consumed by external (ACP) agents
-/// that prefer the older skill-scoped flow. The local agent ignores them and
-/// just uses the description/name returned by `search_skills`.
+/// The built-in skill seeds, one per row of [`SKILL_SEEDS`], in table order.
 pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
-    vec![
-        NodeTemplate::skill(
-            "Research & Search",
-            SkillFields::new(
-                "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.",
-                &["search_semantic", "search_nodes", "get_node"],
-                4,
-            ),
-            r#"# Research & Search Guidance
-
-When answering questions about stored knowledge:
-
-SEARCH FIRST: When the user is looking for information or wants to act on a specific node, call search_semantic with a natural language query. Results are ordered by relevance — the first result is the best match. Skip search for conversational messages or capability questions.
-
-RESULT STRUCTURE: Each result contains:
-- id: node ID (use this for follow-up get_node calls)
-- title: document title
-- score: similarity score (0-1, higher = more relevant)
-- snippet: short content preview
-- markdown: full document content (present for top N results based on include_markdown, default 1)
-
-USE MARKDOWN DIRECTLY: If the top result has a non-empty 'markdown' field, that is the complete document. Summarize or answer from it immediately — do NOT call get_node or search_nodes again.
-
-FETCH ADDITIONAL CONTENT: Only call get_node with format=markdown if you need full content for a lower-ranked result that did not include markdown.
-
-PARAMETER GUIDANCE:
-- Use 'collection' to narrow search to a namespace/folder (e.g. collection="Architecture").
-- Use 'node_types' to filter by type (e.g. node_types=["task"]) — prefer over 'collection' for type-based filtering.
-- Use 'threshold' to tune precision: default 0.3. Lower to 0.1-0.2 for broader recall when results are sparse.
-- Use 'include_archived'=true only when the user explicitly asks for archived or historical content.
-- Use 'exclude_collections' to suppress noisy collections (e.g. exclude_collections=["Archived"]).
-- Use 'include_edges'=true to get relationship data (outgoing 'mentions' edges) with each result — saves a separate get_related_nodes call.
-- Use 'graph_boost'=true to rank well-connected nodes higher (blends similarity with graph connectivity). Useful when the user wants the most referenced/central node on a topic.
-- Use 'property_filters' for simple key-value filtering (e.g. property_filters={"status": "done"}). Prefer 'node_types' for type filtering.
-
-MULTIPLE DOCUMENTS: If the user asks about multiple topics, call search_semantic once per topic rather than searching broadly and fetching each result individually.
-
-search_nodes is the single tool for finding, listing, and filtering nodes — by title, by type, and by typed property. It returns each node's properties.
-
-LISTING BY TYPE: To list all nodes of a type, use search_nodes with an empty query. Examples:
-- "list all tasks" → `search_nodes(query="", node_type="task")`
-- "show me our ADRs" → `search_nodes(query="", node_type="<adr-schema-id>")`
-
-STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc.) or comparison operators (gt, lt, gte, lte, in), pass filters to search_nodes. Copy the type id and the field name exactly as they appear in EXISTING SCHEMAS, and use the exact enum member for a status filter — never a paraphrase. Examples:
-- "which tickets are still in dev?" → `search_nodes(node_type="ticket", filters=[{"type":"property","operator":"equals","property":"status","value":"in_dev"}])`
-- "tasks due tomorrow" → `search_nodes(node_type="task", filters=[{"type":"property","operator":"equals","property":"due_date","value":"<tomorrow's date in YYYY-MM-DD>"}], sorting=[{"field":"due_date","direction":"asc"}])`
-- "tasks due this week" → `search_nodes(node_type="task", filters=[{"type":"property","operator":"gte","property":"due_date","value":"<today's date in YYYY-MM-DD>"},{"type":"property","operator":"lte","property":"due_date","value":"<end of week in YYYY-MM-DD>"}])`
-- Date format: always YYYY-MM-DD. Operators: equals, contains, gt, lt, gte, lte, in, exists."#,
-        ),
-        NodeTemplate::skill(
-            "Node Creation",
-            SkillFields::new(
-                "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
-                // `update_node` is whitelisted here as well as on Graph
-                // Editing — deliberately, to remove a single point of failure
-                // rather than because this skill is about editing.
-                //
-                // Every write tool in this seed set except `create_relationship`
-                // was reachable from exactly ONE skill, while read tools sat in
-                // six or seven. With RETRIEVAL_TOP_K = 3, that makes a write
-                // tool's availability a lottery: if its sole owner misses the
-                // window, the tool does not exist for that turn and the model
-                // cannot call it however well it reasons.
-                //
-                // Measured on the locked model, 6 reps of the same seeded chain
-                // on a warm index: the write turn failed 3 times, every failure
-                // being a turn where Graph Editing placed 4th or worse and no
-                // other candidate carried `update_node`. The two outcomes were
-                // exactly:
-                //   pass: Node Creation, Node Deletion, Graph Editing
-                //   fail: Schema Creation, Node Deletion, Research & Search
-                // Node Creation is present on the passing shape and is the
-                // nearest neighbour of an update request in embedding space
-                // ("add a record" and "change that record" are one user intent
-                // expressed two ways), so it is the natural second home.
-                //
-                // Blast radius is UNCHANGED, not merely bounded: this skill
-                // already whitelisted `create_node`, so `skill_is_mutating` was
-                // already true for it and `score_bar_for` already returned
-                // MUTATING. Adding another mutating tool moves nothing. The
-                // destructive rung is untouched either way —
-                // `stage2_permitted_names` admits destructive tools only from
-                // the retrieval winner, and neither added tool is destructive.
-                // `route_clarify` is here so this skill can hand an
-                // already-exists collision back to the user rather than
-                // resolving it by guessing. Without it, the guidance below
-                // ("ask which they meant") would name a tool the turn cannot
-                // reach, and the model's only options are to create a
-                // duplicate or to refuse in prose — measured: "Add Northwind
-                // Trading to the companies we sell to", with Northwind already
-                // in the graph and rendered in MENTIONED ENTITIES, produced
-                // `create_node` and a silent duplicate on 3 of 3 reps.
-                &["create_node", "update_node", "update_task_status", "search_semantic", "search_nodes", "get_node", "route_clarify"],
-                3,
-            ),
-            node_creation_guidance(),
-        ),
-        NodeTemplate::skill(
-            "Schema Creation",
-            SkillFields::new(
-                "Set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
-                &["create_schema", "update_schema", "get_node"],
-                3,
-            ),
-            schema_creation_guidance(),
-        ),
-        NodeTemplate::skill(
-            "Graph Editing",
-            SkillFields::new(
-                // Names the completion states users actually say ("mark it
-                // resolved", "mark it paid"). The prior wording ("Modify
-                // existing nodes... update content, properties, titles, and
-                // metadata") missed the top-3 for 5 of 7 such requests on the
-                // locked embedding model, while the conflict skill (then
-                // titled "Conflict Resolution") won them on the shared word
-                // "resolve" and left no write tool on Stage 2's surface. Now
-                // in the top-3 for all 7.
-                //
-                // Kept narrow on purpose. A broader draft listing "closed" and
-                // "paid" as nouns ("the invoice is paid, the ticket is closed")
-                // outranked Node Deletion on "remove the closed tickets",
-                // silently withholding delete_node; "keep it" / "stay" is what
-                // holds deletion requests on Node Deletion. Guarded in
-                // `tests/it/live_skill_retrieval_stability.rs` by
-                // `completion_state_updates_route_graph_editing`,
-                // `control_conflict_requests_still_route_conflict_journal`,
-                // and `control_deletion_requests_are_not_outranked_by_graph_editing`.
-                "Update a record that already exists and keep it: mark it resolved, done, or paid, or set or change one of its fields, status, title, or content. Use when the user wants an existing item to stay but move to a new state. For tasks, use update_task_status to change status.",
-                // `create_node` is whitelisted here as the mirror of
-                // `update_node` on Node Creation: "record this" and "change
-                // that" are the same user intent inflected two ways, and either
-                // skill can win retrieval on either phrasing. Pairing them means
-                // whichever one places, the turn can still write. See
-                // `no_write_tool_is_reachable_from_only_one_skill`.
-                &["update_node", "update_task_status", "create_node", "get_node", "search_nodes", "search_semantic", "resolve_query", "route_clarify"],
-                3,
-            )
-            // "remove the resolved tickets" still out-ranked Node Deletion
-            // (0.855 vs 0.841) on "mark it resolved": the two requests
-            // differ only in the verb, which the embedding barely weights.
-            // No description wording separates them — every variant that
-            // lowered this skill on the deletion request lowered it by
-            // the same amount on "mark incident resolved", leaving that
-            // completion-state guard 0.003 from falling out of the top 3.
-            //
-            // An exclusion is scored against the query separately and
-            // costs this skill only on requests closer to it than to the
-            // description (`skill_ops::exclusion_penalized_score`). This
-            // one puts Node Deletion first on "remove the resolved
-            // tickets" by +0.047 and leaves every completion-state score
-            // unchanged. Its one measured cost: "remove the due date from
-            // the launch task" (a field, not a record) loses 0.009 and
-            // stays in the top 3.
-            //
-            // Wording is measured, not intuitive. Two longer drafts ("…or
-            // get rid of records so they no longer exist", "Delete or
-            // remove records.") also lowered "mark the outage report done"
-            // or "record that we decided to use Postgres" by 0.02–0.035;
-            // bare verbs aimed at "them" lowered nothing but deletions.
-            // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
-            // `remove_requests_mentioning_a_state_route_node_deletion`,
-            // `removing_a_field_still_reaches_graph_editing`, and
-            // `graph_editing_exclusion_leaves_completion_state_scores_unchanged`.
-            .with_exclusion("Remove them, delete them, get rid of them, purge them."),
-            graph_editing_guidance(),
-        ),
-        NodeTemplate::skill(
-            "Relationship Management",
-            SkillFields::new(
-                // The prior wording ("Create connections between nodes,
-                // explore relationships, and traverse the knowledge graph")
-                // never used the verbs a user actually says for linking two
-                // things, so it lost Stage-2 retrieval outright on "point
-                // rebuild task at the decision it has to respect" — this
-                // skill's own score did not even reach the printed top-3
-                // against that query.
-                //
-                // Measured on the locked embedding model against that exact
-                // query plus the seeded control prompts for Node Creation,
-                // Graph Editing, Node Deletion, Schema Creation, and
-                // Organization: an earlier draft leaning on generic
-                // "link"/"connect"/"associate"/"relates to" vocabulary DID
-                // clear RETRIEVAL_TOP_K on the failing query, but that same
-                // generic vocabulary crowded Organization itself out of its
-                // own top-3 on "Add this note to my reading list collection"
-                // — reproducing this exact defect for a different skill,
-                // since Organization also whitelists create_relationship and
-                // its own description already uses "categorize"/"group",
-                // semantically adjacent to "associate"/"relate". Dropping the
-                // generic verbs and leading with "edge" plus the query's own
-                // "depends on"/"must respect"/"points at" phrasing clears the
-                // failing query (Relationship Management: unranked 6th at
-                // ~0.803 -> 2nd at ~0.837) without displacing Organization's
-                // own top-3 on its control prompt.
-                "Record an edge between two nodes: a task or note that depends on, must respect, or points at another record. Explore or traverse existing relationships between nodes in the knowledge graph.",
-                &["create_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
-                3,
-            ),
-            relationship_management_guidance(),
-        ),
-        NodeTemplate::skill(
-            "Node Deletion",
-            SkillFields::new(
-                // Destructive verbs ONLY. Two rules, both learned from
-                // measurement, and both about what an embedding encodes.
-                //
-                // 1. No generic noun tail. An earlier wording ended "...remove,
-                //    delete, or trash a node or record", and that trailing noun
-                //    made this skill an attractor for anything node-shaped: it
-                //    was retrieved on turns that recorded a decision, marked a
-                //    status, set a due date, and asked a plain question. Every
-                //    one of those prompts is *about* a node or record; only the
-                //    verb distinguishes them.
-                //
-                // 2. NO DISCLAIMER NAMING OTHER OPERATIONS. The fix for (1)
-                //    appended "— not to record, update, mark, or look something
-                //    up", which made things worse in a way prose review cannot
-                //    catch: embeddings have no notion of negation. A sentence
-                //    listing "record, update, mark, look up" embeds NEARER those
-                //    intents, not further from them. The disclaimer meant to
-                //    exclude update requests is what pulled this skill onto them.
-                //
-                //    Measured on the locked model, write turn "The five-day one
-                //    got signed off — mark it that way": this skill was in the
-                //    Stage-2 top-3 on ALL 18 turns of a 6-rep run, including all
-                //    three that then failed for want of `update_node`. The word
-                //    "mark" in the disclaimer is in the user's prompt.
-                //
-                // The rule this encodes: a retrieval description may contain only
-                // words for what the skill DOES. Scoping ("use this only when…")
-                // belongs in the instruction subtree, which the model reads as
-                // text — not in the description, which is what gets embedded.
-                "Delete, remove, erase, purge, discard, trash, drop, or get rid of stored content. Take something out of the knowledge graph permanently.",
-                &["delete_node", "get_node", "search_semantic", "search_nodes"],
-                3,
-            ),
-            node_deletion_guidance(),
-        ),
-        NodeTemplate::skill(
-            "Conflict Journal",
-            SkillFields::new(
-                // No form of "resolve" in the title or description. Those two
-                // are what gets embedded (the guidance markdown is not), and
-                // the shared word made this skill the rank-1
-                // attractor for any request mentioning "resolved": "delete
-                // the resolved incidents" ranked it above Node Deletion
-                // (0.978 vs 0.904) on the locked embedding model, and since
-                // `delete_node` is offered only from the top tool-bearing
-                // candidate, the deletion was silently withheld. Rewording
-                // the description alone never fixed it — the title "Conflict
-                // Resolution" carried the pull by itself. Guarded in
-                // `tests/it/live_skill_retrieval_stability.rs` by
-                // `deletion_requests_mentioning_resolved_route_node_deletion`
-                // and `control_conflict_requests_still_route_conflict_journal`.
-                "List, inspect, or dismiss conflicts between colliding nodes recorded in the conflict journal: two records that claim the same identity, duplicates, or sync collisions.",
-                &["list_conflicts", "get_conflict", "dismiss_conflict", "adopt_existing_conflict", "search_nodes"],
-                3,
-            ),
-            conflict_journal_guidance(),
-        ),
-        NodeTemplate::skill(
-            "Node Merge",
-            SkillFields::new(
-                // `merge_conflict` is destructive (archives the loser node,
-                // re-points its edges) the same way delete_node is, so this
-                // skill is single-owner by the same ADR-038 reasoning
-                // (`SINGLE_OWNER_BY_DESIGN` in this module's tests) rather
-                // than being folded into Conflict Journal's lower-stakes
-                // whitelist.
-                "Merge two nodes that both represent the same real thing into one, combining their data and archiving the loser. Use when the user wants two duplicate or colliding records combined into a single record.",
-                &["merge_conflict", "dismiss_conflict", "adopt_existing_conflict", "get_conflict", "get_node", "search_nodes"],
-                3,
-            ),
-            node_merge_guidance(),
-        ),
-        NodeTemplate::skill(
-            "Play Workflow State",
-            SkillFields::new(
-                "Check why a Play automation rule hasn't fired for a node, or what conditions are still unmet, by evaluating that node against every active Play rule that could apply to it. Use when the user asks why an automation, rule, or workflow hasn't triggered, or wants to know what's missing before it will.",
-                &["get_workflow_state", "search_semantic", "search_nodes"],
-                3,
-            ),
-            play_workflow_state_guidance(),
-        ),
-        NodeTemplate::skill(
-            "Bulk Import",
-            SkillFields::new(
-                "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
-                &["create_nodes_from_markdown"],
-                2,
-            ),
-            bulk_import_guidance(),
-        ),
-        NodeTemplate::skill(
-            "Organization",
-            SkillFields::new(
-                "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.",
-                &["create_relationship", "get_node", "search_semantic", "search_nodes"],
-                3,
-            ),
-            organization_guidance(),
-        ),
-    ]
+    SKILL_SEEDS.iter().map(SkillSeed::template).collect()
 }
 
-/// Default tool node templates seeded on first run.
+/// The built-in tool seeds, one per [`crate::local_agent::tools::Tool`], in
+/// registry order.
 ///
 /// Each template produces one `node_type='tool'` node bridging graph storage to
-/// a deterministic Rust handler. Properties:
+/// a deterministic Rust handler, under the tool's fixed id. Properties:
 /// - `handler`: stable key into the handler registry (matches `Tool::name()`)
 /// - `description`: embedded for semantic tool discovery
 /// - `parameter_schema`: typed JSON Schema the model uses when calling the tool
@@ -715,8 +498,8 @@ pub fn seed_tool_nodes() -> Vec<NodeTemplate> {
         .map(|tool| {
             let def = tool.definition();
             NodeTemplate {
+                id: tool.seed_id().to_string(),
                 title: def.name.clone(),
-                content: None,
                 root_node_type: "tool".to_string(),
                 root_properties: serde_json::json!({
                     "handler": def.name,
@@ -726,7 +509,6 @@ pub fn seed_tool_nodes() -> Vec<NodeTemplate> {
                     "enabled": true,
                 }),
                 child_node_type: None,
-                child_properties: None,
                 tier: SeedTier::System,
                 markdown_content: String::new(),
             }
@@ -749,8 +531,37 @@ mod tests {
         tmpl_skill(tmpl).tool_whitelist
     }
 
+    /// The seeded body of the skill titled `title`, rule includes resolved.
+    fn skill_body(title: &str) -> String {
+        seed_skill_nodes()
+            .into_iter()
+            .find(|s| s.title == title)
+            .unwrap_or_else(|| panic!("no seeded skill titled {title:?}"))
+            .markdown_content
+    }
+
+    /// A skill body is the file's text: plain Markdown with no frontmatter,
+    /// and every rule it includes is a real one.
+    #[test]
+    fn skill_bodies_are_plain_markdown_files_whose_includes_resolve() {
+        for seed in SKILL_SEEDS {
+            assert!(
+                seed.body.starts_with("# "),
+                "{} must open with its heading, not frontmatter",
+                seed.title
+            );
+            // Panics on an include that names no rule.
+            let resolved = seed.template().markdown_content;
+            assert!(
+                !resolved.contains("<!--"),
+                "{} has an unresolved include marker",
+                seed.title
+            );
+        }
+    }
+
     /// Every `SCHEMA_RULES` entry must either reach the in-app agent prompt
-    /// (`schema_creation_guidance()`) or be named in
+    /// (the Schema Creation skill's body) or be named in
     /// [`SCHEMA_RULES_NOT_IN_PROMPT`] with a reason.
     ///
     /// This is a distinct guard from
@@ -758,16 +569,16 @@ mod tests {
     /// `every_schema_rule_reaches_the_skill`, which only checks that
     /// `rule.prose` reaches the shipped `SKILL.md` — the external shell
     /// agent's surface. Neither that test nor the `prompt_assembly_snapshot`
-    /// golden can catch a rule that never reaches this function: an unwired
+    /// golden can catch a rule that never reaches that body: an unwired
     /// rule never enters the rendered prompt, so the golden never changes,
     /// and the SKILL.md test only ever looks at the other renderer's output.
     /// `DELETE_A_SCHEMA` shipped exactly that gap once for real before this
     /// test existed — registered, rendered into SKILL.md, and never
-    /// interpolated here, so the in-app local agent (holding both
+    /// included there, so the in-app local agent (holding both
     /// `create_schema` and `delete_node`) never saw it.
     #[test]
     fn schema_rules_are_wired_or_explicitly_excluded() {
-        let prompt = schema_creation_guidance();
+        let prompt = skill_body("Schema Creation");
 
         let mut unaccounted = Vec::new();
         let mut wrongly_excluded = Vec::new();
@@ -788,8 +599,8 @@ mod tests {
 
         assert!(
             wrongly_excluded.is_empty(),
-            "these SCHEMA_RULES entries are BOTH interpolated into \
-             schema_creation_guidance() AND listed in SCHEMA_RULES_NOT_IN_PROMPT: {}. \
+            "these SCHEMA_RULES entries are BOTH included in \
+             seeds/skills/schema-creation.md AND listed in SCHEMA_RULES_NOT_IN_PROMPT: {}. \
              Remove them from SCHEMA_RULES_NOT_IN_PROMPT — it must only name rules that \
              are prose-only by design.",
             wrongly_excluded.join(", ")
@@ -797,10 +608,10 @@ mod tests {
 
         assert!(
             unaccounted.is_empty(),
-            "these SCHEMA_RULES entries are neither interpolated into \
-             schema_creation_guidance() (the in-app agent prompt) nor listed in \
+            "these SCHEMA_RULES entries are neither included in \
+             seeds/skills/schema-creation.md (the in-app agent prompt) nor listed in \
              SCHEMA_RULES_NOT_IN_PROMPT (packages/agent/src/skill_pipeline.rs): {}. \
-             Either wire each one into schema_creation_guidance()'s format string, or — \
+             Either include each one in that body, or — \
              if the omission is deliberate, e.g. a field/enum shape rule that belongs on \
              create_schema's own tool schema per ADR-064 — add it to \
              SCHEMA_RULES_NOT_IN_PROMPT with a comment explaining why.",
@@ -1513,41 +1324,6 @@ mod tests {
         }
     }
 
-    /// No seeded skill declares `node_types`, so every candidate takes
-    /// `find_skills`' unscoped branch — all non-core schemas, capped at
-    /// `MAX_UNSCOPED_SCHEMA_METADATA`, UNLESS the query itself names exactly
-    /// one non-core type (`skill_ops::schema_named_in_query`), in which case
-    /// that one type's schema is all that's attached instead. On a query that
-    /// doesn't resolve to a single named type, every candidate still carries
-    /// an *identical* schema list, which is what makes the repeated
-    /// `EXISTING SCHEMAS` copies in one Stage-2 prompt genuinely
-    /// redundant rather than differently-scoped.
-    ///
-    /// This pins the premise of that finding: a seed gaining `node_types`
-    /// would scope its copy to a subset, and the de-duplication argument would
-    /// need re-measuring rather than silently ceasing to hold. (The
-    /// query-named-type narrowing above is a separate, per-query mechanism —
-    /// it does not give any seed a static `node_types` list, so this test's
-    /// own premise, "no seed declares node_types", is unaffected by it.)
-    #[test]
-    fn no_seeded_skill_scopes_its_schema_metadata() {
-        let scoped: Vec<String> = seed_skill_nodes()
-            .into_iter()
-            // Mirrors `find_skills`' predicate: an absent key and an empty
-            // array both fall through to the unscoped branch, so only a
-            // non-empty list actually scopes a candidate's schema_metadata.
-            .filter(|seed| !tmpl_skill(seed).node_types.is_empty())
-            .map(|seed| seed.title)
-            .collect();
-
-        assert!(
-            scoped.is_empty(),
-            "these seeds now scope schema_metadata via node_types: {scoped:?} — the entity-block \
-             duplication measurement assumed every candidate carries the same unscoped schema \
-             list, so re-measure before relying on that finding"
-        );
-    }
-
     #[test]
     fn update_schema_is_reachable_via_search_skills() {
         let seeds = seed_skill_nodes();
@@ -1561,9 +1337,9 @@ mod tests {
         );
     }
 
-    /// `UNIQUE_FIELD_FLAGS` is interpolated into `schema_creation_guidance()`
-    /// via a format-string placeholder — a future edit to that format string
-    /// could silently drop the `{unique_field_flags}` slot with no compiler
+    /// `UNIQUE_FIELD_FLAGS` reaches the Schema Creation body through an
+    /// include marker — a future edit to that file could silently drop the
+    /// `unique-field-flags` include with no compiler
     /// error, since the value is still a valid `String` either way. The
     /// `SCHEMA_RULES` structural tests (`no_rule_text_is_empty` etc.) only
     /// check the constant in isolation, not that it actually reaches the
@@ -1819,7 +1595,7 @@ mod tests {
     /// but a model only emits a parameter its tool schema declares — so the
     /// guidance is inert unless `update_schema`'s schema actually advertises
     /// it. That declaration was missing entirely until the guidance landed,
-    /// which is the exact failure this pins: `schema_creation_guidance` and
+    /// which is the exact failure this pins: the Schema Creation body and
     /// the tool schema are edited in different files, and a rule pointing at
     /// an undeclared parameter reads as working guidance right up until the
     /// model can't act on it.

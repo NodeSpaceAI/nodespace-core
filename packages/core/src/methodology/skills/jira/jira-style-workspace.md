@@ -1,7 +1,3 @@
----
-title: "Jira-style Workspace"
-description: "What workflow this workspace uses: the Jira-style Playbook installed here — its epic, story, bug and sprint types, the Plays that gate sprints, its saved views, and the schema ids they were actually created under."
----
 # Jira-style Workspace
 
 This workspace runs the Jira-style Playbook: work is tracked as `task`,

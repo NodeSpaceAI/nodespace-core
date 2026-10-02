@@ -9,37 +9,21 @@
 //!
 //! This file is that snapshot test. It calls the REAL production assembly
 //! functions — not hand-authored stand-ins — against committed, in-process
-//! fixtures, and diffs the result against a checked-in golden file. No DB, no
-//! daemon, no embedding service, no model: every function called here is
-//! synchronous and pure, so the whole suite runs in milliseconds as part of
-//! the default `cargo test`.
+//! fixtures, and diffs the result against a checked-in golden file. No
+//! daemon, no embedding service, no model: the whole suite runs in
+//! milliseconds as part of the default `cargo test`.
 //!
 //! ## The five sites this covers
 //!
 //! 1. **Resident system prompt** — `assemble_resident_system_prompt` (defined
-//!    in this file), which composes the seeded `agent-guidance` nodes
-//!    (`PromptAssembler::seed_agent_guidance_nodes`, sourced from
-//!    `agent_guidance.rs`) the same way `PromptAssembler::assemble()` does:
-//!    each seed's `markdown_content` is parsed into a node subtree via
-//!    `prepare_nodes_from_template` (`assemble()`'s callers seed the graph
-//!    with exactly this), rendered via the real `render_subtree_markdown`
-//!    (matching `fetch_prompt_body`'s traversal), THEN rendered through
-//!    Minijinja and joined.
-//!
-//!    Deliberately does NOT use `PromptAssembler::assemble_static()` — that
-//!    helper renders each seed's raw `markdown_content` string directly,
-//!    skipping the parse+flatten step entirely. For a single-line seed body
-//!    that's a no-op, but `agent_guidance.rs`'s `TOOL_STRATEGY_RULES`/
-//!    `SCHEMA_CREATION_RULES` bodies are multi-line with `"HEADER:\n- bullet"`
-//!    structure: `prepare_nodes_from_template` parses each bullet into a
-//!    child node (stripping the `"- "` prefix) and `render_subtree_markdown`
-//!    re-derives the markers from that structure — a round trip that can
-//!    lose text `assemble_static` would never exercise (see
-//!    `seeded_markdown_round_trips_through_parse_and_render`). `fetch_prompt_body`'s own
-//!    doc comment names the historical bug this exact mechanism guards
-//!    against ("seed prompt body dropped" — a direct-children-only flatten
-//!    silently ate the bullets). Using `assemble_static` here would leave
-//!    that mechanism, and any regression in it, outside this gate.
+//!    in this file), which seeds the agent-guidance table into a fresh
+//!    database the way the daemon does and calls
+//!    `PromptAssembler::assemble()` on it. That is production's own path, end
+//!    to end: the table's rows become nodes under their fixed ids, the
+//!    assembler fetches those ids in table order, flattens each node's
+//!    subtree and renders it through Minijinja. A change to the order of the
+//!    sections, to which nodes join the prompt, or to what a body loses in
+//!    the parse-and-flatten round trip shows up here as a golden diff.
 //! 2. **Stage-2 candidate block** — `routing::render_candidates_for_prompt`,
 //!    including each candidate's rendered instruction subtree.
 //! 3. **Stage-2 tool surface** — `routing::stage2_tools`: names,
@@ -62,8 +46,8 @@
 //! Skill instructions come from `skill_pipeline::seed_skill_nodes()` — the
 //! real production skill corpus — run through the real
 //! `prepare_nodes_from_template` parser and the real `render_subtree_markdown`
-//! subtree-flatten function that `skill_ops::render_skill_instructions` and
-//! `PromptAssembler::fetch_prompt_body` both call against a live DB. Building
+//! subtree-flatten function that `skill_ops::render_skill_instructions`
+//! calls against a live DB. Building
 //! the `node_map`/`adjacency_list` directly from `prepare_nodes_from_template`'s
 //! output reproduces that subtree without a database — the seeding parse and
 //! the flatten are each production code; only the DB round trip between them
@@ -84,8 +68,8 @@
 //! tuned target from the `packages/agent/goldens/` corpus.**
 //! Those TOML case files are hand-authored, live-model-validated *content*
 //! for `golden_runner`'s tuning loop; the assertions here run the *actual*
-//! assembly code (`PromptAssembler`, `routing.rs`, `context_ops.rs`,
-//! `agent_guidance.rs`) against fixture inputs and pin whatever it currently
+//! assembly code (`PromptAssembler`, `routing.rs`, `context_ops.rs`, the
+//! seed tables' Markdown) against fixture inputs and pin whatever it currently
 //! emits. This gate is deliberately scoped to only make drift from THIS
 //! baseline visible — it does not fix or judge any gap between the two.
 //! Bringing production's emitted text in line with the tuned corpus is
@@ -107,6 +91,7 @@
 //! changed in what the model receives.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use nodespace_agent::agent_types::{SkillCandidate, ToolDefinition};
 use nodespace_agent::local_agent::agent_loop::stage1_system_prompt;
@@ -125,7 +110,7 @@ use nodespace_core::ops::context_ops::{
     CollectionSummary, EntityResolution, PlaybookInfo, WorkspaceContext,
 };
 use nodespace_core::ops::entity_types_block::EntityTypeDescriptor;
-use nodespace_core::services::render_subtree_markdown;
+use nodespace_core::services::{render_subtree_markdown, NodeService};
 
 /// The skill names production's Stage-1 prompt carries on a freshly seeded
 /// registry — what `GraphToolExecutor::skill_names` returns there.
@@ -390,41 +375,31 @@ fn build_node_map_and_adjacency(
 }
 
 // ---------------------------------------------------------------------------
-// Resident system prompt fixture — real seed -> parse -> flatten -> render,
-// no DB. Deliberately reimplements `PromptAssembler::assemble()`'s
-// composition using the same building blocks, rather than calling
-// `PromptAssembler::assemble_static()` — see the module doc comment for why
-// that helper is not a faithful stand-in for multi-line seed bodies.
+// Resident system prompt fixture — the production path against a fresh
+// database: seed the agent-guidance table, then `PromptAssembler::assemble()`.
 // ---------------------------------------------------------------------------
 
-/// One seed's contribution to the resident prompt: parse its
-/// `markdown_content` into a node subtree exactly as first-run seeding does
-/// (`prepare_nodes_from_template`), flatten it exactly as
-/// `PromptAssembler::fetch_prompt_body` does (`render_subtree_markdown`,
-/// which restores list markers), then render through Minijinja exactly as
-/// `PromptAssembler::render_template` does (raw text on a render error,
-/// never a panic). Returns `None` for an empty body, matching `assemble()`'s
-/// own skip.
-fn render_seed_prompt_section(
-    tmpl: &NodeTemplate,
-    ctx: &nodespace_agent::prompt_assembler::TemplateContext,
-) -> Option<String> {
-    let prepared = prepare_nodes_from_template(tmpl).expect("seed prompt template parses");
-    let root_id = prepared[0].id.clone();
-    let (node_map, adjacency) = build_node_map_and_adjacency(&prepared);
-    let body = render_subtree_markdown(&root_id, &node_map, &adjacency);
-    if body.trim().is_empty() {
-        return None;
-    }
-    let env = minijinja::Environment::new();
-    Some(env.render_str(&body, ctx).unwrap_or(body))
-}
+/// The full resident system prompt, assembled the way production assembles
+/// it: the agent-guidance seeds are reconciled into a fresh database exactly
+/// as the daemon's startup does, and `PromptAssembler::assemble()` reads them
+/// back by the table's ids, in table order.
+async fn assemble_resident_system_prompt(workspace_context: &str) -> String {
+    let tmp = tempfile::TempDir::new().expect("temp dir");
+    let mut store = Arc::new(
+        nodespace_core::db::SqliteStore::new(tmp.path().join("golden.db"))
+            .await
+            .expect("store opens"),
+    );
+    let node_service = Arc::new(NodeService::new(&mut store).await.expect("service opens"));
+    let groups: Vec<_> = PromptAssembler::seed_agent_guidance_nodes()
+        .iter()
+        .map(|tmpl| prepare_nodes_from_template(tmpl).expect("seed prompt template parses"))
+        .collect();
+    node_service
+        .seed_nodes_from_templates(groups)
+        .await
+        .expect("seeding succeeds");
 
-/// The full resident system prompt: every seed section from
-/// `PromptAssembler::seed_agent_guidance_nodes()` (the real production seed
-/// list — `agent_guidance.rs` content included), rendered and joined the
-/// same way `PromptAssembler::assemble()` joins its sections.
-fn assemble_resident_system_prompt(workspace_context: &str) -> String {
     let ctx = nodespace_agent::prompt_assembler::TemplateContext {
         current_date: FIXTURE_DATE.to_string(),
         model_name: FIXTURE_MODEL_NAME.to_string(),
@@ -437,11 +412,10 @@ fn assemble_resident_system_prompt(workspace_context: &str) -> String {
             email: "ada@example.com".to_string(),
         }),
     };
-    let sections: Vec<String> = PromptAssembler::seed_agent_guidance_nodes()
-        .iter()
-        .filter_map(|tmpl| render_seed_prompt_section(tmpl, &ctx))
-        .collect();
-    sections.join("\n\n")
+    PromptAssembler::new(node_service)
+        .assemble(&ctx, Vec::new())
+        .await
+        .system_prompt
 }
 
 // ---------------------------------------------------------------------------
@@ -454,8 +428,7 @@ fn assemble_resident_system_prompt(workspace_context: &str) -> String {
 /// `render_subtree_markdown`. Building the node_map/adjacency_list directly
 /// from `prepare_nodes_from_template`'s output reproduces that subtree
 /// without a database — the seed parse and the subtree flatten are each
-/// production code; only the DB round trip between them is skipped (the
-/// same trade `PromptAssembler::assemble_static` makes for prompt nodes).
+/// production code; only the DB round trip between them is skipped.
 fn render_seed_instructions(tmpl: &NodeTemplate) -> String {
     let prepared = prepare_nodes_from_template(tmpl).expect("seed skill template parses");
     let root_id = prepared[0].id.clone();
@@ -635,8 +608,8 @@ mod golden {
              golden:\n\n  UPDATE_GOLDEN=1 cargo test -p nodespace-agent --test \
              prompt_assembly_snapshot\n\n  then review the diff on the golden file itself with \
              `git diff` before committing.\n\n\
-             If it is NOT intentional, an edit to a model-facing source (agent_guidance.rs, \
-             tools.rs, skill_pipeline.rs, routing.rs, context_ops.rs) changed what production \
+             If it is NOT intentional, an edit to a model-facing source (a seed's Markdown \
+             under src/seeds/, tools.rs, routing.rs, context_ops.rs) changed what production \
              sends the model — find it and revert it.\n"
         ));
         out
@@ -647,18 +620,17 @@ mod golden {
 // The five gates
 // ---------------------------------------------------------------------------
 
-/// Site 1: the resident system prompt (`PromptAssembler::assemble()`, via
-/// `assemble_resident_system_prompt`'s DB-free reproduction of its seed ->
-/// parse -> flatten -> render -> join composition). Also covers `RELEVANT
-/// ENTITY TYPES` site 2 (resident workspace context) as it actually reaches
-/// the model: substituted into the "Workspace Context Template" seed via
-/// `{{ workspace_context }}`, exactly as
+/// Site 1: the resident system prompt, through `PromptAssembler::assemble()`
+/// over a freshly seeded database (see `assemble_resident_system_prompt`).
+/// Also covers `RELEVANT ENTITY TYPES` site 2 (resident workspace context) as
+/// it actually reaches the model: substituted into the "Workspace Context
+/// Template" seed via `{{ workspace_context }}`, exactly as
 /// `local_agent_service.rs::build_workspace_context_string` does.
-#[test]
-fn resident_system_prompt_matches_golden() {
+#[tokio::test]
+async fn resident_system_prompt_matches_golden() {
     let workspace_context =
         fixture_workspace_context().format_for_prompt(WORKSPACE_CONTEXT_MAX_CHARS);
-    let system_prompt = assemble_resident_system_prompt(&workspace_context);
+    let system_prompt = assemble_resident_system_prompt(&workspace_context).await;
     golden::assert_matches("resident_system_prompt", &system_prompt);
 }
 

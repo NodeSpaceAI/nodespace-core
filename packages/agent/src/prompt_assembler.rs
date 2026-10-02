@@ -1,12 +1,14 @@
-//! Prompt assembly service: graph-only prompt composition.
+//! Prompt assembly service: the local agent's resident system prompt.
 //!
-//! Composes the final agent prompt exclusively from `agent-guidance` nodes
-//! stored in the knowledge graph, assembled in natural child order. Supports
-//! Minijinja template rendering. If no `agent-guidance` nodes are found
-//! (corrupted/empty database), falls back to a minimal emergency prompt and
-//! logs a warning.
+//! The prompt is the agent-guidance seed table, [`GUIDANCE_SEEDS`], read back
+//! from the knowledge graph: each row is seeded as an `agent-guidance` node
+//! under its fixed id, and the assembler fetches those ids in table order,
+//! renders each node's body, and joins the sections. Supports Minijinja
+//! template rendering. If no section resolves (corrupted/empty database), it
+//! falls back to a minimal emergency prompt and logs a warning.
 //!
-//! ADR-030 Phase 2; `agent-guidance` node type per ADR-057.
+//! ADR-030 Phase 2; `agent-guidance` node type per ADR-057; the seed table
+//! per ADR-086 §10.
 
 use std::sync::Arc;
 
@@ -14,8 +16,8 @@ use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::Node;
 use nodespace_core::services::{render_subtree_markdown, NodeService};
 
-use crate::agent_guidance::{NODE_REFERENCE_FORMAT, SCHEMA_CREATION_RULES, TOOL_STRATEGY_RULES};
 use crate::agent_types::ToolDefinition;
+use crate::skill_rules::{resolve_includes, RuleForm};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -54,13 +56,111 @@ pub struct AssembledPrompt {
 }
 
 // ---------------------------------------------------------------------------
+// The agent-guidance seed table
+// ---------------------------------------------------------------------------
+
+/// One section of the resident system prompt, as its table row.
+#[derive(Debug, Clone, Copy)]
+pub struct GuidanceSeed {
+    /// The `agent-guidance` node's fixed id.
+    pub id: &'static str,
+    /// The section's name: the node's content, and its `_seed.key`.
+    pub title: &'static str,
+    /// The section's text, as plain Markdown.
+    pub body: &'static str,
+}
+
+/// The resident system prompt, section by section. **Array order is the order
+/// of the prompt**: there is no separate order field, and nothing about a
+/// node (its creation time, its id) decides where its section lands.
+///
+/// The set is closed. Only these ids join the prompt; an `agent-guidance`
+/// node a user creates does not. A user's own standing instructions belong in
+/// skills, which the agent finds by search.
+///
+/// Resident prose owns identity and policy and nothing else (ADR-064 rule 5):
+/// argument shape lives on the tools' own schemas, and per-operation routing
+/// in each skill's instructions. A prose-only cut measured better than the
+/// long form it replaced (10,493 chars scored 50% vs. 73% for a 445-char
+/// identity-only prompt on cases built to trip these exact rules), so a rule
+/// added here needs a measurement, not an intuition.
+pub const GUIDANCE_SEEDS: &[GuidanceSeed] = &[
+    GuidanceSeed {
+        // Core Identity
+        id: "8c1f4e2a-6b73-4d09-9e5a-1f3c7b2d4a01",
+        title: "Core Identity",
+        body: include_str!("seeds/guidance/core-identity.md"),
+    },
+    GuidanceSeed {
+        // Workspace Context Template
+        //
+        // The identity is one line, since it lands in every turn's system
+        // prompt. The `{%-` markers eat the newline before each tag, so a
+        // blank identity leaves no empty line behind.
+        id: "8c1f4e2a-6b73-4d09-9e5a-1f3c7b2d4a02",
+        title: "Workspace Context Template",
+        body: include_str!("seeds/guidance/workspace-context-template.md"),
+    },
+    GuidanceSeed {
+        // Tool Strategy Guide
+        //
+        // NODE MODEL is reduced to the one ontological distinction that
+        // governs `create_schema` vs. `create_node` — kind vs. instance.
+        // Everything else it used to carry is owned by another channel:
+        // argument mechanics (`title_template` token coupling, field
+        // `name`/`type` requirements) live on `create_schema`'s tool-schema
+        // description; per-operation routing lives in the retrieved skill
+        // instructions; the no-confirmation-for-known-types rule is the same
+        // invariant the BLAST-RADIUS GATE already states once.
+        //
+        // TOOL STRATEGY is safety-invariant policy only. Rules that
+        // duplicated a code guard in `agent_loop.rs` are deleted outright
+        // rather than kept as inert prose: `seen_calls` already breaks
+        // identical-call loops, and `contains_action_claim` already
+        // suppresses a fabricated success claim — both structurally,
+        // regardless of what the prompt says. The former AMBIGUITY bullet is
+        // the `ambiguity-clarify` rule, delivered with the skills that need
+        // it.
+        id: "8c1f4e2a-6b73-4d09-9e5a-1f3c7b2d4a03",
+        title: "Tool Strategy Guide",
+        body: include_str!("seeds/guidance/tool-strategy-guide.md"),
+    },
+    GuidanceSeed {
+        // Response Formatting Rules
+        //
+        // "Call tools immediately..." reads as similar to Core Identity's
+        // "Call exactly one tool. Do not answer the user in prose when a tool
+        // applies.", but the two state different invariants and both are
+        // kept, deliberately — caught in review after an earlier version
+        // deleted this bullet as redundant. Core Identity's line is about
+        // OUTCOME: don't answer in prose INSTEAD of calling a tool. This one
+        // is about TOKEN ORDER: don't emit narration BEFORE the tool call
+        // either, even alongside one. A model that reasons in prose then
+        // calls the right tool anyway satisfies the first and violates the
+        // second, and templates expecting the tool call as the first token
+        // care about exactly that distinction.
+        //
+        // The node-reference bullet makes every node named in agent output a
+        // markdown link to its `nodespace://` URI. The chat renderer shows
+        // that link with the node's live title, so the label is only what
+        // shows while the node loads or when it cannot be found.
+        id: "8c1f4e2a-6b73-4d09-9e5a-1f3c7b2d4a04",
+        title: "Response Formatting Rules",
+        body: include_str!("seeds/guidance/response-formatting-rules.md"),
+    },
+    GuidanceSeed {
+        // Tool Call Formatting
+        id: "8c1f4e2a-6b73-4d09-9e5a-1f3c7b2d4a05",
+        title: "Tool Call Formatting",
+        body: include_str!("seeds/guidance/tool-call-formatting.md"),
+    },
+];
+
+// ---------------------------------------------------------------------------
 // PromptAssembler
 // ---------------------------------------------------------------------------
 
-/// Maximum number of agent-guidance nodes to fetch from the graph.
-const MAX_PROMPT_NODES: usize = 50;
-
-/// Minimal emergency fallback when no agent-guidance nodes exist in the graph.
+/// Minimal emergency fallback when no agent-guidance section resolves.
 /// This should only fire on corrupted/empty databases — normal operation
 /// reads all prompt content from graph nodes seeded on first run. Also used
 /// by the agent loop when no `PromptAssembler` is wired (only the daemon's
@@ -70,13 +170,15 @@ You are NodeSpace's built-in assistant. You help users work with their \
 knowledge graph — creating, finding, updating, and connecting nodes.\n\n\
 Use the available tools to accomplish tasks. Summarize results in natural language.";
 
-/// Assembles final prompts exclusively from graph-stored `agent-guidance` nodes.
+/// Assembles the resident system prompt from the seeded `agent-guidance`
+/// nodes.
 ///
 /// The assembly order is:
-/// 1. Fetch root agent-guidance nodes from the graph
-/// 2. For each agent-guidance node, fetch children in natural child order and concatenate
+/// 1. For each row of [`GUIDANCE_SEEDS`], in table order, fetch the node
+///    with that row's id; skip one that is missing or archived
+/// 2. Render the node's children to markdown, in natural child order
 /// 3. Render through Minijinja with context variables
-/// 4. If no agent-guidance nodes found, use emergency fallback and log a warning
+/// 4. If no section resolved, use emergency fallback and log a warning
 pub struct PromptAssembler {
     node_service: Arc<NodeService>,
 }
@@ -86,7 +188,7 @@ impl PromptAssembler {
         Self { node_service }
     }
 
-    /// Assemble the final prompt from graph-stored `agent-guidance` nodes only.
+    /// Assemble the final prompt from the seeded `agent-guidance` nodes only.
     ///
     /// `template_ctx` provides variables for Minijinja template rendering, including
     /// `workspace_context` (entity types, collections, playbooks).
@@ -96,13 +198,18 @@ impl PromptAssembler {
         template_ctx: &TemplateContext,
         tools: Vec<ToolDefinition>,
     ) -> AssembledPrompt {
-        // 1. Fetch root agent-guidance nodes from the graph
-        let prompt_nodes = self.fetch_prompt_overrides().await;
+        let mut sections = Vec::new();
+        for node in self.guidance_sections().await {
+            let body = self.fetch_prompt_body(&node).await;
+            if body.trim().is_empty() {
+                continue;
+            }
+            sections.push(Self::render_template(&body, template_ctx));
+        }
 
-        // 2. If no agent-guidance nodes found, use emergency fallback
-        if prompt_nodes.is_empty() {
+        if sections.is_empty() {
             tracing::warn!(
-                "No agent-guidance nodes found in graph — using emergency fallback. \
+                "No agent-guidance section resolved from the graph — using emergency fallback. \
                  Seed agent-guidance nodes on first run to restore full functionality."
             );
             return AssembledPrompt {
@@ -111,23 +218,8 @@ impl PromptAssembler {
             };
         }
 
-        // 3. Fetch children for each agent-guidance node, render through minijinja, and concatenate
-        let mut sections = Vec::new();
-
-        for node in &prompt_nodes {
-            // Fetch children and concatenate their content as the prompt body
-            let body = self.fetch_prompt_body(node).await;
-            if body.trim().is_empty() {
-                continue;
-            }
-            let rendered = Self::render_template(&body, template_ctx);
-            sections.push(rendered);
-        }
-
-        let system_prompt = sections.join("\n\n");
-
         AssembledPrompt {
-            system_prompt,
+            system_prompt: sections.join("\n\n"),
             tool_schemas: tools,
         }
     }
@@ -192,54 +284,38 @@ impl PromptAssembler {
         })
     }
 
-    /// Fetch root-level `agent-guidance` nodes from the graph (no parent).
-    async fn fetch_prompt_overrides(&self) -> Vec<Node> {
-        let filter = nodespace_core::ops::node_ops::QueryNodesInput {
-            node_type: Some("agent-guidance".to_string()),
-            limit: Some(MAX_PROMPT_NODES),
-            offset: None,
-            collection_id: None,
-            collection: None,
-            filters: None,
-        };
-
-        let all_nodes: Vec<Node> = match nodespace_core::ops::node_ops::query_nodes(
-            &self.node_service,
-            filter,
-        )
-        .await
-        {
-            Ok(result) => result
-                .nodes
-                .into_iter()
-                .filter_map(|v| match serde_json::from_value(v) {
-                    Ok(node) => Some(node),
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to deserialize agent-guidance node, skipping");
-                        None
-                    }
-                })
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to fetch agent-guidance overrides, using base only");
-                return Vec::new();
-            }
-        };
-
-        // Keep only true root nodes (no parent edge pointing to them).
-        // query_nodes ignores parent_id filter, so all agent-guidance nodes are
-        // returned; we must post-filter to avoid treating mid-hierarchy nodes as roots.
-        let mut roots = Vec::new();
-        for node in all_nodes {
-            match self.node_service.get_parent(&node.id).await {
-                Ok(None) => roots.push(node),
-                Ok(Some(_)) => {} // has a parent — skip
+    /// The seeded guidance nodes that join the prompt, in table order.
+    ///
+    /// Fetched by the table's ids, never by type: a node is a section because
+    /// the table names it, so one a user creates is not, and where a section
+    /// lands does not depend on what the database returns first. A section
+    /// whose node is missing, or that the user archived to turn it off
+    /// (ADR-087), is left out.
+    async fn guidance_sections(&self) -> Vec<Node> {
+        let mut sections = Vec::with_capacity(GUIDANCE_SEEDS.len());
+        for seed in GUIDANCE_SEEDS {
+            match self.node_service.get_node(seed.id).await {
+                Ok(Some(node)) if nodespace_core::governance::participates(&node) => {
+                    sections.push(node)
+                }
+                Ok(Some(_)) => {
+                    tracing::debug!(
+                        section = seed.title,
+                        "Agent-guidance section is archived, leaving it out"
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        section = seed.title,
+                        "Agent-guidance section is missing from the graph, leaving it out"
+                    );
+                }
                 Err(e) => {
-                    tracing::warn!(error = %e, node_id = %node.id, "Failed to check parent, skipping node");
+                    tracing::warn!(error = %e, section = seed.title, "Failed to fetch agent-guidance section, leaving it out");
                 }
             }
         }
-        roots
+        sections
     }
 
     /// Fetch the full descendant subtree of an agent-guidance node and
@@ -295,135 +371,29 @@ impl PromptAssembler {
         }
     }
 
-    /// Assemble the base system prompt from seed nodes without a database.
+    /// The agent-guidance seeds, one per row of [`GUIDANCE_SEEDS`], in table
+    /// order.
     ///
-    /// Uses `markdown_content` as the prompt body for each seed, rendered
-    /// through Minijinja. Intended for use in unit/integration tests where
-    /// no DB is available.
-    pub fn assemble_static(workspace_context: &str, current_date: Option<&str>) -> String {
-        let seeds = Self::seed_agent_guidance_nodes();
-
-        let ctx = TemplateContext {
-            current_date: current_date.unwrap_or("2025-01-01").to_string(),
-            model_name: "test".to_string(),
-            workspace_context: workspace_context.to_string(),
-            current_user: None,
-        };
-
-        let sections: Vec<String> = seeds
-            .iter()
-            .filter_map(|s| {
-                // Body is the markdown_content (child content)
-                let body = &s.markdown_content;
-                if body.trim().is_empty() {
-                    return None;
-                }
-                Some(Self::render_template(body, &ctx))
-            })
-            .collect();
-
-        sections.join("\n\n")
-    }
-
-    /// Get seed agent-guidance templates for first-run creation.
-    ///
-    /// Each [`NodeTemplate`] produces an `agent-guidance` root node with text
-    /// child nodes for body content. All base-prompt content lives in these
-    /// graph nodes — there is no hardcoded base prompt. Users can customise
-    /// any seed by editing the graph node.
+    /// Each [`NodeTemplate`] produces an `agent-guidance` root node under the
+    /// row's fixed id, with text child nodes for body content. All
+    /// base-prompt content lives in these graph nodes — there is no hardcoded
+    /// base prompt. Users can customise any seed by editing the graph node.
     ///
     /// Use [`nodespace_core::markdown::prepare_nodes_from_template`]
     /// to expand into a [`PreparedNode`] for insertion via `NodeService`.
     pub fn seed_agent_guidance_nodes() -> Vec<NodeTemplate> {
-        vec![
-            NodeTemplate {
-                title: "Core Identity".to_string(),
-                content: None,
+        GUIDANCE_SEEDS
+            .iter()
+            .map(|seed| NodeTemplate {
+                id: seed.id.to_string(),
+                title: seed.title.to_string(),
                 root_node_type: "agent-guidance".to_string(),
                 root_properties: serde_json::json!({}),
                 child_node_type: Some("text".to_string()),
-                child_properties: None,
                 tier: SeedTier::System,
-                markdown_content: "You are NodeSpace's assistant, acting on a user's workspace.\n\
-                    Call exactly one tool. Do not answer the user in prose when a tool applies."
-                        .to_string(),
-            },
-            NodeTemplate {
-                title: "Workspace Context Template".to_string(),
-                content: None,
-                root_node_type: "agent-guidance".to_string(),
-                root_properties: serde_json::json!({}),
-                child_node_type: Some("text".to_string()),
-                child_properties: None,
-                tier: SeedTier::System,
-                // The identity is one line, since it lands in every turn's
-                // system prompt. The `{%-` markers eat the newline before
-                // each tag, so a blank identity leaves no empty line behind.
-                markdown_content: "Current date: {{ current_date }}\n\
-                    Active model: {{ model_name }}\n\
-                    {%- if current_user %}\n\
-                    Current user: {% if current_user.name %}{{ current_user.name }} {% endif %}\
-                    {% if current_user.email %}<{{ current_user.email }}> {% endif %}\
-                    (person node {{ current_user.id }}). \"me\", \"my\" and \"I\" refer to this person.\n\
-                    {%- endif %}\n\n\
-                    {{ workspace_context }}"
-                    .to_string(),
-            },
-            NodeTemplate {
-                title: "Tool Strategy Guide".to_string(),
-                content: None,
-                root_node_type: "agent-guidance".to_string(),
-                root_properties: serde_json::json!({}),
-                child_node_type: Some("text".to_string()),
-                child_properties: None,
-                tier: SeedTier::System,
-                markdown_content: format!("{}\n\n{}", SCHEMA_CREATION_RULES, TOOL_STRATEGY_RULES),
-            },
-            NodeTemplate {
-                // "Call tools immediately..." below reads as similar to
-                // Core Identity's "Call exactly one tool. Do not answer the
-                // user in prose when a tool applies." above, but the two
-                // state different invariants and both are kept, deliberately
-                // — caught in review after an earlier version deleted this
-                // bullet as redundant. Core Identity's line is about
-                // OUTCOME: don't answer in prose INSTEAD of calling a tool.
-                // This one is about TOKEN ORDER: don't emit narration BEFORE
-                // the tool call either, even alongside one. A model that
-                // reasons in prose then calls the right tool anyway satisfies
-                // the first and violates the second, and templates expecting
-                // the tool call as the first token care about exactly that
-                // distinction.
-                title: "Response Formatting Rules".to_string(),
-                content: None,
-                root_node_type: "agent-guidance".to_string(),
-                root_properties: serde_json::json!({}),
-                child_node_type: Some("text".to_string()),
-                child_properties: None,
-                tier: SeedTier::System,
-                markdown_content: format!(
-                    "RESPONSE RULES:\n\
-                    - Call tools immediately when intent is clear. Do NOT output text before the tool call — your first response token must be the tool call.\n\
-                    - After tool results: respond in natural language. Never paste raw JSON.\n\
-                    - {}\n\
-                    - Tool call enums: exact schema values (\"done\", \"in_progress\"). User-facing: friendly labels (\"Done\").\n\
-                    - Listing: [Title](nodespace://id) — description. Search results: \"Found N nodes...\" then top results.\n\
-                    - Tool call error: read the error message, fix your arguments, and retry ONCE. If the retry also fails, tell the user what went wrong in one sentence and stop — do NOT keep retrying. Empty search result: state it in one sentence and stop, do NOT retry or call another tool to compensate.\n\
-                    - Keep responses to 1-2 sentences unless the user asks for detail. No preamble, no sign-off.",
-                    NODE_REFERENCE_FORMAT
-                ),
-            },
-            NodeTemplate {
-                title: "Tool Call Formatting".to_string(),
-                content: None,
-                root_node_type: "agent-guidance".to_string(),
-                root_properties: serde_json::json!({}),
-                child_node_type: Some("text".to_string()),
-                child_properties: None,
-                tier: SeedTier::System,
-                markdown_content: "TOOL CALL FORMAT: Pass arguments flat (not nested under \"properties\"/\"arguments\"). Use exact field names from the schema."
-                        .to_string(),
-            },
-        ]
+                markdown_content: resolve_includes(seed.body, RuleForm::Agent),
+            })
+            .collect()
     }
 }
 
@@ -434,6 +404,7 @@ mod tests {
     #[test]
     fn seed_prompts_have_valid_properties() {
         let seeds = PromptAssembler::seed_agent_guidance_nodes();
+        assert_eq!(seeds.len(), GUIDANCE_SEEDS.len());
         assert!(seeds.len() >= 5, "Should have at least 5 seed prompts");
 
         for seed in &seeds {
@@ -447,46 +418,6 @@ mod tests {
         }
     }
 
-    /// Lock in the exact bytes of the two seeds composed from `agent_guidance`
-    /// constants. If a future edit to `agent_guidance.rs` or the surrounding
-    /// `format!()` glue silently changes the rendered seed body, this test
-    /// fails — preventing the local agent's prompt from drifting
-    /// unintentionally. Edit the expected strings deliberately when you change
-    /// agent guidance.
-    #[test]
-    fn seed_prompt_bodies_match_expected_bytes() {
-        let seeds = PromptAssembler::seed_agent_guidance_nodes();
-        let by_title: std::collections::HashMap<&str, &str> = seeds
-            .iter()
-            .map(|s| (s.title.as_str(), s.markdown_content.as_str()))
-            .collect();
-
-        // This string is the live output of SCHEMA_CREATION_RULES + "\n\n" + TOOL_STRATEGY_RULES.
-        // Keep it in sync with agent_guidance.rs whenever those constants change.
-        let expected_tool_strategy =
-            format!("{}\n\n{}", SCHEMA_CREATION_RULES, TOOL_STRATEGY_RULES);
-
-        let expected_response_rules = "RESPONSE RULES:\n\
-            - Call tools immediately when intent is clear. Do NOT output text before the tool call — your first response token must be the tool call.\n\
-            - After tool results: respond in natural language. Never paste raw JSON.\n\
-            - Link every node you name, as a markdown link: [Title](nodespace://abc-123) (no bare URI, no backticks)\n\
-            - Tool call enums: exact schema values (\"done\", \"in_progress\"). User-facing: friendly labels (\"Done\").\n\
-            - Listing: [Title](nodespace://id) — description. Search results: \"Found N nodes...\" then top results.\n\
-            - Tool call error: read the error message, fix your arguments, and retry ONCE. If the retry also fails, tell the user what went wrong in one sentence and stop — do NOT keep retrying. Empty search result: state it in one sentence and stop, do NOT retry or call another tool to compensate.\n\
-            - Keep responses to 1-2 sentences unless the user asks for detail. No preamble, no sign-off.";
-
-        assert_eq!(
-            by_title.get("Tool Strategy Guide").copied(),
-            Some(expected_tool_strategy.as_str()),
-            "Tool Strategy Guide body drifted — review agent_guidance.rs edits"
-        );
-        assert_eq!(
-            by_title.get("Response Formatting Rules").copied(),
-            Some(expected_response_rules),
-            "Response Formatting Rules body drifted — review agent_guidance.rs edits"
-        );
-    }
-
     #[test]
     fn seed_prompt_template_produces_agent_guidance_node() {
         use nodespace_core::markdown::prepare_nodes_from_template;
@@ -497,9 +428,7 @@ mod tests {
             assert!(!nodes.is_empty());
             let root = &nodes[0];
             assert_eq!(root.node_type, "agent-guidance");
-            assert_eq!(root.id.len(), 36, "Node ID should be a UUID");
-            assert_eq!(root.id.chars().filter(|c| *c == '-').count(), 4);
-            // content is the title (no content override on agent-guidance root nodes)
+            assert_eq!(root.id, seed.id, "the root takes the table's fixed id");
             assert_eq!(root.content, seed.title);
         }
     }
@@ -587,12 +516,12 @@ mod tests {
         let assembled = assembler.assemble(&ctx, Vec::new()).await;
         let prompt = assembled.system_prompt;
 
-        // The full TOOL_STRATEGY_RULES body must be present in the assembled prompt.
+        // The full Tool Strategy Guide body must be present in the assembled prompt.
         for needle in [
             "TOOL STRATEGY:",
             "CLARIFICATION CONTRACT",
             "BLAST-RADIUS GATE",
-            // SCHEMA_CREATION_RULES, sharing the same prompt node, must also survive.
+            // The NODE MODEL line, sharing the same prompt node, must also survive.
             "NODE MODEL:",
             // Response Formatting Rules node body.
             "RESPONSE RULES:",
@@ -605,6 +534,187 @@ mod tests {
                 prompt
             );
         }
+    }
+
+    /// A guidance body is the file's text: plain Markdown with no
+    /// frontmatter.
+    #[test]
+    fn guidance_bodies_are_plain_markdown_files() {
+        for seed in GUIDANCE_SEEDS {
+            assert!(!seed.body.trim().is_empty(), "{} has no body", seed.title);
+            assert!(
+                !seed.body.starts_with("---"),
+                "{} starts with frontmatter",
+                seed.title
+            );
+        }
+    }
+
+    /// Where each section's first line starts in `prompt`, in table order.
+    /// Every section must be present.
+    fn section_offsets(prompt: &str) -> Vec<usize> {
+        GUIDANCE_SEEDS
+            .iter()
+            .map(|seed| {
+                let first_line = seed.body.lines().next().unwrap();
+                // The workspace template's first line is itself a template.
+                let needle = first_line.split("{{").next().unwrap();
+                prompt.find(needle).unwrap_or_else(|| {
+                    panic!("{} is missing from the prompt:\n{prompt}", seed.title)
+                })
+            })
+            .collect()
+    }
+
+    fn test_ctx() -> TemplateContext {
+        TemplateContext {
+            current_date: "2026-06-06".to_string(),
+            model_name: "test".to_string(),
+            workspace_context: "COLLECTIONS:".to_string(),
+            current_user: None,
+        }
+    }
+
+    async fn empty_service() -> (Arc<NodeService>, tempfile::TempDir) {
+        use nodespace_core::db::SqliteStore;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(SqliteStore::new(tmp.path().join("seed.db")).await.unwrap());
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        (node_service, tmp)
+    }
+
+    /// The prompt follows the table's order, whatever order the nodes were
+    /// created in. Seeding the sections last-first gives every node the
+    /// opposite creation order from the table's, which is the order a
+    /// newest-first read would have assembled them in.
+    #[tokio::test]
+    async fn sections_are_assembled_in_table_order_not_creation_order() {
+        use nodespace_core::markdown::prepare_nodes_from_template;
+
+        let (node_service, _tmp) = empty_service().await;
+        for template in PromptAssembler::seed_agent_guidance_nodes().iter().rev() {
+            node_service
+                .seed_nodes_from_templates(vec![prepare_nodes_from_template(template).unwrap()])
+                .await
+                .unwrap();
+            // Distinct creation times, so the order under test is not a tie.
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let created: Vec<_> = {
+            let mut nodes = Vec::new();
+            for seed in GUIDANCE_SEEDS {
+                nodes.push(node_service.get_node(seed.id).await.unwrap().unwrap());
+            }
+            nodes.iter().map(|n| n.created_at).collect()
+        };
+        assert!(
+            created.windows(2).all(|pair| pair[0] > pair[1]),
+            "the fixture must create the sections in reverse table order: {created:?}"
+        );
+
+        let prompt = PromptAssembler::new(node_service)
+            .assemble(&test_ctx(), Vec::new())
+            .await
+            .system_prompt;
+
+        let offsets = section_offsets(&prompt);
+        assert!(
+            offsets.windows(2).all(|pair| pair[0] < pair[1]),
+            "sections must follow the table's order, got offsets {offsets:?}:\n{prompt}"
+        );
+        assert!(
+            prompt.starts_with("You are NodeSpace's assistant"),
+            "{prompt}"
+        );
+    }
+
+    /// The set is closed: a root `agent-guidance` node that is not in the
+    /// table, whoever created it, is not part of the prompt.
+    #[tokio::test]
+    async fn a_guidance_node_outside_the_table_is_not_in_the_prompt() {
+        let (assembler, node_service, _tmp) = seeded_assembler().await;
+        let before = assembler
+            .assemble(&test_ctx(), Vec::new())
+            .await
+            .system_prompt;
+
+        let stray = Node::new(
+            "agent-guidance".to_string(),
+            "My Standing Orders".to_string(),
+            serde_json::json!({}),
+        );
+        let stray_id = node_service.create_node(stray).await.unwrap();
+        node_service
+            .create_node_with_parent(nodespace_core::services::CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "ALWAYS ANSWER IN PIRATE SPEAK.".to_string(),
+                properties: serde_json::json!({}),
+                parent_id: Some(stray_id),
+                position: nodespace_core::services::InsertPositionOwned::End,
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        let after = assembler
+            .assemble(&test_ctx(), Vec::new())
+            .await
+            .system_prompt;
+        assert!(!after.contains("PIRATE"), "{after}");
+        assert_eq!(after, before);
+    }
+
+    /// Archiving a section is how a user turns it off: it leaves the prompt,
+    /// and the sections around it keep their order.
+    #[tokio::test]
+    async fn an_archived_section_is_left_out_of_the_prompt() {
+        use nodespace_core::models::NodeUpdate;
+
+        let (assembler, node_service, _tmp) = seeded_assembler().await;
+        let before = assembler
+            .assemble(&test_ctx(), Vec::new())
+            .await
+            .system_prompt;
+        assert!(before.contains("TOOL CALL FORMAT:"), "{before}");
+
+        let archived = GUIDANCE_SEEDS
+            .iter()
+            .find(|s| s.title == "Tool Call Formatting")
+            .unwrap();
+        let node = node_service.get_node(archived.id).await.unwrap().unwrap();
+        node_service
+            .update_node(
+                archived.id,
+                node.version,
+                NodeUpdate::new()
+                    .with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string()),
+            )
+            .await
+            .unwrap();
+
+        let after = assembler
+            .assemble(&test_ctx(), Vec::new())
+            .await
+            .system_prompt;
+        assert!(!after.contains("TOOL CALL FORMAT:"), "{after}");
+        assert!(after.contains("RESPONSE RULES:"), "{after}");
+        assert!(
+            after.starts_with("You are NodeSpace's assistant"),
+            "{after}"
+        );
+    }
+
+    /// With no section in the graph at all, the turn still gets a prompt.
+    #[tokio::test]
+    async fn no_resolved_section_falls_back_to_the_emergency_prompt() {
+        let (node_service, _tmp) = empty_service().await;
+        let prompt = PromptAssembler::new(node_service)
+            .assemble(&test_ctx(), Vec::new())
+            .await
+            .system_prompt;
+        assert_eq!(prompt, EMERGENCY_FALLBACK_PROMPT);
     }
 
     #[test]

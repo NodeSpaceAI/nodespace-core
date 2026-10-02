@@ -1,9 +1,3 @@
----
-title: "Working with Sprints"
-description: "Start, plan or close a sprint, add work to the sprint, carry unfinished work into the next sprint, or set a sprint goal. Use when the user says start the sprint, close the sprint, what's in this sprint, or move this to the next sprint."
-exclusion: "Add a task or a reminder."
-tools: "create_node, update_node, create_relationship, search_nodes, get_node"
----
 # Working with Sprints
 
 A `sprint` is a time-boxed iteration with its own lifecycle, stored in

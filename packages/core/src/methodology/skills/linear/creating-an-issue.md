@@ -1,8 +1,3 @@
----
-title: "Creating an Issue"
-description: "Report a bug, defect, crash or something broken, open a ticket, or raise an issue. Use when the user wants to file or log a bug, open a ticket, report a problem, or request a feature."
-exclusion: "Add a task or a reminder."
----
 # Creating an Issue
 
 `issue` extends `task`. Create an `issue` for tracked product or engineering

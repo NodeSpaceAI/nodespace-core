@@ -239,7 +239,7 @@ async fn reset_seed_node_restores_a_users_edited_guidance_to_the_current_templat
     let prepared = prepare_nodes_from_template(&template).expect("template must parse");
 
     let (config_reset, guidance_reset) = node_service
-        .reset_seed_node("skill", RESEARCH_AND_SEARCH, &prepared, false, true)
+        .reset_seed_node(&prepared, false, true)
         .await
         .expect("reset must succeed");
     assert!(!config_reset, "config reset was not requested");

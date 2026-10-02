@@ -38,8 +38,4 @@ export type SkillNode = {
    * ReAct iteration budget for the skill.
    */
   maxIterations: number;
-  /**
-   * Schema ids this skill is scoped to. Empty means unscoped.
-   */
-  nodeTypes: Array<string>;
 };

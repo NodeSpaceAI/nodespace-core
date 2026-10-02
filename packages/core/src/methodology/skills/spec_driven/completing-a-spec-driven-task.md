@@ -1,8 +1,3 @@
----
-title: "Completing a Spec-Driven Task"
-description: "Close out a spec-driven task by recording how it was verified, then marking it done. Use when the user says a task is finished, wants to close it out, or asks to mark work done that traces to a spec or plan."
-tools: "update_node, update_task_status, get_node"
----
 # Completing a Spec-Driven Task
 
 A task linked to a plan or spec cannot move to `done` until its

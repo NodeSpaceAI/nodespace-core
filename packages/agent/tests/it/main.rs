@@ -31,4 +31,5 @@ mod prompt_assembly_snapshot;
 mod routing_latency;
 mod search_nodes_enumerate;
 mod search_skills_latency;
+mod seed_tables;
 mod skill_guidance_fetch_mechanism;

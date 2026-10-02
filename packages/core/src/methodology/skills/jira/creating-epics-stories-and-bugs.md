@@ -1,9 +1,3 @@
----
-title: "Creating Epics, Stories, and Bugs"
-description: "Create a story, file a bug, open an epic, or group work under an epic; set story points or bug severity. Use when the user says file a bug, write a user story, create an epic, add this to the epic, or how many points is this."
-exclusion: "Add a task or a reminder."
-tools: "create_node, create_relationship, search_nodes, get_node"
----
 # Creating Epics, Stories, and Bugs
 
 `story`, `bug` and `epic` all extend `task`. Each carries everything a task

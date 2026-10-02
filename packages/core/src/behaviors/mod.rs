@@ -1861,7 +1861,7 @@ impl NodeBehavior for SkillNodeBehavior {
         }
 
         // Field types (description, exclusion, tool_whitelist,
-        // max_iterations, node_types) are the model's to check. Decoded from
+        // max_iterations) are the model's to check. Decoded from
         // the properties rather than the node, so a type extending `skill`
         // is held to the same field shapes.
         SkillFields::from_properties(&node.properties)?;

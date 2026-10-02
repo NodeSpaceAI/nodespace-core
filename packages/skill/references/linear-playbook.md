@@ -91,11 +91,14 @@ Skill nodes carrying usage guidance, discovered through the ordinary skill-searc
 
 Create each as below, then add its guidance as markdown children. The properties carry the whole retrieval surface — `description`, and an `exclusion` where the skill has one, which keeps general requests from ranking it above a built-in — so set them verbatim. The bodies are long-form prose; read them from `packages/core/src/methodology/skills/linear/` rather than reproducing them here.
 
+After creating a skill, link it to the types it is about with an `applies_to` edge to each type's schema, as shown under it. Skill search then hands an agent the skill together with exactly those types' definitions. If a type landed under another id (step 1 reported a re-key), link to that id.
+
 **Creating an Issue** — Report a bug, defect, crash or something broken, open a ticket, or raise an issue. Use when the user wants to file or log a bug, open a ticket, report a problem, or request a feature.
 
 ```bash
 nodespace node create --type skill --content 'Creating an Issue' \
   --properties '{"description":"Report a bug, defect, crash or something broken, open a ticket, or raise an issue. Use when the user wants to file or log a bug, open a ticket, report a problem, or request a feature.","exclusion":"Add a task or a reminder.","max_iterations":3,"tool_whitelist":["create_node","update_node","search_nodes","get_node"]}'
+nodespace relationship create --from <skill-id> --type applies_to --to issue
 ```
 
 **Sprints and Cycles** — Start, plan or close out a sprint or cycle, put issues in the current sprint, roll unfinished issues into the next sprint, and total a sprint's points. Use when the user says start the sprint, what's in this cycle, or how many points are in the sprint.
@@ -103,6 +106,8 @@ nodespace node create --type skill --content 'Creating an Issue' \
 ```bash
 nodespace node create --type skill --content 'Sprints and Cycles' \
   --properties '{"description":"Start, plan or close out a sprint or cycle, put issues in the current sprint, roll unfinished issues into the next sprint, and total a sprint'\''s points. Use when the user says start the sprint, what'\''s in this cycle, or how many points are in the sprint.","exclusion":"Add a task or a reminder.","max_iterations":3,"tool_whitelist":["create_node","update_node","search_nodes","get_node"]}'
+nodespace relationship create --from <skill-id> --type applies_to --to cycle
+nodespace relationship create --from <skill-id> --type applies_to --to issue
 ```
 
 **Issue Validation Rules** — Why an issue won't close or won't start: its status change was rejected because sub-issues are still open or a blocker isn't done. Use when the user says it won't let me mark this done, it won't let me move this to in progress, why can't I close this, or why is this blocked.
@@ -110,6 +115,7 @@ nodespace node create --type skill --content 'Sprints and Cycles' \
 ```bash
 nodespace node create --type skill --content 'Issue Validation Rules' \
   --properties '{"description":"Why an issue won'\''t close or won'\''t start: its status change was rejected because sub-issues are still open or a blocker isn'\''t done. Use when the user says it won'\''t let me mark this done, it won'\''t let me move this to in progress, why can'\''t I close this, or why is this blocked.","exclusion":"Link a task to a decision.","max_iterations":3,"tool_whitelist":["create_node","update_node","search_nodes","get_node"]}'
+nodespace relationship create --from <skill-id> --type applies_to --to issue
 ```
 
 ### 5. Saved views
@@ -136,7 +142,12 @@ One more skill, created after everything else because it names what you created.
 
 **Linear-style Workspace** — What workflow this workspace uses: the Linear-style Playbook installed here — its issue and cycle types, the Plays that automate and gate them, its saved views, and the schema ids they were actually created under.
 
-Create it the same way as the guidance skills, and end its body with an "Installed in this workspace" section listing the types, Plays, guidance skills and views above, by id.
+Create it the same way as the guidance skills, and end its body with an "Installed in this workspace" section listing the types, Plays, guidance skills and views above, by id. Link it to the Playbook's types:
+
+```bash
+nodespace relationship create --from <skill-id> --type applies_to --to issue
+nodespace relationship create --from <skill-id> --type applies_to --to cycle
+```
 <!-- END GENERATED: linear-playbook -->
 
 ## After installing

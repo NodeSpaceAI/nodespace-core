@@ -7397,7 +7397,7 @@ mod tests {
 
     /// Regression coverage: `update_node` must remain reachable through a
     /// find-then-act chain (`search_nodes` then `update_node`) now that
-    /// `TOOL_STRATEGY_RULES` no longer hardcodes "ALWAYS search_nodes first
+    /// the Tool Strategy Guide no longer hardcodes "ALWAYS search_nodes first
     /// before update_node" in resident prose.
     ///
     /// This scripts the full chain a real model is expected to follow and

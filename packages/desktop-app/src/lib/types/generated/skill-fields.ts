@@ -2,8 +2,9 @@
 
 /**
  * The typed fields of a `skill` node: its retrieval and dispatch config. The
- * skill's name is the node's `content`, and its guidance is its child
- * subtree; neither is part of this shape.
+ * skill's name is the node's `content`, its guidance is its child subtree,
+ * and the schemas it is about are its [`SKILL_APPLIES_TO`] edges; none of
+ * those is part of this shape.
  */
 export type SkillFields = {
   /**
@@ -23,8 +24,4 @@ export type SkillFields = {
    * ReAct iteration budget for the skill.
    */
   maxIterations: number;
-  /**
-   * Schema ids this skill is scoped to. Empty means unscoped.
-   */
-  nodeTypes: Array<string>;
 };

@@ -43,7 +43,7 @@
 //! reminder — never meets them. Installing this methodology must not make
 //! closing an unrelated task require a verification method.
 
-use crate::methodology::skills::playbook_skill;
+use crate::methodology::skills::{PlaybookSkill, DEFAULT_TOOLS};
 use crate::methodology::{
     FieldValueExtension, MethodologyPlaybook, PlayStep, SchemaStep, ViewStep,
 };
@@ -66,6 +66,86 @@ pub const SPECS_BY_STATUS_ID: &str = "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b05";
 /// The `spec-driven-plans-by-status` saved view.
 pub const PLANS_BY_STATUS_ID: &str = "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b06";
 
+/// The guidance skills, in install order.
+const SKILLS: &[PlaybookSkill] = &[
+    PlaybookSkill {
+        // Writing a Spec
+        id: "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b07",
+        title: "Writing a Spec",
+        description: "Write a spec before any plan or implementation: capture the objective, \
+                      testable success criteria and boundaries (always do, ask first, never \
+                      do). Use when the user says write a spec, spec this out, define \
+                      requirements, or starts describing a feature or fix that has no spec yet.",
+        exclusion: None,
+        tools: DEFAULT_TOOLS,
+        applies_to: &["spec"],
+        body: include_str!("skills/spec_driven/writing-a-spec.md"),
+    },
+    PlaybookSkill {
+        // Writing a Plan from a Spec
+        id: "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b08",
+        title: "Writing a Plan from a Spec",
+        description: "Draft the technical plan for an approved spec: approach, components, \
+                      sequencing and risks, linked back to the spec. Use when the user says \
+                      plan this out, what's the approach, how should we build this, or asks \
+                      for a plan for an existing spec.",
+        exclusion: None,
+        tools: &[
+            "create_node",
+            "update_node",
+            "create_relationship",
+            "search_nodes",
+            "get_node",
+        ],
+        applies_to: &["plan", "spec"],
+        body: include_str!("skills/spec_driven/writing-a-plan.md"),
+    },
+    PlaybookSkill {
+        // Creating Implementation Tasks
+        id: "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b09",
+        title: "Creating Implementation Tasks",
+        description: "Break an approved plan into tasks linked to both the plan and its spec. \
+                      Use when the user says create tasks for this plan, break this down, let's \
+                      start implementing, or asks to turn a plan into actionable work.",
+        exclusion: None,
+        tools: &[
+            "create_node",
+            "create_relationship",
+            "search_nodes",
+            "get_node",
+        ],
+        applies_to: &["task", "plan", "spec"],
+        body: include_str!("skills/spec_driven/creating-implementation-tasks.md"),
+    },
+    PlaybookSkill {
+        // Completing a Spec-Driven Task
+        id: "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b0a",
+        title: "Completing a Spec-Driven Task",
+        description: "Close out a spec-driven task by recording how it was verified, then \
+                      marking it done. Use when the user says a task is finished, wants to \
+                      close it out, or asks to mark work done that traces to a spec or plan.",
+        exclusion: None,
+        tools: &["update_node", "update_task_status", "get_node"],
+        applies_to: &["task"],
+        body: include_str!("skills/spec_driven/completing-a-spec-driven-task.md"),
+    },
+];
+
+/// The bundle-level skill.
+const OVERVIEW: PlaybookSkill = PlaybookSkill {
+    // Spec-driven Workspace
+    id: "2f8b6c15-9e04-4d7a-b3c8-6a1e5f7d9b0b",
+    title: "Spec-driven Workspace",
+    description: "What workflow this workspace uses: the Spec-driven Playbook installed here — \
+                  its spec and plan types, how tasks trace back to them, the approval gates \
+                  that refuse some changes, its saved views, and the schema ids they were \
+                  actually created under.",
+    exclusion: None,
+    tools: DEFAULT_TOOLS,
+    applies_to: &["spec", "plan"],
+    body: include_str!("skills/spec_driven/spec-driven-workspace.md"),
+};
+
 /// The spec-driven playbook.
 pub fn playbook() -> MethodologyPlaybook {
     MethodologyPlaybook {
@@ -84,17 +164,8 @@ pub fn playbook() -> MethodologyPlaybook {
             task_verification_gate(),
             supersession_lock(),
         ],
-        skills: vec![
-            playbook_skill(include_str!("skills/spec_driven/writing-a-spec.md")),
-            playbook_skill(include_str!("skills/spec_driven/writing-a-plan.md")),
-            playbook_skill(include_str!(
-                "skills/spec_driven/creating-implementation-tasks.md"
-            )),
-            playbook_skill(include_str!(
-                "skills/spec_driven/completing-a-spec-driven-task.md"
-            )),
-        ],
-        overview: include_str!("skills/spec_driven/spec-driven-workspace.md"),
+        skills: SKILLS,
+        overview: OVERVIEW,
         views: vec![specs_by_status_view(), plans_by_status_view()],
     }
 }
@@ -700,10 +771,9 @@ mod tests {
     #[test]
     fn overview_is_titled_as_skill_md_routes_on() {
         let pb = playbook();
-        let overview = crate::methodology::skills::playbook_overview_skill(
-            pb.overview,
-            &crate::methodology::skills::InstalledIds::default(),
-        );
+        let overview = pb
+            .overview
+            .overview_template(&crate::methodology::skills::InstalledIds::default());
         assert_eq!(overview.title, format!("{} Workspace", pb.name));
         assert!(matches!(overview.tier, SeedTier::Starter));
     }
@@ -712,7 +782,7 @@ mod tests {
     fn skills_decode_and_are_starter_tier() {
         let skills = playbook().skills;
         assert_eq!(skills.len(), 4);
-        for s in &skills {
+        for s in skills.iter().map(PlaybookSkill::template) {
             let skill = crate::models::SkillFields::from_properties(&s.root_properties)
                 .expect("playbook skill must decode");
             assert!(!skill.description.is_empty(), "{}", s.title);

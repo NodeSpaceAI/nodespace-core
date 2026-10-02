@@ -1,8 +1,3 @@
----
-title: "Creating Implementation Tasks"
-description: "Break an approved plan into tasks linked to both the plan and its spec. Use when the user says create tasks for this plan, break this down, let's start implementing, or asks to turn a plan into actionable work."
-tools: "create_node, create_relationship, search_nodes, get_node"
----
 # Creating Implementation Tasks
 
 Under spec-driven development a task is not a bare task: it traces to the plan

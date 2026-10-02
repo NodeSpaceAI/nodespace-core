@@ -1,7 +1,3 @@
----
-title: "Writing a Spec"
-description: "Write a spec before any plan or implementation: capture the objective, testable success criteria and boundaries (always do, ask first, never do). Use when the user says write a spec, spec this out, define requirements, or starts describing a feature or fix that has no spec yet."
----
 # Writing a Spec
 
 A spec is the source of truth every plan and task under it is judged against.
