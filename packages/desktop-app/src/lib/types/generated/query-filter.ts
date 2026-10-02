@@ -5,6 +5,11 @@ import type { RelationshipPath } from './relationship-path';
 
 /**
  * Individual filter condition
+ *
+ * A nested stored value: its keys are these field names, snake_case, in the
+ * database, on the wire and in the CLI's and the agent's input alike
+ * (ADR-086 §9). An unknown key is rejected, so a key in the wrong case fails
+ * the write instead of leaving a filter that looks applied and is not.
  */
 export type QueryFilter = {
   /**
@@ -26,11 +31,11 @@ export type QueryFilter = {
   /**
    * Case sensitivity for text comparisons
    */
-  caseSensitive?: boolean | null;
+  case_sensitive?: boolean | null;
   /**
    * The node a [`FilterType::Relationship`] filter's path must reach.
    */
-  nodeId?: string | null;
+  node_id?: string | null;
   /**
    * The walk a [`FilterType::Relationship`] or [`FilterType::Related`]
    * filter makes from each candidate node: built-in, schema-declared and

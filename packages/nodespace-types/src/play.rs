@@ -833,7 +833,7 @@ mod tests {
             // A filter is held to the same strictness as the rule around it.
             json!({
                 "target_type": "task",
-                "filters": [{ "type": "content", "operator": "contains", "value": "x", "case_sensitive": false }]
+                "filters": [{ "type": "content", "operator": "contains", "value": "x", "caseSensitive": false }]
             }),
             json!({ "target_type": "task", "query_id": "q-1" }),
             json!({ "target_type": "task", "limit": 5 }),

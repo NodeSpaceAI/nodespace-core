@@ -3,10 +3,15 @@ import type { SortDirection } from './sort-direction';
 
 /**
  * Sorting configuration
+ *
+ * A nested stored value, like [`QueryFilter`]: snake_case keys, one spelling,
+ * unknown keys rejected.
  */
 export type SortConfig = {
   /**
-   * Property or field to sort by
+   * The field to sort by, under its stored name: a schema field
+   * (`due_date`) or a metadata column (`created_at`, `modified_at`,
+   * `node_type`, `content`, `title`)
    */
   field: string;
   /**

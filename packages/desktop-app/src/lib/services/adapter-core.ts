@@ -94,9 +94,9 @@ export interface EdgeRecord {
  * and operator-capable engine, as opposed to `NodeQuery`'s type/text scoping.
  *
  * Mirrors `ExecuteQueryInput` in `packages/core/src/ops/query_ops.rs`. The
- * filter and sort shapes are the frontend's own `QueryFilter` / `SortConfig`;
- * the adapter converts their camelCase keys to the snake_case the ops layer
- * deserializes, so callers pass a `QueryDefinition` unchanged.
+ * filter and sort shapes are the generated `QueryFilter` / `SortConfig`, whose
+ * keys are the snake_case the ops layer deserializes, so a `QueryDefinition`
+ * is sent as it is stored.
  */
 export interface ExecuteQueryInput {
   targetType: string;
@@ -444,78 +444,18 @@ export interface ExecuteQueryWire {
 }
 
 /**
- * Metadata fields `QueryService::resolve_field` reads as top-level SQL columns,
- * keyed by the camelCase spelling a stored `QueryDefinition` uses.
- *
- * A stored sort names `modifiedAt` (see `QueryNode`'s docs and
- * `QUERY_TEMPLATE_EXAMPLES`), but the backend matches the column name
- * `modified_at`. Anything it does not recognize becomes
- * `json_extract(properties, '$.<type>.<field>')` — for a metadata field that
- * path is structurally NULL, so an unconverted `modifiedAt` would not error,
- * it would silently order every row equally. Only these five are renamed;
- * property names are stored as authored and pass through untouched.
- *
- * `content` and `title` map to themselves deliberately: they are metadata
- * columns whose two spellings coincide, and listing them states that they were
- * considered rather than leaving a reader to wonder if they were missed.
- *
- * This list must agree with `resolve_field`'s, which is the kind of
- * cross-language pairing this module otherwise exists to avoid. It is tolerable
- * here because the set is five long-stable column names rather than a semantic
- * table, and a mismatch degrades to an unsorted result rather than wrong data.
- */
-const METADATA_SORT_FIELDS: Readonly<Record<string, string>> = {
-  createdAt: 'created_at',
-  modifiedAt: 'modified_at',
-  nodeType: 'node_type',
-  content: 'content',
-  title: 'title',
-};
-
-/** Resolve a sort field to the spelling `resolve_field` matches. */
-export function encodeSortField(field: string): string {
-  return METADATA_SORT_FIELDS[field] ?? field;
-}
-
-/**
- * One filter in the snake_case `AgentFilterItem` deserializes. A `path`
- * travels as written (a hop's own keys are already snake_case), and a
- * related-node filter's nested `filter` is encoded the same way.
- */
-function encodeFilter(f: QueryFilter): Record<string, unknown> {
-  return {
-    type: f.type,
-    operator: f.operator,
-    ...(f.property !== undefined ? { property: f.property } : {}),
-    ...(f.value !== undefined ? { value: f.value } : {}),
-    ...(f.caseSensitive !== undefined ? { case_sensitive: f.caseSensitive } : {}),
-    ...(f.nodeId !== undefined ? { node_id: f.nodeId } : {}),
-    ...(f.path !== undefined && f.path !== null ? { path: f.path } : {}),
-    ...(f.filter !== undefined && f.filter !== null ? { filter: encodeFilter(f.filter) } : {}),
-  };
-}
-
-/**
  * Encode a query definition for the `ExecuteQuery` wire.
  *
  * `limit` uses 0 as the "unset" sentinel, matching the proto: the server then
- * applies its own default. Filter/sort keys are converted to the snake_case
- * `AgentFilterItem` / `AgentSortItem` deserialize, and absent optional keys are
- * omitted rather than sent as null — both structs are `deny_unknown_fields`,
- * and a null would not deserialize into `Option<T>`'s absent case the way a
- * missing key does.
+ * applies its own default. Filters and sorting are sent as written: their keys
+ * and the field names they carry have one spelling, the stored one.
  */
 export function buildExecuteQueryWire(input: ExecuteQueryInput): ExecuteQueryWire {
-  const filters = (input.filters ?? []).map(encodeFilter);
-
-  const sorting = input.sorting?.map((s) => ({
-    field: encodeSortField(s.field),
-    direction: s.direction,
-  }));
+  const sorting = input.sorting;
 
   return {
     targetType: input.targetType,
-    filtersJson: JSON.stringify(filters),
+    filtersJson: JSON.stringify(input.filters ?? []),
     sortingJson: sorting && sorting.length > 0 ? JSON.stringify(sorting) : null,
     limit: input.limit ?? 0,
   };

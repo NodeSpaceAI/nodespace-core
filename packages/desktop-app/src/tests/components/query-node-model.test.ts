@@ -78,14 +78,14 @@ describe('parseQueryDefinition', () => {
       queryNode({
         targetType: 'task',
         filters,
-        sorting: [{ field: 'dueDate', direction: 'asc' }],
+        sorting: [{ field: 'due_date', direction: 'asc' }],
         limit: 25,
       })
     );
     expect(def).toEqual({
       targetType: 'task',
       filters,
-      sorting: [{ field: 'dueDate', direction: 'asc' }],
+      sorting: [{ field: 'due_date', direction: 'asc' }],
       limit: 25,
     });
   });
@@ -213,14 +213,14 @@ describe('matchesFilter', () => {
     ).toBe(true);
   });
 
-  it('respects caseSensitive when set', () => {
+  it('respects case_sensitive when set', () => {
     expect(
       matchesFilter(invoice, {
         type: 'property',
         operator: 'equals',
         property: 'status',
         value: 'OPEN',
-        caseSensitive: true,
+        case_sensitive: true,
       })
     ).toBe(false);
   });
@@ -396,19 +396,19 @@ describe('matchesFilter', () => {
   it('evaluates node-local relationship filters and declines graph ones', () => {
     const withRels = node('n2', { mentions: ['m1'], mentionedIn: [{ id: 'src', title: null, nodeType: 'text' }] });
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentions'], nodeId: 'm1' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentions'], node_id: 'm1' })
     ).toBe(true);
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentioned_by'], nodeId: 'src' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['mentioned_by'], node_id: 'src' })
     ).toBe(true);
     // Parent/children need graph traversal the node doesn't carry. Unverifiable
     // is not matching: declining keeps a node the query may exclude out of the
     // view until the next load, where the backend evaluates it in SQL.
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['child_of'], nodeId: 'x' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['child_of'], node_id: 'x' })
     ).toBe(false);
     expect(
-      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['has_child'], nodeId: 'x' })
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', path: ['has_child'], node_id: 'x' })
     ).toBe(false);
   });
 
@@ -422,7 +422,7 @@ describe('matchesFilter', () => {
       undefined
     ]) {
       expect(
-        matchesFilter(withRels, { type: 'relationship', operator: 'exists', path, nodeId: 'm1' })
+        matchesFilter(withRels, { type: 'relationship', operator: 'exists', path, node_id: 'm1' })
       ).toBe(false);
     }
   });

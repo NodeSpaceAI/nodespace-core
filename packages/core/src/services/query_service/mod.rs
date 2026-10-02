@@ -152,7 +152,7 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
                 anyhow::bail!("Relationship filter missing 'path'");
             }
             if filter.node_id.is_none() {
-                anyhow::bail!("Relationship filter missing 'nodeId'");
+                anyhow::bail!("Relationship filter missing 'node_id'");
             }
         }
         FilterType::Related => {
@@ -915,7 +915,7 @@ impl QueryService {
         let node_id = filter
             .node_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Relationship filter missing 'nodeId'"))?;
+            .ok_or_else(|| anyhow::anyhow!("Relationship filter missing 'node_id'"))?;
 
         let anchor = built.bind(libsql::Value::Text(node_id.clone()));
         Ok(crate::db::path_reaches_condition(

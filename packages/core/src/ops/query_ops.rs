@@ -664,6 +664,25 @@ mod tests {
 
     // -- Unknown-field rejection (acceptance criterion) --
 
+    /// A typed client sends a filter as it is stored, optional keys included
+    /// as explicit nulls. Each reads as absent.
+    #[test]
+    fn agent_filter_item_reads_an_explicit_null_as_absent() {
+        let item: AgentFilterItem = serde_json::from_value(json!({
+            "type": "content",
+            "operator": "contains",
+            "value": "acme",
+            "property": null,
+            "case_sensitive": null,
+            "node_id": null,
+            "path": null,
+            "filter": null
+        }))
+        .unwrap();
+        assert!(item.property.is_none() && item.case_sensitive.is_none());
+        assert!(item.node_id.is_none() && item.path.is_none() && item.filter.is_none());
+    }
+
     #[test]
     fn agent_filter_item_rejects_unknown_field() {
         let args = json!({

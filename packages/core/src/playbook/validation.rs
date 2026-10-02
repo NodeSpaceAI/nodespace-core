@@ -5697,7 +5697,7 @@ mod tests {
                     "target_type": "task",
                     "filters": [{
                         "type": "relationship", "operator": "equals",
-                        "path": ["no_such_relationship"], "nodeId": "x"
+                        "path": ["no_such_relationship"], "node_id": "x"
                     }]
                 }),
                 "node.status == 'open'",

@@ -213,7 +213,7 @@ function filterSubject(node: Node, filter: QueryFilter): unknown {
  * nothing to correct it until a reload.
  */
 export function matchesFilter(node: Node, filter: QueryFilter): boolean {
-  const caseSensitive = filter.caseSensitive ?? false;
+  const caseSensitive = filter.case_sensitive ?? false;
 
   // A related-node filter is a condition on other nodes, which this node
   // alone cannot answer.
@@ -225,9 +225,9 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
     if (more.length > 0 || typeof hop !== 'string') return false;
     switch (hop) {
       case 'mentions':
-        return (node.mentions ?? []).some((id) => id === filter.nodeId);
+        return (node.mentions ?? []).some((id) => id === filter.node_id);
       case 'mentioned_by':
-        return (node.mentionedIn ?? []).some((ref) => ref.id === filter.nodeId);
+        return (node.mentionedIn ?? []).some((ref) => ref.id === filter.node_id);
       default:
         return false;
     }

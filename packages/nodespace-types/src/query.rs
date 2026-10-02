@@ -71,10 +71,15 @@ pub enum SortDirection {
 }
 
 /// Individual filter condition
+///
+/// A nested stored value: its keys are these field names, snake_case, in the
+/// database, on the wire and in the CLI's and the agent's input alike
+/// (ADR-086 §9). An unknown key is rejected, so a key in the wrong case fails
+/// the write instead of leaving a filter that looks applied and is not.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(optional_fields = nullable))]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct QueryFilter {
     /// Filter category
     #[serde(rename = "type")]
@@ -113,11 +118,16 @@ pub struct QueryFilter {
 }
 
 /// Sorting configuration
+///
+/// A nested stored value, like [`QueryFilter`]: snake_case keys, one spelling,
+/// unknown keys rejected.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct SortConfig {
-    /// Property or field to sort by
+    /// The field to sort by, under its stored name: a schema field
+    /// (`due_date`) or a metadata column (`created_at`, `modified_at`,
+    /// `node_type`, `content`, `title`)
     pub field: String,
     /// Sort direction
     pub direction: SortDirection,
@@ -409,16 +419,44 @@ mod tests {
 
     /// A filter key the struct does not know is refused, not dropped: a
     /// dropped key is a filter that looks applied and is not. That includes a
-    /// snake_case spelling of a stored key.
+    /// camelCase spelling of a stored key.
     #[test]
     fn a_filter_with_an_unknown_key_is_rejected() {
         for filter in [
             json!({ "type": "property", "operator": "equals", "property": "status", "value": "open", "relationshipType": "children" }),
-            json!({ "type": "content", "operator": "contains", "value": "x", "case_sensitive": false }),
+            json!({ "type": "content", "operator": "contains", "value": "x", "caseSensitive": false }),
+            json!({ "type": "relationship", "operator": "exists", "path": ["mentions"], "nodeId": "n1" }),
         ] {
             let err = QueryFields::from_properties(&json!({ "filters": [filter] })).unwrap_err();
             assert!(err.to_string().contains("unknown field"), "{err}");
         }
+    }
+
+    /// A filter's keys are its Rust field names: stored and sent snake_case.
+    #[test]
+    fn filter_keys_are_snake_case_stored_and_on_the_wire() {
+        let stored = json!({
+            "type": "relationship", "operator": "exists",
+            "path": ["mentions"], "node_id": "n1", "case_sensitive": false
+        });
+        let fields = QueryFields::from_properties(&json!({ "filters": [stored] })).unwrap();
+        assert_eq!(fields.filters[0].node_id.as_deref(), Some("n1"));
+        assert_eq!(fields.filters[0].case_sensitive, Some(false));
+
+        let wire = serde_json::to_value(&fields.filters[0]).unwrap();
+        assert_eq!(wire["node_id"], "n1");
+        assert_eq!(wire["case_sensitive"], false);
+        assert!(wire.get("nodeId").is_none() && wire.get("caseSensitive").is_none());
+    }
+
+    /// A sort item is held to the same strictness as a filter.
+    #[test]
+    fn a_sort_item_with_an_unknown_key_is_rejected() {
+        let err = QueryFields::from_properties(&json!({
+            "sorting": [{ "field": "due_date", "direction": "asc", "nulls": "last" }]
+        }))
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown field"), "{err}");
     }
 
     #[test]
