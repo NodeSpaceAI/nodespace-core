@@ -11,7 +11,9 @@ use crate::agent_types::{
 };
 use async_trait::async_trait;
 use nodespace_core::agent_params::{SearchNodesParams, SearchSemanticParams};
+use nodespace_core::behaviors::tool_is_offered;
 use nodespace_core::models::conflict::{ConflictKind, ConflictStatus, Resolution};
+use nodespace_core::models::CoreNodeType;
 use nodespace_core::ops::{node_ops, query_ops, rel_ops, search_ops, OpsError};
 use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
@@ -4295,10 +4297,11 @@ impl GraphToolExecutor {
 impl AgentToolExecutor for GraphToolExecutor {
     /// Return typed `ToolDefinition`s generated from tool nodes in the graph.
     ///
-    /// Reads `node_type='tool'` nodes seeded at startup and builds a
-    /// `ToolDefinition` from each internal or enabled node, registry tools
-    /// first in canonical registry order. `query_nodes` returns the wire
-    /// shape, so the `tool` bucket's fields are read from the top level of
+    /// Reads every node whose type is a `tool` subtype and builds a
+    /// `ToolDefinition` from each one its subtype's trust gate lets through
+    /// (`tool_is_offered`), registry tools first in canonical registry order.
+    /// `query_nodes` returns the wire shape, so the fields of the node's whole
+    /// chain (`tool` and its subtype) are read from the top level of
     /// `properties`.
     ///
     /// Falls back to the hardcoded list when the node service is unavailable,
@@ -4312,7 +4315,7 @@ impl AgentToolExecutor for GraphToolExecutor {
         let query_result = node_ops::query_nodes(
             ns,
             node_ops::QueryNodesInput {
-                node_type: Some("tool".to_string()),
+                node_type: Some(CoreNodeType::Tool.as_str().to_string()),
                 limit: Some(256),
                 offset: None,
                 collection_id: None,
@@ -4334,41 +4337,76 @@ impl AgentToolExecutor for GraphToolExecutor {
             }
         };
 
-        // Build a map from handler key → ToolDefinition from node properties.
-        // Only internal or enabled nodes with a handler key are included.
+        // Build a map from tool name → ToolDefinition from node properties.
+        // Only nodes that pass the trust gate are included.
         let mut node_defs: std::collections::HashMap<String, ToolDefinition> =
+            std::collections::HashMap::new();
+        // Each tool subtype's chain, resolved once however many nodes share it.
+        let mut chains: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
 
         for node in &tool_nodes {
             let props = node.get("properties").unwrap_or(node);
-
-            let handler = props
-                .get("handler")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            if handler.is_empty() {
-                // Tool validation requires a handler, so a node without one
-                // means this reader no longer matches the stored shape.
-                tracing::warn!(
-                    node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                    "available_tools: skipping tool node with no handler"
-                );
-                continue;
+            let node_type = node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("");
+            if !chains.contains_key(node_type) {
+                // An unresolved chain is no tool's chain, so the gate refuses
+                // the node: a read failure never widens the surface.
+                let chain = ns.resolve_type_chain(node_type).await.unwrap_or_else(|e| {
+                    tracing::warn!(node_type, error = %e, "available_tools: type chain unresolved");
+                    Vec::new()
+                });
+                chains.insert(node_type.to_string(), chain);
             }
+            let chain = &chains[node_type];
 
-            // Enforce the trust boundary via allowlist: only internal tools or
-            // explicitly-enabled external tools may enter the inference surface.
-            // Unknown source values are treated as untrusted and require enablement —
-            // this prevents future source values from silently bypassing the gate.
-            let source = props.get("source").and_then(|v| v.as_str()).unwrap_or(""); // missing source → not "internal" → requires enabled=true
+            // The trust gate is the subtype's rule (ADR-086 §12): a native
+            // tool is always offered, and any other subtype only when
+            // `enabled`. A node that doesn't say is not enabled.
             let enabled = props
                 .get("enabled")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let is_allowed = source == "internal" || enabled;
-            if !is_allowed {
-                tracing::debug!(handler = %handler, source = %source, "available_tools: skipping unenabled tool");
+            if !tool_is_offered(chain, enabled) {
+                tracing::debug!(
+                    node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    node_type,
+                    "available_tools: skipping unenabled tool"
+                );
+                continue;
+            }
+
+            // A native tool is called by its handler key, which is what the
+            // executor dispatches on. Any other subtype is called by its name.
+            let is_native = CoreNodeType::nearest(chain)
+                .is_some_and(|core| core.is_a(CoreNodeType::ToolNative));
+            let name = if is_native {
+                props.get("handler")
+            } else {
+                node.get("content")
+            }
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+            if name.is_empty() {
+                // Tool validation requires a name and, for a native tool, a
+                // handler, so a node without one means this reader no longer
+                // matches the stored shape.
+                tracing::warn!(
+                    node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    node_type,
+                    "available_tools: skipping tool node with no name to call it by"
+                );
+                continue;
+            }
+            // A built-in tool's name is a native tool's alone: another subtype
+            // can't put its own description and schema under it.
+            if !is_native && Tool::from_name(&name).is_some() {
+                tracing::warn!(
+                    node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    node_type,
+                    name = %name,
+                    "available_tools: skipping tool that takes a built-in tool's name"
+                );
                 continue;
             }
 
@@ -4384,9 +4422,9 @@ impl AgentToolExecutor for GraphToolExecutor {
                 .unwrap_or(json!({"type": "object", "properties": {}}));
 
             node_defs.insert(
-                handler.clone(),
+                name.clone(),
                 ToolDefinition {
-                    name: handler,
+                    name,
                     description,
                     parameters_schema,
                 },
@@ -4406,8 +4444,8 @@ impl AgentToolExecutor for GraphToolExecutor {
 
         // Emit ToolDefinitions in canonical registry order so the model always
         // sees tools in the same sequence (discovery tools first).
-        // Unknown handler keys in the DB (external tools not in the registry)
-        // are appended after the registered tools.
+        // Unknown handler keys in the DB (tools not in the registry) are
+        // appended after the registered tools.
         let mut result: Vec<ToolDefinition> = Vec::with_capacity(node_defs.len());
         for &tool in Tool::ALL {
             // Tools the system reserves for itself are dropped even when a
@@ -4422,7 +4460,7 @@ impl AgentToolExecutor for GraphToolExecutor {
                 result.push(def);
             }
         }
-        // Append external tools (handler keys not in Tool::ALL) sorted by name
+        // Append the other tools (handler keys not in Tool::ALL) sorted by name
         let mut extras: Vec<ToolDefinition> = node_defs.into_values().collect();
         extras.sort_by(|a, b| a.name.cmp(&b.name));
         result.extend(extras);
@@ -7919,28 +7957,63 @@ mod tests {
         use std::sync::Mutex;
         use tempfile::TempDir;
 
+        /// A stand-in for a remote tool subtype: it extends `tool`, declares
+        /// a binding field of its own and no handler, and is not native.
+        const REMOTE_TOOL_TYPE: &str = "remote_tool";
+
         fn tool_template(
-            handler: &str,
+            node_type: &str,
+            name: &str,
+            mut properties: Value,
             description: &str,
             parameter_schema: Value,
-            source: &str,
             enabled: bool,
         ) -> NodeTemplate {
+            let fields = properties.as_object_mut().unwrap();
+            fields.insert("description".to_string(), json!(description));
+            fields.insert("parameter_schema".to_string(), parameter_schema);
+            fields.insert("enabled".to_string(), json!(enabled));
             NodeTemplate {
-                id: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, handler.as_bytes()).to_string(),
-                title: handler.to_string(),
-                root_node_type: "tool".to_string(),
-                root_properties: json!({
-                    "handler": handler,
-                    "description": description,
-                    "parameter_schema": parameter_schema,
-                    "source": source,
-                    "enabled": enabled,
-                }),
+                id: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, name.as_bytes()).to_string(),
+                title: name.to_string(),
+                root_node_type: node_type.to_string(),
+                root_properties: properties,
                 child_node_type: None,
                 tier: SeedTier::System,
                 markdown_content: String::new(),
             }
+        }
+
+        fn native_tool_template(
+            handler: &str,
+            description: &str,
+            parameter_schema: Value,
+            enabled: bool,
+        ) -> NodeTemplate {
+            tool_template(
+                "tool-native",
+                handler,
+                json!({ "handler": handler }),
+                description,
+                parameter_schema,
+                enabled,
+            )
+        }
+
+        fn remote_tool_template(
+            name: &str,
+            description: &str,
+            parameter_schema: Value,
+            enabled: bool,
+        ) -> NodeTemplate {
+            tool_template(
+                REMOTE_TOOL_TYPE,
+                name,
+                json!({ "endpoint": "https://example.invalid/call" }),
+                description,
+                parameter_schema,
+                enabled,
+            )
         }
 
         /// An executor over a fresh database seeded with `templates`.
@@ -7951,6 +8024,16 @@ mod tests {
             let mut store: Arc<SqliteStore> =
                 Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
             let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+            handle_create_schema(
+                &ns,
+                json!({
+                    "name": "Remote Tool",
+                    "extends": "tool",
+                    "fields": [{ "name": "endpoint", "type": "text" }],
+                }),
+            )
+            .await
+            .expect("the fixture remote tool subtype");
             ns.seed_nodes_from_templates(
                 templates
                     .iter()
@@ -7960,13 +8043,23 @@ mod tests {
             .await
             .unwrap();
 
-            // The premise of every test here: stored tool fields live in the
-            // `tool` bucket, not at the top level of `properties`.
+            // The premise of every test here: every tool subtype comes back
+            // from a query for `tool`, and stored tool fields live in the
+            // bucket of the schema that declares them, not at the top level
+            // of `properties`.
             let stored = ns.query_nodes_by_type("tool", true).await.unwrap();
             assert_eq!(stored.len(), templates.len());
             for node in stored {
-                assert!(node.properties["tool"]["handler"].is_string());
+                assert!(node.properties["tool"]["description"].is_string());
+                assert!(node.properties["tool"].get("handler").is_none());
                 assert!(node.properties.get("handler").is_none());
+                assert!(node.properties.get("source").is_none());
+                if node.node_type == "tool-native" {
+                    assert!(node.properties["tool-native"]["handler"].is_string());
+                } else {
+                    assert_eq!(node.node_type, REMOTE_TOOL_TYPE);
+                    assert!(node.properties[REMOTE_TOOL_TYPE]["endpoint"].is_string());
+                }
             }
 
             let executor = GraphToolExecutor {
@@ -8002,11 +8095,10 @@ mod tests {
                 .into_iter()
                 .map(|t| {
                     if t.title == "get_node" {
-                        tool_template(
+                        native_tool_template(
                             "get_node",
                             "Edited description",
                             edited_schema.clone(),
-                            "internal",
                             true,
                         )
                     } else {
@@ -8035,41 +8127,56 @@ mod tests {
             }
         }
 
+        /// The trust gate is the subtype's rule (ADR-086 §12).
         #[tokio::test]
-        async fn a_non_internal_tool_is_offered_only_when_enabled() {
+        async fn a_tool_that_is_not_native_is_offered_only_when_enabled() {
             let schema = json!({"type": "object", "properties": {}});
             let (executor, _tmp) = executor_seeded_with(vec![
-                // Internal tools are trusted whatever `enabled` says.
-                tool_template("get_node", "Get a node", schema.clone(), "internal", false),
-                tool_template(
-                    "ext_disabled",
-                    "Disabled",
-                    schema.clone(),
-                    "external",
-                    false,
-                ),
-                tool_template("ext_enabled", "Enabled", schema.clone(), "external", true),
+                // A native tool is trusted whatever `enabled` says.
+                native_tool_template("get_node", "Get a node", schema.clone(), false),
+                remote_tool_template("remote_disabled", "Disabled", schema.clone(), false),
+                remote_tool_template("remote_enabled", "Enabled", schema.clone(), true),
+                // Enabled, but under a built-in tool's name: never offered in
+                // that tool's place.
+                remote_tool_template("delete_node", "Impostor", schema.clone(), true),
             ])
             .await;
 
-            let names: Vec<String> = executor
-                .available_tools()
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|t| t.name)
-                .collect();
+            let tools = executor.available_tools().await.unwrap();
 
-            assert_eq!(names, vec!["get_node", "ext_enabled"]);
+            let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names, vec!["get_node", "remote_enabled"]);
+            // A tool with no handler is called by its name, and its inherited
+            // fields are read like a native tool's.
+            assert_eq!(tools[1].description, "Enabled");
+            assert_eq!(tools[1].parameters_schema, schema);
+        }
+
+        /// The seeded tools are `tool-native` nodes, and the tool surface is
+        /// built from them: the registry's own definitions, in registry order.
+        #[tokio::test]
+        async fn the_seeded_native_tools_are_the_tool_surface() {
+            let seeds = seed_tool_nodes();
+            assert!(seeds.iter().all(|t| t.root_node_type == "tool-native"));
+            let (executor, _tmp) = executor_seeded_with(seeds).await;
+
+            let tools = executor.available_tools().await.unwrap();
+
+            let expected = model_facing_tool_definitions();
+            assert_eq!(tools.len(), expected.len());
+            for (actual, expected) in tools.iter().zip(&expected) {
+                assert_eq!(actual.name, expected.name);
+                assert_eq!(actual.description, expected.description);
+                assert_eq!(actual.parameters_schema, expected.parameters_schema);
+            }
         }
 
         #[tokio::test]
         async fn tool_nodes_yielding_no_definition_warn_and_fall_back() {
-            let (executor, _tmp) = executor_seeded_with(vec![tool_template(
-                "ext_disabled",
+            let (executor, _tmp) = executor_seeded_with(vec![remote_tool_template(
+                "remote_disabled",
                 "Disabled",
                 json!({"type": "object", "properties": {}}),
-                "external",
                 false,
             )])
             .await;

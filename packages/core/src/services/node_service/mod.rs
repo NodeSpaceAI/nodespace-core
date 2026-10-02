@@ -10797,12 +10797,14 @@ mod tests {
         );
     }
 
-    /// `tool` seed templates carry a nested `parameter_schema` object as a plain
+    /// Tool seed templates carry a nested `parameter_schema` object as a plain
     /// flat property (see `skill_pipeline.rs::seed_tool_nodes`). That object must
-    /// be namespaced under `"tool"` alongside the scalar fields rather than
-    /// hoisted out beside it, where the read-path flattener would never find it.
-    /// This also proves `_seed`, stamped on the same properties, still lands at
-    /// the top level and does not collide with the type's namespace.
+    /// be namespaced under `"tool"`, the bucket of the schema that declares it,
+    /// alongside the scalar fields rather than hoisted out beside it, where the
+    /// read-path flattener would never find it. The subtype's own `handler`
+    /// goes to the subtype's bucket. This also proves `_seed`, stamped on the
+    /// same properties, still lands at the top level and does not collide with
+    /// either namespace.
     #[tokio::test]
     async fn reseed_replaces_tool_tier_node_with_object_valued_property() {
         use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
@@ -10812,12 +10814,11 @@ mod tests {
         let tool_tmpl = |description: &str| NodeTemplate {
             id: TEST_SEED_ID.to_string(),
             title: "search_nodes".to_string(),
-            root_node_type: "tool".to_string(),
+            root_node_type: "tool-native".to_string(),
             root_properties: json!({
                 "handler": "search_nodes",
                 "description": description,
                 "parameter_schema": {"type": "object"},
-                "source": "internal",
                 "enabled": true,
             }),
             child_node_type: None,
@@ -10834,7 +10835,14 @@ mod tests {
 
         let nodes = service.query_nodes_by_type("tool", true).await.unwrap();
         assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_type, "tool-native");
         assert_eq!(nodes[0].properties["tool"]["description"], "Search v1");
+        assert_eq!(
+            nodes[0].properties["tool-native"],
+            json!({ "handler": "search_nodes" }),
+            "the subtype's bucket holds its own field and nothing inherited"
+        );
+        assert!(nodes[0].properties["tool"].get("handler").is_none());
         assert_eq!(
             nodes[0].properties["tool"]["parameter_schema"],
             json!({"type": "object"}),

@@ -21,7 +21,7 @@ const CORE_TYPES_WITHOUT_PLUGIN: Record<string, string> = {
   'database-settings': 'a singleton edited through Settings; shown as an entity row',
   schema: 'edited through the schema surfaces, never as an outline node',
   play: 'authored through the playbook surfaces; shown as an entity row',
-  tool: 'registered by the agent runtime, never typed in; shown as an entity row',
+  'tool-native': 'seeded by the agent runtime, never typed in; shown as an entity row',
   'ai-chat-message':
     'a message of a native chat, rendered only by the chat viewer through ChatMessage; never an outline row or a slash command'
 };
@@ -55,7 +55,7 @@ describe('core plugins against the core node type registry', () => {
 
   it('defines no plugin for an abstract type, and every abstract type is covered by its subtypes', () => {
     const pluginIds = new Set(corePlugins.map((p) => p.id));
-    expect(ABSTRACT_CORE_TYPES_WITHOUT_PLUGIN).toContain('ai-chat');
+    expect(ABSTRACT_CORE_TYPES_WITHOUT_PLUGIN).toEqual(['ai-chat', 'tool']);
     for (const abstractId of ABSTRACT_CORE_TYPES_WITHOUT_PLUGIN) {
       expect(pluginIds.has(abstractId), `${abstractId} is abstract`).toBe(false);
       const subtypes = CORE_NODE_TYPES.filter((t) => t.parent === abstractId);

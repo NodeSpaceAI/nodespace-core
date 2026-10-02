@@ -23,7 +23,7 @@
 
 use crate::skill_rules::{resolve_includes, RuleForm};
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
-use nodespace_core::models::SkillFields;
+use nodespace_core::models::{CoreNodeType, SkillFields};
 
 /// One built-in skill, as its table row.
 #[derive(Debug, Clone, Copy)]
@@ -484,13 +484,12 @@ pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
 /// The built-in tool seeds, one per [`crate::local_agent::tools::Tool`], in
 /// registry order.
 ///
-/// Each template produces one `node_type='tool'` node bridging graph storage to
-/// a deterministic Rust handler, under the tool's fixed id. Properties:
+/// Each template produces one `tool-native` node bridging graph storage to a
+/// deterministic Rust handler, under the tool's fixed id. Fields:
 /// - `handler`: stable key into the handler registry (matches `Tool::name()`)
 /// - `description`: embedded for semantic tool discovery
 /// - `parameter_schema`: typed JSON Schema the model uses when calling the tool
-/// - `source`: `"internal"` for all built-in tools
-/// - `enabled`: `true` for internal tools (external tools require explicit enablement)
+/// - `enabled`: `true`; a native tool is offered whatever it says
 pub fn seed_tool_nodes() -> Vec<NodeTemplate> {
     use crate::local_agent::tools::Tool;
     Tool::ALL
@@ -500,12 +499,11 @@ pub fn seed_tool_nodes() -> Vec<NodeTemplate> {
             NodeTemplate {
                 id: tool.seed_id().to_string(),
                 title: def.name.clone(),
-                root_node_type: "tool".to_string(),
+                root_node_type: CoreNodeType::ToolNative.as_str().to_string(),
                 root_properties: serde_json::json!({
                     "handler": def.name,
                     "description": def.description,
                     "parameter_schema": def.parameters_schema,
-                    "source": "internal",
                     "enabled": true,
                 }),
                 child_node_type: None,
@@ -1721,10 +1719,10 @@ mod tests {
     #[test]
     fn seed_tool_nodes_have_required_properties() {
         for seed in seed_tool_nodes() {
-            assert_eq!(seed.root_node_type, "tool");
+            assert_eq!(seed.root_node_type, "tool-native");
 
-            // Flat, bare field names — the normalizer moves them under the
-            // "tool" namespace on create, `parameter_schema` object included.
+            // Flat, bare field names: the write path moves each into the
+            // bucket of the schema that declares it, `tool` or `tool-native`.
             let ns = &seed.root_properties;
 
             let handler = ns.get("handler").and_then(|v| v.as_str()).unwrap_or("");
@@ -1734,10 +1732,9 @@ mod tests {
                 seed.title
             );
 
-            let source = ns.get("source").and_then(|v| v.as_str()).unwrap_or("");
-            assert_eq!(
-                source, "internal",
-                "Built-in tool '{}' must have source='internal'",
+            assert!(
+                ns.get("source").is_none(),
+                "Tool '{}' must not carry a source: its type says where it comes from",
                 seed.title
             );
 
@@ -1790,7 +1787,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("Template '{}' failed: {:?}", seed.title, e));
             assert!(!nodes.is_empty(), "Tool '{}' produced no nodes", seed.title);
             let root = &nodes[0];
-            assert_eq!(root.node_type, "tool");
+            assert_eq!(root.node_type, "tool-native");
         }
     }
 }

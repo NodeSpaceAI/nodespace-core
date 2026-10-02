@@ -1178,6 +1178,7 @@ mod tests {
             "agent-guidance",
             "skill",
             "tool",
+            "tool-native",
             "play",
             "database-settings",
             "ai-chat",

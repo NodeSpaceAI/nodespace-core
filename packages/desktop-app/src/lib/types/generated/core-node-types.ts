@@ -216,10 +216,19 @@ export const CORE_NODE_TYPES = [
   {
     id: 'tool',
     parent: null,
-    abstract: false,
+    abstract: true,
     mentionable: true,
     excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'none' }, parent: { rule: 'any' } }
+  },
+  {
+    id: 'tool-native',
+    parent: 'tool',
+    abstract: false,
+    mentionable: true,
+    excludedFromDefaultQueries: false,
+    typedUpdate: false,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   }
 ] as const satisfies readonly CoreTypeEntry[];

@@ -80,6 +80,8 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
             // and its declaration edges, and read through the schema reads.
             // A schema node read as a plain node keeps the generic shape.
             | CoreNodeType::Schema
+            // A tool's fields travel inside `properties`.
+            | CoreNodeType::ToolNative
             // Abstract: no node has it as its type, and a subtype read at its
             // scope keeps the generic shape rather than borrowing a struct.
             | CoreNodeType::AiChat
@@ -394,7 +396,8 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
         | CoreNodeType::Date
         | CoreNodeType::AgentGuidance
         | CoreNodeType::Schema
-        | CoreNodeType::Tool => &[],
+        | CoreNodeType::Tool
+        | CoreNodeType::ToolNative => &[],
         // The chat family (ADR-088). The base's fields come first in each
         // subtype's list, as each subtype's struct embeds them. None is marked
         // read-only: the flag says what a typed update may set, and the

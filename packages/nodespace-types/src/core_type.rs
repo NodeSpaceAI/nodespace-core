@@ -41,6 +41,7 @@ pub enum CoreNodeType {
     AiChatPty,
     AiChatMessage,
     Tool,
+    ToolNative,
 }
 
 /// Which of the three kinds of core type a variant is.
@@ -201,7 +202,7 @@ pub struct CoreTypeInfo {
 
 impl CoreNodeType {
     /// Every core type, in registry order.
-    pub const ALL: [CoreNodeType; 24] = [
+    pub const ALL: [CoreNodeType; 25] = [
         CoreNodeType::Text,
         CoreNodeType::Header,
         CoreNodeType::CodeBlock,
@@ -226,6 +227,7 @@ impl CoreNodeType {
         CoreNodeType::AiChatPty,
         CoreNodeType::AiChatMessage,
         CoreNodeType::Tool,
+        CoreNodeType::ToolNative,
     ];
 
     /// The registry entry for this type.
@@ -415,13 +417,28 @@ impl CoreNodeType {
                     WireShape::Typed { update: false },
                 )
             },
-            Self::Tool => leaf(entry(
-                "tool",
-                Structured,
-                Name,
-                EMBEDDED,
-                WireShape::Generic,
-            )),
+            // The tool family (§12). The base is never instantiated: the
+            // subtype says where a tool comes from.
+            Self::Tool => CoreTypeInfo {
+                is_abstract: true,
+                ..leaf(entry(
+                    "tool",
+                    Structured,
+                    Name,
+                    EMBEDDED,
+                    WireShape::Generic,
+                ))
+            },
+            Self::ToolNative => CoreTypeInfo {
+                parent: Some(Self::Tool),
+                ..entry(
+                    "tool-native",
+                    Structured,
+                    Name,
+                    EMBEDDED,
+                    WireShape::Generic,
+                )
+            },
         }
     }
 
@@ -648,7 +665,8 @@ mod tests {
                 | CoreNodeType::AiChatNative
                 | CoreNodeType::AiChatPty
                 | CoreNodeType::AiChatMessage
-                | CoreNodeType::Tool => {}
+                | CoreNodeType::Tool
+                | CoreNodeType::ToolNative => {}
             }
         }
         let unique: HashSet<_> = CoreNodeType::ALL.into_iter().collect();
@@ -737,7 +755,8 @@ mod tests {
                 CoreNodeType::DatabaseSettings,
                 CoreNodeType::Query,
                 CoreNodeType::AiChatMessage,
-                CoreNodeType::Tool
+                CoreNodeType::Tool,
+                CoreNodeType::ToolNative
             ]
         );
         assert_eq!(
@@ -795,6 +814,32 @@ mod tests {
         assert_eq!(
             CoreNodeType::nearest(&["ai-chat-pty", "ai-chat"]),
             Some(CoreNodeType::AiChatPty)
+        );
+    }
+
+    #[test]
+    fn the_tool_family_is_an_abstract_base_with_a_native_subtype() {
+        assert_eq!(CoreNodeType::Tool.kind(), CoreTypeKind::AbstractBase);
+        let native = CoreNodeType::ToolNative;
+        assert_eq!(native.kind(), CoreTypeKind::CoreSubtype);
+        assert_eq!(native.parent(), Some(CoreNodeType::Tool));
+        assert!(native.is_a(CoreNodeType::Tool));
+        assert!(!native.is_abstract());
+        // The base's rules reach it: a leaf, embedded, named by its content,
+        // and structured through the inherited parameter schema.
+        assert_eq!(native.declared_structure(), StructuralRules::ANY);
+        assert_eq!(native.structure().children, ChildrenRule::None);
+        assert!(native.participation().embedded);
+        assert_eq!(native.content_role(), ContentRole::Name);
+        assert_eq!(native.category(), TypeCategory::Structured);
+        assert_eq!(
+            CoreNodeType::nearest(&["tool-native", "tool"]),
+            Some(CoreNodeType::ToolNative)
+        );
+        // A subtype no build ships resolves to the base, not to the native one.
+        assert_eq!(
+            CoreNodeType::nearest(&["tool-remote", "tool"]),
+            Some(CoreNodeType::Tool)
         );
     }
 

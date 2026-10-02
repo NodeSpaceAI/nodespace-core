@@ -29,12 +29,13 @@ import { isUserVisibleField } from '$lib/utils/schema-field-visibility';
  * from primitive body-content types like `task`/`text`, so inferring the set would
  * silently drift as new Core types are added.
  *
- * `tool` is listed for constraint-consistency, but note its validation also
- * requires a non-empty `handler` property — this content default alone does not
- * make a bare `tool` creatable via "+New"; it just keeps the content rule uniform
- * for the day a tool-creation path (with a handler) exists.
+ * The rule is the base type's, so it reaches every type that extends one of
+ * these. `tool` is abstract: only its subtypes are created, and each has
+ * required fields of its own (`tool-native` needs a `handler`), so this content
+ * default alone does not make a tool creatable via "+New"; it keeps the content
+ * rule uniform across the family.
  */
-const NAME_AS_CONTENT_TYPES = new Set(['project', 'skill', 'collection', 'agent-guidance', 'tool']);
+const NAME_AS_CONTENT_TYPES = ['project', 'skill', 'collection', 'agent-guidance', 'tool'] as const;
 
 /**
  * The seed `content` a fresh instance of `typeId` starts with — shared by the
@@ -48,7 +49,9 @@ const NAME_AS_CONTENT_TYPES = new Set(['project', 'skill', 'collection', 'agent-
  */
 function seedContent(typeId: string): string {
   if (isA(typeId, 'ai-chat')) return UNTITLED_CHAT_TITLE;
-  return NAME_AS_CONTENT_TYPES.has(typeId) ? `Untitled ${humanizeSchemaId(typeId)}` : '';
+  return NAME_AS_CONTENT_TYPES.some((base) => isA(typeId, base))
+    ? `Untitled ${humanizeSchemaId(typeId)}`
+    : '';
 }
 
 /**

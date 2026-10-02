@@ -65,6 +65,7 @@ mod skill_applies_to_test;
 mod skill_updater_test;
 mod store_concurrency_test;
 mod structural_rules_test;
+mod tool_subtypes_test;
 mod typed_flat_updates_test;
 mod unique_field_extends_chain_test;
 mod update_node_transaction_test;

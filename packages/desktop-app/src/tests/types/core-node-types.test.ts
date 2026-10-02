@@ -82,6 +82,8 @@ describe('structural rules', () => {
     'table',
     'query',
     'tool',
+    // A leaf through the rule it inherits from `tool`.
+    'tool-native',
     'database-settings'
   ];
   // Only ever a leaf under a native chat; covered by the chat message tests below.

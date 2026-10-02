@@ -27,4 +27,5 @@ export type CoreNodeType =
   | 'ai-chat-native'
   | 'ai-chat-pty'
   | 'ai-chat-message'
-  | 'tool';
+  | 'tool'
+  | 'tool-native';
