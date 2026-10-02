@@ -956,8 +956,11 @@ impl NodeService {
             }
             let ownership = self
                 .field_ownership_in_batch(&updated.node_type, &mut ownership_by_type)
-                .await?;
-            self.rebucket_and_validate_with(&mut updated, ownership, node_type_changed)
+                .await;
+            ownership
+                .and_then(|ownership| {
+                    self.rebucket_and_validate_with(&mut updated, ownership, node_type_changed)
+                })
                 .map_err(|e| {
                     NodeServiceError::bulk_operation_failed(format!(
                         "Failed to validate node {}: {}",

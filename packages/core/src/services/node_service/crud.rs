@@ -3001,11 +3001,12 @@ impl NodeService {
         Ok(())
     }
 
-    /// The first half of [`Self::rebucket_and_validate`]: default, re-bucket,
-    /// then run every behaviour in the node's type chain over the result,
-    /// base first. A subtype is validated as the type it extends, plus its
-    /// own rules. Called on its own only by the trusted import, which skips
-    /// schema validation.
+    /// The first half of [`Self::rebucket_and_validate`]: refuse properties
+    /// that are not bucketed, un-nest, default, re-bucket, then run every
+    /// behaviour in the node's type chain over the result, base first. A
+    /// subtype is validated as the type it extends, plus its own rules.
+    /// Called on its own only by the trusted import, which skips schema
+    /// validation.
     pub(crate) fn rebucket_and_validate_behaviors(
         &self,
         node: &mut Node,
@@ -3013,12 +3014,8 @@ impl NodeService {
         apply_defaults: bool,
     ) -> Result<(), NodeServiceError> {
         let (fields, owners, chain) = ownership;
-        if !node.properties.is_object() {
-            // Nothing to bucket. Whether the type takes properties that are
-            // not an object is its behaviours' call (a user-defined type
-            // does not), made before defaulting replaces them with an empty
-            // object.
-            self.behaviors.validate_node(node, chain)?;
+        if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
+            Self::ensure_properties_are_buckets(node, chain)?;
         }
         node.properties =
             Self::unnest_ancestor_buckets(&node.node_type, &node.properties, owners, chain);
@@ -3030,6 +3027,33 @@ impl NodeService {
                 Self::bucket_properties_by_owner(&node.node_type, &node.properties, owners);
         }
         self.behaviors.validate_node(node, chain)?;
+        Ok(())
+    }
+
+    /// Refuse properties the bucketing steps cannot place: properties that
+    /// are not an object, and a value that is not an object under the name of
+    /// a type in the node's chain, where that type's bucket is stored.
+    ///
+    /// Every step after this one skips what it cannot read as a bucket, so a
+    /// malformed value would otherwise be dropped, or replaced by defaults,
+    /// with no error.
+    fn ensure_properties_are_buckets(
+        node: &Node,
+        chain: &[String],
+    ) -> Result<(), NodeServiceError> {
+        let Some(buckets) = node.properties.as_object() else {
+            return Err(NodeServiceError::invalid_update(
+                "Properties must be a JSON object",
+            ));
+        };
+        for scope in chain {
+            if buckets.get(scope.as_str()).is_some_and(|v| !v.is_object()) {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "'{scope}' in properties holds the fields of the type '{scope}' and must be \
+                     a JSON object"
+                )));
+            }
+        }
         Ok(())
     }
 

@@ -390,21 +390,26 @@ async fn a_retype_into_a_subtype_defaults_inherited_fields_before_validating() {
 #[tokio::test]
 async fn a_value_named_in_its_declaring_bucket_is_not_defaulted_over() {
     let (service, _temp) = service_with_campaign_type().await;
-    let addressed = json!({
-        "status": "completed",
-        "project": { "status": "active", "end_date": "2026-12-31" },
-    });
     let expected = json!({
         "project": { "status": "active", "end_date": "2026-12-31" },
         "campaign": {},
     });
+    // The addressed value alone, where a default would otherwise apply, and
+    // beside the same field given flat.
+    let alone = json!({ "project": { "status": "active", "end_date": "2026-12-31" } });
+    let addressed = json!({
+        "status": "completed",
+        "project": { "status": "active", "end_date": "2026-12-31" },
+    });
 
-    let id = service
-        .create_node(campaign(addressed.clone()))
-        .await
-        .unwrap();
-    let created = service.get_node(&id).await.unwrap().unwrap();
-    assert_eq!(created.properties, expected, "create");
+    for properties in [&alone, &addressed] {
+        let id = service
+            .create_node(campaign(properties.clone()))
+            .await
+            .unwrap();
+        let created = service.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(created.properties, expected, "create with {properties}");
+    }
 
     for path in UPDATE_PATHS {
         // The version-checked update never defaults: it is not a retype path.
@@ -425,7 +430,7 @@ async fn a_value_named_in_its_declaring_bucket_is_not_defaulted_over() {
             &id,
             NodeUpdate::new()
                 .with_node_type("campaign".to_string())
-                .with_properties(addressed.clone()),
+                .with_properties(alone.clone()),
         )
         .await
         .unwrap_or_else(|e| panic!("{path:?}: the retype was refused: {e}"));
@@ -485,38 +490,41 @@ async fn an_entry_of_a_named_bucket_is_stored_where_its_field_is_declared() {
     );
 }
 
-/// A user-defined type refuses properties that are not an object, with or
-/// without declared fields to default.
+/// Properties that are not an object, or that hold something other than an
+/// object where a type's bucket is stored, are refused rather than replaced
+/// by defaults or dropped.
 #[tokio::test]
-async fn properties_that_are_not_an_object_are_refused_for_a_user_defined_type() {
+async fn properties_that_are_not_bucketed_are_refused() {
     let (service, _temp) = service_with_campaign_type().await;
-    crate::schema::handle_create_schema(
-        &service,
-        json!({
-            "name": "Memo",
-            "fields": [
-                {
-                    "name": "tone",
-                    "type": "text",
-                    "protection": "user",
-                    "indexed": false,
-                    "default": "plain"
-                }
-            ]
-        }),
-    )
-    .await
-    .expect("memo schema creation failed");
 
+    for node_type in ["campaign", "task"] {
+        let result = service
+            .create_node(Node::new(
+                node_type.to_string(),
+                "Launch".to_string(),
+                json!("not an object"),
+            ))
+            .await;
+        let error = result.expect_err("the properties were discarded instead of refused");
+        assert!(
+            error
+                .to_string()
+                .contains("Properties must be a JSON object"),
+            "{node_type}: {error}"
+        );
+    }
+
+    // The declaring bucket holds a string: the dates addressed to it have
+    // nowhere to go.
     let result = service
-        .create_node(Node::new(
-            "memo".to_string(),
-            "Note".to_string(),
-            json!("not an object"),
-        ))
+        .bulk_create(vec![campaign(json!({
+            "campaign": { "project": { "end_date": "2026-12-31" } },
+            "project": "oops",
+        }))])
         .await;
+    let error = result.expect_err("the addressed dates were dropped instead of refused");
     assert!(
-        result.is_err(),
-        "the properties were discarded instead of refused: {result:?}"
+        error.to_string().contains("'project' in properties"),
+        "{error}"
     );
 }

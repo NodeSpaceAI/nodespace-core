@@ -688,8 +688,8 @@ impl NodeBehavior for ProjectNodeBehavior {
         // schema-typed node type, so NodeService hoists its schema-defined
         // fields there on write, the same as `task` under `properties.task.*`.
         // Falling back to the flat
-        // top level keeps this correct for a node that was constructed
-        // directly. TYPE checks only — the schema system validates enum
+        // top level keeps this correct for a write that does not normalize
+        // flat properties (`bulk_create`). TYPE checks only — the schema system validates enum
         // membership and allowed values.
         let project_props = node
             .properties
