@@ -14,6 +14,7 @@ pub mod embeddings_service;
 pub mod import_service;
 pub mod local_agent_service;
 pub mod node_service;
+pub mod session_summary;
 #[cfg(test)]
 mod required_extensions_tests;
 pub mod settings_service;

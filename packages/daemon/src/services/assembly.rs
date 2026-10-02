@@ -23,6 +23,7 @@ use nodespace_core::{NodeService as CoreNodeService, PlaybookEngine, SqliteStore
 use nodespace_nlp_engine::EmbeddingService;
 use tokio::sync::{watch, RwLock};
 
+use super::session_summary::LocalModelSummarizer;
 use super::{
     AgentSessionHandler, EmbeddingReady, EmbeddingsServiceImpl, ImportServiceImpl,
     LocalAgentServiceImpl, NodeServiceImpl, SettingsServiceImpl, SharedLocalAgent,
@@ -506,6 +507,7 @@ pub async fn build_database_services(
         assembler,
         node_service.clone(),
         capture_config_path,
+        Arc::new(LocalModelSummarizer::new(shared.local_agent.clone())),
     );
 
     let import = ImportServiceImpl::new(node_service.clone());
@@ -649,6 +651,7 @@ async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServi
         assembler,
         node_service.clone(),
         crate::nodespace_dir()?.join("daemon.toml"),
+        Arc::new(LocalModelSummarizer::new(shared.local_agent.clone())),
     );
     let import = ImportServiceImpl::new(node_service.clone());
     let local_agent = LocalAgentServiceImpl::new(

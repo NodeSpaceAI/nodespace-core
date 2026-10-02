@@ -145,6 +145,10 @@ message SessionInfo {
   string agent_type = 2;
   // Unix timestamp (seconds) when the session was started.
   int64 started_at = 3;
+  // ID of the `ai-chat-pty` node the session was launched for, when it was
+  // launched for one (LaunchSessionRequest.node_id). A viewer of that node
+  // finds its running session by this.
+  optional string node_id = 4;
 }
 
 message ListSessionsResponse {

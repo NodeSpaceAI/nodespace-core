@@ -18,10 +18,13 @@
 
 pub mod capture;
 pub mod detection;
+pub mod harness_session;
 pub mod manager;
+pub mod plain_text;
 pub mod session;
 
 pub use capture::SessionCapture;
 pub use detection::{detect_all_agents, AgentAvailability};
+pub use harness_session::find_harness_session_id;
 pub use manager::{PtySessionManager, SessionMetadata};
 pub use session::{ExitStatus, OutputChunk, PtySession};

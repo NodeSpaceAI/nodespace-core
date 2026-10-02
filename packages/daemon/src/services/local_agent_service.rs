@@ -299,6 +299,20 @@ impl SharedLocalAgent {
         self.engine.read().await.clone()
     }
 
+    /// The loaded engine, when its model runs on this machine.
+    ///
+    /// `None` when no model is loaded, and when the loaded model is an
+    /// OpenAI-compatible endpoint: a request to one leaves the machine. This
+    /// is the engine for background work whose input must stay here (a
+    /// terminal session's output, ADR-061 §7).
+    pub(crate) async fn local_engine(&self) -> Option<Arc<dyn ChatInferenceEngine>> {
+        let active = self.active_model_id.lock().await.clone()?;
+        if nodespace_agent::local_agent::openai_compat_inference::is_openai_compat(&active) {
+            return None;
+        }
+        Some(self.engine().await)
+    }
+
     /// The GGUF model manager, or `None` when `GgufModelManager::new()` failed
     /// at construction (see the field's doc comment). Every gRPC handler that
     /// manages local GGUF models (list/download/delete/load/unload/cancel/
@@ -3787,6 +3801,80 @@ mod tests {
         async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
             Ok((text.len() as f32 / 4.0).ceil() as u32)
         }
+    }
+
+    /// The engine handed to work that must stay on this machine is the
+    /// loaded model only when that model runs here.
+    #[tokio::test]
+    async fn local_engine_is_the_loaded_model_only_when_it_runs_on_this_machine() {
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let shared = SharedLocalAgent::from_model_manager(
+            tempdir.path().join("daemon.toml"),
+            None,
+            MODEL_SPEC_SNAPSHOT_TIMEOUT,
+        );
+        assert!(shared.local_engine().await.is_none(), "no model loaded");
+
+        shared
+            .set_engine_if_changed("gemma-4-e4b", Arc::new(StubEngine::new("local")))
+            .await;
+        assert!(shared.local_engine().await.is_some(), "a model on this machine");
+
+        shared
+            .set_engine_if_changed("openai-compat:abc-123", Arc::new(StubEngine::new("remote")))
+            .await;
+        assert!(shared.local_engine().await.is_none(), "a remote endpoint");
+
+        shared.reset_to_noop_engine().await;
+        assert!(shared.local_engine().await.is_none(), "unloaded");
+    }
+
+    /// A terminal session is summarized by the model on this machine, and by
+    /// nothing else: with a remote endpoint loaded its output is never sent,
+    /// and the session gets no summary.
+    #[tokio::test(start_paused = true)]
+    async fn a_terminal_session_is_summarized_only_by_a_model_on_this_machine() {
+        use crate::services::capture_service::SessionSummarizer;
+        use crate::services::session_summary::LocalModelSummarizer;
+
+        let tempdir = tempfile::TempDir::new().unwrap();
+        let shared = SharedLocalAgent::from_model_manager(
+            tempdir.path().join("daemon.toml"),
+            None,
+            MODEL_SPEC_SNAPSHOT_TIMEOUT,
+        );
+        let summarizer = LocalModelSummarizer::new(shared.clone());
+        let output = "Edited parser.rs\nAll 42 tests pass";
+
+        assert_eq!(summarizer.summarize(output).await, None, "no model loaded");
+
+        let local = Arc::new(StubEngine::new("Fixed the parser and its tests."));
+        shared
+            .set_engine_if_changed("gemma-4-e4b", local.clone())
+            .await;
+        assert_eq!(
+            summarizer.summarize(output).await.as_deref(),
+            Some("Fixed the parser and its tests.")
+        );
+        assert_eq!(
+            local
+                .generate_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        let remote = Arc::new(StubEngine::new("A summary from somewhere else."));
+        shared
+            .set_engine_if_changed("openai-compat:abc-123", remote.clone())
+            .await;
+        assert_eq!(summarizer.summarize(output).await, None, "a remote endpoint");
+        assert_eq!(
+            remote
+                .generate_count
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the session's output is not sent to it"
+        );
     }
 
     /// An engine that deletes `target` whenever `delete_node` is on offer and

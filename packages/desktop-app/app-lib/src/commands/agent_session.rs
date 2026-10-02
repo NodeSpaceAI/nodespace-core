@@ -109,6 +109,9 @@ pub struct PtySessionInfo {
     pub session_id: String,
     pub agent_type: String,
     pub started_at: i64,
+    /// The `ai-chat-pty` node the session was launched for, if any. The
+    /// node's viewer finds its running session by it.
+    pub node_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -423,6 +426,7 @@ pub async fn list_sessions(
             session_id: s.session_id,
             agent_type: s.agent_type,
             started_at: s.started_at,
+            node_id: s.node_id,
         })
         .collect();
     Ok(ListSessionsResult {

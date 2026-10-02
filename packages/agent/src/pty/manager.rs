@@ -20,11 +20,13 @@ use crate::agent_types::AgentType;
 use crate::pty::session::PtySession;
 
 /// Lightweight snapshot of a session suitable for listing in a UI / RPC.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMetadata {
     pub id: Uuid,
     pub agent_type: AgentType,
     pub started_at: DateTime<Utc>,
+    /// The `ai-chat-pty` node the session was launched for, if any.
+    pub node_id: Option<String>,
 }
 
 impl SessionMetadata {
@@ -33,6 +35,7 @@ impl SessionMetadata {
             id: s.id,
             agent_type: s.agent_type,
             started_at: s.started_at,
+            node_id: s.node_id.clone(),
         }
     }
 }
@@ -49,13 +52,18 @@ impl PtySessionManager {
     }
 
     /// Launch a new agent session and register it. Returns the session id.
+    ///
+    /// `node_id` is the `ai-chat-pty` node the session is a view onto, when
+    /// there is one.
     pub async fn launch(
         &self,
         agent_type: AgentType,
         initial_prompt: Option<String>,
+        node_id: Option<String>,
         assembler: &GraphContextAssembler,
     ) -> anyhow::Result<Uuid> {
-        let session = PtySession::launch(agent_type, initial_prompt, assembler).await?;
+        let session =
+            PtySession::launch(agent_type, initial_prompt, node_id, assembler).await?;
         Ok(self.insert(session).await)
     }
 
@@ -165,13 +173,15 @@ mod tests {
     #[tokio::test]
     async fn insert_then_list_returns_metadata() {
         let manager = PtySessionManager::new();
-        let session = PtySession::launch_for_test("sh", vec!["-c".into(), "sleep 1".into()])
+        let mut session = PtySession::launch_for_test("sh", vec!["-c".into(), "sleep 1".into()])
             .expect("launch session");
+        session.node_id = Some("chat-node".to_string());
 
         let id = manager.insert(session).await;
         let listed = manager.list().await;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, id);
+        assert_eq!(listed[0].node_id.as_deref(), Some("chat-node"));
 
         // Wait for the session to exit naturally so the manager's auto-prune
         // runs; otherwise the test would leak the watcher task.
