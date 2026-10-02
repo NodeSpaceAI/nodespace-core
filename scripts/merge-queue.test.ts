@@ -308,6 +308,8 @@ describe("changesGate", () => {
   test("covers the gate's scripts and nothing else", () => {
     expect(changesGate(["scripts/test-gate.ts"])).toBe(true);
     expect(changesGate(["scripts/gate-stage.ts"])).toBe(true);
+    expect(changesGate(["scripts/check-node-types-doc.ts"])).toBe(true);
+    expect(changesGate(["scripts/check-node-types-doc.test.ts"])).toBe(false);
     expect(changesGate(["scripts/gate-lock.test.ts"])).toBe(false);
     expect(changesGate(["scripts/merge-pr.ts", "packages/core/src/lib.rs"])).toBe(false);
   });

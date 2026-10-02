@@ -22,8 +22,8 @@ export interface GateScope {
   /** Happy-DOM unit tests and the Chromium browser tier. */
   frontend: boolean;
   /**
-   * The Rust workspace's tests (nextest), nodespace-app-lib's unit tests and
-   * the generated-TypeScript drift check.
+   * The Rust workspace's tests (nextest), nodespace-app-lib's unit tests, the
+   * generated-TypeScript drift check and the node-types.md check.
    */
   rust: boolean;
   /** The skill package's tests. */
@@ -81,6 +81,7 @@ const GATE_FILES = [
   "scripts/gate-stage.ts",
   "scripts/test-changed.ts",
   "scripts/test-app-units.ts",
+  "scripts/check-node-types-doc.ts",
   "scripts/setup-rust-tooling.ts",
   "scripts/merge-pr.ts",
   ".husky/",

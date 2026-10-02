@@ -10,10 +10,10 @@
  *   changes main, and the merge gate tests it. Test the tiers a change
  *   reaches while developing, with `bun run test:changed`.
  * - `merge` (`--mode=merge`, run by `bun run merge <PR#>`): lint, then the
- *   full pyramid — every unit tier, the daemon build, the SKILL.md and
- *   generated-TypeScript drift checks, e2e and the Tauri-seam tests —
- *   unscoped, on the PR rebased onto
- *   current main. The only automated test run a change gets.
+ *   full pyramid — every unit tier, the daemon build, the SKILL.md,
+ *   generated-TypeScript and node-types.md drift checks, e2e and the
+ *   Tauri-seam tests — unscoped, on the PR rebased onto current main. The
+ *   only automated test run a change gets.
  *
  * The merge gate holds the machine slot (gate-lock.ts) from its first compile
  * until it exits. Tests starve into timeouts on correct code when another
@@ -41,9 +41,19 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { $ } from "bun";
+import { resolveDocsDir, resolvePublished } from "./check-node-types-doc";
 import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
 import { SCCACHE_CACHE_SIZE, sccacheServerUds } from "./gate-sccache";
-import { createLogDir, GATE_INFRA_EXIT, killActiveStages, runStage, TIERS, type StageSpec } from "./gate-stage";
+import {
+  createLogDir,
+  GATE_INFRA_EXIT,
+  killActiveStages,
+  NODE_TYPES_CHECK_PUBLISHED_LABEL,
+  nodeTypesCheckAt,
+  runStage,
+  TIERS,
+  type StageSpec,
+} from "./gate-stage";
 import { TOOLS_DIR } from "./setup-rust-tooling";
 import { freeGiBFromDf } from "./gate-output";
 
@@ -249,6 +259,21 @@ if (!existsSync(join(TOOLS_DIR, "bin", "cargo-nextest"))) {
   process.exit(GATE_INFRA_EXIT);
 }
 
+// The reference the node-types.md check compares with: the docs remote's main,
+// resolved to a commit here, once, so a sheet pushed while this gate runs
+// doesn't change what it is judged against. A docs checkout that can't give
+// that commit is this machine's fault; a machine with no docs checkout skips
+// the stage, said here because a skipped stage would otherwise show as a pass.
+const publishedSheet = resolvePublished(await resolveDocsDir());
+if ("unreadable" in publishedSheet) {
+  console.error(`\n✗ The node-types.md check can't read the published reference: ${publishedSheet.unreadable}\n`);
+  process.exit(GATE_INFRA_EXIT);
+}
+if ("skip" in publishedSheet) console.warn(`  ⚠ ${NODE_TYPES_CHECK_PUBLISHED_LABEL} SKIPPED: ${publishedSheet.skip}`);
+else if (publishedSheet.fetchFailed) {
+  console.warn("  ⚠ node-types:check: the docs fetch failed; comparing with the published reference as last fetched.");
+}
+
 // Held until this process exits: registerLockRelease() covers Ctrl-C and every
 // early exit, including the process.exit(1) inside run(). A merge's ticket
 // queues ahead of every test:changed run's. The lock's usual degrade-and-run
@@ -295,6 +320,9 @@ await Promise.all([
     // the daemon build so its `cargo run --example` reuses that dev-profile
     // dependency tree.
     await run({ label: "skill:check (SKILL.md drift)", command: "bun run skill:check", timeoutMs: 20 * MINUTE });
+    // After the daemon build for the same reason: its example links the
+    // nodespace-core that build already compiled.
+    if ("commit" in publishedSheet) await run(nodeTypesCheckAt(publishedSheet.commit, publishedSheet.fetchFailed));
   })(),
   (async () => {
     await run(TIERS.frontend);

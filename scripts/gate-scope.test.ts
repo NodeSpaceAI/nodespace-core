@@ -54,6 +54,12 @@ describe("classify", () => {
     expect(classify(["scripts/eval/golden/case-1.json"]).rust).toBe(true);
   });
 
+  test("the node-types.md check runs in the Rust tier, so its script and its example reach it", () => {
+    // The gate and test:changed import the script, so it is gate machinery.
+    expect(classify(["scripts/check-node-types-doc.ts"]).fullReason).toContain("check-node-types-doc.ts");
+    expect(classify(["packages/core/examples/dump_core_schemas.rs"]).rust).toBe(true);
+  });
+
   test("a tooling script change runs only the scripts tests", () => {
     expect(classify(["scripts/gh-utils.ts"])).toEqual({ fullReason: null, ...NONE, scripts: true });
   });

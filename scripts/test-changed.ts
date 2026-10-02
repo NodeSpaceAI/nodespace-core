@@ -18,6 +18,7 @@
 //   NODESPACE_TEST_ALL=1 bun run test:changed   every tier
 
 import { reportBranchBehind } from "./check-branch-behind";
+import { stageSkipReason } from "./check-node-types-doc";
 import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
 import { describeScope, gateScope } from "./gate-scope";
 import { createLogDir, runStage, TIERS, type StageSpec } from "./gate-stage";
@@ -67,6 +68,11 @@ if (scope.rust) {
   }
   registerLockRelease(slot);
   await run(TIERS.typesCheck);
+  // First to compile nodespace-core in a fresh worktree, so it gets the cold
+  // build's time, like the Rust tier below.
+  const nodeTypesSkip = await stageSkipReason();
+  if (nodeTypesSkip === null) await run({ ...TIERS.nodeTypesCheck, timeoutMs: 60 * MINUTE });
+  else console.warn(`  ⚠ ${TIERS.nodeTypesCheck.label} SKIPPED: ${nodeTypesSkip}`);
   // Unlike the merge gate's, this tier compiles as well as tests, in this
   // worktree's own incremental build — a cold one can take many minutes.
   await run({ ...TIERS.rust, timeoutMs: 60 * MINUTE });
