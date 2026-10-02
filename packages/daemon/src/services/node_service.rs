@@ -4953,14 +4953,14 @@ mod tests {
     }
 
     /// UpdatePlayNode rejects an update that is not a `PlayNodeUpdate` before
-    /// it reaches the service: a key the play schema does not declare, and a
+    /// it reaches the service: a field only the engine writes, and a
     /// rule naming a trigger parameter the engine never reads.
     #[tokio::test]
     async fn update_play_node_rejects_an_unknown_key_in_the_update() {
         let (svc, _tmp) = make_service().await;
 
         for update_json in [
-            r#"{"enabled": true}"#,
+            r#"{"suspendedReason": "action_failed"}"#,
             r#"{"rules": [{"name": "r", "trigger": {"type": "graph_event", "on": "node_created", "select": {"target_type": "task"}, "debounce_ms": 500}}]}"#,
         ] {
             let err = svc

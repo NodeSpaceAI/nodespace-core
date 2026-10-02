@@ -405,8 +405,7 @@ impl PlayValidationError {
     /// produced this error.
     ///
     /// Callers that log or fingerprint validation errors (e.g. the play
-    /// engine's `load_active_plays`/`handle_play_created`/`handle_play_updated`)
-    /// need this: two structurally different errors on the same play must
+    /// engine's `sync_play`) need this: two structurally different errors on the same play must
     /// not collapse onto the same identity just because both happen to be
     /// `PlayValidationError`s.
     pub fn location(&self) -> &str {

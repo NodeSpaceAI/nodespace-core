@@ -234,6 +234,7 @@ pub enum PromotedShape {
     /// A string holding a date, normalized to `YYYY-MM-DD` on read.
     Date,
     Number,
+    Boolean,
     Array,
     Object,
 }
@@ -289,7 +290,7 @@ impl PromotedField {
 /// carries back.
 pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
     use PromotedField as F;
-    use PromotedShape::{Array, Number, Object};
+    use PromotedShape::{Array, Boolean, Number, Object};
     match core {
         CoreNodeType::Task => {
             const {
@@ -356,6 +357,10 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                 &[
                     F::new("rules", "rules", Array),
                     F::text("description", "description"),
+                    F::new("enabled", "enabled", Boolean),
+                    F::text("suspended_reason", "suspendedReason").read_only(),
+                    F::text("suspended_message", "suspendedMessage").read_only(),
+                    F::text("suspended_at", "suspendedAt").read_only(),
                 ]
             }
         }
@@ -634,13 +639,14 @@ fn query_node_to_value(node: Node) -> Result<serde_json::Value, String> {
 }
 
 /// A stored play whose fields do not decode keeps its node in the batch with
-/// the schema defaults, as a malformed query does. Writes are checked by
-/// `PlayNodeBehavior::validate`, so this only meets a row written around the
-/// service layer.
+/// the fields that do decode and the schema defaults for the rest, as a
+/// malformed query does. Writes are checked by `PlayNodeBehavior::validate`,
+/// so this only meets a row written around the service layer. Such a play is
+/// one the engine suspends, so its switch and suspension are kept readable.
 fn play_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     let fields = PlayFields::from_properties(&node.properties).unwrap_or_else(|e| {
         eprintln!("play node '{}' has unreadable fields: {e}", node.id);
-        PlayFields::default()
+        PlayFields::readable_from_properties(&node.properties)
     });
 
     let play = PlayNode {

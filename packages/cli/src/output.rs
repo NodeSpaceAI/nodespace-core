@@ -21,6 +21,13 @@ pub fn print_node(node: &NodeData, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// A node's lifecycle as a listing prints it: the stored value, verbatim. For
+/// a command that prints its own one-line-per-node listing instead of
+/// [`print_node_list`]'s blocks.
+pub fn lifecycle_label(node: &NodeData) -> &str {
+    &node.lifecycle_status
+}
+
 pub fn print_delete(response: &DeleteNodeResponse, json: bool) -> Result<()> {
     if json {
         let value = json!({

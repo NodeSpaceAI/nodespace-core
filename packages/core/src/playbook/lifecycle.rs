@@ -1,8 +1,9 @@
 //! Play Lifecycle Manager
 //!
 //! Owns all engine state: TriggerIndex, CronRegistry, ActivePlaybooks.
-//! Handles install/uninstall/enable/disable of plays and builds
-//! the trigger index for O(1) event-to-rule matching.
+//! Handles install/uninstall of plays, keeps each play's run state
+//! ([`PlayStatus`]) and builds the trigger index for O(1) event-to-rule
+//! matching. Only a runnable play has rules in the indexes.
 
 use crate::models::Node;
 use crate::playbook::types::*;
@@ -17,7 +18,7 @@ use tracing::{debug, info, warn};
 /// operations) is infrequent and short-lived.
 #[derive(Default)]
 pub struct PlaybookLifecycleManager {
-    /// Active (and disabled) plays indexed by ID
+    /// Every installed play indexed by ID, runnable or not
     active_playbooks: HashMap<String, ParsedPlay>,
     /// Trigger index for O(1) event → rules lookup
     trigger_index: TriggerIndex,
@@ -39,8 +40,8 @@ pub struct PlaybookLifecycleManager {
     ancestor_cache: HashMap<String, Vec<String>>,
     /// Whether `trigger_index` currently holds any `TriggerKey::RelationshipEvent`
     /// entry — recomputed (from `trigger_index` itself) whenever a play
-    /// activates, deactivates, is disabled, or is re-enabled, so the flag is
-    /// never more than one lifecycle operation stale.
+    /// enters or leaves the index, so the flag is never more than one
+    /// lifecycle operation stale.
     ///
     /// Matching a relationship event needs its source node's type, which
     /// `handle_event` (`engine.rs`) can only get via a `get_node` fetch — real
@@ -75,7 +76,7 @@ impl PlaybookLifecycleManager {
 
     /// Recompute [`Self::has_relationship_triggers`] from `trigger_index`
     /// itself. Cheap relative to the lifecycle operation it runs after
-    /// (install/uninstall/disable/re-enable a play) — none of which are a
+    /// (install/uninstall/park/re-index a play) — none of which are a
     /// per-event hot path — and correct by construction rather than by
     /// keeping an incremental counter in sync with every insert/retain.
     fn recompute_has_relationship_triggers(&mut self) {
@@ -175,19 +176,20 @@ impl PlaybookLifecycleManager {
             debug!("Play {} already active, skipping", node.id);
             return Ok(());
         }
+        let parsed_rules = parse_play_rules(node)?;
+        self.insert_runnable(node, parsed_rules);
+        Ok(())
+    }
 
-        let rule_defs = parse_rules_from_properties(&node.properties)?;
-        let mut parsed_rules = Vec::with_capacity(rule_defs.len());
-
-        for def in &rule_defs {
-            parsed_rules.push(Arc::new(parse_rule(def)?));
-        }
-
+    /// Insert a runnable play and index its already-compiled rules.
+    fn insert_runnable(&mut self, node: &Node, parsed_rules: Vec<Arc<ParsedRule>>) {
         let play = ParsedPlay {
             id: node.id.clone(),
             created_at: node.created_at,
             rules: parsed_rules.clone(),
-            status: PlayStatus::Active,
+            status: PlayStatus::Runnable,
+            enabled: crate::models::PlayFields::enabled_in(&node.properties),
+            stored_rules: stored_rules(node),
         };
 
         // Build trigger entries for each rule
@@ -234,9 +236,12 @@ impl PlaybookLifecycleManager {
 
         self.recompute_has_relationship_triggers();
 
-        info!("Activated play {} with {} rules", node.id, rule_defs.len());
+        info!(
+            "Activated play {} with {} rules",
+            node.id,
+            parsed_rules.len()
+        );
         self.active_playbooks.insert(node.id.clone(), play);
-        Ok(())
     }
 
     /// Remove a play from all indexes (on deletion or permanent removal).
@@ -251,30 +256,89 @@ impl PlaybookLifecycleManager {
         info!("Deactivated play {}", play_id);
     }
 
-    /// Disable a play — remove from indexes but keep in active_playbooks as disabled.
+    /// Keep a play that does not run: out of the indexes, in
+    /// `active_playbooks` with the reason.
     ///
-    /// Called on first error or when schema version drifts.
-    pub fn disable_play(&mut self, play_id: &str) {
-        if let Some(play) = self.active_playbooks.get_mut(play_id) {
-            play.status = PlayStatus::Disabled;
-            self.remove_from_trigger_index(play_id);
-            self.remove_from_cron_registry(play_id);
-            info!("Disabled play {}", play_id);
-        } else {
-            warn!("Play {} not found for disabling", play_id);
+    /// Works for a play the manager has never seen, so a play that is
+    /// created disabled, archived or with rules that do not validate is
+    /// still known. `rules` are the play's compiled rules, empty when they
+    /// do not parse; the caller compiles them before taking the write lock.
+    pub fn park_play(&mut self, node: &Node, status: PlayStatus, rules: Vec<Arc<ParsedRule>>) {
+        debug_assert!(
+            status != PlayStatus::Runnable,
+            "a runnable play is activated"
+        );
+        self.remove_from_trigger_index(&node.id);
+        self.remove_from_cron_registry(&node.id);
+        self.active_playbooks.insert(
+            node.id.clone(),
+            ParsedPlay {
+                id: node.id.clone(),
+                created_at: node.created_at,
+                rules,
+                status,
+                enabled: crate::models::PlayFields::enabled_in(&node.properties),
+                stored_rules: stored_rules(node),
+            },
+        );
+        info!("Play {} is not running: {:?}", node.id, status);
+    }
+
+    /// Take a running play out of service: remove it from the indexes and
+    /// mark it suspended.
+    ///
+    /// Returns whether the play was running. `false` means there is nothing
+    /// to suspend (it is unknown, or already out of service), so the caller
+    /// records one suspension per failure rather than one per queued rule.
+    pub fn suspend_play(&mut self, play_id: &str) -> bool {
+        match self.active_playbooks.get_mut(play_id) {
+            Some(play) if play.status == PlayStatus::Runnable => {
+                play.status = PlayStatus::Suspended;
+                self.remove_from_trigger_index(play_id);
+                self.remove_from_cron_registry(play_id);
+                info!("Suspended play {}", play_id);
+                true
+            }
+            Some(_) => false,
+            None => {
+                warn!("Play {} not found for suspending", play_id);
+                false
+            }
         }
     }
 
-    /// Re-enable a previously disabled play.
-    ///
-    /// Re-parses rules from the provided node and re-inserts into indexes.
-    pub fn reenable_play(&mut self, node: &Node) -> Result<(), PlayParseError> {
-        // Remove existing entry so activate_play isn't a no-op
+    /// Whether a play is known and runs. A rule matched earlier runs only
+    /// while this holds: a play that has since been switched off, archived,
+    /// suspended or deleted does not run rules from a queued work item.
+    pub fn is_running(&self, play_id: &str) -> bool {
+        self.active_playbooks
+            .get(play_id)
+            .is_some_and(|play| play.status == PlayStatus::Runnable)
+    }
+
+    /// Index a play afresh from its node and its compiled rules, whatever
+    /// state it was in: a parked play that runs again, or a running play
+    /// whose rules were edited. The caller compiles the rules, so nothing is
+    /// compiled under the write lock.
+    pub fn reindex_play(&mut self, node: &Node, parsed_rules: Vec<Arc<ParsedRule>>) {
         self.active_playbooks.remove(&node.id);
         self.remove_from_trigger_index(&node.id);
         self.remove_from_cron_registry(&node.id);
+        self.insert_runnable(node, parsed_rules);
+    }
 
-        self.activate_play(node)
+    /// Forget every play whose id is not in `keep`. For a resync from the
+    /// store, where a play missing from the load was deleted or archived.
+    pub fn retain_plays(&mut self, keep: &std::collections::HashSet<&str>) {
+        let gone: Vec<String> = self
+            .active_playbooks
+            .keys()
+            .filter(|id| !keep.contains(id.as_str()))
+            .cloned()
+            .collect();
+        for id in gone {
+            self.deactivate_play(&id);
+        }
     }
 
     /// Plays that *reference* the changed schema — candidates for drift, not
@@ -289,7 +353,7 @@ impl PlaybookLifecycleManager {
     pub fn plays_referencing_schema(&self, schema_node_type: &str) -> Vec<String> {
         self.active_playbooks
             .iter()
-            .filter(|(_, pb)| pb.status == PlayStatus::Active)
+            .filter(|(_, pb)| pb.status == PlayStatus::Runnable)
             .filter(|(_, pb)| {
                 play_references_node_type(pb, schema_node_type)
                     || play_has_paths_through_schema(pb, schema_node_type)
@@ -381,6 +445,21 @@ impl PlaybookLifecycleManager {
         }
         self.cron_registry.retain(|e| !e.rules.is_empty());
     }
+}
+
+/// Parse a play node's stored rules into compiled rules.
+pub(crate) fn parse_play_rules(node: &Node) -> Result<Vec<Arc<ParsedRule>>, PlayParseError> {
+    parse_rules_from_properties(&node.properties)?
+        .iter()
+        .map(|def| parse_rule(def).map(Arc::new))
+        .collect()
+}
+
+/// A play node's stored `rules` value, `Null` when it has none.
+fn stored_rules(node: &Node) -> serde_json::Value {
+    crate::models::PlayFields::stored_field(&node.properties, nodespace_types::PLAY_RULES_FIELD)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Build trigger keys for a graph event trigger definition.
@@ -651,7 +730,7 @@ mod tests {
         );
         lm.activate_play(&node).unwrap();
         assert!(lm.active_playbooks().contains_key("pb-1"));
-        assert_eq!(lm.active_playbooks()["pb-1"].status, PlayStatus::Active);
+        assert_eq!(lm.active_playbooks()["pb-1"].status, PlayStatus::Runnable);
     }
 
     #[test]
@@ -675,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    fn disable_keeps_in_active_but_removes_from_index() {
+    fn suspend_keeps_in_active_but_removes_from_index() {
         let mut lm = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb-3",
@@ -687,13 +766,97 @@ mod tests {
             }]),
         );
         lm.activate_play(&node).unwrap();
-        lm.disable_play("pb-3");
+        assert!(lm.suspend_play("pb-3"), "a running play is suspended");
 
-        // Still in active_playbooks but disabled
+        // Still in active_playbooks but suspended
         assert!(lm.active_playbooks().contains_key("pb-3"));
-        assert_eq!(lm.active_playbooks()["pb-3"].status, PlayStatus::Disabled);
+        assert_eq!(lm.active_playbooks()["pb-3"].status, PlayStatus::Suspended);
+        assert!(!lm.is_running("pb-3"));
         // Removed from trigger index
         assert!(lm.trigger_index().is_empty());
+
+        // One suspension per failure: a second call has nothing to suspend,
+        // and neither does a play the manager never saw.
+        assert!(!lm.suspend_play("pb-3"));
+        assert!(!lm.suspend_play("pb-unknown"));
+        assert!(!lm.is_running("pb-unknown"), "an unknown play does not run");
+    }
+
+    /// A play that does not run is still known, with its reason, even when
+    /// the manager has never seen it and even when its rules do not parse.
+    #[test]
+    fn park_keeps_a_play_the_manager_never_saw() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_play_node(
+            "pb-parked",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        lm.park_play(
+            &node,
+            PlayStatus::Disabled,
+            parse_play_rules(&node).unwrap(),
+        );
+        assert_eq!(
+            lm.active_playbooks()["pb-parked"].status,
+            PlayStatus::Disabled
+        );
+        assert_eq!(lm.active_playbooks()["pb-parked"].rules.len(), 1);
+        assert!(lm.trigger_index().is_empty());
+
+        let broken = make_play_node(
+            "pb-broken",
+            json!([{ "name": "r1", "trigger": { "type": "nope" } }]),
+        );
+        assert!(parse_play_rules(&broken).is_err());
+        lm.park_play(&broken, PlayStatus::Suspended, Vec::new());
+        assert_eq!(
+            lm.active_playbooks()["pb-broken"].status,
+            PlayStatus::Suspended
+        );
+        assert!(lm.active_playbooks()["pb-broken"].rules.is_empty());
+
+        // Parking a running play takes it out of the index.
+        lm.reindex_play(&node, parse_play_rules(&node).unwrap());
+        assert!(lm.is_running("pb-parked"));
+        assert!(!lm.trigger_index().is_empty());
+        lm.park_play(
+            &node,
+            PlayStatus::Archived,
+            parse_play_rules(&node).unwrap(),
+        );
+        assert!(lm.trigger_index().is_empty());
+        assert!(lm.plays_referencing_schema("task").is_empty());
+    }
+
+    /// A resync forgets the plays that are no longer in the store's load.
+    #[test]
+    fn retain_forgets_the_plays_not_kept() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let rules = json!([{
+            "name": "r1",
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
+            "conditions": [],
+            "actions": []
+        }]);
+        let kept = make_play_node("pb-kept", rules.clone());
+        let gone = make_play_node("pb-gone", rules);
+        lm.activate_play(&kept).unwrap();
+        lm.activate_play(&gone).unwrap();
+
+        lm.retain_plays(&std::collections::HashSet::from(["pb-kept"]));
+
+        assert!(lm.is_running("pb-kept"));
+        assert!(lm.get_play("pb-gone").is_none());
+        assert!(lm
+            .trigger_index()
+            .values()
+            .flatten()
+            .all(|rule| rule.play_id == "pb-kept"));
     }
 
     #[test]
@@ -941,8 +1104,8 @@ mod tests {
         assert_eq!(candidates, vec!["pb-drift-1"]);
         assert_eq!(
             lm.active_playbooks()["pb-drift-1"].status,
-            PlayStatus::Active,
-            "identifying a candidate must not itself disable it"
+            PlayStatus::Runnable,
+            "identifying a candidate must not itself suspend it"
         );
     }
 
@@ -985,12 +1148,12 @@ mod tests {
         assert!(candidates.is_empty());
         assert_eq!(
             lm.active_playbooks()["pb-drift-3"].status,
-            PlayStatus::Active
+            PlayStatus::Runnable
         );
     }
 
     #[test]
-    fn schema_change_skips_already_disabled_plays() {
+    fn schema_change_skips_plays_that_are_not_running() {
         let mut lm = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb-drift-4",
@@ -1002,12 +1165,12 @@ mod tests {
             }]),
         );
         lm.activate_play(&node).unwrap();
-        lm.disable_play("pb-drift-4");
+        lm.suspend_play("pb-drift-4");
 
         let candidates = lm.plays_referencing_schema("task");
         assert!(
             candidates.is_empty(),
-            "already-disabled plays should not appear"
+            "a play that is not running should not appear"
         );
     }
 
@@ -1034,7 +1197,9 @@ mod tests {
                 .unwrap()],
                 actions: vec![],
             })],
-            status: PlayStatus::Active,
+            status: PlayStatus::Runnable,
+            enabled: true,
+            stored_rules: serde_json::Value::Null,
         };
 
         assert!(play_has_paths_through_schema(&pb, "story"));
@@ -1058,7 +1223,9 @@ mod tests {
                 conditions: vec![],
                 actions: vec![],
             })],
-            status: PlayStatus::Active,
+            status: PlayStatus::Runnable,
+            enabled: true,
+            stored_rules: serde_json::Value::Null,
         };
 
         assert!(!play_has_paths_through_schema(&pb, "task"));

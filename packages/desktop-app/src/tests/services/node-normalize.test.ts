@@ -167,6 +167,31 @@ describe('storageNodeToApiFields', () => {
     expect(fields.properties).toEqual({});
   });
 
+  it('promotes a play\'s switch and suspension, defaulting the switch to on', () => {
+    const suspended = storageNodeToApiFields('play', {
+      play: {
+        rules: [],
+        enabled: false,
+        suspended_reason: 'action_failed',
+        suspended_message: 'boom',
+        suspended_at: '2026-10-02T10:00:00Z'
+      }
+    });
+    expect(suspended.enabled).toBe(false);
+    expect(suspended.suspendedReason).toBe('action_failed');
+    expect(suspended.suspendedMessage).toBe('boom');
+    expect(suspended.suspendedAt).toBe('2026-10-02T10:00:00Z');
+    expect(suspended.properties).toEqual({});
+
+    // An absent or cleared field takes the default, as the Rust decoder does,
+    // and so does a switch of the wrong shape.
+    for (const play of [{}, { enabled: null, suspended_at: null }, { enabled: 'yes' }]) {
+      const fields = storageNodeToApiFields('play', { play });
+      expect(fields.enabled).toBe(true);
+      expect(fields.suspendedAt).toBeUndefined();
+    }
+  });
+
   // The browser/dev-proxy HTTP transport (packages/dev-tools/src/dev-proxy.ts)
   // receives a node's `properties` exactly as stored — namespaced under the
   // node's own type. The Tauri IPC layer's `node_to_typed_value`

@@ -739,14 +739,17 @@ pub async fn build_workspace_context(
         .await
         .unwrap_or_default();
 
-    // Convert playbook nodes
+    // The plays that run: one the user switched off, or the engine suspended
+    // on this device, is not active automation (ADR-087 §5).
     let active_playbooks: Vec<PlaybookInfo> = playbook_nodes
         .into_iter()
+        .filter(|node| {
+            crate::playbook::types::PlayStatus::of_node(node)
+                == crate::playbook::types::PlayStatus::Runnable
+        })
         .map(|node| PlaybookInfo {
             name: node.content.clone(),
-            description: node
-                .properties
-                .get("description")
+            description: crate::models::PlayFields::stored_field(&node.properties, "description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),

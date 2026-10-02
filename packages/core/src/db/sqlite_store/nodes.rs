@@ -1817,6 +1817,42 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Set several string values at JSON paths within a node's properties in
+    /// one statement, so a reader sees all of them or none. Same
+    /// OCC-bypassing posture as [`Self::set_property_bool`]: no version
+    /// check, no version bump.
+    ///
+    /// For system-owned fields no client writes, where the write must not
+    /// collide with a user's version-checked edit of the same node.
+    pub async fn set_property_strings(
+        &self,
+        node_id: &str,
+        values: &[(String, String)],
+    ) -> Result<()> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        let mut params: Vec<libsql::Value> = Vec::with_capacity(values.len() * 2 + 1);
+        let mut placeholders = Vec::with_capacity(values.len());
+        for (json_path, value) in values {
+            params.push(json_path.clone().into());
+            params.push(value.clone().into());
+            placeholders.push(format!("?{}, ?{}", params.len() - 1, params.len()));
+        }
+        params.push(node_id.to_string().into());
+        let sql = format!(
+            "UPDATE node SET properties = json_set(properties, {}) WHERE id = ?{}",
+            placeholders.join(", "),
+            params.len()
+        );
+        self.write()
+            .await
+            .execute(&sql, params)
+            .await
+            .context("Failed to set property keys")?;
+        Ok(())
+    }
+
     pub async fn delete_with_version_check(
         &self,
         id: &str,

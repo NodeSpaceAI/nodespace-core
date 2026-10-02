@@ -10,6 +10,7 @@ import {
   TYPED_CORE_DEFAULTS,
   TYPED_CORE_FIELDS
 } from '$lib/types/typed-core-fields';
+import type { StructuredShape } from '$lib/types/generated';
 
 /** The typed wire shape each type with one is converted to, keyed by exact type. */
 const TYPED_WIRE_CONVERTERS: ReadonlyMap<string, (node: Node) => Node> = new Map([
@@ -95,9 +96,10 @@ function normalizeDate(value: string): string {
   return OFFSET_DATETIME.test(value) ? value.slice(0, 10) : value;
 }
 
-function hasJsonShape(value: unknown, shape: 'array' | 'number' | 'object'): boolean {
+function hasJsonShape(value: unknown, shape: StructuredShape): boolean {
   if (shape === 'array') return Array.isArray(value);
   if (shape === 'number') return typeof value === 'number';
+  if (shape === 'boolean') return typeof value === 'boolean';
   return isPlainObject(value);
 }
 

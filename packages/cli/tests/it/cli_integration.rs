@@ -3598,8 +3598,7 @@ async fn playbook_list_round_trip() {
     .await
     .expect("playbook list (one play)");
 
-    // A disabled Play is archived, so it leaves the list. `--include-archived`
-    // is the way back to its id for `playbook enable`.
+    // A disabled Play is switched off, not archived: it stays in the list.
     commands::playbook::run(
         &mut client,
         commands::playbook::PlaybookAction::Disable(commands::playbook::PlaybookIdArgs {
@@ -3610,45 +3609,88 @@ async fn playbook_list_round_trip() {
     .await
     .expect("playbook disable");
 
-    for include_archived in [false, true] {
-        let listed = client
-            .query_nodes_simple(QueryNodesSimpleRequest {
-                include_archived,
-                id: None,
-                mentioned_by: None,
-                content_contains: None,
-                title_contains: None,
-                node_type: Some("play".to_string()),
-                limit: 0,
-                offset: 0,
-                order_by: 0,
-            })
-            .await
-            .expect("QueryNodesSimple")
-            .into_inner();
-        assert_eq!(
-            listed.nodes.iter().any(|n| n.id == play_id),
-            include_archived,
-            "include_archived={include_archived}"
-        );
-    }
+    let list_plays = |include_archived: bool| QueryNodesSimpleRequest {
+        include_archived,
+        id: None,
+        mentioned_by: None,
+        content_contains: None,
+        title_contains: None,
+        node_type: Some("play".to_string()),
+        limit: 0,
+        offset: 0,
+        order_by: 0,
+    };
+    let listed = client
+        .query_nodes_simple(list_plays(false))
+        .await
+        .expect("QueryNodesSimple")
+        .into_inner();
+    let disabled = listed
+        .nodes
+        .iter()
+        .find(|n| n.id == play_id)
+        .expect("a disabled Play is still listed");
+    assert_eq!(
+        commands::playbook::PlayState::of(&nodespace_cli::output::node_to_json(disabled)),
+        commands::playbook::PlayState::Off
+    );
+
+    // A suspension the engine recorded is reported as that state, with the
+    // reason in the Play's properties.
     commands::playbook::run(
         &mut client,
-        commands::playbook::PlaybookAction::List(commands::playbook::PlaybookListArgs {
-            include_archived: true,
+        commands::playbook::PlaybookAction::Enable(commands::playbook::PlaybookIdArgs {
+            play_id: play_id.clone(),
         }),
         true,
     )
     .await
-    .expect("playbook list --include-archived");
+    .expect("playbook enable");
+    node_service
+        .record_play_suspension(
+            &play_id,
+            nodespace_core::models::PlaySuspensionReason::ActionFailed,
+            "boom",
+        )
+        .await
+        .expect("record suspension");
+    let listed = client
+        .query_nodes_simple(list_plays(false))
+        .await
+        .expect("QueryNodesSimple")
+        .into_inner();
+    let suspended = nodespace_cli::output::node_to_json(
+        listed
+            .nodes
+            .iter()
+            .find(|n| n.id == play_id)
+            .expect("a suspended Play is still listed"),
+    );
+    assert_eq!(
+        commands::playbook::PlayState::of(&suspended),
+        commands::playbook::PlayState::Suspended
+    );
+    assert_eq!(suspended["properties"]["suspended_reason"], "action_failed");
+    assert_eq!(suspended["properties"]["suspended_message"], "boom");
+
+    for include_archived in [false, true] {
+        commands::playbook::run(
+            &mut client,
+            commands::playbook::PlaybookAction::List(commands::playbook::PlaybookListArgs {
+                include_archived,
+            }),
+            include_archived,
+        )
+        .await
+        .expect("playbook list");
+    }
 
     let _ = shutdown.send(());
 }
 
-/// `nodespace playbook enable`/`disable` reduce to `UpdateNode` setting
-/// `lifecycle_status` (per ADR-035 capability parity) — proves the round
-/// trip actually flips the Play node's stored `lifecycle_status` over the
-/// real gRPC transport.
+/// `nodespace playbook enable`/`disable` write the Play's `enabled` field
+/// through the typed play update over the real gRPC transport. They never
+/// touch `lifecycle_status`, and `enable` clears a suspension.
 #[tokio::test]
 async fn playbook_enable_disable_round_trip() {
     let (sock, shutdown, _tempdir, node_service, _lifecycle) =
@@ -3682,7 +3724,17 @@ async fn playbook_enable_disable_round_trip() {
         .await
         .expect("get_node")
         .expect("play node still exists");
-    assert_eq!(disabled.lifecycle_status, "archived");
+    assert_eq!(disabled.properties["play"]["enabled"], false);
+    assert_eq!(disabled.lifecycle_status, "active");
+
+    node_service
+        .record_play_suspension(
+            &play_id,
+            nodespace_core::models::PlaySuspensionReason::CycleLimit,
+            "boom",
+        )
+        .await
+        .expect("record suspension");
 
     commands::playbook::run(
         &mut client,
@@ -3699,7 +3751,25 @@ async fn playbook_enable_disable_round_trip() {
         .await
         .expect("get_node")
         .expect("play node still exists");
+    assert_eq!(enabled.properties["play"]["enabled"], true);
     assert_eq!(enabled.lifecycle_status, "active");
+    assert!(
+        enabled.properties["play"]["suspended_reason"].is_null()
+            && enabled.properties["play"]["suspended_at"].is_null(),
+        "enable clears a suspension: {}",
+        enabled.properties
+    );
+
+    // Enabling an already-enabled Play is not an error.
+    commands::playbook::run(
+        &mut client,
+        commands::playbook::PlaybookAction::Enable(commands::playbook::PlaybookIdArgs {
+            play_id: play_id.clone(),
+        }),
+        false,
+    )
+    .await
+    .expect("playbook enable (already on)");
 
     let _ = shutdown.send(());
 }

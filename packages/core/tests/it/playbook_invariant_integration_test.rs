@@ -683,10 +683,10 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
 // Seeded-play protection (ADR-060 §8) — warn on disable, via the real engine
 // ---------------------------------------------------------------------------
 
-/// Disabling a seeded play that carries an invariant rule surfaces an
-/// explicit warning naming the concrete consequence, not just a silent
-/// lifecycle_status flip. The warning goes to tracing (engine diagnostics are
-/// not graph nodes), so this captures the subscriber output to assert on it.
+/// Switching off a seeded play that carries an invariant rule surfaces an
+/// explicit warning naming the concrete consequence, not just a silent flip
+/// of `enabled`. The warning goes to tracing (engine diagnostics are not
+/// graph nodes), so this captures the subscriber output to assert on it.
 #[tokio::test]
 async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
     let logs = CapturedLogs::install();
@@ -722,7 +722,7 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
         .await?
         .unwrap();
     let update =
-        nodespace_core::models::NodeUpdate::default().with_lifecycle_status("archived".to_string());
+        nodespace_core::models::NodeUpdate::default().with_properties(json!({ "enabled": false }));
     service
         .update_node(
             "06e19d75-005e-5c35-b6e1-01dc381ceb11",
@@ -736,7 +736,8 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
     let logged = logs.contents();
     assert!(
         logged.contains("seeded-invariant-rule")
-            && logged.contains("06e19d75-005e-5c35-b6e1-01dc381ceb11"),
+            && logged.contains("06e19d75-005e-5c35-b6e1-01dc381ceb11")
+            && logged.contains("was disabled"),
         "disabling a seeded invariant play must log a warning naming the play and \
          rule; captured tracing output was: {logged}"
     );
@@ -1521,14 +1522,14 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
 /// `validate_play_rules` save-time gate entirely, simulating a play row that
 /// reached the DB before this validation existed (an earlier build) or from
 /// a device running different validation rules (ADR-060 is explicitly about
-/// multi-device sync). `PlaybookEngine::start()`'s `load_active_plays()`
+/// multi-device sync). `PlaybookEngine::start()`'s `load_plays()`
 /// re-validates at load time specifically to catch this: without it, this
-/// play would activate unvalidated on every restart and then disable itself
-/// entirely (not just the offending rule) the first time its trigger fired,
-/// since `execute_reject` always errors when reached.
+/// play would run unvalidated on every restart and then fail the first time
+/// its trigger fired, since `execute_reject` always errors when reached. The
+/// play is suspended with the reason on its node, not silently skipped.
 #[tokio::test]
-async fn reject_on_reactive_rule_bypassing_save_time_validation_is_not_activated_at_load(
-) -> Result<()> {
+async fn reject_on_reactive_rule_bypassing_save_time_validation_is_suspended_at_load() -> Result<()>
+{
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("test.db");
     let mut store = Arc::new(SqliteStore::new(db_path).await?);
@@ -1544,7 +1545,7 @@ async fn reject_on_reactive_rule_bypassing_save_time_validation_is_not_activated
     let invalid_play = Node::new(
         "play".to_string(),
         "invalid-reject-on-reactive".to_string(),
-        json!({ "rules": [{
+        json!({ "play": { "rules": [{
             "name": "reject-on-reactive",
             "class": "reactive",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_bypass" } },
@@ -1553,7 +1554,7 @@ async fn reject_on_reactive_rule_bypassing_save_time_validation_is_not_activated
                 "action_type": "reject",
                 "params": { "message": "should never reach a caller — this play must not activate" }
             }]
-        }] }),
+        }] } }),
     );
     let invalid_play_id = invalid_play.id.clone();
 
@@ -1563,15 +1564,28 @@ async fn reject_on_reactive_rule_bypassing_save_time_validation_is_not_activated
 
     let (engine, shutdown_tx, task) = spawn_engine(&service).await;
 
-    let is_active = {
+    let status = {
         let lifecycle = engine.lifecycle();
         let lm = lifecycle.read().unwrap();
-        lm.get_play(&invalid_play_id).is_some()
+        assert!(
+            lm.trigger_index()
+                .values()
+                .flatten()
+                .all(|rule| rule.play_id != invalid_play_id),
+            "a play whose rule fails save-time validation must not be indexed at load time, \
+             even when it reached the DB by bypassing the normal save path"
+        );
+        lm.get_play(&invalid_play_id).map(|play| play.status)
     };
-    assert!(
-        !is_active,
-        "a play whose rule fails save-time validation must not be activated at load time, \
-         even when it reached the DB by bypassing the normal save path"
+    assert_eq!(
+        status,
+        Some(nodespace_core::playbook::types::PlayStatus::Suspended),
+        "the play is known to the engine, suspended"
+    );
+    let stored = service.get_node(&invalid_play_id).await?.unwrap();
+    assert_eq!(
+        stored.properties["play"]["suspended_reason"], "validation_failed",
+        "the reason is recorded on the play node"
     );
 
     shutdown_engine(shutdown_tx, task).await;

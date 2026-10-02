@@ -1437,6 +1437,102 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
+                // The user's switch (ADR-087 §5). Only a user or an agent
+                // changes it; the engine records its own verdicts in the
+                // suspension fields below and never touches this one.
+                SchemaField {
+                    name: "enabled".to_string(),
+                    friendly_name: "Enabled".to_string(),
+                    field_type: crate::models::SchemaFieldType::Boolean,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!(true)),
+                    description: Some(
+                        "The user's on/off switch. The engine never changes it"
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                // The engine's suspension: a fact about this device's run, so
+                // the three fields are system-owned and stay on the machine.
+                SchemaField {
+                    name: "suspended_reason".to_string(),
+                    friendly_name: "Suspended reason".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: true,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: Some(enum_values(
+                        &crate::models::PlaySuspensionReason::ALL,
+                        crate::models::PlaySuspensionReason::as_str,
+                    )),
+                    user_values: Some(vec![]),
+                    indexed: false,
+                    required: Some(false),
+                    extensible: Some(false),
+                    default: None,
+                    description: Some(
+                        "Why the engine took the play out of service on this device"
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "suspended_message".to_string(),
+                    friendly_name: "Suspended message".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
+                    local_only: true,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some(
+                        "The diagnostic the suspension was logged with"
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "suspended_at".to_string(),
+                    friendly_name: "Suspended at".to_string(),
+                    field_type: crate::models::SchemaFieldType::Datetime,
+                    local_only: true,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some(
+                        "When the engine suspended the play on this device"
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
             ],
             relationships: vec![],
             title_template: None,
@@ -1889,12 +1985,9 @@ mod tests {
                     T::Text | T::Enum | T::Datetime => S::Text,
                     T::Date => S::Date,
                     T::Number => S::Number,
+                    T::Boolean => S::Boolean,
                     T::Array => S::Array,
                     T::Object => S::Object,
-                    T::Boolean => panic!(
-                        "{core}.{}: a boolean field needs a promoted shape",
-                        field.name
-                    ),
                 };
                 assert_eq!(promoted.shape, shape, "{core}.{}: shape", field.name);
                 // `read_only` says what a typed update may set, so it follows

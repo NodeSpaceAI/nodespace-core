@@ -28,6 +28,7 @@ use anyhow::Result;
 use nodespace_core::db::events::REPLICATED_APPLY_CLIENT_ID;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::Node;
+use nodespace_core::playbook::types::PlayStatus;
 use nodespace_core::services::NodeService;
 use nodespace_core::PlaybookEngine;
 use serde_json::json;
@@ -172,7 +173,7 @@ async fn spawn_engine(
         tokio::spawn(async move { engine.start(shutdown_rx).await })
     };
     // Let the engine finish subscribing (step 1 of `start()`, which happens
-    // before `load_active_plays()`) before the caller starts creating nodes —
+    // before `load_plays()`) before the caller starts creating nodes —
     // not required for correctness (the broadcast channel buffers events
     // once subscribed), but keeps the tests' timing intuitive.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -549,7 +550,7 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
     let target_id = target.id.clone();
     service.create_node(target).await?;
 
-    // Registered before the engine starts, so `load_active_plays()` picks it
+    // Registered before the engine starts, so `load_plays()` picks it
     // up at startup and `CronRunner`'s first tick has a live registry entry
     // to check — this test is specifically about the poll loop firing, not
     // about reactive install.
@@ -578,7 +579,7 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
         tokio::spawn(async move { engine.start(shutdown_rx).await })
     };
 
-    // Let the engine's own startup chain (subscribe, load_active_plays,
+    // Let the engine's own startup chain (subscribe, load_plays,
     // spawn RuleProcessor, spawn CronRunner) actually run to the point where
     // CronRunner reaches its `sleep(POLL_INTERVAL)` — `tokio::spawn` only
     // schedules the task, so without yielding first, `advance` below can run
@@ -774,7 +775,7 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
 
     // Registered before the engine starts, same as
     // `cron_runner_ticks_and_fires_a_scheduled_play` above, so
-    // `load_active_plays()` picks it up and the first tick has a live
+    // `load_plays()` picks it up and the first tick has a live
     // registry entry to scan against.
     create_play(
         &service,
@@ -1045,12 +1046,11 @@ async fn patch_node_properties(
 /// declared "many" relationship with zero CURRENT matches resolved to
 /// `Missing`, not an empty collection -- indistinguishable, at the raw
 /// row-count level, from "no such relationship at all". Since an action
-/// failure disables the WHOLE PLAY (`rule_processor_loop`'s
-/// `ActionResult::Failed` handling calls `lifecycle.disable_play`), this
-/// meant the aggregate play would self-disable on its very first trigger
-/// for any Cycle that hadn't yet had an Issue attached -- silently, with no
-/// further recomputation ever happening again for that play, even after
-/// Issues were later added.
+/// failure suspends the WHOLE PLAY (`rule_processor_loop`'s
+/// `ActionResult::Failed` handling), this meant the aggregate play would
+/// take itself out of service on its very first trigger for any Cycle that
+/// hadn't yet had an Issue attached, with no further recomputation ever
+/// happening again for that play, even after Issues were later added.
 #[tokio::test]
 async fn recompute_over_a_relationship_with_zero_current_matches_does_not_fail_the_action(
 ) -> Result<()> {
@@ -1625,6 +1625,140 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
         "a rule registered on an unrelated node_type must not fire for this \
          relationship's source node"
     );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// The subscriber and the rule processor together: an action failure in a
+/// running engine suspends the play on its node, the engine's own
+/// node-updated event for that write comes back through the subscriber and
+/// changes nothing, the play stops firing, and enabling it brings it back.
+#[tokio::test]
+async fn an_action_failure_in_a_running_engine_suspends_the_play_until_it_is_enabled() -> Result<()>
+{
+    let (service, _tmp) = create_test_service().await?;
+    let node_type = "susp_widget";
+    create_schema(
+        &service,
+        node_type,
+        json!([
+            { "name": "target", "type": "text" },
+            { "name": "marker", "type": "text" }
+        ]),
+    )
+    .await?;
+    let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    // Rule 0 updates the node named by the trigger's `target`, which fails
+    // when there is no such node. Rule 1 stamps the trigger node.
+    let play_id = create_play(
+        &service,
+        "suspends-on-failure",
+        json!([
+            {
+                "name": "touch-target",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
+                "conditions": [],
+                "actions": [{
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.target}", "properties": { "marker": "touched" } }
+                }]
+            },
+            {
+                "name": "mark",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
+                "conditions": [],
+                "actions": [{
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.id}", "properties": { "marker": "set" } }
+                }]
+            }
+        ]),
+    )
+    .await?;
+    let status = |engine: &Arc<PlaybookEngine>| {
+        let lifecycle = engine.lifecycle();
+        let lm = lifecycle.read().unwrap();
+        lm.get_play(&play_id).map(|play| play.status)
+    };
+    assert!(
+        wait_until(|| async { status(&engine) == Some(PlayStatus::Runnable) }).await,
+        "the play is installed and running"
+    );
+    let version_before = service.get_node(&play_id).await?.unwrap().version;
+
+    let create_widget = |target: &str| {
+        let service = Arc::clone(&service);
+        let node = Node::new(
+            node_type.to_string(),
+            "a widget".to_string(),
+            json!({ "target": target }),
+        );
+        async move { service.create_node(node).await }
+    };
+    let marker = |id: String| {
+        let service = Arc::clone(&service);
+        async move {
+            let node = service.get_node(&id).await.unwrap().unwrap();
+            user_field(&node, node_type, "marker").cloned()
+        }
+    };
+
+    // The first rule's action fails: there is no node to touch.
+    let failing = create_widget("no-such-node").await?;
+    assert!(
+        wait_until(|| async {
+            let play = service.get_node(&play_id).await.unwrap().unwrap();
+            play.properties["play"]["suspended_reason"] == "action_failed"
+        })
+        .await,
+        "the failure is recorded on the play node"
+    );
+    // Let the engine's own event for that write come back round.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let play = service.get_node(&play_id).await?.unwrap();
+    assert_eq!(status(&engine), Some(PlayStatus::Suspended));
+    assert_eq!(
+        play.version, version_before,
+        "a suspension bumps no version"
+    );
+    assert_ne!(
+        play.properties["play"]["enabled"], false,
+        "the switch is the user's"
+    );
+    assert_eq!(
+        marker(failing.clone()).await,
+        None,
+        "the play's later rule did not run in the same work item"
+    );
+
+    // Suspended: a trigger whose actions would all succeed fires nothing.
+    let ignored = create_widget(&failing).await?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(marker(ignored).await, None);
+    assert_eq!(marker(failing.clone()).await, None);
+
+    // Enabling clears the suspension and the play runs again.
+    service
+        .update_node(
+            &play_id,
+            play.version,
+            nodespace_core::models::NodeUpdate::default()
+                .with_properties(json!({ "enabled": true })),
+        )
+        .await?;
+    assert!(
+        wait_until(|| async { status(&engine) == Some(PlayStatus::Runnable) }).await,
+        "enabling brings the play back"
+    );
+    let fired = create_widget(&failing).await?;
+    assert!(
+        wait_until(|| async { marker(fired.clone()).await == Some(json!("set")) }).await,
+        "the play fires again"
+    );
+    assert_eq!(marker(failing).await, Some(json!("touched")));
 
     shutdown_engine(shutdown_tx, task).await;
     Ok(())

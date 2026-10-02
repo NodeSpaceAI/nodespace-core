@@ -338,15 +338,24 @@ Both node IDs must already exist — look up missing IDs first (`nodespace node 
 A Play (`trigger → conditions → actions`) is a `node_type: "play"` node:
 
 ```bash
-nodespace playbook list                     # the Plays that can run
-nodespace playbook disable <play-id>        # archive a Play: it stops running and leaves every list
-nodespace playbook list --include-archived  # also the archived Plays, to find one's id
-nodespace playbook enable <play-id>         # unarchive it
+nodespace playbook list                     # every Play, its state (on, off or suspended) and its lifecycle
+nodespace playbook disable <play-id>        # switch a Play off: it stops running and stays in the list
+nodespace playbook enable <play-id>         # switch it on, and clear a suspension
 ```
 
-An archived node takes part in nothing, so no rule fires on one and no action touches one. A Play's conditions and actions can't read or set whether a node is archived.
+A Play's switch is its `enabled` field (default `true`). `playbook enable` and `playbook disable` write it, and so does `nodespace node update <play-id> --property enabled=false`. Only you or the user change it: the engine never does. Switching a Play off always works, even when its rules no longer validate.
 
-A Play's execution errors are **not** in the graph. Engine diagnostics (a failed
+A Play runs when it is `enabled`, not suspended, not archived, and its rules validate. `playbook list` reports each Play's `state`:
+
+- **on** — it runs.
+- **off** — `enabled` is `false`.
+- **suspended** — the engine took the Play out of service on this device: its rules failed validation (`validation_failed`), an action failed (`action_failed`), a chain of rules hit the cycle limit (`cycle_limit`), or a schema change broke its rules (`schema_drift`). The Play's `suspended_reason`, `suspended_message` and `suspended_at` say why and when. The engine writes these three fields; a write that changes one is refused, and a new Play can't be created with one set. `enabled` stays as it was.
+
+To bring a suspended Play back, fix the cause, then run `playbook enable <play-id>` (it clears the suspension even when the Play is already enabled) or save the corrected `rules`. The engine checks the Play again and suspends it again if the problem remains.
+
+Archiving is not a Play's switch. An archived node takes part in nothing, so an archived Play doesn't run whatever its `state` says, no rule fires on an archived node and no action touches one; `playbook list --include-archived` shows archived Plays too, with their lifecycle. A Play's conditions and actions can't read or set whether a node is archived.
+
+A Play's execution errors are **not** in the graph: the graph holds only the suspension above. Engine diagnostics (a failed
 action, a cycle-limit breach, a rule that would not compile) are operational
 telemetry rather than knowledge, so they go to the daemon log rather than
 becoming nodes — there is nothing to query for them. Read them with
@@ -802,17 +811,17 @@ Inspect and manage node type schema definitions
 
 ### `nodespace playbook`
 
-Inspect and control Play automation rule-sets (list, logs, enable, disable, get-workflow-state)
+Inspect and control Play automation rule-sets (list, enable, disable, get-workflow-state)
 
-**`nodespace playbook list`** — List the installed Plays that can run. An archived (disabled) Play is listed only with `--include-archived`
+**`nodespace playbook list`** — List the installed Plays with each one's state: on, off (disabled), or suspended by the engine on this device, with the reason and time
 
-- `--include-archived` — Also list archived Plays, to find the id of one to `enable`
+- `--include-archived` — Also list archived Plays. An archived Play runs nowhere, whatever its switch says
 
-**`nodespace playbook enable`** — Unarchive a Play so it runs again, after fixing the underlying issue
+**`nodespace playbook enable`** — Switch a Play on. Also clears a suspension: the engine checks the Play again and suspends it again if the problem remains
 
 - `<PLAY_ID>` — Play ID (node ID of the `play` node) (required)
 
-**`nodespace playbook disable`** — Archive a Play: it stops running and leaves every list
+**`nodespace playbook disable`** — Switch a Play off: it stops running and stays in the list
 
 - `<PLAY_ID>` — Play ID (node ID of the `play` node) (required)
 
