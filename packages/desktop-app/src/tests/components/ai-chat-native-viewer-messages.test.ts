@@ -189,7 +189,8 @@ describe('AiChatNativeNodeViewer message nodes', () => {
     const calls: string[] = [];
     let storeMessage: (() => void) | undefined;
     vi.spyOn(backendAdapter, 'createNode').mockImplementation(async (node) => {
-      calls.push(`createNode:${node.nodeType}:${node.parentId}`);
+      const parentId = 'parentId' in node ? node.parentId : undefined;
+      calls.push(`createNode:${node.nodeType}:${parentId}`);
       await new Promise<void>((resolve) => {
         storeMessage = resolve;
       });

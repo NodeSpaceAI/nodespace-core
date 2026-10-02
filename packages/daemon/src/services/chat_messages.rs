@@ -464,14 +464,17 @@ fn message_edges(message: &NewMessage<'_>) -> Vec<NewRelationship> {
                 tool: entity.tool.clone(),
             }),
         });
-    let pending = message.pending_deletions.iter().map(|held| NewRelationship {
-        name: AI_CHAT_PENDING_DELETE.to_string(),
-        target_id: held.node_id.clone(),
-        edge_data: serde_json::json!(AiChatPendingDeleteEdge {
-            version: held.version,
-            descendant_count: held.descendant_count,
-        }),
-    });
+    let pending = message
+        .pending_deletions
+        .iter()
+        .map(|held| NewRelationship {
+            name: AI_CHAT_PENDING_DELETE.to_string(),
+            target_id: held.node_id.clone(),
+            edge_data: serde_json::json!(AiChatPendingDeleteEdge {
+                version: held.version,
+                descendant_count: held.descendant_count,
+            }),
+        });
     wrote.chain(resolved).chain(pending).collect()
 }
 

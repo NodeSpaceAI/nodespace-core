@@ -556,9 +556,11 @@ async fn a_message_is_created_with_its_edges_in_one_write() {
         target_id: target.to_string(),
         edge_data: data,
     };
-    let wrote = || json!(AiChatWroteEdge {
-        writes: vec![write(0, "create_node", "{}")]
-    });
+    let wrote = || {
+        json!(AiChatWroteEdge {
+            writes: vec![write(0, "create_node", "{}")]
+        })
+    };
 
     let (id, skipped) = svc
         .create_node_with_relationships(
@@ -573,7 +575,10 @@ async fn a_message_is_created_with_its_edges_in_one_write() {
     assert_eq!(skipped, [0], "the edge to the missing node is left out");
     let edges = svc.get_child_edges(&chat, &[AI_CHAT_WROTE]).await.unwrap();
     assert_eq!(edges.len(), 1);
-    assert_eq!((edges[0].0.as_str(), edges[0].2.id.as_str()), (id.as_str(), task.as_str()));
+    assert_eq!(
+        (edges[0].0.as_str(), edges[0].2.id.as_str()),
+        (id.as_str(), task.as_str())
+    );
 
     // An edge that cannot be written fails the whole create: no message is
     // left behind without it.
@@ -589,7 +594,10 @@ async fn a_message_is_created_with_its_edges_in_one_write() {
     .expect_err("an undeclared relationship fails the create");
     assert_eq!(svc.get_children(&chat).await.unwrap().len(), before);
     assert_eq!(
-        svc.get_child_edges(&chat, &[AI_CHAT_WROTE]).await.unwrap().len(),
+        svc.get_child_edges(&chat, &[AI_CHAT_WROTE])
+            .await
+            .unwrap()
+            .len(),
         1
     );
 }
