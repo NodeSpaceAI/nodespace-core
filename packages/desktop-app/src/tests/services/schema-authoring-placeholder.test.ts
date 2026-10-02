@@ -140,6 +140,33 @@ describe('createInstancePlaceholder', () => {
     expect(sharedNodeStore.isUnsavedPlaceholder(node.id)).toBe(false);
   });
 
+  it('creates the skill with the description as typed so far, one keystroke at a time', async () => {
+    // The form writes on every keystroke. The first character completes the
+    // placeholder and queues its create; the ones typed before that create
+    // goes out are staged typed writes. The create must still carry the
+    // description, or the backend rejects the node and nothing is ever saved.
+    const node = createInstancePlaceholder(skillLike);
+    const viewer = { type: 'viewer' as const, viewerId: 'test' };
+    const order: string[] = [];
+    createNodeSpy.mockImplementation(async (input) => {
+      order.push(`create:${JSON.stringify((input as { properties: unknown }).properties)}`);
+      return { id: (input as { id: string }).id, placement: null };
+    });
+    vi.spyOn(backendAdapter, 'updateSkillNode').mockImplementation(async (id, version, update) => {
+      order.push(`typed:${JSON.stringify(update)}`);
+      return { ...node, ...update, id, version: version + 1 } as never;
+    });
+
+    for (const description of ['S', 'Su', 'Sum']) {
+      sharedNodeStore.updateNode(node.id, { description } as never, viewer);
+    }
+
+    await vi.waitFor(() => expect(order).toHaveLength(2), { timeout: 3000 });
+    expect(order).toEqual(['create:{"description":"Sum"}', 'typed:{"description":"Sum"}']);
+    expect(createNodeSpy).toHaveBeenCalledTimes(1);
+    expect(sharedNodeStore.isNodePersisted(node.id)).toBe(true);
+  });
+
   it('creates a user-defined type with its required property', async () => {
     const note = schema('note', [field({ name: 'body', required: true })]);
     const node = createInstancePlaceholder(note);

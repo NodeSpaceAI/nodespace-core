@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::helpers::deserialize_clearable;
+use crate::helpers::{deserialize_clearable, deserialize_set_only};
 use crate::node::{Node, NodeEnvelope, ValidationError};
 
 /// The `node_type` of every skill node.
@@ -10,23 +10,17 @@ pub const SKILL_NODE_TYPE: &str = "skill";
 /// `max_iterations` when a skill doesn't set one — the core schema's default.
 pub const DEFAULT_SKILL_MAX_ITERATIONS: u32 = 2;
 
-/// The typed fields of a `skill` node: the retrieval and dispatch config
-/// stored in its properties. The skill's name is the node's `content`.
-///
-/// This is the only place a skill field is read from or written to the
-/// properties bag. `skill` has a registered core schema, so the store hoists
-/// its fields under `properties.skill.*`; a node built in memory, a seed
-/// template, or a flat update patch carries them at the top level instead.
-/// [`SkillFields::from_properties`] reads both, preferring the `skill` bucket
-/// per field. Every hand-rolled reader that guessed only one of the two
-/// shapes read that field as empty.
-///
-/// The skill's guidance body is its child subtree, not a property, so it is
-/// not part of this model.
-///
-/// Serializes with camelCase keys: these are the fields the wire [`SkillNode`]
-/// promotes to the top level. Storage keeps the schema's snake_case names
-/// ([`Self::properties`]).
+/// The typed fields of a `skill` node: its retrieval and dispatch config. The
+/// skill's name is the node's `content`, and its guidance is its child
+/// subtree; neither is part of this shape.
+// The one reader and writer of a skill's stored fields. `skill` has a
+// registered core schema, so the store hoists its fields under
+// `properties.skill.*`; a node built in memory, a seed template, or a flat
+// update patch carries them at the top level instead. `from_properties` reads
+// both, preferring the `skill` bucket per field: a reader that guesses one of
+// the two shapes reads the other as empty. Serialized, these are the camelCase
+// fields the wire `SkillNode` promotes; storage keeps the schema's snake_case
+// names (`properties`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(optional_fields))]
@@ -198,7 +192,8 @@ pub struct SkillNode {
 /// Partial update for a skill's core fields, received from the frontend.
 ///
 /// `description` and `tool_whitelist` have no clear path (the schema requires
-/// them); the other fields are tri-state: absent leaves the field unchanged,
+/// them), and `null` for either is refused rather than read as absent; the
+/// other fields are tri-state: absent leaves the field unchanged,
 /// `null` clears it, and a value sets it. A list is replaced whole. The
 /// skill's name is `content`, an envelope field, and its guidance is its
 /// child subtree; both are written through the generic node operations.
@@ -207,7 +202,11 @@ pub struct SkillNode {
 #[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SkillNodeUpdate {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_set_only"
+    )]
     pub description: Option<String>,
     #[serde(
         default,
@@ -215,7 +214,11 @@ pub struct SkillNodeUpdate {
         deserialize_with = "deserialize_clearable"
     )]
     pub exclusion: Option<Option<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_set_only"
+    )]
     pub tool_whitelist: Option<Vec<String>>,
     #[serde(
         default,
@@ -432,6 +435,27 @@ mod tests {
             SkillFields::from_node(&node),
             Err(ValidationError::InvalidNodeType(_))
         ));
+    }
+
+    /// A required field has no clear path: `null` is refused, naming why,
+    /// rather than read as "unchanged" and dropped.
+    #[test]
+    fn update_refuses_to_clear_a_required_field() {
+        for json in [
+            r#"{"description": null}"#,
+            r#"{"toolWhitelist": null}"#,
+            r#"{"maxIterations": 3, "description": null}"#,
+        ] {
+            let error = serde_json::from_str::<SkillNodeUpdate>(json)
+                .expect_err("null must not clear a required field")
+                .to_string();
+            assert!(error.contains("cannot be cleared"), "{json}: {error}");
+        }
+        // Absent is still "unchanged", and a value still sets.
+        let update: SkillNodeUpdate =
+            serde_json::from_str(r#"{"description": "d", "toolWhitelist": []}"#).unwrap();
+        assert_eq!(update.description.as_deref(), Some("d"));
+        assert_eq!(update.tool_whitelist, Some(Vec::new()));
     }
 
     /// The update carries the skill schema's fields only, by wire name;

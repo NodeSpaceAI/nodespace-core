@@ -126,6 +126,9 @@ describe('QueryNodeViewer — materialize race', () => {
     vi.spyOn(actual.backendAdapter, 'updateQueryNode').mockImplementation((...args) =>
       mockUpdateQueryNode(...args)
     );
+    vi.spyOn(actual.backendAdapter, 'updateNode').mockImplementation((...args) =>
+      mockUpdateNode(...args)
+    );
   });
 
   afterEach(() => {
@@ -451,6 +454,55 @@ describe('QueryNodeViewer — materialize race', () => {
     expect(mockUpdateQueryNode).toHaveBeenLastCalledWith(savedId, 2, {
       viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status' } }
     });
+  });
+
+  it('renames a saved query through the store, after a view change still in flight', async () => {
+    const savedId = 'saved-query-4';
+    const saved = {
+      ...materializedQueryNode(savedId),
+      content: 'My Board',
+      viewConfig: { lastView: 'table' }
+    };
+    mockGetNode.mockResolvedValue(saved);
+    let releaseViewChange!: () => void;
+    mockUpdateQueryNode.mockImplementation(
+      (_id: string, _version: number, update: QueryNodeUpdate) =>
+        new Promise((resolve) => {
+          releaseViewChange = () => resolve({ ...saved, version: 2, ...update });
+        })
+    );
+    mockUpdateNode.mockImplementation(
+      async (_id: string, version: number, update: { content?: string }) => ({
+        ...saved,
+        viewConfig: { lastView: 'list' },
+        version: version + 1,
+        ...update
+      })
+    );
+
+    const { getByRole, getByLabelText } = render(QueryNodeViewer, {
+      props: { nodeId: savedId, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+
+    await fireEvent.click(getByRole('button', { name: 'List' }));
+    await waitFor(() => expect(mockUpdateQueryNode).toHaveBeenCalledTimes(1));
+
+    const title = getByLabelText('Query name') as HTMLInputElement;
+    await fireEvent.focus(title);
+    await fireEvent.input(title, { target: { value: 'Sprint Board' } });
+    await fireEvent.blur(title);
+    // The header shows the new name at once, from the store.
+    await waitFor(() => expect(title.value).toBe('Sprint Board'));
+    // The rename waits for the view change rather than racing it at v1.
+    expect(mockUpdateNode).not.toHaveBeenCalled();
+
+    releaseViewChange();
+    await waitFor(() => expect(mockUpdateNode).toHaveBeenCalledTimes(1));
+    expect(mockUpdateNode.mock.calls[0].slice(0, 2)).toEqual([savedId, 2]);
+    expect(mockUpdateNode.mock.calls[0][2]).toEqual(
+      expect.objectContaining({ content: 'Sprint Board' })
+    );
   });
 
   it('reports a failed saved-query view change', async () => {

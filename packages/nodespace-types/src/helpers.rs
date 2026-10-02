@@ -32,3 +32,18 @@ where
     use serde::Deserialize;
     Option::<T>::deserialize(d).map(Some)
 }
+
+/// Deserialize a set-only update field: absent → `None` (via
+/// `#[serde(default)]`), a value → `Some(v)`, and `null` is an error. A plain
+/// `Option<T>` reads `null` as absent, which would turn "clear this required
+/// field" into a write that silently does nothing.
+pub(crate) fn deserialize_set_only<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    use serde::Deserialize;
+    Option::<T>::deserialize(d)?
+        .map(Some)
+        .ok_or_else(|| serde::de::Error::custom("the field is required and cannot be cleared"))
+}

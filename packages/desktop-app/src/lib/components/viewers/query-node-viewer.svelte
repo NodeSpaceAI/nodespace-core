@@ -502,17 +502,20 @@
 
     if (mode === 'saved') {
       if (!queryNode) return;
-      try {
-        const updated = await backendAdapter.updateNode(queryNode.id, queryNode.version, {
-          content: name
-        });
-        sharedNodeStore.setNode(updated, { type: 'database', reason: 'query-node-viewer rename' });
-        log.debug('QueryNodeViewer: query renamed', { nodeId: updated.id });
-      } catch (e) {
-        const message = toError(e).message;
-        log.error('QueryNodeViewer: failed to rename query', { error: message });
-        saveError = `Failed to rename query: ${message}`;
-      }
+      // Through the store, like a view-config change: one queue orders both
+      // writes, so neither is sent at a version the other has just bumped.
+      sharedNodeStore.updateNode(
+        queryNode.id,
+        { content: name },
+        { type: 'viewer', viewerId: 'query-node-viewer' },
+        {
+          persist: 'immediate',
+          onPersistError: (e) => {
+            log.error('QueryNodeViewer: failed to rename query', { error: e.message });
+            saveError = `Failed to rename query: ${e.message}`;
+          }
+        }
+      );
       return;
     }
 

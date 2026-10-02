@@ -1685,19 +1685,22 @@ export class SharedNodeStore {
    * `properties` under their storage names, the form a create takes them in.
    * A typed field has no home in `properties` locally, so without this a
    * create would drop it, and the backend rejects a node whose required field
-   * has no value. Fields a typed write has staged are left out: that write
-   * sends them once the create lands (see `sendPendingTypedFields()`).
+   * has no value.
+   *
+   * A field a typed write has staged is carried too, at its current value. The
+   * staged write still follows the create (see `sendPendingTypedFields()`) and
+   * settles its callers' callbacks; it only runs if the create succeeds, so
+   * the create cannot leave a required field to it.
    */
   private withTypedFields(
     input: import('$lib/services/backend-adapter').CreateNodeInput
   ): import('$lib/services/backend-adapter').CreateNodeInput {
     const node = this.nodes.get(input.id) as (Node & Record<string, unknown>) | undefined;
     if (!node || !hasTypedUpdate(node.nodeType)) return input;
-    const staged = this.pendingTypedFields.get(input.id)?.fields ?? {};
     const typed: Record<string, unknown> = {};
     for (const field of TYPED_CORE_FIELDS[node.nodeType] ?? []) {
       const value = node[field.wire];
-      if (field.readOnly || field.wire in staged || value === undefined || value === null) continue;
+      if (field.readOnly || value === undefined || value === null) continue;
       typed[field.storage] = value;
     }
     if (Object.keys(typed).length === 0) return input;
