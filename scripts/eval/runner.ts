@@ -28,6 +28,7 @@ import type {
   DecisionRecord,
   EvalFixture,
   EvalResults,
+  ExclusionCounts,
   GuidanceProvenance,
   Provenance,
   RepResult,
@@ -435,13 +436,12 @@ async function compareToBaseline(
       );
       continue;
     }
-    // A scenario excluded in every rep was never scored this run — an
-    // inference bug, not a scoring outcome. Comparing it against a baseline
-    // verdict would report a spurious REGRESSION on a scenario the model was
-    // never actually measured against this time.
+    // A scenario excluded in every rep was never scored this run. Comparing
+    // it against a baseline verdict would report a spurious REGRESSION on a
+    // scenario the model was never actually measured against this time.
     if (cur.scoredReps === 0) {
       console.log(
-        `   EXCLUDED    ${cur.id}: degenerate empty generation in all ` +
+        `   EXCLUDED    ${cur.id}: ${describeExclusions(cur.excludedBy)} in all ` +
           `${cur.excludedReps} rep(s) — not compared`,
       );
       continue;
@@ -480,39 +480,37 @@ async function compareToBaseline(
 // ---------------------------------------------------------------------------
 
 /**
- * Whether a setup turn left its group without the state later scenarios need.
+ * Count a scenario's excluded reps by cause.
  *
- * A setup turn is judged by what it did — it asked for a type to be created,
- * so it passes when `create_schema` was called. Groups in one rep share a
- * database, so from the second group on that type already exists, and a model
- * that sees it and creates nothing has done the right thing while failing the
- * turn's assertion. The state the group needs is there either way.
- *
- * So a setup turn that failed its assertion leaves the group scoreable only
- * when both hold:
- *
- * - The turn did nothing: no tool call, no Stage-1 clarification, no failed
- *   send. Only that can be the correct no-op. A clarification leaves the next
- *   prompt to be read as its answer, and any tool call, a read included, means
- *   the turn went somewhere other than where the setup points; the state check
- *   sees neither, so both block. A reply that asks a question in its own words
- *   is not detected: on the record it is the same as "that type already
- *   exists", a reply with no tool call that routed as a query.
- * - The fixture shows the state present. A fixture with no way to check keeps
- *   the turn's own verdict: unknown is treated as missing.
- *
- * Called for a setup turn that failed its own assertion.
+ * A result carries one exclusion at most: each is recorded where the runner
+ * stops scoring the turn. The order here only matters if that changes, and
+ * then matches `markerFor`.
  */
-export function setupLeftStateMissing(
-  turn: Pick<TurnRecord, "toolsCalled" | "routingDecision" | "sendFailed">,
-  statePresent: () => boolean | undefined,
-): boolean {
-  const didNothing =
-    turn.toolsCalled.length === 0 &&
-    turn.sendFailed !== true &&
-    turn.routingDecision !== "clarify";
-  if (!didNothing) return true;
-  return statePresent() !== true;
+export function countExclusions(results: ScenarioResult[]): ExclusionCounts {
+  const counts: ExclusionCounts = { emptyGeneration: 0, toolNotOffered: 0, setupFailed: 0 };
+  for (const r of results) {
+    if (r.excludedAsEmptyGeneration) counts.emptyGeneration++;
+    else if (r.excludedAsToolNotOffered) counts.toolNotOffered++;
+    else if (r.excludedAsSetupFailed) counts.setupFailed++;
+  }
+  return counts;
+}
+
+/**
+ * Name what excluded a scenario's reps, for the summary and the baseline diff.
+ *
+ * One cause is named alone. Several are each given their rep count, since
+ * "excluded in all 3 reps" then describes three different things.
+ */
+export function describeExclusions(by: ExclusionCounts): string {
+  const causes: Array<[number, string]> = [
+    [by.emptyGeneration, "degenerate empty generation"],
+    [by.toolNotOffered, "asserted tool never offered"],
+    [by.setupFailed, "group setup failed"],
+  ];
+  const present = causes.filter(([n]) => n > 0);
+  if (present.length === 1) return present[0][1];
+  return present.map(([n, cause]) => `${cause} ×${n}`).join(", ");
 }
 
 /**
@@ -660,6 +658,9 @@ export function aggregateReps(reps: ScenarioResult[][]): RunAggregate {
       scoredReps: scored.length,
       passedReps,
       excludedReps,
+      excludedBy: setup
+        ? { emptyGeneration: 0, toolNotOffered: 0, setupFailed: 0 }
+        : countExclusions(results),
       passedAll: scored.length > 0 && passedReps === scored.length,
       flipped: passedReps > 0 && passedReps < scored.length,
       ...(setup ? { setup: true } : {}),
@@ -862,10 +863,18 @@ export function formatReliabilityTable(aggregate: RunAggregate): string[] {
     if (s.setup) {
       return `  ⊙ ${s.id}  fixture setup — not scored`;
     }
+    // The cause is named from the scenario's own exclusion flags. It was once
+    // the fixed text "degenerate empty generation", which reported a group
+    // whose setup failed, or a turn never offered its tool, as an inference
+    // bug that had not happened.
+    const cause = describeExclusions(s.excludedBy);
     if (s.scoredReps === 0) {
+      // The glyphs `markerFor` gives a single result: ⊘ is the inference bug,
+      // ⊗ every exclusion that is not one.
+      const marker = s.excludedBy.emptyGeneration === s.excludedReps ? "⊘" : "⊗";
       return single
-        ? `  ⊘ ${s.id}  excluded (degenerate empty generation) — never scored`
-        : `  ⊘ ${s.id}  excluded in all ${s.excludedReps} rep(s) — never scored`;
+        ? `  ${marker} ${s.id}  excluded (${cause}) — never scored`
+        : `  ${marker} ${s.id}  excluded in all ${s.excludedReps} rep(s) (${cause}) — never scored`;
     }
     const marker = s.passedAll ? "✓" : s.flipped ? "~" : "✗";
     const tally = single
@@ -874,7 +883,7 @@ export function formatReliabilityTable(aggregate: RunAggregate): string[] {
         : "fail"
       : `${s.passedReps}/${s.scoredReps} reps`;
     const excluded =
-      s.excludedReps > 0 ? ` · ${s.excludedReps} excluded` : "";
+      s.excludedReps > 0 ? ` · ${s.excludedReps} excluded (${cause})` : "";
     const flag = s.flipped ? "  ← FLIPPED" : "";
     return `  ${marker} ${s.id}  ${tally}${excluded}${flag}`;
   });
@@ -1261,7 +1270,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
           ? fixture.graph.scoreOutcome(scenario, diff, [scored])
           : trajectory;
 
-      const recorded: ScenarioResult = {
+      results.push({
         id: scenario.id,
         scenario: scenario.scenario,
         prompt: scenario.prompt,
@@ -1272,8 +1281,7 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
         graphDiff: diff,
         trajectory: fixture.graph ? trajectory : undefined,
         excludedAsSetup: scenario.setup === true ? true : undefined,
-      };
-      results.push(recorded);
+      });
 
       const marker = markerFor({
         excludedAsSetup: scenario.setup === true,
@@ -1290,25 +1298,11 @@ function runRep(fixture: EvalFixture, env: EvalEnv): ScenarioResult[] {
       // A setup turn that failed to establish its state makes every scenario
       // after it unwinnable. It is not scored, but it must not pass silently.
       if (scenario.setup && !verdict.passed) {
-        if (
-          setupLeftStateMissing(scored, () =>
-            fixture.setupStatePresent?.(env, scenario),
-          )
-        ) {
-          console.error(
-            `[${fixture.name}]     ⚠ setup did not establish its state — ` +
-              `later scenarios in this group are excluded, not scored`,
-          );
-          setupFailed ??= scenario.id;
-        } else {
-          // Recorded on the setup turn's own result, so the results file shows
-          // which groups were scored on state that was already there.
-          recorded.setupStateAlreadyPresent = true;
-          console.error(
-            `[${fixture.name}]     ↳ the turn did nothing and the state this setup ` +
-              `establishes is already present, so later scenarios in this group are scored`,
-          );
-        }
+        console.error(
+          `[${fixture.name}]     ⚠ setup did not establish its state — ` +
+            `later scenarios in this group are excluded, not scored`,
+        );
+        setupFailed ??= scenario.id;
       }
     }
   }

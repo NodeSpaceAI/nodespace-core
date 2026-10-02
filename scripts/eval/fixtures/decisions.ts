@@ -143,12 +143,6 @@ type Expected =
 interface DecisionScenario extends Scenario {
   expected: Expected;
   /**
-   * On a setup scenario: which custom type its turn exists to establish. The
-   * runner asks whether that type is present when the turn itself created
-   * nothing (see `setupStatePresent`).
-   */
-  establishes?: "company" | "venue";
-  /**
    * Reproduces a failure ADR-056 records against the locked model. These are
    * the cases with a known-bad baseline, so a regression here is unambiguous.
    */
@@ -215,112 +209,88 @@ interface DecisionScenario extends Scenario {
 }
 
 // ---------------------------------------------------------------------------
-// Workspace setup
+// Workspace
 //
-// Every scenario runs against a workspace carrying several overlapping types,
-// because a decision is only scoreable when there was something to decide
-// between: a single-schema workspace makes every schema selection trivially
-// correct and measures nothing.
+// Every scenario runs against a workspace carrying two overlapping custom
+// types, because a decision is only scoreable when there was something to
+// decide between: a single-schema workspace makes every schema selection
+// trivially correct and measures nothing.
 //
-// Setup turns are marked `setup` so they are recorded but not scored — a
-// failure to create a type would otherwise crater every scenario after it and
-// count one failure many times.
+// The types are seeded once per rep (`seedWorkspace`), not created by turns in
+// each chat. They were once two setup turns ahead of every scenario, and that
+// made a scenario's score depend on the chats before it:
+//
+// - Chats in a rep share a database, so from the second chat on the turns met
+//   types that already existed. Each scenario was then asked after two turns
+//   that had failed ("I couldn't complete the schema creation"), which is the
+//   history in which `schema-on-menu-company` stopped passing.
+// - `create_schema` names a type from the model's own phrasing, so a later
+//   chat could add a second venue type (`event_place` beside `event_venue`)
+//   and every scenario after it chose among three types, not two.
+// - A setup turn that replied "that type already exists" without a call failed
+//   its assertion, and the scenario after it was not scored. A full run lost
+//   up to five scenarios that way.
+// - A `--only` run and a full run put different histories ahead of the same
+//   scenario, so the two could disagree.
+//
+// Seeded, every scenario is the first turn of its own chat (after its
+// `priorTurns`, if any) against the same two types, whichever chats ran first.
 // ---------------------------------------------------------------------------
 
-const SETUP: DecisionScenario[] = [
+/// The two custom types every scenario runs against.
+///
+/// Their ids are named literally, unlike every ASSERTION in this file: a seed
+/// establishes state, so there is nothing here for a model-derived id to
+/// invalidate. The schema assertions still match on a pattern, because those
+/// score what the model chose.
+///
+/// The venue type has no `name` field: a record's name is its title, and that
+/// is the shape the agent gives a type asked for "with a name, a booking date
+/// and a capacity". The company type keeps the `name` field it has always been
+/// seeded with, so its scenarios are scored against the type they were
+/// measured on.
+const COMPANY_TYPE = "company_sold_to";
+const VENUE_TYPE = "event_venue";
+const SIGNED_DATE_FIELD = "signed_date";
+
+const SEEDED_TYPES: Array<{ id: string; params: Record<string, unknown> }> = [
   {
-    id: "setup-company",
-    scenario: "Setup: company type",
-    prompt:
-      "Set up a new type for the companies we sell to, with a name and the date we signed them.",
-    setup: true,
-    establishes: "company",
-    expected: { decision: "operation", oneOf: ["create_schema"] },
+    id: COMPANY_TYPE,
+    params: {
+      name: COMPANY_TYPE,
+      description: "A company we sell to, and the date we signed them",
+      fields: [
+        { name: "name", type: "text" },
+        { name: SIGNED_DATE_FIELD, type: "date" },
+      ],
+    },
   },
   {
-    id: "setup-venue",
-    scenario: "Setup: venue type",
-    // Deliberately parallel in shape to `setup-company`, which routes to
-    // Schema Creation reliably. An earlier wording ("Set up a way to track
-    // pieces of delivery work...") routed to Node Creation instead on all three
-    // reps — the model read it as creating one instance — so `create_schema`
-    // was never offered and every downstream scenario was blocked rather than
-    // measured.
-    prompt:
-      "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
-    setup: true,
-    establishes: "venue",
-    expected: { decision: "operation", oneOf: ["create_schema"] },
+    id: VENUE_TYPE,
+    params: {
+      name: "Event Venue",
+      description: "A place we hold events, with its booking date and capacity",
+      fields: [
+        { name: "booking_date", type: "date" },
+        { name: "capacity", type: "number" },
+      ],
+    },
   },
 ];
 
 /// The company instance the entity scenarios act on.
 ///
-/// Seeded through `seedRun` rather than as a scored setup TURN, for two
-/// reasons. First, a turn's writes are replayed into every later turn as terse
-/// facts carrying the id inline, so seeding by turn would put the answer in the
-/// prompt as literal history — seeding out of band keeps instance data out of
-/// that channel entirely (see `EvalFixture.seedGroup`'s contract, which
-/// `seedRun` shares). Second, a turn lengthens the conversation, and length
-/// alone was enough to make the model stop emitting tool calls.
+/// Seeded out of band rather than by a turn, for two reasons. First, a turn's
+/// writes are replayed into every later turn as terse facts carrying the id
+/// inline, so seeding by turn would put the answer in the prompt as literal
+/// history (see `EvalFixture.seedGroup`'s contract, which `seedRun` shares).
+/// Second, a turn lengthens the conversation, and length alone was enough to
+/// make the model stop emitting tool calls.
 const SEEDED_COMPANY_TITLE = "Northwind Trading";
 const SEEDED_COMPANY_SIGNED = "2025-03-14";
 /// That date as a reply may write it: ISO, or the day and month in words.
 const SEEDED_COMPANY_SIGNED_IN_REPLY =
   /2025-03-14|\bMar(ch|\.)?\s+14(th)?\b|\b14(th)?\s+(of\s+)?Mar(ch|\.)?\b|\b0?3\/14\/(20)?25\b|\b14\/0?3\/(20)?25\b/i;
-
-/// The company type this fixture creates when a rep starts cold.
-///
-/// Named literally, unlike every ASSERTION in this file: the seed establishes
-/// state rather than scoring a decision, so there is nothing here for a
-/// model-derived id to invalidate. The schema assertions still match on a
-/// pattern, because those score what the model chose.
-const SEEDED_COMPANY_TYPE = "company_sold_to";
-
-/// Words that identify the company type among the schemas the setup turn
-/// created, since its id cannot be predicted.
-///
-/// `create_schema` derives the id from the MODEL's phrasing, not the
-/// fixture's: the same `setup-company` prompt produced `company_sold_to` in one
-/// run and `client_company` in another. An earlier version of this seed named
-/// `company_sold_to` literally, never found it, and silently seeded nothing —
-/// so every entity scenario scored against a workspace with no Northwind in
-/// it. The file's own expectation model warns about exactly this ("Schema
-/// expectations deliberately never name an exact type id") and records that it
-/// cost two 3-rep runs to learn the first time.
-///
-/// Matching on a word stem rather than an id is the same tactic the schema
-/// assertions use, for the same reason.
-const COMPANY_TYPE_HINTS = ["compan", "client", "customer", "account"];
-
-/// The venue type, excluded from the company match: `setup-venue` runs in the
-/// same group, and a naive "first schema mentioning a company-ish word" could
-/// pick it up if the model phrased it as "client venue" or similar.
-const VENUE_TYPE_HINTS = ["venue", "event", "place"];
-
-/** The two types the setup turns establish. */
-type SetupType = "company" | "venue";
-
-/**
- * Whether `id` is the custom type a setup turn of this kind establishes.
- *
- * A venue-ish id is never the company type, whatever else it mentions: the
- * model has named the venue type "client venue" before.
- */
-function isSetupType(kind: SetupType, id: string): boolean {
-  const lower = id.toLowerCase();
-  const venue = VENUE_TYPE_HINTS.some((h) => lower.includes(h));
-  if (kind === "venue") return venue;
-  return !venue && COMPANY_TYPE_HINTS.some((h) => lower.includes(h));
-}
-
-/**
- * Whether the workspace's custom types include the one a setup turn of this
- * kind establishes. Pure over the ids, so it is testable without a daemon.
- */
-export function setupTypePresent(kind: SetupType, customTypeIds: string[]): boolean {
-  return customTypeIds.some((id) => isSetupType(kind, id));
-}
 
 function runNs(env: EvalEnv, args: string[]): unknown {
   const r = Bun.spawnSync([env.nsBin, "--socket", env.socket, "--json", ...args], {
@@ -337,122 +307,59 @@ function runNs(env: EvalEnv, args: string[]): unknown {
   return out ? JSON.parse(out) : null;
 }
 
-/** One schema as `schema list` reports it, reduced to what this fixture reads. */
-export interface ListedSchema {
-  id: string;
-  isCore: boolean;
-  fields: Array<{ name?: string; type?: string }>;
-}
-
 /**
- * Decode `schema list --json` output. Pure, so the shape this fixture depends
- * on is pinned by a test rather than discovered on a warm database: a reader
- * of a shape the CLI no longer emits finds no schema at all, which looks like
- * an empty workspace and re-creates every type.
+ * The schema ids in `schema list --json` output. Pure, so the shape this
+ * fixture depends on is pinned by a test rather than discovered on a warm
+ * database: a reader of a shape the CLI no longer emits finds no schema at
+ * all, which looks like an empty workspace and re-creates every type.
  */
-export function listedSchemas(output: unknown): ListedSchema[] {
+export function listedSchemaIds(output: unknown): string[] {
   const schemas = (output as { schemas?: unknown } | null)?.schemas;
   if (!Array.isArray(schemas)) return [];
   return schemas.flatMap((s) => {
-    const { id, is_core: isCore, fields } = (s ?? {}) as Record<string, unknown>;
-    if (typeof id !== "string" || id === "") return [];
-    return [
-      {
-        id,
-        isCore: isCore === true,
-        fields: Array.isArray(fields) ? (fields as ListedSchema["fields"]) : [],
-      },
-    ];
+    const id = (s as { id?: unknown } | null)?.id;
+    return typeof id === "string" && id !== "" ? [id] : [];
   });
 }
 
-/** Every schema in the workspace. */
-function listSchemas(env: EvalEnv): ListedSchema[] {
-  return listedSchemas(runNs(env, ["schema", "list"]));
+/** The id of every schema in the workspace. */
+function listSchemaIds(env: EvalEnv): Set<string> {
+  return new Set(listedSchemaIds(runNs(env, ["schema", "list"])));
 }
 
 /**
- * Create the Northwind instance the entity scenarios resolve against.
+ * Create the two custom types and the Northwind instance the scenarios run
+ * against.
  *
- * Idempotent, and that is load-bearing rather than defensive. `seedRun` fires
- * once per rep, and while `--between-runs` normally wipes the database first,
- * the hook must not depend on that: a run without a between-runs command, or
- * one whose reset failed, would otherwise leave rep 2 with two Northwinds and
- * rep 3 with three. The name would stop resolving to a single node and the
- * resulting failures would read as model non-determinism — corrupting the very
- * measurement `--runs` exists to produce.
+ * Runs as `seedRun`, once per rep, before any chat. `--between-runs` wipes the
+ * database between reps, so nothing a rep needs can be left to an earlier one,
+ * and a seed hung on `seedGroup` would run inside the chat loop.
  *
- * Runs as `seedRun`, once per rep, BEFORE any group. That timing is the fix
- * for a defect that silently invalidated three separate measured runs:
- * `seedGroup` fires inside the group loop, and `--between-runs` wipes the
- * database between reps, so the first group of every rep saw a workspace whose
- * types its own setup turns had not created yet. A seed that waited for those
- * types found nothing, no-oped, and every scenario scored against a workspace
- * with no instance in it — looking exactly like a model result.
- *
- * Because it runs before the setup turns, it CREATES the company type rather
- * than discovering one. The setup turns still run; a `create_schema` against
- * an existing type is refused and changes nothing, and `setup-company` asserts
- * on the operation chosen, not on its result, so it is unaffected either way.
- *
- * The type id is fixed here rather than model-derived, which is the one place
- * this fixture may name one: everything downstream (the schema assertions)
- * still matches on a pattern, because those score what the MODEL selected.
- * This is establishing state, not asserting on it.
+ * Idempotent, and that is load-bearing rather than defensive: a run without a
+ * between-runs command, or one whose reset failed, must not leave rep 2 with
+ * two Northwinds and rep 3 with three. The name would stop resolving to a
+ * single node, and the failures would read as model non-determinism.
  */
-function seedNorthwind(env: EvalEnv): void {
-  // Non-core only: a core type matching a hint word (`person`, `project`)
-  // would shadow the company type.
-  const candidates = listSchemas(env).filter((s) => !s.isCore);
-  let company = candidates.find((s) => isSetupType("company", s.id));
-
-  // Cold rep: no company type exists yet, so create the one this fixture's
-  // instances hang off. Reusing a model-created type when present keeps a
-  // warm rep from ending up with two company-ish types.
-  if (!company?.id) {
-    runNs(env, [
-      "schema",
-      "create",
-      "--params",
-      JSON.stringify({
-        name: SEEDED_COMPANY_TYPE,
-        description: "A company we sell to, and the date we signed them",
-        fields: [
-          { name: "name", type: "text" },
-          { name: "signed_date", type: "date" },
-        ],
-      }),
-    ]);
-    company = {
-      id: SEEDED_COMPANY_TYPE,
-      isCore: false,
-      fields: [{ name: "signed_date", type: "date" }],
-    };
+function seedWorkspace(env: EvalEnv): void {
+  const present = listSchemaIds(env);
+  for (const type of SEEDED_TYPES) {
+    if (present.has(type.id)) continue;
+    runNs(env, ["schema", "create", "--params", JSON.stringify(type.params)]);
   }
-
-  const companyType = company?.id;
-  if (!companyType) {
-    throw new Error("company type missing after seed — schema create did not take");
-  }
-
-  // The date field's name is model-derived too (`signed_date`, `date_signed`,
-  // `signed_on` have all appeared), so find it by type rather than by name.
-  // A company type with no date field fails the seed before it writes
-  // anything: a scenario is scored on the reply carrying this date
-  // (`outcome-record-field-is-answered`), and with nothing to answer from it
-  // would score a setup turn's missing field as the model failing to read one.
-  const dateField = company.fields.find((f) => f?.type === "date" && f?.name)?.name;
-  if (!dateField) {
-    throw new Error(
-      `company type '${companyType}' has no date field, so '${SEEDED_COMPANY_TITLE}' cannot be given its signing date — purge the database and re-run`,
-    );
+  // The daemon derives a type's id from its name. A seed that came back under
+  // another id would leave every scenario choosing among types the fixture
+  // does not know it has.
+  const after = listSchemaIds(env);
+  const missing = SEEDED_TYPES.filter((t) => !after.has(t.id)).map((t) => t.id);
+  if (missing.length > 0) {
+    throw new Error(`seeded type(s) missing after schema create: ${missing.join(", ")}`);
   }
 
   const existing = runNs(env, [
     "node",
     "query",
     "--type",
-    companyType,
+    COMPANY_TYPE,
     "--limit",
     "50",
   ]) as { nodes?: Array<{ content?: string; id?: string }> } | null;
@@ -461,7 +368,8 @@ function seedNorthwind(env: EvalEnv): void {
   );
 
   // An existing Northwind is given the date too: a rep whose update failed
-  // after the create would otherwise leave it dateless for every rep after.
+  // after the create would otherwise leave it dateless for every rep after,
+  // and `outcome-record-field-is-answered` is scored on the reply carrying it.
   const id =
     present?.id ??
     (
@@ -469,7 +377,7 @@ function seedNorthwind(env: EvalEnv): void {
         "node",
         "create",
         "--type",
-        companyType,
+        COMPANY_TYPE,
         "--content",
         SEEDED_COMPANY_TITLE,
       ]) as { id?: string } | null
@@ -481,7 +389,7 @@ function seedNorthwind(env: EvalEnv): void {
     "update",
     id.replace(/^nodespace:\/\//, ""),
     "--property",
-    `${dateField}=${SEEDED_COMPANY_SIGNED}`,
+    `${SIGNED_DATE_FIELD}=${SEEDED_COMPANY_SIGNED}`,
   ]);
 }
 
@@ -521,7 +429,7 @@ const LINKED_SKILLS: Array<{ name: string; description: string; tools: string[] 
  * Create `LINKED_TYPE` and the skills linked to it, then wait until the skills
  * are retrievable.
  *
- * Idempotent, for the reason `seedNorthwind` is: a rep whose database was not
+ * Idempotent, for the reason `seedWorkspace` is: a rep whose database was not
  * wiped must not end up with two of each skill.
  *
  * Runs as `seedGroup` for the linked-skill scenarios only, which sit last in
@@ -536,7 +444,7 @@ const LINKED_SKILLS: Array<{ name: string; description: string; tools: string[] 
  * left unlinked. Its scenario then fails as not held, which names the cause.
  */
 function seedLinkedSkills(env: EvalEnv): void {
-  if (!listSchemas(env).some((s) => s.id === LINKED_TYPE)) {
+  if (!listSchemaIds(env).has(LINKED_TYPE)) {
     runNs(env, [
       "schema",
       "create",
@@ -769,7 +677,7 @@ const FIXTURES: DecisionScenario[] = [
     // "is not visible"; which way the model reads a record varies between
     // runs of the same prompt, so this is scored on the reply, not the call.
     //
-    // Needs the seeded date, which `seedNorthwind` sets or fails the run.
+    // Needs the seeded date, which `seedWorkspace` sets or fails the run.
     prompt: "When did we sign Northwind Trading?",
     expected: { decision: "outcome", replyMatches: SEEDED_COMPANY_SIGNED_IN_REPLY },
     knowledgeQuestion: true,
@@ -807,8 +715,8 @@ const FIXTURES: DecisionScenario[] = [
     // the one that stands unless the put-back produces a call.
     //
     // The put-back needs two turns behind it that wrote nothing, so there are
-    // two questions ahead of the follow-up: the chat's setup turns write, and
-    // one question alone would leave the reply to stand untouched.
+    // two questions ahead of the follow-up: one question alone would leave
+    // the reply to stand untouched.
     priorTurns: [
       "When did we sign Northwind Trading?",
       "Which company was that about?",
@@ -821,7 +729,7 @@ const FIXTURES: DecisionScenario[] = [
 
   // ── Schema selection ───────────────────────────────────────────────────
   //
-  // Every type asserted on here is USER-DEFINED, created by the setup turns
+  // Every type asserted on here is USER-DEFINED, one of the two seeded
   // above. Core seeded types (`project`, `task`, `person`, ...) cannot be used:
   // `non_core_schema_hits` strips them from schema candidates, so
   // a turn acting on one gets an EMPTY candidate set and the model emits the
@@ -833,7 +741,7 @@ const FIXTURES: DecisionScenario[] = [
   {
     id: "schema-on-menu-company",
     scenario: "Schema: a name that already exists is an update, not a create",
-    // Ambiguous BY DESIGN now that `setup-northwind-instance` seeds the
+    // Ambiguous BY DESIGN now that the workspace is seeded with the
     // company. "Add X to the companies we sell to" could mean create this or
     // you already have this — and with the instance present, the right answer
     // is the latter. That ambiguity is the point: it is the disambiguation
@@ -877,7 +785,7 @@ const FIXTURES: DecisionScenario[] = [
   {
     id: "schema-field-disambiguates",
     scenario: "Entity: the named field settles which type is meant",
-    // Both setup types carry a date, but only the venue has a capacity — so a
+    // Both seeded types carry a date, but only the venue has a capacity — so a
     // message about seating can only mean the venue. The disambiguating signal
     // is structural (which type even has that field), not semantic similarity,
     // which is the case embedding distance alone cannot resolve.
@@ -1400,34 +1308,22 @@ function assertFixture(
 const fixture: EvalFixture = {
   name: "decisions",
   description: "Decision Eval Results (schema and operation selection)",
-  // One group PER SCORED SCENARIO, each preceded by the setup turns.
+  // One chat per scenario.
   //
-  // Previously a single group held all of them, so every scenario shared one
-  // chat — and by the later ones the model stopped emitting tool calls at all.
-  // A measured run showed every scenario after the fourth recording
-  // `toolsCalled: []`, including `skill-instance-request`, which has nothing to
-  // do with the entity work and passes in isolation. That is conversation
-  // length being scored as decision quality: the scenarios at the end of the
-  // list were never measured on their own merits.
+  // A single chat once held all of them, and by the later ones the model
+  // stopped emitting tool calls at all: a measured run showed every scenario
+  // after the fourth recording `toolsCalled: []`, including
+  // `skill-instance-request`, which passes in isolation. That is conversation
+  // length being scored as decision quality.
   //
-  // The setup turns are cheap to repeat and leave the workspace as it was: a
-  // second `create_schema` for an existing type is refused, and a model that
-  // sees the type and creates nothing changes nothing either. Paying them per
-  // group buys scenario isolation without changing what any scenario is asked.
-  // `setupStatePresent` is what keeps the second case from excluding the group.
-  //
-  // This makes the fixture's numbers NOT comparable to any run recorded before
-  // the split: each scenario now starts from a short conversation rather than
-  // inheriting however many turns preceded it.
-  groups: FIXTURES.map((scenario) => [...SETUP, scenario]),
-  // Per REP, not per group. `--between-runs` wipes the database between reps,
-  // and `seedGroup` runs inside the group loop where a cold rep's first group
-  // has no types yet — so a group-scoped seed silently no-ops and every
-  // scenario scores against a workspace with no instance in it. That defect
-  // invalidated three measured runs before it was found; `seedRun` exists to
-  // make it unrepresentable.
+  // The chats still share the rep's database, so a record or a type one
+  // scenario creates is there for the ones after it. The two seeded types and
+  // the seeded company are the same for all of them (see `seedWorkspace`).
+  groups: FIXTURES.map((scenario) => [scenario]),
+  // Per REP, before any chat: `--between-runs` wipes the database between
+  // reps, so every rep starts cold and has to be seeded again.
   seedRun(env: EvalEnv) {
-    seedNorthwind(env);
+    seedWorkspace(env);
   },
   // Per group, and only for the linked-skill scenarios: see `seedLinkedSkills`
   // for why these are kept out of every other scenario's workspace.
@@ -1435,29 +1331,6 @@ const fixture: EvalFixture = {
     if (group.some((s) => (s as DecisionScenario).linkedSkills)) {
       seedLinkedSkills(env);
     }
-  },
-  // Groups share the rep's database, so every group after the first runs its
-  // setup turns against types that already exist. The model sometimes sees
-  // that and creates nothing, which is correct and fails the turn's
-  // `create_schema` assertion. What the scenarios after it need is the type,
-  // so that is what decides whether the group is scored.
-  setupStatePresent(env: EvalEnv, scenario) {
-    const kind = (scenario as DecisionScenario).establishes;
-    if (kind === undefined) return undefined;
-    let schemas: ListedSchema[];
-    try {
-      schemas = listSchemas(env);
-    } catch (err) {
-      // The check could not be made, which is not the same as the state being
-      // there: unknown blocks the group. Logged so a daemon failure can be
-      // told apart from a setup that established nothing.
-      console.error(
-        `[decisions]     setup state check failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      return undefined;
-    }
-    const customTypeIds = schemas.filter((s) => !s.isCore).map((s) => s.id);
-    return setupTypePresent(kind, customTypeIds);
   },
   score(scenario, turns) {
     return assertFixture(scenario as DecisionScenario, turns);
