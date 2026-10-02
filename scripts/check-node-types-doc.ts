@@ -26,12 +26,12 @@
 //
 // A plain run reads the docs working tree, so a type and its sheet can be
 // changed together and checked before either is committed. The merge gate
-// passes --published and compares with the docs remote's main instead: what a
-// merge is tested against must not depend on the state of a checkout on the
-// machine that happens to run the gate. So a type change lands docs first:
-// push the sheet, then queue the merge.
+// compares with the docs remote's main instead, resolved to a commit when the
+// gate starts: what a merge is tested against must not depend on the state of
+// a checkout on the machine that happens to run the gate. So a type change
+// lands docs first: push the sheet, then queue the merge.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { $ } from "bun";
 import { primaryRootFromCommonDir } from "./setup-rust-tooling";
@@ -271,7 +271,9 @@ export function parseNodeTypesDoc(markdown: string): ParsedDoc {
         continue;
       }
       const typeCell = row.cells[typeColumn] ?? "";
-      const extensible = /\bextensible\b/.test(typeCell) ? true : /\bclosed\b/.test(typeCell) ? false : undefined;
+      // The two words outside backticks: an enum value may be called `closed`.
+      const typeWords = typeCell.replace(/`[^`]*`/g, "");
+      const extensible = /\bextensible\b/.test(typeWords) ? true : /\bclosed\b/.test(typeWords) ? false : undefined;
       const values = parsedType.type === "enum" ? enumValues(headers, row.cells, typeColumn) : undefined;
       for (const name of names) {
         current.fields.push({
@@ -428,10 +430,23 @@ export async function resolveDocsDir(
   return { dir: join(dirname(primaryRootFromCommonDir(commonDir)), DOCS_REPO_NAME), explicit: false };
 }
 
-/** What the merge gate reads: the docs repository's published main. */
+/** What the merge gate compares with: the docs repository's main, as its remote has it. */
 const PUBLISHED_REF = "origin/main";
 
-export type DocRead = { markdown: string; source: string } | { skip: string } | { error: string };
+/** How long a git command in the docs checkout may take; a fetch that stalls or prompts is cut off. */
+const DOCS_GIT_TIMEOUT_MS = 60_000;
+
+/** Runs git in the docs checkout, bounded, and never waiting on a credential prompt. */
+function docsGit(dir: string, ...args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  const result = Bun.spawnSync(["git", ...args], {
+    cwd: dir,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+    timeout: DOCS_GIT_TIMEOUT_MS,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return { ok: result.exitCode === 0, stdout: result.stdout.toString(), stderr: result.stderr.toString().trim() };
+}
 
 /**
  * Why this machine can't run the check: it has no docs checkout. Null when it
@@ -443,40 +458,92 @@ export function skipReason(docs: DocsLocation): string | null {
   return `no docs checkout at ${docs.dir}. Clone the docs repository beside the primary checkout, or set ${DOCS_DIR_ENV_VAR}.`;
 }
 
-/**
- * The reference's text. `published` reads the docs repository's main as its
- * remote has it, fetched first: the merge gate's verdict then depends on
- * neither the edits someone has in progress in that checkout nor on how
- * recently it was pulled. Otherwise the working tree is read, which is what a
- * change to a type and its sheet is developed against.
- */
-export async function readDoc(docs: DocsLocation, published: boolean): Promise<DocRead> {
-  const skip = skipReason(docs);
-  if (skip !== null) return { skip };
-  if (!existsSync(docs.dir)) return { error: `${DOCS_DIR_ENV_VAR} is set, and ${docs.dir} does not exist.` };
-  const path = join(docs.dir, DOC_FILE);
-  if (!published) {
-    if (!existsSync(path)) return { error: `${path} does not exist.` };
-    return { markdown: readFileSync(path, "utf8"), source: path };
-  }
-  const fetched = await $`git fetch --quiet origin`.cwd(docs.dir).quiet().nothrow();
-  const shown = await $`git show ${`${PUBLISHED_REF}:${DOC_FILE}`}`.cwd(docs.dir).quiet().nothrow();
-  if (shown.exitCode !== 0) {
-    return { error: `could not read ${DOC_FILE} at ${PUBLISHED_REF} in ${docs.dir}:\n${shown.stderr.toString().trim()}` };
-  }
-  const commit = (await $`git rev-parse --short ${PUBLISHED_REF}`.cwd(docs.dir).quiet().nothrow().text()).trim();
-  const stale = fetched.exitCode === 0 ? "" : ", as last fetched: the fetch failed";
-  return { markdown: shown.stdout.toString(), source: `${DOC_FILE} at ${PUBLISHED_REF} (${commit}${stale}) in ${docs.dir}` };
-}
-
-/** Why a merge gate or a test:changed run on this machine will skip the check; null when it won't. */
+/** Why a test:changed run on this machine will skip the check; null when it won't. */
 export async function stageSkipReason(): Promise<string | null> {
   return skipReason(await resolveDocsDir());
 }
 
+export type PublishedSheet =
+  | { commit: string; fetchFailed: boolean }
+  | { skip: string }
+  /** This machine's docs checkout can't give the published reference. */
+  | { unreadable: string };
+
+/**
+ * The commit of the docs remote's main, fetched first: what a merge is
+ * compared with. Reading a commit rather than the working tree keeps the
+ * verdict independent of edits in progress in that checkout and of how
+ * recently it was pulled. Every way of failing here is a property of this
+ * machine's docs checkout, never of the code under test, so the caller must
+ * not report it as that code's failure.
+ */
+export function resolvePublished(docs: DocsLocation): PublishedSheet {
+  const skip = skipReason(docs);
+  if (skip !== null) return { skip };
+  if (!existsSync(docs.dir)) return { unreadable: `${DOCS_DIR_ENV_VAR} is set, and ${docs.dir} does not exist.` };
+  // A plain directory inside some other repository would answer for that repository.
+  const top = docsGit(docs.dir, "rev-parse", "--show-toplevel");
+  if (!top.ok || realpathSync(top.stdout.trim()) !== realpathSync(docs.dir)) {
+    return { unreadable: `${docs.dir} is not the root of a git checkout, so it has no published ${DOC_FILE}.` };
+  }
+  const fetched = docsGit(docs.dir, "fetch", "--quiet", "origin");
+  const commit = docsGit(docs.dir, "rev-parse", "--verify", "--quiet", `${PUBLISHED_REF}^{commit}`);
+  if (!commit.ok) {
+    return { unreadable: `${docs.dir} has no ${PUBLISHED_REF}${fetched.ok ? "" : ` (and the fetch failed: ${fetched.stderr})`}.` };
+  }
+  const sha = commit.stdout.trim();
+  if (!docsGit(docs.dir, "cat-file", "-e", `${sha}:${DOC_FILE}`).ok) {
+    return { unreadable: `${PUBLISHED_REF} (${sha.slice(0, 7)}) of ${docs.dir} has no ${DOC_FILE}.` };
+  }
+  return { commit: sha, fetchFailed: !fetched.ok };
+}
+
+export type DocRead = { markdown: string; source: string } | { skip: string } | { error: string };
+
+/**
+ * The reference's text: at `commit` of the docs checkout when one is given
+ * (see resolvePublished), else from its working tree, which is what a change
+ * to a type and its sheet is developed against.
+ */
+export function readDoc(docs: DocsLocation, commit?: string): DocRead {
+  const skip = skipReason(docs);
+  if (skip !== null) return { skip };
+  if (!existsSync(docs.dir)) return { error: `${DOCS_DIR_ENV_VAR} is set, and ${docs.dir} does not exist.` };
+  const path = join(docs.dir, DOC_FILE);
+  if (commit === undefined) {
+    if (!existsSync(path)) return { error: `${path} does not exist.` };
+    return { markdown: readFileSync(path, "utf8"), source: path };
+  }
+  const shown = docsGit(docs.dir, "show", `${commit}:${DOC_FILE}`);
+  if (!shown.ok) return { error: `could not read ${DOC_FILE} at ${commit} in ${docs.dir}:\n${shown.stderr}` };
+  return { markdown: shown.stdout, source: `${DOC_FILE} at ${commit.slice(0, 7)} in ${docs.dir}` };
+}
+
+/** The value after `flag` on the command line. */
+function flagValue(flag: string): string | undefined {
+  const at = process.argv.indexOf(flag);
+  return at === -1 ? undefined : process.argv[at + 1];
+}
+
 if (import.meta.main) {
-  // --published: compare with the docs repository's remote main, not its working tree.
-  const doc = await readDoc(await resolveDocsDir(), process.argv.includes("--published"));
+  // --at <commit>: compare with the reference at that commit of the docs
+  // checkout (the merge gate resolves it once, before its stages).
+  // --published: resolve the docs remote's main here, then the same.
+  // Neither: the docs working tree.
+  const docs = await resolveDocsDir();
+  let commit = flagValue("--at");
+  if (commit === undefined && process.argv.includes("--published")) {
+    const published = resolvePublished(docs);
+    if ("unreadable" in published) {
+      console.error(`❌ ${published.unreadable}`);
+      process.exit(1);
+    }
+    if ("commit" in published) {
+      commit = published.commit;
+      if (published.fetchFailed) console.warn(`⚠ The fetch failed; comparing with ${PUBLISHED_REF} as last fetched.`);
+    }
+  }
+  const doc = readDoc(docs, commit);
   if ("error" in doc) {
     console.error(`❌ ${doc.error}`);
     process.exit(1);
@@ -499,6 +566,12 @@ if (import.meta.main) {
     console.error(
       "\nA change to a core type updates its sheet in the same change (the node type sequence). Fix whichever side is wrong."
     );
+    if (commit !== undefined) {
+      console.error(
+        "\nIf this merge changes no core type, it did not cause the difference: the published sheet is ahead of main\n" +
+          "while a type change lands. Change neither side, and re-run `bun run merge` once that change has merged."
+      );
+    }
     process.exit(1);
   }
   console.log(`✅ ${doc.source} matches the ${dump.types.length} core node types and their schemas.`);

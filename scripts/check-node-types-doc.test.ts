@@ -3,7 +3,7 @@
 // matching dump built here, so each test changes one side and names the
 // disagreement it expects; nothing reads the real reference or compiles Rust.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
@@ -14,10 +14,12 @@ import {
   parseNodeTypesDoc,
   readDoc,
   resolveDocsDir,
+  resolvePublished,
   skipReason,
   type CoreSchemaDump,
   type DumpedField,
 } from "./check-node-types-doc";
+import { nodeTypesCheckAt, TIERS } from "./gate-stage";
 
 const DOC = `# Node Types
 
@@ -240,6 +242,17 @@ describe("compareNodeTypesDoc — the reference is wrong", () => {
     ]);
   });
 
+  test("an enum value called closed or extensible is a value, not the row's word", () => {
+    const dump = withFields("play", (fields) =>
+      fields.map((f) => (f.name === "suspended_reason" ? { ...f, coreValues: values("open", "closed") } : f))
+    );
+    const doc = DOC.replace("enum, closed: `failed`, `drift`; system", "enum `open`, `closed`; system");
+    expect(compareNodeTypesDoc(dump, doc)).toEqual([
+      `line ${lineOf("| `suspended_reason`")}: \`play.suspended_reason\` is an enum, and the sheet's Type cell says neither \`extensible\` nor \`closed\``,
+    ]);
+    expect(compareNodeTypesDoc(dump, DOC.replace("enum, closed: `failed`, `drift`; system", "enum, closed: `open`, `closed`"))).toEqual([]);
+  });
+
   test("a field table on the sheet of a type the code seeds no schema for", () => {
     const dump = matchingDump();
     dump.schemas = dump.schemas.filter((schema) => schema.id !== "ai-chat");
@@ -427,71 +440,122 @@ describe("readDoc", () => {
     return checkout;
   }
 
-  test("a machine with no docs checkout skips, whichever form is asked for", async () => {
+  const published = (dir: string) => resolvePublished({ dir, explicit: false });
+  const commitOf = async (dir: string, ref: string) => (await git(dir, "rev-parse", ref).text()).trim();
+
+  test("a machine with no docs checkout skips, whichever form is asked for", () => {
     const docs = { dir: join(root, "nodespace-docs"), explicit: false };
-    expect(await readDoc(docs, false)).toEqual({ skip: expect.stringContaining("no docs checkout") });
-    expect(await readDoc(docs, true)).toEqual({ skip: expect.stringContaining("no docs checkout") });
+    expect(readDoc(docs)).toEqual({ skip: expect.stringContaining("no docs checkout") });
+    expect(resolvePublished(docs)).toEqual({ skip: expect.stringContaining("no docs checkout") });
   });
 
-  test("a docs directory with no reference in it is an error, not a skip", async () => {
+  test("a docs directory with no reference in it is an error, not a skip", () => {
     const dir = join(root, "nodespace-docs");
     mkdirSync(dir);
-    expect(await readDoc({ dir, explicit: false }, false)).toEqual({ error: `${join(dir, DOC_PATH)} does not exist.` });
+    expect(readDoc({ dir, explicit: false })).toEqual({ error: `${join(dir, DOC_PATH)} does not exist.` });
     const named = { dir: join(root, "nowhere"), explicit: true };
-    const missing = { error: `${DOCS_DIR_ENV_VAR} is set, and ${named.dir} does not exist.` };
-    expect(await readDoc(named, false)).toEqual(missing);
-    expect(await readDoc(named, true)).toEqual(missing);
-    // A checkout whose main has no reference.
-    const docs = await clone("empty-docs");
-    writeFileSync(join(docs, "README.md"), "docs\n");
-    await git(docs, "add", "-A");
-    await git(docs, "commit", "-q", "-m", "no reference");
-    await git(docs, "push", "-q", "origin", "HEAD:main");
-    expect(await readDoc({ dir: docs, explicit: false }, true)).toEqual({ error: expect.stringContaining("could not read") });
+    expect(readDoc(named)).toEqual({ error: `${DOCS_DIR_ENV_VAR} is set, and ${named.dir} does not exist.` });
   });
 
   test("a plain run reads the working tree, uncommitted edits included", async () => {
     const docs = await clone("nodespace-docs");
     await publish(docs, "published\n");
     writeFileSync(join(docs, DOC_PATH), "being edited\n");
-    expect(await readDoc({ dir: docs, explicit: false }, false)).toEqual({
-      markdown: "being edited\n",
-      source: join(docs, DOC_PATH),
-    });
+    expect(readDoc({ dir: docs, explicit: false })).toEqual({ markdown: "being edited\n", source: join(docs, DOC_PATH) });
   });
 
-  test("the published form reads the remote's main: not uncommitted edits, not an unpushed commit", async () => {
+  test("the published reference is the remote's main: not uncommitted edits, not an unpushed commit", async () => {
     const docs = await clone("nodespace-docs");
     await publish(docs, "published\n");
+    const pushed = await commitOf(docs, "HEAD");
     writeFileSync(join(docs, DOC_PATH), "committed here, not pushed\n");
     await git(docs, "commit", "-q", "-am", "local only");
     writeFileSync(join(docs, DOC_PATH), "being edited\n");
 
-    const read = await readDoc({ dir: docs, explicit: false }, true);
-    expect(read).toEqual({ markdown: "published\n", source: expect.stringContaining("at origin/main (") });
+    expect(published(docs)).toEqual({ commit: pushed, fetchFailed: false });
+    expect(readDoc({ dir: docs, explicit: false }, pushed)).toEqual({
+      markdown: "published\n",
+      source: `${DOC_PATH} at ${pushed.slice(0, 7)} in ${docs}`,
+    });
   });
 
-  test("the published form fetches, so a checkout behind its remote reads what was pushed since", async () => {
+  test("resolving fetches, so a checkout behind its remote gives what was pushed since", async () => {
     const docs = await clone("nodespace-docs");
     await publish(docs, "first\n");
     const elsewhere = join(root, "elsewhere");
     await $`git clone -q ${join(root, "remote.git")} ${elsewhere}`.quiet();
     await publish(elsewhere, "pushed from another machine\n");
 
-    expect(await readDoc({ dir: docs, explicit: false }, true)).toEqual({
-      markdown: "pushed from another machine\n",
-      source: expect.stringContaining("at origin/main ("),
-    });
+    const resolved = published(docs);
+    expect(resolved).toEqual({ commit: await commitOf(elsewhere, "HEAD"), fetchFailed: false });
+    if (!("commit" in resolved)) throw new Error("unreachable");
+    expect(readDoc({ dir: docs, explicit: false }, resolved.commit)).toMatchObject({ markdown: "pushed from another machine\n" });
   });
 
-  test("when the fetch fails, the published form reads main as last fetched and says so", async () => {
+  test("a commit resolved earlier stays what is read, whatever is pushed afterwards", async () => {
+    const docs = await clone("nodespace-docs");
+    await publish(docs, "when the gate started\n");
+    const resolved = published(docs);
+    if (!("commit" in resolved)) throw new Error("unreachable");
+    await publish(docs, "pushed while the gate ran\n");
+    expect(readDoc({ dir: docs, explicit: false }, resolved.commit)).toMatchObject({ markdown: "when the gate started\n" });
+  });
+
+  test("when the fetch fails, main as last fetched is given, and marked", async () => {
     const docs = await clone("nodespace-docs");
     await publish(docs, "first\n");
     await git(docs, "remote", "set-url", "origin", join(root, "gone.git"));
+    expect(published(docs)).toEqual({ commit: await commitOf(docs, "HEAD"), fetchFailed: true });
+  });
 
-    expect(await readDoc({ dir: docs, explicit: false }, true)).toEqual({
-      markdown: "first\n",
-      source: expect.stringContaining("as last fetched: the fetch failed"),
+  test("a docs checkout that can't give the published reference is unreadable, never a failed comparison", async () => {
+    // The directory NODESPACE_DOCS_DIR names is missing.
+    expect(resolvePublished({ dir: join(root, "nowhere"), explicit: true })).toEqual({
+      unreadable: expect.stringContaining("does not exist"),
     });
+
+    // Its remote isn't called origin.
+    const renamed = await clone("renamed");
+    await publish(renamed, "published\n");
+    await git(renamed, "remote", "rename", "origin", "upstream");
+    expect(published(renamed)).toEqual({ unreadable: expect.stringContaining("has no origin/main") });
+
+    // Its main has no reference.
+    const empty = join(root, "empty");
+    await $`git clone -q ${join(root, "remote.git")} ${empty}`.quiet();
+    await git(empty, "rm", "-q", "-r", "components");
+    await git(empty, "commit", "-q", "-m", "no reference");
+    await git(empty, "push", "-q", "origin", "HEAD:main");
+    expect(published(empty)).toEqual({ unreadable: expect.stringContaining(`has no ${DOC_PATH}`) });
+
+    // A plain copy inside another checkout would answer for that checkout.
+    const copy = join(empty, "copy");
+    mkdirSync(join(copy, "components"), { recursive: true });
+    writeFileSync(join(copy, DOC_PATH), "a copy\n");
+    expect(published(copy)).toEqual({ unreadable: expect.stringContaining("is not the root of a git checkout") });
+  });
+});
+
+describe("the stage", () => {
+  const script = (name: string) => readFileSync(join(import.meta.dir, name), "utf8");
+
+  test("test:changed compares with the docs working tree", () => {
+    expect(TIERS.nodeTypesCheck.command).toBe("bun run node-types:check");
+    const scripts = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).scripts;
+    expect(scripts["node-types:check"]).toBe("bun run scripts/check-node-types-doc.ts");
+    expect(script("test-changed.ts")).toContain("run({ ...TIERS.nodeTypesCheck,");
+    expect(script("test-changed.ts")).not.toContain("nodeTypesCheckAt");
+  });
+
+  test("the merge gate compares with the published commit it resolved, and exits as a machine fault when it can't", () => {
+    expect(nodeTypesCheckAt("abc1234").command).toBe("bun run node-types:check --at abc1234");
+    const gate = script("test-gate.ts");
+    expect(gate).toContain("run(nodeTypesCheckAt(publishedSheet.commit))");
+    expect(gate).not.toContain("TIERS.nodeTypesCheck");
+    expect(/"unreadable" in publishedSheet\) \{[\s\S]{0,200}?process\.exit\(GATE_INFRA_EXIT\)/.test(gate)).toBe(true);
+  });
+
+  test("both say when the stage is skipped", () => {
+    for (const name of ["test-gate.ts", "test-changed.ts"]) expect(script(name)).toContain("SKIPPED:");
   });
 });
