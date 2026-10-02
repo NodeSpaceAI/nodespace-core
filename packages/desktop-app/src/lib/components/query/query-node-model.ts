@@ -147,12 +147,11 @@ function isEmpty(value: unknown): boolean {
   return value === null || value === undefined || value === '';
 }
 
-function equals(actual: unknown, expected: unknown, caseSensitive: boolean): boolean {
+/** Exact, as the backend's SQL `=` is: `case_sensitive` applies to `contains` only. */
+function equals(actual: unknown, expected: unknown): boolean {
   if (actual === expected) return true;
   if (typeof actual === 'number' && typeof expected === 'number') return actual === expected;
-  const a = String(actual);
-  const b = String(expected);
-  return caseSensitive ? a === b : a.toLowerCase() === b.toLowerCase();
+  return String(actual) === String(expected);
 }
 
 function contains(actual: unknown, expected: unknown, caseSensitive: boolean): boolean {
@@ -213,7 +212,9 @@ function filterSubject(node: Node, filter: QueryFilter): unknown {
  * nothing to correct it until a reload.
  */
 export function matchesFilter(node: Node, filter: QueryFilter): boolean {
-  const caseSensitive = filter.case_sensitive ?? false;
+  // The backend's default: a `contains` is case-sensitive unless the filter
+  // says otherwise.
+  const caseSensitive = filter.case_sensitive ?? true;
 
   // A related-node filter is a condition on other nodes, which this node
   // alone cannot answer.
@@ -239,12 +240,12 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
     case 'exists':
       return !isEmpty(actual);
     case 'equals':
-      return equals(actual, filter.value, caseSensitive);
+      return equals(actual, filter.value);
     case 'contains':
       return contains(actual, filter.value, caseSensitive);
     case 'in':
       return (
-        Array.isArray(filter.value) && filter.value.some((v) => equals(actual, v, caseSensitive))
+        Array.isArray(filter.value) && filter.value.some((v) => equals(actual, v))
       );
     case 'gt':
       return !isEmpty(actual) && ordered(actual, filter.value) > 0;

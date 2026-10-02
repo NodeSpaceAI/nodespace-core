@@ -207,26 +207,33 @@ describe('matchesFilter', () => {
     ).toBe(false);
   });
 
-  it('matches property equals (case-insensitive by default)', () => {
+  it('matches property equals exactly, as the backend does', () => {
     expect(
-      matchesFilter(invoice, { type: 'property', operator: 'equals', property: 'status', value: 'OPEN' })
+      matchesFilter(invoice, { type: 'property', operator: 'equals', property: 'status', value: 'open' })
     ).toBe(true);
+    // The backend compares with SQL `=`; `case_sensitive` does not loosen it.
+    for (const case_sensitive of [undefined, true, false]) {
+      expect(
+        matchesFilter(invoice, {
+          type: 'property',
+          operator: 'equals',
+          property: 'status',
+          value: 'OPEN',
+          case_sensitive
+        })
+      ).toBe(false);
+    }
   });
 
-  it('respects case_sensitive when set', () => {
-    expect(
-      matchesFilter(invoice, {
-        type: 'property',
-        operator: 'equals',
-        property: 'status',
-        value: 'OPEN',
-        case_sensitive: true,
-      })
-    ).toBe(false);
+  it('treats contains as case-sensitive unless case_sensitive is false', () => {
+    const upper = { type: 'property', operator: 'contains', property: 'status', value: 'OP' } as const;
+    expect(matchesFilter(invoice, upper)).toBe(false);
+    expect(matchesFilter(invoice, { ...upper, case_sensitive: true })).toBe(false);
+    expect(matchesFilter(invoice, { ...upper, case_sensitive: false })).toBe(true);
   });
 
   it('matches content contains', () => {
-    expect(matchesFilter(invoice, { type: 'content', operator: 'contains', value: 'acme' })).toBe(
+    expect(matchesFilter(invoice, { type: 'content', operator: 'contains', value: 'Acme' })).toBe(
       true
     );
   });

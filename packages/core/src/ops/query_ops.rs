@@ -664,6 +664,61 @@ mod tests {
 
     // -- Unknown-field rejection (acceptance criterion) --
 
+    /// A typed client sends a stored filter and sort item as serialized, so
+    /// the execute input must accept every key they carry and read each back
+    /// to the same value. A key added to `QueryFilter` or `SortConfig` and not
+    /// to the input fails here instead of failing every saved query.
+    #[test]
+    fn the_execute_input_accepts_what_the_stored_types_serialize() {
+        let stored = vec![
+            QueryFilter {
+                filter_type: FilterType::Related,
+                operator: FilterOperator::Exists,
+                path: Some(
+                    serde_json::from_value(
+                        json!([{ "name": "child_of", "open_ended": true }, "project"]),
+                    )
+                    .unwrap(),
+                ),
+                filter: Some(Box::new(QueryFilter {
+                    filter_type: FilterType::Property,
+                    operator: FilterOperator::Contains,
+                    property: Some("status".to_string()),
+                    value: Some(json!("act")),
+                    case_sensitive: Some(false),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+            QueryFilter {
+                filter_type: FilterType::Relationship,
+                operator: FilterOperator::Equals,
+                path: Some(serde_json::from_value(json!(["mentions"])).unwrap()),
+                node_id: Some("n1".to_string()),
+                ..Default::default()
+            },
+        ];
+        for filter in stored {
+            let item: AgentFilterItem =
+                serde_json::from_value(serde_json::to_value(&filter).unwrap()).unwrap();
+            assert_eq!(to_query_filter(item).unwrap(), filter);
+        }
+
+        for direction in [SortDirection::Ascending, SortDirection::Descending] {
+            let sort = SortConfig {
+                field: "due_date".to_string(),
+                direction,
+            };
+            let item: AgentSortItem =
+                serde_json::from_value(serde_json::to_value(&sort).unwrap()).unwrap();
+            assert_eq!(item.field, sort.field);
+            assert_eq!(
+                parse_sort_direction(item.direction.as_deref().unwrap_or("asc")),
+                sort.direction
+            );
+        }
+    }
+
     /// A typed client sends a filter as it is stored, optional keys included
     /// as explicit nulls. Each reads as absent.
     #[test]
