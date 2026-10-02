@@ -29,8 +29,9 @@ use nodespace_agent::local_agent::tools::{
     is_cross_turn_guarded_tool, resolves_entities_tool, GraphToolExecutor, SharedEmbeddingService,
 };
 use nodespace_core::models::{
-    AiChatCompletedWrite, AiChatMessage, AiChatNativeNode, AiChatPendingDeletion,
-    AiChatResolvedEntity, AiChatTurnOutcome, AiChatTurnStatus, NodeFilter, NodeUpdate,
+    AiChatCompletedWrite, AiChatMessage, AiChatMessageRole, AiChatNativeNode,
+    AiChatPendingDeletion, AiChatResolvedEntity, AiChatTurnOutcome, AiChatTurnStatus, NodeFilter,
+    NodeUpdate,
 };
 use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceError};
 
@@ -708,7 +709,7 @@ impl LocalAgentServiceImpl {
 
         // Check that the last message is from the user.
         match ai_chat.messages.last() {
-            Some(last) if last.role == "user" => {}
+            Some(last) if last.role == AiChatMessageRole::User => {}
             _ => return,
         }
 
@@ -1204,7 +1205,7 @@ impl LocalAgentServiceImpl {
             let is_trailing_user = ai_chat
                 .messages
                 .last()
-                .map(|m| m.role == "user")
+                .map(|m| m.role == AiChatMessageRole::User)
                 .unwrap_or(false);
 
             if is_trailing_user {
@@ -1335,7 +1336,7 @@ impl LocalAgentServiceImpl {
                 .filter(|r| !r.trim().is_empty())
                 .map(|r| r.to_string());
             ai_chat.messages.push(AiChatMessage {
-                role: "assistant".to_string(),
+                role: AiChatMessageRole::Assistant,
                 content: content.to_string(),
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 reasoning,
@@ -2470,7 +2471,10 @@ fn pending_deletion_answer(
     let [.., asked, reply] = messages else {
         return None;
     };
-    if reply.role != "user" || asked.role != "assistant" || asked.pending_deletions.is_empty() {
+    if reply.role != AiChatMessageRole::User
+        || asked.role != AiChatMessageRole::Assistant
+        || asked.pending_deletions.is_empty()
+    {
         return None;
     }
     let answer = match deletion_confirmation::classify_reply(&reply.content) {
@@ -2758,7 +2762,7 @@ struct AssistantRecord<'a> {
 fn prior_turns_from_history(messages: &[AiChatMessage]) -> Vec<PriorTurn> {
     messages
         .iter()
-        .filter(|m| m.role == "assistant")
+        .filter(|m| m.role == AiChatMessageRole::Assistant)
         .filter_map(|m| {
             m.outcome.map(|outcome| PriorTurn {
                 outcome,
@@ -3152,10 +3156,10 @@ pub fn node_history_from_messages(messages: Vec<AiChatMessage>) -> Vec<ChatMessa
     messages
         .into_iter()
         .flat_map(|m| {
-            let role = match m.role.as_str() {
-                "user" => Role::User,
-                "assistant" => Role::Assistant,
-                _ => return Vec::new(),
+            let role = match m.role {
+                AiChatMessageRole::User => Role::User,
+                AiChatMessageRole::Assistant => Role::Assistant,
+                AiChatMessageRole::System => return Vec::new(),
             };
             let content = if role == Role::Assistant && m.question.is_none() {
                 terse_assistant_facts(&m.completed_writes).unwrap_or(m.content)
@@ -3702,7 +3706,7 @@ mod tests {
         let mut ai_chat = AiChatNativeNode::from_node(node).expect("from_node");
         ai_chat.turn_status = AiChatTurnStatus::Processing;
         ai_chat.messages.push(AiChatMessage {
-            role: "user".to_string(),
+            role: AiChatMessageRole::User,
             content: user_text.to_string(),
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
             reasoning: None,
@@ -4421,7 +4425,7 @@ mod tests {
         let assistant = ai_chat
             .messages
             .iter()
-            .find(|m| m.role == "assistant")
+            .find(|m| m.role == AiChatMessageRole::Assistant)
             .expect("assistant reply appended");
         assert_eq!(assistant.content, "Hello back!");
         assert!(
@@ -4432,9 +4436,9 @@ mod tests {
 
     // -- Agent deletes wait for the user's yes -------------------------------
 
-    fn chat_message(role: &str, content: &str) -> AiChatMessage {
+    fn chat_message(role: AiChatMessageRole, content: &str) -> AiChatMessage {
         AiChatMessage {
-            role: role.to_string(),
+            role,
             content: content.to_string(),
             timestamp: None,
             reasoning: None,
@@ -4467,7 +4471,7 @@ mod tests {
             .expect("target exists");
         let question = deletion_confirmation::confirmation_question(std::slice::from_ref(&pending));
         let mut asked = chat_message(
-            "assistant",
+            AiChatMessageRole::Assistant,
             &deletion_confirmation::confirmation_text(&question),
         );
         asked.question = Some(question);
@@ -4483,9 +4487,9 @@ mod tests {
         let mut ai_chat = AiChatNativeNode::from_node(node).unwrap();
         ai_chat.turn_status = AiChatTurnStatus::Processing;
         ai_chat.messages = vec![
-            chat_message("user", "delete the old plan"),
+            chat_message(AiChatMessageRole::User, "delete the old plan"),
             asked,
-            chat_message("user", reply),
+            chat_message(AiChatMessageRole::User, reply),
         ];
         let props = ai_chat.conversation_patch();
         node_service
@@ -4572,9 +4576,10 @@ mod tests {
         let version = node.version;
         let mut ai_chat = AiChatNativeNode::from_node(node).unwrap();
         ai_chat.turn_status = AiChatTurnStatus::Processing;
-        ai_chat
-            .messages
-            .push(chat_message("user", deletion_confirmation::CONFIRM_OPTION));
+        ai_chat.messages.push(chat_message(
+            AiChatMessageRole::User,
+            deletion_confirmation::CONFIRM_OPTION,
+        ));
         let props = ai_chat.conversation_patch();
         node_service
             .update_node(&chat_id, version, NodeUpdate::new().with_properties(props))
@@ -4627,7 +4632,7 @@ mod tests {
     /// after some other exchange does not reach back to an earlier question.
     #[test]
     fn only_the_message_right_after_a_confirmation_answers_it() {
-        let mut asked = chat_message("assistant", "Delete \"A\" (text)?");
+        let mut asked = chat_message(AiChatMessageRole::Assistant, "Delete \"A\" (text)?");
         asked.pending_deletions = vec![AiChatPendingDeletion {
             node_id: "a".to_string(),
             title: "A".to_string(),
@@ -4636,7 +4641,7 @@ mod tests {
             descendant_count: 0,
         }];
 
-        let direct = [asked.clone(), chat_message("user", "yes")];
+        let direct = [asked.clone(), chat_message(AiChatMessageRole::User, "yes")];
         assert!(matches!(
             pending_deletion_answer(&direct),
             Some((_, DeletionAnswer::Confirmed))
@@ -4644,9 +4649,9 @@ mod tests {
 
         let later = [
             asked,
-            chat_message("user", "what else is in there?"),
-            chat_message("assistant", "Two notes."),
-            chat_message("user", "yes"),
+            chat_message(AiChatMessageRole::User, "what else is in there?"),
+            chat_message(AiChatMessageRole::Assistant, "Two notes."),
+            chat_message(AiChatMessageRole::User, "yes"),
         ];
         assert!(pending_deletion_answer(&later).is_none());
     }
@@ -4915,7 +4920,7 @@ mod tests {
         let assistant = ai_chat
             .messages
             .iter()
-            .find(|m| m.role == "assistant")
+            .find(|m| m.role == AiChatMessageRole::Assistant)
             .expect("assistant reply appended");
         assert_eq!(
             assistant.content, "Hello back!",
@@ -4987,7 +4992,7 @@ mod tests {
         let assistant = ai_chat
             .messages
             .iter()
-            .find(|m| m.role == "assistant")
+            .find(|m| m.role == AiChatMessageRole::Assistant)
             .expect(
                 "a failed inference turn must append a visible assistant message, \
                  not silently reset to idle with no new content",
@@ -5075,7 +5080,10 @@ mod tests {
             AiChatTurnStatus::Idle,
             "a node stuck in processing at startup must recover to idle, not stay stuck"
         );
-        assert!(ai_chat.messages.iter().any(|m| m.role == "assistant"));
+        assert!(ai_chat
+            .messages
+            .iter()
+            .any(|m| m.role == AiChatMessageRole::Assistant));
     }
 
     #[tokio::test]
@@ -5123,7 +5131,10 @@ mod tests {
             "cancelled turn must reset to idle, not stay stuck"
         );
         assert!(
-            !ai_chat.messages.iter().any(|m| m.role == "assistant"),
+            !ai_chat
+                .messages
+                .iter()
+                .any(|m| m.role == AiChatMessageRole::Assistant),
             "a cancelled turn must not append an assistant message"
         );
         assert!(
@@ -5169,7 +5180,7 @@ mod tests {
         let assistant = ai_chat_2
             .messages
             .iter()
-            .find(|m| m.role == "assistant")
+            .find(|m| m.role == AiChatMessageRole::Assistant)
             .expect("assistant reply appended");
         assert_eq!(assistant.content, "first reply");
     }
@@ -5231,7 +5242,7 @@ mod tests {
         let messages = load_chat_messages(&node_service, &node_id).await;
         let assistant = messages
             .iter()
-            .find(|m| m.role == "assistant")
+            .find(|m| m.role == AiChatMessageRole::Assistant)
             .expect("assistant message present");
         assert_eq!(
             assistant.question.as_deref(),
@@ -5315,7 +5326,7 @@ mod tests {
         let messages = load_chat_messages(&node_service, &node_id).await;
         let assistant = messages
             .iter()
-            .find(|m| m.role == "assistant")
+            .find(|m| m.role == AiChatMessageRole::Assistant)
             .expect("assistant message present");
         assert!(assistant.question.is_none());
         assert!(assistant.options.is_empty());
@@ -6053,7 +6064,7 @@ model = "model-b"
     #[tokio::test]
     async fn prior_writes_are_rebuilt_from_persisted_messages() {
         let msgs = vec![AiChatMessage {
-            role: "assistant".to_string(),
+            role: AiChatMessageRole::Assistant,
             content: "Added it.".to_string(),
             timestamp: None,
             reasoning: None,
@@ -6284,7 +6295,7 @@ model = "model-b"
     #[test]
     fn terse_write_fact_reads_field_values_key() {
         let history = node_history_from_messages(vec![AiChatMessage {
-            role: "assistant".to_string(),
+            role: AiChatMessageRole::Assistant,
             content: "Marked the invoice as paid.".to_string(),
             timestamp: None,
             reasoning: None,
@@ -6352,7 +6363,7 @@ model = "model-b"
     /// Build one persisted assistant turn carrying a single completed write.
     fn assistant_turn(content: &str, write: AiChatCompletedWrite) -> AiChatMessage {
         AiChatMessage {
-            role: "assistant".to_string(),
+            role: AiChatMessageRole::Assistant,
             content: content.to_string(),
             timestamp: None,
             reasoning: None,
@@ -6367,7 +6378,7 @@ model = "model-b"
 
     fn user_turn(content: &str) -> AiChatMessage {
         AiChatMessage {
-            role: "user".to_string(),
+            role: AiChatMessageRole::User,
             content: content.to_string(),
             timestamp: None,
             reasoning: None,
@@ -6687,7 +6698,7 @@ model = "model-b"
         let history = node_history_from_messages(vec![
             user_turn("What can you do?"),
             AiChatMessage {
-                role: "assistant".to_string(),
+                role: AiChatMessageRole::Assistant,
                 content: "I can help you track work in your graph.".to_string(),
                 timestamp: None,
                 reasoning: None,
@@ -6873,7 +6884,7 @@ model = "model-b"
     fn retrieval_query_blends_history_and_excludes_completed_writes() {
         let history = node_history_from_messages(vec![
             AiChatMessage {
-                role: "user".to_string(),
+                role: AiChatMessageRole::User,
                 content: "Add a conference proposal for Redwood Summit".to_string(),
                 timestamp: None,
                 reasoning: None,
@@ -6885,7 +6896,7 @@ model = "model-b"
                 outcome: None,
             },
             AiChatMessage {
-                role: "assistant".to_string(),
+                role: AiChatMessageRole::Assistant,
                 content: "Added the Redwood Summit proposal.".to_string(),
                 timestamp: None,
                 reasoning: None,
@@ -6943,7 +6954,7 @@ model = "model-b"
     #[tokio::test]
     async fn idempotent_updates_are_not_carried_into_the_guard() {
         let msgs = vec![AiChatMessage {
-            role: "assistant".to_string(),
+            role: AiChatMessageRole::Assistant,
             content: "Done.".to_string(),
             timestamp: None,
             reasoning: None,
@@ -7321,7 +7332,7 @@ model = "model-b"
         let ai_chat = get_ai_chat(&node_service, &node_id).await;
         assert_eq!(ai_chat.turn_status, AiChatTurnStatus::Idle);
         assert_eq!(ai_chat.messages.len(), 2);
-        assert_eq!(ai_chat.messages[1].role, "assistant");
+        assert_eq!(ai_chat.messages[1].role, AiChatMessageRole::Assistant);
         assert_eq!(ai_chat.messages[1].content, "Hello there");
     }
 

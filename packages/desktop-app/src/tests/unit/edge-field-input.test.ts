@@ -9,19 +9,17 @@ import {
   toInputString
 } from '$lib/services/edge-field-input';
 import type { RawEdgeField } from '$lib/services/relationship-grouping';
+import type { SchemaFieldType } from '$lib/types/generated';
 
-const field = (type: string): RawEdgeField => ({ name: 'f', type });
+const field = (type: SchemaFieldType): RawEdgeField => ({ name: 'f', type });
 
 describe('edge-field-input: edgeInputKind', () => {
-  it('maps every numeric type alias to a number input', () => {
+  it('maps a number field to a number input', () => {
     expect(edgeInputKind(field('number'))).toBe('number');
-    expect(edgeInputKind(field('integer'))).toBe('number');
-    expect(edgeInputKind(field('float'))).toBe('number');
   });
 
-  it('maps both boolean aliases to a checkbox', () => {
+  it('maps a boolean field to a checkbox', () => {
     expect(edgeInputKind(field('boolean'))).toBe('boolean');
-    expect(edgeInputKind(field('bool'))).toBe('boolean');
   });
 
   it('keeps datetime distinct from date so the time component survives', () => {
@@ -29,10 +27,11 @@ describe('edge-field-input: edgeInputKind', () => {
     expect(edgeInputKind(field('datetime'))).toBe('datetime');
   });
 
-  it('falls back to text for string and for types with no declared editor', () => {
-    expect(edgeInputKind(field('string'))).toBe('text');
+  it('renders text, an enum with no declared values, and the structured types as text', () => {
+    expect(edgeInputKind(field('text'))).toBe('text');
     expect(edgeInputKind(field('enum'))).toBe('text');
-    expect(edgeInputKind(field('something-new'))).toBe('text');
+    expect(edgeInputKind(field('array'))).toBe('text');
+    expect(edgeInputKind(field('object'))).toBe('text');
   });
 });
 

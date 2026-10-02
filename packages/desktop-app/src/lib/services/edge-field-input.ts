@@ -19,11 +19,8 @@ export type EdgeInputKind = 'number' | 'boolean' | 'date' | 'datetime' | 'enum' 
 export function edgeInputKind(field: RawEdgeField): EdgeInputKind {
   switch (field.type) {
     case 'number':
-    case 'integer':
-    case 'float':
       return 'number';
     case 'boolean':
-    case 'bool':
       return 'boolean';
     case 'date':
       return 'date';

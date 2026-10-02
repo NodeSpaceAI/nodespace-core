@@ -1531,7 +1531,6 @@ mod tests {
             json!({
                 "messages": [
                     {"role": "user", "content": "How do I write tests?"},
-                    {"role": "tool_call", "tool": "search", "result_summary": "3 results"},
                     {"role": "assistant", "content": "Here is a testing guide."}
                 ]
             }),

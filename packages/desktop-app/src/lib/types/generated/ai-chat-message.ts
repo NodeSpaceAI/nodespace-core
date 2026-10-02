@@ -1,5 +1,6 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { AiChatCompletedWrite } from './ai-chat-completed-write';
+import type { AiChatMessageRole } from './ai-chat-message-role';
 import type { AiChatPendingDeletion } from './ai-chat-pending-deletion';
 import type { AiChatResolvedEntity } from './ai-chat-resolved-entity';
 import type { AiChatTurnOutcome } from './ai-chat-turn-outcome';
@@ -9,9 +10,9 @@ import type { AiChatTurnOutcome } from './ai-chat-turn-outcome';
  */
 export type AiChatMessage = {
   /**
-   * Sender role: `"user"`, `"assistant"`, or `"system"`.
+   * Who sent the message.
    */
-  role: string;
+  role: AiChatMessageRole;
   /**
    * Message text.
    */

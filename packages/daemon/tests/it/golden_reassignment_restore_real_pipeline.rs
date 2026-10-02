@@ -31,7 +31,7 @@ use nodespace_agent::agent_types::{
     ToolDefinition, ToolExecutionRecord,
 };
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
-use nodespace_core::models::{AiChatMessage, AiChatResolvedEntity};
+use nodespace_core::models::{AiChatMessage, AiChatMessageRole, AiChatResolvedEntity};
 use nodespace_daemon::services::local_agent_service::{
     completed_writes_from, node_history_from_messages,
 };
@@ -95,9 +95,9 @@ fn search_nodes_tool() -> ToolDefinition {
     }
 }
 
-fn message(role: &str, content: &str) -> AiChatMessage {
+fn message(role: AiChatMessageRole, content: &str) -> AiChatMessage {
     AiChatMessage {
-        role: role.to_string(),
+        role,
         content: content.to_string(),
         timestamp: None,
         reasoning: None,
@@ -131,7 +131,7 @@ fn reassignment_turn() -> Vec<AiChatMessage> {
     }]);
 
     let mut assistant = message(
-        "assistant",
+        AiChatMessageRole::Assistant,
         "Done — the launch checklist is now assigned to Bob. It was previously assigned to \
          Alice, so she has been unassigned.",
     );
@@ -150,7 +150,10 @@ fn reassignment_turn() -> Vec<AiChatMessage> {
     ];
 
     vec![
-        message("user", "Assign the launch checklist to Bob"),
+        message(
+            AiChatMessageRole::User,
+            "Assign the launch checklist to Bob",
+        ),
         assistant,
     ]
 }

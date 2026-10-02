@@ -3014,11 +3014,13 @@ impl NodeService {
         field: &crate::models::SchemaField,
         value: &serde_json::Value,
     ) -> Result<(), String> {
+        use crate::models::SchemaFieldType;
+
         if value.is_null() {
             return Ok(());
         }
 
-        if field.field_type == crate::models::SchemaFieldType::Enum {
+        if field.field_type == SchemaFieldType::Enum {
             let Some(value_str) = value.as_str() else {
                 return Err(format!(
                     "Enum field '{}' must be a string or null",
@@ -3055,7 +3057,7 @@ impl NodeService {
         // `item_fields`, each nested value gets the same type, enum and
         // required checks as a top-level one, at every depth. An object with no
         // nested declaration is an open leaf and is not walked into.
-        if field.field_type == crate::models::SchemaFieldType::Object {
+        if field.field_type == SchemaFieldType::Object {
             let Some(object) = value.as_object() else {
                 return Err(format!(
                     "Field '{}' is declared as type 'object' but received {}",
@@ -3067,8 +3069,8 @@ impl NodeService {
                 Self::check_nested_fields(&field.name, nested, object)?;
             }
         }
-        if field.field_type == crate::models::SchemaFieldType::Array
-            && field.item_type == Some(crate::models::SchemaFieldType::Object)
+        if field.field_type == SchemaFieldType::Array
+            && field.item_type == Some(SchemaFieldType::Object)
         {
             let Some(items) = value.as_array() else {
                 return Err(format!(
@@ -3105,22 +3107,27 @@ impl NodeService {
         // filters and the CEL date functions all trust the declared type, so
         // a value that doesn't match it is rejected here rather than misread
         // later.
-        let check = match field.field_type.as_str() {
-            "number" => Some((value.is_number(), "")),
-            "boolean" => Some((value.is_boolean(), "")),
-            "date" => Some((
+        let check = match field.field_type {
+            SchemaFieldType::Number => Some((value.is_number(), "")),
+            SchemaFieldType::Boolean => Some((value.is_boolean(), "")),
+            SchemaFieldType::Date => Some((
                 value
                     .as_str()
                     .is_some_and(crate::schema::is_iso_date_or_datetime),
                 " (a YYYY-MM-DD date or RFC 3339 date-time string)",
             )),
-            "datetime" => Some((
+            SchemaFieldType::Datetime => Some((
                 value
                     .as_str()
                     .is_some_and(crate::schema::is_rfc3339_datetime),
                 " (an RFC 3339 date-time string)",
             )),
-            _ => None,
+            // Enum, object and array values are checked above. A text
+            // field's value is not type-checked.
+            SchemaFieldType::Text
+            | SchemaFieldType::Enum
+            | SchemaFieldType::Array
+            | SchemaFieldType::Object => None,
         };
         if let Some((false, expected)) = check {
             let received = match value.as_str() {

@@ -9514,7 +9514,7 @@ mod tests {
                 "cardinality": "many",
                 "reverseName": "gadgets",
                 "reverseCardinality": "many",
-                "edgeFields": [{ "name": "role", "type": "string" }]
+                "edgeFields": [{ "name": "role", "type": "text" }]
             }]))
             .unwrap();
         service
@@ -12147,7 +12147,7 @@ mod tests {
                             {"value": "viewer", "label": "Viewer"}
                         ]
                     },
-                    { "name": "note", "type": "string" }
+                    { "name": "note", "type": "text" }
                 ]
             }]))
             .unwrap();

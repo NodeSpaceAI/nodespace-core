@@ -40,7 +40,7 @@ use nodespace_agent::agent_types::{
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::prompt_templates;
 use nodespace_agent::local_agent::tools::all_tool_definitions;
-use nodespace_core::models::AiChatMessage;
+use nodespace_core::models::{AiChatMessage, AiChatMessageRole};
 use nodespace_daemon::services::local_agent_service::{
     completed_writes_from, node_history_from_messages,
 };
@@ -103,7 +103,7 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
 
     vec![
         AiChatMessage {
-            role: "user".to_string(),
+            role: AiChatMessageRole::User,
             content: "I want to keep a record of the equipment my team checks out, whether \
                 it's been returned, and what each item costs to replace"
                 .to_string(),
@@ -117,7 +117,7 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
             outcome: None,
         },
         AiChatMessage {
-            role: "assistant".to_string(),
+            role: AiChatMessageRole::Assistant,
             content: "I've created an Equipment Checkout Record type for you.".to_string(),
             timestamp: None,
             reasoning: None,
@@ -129,7 +129,7 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
             outcome: None,
         },
         AiChatMessage {
-            role: "user".to_string(),
+            role: AiChatMessageRole::User,
             content: "Log a laser cutter checked out on the 12th, replacement cost 2400"
                 .to_string(),
             timestamp: None,
@@ -142,7 +142,7 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
             outcome: None,
         },
         AiChatMessage {
-            role: "assistant".to_string(),
+            role: AiChatMessageRole::Assistant,
             content: "Logged it — Laser Cutter, replacement cost $2,400.".to_string(),
             timestamp: None,
             reasoning: None,

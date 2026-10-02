@@ -731,7 +731,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     indexed: true,
                     required: Some(true),
                     extensible: Some(false),
-                    default: Some(serde_json::json!("native")),
+                    default: Some(serde_json::json!(AiChatProvider::default())),
                     description: Some("Where this conversation's inference runs".to_string()),
                     item_type: None,
                     fields: None,
@@ -750,7 +750,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     indexed: true,
                     required: Some(true),
                     extensible: Some(false),
-                    default: Some(serde_json::json!("idle")),
+                    default: Some(serde_json::json!(AiChatTurnStatus::default())),
                     description: Some("Inference turn state, daemon-owned".to_string()),
                     item_type: None,
                     fields: None,
@@ -827,7 +827,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     indexed: true,
                     required: Some(true),
                     extensible: Some(false),
-                    default: Some(serde_json::json!("active")),
+                    default: Some(serde_json::json!(AiChatSessionStatus::default())),
                     description: Some("Whether the terminal session is running".to_string()),
                     item_type: None,
                     fields: None,
@@ -2235,6 +2235,25 @@ mod tests {
             ["idle", "processing"]
         );
         assert_eq!(values("ai-chat-pty", "session_status"), ["active", "ended"]);
+
+        // A chat with no stored value reads as the enum's default, so the
+        // schema's declared default must be that same value.
+        let default = |schema_id: &str, field: &str| {
+            let schema = schemas.iter().find(|s| s.id == schema_id).unwrap();
+            schema.get_field(field).unwrap().default.clone()
+        };
+        assert_eq!(
+            default("ai-chat-native", "provider"),
+            Some(serde_json::json!("native"))
+        );
+        assert_eq!(
+            default("ai-chat-native", "turn_status"),
+            Some(serde_json::json!("idle"))
+        );
+        assert_eq!(
+            default("ai-chat-pty", "session_status"),
+            Some(serde_json::json!("active"))
+        );
         for schema in &schemas {
             for field in &schema.fields {
                 for value in field.core_values.iter().flatten() {
