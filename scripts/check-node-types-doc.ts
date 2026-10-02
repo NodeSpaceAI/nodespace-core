@@ -23,6 +23,13 @@
 // directory rather than relative to this checkout. NODESPACE_DOCS_DIR names it
 // explicitly. A machine without the docs checkout skips the check with a
 // warning; an explicit NODESPACE_DOCS_DIR that has no reference is an error.
+//
+// A plain run reads the docs working tree, so a type and its sheet can be
+// changed together and checked before either is committed. The merge gate
+// passes --published and compares with the docs remote's main instead: what a
+// merge is tested against must not depend on the state of a checkout on the
+// machine that happens to run the gate. So a type change lands docs first:
+// push the sheet, then queue the merge.
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -39,7 +46,6 @@ const DOC_FILE = join("components", "node-types.md");
 export interface DumpedType {
   id: string;
   kind: RegistryKind;
-  parent: string | null;
 }
 
 /** One field of a seeded schema: the parts the reference documents. */
@@ -80,7 +86,7 @@ export interface DocField {
   itemType?: string;
   /** An enum's values, in the order listed. */
   enumValues?: string[];
-  /** Set when the row says `extensible` or `closed`. */
+  /** Whether the row says `extensible` or `closed`; an enum row says one. */
   extensible?: boolean;
   line: number;
 }
@@ -148,8 +154,8 @@ export function parseDocType(cell: string): { type: string; itemType?: string } 
 
 /**
  * An enum row's values: the backticked list one of its cells opens with. The
- * `Values` column comes first, then what follows `enum` in the `Type` cell,
- * then the `Notes` column.
+ * `Values` column comes first, then what follows `enum`, `enum, closed:` or
+ * `enum, extensible:` in the `Type` cell, then the `Notes` column.
  */
 function enumValues(headers: string[], cells: string[], typeColumn: number): string[] | undefined {
   const columnsNamed = (prefix: string) =>
@@ -157,7 +163,7 @@ function enumValues(headers: string[], cells: string[], typeColumn: number): str
   const order = [...columnsNamed("Values"), typeColumn, ...columnsNamed("Notes")];
   for (const column of order) {
     const cell = (cells[column] ?? "").trim();
-    const text = column === typeColumn ? cell.replace(/^enum\s*/, "") : cell;
+    const text = column === typeColumn ? cell.replace(/^enum(?:,\s*(?:extensible|closed))?[:\s]*/, "") : cell;
     const run = LEADING_VALUES.exec(text);
     if (run !== null) return backticked(run[0]);
   }
@@ -318,6 +324,12 @@ export function compareNodeTypesDoc(dump: CoreSchemaDump, markdown: string): str
     }
   }
 
+  for (const schema of dump.schemas) {
+    if (!registered.has(schema.id)) {
+      problems.push(`the code seeds a \`${schema.id}\` schema for a type the registry doesn't list`);
+    }
+  }
+
   for (const sheet of doc.sheets.values()) {
     if (!registered.has(sheet.type) && sheet.fields.length > 0) {
       problems.push(`line ${sheet.line}: \`${sheet.type}\` has a field table, and the code registers no such core type`);
@@ -330,9 +342,17 @@ export function compareNodeTypesDoc(dump: CoreSchemaDump, markdown: string): str
       problems.push(`\`${type.id}\` is a core type with no sheet`);
       continue;
     }
-    // The `schema` meta-type is registered but has no seeded schema of its own.
+    // The `schema` meta-type is registered but has no seeded schema of its
+    // own, so its sheet has no field table.
     const schema = dump.schemas.find((candidate) => candidate.id === type.id);
-    if (schema === undefined) continue;
+    if (schema === undefined) {
+      for (const field of sheet.fields) {
+        problems.push(
+          `line ${field.line}: the \`${type.id}\` sheet lists \`${field.name}\`, and the code seeds no \`${type.id}\` schema`
+        );
+      }
+      continue;
+    }
 
     const documented = new Map<string, DocField>();
     for (const field of sheet.fields) {
@@ -368,7 +388,9 @@ export function compareNodeTypesDoc(dump: CoreSchemaDump, markdown: string): str
       } else if (docField.enumValues.join("\n") !== values.join("\n")) {
         problems.push(`${at} has the values ${values.join(", ")}, and the sheet lists ${docField.enumValues.join(", ")}`);
       }
-      if (docField.extensible !== undefined && docField.extensible !== (field.extensible ?? false)) {
+      if (docField.extensible === undefined) {
+        problems.push(`${at} is an enum, and the sheet's Type cell says neither \`extensible\` nor \`closed\``);
+      } else if (docField.extensible !== (field.extensible ?? false)) {
         problems.push(
           `${at} is ${field.extensible ? "extensible" : "closed"} in the schema and ${docField.extensible ? "extensible" : "closed"} in the sheet`
         );
@@ -406,33 +428,63 @@ export async function resolveDocsDir(
   return { dir: join(dirname(primaryRootFromCommonDir(commonDir)), DOCS_REPO_NAME), explicit: false };
 }
 
-export type DocLookup = { path: string } | { skip: string } | { error: string };
+/** What the merge gate reads: the docs repository's published main. */
+const PUBLISHED_REF = "origin/main";
+
+export type DocRead = { markdown: string; source: string } | { skip: string } | { error: string };
 
 /**
- * The reference inside the docs repository. A machine with no docs checkout
- * skips the check; a NODESPACE_DOCS_DIR that holds no reference is a mistake
- * to report, since skipping would hide it.
+ * Why this machine can't run the check: it has no docs checkout. Null when it
+ * has one, or when NODESPACE_DOCS_DIR names one, which is then an error to
+ * report if it isn't there, since skipping would hide the mistake.
  */
-export function locateDoc(docs: DocsLocation): DocLookup {
+export function skipReason(docs: DocsLocation): string | null {
+  if (docs.explicit || existsSync(docs.dir)) return null;
+  return `no docs checkout at ${docs.dir}. Clone the docs repository beside the primary checkout, or set ${DOCS_DIR_ENV_VAR}.`;
+}
+
+/**
+ * The reference's text. `published` reads the docs repository's main as its
+ * remote has it, fetched first: the merge gate's verdict then depends on
+ * neither the edits someone has in progress in that checkout nor on how
+ * recently it was pulled. Otherwise the working tree is read, which is what a
+ * change to a type and its sheet is developed against.
+ */
+export async function readDoc(docs: DocsLocation, published: boolean): Promise<DocRead> {
+  const skip = skipReason(docs);
+  if (skip !== null) return { skip };
+  if (!existsSync(docs.dir)) return { error: `${DOCS_DIR_ENV_VAR} is set, and ${docs.dir} does not exist.` };
   const path = join(docs.dir, DOC_FILE);
-  if (existsSync(path)) return { path };
-  if (docs.explicit) return { error: `${DOCS_DIR_ENV_VAR} is set, and ${path} does not exist.` };
-  return {
-    skip: `${path} not found — skipping the node-types.md check. Clone the docs repository beside the primary checkout, or set ${DOCS_DIR_ENV_VAR}.`,
-  };
+  if (!published) {
+    if (!existsSync(path)) return { error: `${path} does not exist.` };
+    return { markdown: readFileSync(path, "utf8"), source: path };
+  }
+  const fetched = await $`git fetch --quiet origin`.cwd(docs.dir).quiet().nothrow();
+  const shown = await $`git show ${`${PUBLISHED_REF}:${DOC_FILE}`}`.cwd(docs.dir).quiet().nothrow();
+  if (shown.exitCode !== 0) {
+    return { error: `could not read ${DOC_FILE} at ${PUBLISHED_REF} in ${docs.dir}:\n${shown.stderr.toString().trim()}` };
+  }
+  const commit = (await $`git rev-parse --short ${PUBLISHED_REF}`.cwd(docs.dir).quiet().nothrow().text()).trim();
+  const stale = fetched.exitCode === 0 ? "" : ", as last fetched: the fetch failed";
+  return { markdown: shown.stdout.toString(), source: `${DOC_FILE} at ${PUBLISHED_REF} (${commit}${stale}) in ${docs.dir}` };
+}
+
+/** Why a merge gate or a test:changed run on this machine will skip the check; null when it won't. */
+export async function stageSkipReason(): Promise<string | null> {
+  return skipReason(await resolveDocsDir());
 }
 
 if (import.meta.main) {
-  const found = locateDoc(await resolveDocsDir());
-  if ("error" in found) {
-    console.error(`❌ ${found.error}`);
+  // --published: compare with the docs repository's remote main, not its working tree.
+  const doc = await readDoc(await resolveDocsDir(), process.argv.includes("--published"));
+  if ("error" in doc) {
+    console.error(`❌ ${doc.error}`);
     process.exit(1);
   }
-  if ("skip" in found) {
-    console.warn(`⚠ ${found.skip}`);
+  if ("skip" in doc) {
+    console.warn(`⚠ Skipping the node-types.md check: ${doc.skip}`);
     process.exit(0);
   }
-  const docPath = found.path;
 
   const dumped = await $`cargo run -q -p nodespace-core --example dump_core_schemas`.cwd(REPO).quiet().nothrow();
   if (dumped.exitCode !== 0) {
@@ -440,14 +492,14 @@ if (import.meta.main) {
     process.exit(1);
   }
   const dump = JSON.parse(dumped.stdout.toString()) as CoreSchemaDump;
-  const problems = compareNodeTypesDoc(dump, readFileSync(docPath, "utf8"));
+  const problems = compareNodeTypesDoc(dump, doc.markdown);
   if (problems.length > 0) {
-    console.error(`❌ ${docPath} and the core node types disagree (${problems.length}):`);
+    console.error(`❌ ${doc.source} and the core node types disagree (${problems.length}):`);
     for (const problem of problems) console.error(`  - ${problem}`);
     console.error(
       "\nA change to a core type updates its sheet in the same change (the node type sequence). Fix whichever side is wrong."
     );
     process.exit(1);
   }
-  console.log(`✅ ${docPath} matches the ${dump.types.length} core node types and their schemas.`);
+  console.log(`✅ ${doc.source} matches the ${dump.types.length} core node types and their schemas.`);
 }

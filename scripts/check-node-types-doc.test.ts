@@ -10,10 +10,11 @@ import { $ } from "bun";
 import {
   compareNodeTypesDoc,
   DOCS_DIR_ENV_VAR,
-  locateDoc,
   parseDocType,
   parseNodeTypesDoc,
+  readDoc,
   resolveDocsDir,
+  skipReason,
   type CoreSchemaDump,
   type DumpedField,
 } from "./check-node-types-doc";
@@ -76,7 +77,7 @@ const DOC = `# Node Types
 | Field | Storage | Type | Default |
 |---|---|---|---|
 | \`rules\` | \`play.rules\` | \`RuleDefinition[]\` | \`[]\` |
-| \`suspended_reason\` | \`play.suspended_reason\` | enum \`failed\`, \`drift\`; system | — |
+| \`suspended_reason\` | \`play.suspended_reason\` | enum, closed: \`failed\`, \`drift\`; system | — |
 `;
 
 /** The 1-based line of the reference that contains \`snippet\`. */
@@ -89,11 +90,11 @@ const values = (...all: string[]) => all.map((value) => ({ value }));
 function matchingDump(): CoreSchemaDump {
   return {
     types: [
-      { id: "text", kind: "concrete", parent: null },
-      { id: "task", kind: "concrete", parent: null },
-      { id: "play", kind: "concrete", parent: null },
-      { id: "ai-chat", kind: "abstract_base", parent: null },
-      { id: "ai-chat-pty", kind: "core_subtype", parent: "ai-chat" },
+      { id: "text", kind: "concrete" },
+      { id: "task", kind: "concrete" },
+      { id: "play", kind: "concrete" },
+      { id: "ai-chat", kind: "abstract_base" },
+      { id: "ai-chat-pty", kind: "core_subtype" },
     ],
     schemas: [
       { id: "text", fields: [] },
@@ -138,7 +139,7 @@ describe("compareNodeTypesDoc — a matching reference", () => {
 
   test("a registered type with no seeded schema needs only a sheet", () => {
     const dump = matchingDump();
-    dump.types.push({ id: "schema", kind: "concrete", parent: null });
+    dump.types.push({ id: "schema", kind: "concrete" });
     const doc = DOC.replace("text, task, play", "text, task, play, schema") + "\n### `schema` (meta-type)\n\nFlat properties.\n";
     expect(compareNodeTypesDoc(dump, doc)).toEqual([]);
   });
@@ -226,14 +227,29 @@ describe("compareNodeTypesDoc — the reference is wrong", () => {
   });
 
   test("an enum with no values listed", () => {
-    const doc = DOC.replace("enum `failed`, `drift`; system", "enum, system");
+    const doc = DOC.replace("enum, closed: `failed`, `drift`; system", "enum, closed; system");
     expect(compareNodeTypesDoc(matchingDump(), doc)).toEqual([
       `line ${lineOf("| `suspended_reason`")}: \`play.suspended_reason\` is an enum, and the sheet lists no values for it (the schema's: failed, drift)`,
     ]);
   });
 
+  test("an enum row that says neither extensible nor closed", () => {
+    const doc = DOC.replace("enum, closed: `failed`, `drift`; system", "enum `failed`, `drift`; system");
+    expect(compareNodeTypesDoc(matchingDump(), doc)).toEqual([
+      `line ${lineOf("| `suspended_reason`")}: \`play.suspended_reason\` is an enum, and the sheet's Type cell says neither \`extensible\` nor \`closed\``,
+    ]);
+  });
+
+  test("a field table on the sheet of a type the code seeds no schema for", () => {
+    const dump = matchingDump();
+    dump.schemas = dump.schemas.filter((schema) => schema.id !== "ai-chat");
+    expect(compareNodeTypesDoc(dump, DOC)).toEqual([
+      `line ${lineOf("| `agent`")}: the \`ai-chat\` sheet lists \`agent\`, and the code seeds no \`ai-chat\` schema`,
+    ]);
+  });
+
   test("a field listed twice", () => {
-    const doc = DOC.replace("| `tags` |", "| `status` | `task.status` | enum | `open`, `done` | — | — |\n| `tags` |");
+    const doc = DOC.replace("| `tags` |", "| `status` | `task.status` | enum, extensible | `open`, `done` | — | — |\n| `tags` |");
     expect(compareNodeTypesDoc(matchingDump(), doc)).toEqual([`line ${lineOf("| `tags`")}: \`task\` lists the field \`status\` twice`]);
   });
 
@@ -256,7 +272,7 @@ describe("compareNodeTypesDoc — the reference is wrong", () => {
 describe("compareNodeTypesDoc — the type list", () => {
   test("a core type with no sheet", () => {
     const dump = matchingDump();
-    dump.types.push({ id: "person", kind: "concrete", parent: null });
+    dump.types.push({ id: "person", kind: "concrete" });
     dump.schemas.push({ id: "person", fields: [field("email", "text")] });
     expect(compareNodeTypesDoc(dump, DOC)).toEqual([
       `line ${lineOf("| Concrete core types")}: \`person\` is registered as one of the concrete core types, and the registry table doesn't list it there`,
@@ -281,6 +297,12 @@ describe("compareNodeTypesDoc — the type list", () => {
       `line ${lineOf("| Core subtypes")}: the registry table lists \`ai-chat-pty\` under "Core subtypes", and the code registers no such type of that kind`,
       `line ${lineOf("**`ai-chat-pty`**")}: \`ai-chat-pty\` has a field table, and the code registers no such core type`,
     ]);
+  });
+
+  test("a seeded schema the registry doesn't list", () => {
+    const dump = matchingDump();
+    dump.schemas.push({ id: "invoice", fields: [] });
+    expect(compareNodeTypesDoc(dump, DOC)).toEqual(["the code seeds a `invoice` schema for a type the registry doesn't list"]);
   });
 
   test("a type named only in a parenthesis or a table-less sheet is not a registered type", () => {
@@ -364,13 +386,112 @@ describe("resolveDocsDir", () => {
     });
   });
 
-  test("a machine with no docs checkout skips; a named directory with no reference is an error", () => {
+  test("only a machine with no docs checkout skips; a named directory is never skipped", () => {
     const dir = join(root, "nodespace-docs");
-    expect(locateDoc({ dir, explicit: false })).toEqual({ skip: expect.stringContaining("skipping the node-types.md check") });
-    expect(locateDoc({ dir, explicit: true })).toEqual({ error: expect.stringContaining(`${DOCS_DIR_ENV_VAR} is set`) });
+    expect(skipReason({ dir, explicit: false })).toContain(`no docs checkout at ${dir}`);
+    expect(skipReason({ dir, explicit: true })).toBeNull();
+    mkdirSync(dir);
+    expect(skipReason({ dir, explicit: false })).toBeNull();
+  });
+});
 
-    mkdirSync(join(dir, "components"), { recursive: true });
-    writeFileSync(join(dir, "components", "node-types.md"), "# Node Types\n");
-    expect(locateDoc({ dir, explicit: false })).toEqual({ path: join(dir, "components", "node-types.md") });
+describe("readDoc", () => {
+  let root: string;
+  const DOC_PATH = join("components", "node-types.md");
+  const git = (cwd: string, ...args: string[]) =>
+    $`git -c user.name=test -c user.email=test@example.com ${args}`.cwd(cwd).quiet();
+
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "check-node-types-doc-test-")));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Commits `text` as the reference in `checkout` and pushes it to the remote's main. */
+  async function publish(checkout: string, text: string): Promise<void> {
+    mkdirSync(join(checkout, "components"), { recursive: true });
+    writeFileSync(join(checkout, DOC_PATH), text);
+    await git(checkout, "add", "-A");
+    await git(checkout, "commit", "-q", "-m", "reference");
+    await git(checkout, "push", "-q", "origin", "HEAD:main");
+  }
+
+  /** A docs remote, and a clone of it at `<root>/<name>`. */
+  async function clone(name: string): Promise<string> {
+    const remote = join(root, "remote.git");
+    await $`git init -q --bare -b main ${remote}`.quiet();
+    const checkout = join(root, name);
+    await $`git clone -q ${remote} ${checkout}`.quiet();
+    return checkout;
+  }
+
+  test("a machine with no docs checkout skips, whichever form is asked for", async () => {
+    const docs = { dir: join(root, "nodespace-docs"), explicit: false };
+    expect(await readDoc(docs, false)).toEqual({ skip: expect.stringContaining("no docs checkout") });
+    expect(await readDoc(docs, true)).toEqual({ skip: expect.stringContaining("no docs checkout") });
+  });
+
+  test("a docs directory with no reference in it is an error, not a skip", async () => {
+    const dir = join(root, "nodespace-docs");
+    mkdirSync(dir);
+    expect(await readDoc({ dir, explicit: false }, false)).toEqual({ error: `${join(dir, DOC_PATH)} does not exist.` });
+    const named = { dir: join(root, "nowhere"), explicit: true };
+    const missing = { error: `${DOCS_DIR_ENV_VAR} is set, and ${named.dir} does not exist.` };
+    expect(await readDoc(named, false)).toEqual(missing);
+    expect(await readDoc(named, true)).toEqual(missing);
+    // A checkout whose main has no reference.
+    const docs = await clone("empty-docs");
+    writeFileSync(join(docs, "README.md"), "docs\n");
+    await git(docs, "add", "-A");
+    await git(docs, "commit", "-q", "-m", "no reference");
+    await git(docs, "push", "-q", "origin", "HEAD:main");
+    expect(await readDoc({ dir: docs, explicit: false }, true)).toEqual({ error: expect.stringContaining("could not read") });
+  });
+
+  test("a plain run reads the working tree, uncommitted edits included", async () => {
+    const docs = await clone("nodespace-docs");
+    await publish(docs, "published\n");
+    writeFileSync(join(docs, DOC_PATH), "being edited\n");
+    expect(await readDoc({ dir: docs, explicit: false }, false)).toEqual({
+      markdown: "being edited\n",
+      source: join(docs, DOC_PATH),
+    });
+  });
+
+  test("the published form reads the remote's main: not uncommitted edits, not an unpushed commit", async () => {
+    const docs = await clone("nodespace-docs");
+    await publish(docs, "published\n");
+    writeFileSync(join(docs, DOC_PATH), "committed here, not pushed\n");
+    await git(docs, "commit", "-q", "-am", "local only");
+    writeFileSync(join(docs, DOC_PATH), "being edited\n");
+
+    const read = await readDoc({ dir: docs, explicit: false }, true);
+    expect(read).toEqual({ markdown: "published\n", source: expect.stringContaining("at origin/main (") });
+  });
+
+  test("the published form fetches, so a checkout behind its remote reads what was pushed since", async () => {
+    const docs = await clone("nodespace-docs");
+    await publish(docs, "first\n");
+    const elsewhere = join(root, "elsewhere");
+    await $`git clone -q ${join(root, "remote.git")} ${elsewhere}`.quiet();
+    await publish(elsewhere, "pushed from another machine\n");
+
+    expect(await readDoc({ dir: docs, explicit: false }, true)).toEqual({
+      markdown: "pushed from another machine\n",
+      source: expect.stringContaining("at origin/main ("),
+    });
+  });
+
+  test("when the fetch fails, the published form reads main as last fetched and says so", async () => {
+    const docs = await clone("nodespace-docs");
+    await publish(docs, "first\n");
+    await git(docs, "remote", "set-url", "origin", join(root, "gone.git"));
+
+    expect(await readDoc({ dir: docs, explicit: false }, true)).toEqual({
+      markdown: "first\n",
+      source: expect.stringContaining("as last fetched: the fetch failed"),
+    });
   });
 });

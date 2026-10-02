@@ -70,14 +70,6 @@ const GENERATED_TYPES_INPUTS = [
 ];
 
 /**
- * The script behind the node-types.md check. The check runs in the Rust tier
- * (it runs a nodespace-core example), so a change to how it reads the
- * reference reaches that tier. Its other input is the docs repository, which
- * no diff here can show.
- */
-const NODE_TYPES_CHECK_INPUTS = ["scripts/check-node-types-doc.ts"];
-
-/**
  * The gate's own machinery. A change here can alter what any stage does, so
  * it is never allowed to scope itself down.
  */
@@ -89,6 +81,7 @@ const GATE_FILES = [
   "scripts/gate-stage.ts",
   "scripts/test-changed.ts",
   "scripts/test-app-units.ts",
+  "scripts/check-node-types-doc.ts",
   "scripts/setup-rust-tooling.ts",
   "scripts/merge-pr.ts",
   ".husky/",
@@ -115,7 +108,6 @@ export function classify(files: string[]): GateScope {
     }
     if (isInert(file)) continue;
     if (GENERATED_TYPES_INPUTS.some((g) => (g.endsWith("/") ? file.startsWith(g) : file === g))) scope.rust = true;
-    if (NODE_TYPES_CHECK_INPUTS.includes(file)) scope.rust = true;
     if (RUST_ROOT_FILES.includes(file) || file.startsWith(".cargo/") || RUST_DIRS.some((d) => file.startsWith(d))) {
       scope.rust = true;
       continue;

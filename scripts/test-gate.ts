@@ -41,6 +41,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { $ } from "bun";
+import { stageSkipReason } from "./check-node-types-doc";
 import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
 import { SCCACHE_CACHE_SIZE, sccacheServerUds } from "./gate-sccache";
 import { createLogDir, GATE_INFRA_EXIT, killActiveStages, runStage, TIERS, type StageSpec } from "./gate-stage";
@@ -297,7 +298,9 @@ await Promise.all([
     await run({ label: "skill:check (SKILL.md drift)", command: "bun run skill:check", timeoutMs: 20 * MINUTE });
     // After the daemon build for the same reason: its example links the
     // nodespace-core that build already compiled.
-    await run(TIERS.nodeTypesCheck);
+    const nodeTypesSkip = await stageSkipReason();
+    if (nodeTypesSkip === null) await run(TIERS.nodeTypesCheckPublished);
+    else console.warn(`  ⚠ ${TIERS.nodeTypesCheckPublished.label} SKIPPED: ${nodeTypesSkip}`);
   })(),
   (async () => {
     await run(TIERS.frontend);

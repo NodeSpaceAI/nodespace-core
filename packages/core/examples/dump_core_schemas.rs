@@ -1,7 +1,7 @@
 //! Prints the core node type registry and the seeded core schemas as JSON, for
 //! tooling that compares them with something outside the Rust workspace.
 //!
-//! `types` is one entry per [`CoreNodeType`], in registry order. `schemas` is
+//! `types` is each [`CoreNodeType`]'s id and kind, in registry order. `schemas` is
 //! [`get_core_schemas`] as it is seeded: each schema's own fields, not the
 //! ones it inherits through `extends`.
 //!
@@ -14,14 +14,7 @@ use serde_json::json;
 fn main() {
     let types: Vec<_> = CoreNodeType::ALL
         .into_iter()
-        .map(|t| {
-            json!({
-                "id": t.as_str(),
-                "kind": t.kind(),
-                "parent": t.parent().map(CoreNodeType::as_str),
-                "category": t.category(),
-            })
-        })
+        .map(|t| json!({ "id": t.as_str(), "kind": t.kind() }))
         .collect();
     let dump = json!({ "types": types, "schemas": get_core_schemas() });
     println!(

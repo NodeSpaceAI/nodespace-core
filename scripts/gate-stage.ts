@@ -76,11 +76,19 @@ export const TIERS = {
   },
   // Compares the per-type reference in the docs repository with the registry
   // and the seeded core schemas (ADR-086). Part of the Rust tier: it runs a
-  // nodespace-core example. Skips, with a warning, on a machine that has no
-  // docs checkout.
+  // nodespace-core example. This is the working-tree form test:changed runs;
+  // the merge gate reads the docs remote's main (nodeTypesCheckPublished).
+  // A machine with no docs checkout can't run either: the caller asks
+  // stageSkipReason() and says so on its own output, since a stage that
+  // skipped itself would show as a pass.
   nodeTypesCheck: {
     label: "node-types:check (node-types.md vs. the core schemas)",
     command: "bun run node-types:check",
+    timeoutMs: 20 * MINUTE,
+  },
+  nodeTypesCheckPublished: {
+    label: "node-types:check (published node-types.md vs. the core schemas)",
+    command: "bun run node-types:check --published",
     timeoutMs: 20 * MINUTE,
   },
   // The browser tier: real focus/blur, drag-and-drop and layout that Happy-DOM
