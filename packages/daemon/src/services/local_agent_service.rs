@@ -3818,7 +3818,10 @@ mod tests {
         shared
             .set_engine_if_changed("gemma-4-e4b", Arc::new(StubEngine::new("local")))
             .await;
-        assert!(shared.local_engine().await.is_some(), "a model on this machine");
+        assert!(
+            shared.local_engine().await.is_some(),
+            "a model on this machine"
+        );
 
         shared
             .set_engine_if_changed("openai-compat:abc-123", Arc::new(StubEngine::new("remote")))
@@ -3867,7 +3870,11 @@ mod tests {
         shared
             .set_engine_if_changed("openai-compat:abc-123", remote.clone())
             .await;
-        assert_eq!(summarizer.summarize(output).await, None, "a remote endpoint");
+        assert_eq!(
+            summarizer.summarize(output).await,
+            None,
+            "a remote endpoint"
+        );
         assert_eq!(
             remote
                 .generate_count

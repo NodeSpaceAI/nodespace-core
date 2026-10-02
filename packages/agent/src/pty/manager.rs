@@ -62,8 +62,7 @@ impl PtySessionManager {
         node_id: Option<String>,
         assembler: &GraphContextAssembler,
     ) -> anyhow::Result<Uuid> {
-        let session =
-            PtySession::launch(agent_type, initial_prompt, node_id, assembler).await?;
+        let session = PtySession::launch(agent_type, initial_prompt, node_id, assembler).await?;
         Ok(self.insert(session).await)
     }
 

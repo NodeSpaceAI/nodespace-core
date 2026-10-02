@@ -76,26 +76,9 @@ pub fn strip_terminal_sequences(raw: &str) -> String {
     let mut state = State::Text;
 
     for c in raw.chars() {
-        // `ESC` inside a string sequence is the only byte that needs a second
-        // look: `ESC \` ends the string, and anything else starts a new
-        // sequence.
-        if state == State::StringSequenceEscape {
-            if c == '\\' {
-                state = State::Text;
-                continue;
-            }
-            state = State::Escape;
-        }
-
         state = match state {
             State::Text => text(c, &mut lines),
-            State::Escape => match c {
-                '[' => State::Csi,
-                ']' | 'P' | 'X' | '^' | '_' => State::StringSequence,
-                '\u{20}'..='\u{2f}' => State::EscapeIntermediate,
-                '\u{1b}' => State::Escape,
-                _ => State::Text,
-            },
+            State::Escape => after_escape(c),
             State::EscapeIntermediate => match c {
                 '\u{20}'..='\u{2f}' => State::EscapeIntermediate,
                 '\u{1b}' => State::Escape,
@@ -132,7 +115,12 @@ pub fn strip_terminal_sequences(raw: &str) -> String {
                 '\u{1b}' => State::StringSequenceEscape,
                 _ => State::StringSequence,
             },
-            State::StringSequenceEscape => unreachable!("resolved before the match"),
+            // `ESC \` is the string terminator; `ESC` and anything else
+            // starts a new sequence.
+            State::StringSequenceEscape => match c {
+                '\\' => State::Text,
+                c => after_escape(c),
+            },
         };
     }
     // Whatever sequence the output ended inside is dropped; the text before
@@ -142,6 +130,18 @@ pub fn strip_terminal_sequences(raw: &str) -> String {
     }
 
     without_repaints(lines.done)
+}
+
+/// The character after `ESC`, which says what kind of sequence this is.
+fn after_escape(c: char) -> State {
+    match c {
+        '[' => State::Csi,
+        ']' | 'P' | 'X' | '^' | '_' => State::StringSequence,
+        '\u{20}'..='\u{2f}' => State::EscapeIntermediate,
+        '\u{1b}' => State::Escape,
+        // A two-character escape (`ESC =`, `ESC 7`): the character ends it.
+        _ => State::Text,
+    }
 }
 
 /// One character of ordinary text.
@@ -206,7 +206,8 @@ mod tests {
 
     #[test]
     fn colours_and_styles_are_removed() {
-        let out = strip_terminal_sequences("\x1b[1;32mBuild passed\x1b[0m in \x1b[38;5;208m3s\x1b[m");
+        let out =
+            strip_terminal_sequences("\x1b[1;32mBuild passed\x1b[0m in \x1b[38;5;208m3s\x1b[m");
         assert_eq!(out, "Build passed in 3s");
     }
 
@@ -221,7 +222,8 @@ mod tests {
 
     #[test]
     fn device_control_and_application_strings_are_removed() {
-        let out = strip_terminal_sequences("a\x1bPq#0;2;0;0;0\x1b\\b\x1b_payload\x1b\\c\x1b^pm\x1b\\d");
+        let out =
+            strip_terminal_sequences("a\x1bPq#0;2;0;0;0\x1b\\b\x1b_payload\x1b\\c\x1b^pm\x1b\\d");
         assert_eq!(out, "abcd");
     }
 

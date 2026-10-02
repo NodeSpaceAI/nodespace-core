@@ -284,7 +284,8 @@ mod tests {
     #[test]
     fn the_claude_code_conversation_written_to_last_is_the_one_returned() {
         let fixture = Fixture::new();
-        let first = fixture.claude_conversation(&fixture.session_dir, &format!("{SESSION_A}.jsonl"));
+        let first =
+            fixture.claude_conversation(&fixture.session_dir, &format!("{SESSION_A}.jsonl"));
         let last = fixture.claude_conversation(&fixture.session_dir, &format!("{SESSION_B}.jsonl"));
         let now = SystemTime::now();
         set_modified(&first, now - Duration::from_secs(120));
@@ -372,6 +373,7 @@ mod tests {
         assert_eq!(fixture.find(AgentType::Codex), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_working_directory_reached_through_a_symlink_is_matched_resolved() {
         let fixture = Fixture::new();
@@ -400,7 +402,11 @@ mod tests {
         fixture.claude_conversation(&fixture.session_dir, &format!("{SESSION_A}.jsonl"));
         fixture.codex_rollout(SESSION_B, &fixture.session_dir);
 
-        for agent_type in [AgentType::AntigravityCli, AgentType::Pi, AgentType::OpenCode] {
+        for agent_type in [
+            AgentType::AntigravityCli,
+            AgentType::Pi,
+            AgentType::OpenCode,
+        ] {
             assert_eq!(fixture.find(agent_type), None, "{agent_type:?}");
         }
     }

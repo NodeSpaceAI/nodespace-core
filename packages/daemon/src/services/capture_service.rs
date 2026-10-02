@@ -618,7 +618,10 @@ mod tests {
             AiChatPtyNode::from_node(node_service.get_node(&node_id).await.unwrap().unwrap())
                 .unwrap();
         assert_eq!(chat.base.summary.as_deref(), Some("The tests pass."));
-        assert_eq!(chat.transcript, None, "the summary level saves no transcript");
+        assert_eq!(
+            chat.transcript, None,
+            "the summary level saves no transcript"
+        );
     }
 
     /// With no summarizer on the machine the chat has no summary: never the
@@ -654,7 +657,10 @@ mod tests {
 
         // A cleared field is stored null and read as absent.
         let node = node_service.get_node(&node_id).await.unwrap().unwrap();
-        assert_eq!(node.properties["ai-chat"]["summary"], serde_json::Value::Null);
+        assert_eq!(
+            node.properties["ai-chat"]["summary"],
+            serde_json::Value::Null
+        );
         let typed = nodespace_core::models::node_to_typed_value(node.clone()).unwrap();
         assert!(typed.get("summary").is_none(), "{typed}");
         assert_eq!(AiChatPtyNode::from_node(node).unwrap().base.summary, None);
@@ -723,10 +729,17 @@ mod tests {
             "{}\n",
         )
         .unwrap();
-        let codex_dir = home.join(".codex").join("sessions").join("2026").join("01").join("01");
+        let codex_dir = home
+            .join(".codex")
+            .join("sessions")
+            .join("2026")
+            .join("01")
+            .join("01");
         std::fs::create_dir_all(&codex_dir).unwrap();
         std::fs::write(
-            codex_dir.join(format!("rollout-2026-01-01T11-00-00-{CODEX_SESSION_ID}.jsonl")),
+            codex_dir.join(format!(
+                "rollout-2026-01-01T11-00-00-{CODEX_SESSION_ID}.jsonl"
+            )),
             format!(
                 "{}\n",
                 json!({
