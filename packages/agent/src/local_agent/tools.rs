@@ -658,24 +658,6 @@ fn wire_node_type(node: &Value) -> &str {
     node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("")
 }
 
-/// `nodes` in their typed wire shape, by node id, with each extending node's
-/// inherited fields folded in (ADR-078) as every ops read does.
-async fn typed_values_by_id(
-    node_service: &NodeService,
-    nodes: Vec<nodespace_core::models::Node>,
-) -> Result<std::collections::HashMap<String, Value>, OpsError> {
-    let collapsed = node_service.collapse_chain_for_wire(nodes).await?;
-    collapsed
-        .into_iter()
-        .map(|node| {
-            let id = node.id.clone();
-            nodespace_core::models::node_to_typed_value(node)
-                .map(|value| (id, value))
-                .map_err(OpsError::Internal)
-        })
-        .collect()
-}
-
 /// One `search_nodes` result row, as the model sees it.
 fn search_result_summary(node: &Value) -> Value {
     let content = node.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -691,10 +673,8 @@ fn search_result_summary(node: &Value) -> Value {
         "title": truncate(title, 100),
         "type": wire_node_type(node),
         "snippet": truncate(content, BODY_TRUNCATE_SUMMARY),
-        // The flat, storage-keyed map (core fields folded back in) — the same
-        // bare keys the model writes with update_node.
-        "properties": nodespace_core::models::flat_properties_view(node),
     });
+    attach_set_fields(&mut summary, node);
     // A row carries only what it has. A type's row is otherwise an id beside
     // an empty property map and a snippet repeating its title, twenty-odd
     // times over, and a list padded that way is one the model summarises
@@ -703,13 +683,6 @@ fn search_result_summary(node: &Value) -> Value {
     if let Some(row) = summary.as_object_mut() {
         if row.get("type").and_then(|v| v.as_str()) == Some("") {
             row.remove("type");
-        }
-        if row
-            .get("properties")
-            .and_then(|v| v.as_object())
-            .is_some_and(|p| p.is_empty())
-        {
-            row.remove("properties");
         }
         if row.get("snippet") == row.get("title") {
             row.remove("snippet");
@@ -734,15 +707,17 @@ fn resolved_payload(row: &Value) -> Value {
     payload
 }
 
-/// Put a node's set fields on a result that carries its text, under
-/// `properties`: the flat, storage-keyed map `search_nodes` and `get_node`'s
-/// json format report. `typed_node` is the node in its typed wire shape.
+/// Put a node's set fields on a result row, under `properties`: the flat,
+/// storage-keyed map (a core type's fields folded back in from the typed top
+/// level), which holds the same bare keys the model writes with `update_node`.
+/// `typed_node` is the node in its typed wire shape. A node with no field set
+/// gets no key.
 ///
-/// A record's fields are not in its text. The text is the node's content and
-/// its descendants', and a record's content is its title, so a record read as
-/// a document alone is a title: asked when a company was signed, the model
-/// answered that the date was not visible. A node with no field set gets no
-/// key.
+/// Every row that stands for a node carries them, a row that carries the
+/// node's text included. A record's fields are not in its text: the text is
+/// the node's content and its descendants', and a record's content is its
+/// title, so a record read as a document alone is a title. Asked when a
+/// company was signed, the model answered that the date was not visible.
 fn attach_set_fields(result: &mut Value, typed_node: &Value) {
     let fields = nodespace_core::models::flat_properties_view(typed_node);
     if fields.as_object().is_some_and(|f| !f.is_empty()) {
@@ -784,6 +759,40 @@ fn semantic_result_summary(node: &Value, typed_node: Option<&Value>) -> Value {
         }
     }
     item
+}
+
+/// `search_semantic`'s result rows, as the model sees them: each result's
+/// [`semantic_result_summary`], with the node's set fields on the rows that
+/// carry its text.
+///
+/// `output.nodes` holds each node's stored property buckets, not the flat map
+/// the model reads and writes, so the fields are read from the typed wire
+/// shape of `output.matched_nodes`: the same results in the same order.
+async fn semantic_result_rows(
+    node_service: &NodeService,
+    output: &search_ops::SearchSemanticOutput,
+) -> Result<Vec<Value>, OpsError> {
+    let with_text: Vec<nodespace_core::models::Node> = output
+        .nodes
+        .iter()
+        .zip(&output.matched_nodes)
+        .filter(|(row, _)| row.get("markdown").is_some())
+        .map(|(_, node)| node.clone())
+        .collect();
+    let typed = node_ops::nodes_to_typed_values(node_service, with_text).await?;
+    let typed_by_id: std::collections::HashMap<&str, &Value> = typed
+        .iter()
+        .filter_map(|node| Some((node.get("id")?.as_str()?, node)))
+        .collect();
+
+    Ok(output
+        .nodes
+        .iter()
+        .map(|row| {
+            let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            semantic_result_summary(row, typed_by_id.get(id).copied())
+        })
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,7 +1082,7 @@ fn def_search_semantic() -> ToolDefinition {
 fn def_get_node() -> ToolDefinition {
     ToolDefinition {
         name: "get_node".into(),
-        description: "Get a node by ID. In the default json format, returns the node's current values in 'properties', plus 'available_properties' — every field this node's type defines, each with its type, any allowed values, and 'set' indicating whether this node currently has a value for it. A field with \"set\": false exists and can be written; it simply has no value yet. Use format=markdown instead to get the node and all its descendants as a readable document; that format returns the text in 'markdown' and, for a record, the fields it has a value for in 'properties'. It does not return 'available_properties'.".into(),
+        description: "Get a node by ID. In the default json format, returns the node's current values in 'properties', plus 'available_properties' — every field this node's type defines, each with its type, any allowed values, and 'set' indicating whether this node currently has a value for it. A field with \"set\": false exists and can be written; it simply has no value yet. Use format=markdown instead to get the node and all its descendants as a readable document; that format returns the text in 'markdown' and, when this node is a record, the fields it has a value for in 'properties'. A descendant's fields are not included: read it with its own get_node. It does not return 'available_properties'.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -3508,29 +3517,9 @@ impl GraphToolExecutor {
             .await
             .map_err(|e| ops_error_to_tool(e, "search_semantic"))?;
 
-        // The results that carry their text, in the typed wire shape their
-        // fields are read from. `output.nodes` holds each node's stored
-        // property buckets, not the flat map the model reads and writes.
-        let with_text: Vec<nodespace_core::models::Node> = output
-            .nodes
-            .iter()
-            .zip(&output.matched_nodes)
-            .filter(|(row, _)| row.get("markdown").is_some())
-            .map(|(_, node)| node.clone())
-            .collect();
-        let typed = typed_values_by_id(&ns, with_text)
+        let items = semantic_result_rows(&ns, &output)
             .await
             .map_err(|e| ops_error_to_tool(e, "search_semantic"))?;
-
-        // Truncate for token efficiency
-        let items: Vec<Value> = output
-            .nodes
-            .iter()
-            .map(|row| {
-                let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                semantic_result_summary(row, typed.get(id))
-            })
-            .collect();
 
         Ok(ok_result(
             tool_call_id,
@@ -3554,6 +3543,21 @@ impl GraphToolExecutor {
 
         let ns = self.node_service()?;
 
+        let input = node_ops::GetNodeInput {
+            node_id: id.clone(),
+        };
+        let mut node_data = match node_ops::get_node(&ns, input).await {
+            Ok(node_data) => node_data,
+            Err(OpsError::NotFound { .. }) => {
+                return Ok(error_result(
+                    tool_call_id,
+                    "get_node",
+                    &format!("Node '{}' not found", id),
+                ))
+            }
+            Err(e) => return Err(ops_error_to_tool(e, "get_node")),
+        };
+
         if format == "markdown" {
             // Reuse the MCP handler's markdown export (single source of truth)
             use nodespace_core::markdown::handle_get_markdown_from_node_id;
@@ -3563,19 +3567,13 @@ impl GraphToolExecutor {
                 "include_children": true,
                 "include_node_ids": false,
             });
-            match handle_get_markdown_from_node_id(&ns, params).await {
+            return match handle_get_markdown_from_node_id(&ns, params).await {
                 Ok(result) => {
                     let md = result
                         .get("markdown")
                         .and_then(|t| t.as_str())
                         .unwrap_or("");
                     let mut payload = json!({ "markdown": truncate(md, BODY_TRUNCATE_FULL) });
-                    let input = node_ops::GetNodeInput {
-                        node_id: id.clone(),
-                    };
-                    let node_data = node_ops::get_node(&ns, input)
-                        .await
-                        .map_err(|e| ops_error_to_tool(e, "get_node"))?;
                     attach_set_fields(&mut payload, &node_data);
                     Ok(ok_result(tool_call_id, "get_node", payload))
                 }
@@ -3585,102 +3583,83 @@ impl GraphToolExecutor {
                     // Display, not Debug — this text reaches the model verbatim.
                     &format!("Failed to render markdown: {e}"),
                 )),
-            }
-        } else {
-            let input = node_ops::GetNodeInput {
-                node_id: id.clone(),
             };
-            match node_ops::get_node(&ns, input).await {
-                Ok(mut node_data) => {
-                    // The model reads and writes properties by their bare
-                    // storage keys (`update_node` field_values), so its view
-                    // of `properties` is the flat, storage-keyed map — a core
-                    // type's fields folded back in from the typed top level.
-                    let flat = nodespace_core::models::flat_properties_view(&node_data);
-                    if let Some(obj) = node_data.as_object_mut() {
-                        obj.insert("properties".to_string(), flat);
-                    }
+        }
 
-                    // Attach the type's full schema field list. `node_data`
-                    // carries only *populated* properties, so without this a
-                    // defined-but-unset field (`due_date` on a fresh task) is
-                    // indistinguishable from one that does not exist, and the
-                    // model cannot name it to write it. See
-                    // `build_available_properties` for why this rides on the
-                    // tool result rather than the routing prompt block.
-                    //
-                    // Best-effort: a node whose type has no stored schema is
-                    // ordinary (plain `text` nodes, ad-hoc types), so a missing
-                    // schema omits the key rather than failing the lookup the
-                    // model actually asked for.
-                    // `nodeType` is the serialized spelling on every path that
-                    // carries one: the generic `Node` camelCases it, and
-                    // the typed node structs flatten the same envelope.
-                    //
-                    // `SchemaNode` is the exception — it has no `node_type`
-                    // field at all, so a schema node emits no `nodeType` and
-                    // skips this block by construction. That is load-bearing:
-                    // it is what stops the `task` SCHEMA node being described
-                    // using `task`'s own instance fields. If `SchemaNode` ever
-                    // gains the field, this needs an explicit
-                    // `node_type != "schema"` guard, because the test covering
-                    // it would keep passing while silently stopping to cover
-                    // anything.
-                    if let Some(node_type) = node_data.get("nodeType").and_then(|v| v.as_str()) {
-                        let node_type = node_type.to_string();
-                        // Effective fields across the `extends` chain, so a
-                        // subtype lists what it inherits; `node_ops` has
-                        // already folded the inherited values in, so `set`
-                        // reads them too.
-                        if let Ok((schema_fields, _, _)) = ns.resolve_field_owners(&node_type).await
-                        {
-                            // Flat, storage-keyed view: a core type's
-                            // fields are top-level on the typed node, but the
-                            // schema names them by storage key (`due_date`).
-                            let properties =
-                                nodespace_core::models::flat_properties_view(&node_data);
-                            let available =
-                                nodespace_core::ops::entity_types_block::build_available_properties(
-                                    &schema_fields,
-                                    &properties,
-                                );
-                            if !available.is_empty() {
-                                if let Some(obj) = node_data.as_object_mut() {
-                                    obj.insert(
-                                        "available_properties".to_string(),
-                                        json!(available),
-                                    );
-                                }
-                            }
-                        }
+        // The model reads and writes properties by their bare
+        // storage keys (`update_node` field_values), so its view
+        // of `properties` is the flat, storage-keyed map — a core
+        // type's fields folded back in from the typed top level.
+        let flat = nodespace_core::models::flat_properties_view(&node_data);
+        if let Some(obj) = node_data.as_object_mut() {
+            obj.insert("properties".to_string(), flat);
+        }
+
+        // Attach the type's full schema field list. `node_data`
+        // carries only *populated* properties, so without this a
+        // defined-but-unset field (`due_date` on a fresh task) is
+        // indistinguishable from one that does not exist, and the
+        // model cannot name it to write it. See
+        // `build_available_properties` for why this rides on the
+        // tool result rather than the routing prompt block.
+        //
+        // Best-effort: a node whose type has no stored schema is
+        // ordinary (plain `text` nodes, ad-hoc types), so a missing
+        // schema omits the key rather than failing the lookup the
+        // model actually asked for.
+        // `nodeType` is the serialized spelling on every path that
+        // carries one: the generic `Node` camelCases it, and
+        // the typed node structs flatten the same envelope.
+        //
+        // `SchemaNode` is the exception — it has no `node_type`
+        // field at all, so a schema node emits no `nodeType` and
+        // skips this block by construction. That is load-bearing:
+        // it is what stops the `task` SCHEMA node being described
+        // using `task`'s own instance fields. If `SchemaNode` ever
+        // gains the field, this needs an explicit
+        // `node_type != "schema"` guard, because the test covering
+        // it would keep passing while silently stopping to cover
+        // anything.
+        if let Some(node_type) = node_data.get("nodeType").and_then(|v| v.as_str()) {
+            let node_type = node_type.to_string();
+            // Effective fields across the `extends` chain, so a
+            // subtype lists what it inherits; `node_ops` has
+            // already folded the inherited values in, so `set`
+            // reads them too.
+            if let Ok((schema_fields, _, _)) = ns.resolve_field_owners(&node_type).await {
+                // Flat, storage-keyed view: a core type's
+                // fields are top-level on the typed node, but the
+                // schema names them by storage key (`due_date`).
+                let properties = nodespace_core::models::flat_properties_view(&node_data);
+                let available = nodespace_core::ops::entity_types_block::build_available_properties(
+                    &schema_fields,
+                    &properties,
+                );
+                if !available.is_empty() {
+                    if let Some(obj) = node_data.as_object_mut() {
+                        obj.insert("available_properties".to_string(), json!(available));
                     }
-                    // Normalise `id` to the `nodespace://` URI form every
-                    // other entity-resolving tool's result already uses
-                    // (`search_nodes`/`search_semantic`/`get_related_nodes`/
-                    // `resolve_query`, all built on `node_uri(...)`).
-                    // `node_to_typed_value` sets this to the bare UUID and
-                    // carries the URI separately under `"uri"` — without this,
-                    // `resolved_entities_from`'s dedup-by-`node_id` would treat
-                    // the same node as two different entities depending on
-                    // which tool last reported it, and the model could echo
-                    // the bare-UUID form back into a later tool call that
-                    // expects the URI form.
-                    if let Some(id) = node_data.get("id").and_then(|v| v.as_str()) {
-                        let uri = node_uri(id);
-                        if let Some(obj) = node_data.as_object_mut() {
-                            obj.insert("id".to_string(), json!(uri));
-                        }
-                    }
-                    Ok(ok_result(tool_call_id, "get_node", node_data))
                 }
-                Err(OpsError::NotFound { .. }) => Ok(error_result(
-                    tool_call_id,
-                    "get_node",
-                    &format!("Node '{}' not found", id),
-                )),
-                Err(e) => Err(ops_error_to_tool(e, "get_node")),
             }
         }
+        // Normalise `id` to the `nodespace://` URI form every
+        // other entity-resolving tool's result already uses
+        // (`search_nodes`/`search_semantic`/`get_related_nodes`/
+        // `resolve_query`, all built on `node_uri(...)`).
+        // `node_to_typed_value` sets this to the bare UUID and
+        // carries the URI separately under `"uri"` — without this,
+        // `resolved_entities_from`'s dedup-by-`node_id` would treat
+        // the same node as two different entities depending on
+        // which tool last reported it, and the model could echo
+        // the bare-UUID form back into a later tool call that
+        // expects the URI form.
+        if let Some(id) = node_data.get("id").and_then(|v| v.as_str()) {
+            let uri = node_uri(id);
+            if let Some(obj) = node_data.as_object_mut() {
+                obj.insert("id".to_string(), json!(uri));
+            }
+        }
+        Ok(ok_result(tool_call_id, "get_node", node_data))
     }
 
     async fn exec_create_node(
@@ -5721,28 +5700,26 @@ mod tests {
     }
 
     /// A record's text is its title, so a result that carries the text carries
-    /// the record's set fields beside it. The typed wire shape promotes a core
-    /// type's fields to the top level; the row reports them by storage key.
+    /// the record's set fields beside it.
     #[test]
     fn a_semantic_result_with_text_carries_the_records_set_fields() {
         let stored = json!({
             "id": "abc",
-            "nodeType": "task",
-            "content": "Renew the lease",
-            "markdown": "Renew the lease",
+            "nodeType": "customer_account",
+            "content": "Northwind Trading",
+            "markdown": "Northwind Trading",
         });
         let typed = json!({
             "id": "abc",
-            "nodeType": "task",
-            "content": "Renew the lease",
-            "dueDate": "2026-08-06",
-            "properties": { "custom:landlord": "Ada" },
+            "nodeType": "customer_account",
+            "content": "Northwind Trading",
+            "properties": { "signed_date": "2025-03-14" },
         });
 
         let row = semantic_result_summary(&stored, Some(&typed));
         assert_eq!(
             row["properties"],
-            json!({ "due_date": "2026-08-06", "custom:landlord": "Ada" }),
+            json!({ "signed_date": "2025-03-14" }),
             "{row}"
         );
     }
@@ -5751,9 +5728,13 @@ mod tests {
     /// one the model fetches, and the fetch returns them.
     #[test]
     fn a_semantic_result_without_text_or_set_fields_carries_no_properties() {
-        let typed_record = json!({ "id": "abc", "nodeType": "task", "dueDate": "2026-08-06" });
+        let typed_record = json!({
+            "id": "abc",
+            "nodeType": "customer_account",
+            "properties": { "signed_date": "2025-03-14" },
+        });
         let snippet_only = semantic_result_summary(
-            &json!({ "id": "abc", "nodeType": "task", "content": "Renew the lease" }),
+            &json!({ "id": "abc", "nodeType": "customer_account", "content": "Northwind Trading" }),
             Some(&typed_record),
         );
         assert!(snippet_only.get("properties").is_none(), "{snippet_only}");
@@ -7754,6 +7735,155 @@ mod tests {
             assert_eq!(
                 stored.properties,
                 json!({ "collection": { "description": "Accounts we bill, one page each" } })
+            );
+        }
+    }
+
+    /// `search_semantic`'s rows are built from what the ops layer returned:
+    /// stored nodes, and a row per node holding its stored property buckets.
+    /// These build that output by hand from nodes in a real store, so the
+    /// conversion to the model's flat field map runs without an embedding
+    /// service.
+    mod semantic_result_rows {
+        use super::update_node_noop_gate::{make_test_service, plain_executor};
+        use super::*;
+        use nodespace_core::models::Node;
+
+        async fn create(executor: &GraphToolExecutor, args: Value) -> String {
+            let result = executor.execute("create_node", args).await.unwrap();
+            assert!(!result.is_error, "fixture creation failed: {result:?}");
+            strip_node_uri(result.result["id"].as_str().unwrap()).to_string()
+        }
+
+        /// The ops layer's row for a stored node, with its text when
+        /// `with_text`.
+        fn ops_row(node: &Node, with_text: bool) -> Value {
+            let mut row = json!({
+                "id": node.id,
+                "nodeType": node.node_type,
+                "content": node.content,
+                "title": node.title,
+                "properties": node.properties,
+                "similarity": 0.8,
+            });
+            if with_text {
+                row["markdown"] = json!(node.content);
+            }
+            row
+        }
+
+        fn ops_output(results: Vec<(Node, bool)>) -> search_ops::SearchSemanticOutput {
+            search_ops::SearchSemanticOutput {
+                nodes: results
+                    .iter()
+                    .map(|(node, with_text)| ops_row(node, *with_text))
+                    .collect(),
+                count: results.len(),
+                matched_nodes: results.into_iter().map(|(node, _)| node).collect(),
+                query: "northwind".to_string(),
+                threshold: SEMANTIC_THRESHOLD,
+                collection_id: None,
+                include_markdown: 1,
+                include_archived: false,
+                scope: "user".to_string(),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_record_with_text_carries_its_set_fields_and_one_without_does_not() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+            handle_create_schema(
+                &ns,
+                json!({
+                    "name": "customer_account",
+                    "fields": [{ "name": "signed_date", "type": "date" }]
+                }),
+            )
+            .await
+            .expect("schema");
+            let mut stored = Vec::new();
+            for (title, signed) in [
+                ("Northwind Trading", "2025-03-14"),
+                ("Tailspin", "2024-01-09"),
+            ] {
+                let id = create(
+                    &executor,
+                    json!({
+                        "content": title,
+                        "node_type": "customer_account",
+                        "field_values": { "signed_date": signed },
+                    }),
+                )
+                .await;
+                stored.push(ns.get_node(&id).await.unwrap().unwrap());
+            }
+            let tailspin = stored.pop().unwrap();
+            let northwind = stored.pop().unwrap();
+
+            let rows =
+                semantic_result_rows(&ns, &ops_output(vec![(northwind, true), (tailspin, false)]))
+                    .await
+                    .unwrap();
+
+            assert_eq!(rows[0]["markdown"], "Northwind Trading");
+            assert_eq!(
+                rows[0]["properties"],
+                json!({ "signed_date": "2025-03-14" }),
+                "the stored bucket must come back as the flat map: {}",
+                rows[0]
+            );
+            assert!(
+                rows[1].get("properties").is_none(),
+                "a row without text is one the model fetches: {}",
+                rows[1]
+            );
+        }
+
+        /// An extending type's inherited field is stored in its base's bucket.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_subtype_with_text_carries_the_fields_it_inherits() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+            handle_create_schema(
+                &ns,
+                json!({
+                    "name": "ledger_entry",
+                    "fields": [{ "name": "amount", "type": "number" }]
+                }),
+            )
+            .await
+            .expect("base schema");
+            handle_create_schema(
+                &ns,
+                json!({
+                    "name": "refund_entry",
+                    "extends": "ledger_entry",
+                    "fields": [{ "name": "reason", "type": "text" }]
+                }),
+            )
+            .await
+            .expect("subtype schema");
+            let id = create(
+                &executor,
+                json!({
+                    "content": "Refund for a duplicate charge",
+                    "node_type": "refund_entry",
+                    "field_values": { "amount": 42, "reason": "duplicate" },
+                }),
+            )
+            .await;
+            let refund = ns.get_node(&id).await.unwrap().unwrap();
+
+            let rows = semantic_result_rows(&ns, &ops_output(vec![(refund, true)]))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                rows[0]["properties"],
+                json!({ "amount": 42, "reason": "duplicate" }),
+                "{}",
+                rows[0]
             );
         }
     }

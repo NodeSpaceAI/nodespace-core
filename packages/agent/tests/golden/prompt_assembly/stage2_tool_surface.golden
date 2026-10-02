@@ -183,7 +183,7 @@ parameters_schema:
 }
 
 ### get_node
-description: Get a node by ID. In the default json format, returns the node's current values in 'properties', plus 'available_properties' — every field this node's type defines, each with its type, any allowed values, and 'set' indicating whether this node currently has a value for it. A field with "set": false exists and can be written; it simply has no value yet. Use format=markdown instead to get the node and all its descendants as a readable document; that format returns the text in 'markdown' and, for a record, the fields it has a value for in 'properties'. It does not return 'available_properties'.
+description: Get a node by ID. In the default json format, returns the node's current values in 'properties', plus 'available_properties' — every field this node's type defines, each with its type, any allowed values, and 'set' indicating whether this node currently has a value for it. A field with "set": false exists and can be written; it simply has no value yet. Use format=markdown instead to get the node and all its descendants as a readable document; that format returns the text in 'markdown' and, when this node is a record, the fields it has a value for in 'properties'. A descendant's fields are not included: read it with its own get_node. It does not return 'available_properties'.
 parameters_schema:
 {
   "properties": {

@@ -267,7 +267,7 @@ const SEEDED_COMPANY_TITLE = "Northwind Trading";
 const SEEDED_COMPANY_SIGNED = "2025-03-14";
 /// That date as a reply may write it: ISO, or the day and month in words.
 const SEEDED_COMPANY_SIGNED_IN_REPLY =
-  /2025-03-14|\bMar(ch|\.)?\s+14(th)?\b|\b14(th)?\s+(of\s+)?Mar(ch|\.)?\b/i;
+  /2025-03-14|\bMar(ch|\.)?\s+14(th)?\b|\b14(th)?\s+(of\s+)?Mar(ch|\.)?\b|\b0?3\/14\/(20)?25\b|\b14\/0?3\/(20)?25\b/i;
 
 /// The company type this fixture creates when a rep starts cold.
 ///
@@ -461,20 +461,23 @@ function seedNorthwind(env: EvalEnv): void {
 
   // The date field's name is model-derived too (`signed_date`, `date_signed`,
   // `signed_on` have all appeared), so find it by type rather than by name.
-  // Skipped rather than failed when absent: the scenario that reads it
-  // (`schema-shared-name-signed`) is scored on which TYPE the model selects,
-  // not on the value it returns, so a missing date weakens one assertion
-  // rather than invalidating the seed.
+  // A company type with no date field fails the seed: a scenario is scored on
+  // the reply carrying this date (`outcome-record-field-is-answered`), and
+  // with nothing to answer from it would score a setup turn's missing field
+  // as the model failing to read one.
   const dateField = company.fields.find((f) => f?.type === "date" && f?.name)?.name;
-  if (dateField) {
-    runNs(env, [
-      "node",
-      "update",
-      id.replace(/^nodespace:\/\//, ""),
-      "--property",
-      `${dateField}=${SEEDED_COMPANY_SIGNED}`,
-    ]);
+  if (!dateField) {
+    throw new Error(
+      `company type '${companyType}' has no date field, so '${SEEDED_COMPANY_TITLE}' cannot be given its signing date — purge the database and re-run`,
+    );
   }
+  runNs(env, [
+    "node",
+    "update",
+    id.replace(/^nodespace:\/\//, ""),
+    "--property",
+    `${dateField}=${SEEDED_COMPANY_SIGNED}`,
+  ]);
 }
 
 /// The type the linked-skill scenarios act on, and the only one their turns
@@ -761,9 +764,7 @@ const FIXTURES: DecisionScenario[] = [
     // "is not visible"; which way the model reads a record varies between
     // runs of the same prompt, so this is scored on the reply, not the call.
     //
-    // Needs the seeded date: `seedNorthwind` sets it on the company type's
-    // date field, and a setup turn that created the type without one leaves
-    // nothing to answer with.
+    // Needs the seeded date, which `seedNorthwind` sets or fails the run.
     prompt: "When did we sign Northwind Trading?",
     expected: { decision: "outcome", replyMatches: SEEDED_COMPANY_SIGNED_IN_REPLY },
     knowledgeQuestion: true,
