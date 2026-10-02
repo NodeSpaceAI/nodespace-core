@@ -658,6 +658,24 @@ fn wire_node_type(node: &Value) -> &str {
     node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("")
 }
 
+/// `nodes` in their typed wire shape, by node id, with each extending node's
+/// inherited fields folded in (ADR-078) as every ops read does.
+async fn typed_values_by_id(
+    node_service: &NodeService,
+    nodes: Vec<nodespace_core::models::Node>,
+) -> Result<std::collections::HashMap<String, Value>, OpsError> {
+    let collapsed = node_service.collapse_chain_for_wire(nodes).await?;
+    collapsed
+        .into_iter()
+        .map(|node| {
+            let id = node.id.clone();
+            nodespace_core::models::node_to_typed_value(node)
+                .map(|value| (id, value))
+                .map_err(OpsError::Internal)
+        })
+        .collect()
+}
+
 /// One `search_nodes` result row, as the model sees it.
 fn search_result_summary(node: &Value) -> Value {
     let content = node.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -716,8 +734,26 @@ fn resolved_payload(row: &Value) -> Value {
     payload
 }
 
-/// One `search_semantic` result row, as the model sees it.
-fn semantic_result_summary(node: &Value) -> Value {
+/// Put a node's set fields on a result that carries its text, under
+/// `properties`: the flat, storage-keyed map `search_nodes` and `get_node`'s
+/// json format report. `typed_node` is the node in its typed wire shape.
+///
+/// A record's fields are not in its text. The text is the node's content and
+/// its descendants', and a record's content is its title, so a record read as
+/// a document alone is a title: asked when a company was signed, the model
+/// answered that the date was not visible. A node with no field set gets no
+/// key.
+fn attach_set_fields(result: &mut Value, typed_node: &Value) {
+    let fields = nodespace_core::models::flat_properties_view(typed_node);
+    if fields.as_object().is_some_and(|f| !f.is_empty()) {
+        result["properties"] = fields;
+    }
+}
+
+/// One `search_semantic` result row, as the model sees it. `typed_node` is the
+/// result in its typed wire shape, given for a row whose fields are to be read
+/// beside its text.
+fn semantic_result_summary(node: &Value, typed_node: Option<&Value>) -> Value {
     let mut item = json!({
         "id": node_uri(node.get("id").and_then(|v| v.as_str()).unwrap_or("")),
         "title": truncate(
@@ -731,10 +767,14 @@ fn semantic_result_summary(node: &Value) -> Value {
             BODY_TRUNCATE_SUMMARY
         ),
     });
-    // Include the document's text if the ops layer returned it.
+    // Include the document's text if the ops layer returned it, and beside it
+    // the fields the text leaves out.
     if let Some(md) = node.get("markdown").and_then(|v| v.as_str()) {
         if !md.is_empty() {
             item["markdown"] = json!(truncate(md, BODY_TRUNCATE_FULL));
+            if let Some(typed_node) = typed_node {
+                attach_set_fields(&mut item, typed_node);
+            }
         }
     }
     // Include edge data if the ops layer returned it (include_edges=true).
@@ -968,7 +1008,7 @@ fn def_resolve_query() -> ToolDefinition {
 fn def_search_semantic() -> ToolDefinition {
     ToolDefinition {
         name: "search_semantic".into(),
-        description: "Find nodes semantically related to a natural-language query. By default returns full content for the top result (include_markdown=1). Increase include_markdown to get full content for more results, or set to 0 for IDs and snippets only. If a result's 'markdown' field is non-empty, that is the complete document — summarize or answer from it directly, do not call get_node or search_nodes again for that result.".into(),
+        description: "Find nodes semantically related to a natural-language query. By default returns full content for the top result (include_markdown=1). Increase include_markdown to get full content for more results, or set to 0 for IDs and snippets only. If a result's 'markdown' field is non-empty, that is the complete document, and a record's field values are beside it in 'properties' — summarize or answer from them directly, do not call get_node or search_nodes again for that result.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -1033,7 +1073,7 @@ fn def_search_semantic() -> ToolDefinition {
 fn def_get_node() -> ToolDefinition {
     ToolDefinition {
         name: "get_node".into(),
-        description: "Get a node by ID. In the default json format, returns the node's current values in 'properties', plus 'available_properties' — every field this node's type defines, each with its type, any allowed values, and 'set' indicating whether this node currently has a value for it. A field with \"set\": false exists and can be written; it simply has no value yet. Use format=markdown instead to get the node and all its descendants as a readable document; that format returns the document text alone, without either of those fields.".into(),
+        description: "Get a node by ID. In the default json format, returns the node's current values in 'properties', plus 'available_properties' — every field this node's type defines, each with its type, any allowed values, and 'set' indicating whether this node currently has a value for it. A field with \"set\": false exists and can be written; it simply has no value yet. Use format=markdown instead to get the node and all its descendants as a readable document; that format returns the text in 'markdown' and, for a record, the fields it has a value for in 'properties'. It does not return 'available_properties'.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -1044,7 +1084,7 @@ fn def_get_node() -> ToolDefinition {
                 "format": {
                     "type": "string",
                     "enum": ["json", "markdown"],
-                    "description": "Output format: json (default) returns node fields, markdown returns the node and all descendants as a readable document"
+                    "description": "Output format: json (default) returns node fields, markdown returns the node and all descendants as a readable document, with a record's set fields beside it"
                 }
             },
             "required": ["id"]
@@ -3468,8 +3508,29 @@ impl GraphToolExecutor {
             .await
             .map_err(|e| ops_error_to_tool(e, "search_semantic"))?;
 
+        // The results that carry their text, in the typed wire shape their
+        // fields are read from. `output.nodes` holds each node's stored
+        // property buckets, not the flat map the model reads and writes.
+        let with_text: Vec<nodespace_core::models::Node> = output
+            .nodes
+            .iter()
+            .zip(&output.matched_nodes)
+            .filter(|(row, _)| row.get("markdown").is_some())
+            .map(|(_, node)| node.clone())
+            .collect();
+        let typed = typed_values_by_id(&ns, with_text)
+            .await
+            .map_err(|e| ops_error_to_tool(e, "search_semantic"))?;
+
         // Truncate for token efficiency
-        let items: Vec<Value> = output.nodes.iter().map(semantic_result_summary).collect();
+        let items: Vec<Value> = output
+            .nodes
+            .iter()
+            .map(|row| {
+                let id = row.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                semantic_result_summary(row, typed.get(id))
+            })
+            .collect();
 
         Ok(ok_result(
             tool_call_id,
@@ -3508,12 +3569,15 @@ impl GraphToolExecutor {
                         .get("markdown")
                         .and_then(|t| t.as_str())
                         .unwrap_or("");
-                    let truncated = truncate(md, BODY_TRUNCATE_FULL);
-                    Ok(ok_result(
-                        tool_call_id,
-                        "get_node",
-                        json!({ "markdown": truncated }),
-                    ))
+                    let mut payload = json!({ "markdown": truncate(md, BODY_TRUNCATE_FULL) });
+                    let input = node_ops::GetNodeInput {
+                        node_id: id.clone(),
+                    };
+                    let node_data = node_ops::get_node(&ns, input)
+                        .await
+                        .map_err(|e| ops_error_to_tool(e, "get_node"))?;
+                    attach_set_fields(&mut payload, &node_data);
+                    Ok(ok_result(tool_call_id, "get_node", payload))
                 }
                 Err(e) => Ok(error_result(
                     tool_call_id,
@@ -5603,13 +5667,16 @@ mod tests {
     /// result's type as the empty string.
     #[test]
     fn a_semantic_result_carries_the_nodes_type() {
-        let row = semantic_result_summary(&json!({
-            "id": "abc",
-            "title": "Retry policy",
-            "nodeType": "text",
-            "similarity": 0.8,
-            "content": "Retries back off.",
-        }));
+        let row = semantic_result_summary(
+            &json!({
+                "id": "abc",
+                "title": "Retry policy",
+                "nodeType": "text",
+                "similarity": 0.8,
+                "content": "Retries back off.",
+            }),
+            None,
+        );
         assert_eq!(row["type"], "text");
         assert_eq!(row["id"], "nodespace://abc");
         assert_eq!(row["score"], 0.8);
@@ -5640,14 +5707,62 @@ mod tests {
 
     #[test]
     fn a_semantic_result_carries_text_and_edges_when_the_ops_layer_sent_them() {
-        let row = semantic_result_summary(&json!({
-            "id": "abc",
-            "nodeType": "text",
-            "markdown": "# Retry policy\n\nRetries back off.",
-            "edges": [{"type": "mentions", "to": "def"}],
-        }));
+        let row = semantic_result_summary(
+            &json!({
+                "id": "abc",
+                "nodeType": "text",
+                "markdown": "# Retry policy\n\nRetries back off.",
+                "edges": [{"type": "mentions", "to": "def"}],
+            }),
+            None,
+        );
         assert_eq!(row["markdown"], "# Retry policy\n\nRetries back off.");
         assert_eq!(row["edges"][0]["to"], "def");
+    }
+
+    /// A record's text is its title, so a result that carries the text carries
+    /// the record's set fields beside it. The typed wire shape promotes a core
+    /// type's fields to the top level; the row reports them by storage key.
+    #[test]
+    fn a_semantic_result_with_text_carries_the_records_set_fields() {
+        let stored = json!({
+            "id": "abc",
+            "nodeType": "task",
+            "content": "Renew the lease",
+            "markdown": "Renew the lease",
+        });
+        let typed = json!({
+            "id": "abc",
+            "nodeType": "task",
+            "content": "Renew the lease",
+            "dueDate": "2026-08-06",
+            "properties": { "custom:landlord": "Ada" },
+        });
+
+        let row = semantic_result_summary(&stored, Some(&typed));
+        assert_eq!(
+            row["properties"],
+            json!({ "due_date": "2026-08-06", "custom:landlord": "Ada" }),
+            "{row}"
+        );
+    }
+
+    /// Fields ride beside the text, not on every row: a result with no text is
+    /// one the model fetches, and the fetch returns them.
+    #[test]
+    fn a_semantic_result_without_text_or_set_fields_carries_no_properties() {
+        let typed_record = json!({ "id": "abc", "nodeType": "task", "dueDate": "2026-08-06" });
+        let snippet_only = semantic_result_summary(
+            &json!({ "id": "abc", "nodeType": "task", "content": "Renew the lease" }),
+            Some(&typed_record),
+        );
+        assert!(snippet_only.get("properties").is_none(), "{snippet_only}");
+
+        let document = semantic_result_summary(
+            &json!({ "id": "def", "nodeType": "text", "markdown": "Retries back off." }),
+            Some(&json!({ "id": "def", "nodeType": "text", "properties": {} })),
+        );
+        assert!(document.get("properties").is_none(), "{document}");
     }
 
     #[test]

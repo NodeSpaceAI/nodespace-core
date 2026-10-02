@@ -265,6 +265,9 @@ const SETUP: DecisionScenario[] = [
 /// alone was enough to make the model stop emitting tool calls.
 const SEEDED_COMPANY_TITLE = "Northwind Trading";
 const SEEDED_COMPANY_SIGNED = "2025-03-14";
+/// That date as a reply may write it: ISO, or the day and month in words.
+const SEEDED_COMPANY_SIGNED_IN_REPLY =
+  /2025-03-14|\bMar(ch|\.)?\s+14(th)?\b|\b14(th)?\s+(of\s+)?Mar(ch|\.)?\b/i;
 
 /// The company type this fixture creates when a rep starts cold.
 ///
@@ -750,6 +753,23 @@ const FIXTURES: DecisionScenario[] = [
     knowledgeQuestion: true,
   },
   {
+    id: "outcome-record-field-is-answered",
+    scenario: "Outcome: a question about a record's field is answered with its value",
+    // The date is a field of the record, not text in it, so the reply carries
+    // it only when the fields reached the model. A record read as a document
+    // came back as its title alone, and the reply was that the signing date
+    // "is not visible"; which way the model reads a record varies between
+    // runs of the same prompt, so this is scored on the reply, not the call.
+    //
+    // Needs the seeded date: `seedNorthwind` sets it on the company type's
+    // date field, and a setup turn that created the type without one leaves
+    // nothing to answer with.
+    prompt: "When did we sign Northwind Trading?",
+    expected: { decision: "outcome", replyMatches: SEEDED_COMPANY_SIGNED_IN_REPLY },
+    knowledgeQuestion: true,
+    entityResolution: true,
+  },
+  {
     id: "outcome-follow-up-keeps-its-answer",
     scenario: "Outcome: a follow-up on the last answer still answers about it",
     // A follow-up has nothing to look up and nothing to change, so the reply
@@ -763,9 +783,8 @@ const FIXTURES: DecisionScenario[] = [
     priorTurns: ["When did we sign Northwind Trading?"],
     prompt: "Can you say that again more simply?",
     // The company, not the date. Whether the turn before found the date is
-    // not this scenario's subject, and it does not always: the model reads
-    // the record as JSON on some runs and as markdown, which leaves the
-    // properties out, on others. Either answer said again names the company.
+    // `outcome-record-field-is-answered`'s subject, not this one's. Either
+    // answer said again names the company.
     // Every reply this scenario exists to catch ("I'm not sure what you
     // mean", "I don't see a record of that in this conversation", a request
     // to confirm) names nothing.

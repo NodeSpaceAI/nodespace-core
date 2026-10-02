@@ -110,7 +110,7 @@ parameters_schema:
 }
 
 ### search_semantic
-description: Find nodes semantically related to a natural-language query. By default returns full content for the top result (include_markdown=1). Increase include_markdown to get full content for more results, or set to 0 for IDs and snippets only. If a result's 'markdown' field is non-empty, that is the complete document — summarize or answer from it directly, do not call get_node or search_nodes again for that result.
+description: Find nodes semantically related to a natural-language query. By default returns full content for the top result (include_markdown=1). Increase include_markdown to get full content for more results, or set to 0 for IDs and snippets only. If a result's 'markdown' field is non-empty, that is the complete document, and a record's field values are beside it in 'properties' — summarize or answer from them directly, do not call get_node or search_nodes again for that result.
 parameters_schema:
 {
   "properties": {
@@ -183,12 +183,12 @@ parameters_schema:
 }
 
 ### get_node
-description: Get a node by ID. In the default json format, returns the node's current values in 'properties', plus 'available_properties' — every field this node's type defines, each with its type, any allowed values, and 'set' indicating whether this node currently has a value for it. A field with "set": false exists and can be written; it simply has no value yet. Use format=markdown instead to get the node and all its descendants as a readable document; that format returns the document text alone, without either of those fields.
+description: Get a node by ID. In the default json format, returns the node's current values in 'properties', plus 'available_properties' — every field this node's type defines, each with its type, any allowed values, and 'set' indicating whether this node currently has a value for it. A field with "set": false exists and can be written; it simply has no value yet. Use format=markdown instead to get the node and all its descendants as a readable document; that format returns the text in 'markdown' and, for a record, the fields it has a value for in 'properties'. It does not return 'available_properties'.
 parameters_schema:
 {
   "properties": {
     "format": {
-      "description": "Output format: json (default) returns node fields, markdown returns the node and all descendants as a readable document",
+      "description": "Output format: json (default) returns node fields, markdown returns the node and all descendants as a readable document, with a record's set fields beside it",
       "enum": [
         "json",
         "markdown"
