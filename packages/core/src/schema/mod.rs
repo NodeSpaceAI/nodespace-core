@@ -398,8 +398,9 @@ async fn schema_is_core(
 /// `handle_update_schema` passes `None` — the schema it edits already exists,
 /// so a self-reference there resolves through the ordinary lookup.
 ///
-/// A relationship may never target `ai-chat`: no node may reference a chat
-/// (ADR-061 §8), and a declared link to one is exactly the reference
+/// A relationship may never target `ai-chat` or `ai-chat-message`: no node
+/// may reference a chat (ADR-061 §8) or a message (ADR-088 §3), and a declared
+/// link to one is exactly the reference
 /// `NodeService` refuses at edge creation. Rejecting the declaration keeps a
 /// provenance-style field from being modelled at all, rather than failing on
 /// its first write.
@@ -412,18 +413,18 @@ async fn validate_relationship_targets(
         let Some(target_type) = rel.target_type.as_deref() else {
             continue;
         };
-        let targets_a_chat = node_service
-            .type_is_a(target_type, crate::models::CoreNodeType::AiChat)
+        let accepts_references = node_service
+            .accepts_inbound_references(target_type)
             .await
             .map_err(|e| {
                 MarkdownError::internal_error(format!(
                     "Failed to resolve the type chain of '{target_type}': {e}"
                 ))
             })?;
-        if targets_a_chat {
+        if !accepts_references {
             return Err(MarkdownError::invalid_params(format!(
-                "Relationship '{}' targets '{}', an AI chat. No node may reference an AI \
-                 chat, so no relationship may target one.",
+                "Relationship '{}' targets '{}', an AI chat or one of its messages. No node \
+                 may reference an AI chat or a message, so no relationship may target one.",
                 rel.name, target_type
             )));
         }

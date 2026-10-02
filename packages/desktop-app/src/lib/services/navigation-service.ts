@@ -19,7 +19,7 @@
  * showing the node. See each method for which to reach for.
  */
 
-import { isA } from '$lib/types/core-node-types';
+import { isA, isOwnedByParentViewer } from '$lib/types/core-node-types';
 import { v4 as uuidv4 } from 'uuid';
 import {
   addTab,
@@ -28,6 +28,7 @@ import {
   createPane,
   setActivePane,
   setActiveTab,
+  closeTab,
   DEFAULT_PANE_ID,
   LOADING_TAB_TITLE
 } from '$lib/stores/navigation.svelte';
@@ -256,13 +257,16 @@ export class NavigationService {
   }
 
   /**
-   * Scroll to a node element in the DOM after it renders.
+   * Scroll to a node element in the DOM after it renders: an outline row
+   * (`data-node-id`) or a chat message (`data-message-id`).
    * Uses requestAnimationFrame + polling retries for async-loaded child nodes.
    */
   private scrollToNode(nodeId: string): void {
     const escapedId = CSS.escape(nodeId);
     const attemptScroll = () => {
-      const el = document.querySelector(`[data-node-id="${escapedId}"]`);
+      const el = document.querySelector(
+        `[data-node-id="${escapedId}"], [data-message-id="${escapedId}"]`
+      );
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return true;
@@ -274,8 +278,9 @@ export class NavigationService {
     requestAnimationFrame(() => {
       if (attemptScroll()) return;
 
-      // Retry with increasing delays for lazy-loaded content (100ms, 250ms, 500ms)
-      const delays = [100, 250, 500];
+      // Retry with increasing delays for lazy-loaded content (a chat's messages load
+      // after its viewer mounts)
+      const delays = [100, 250, 500, 1000, 2000];
       let attempt = 0;
       const retry = () => {
         if (attemptScroll() || attempt >= delays.length) return;
@@ -283,6 +288,26 @@ export class NavigationService {
       };
       retry();
     });
+  }
+
+  /**
+   * The id of a node's parent: from the structure tree when the node's
+   * siblings are loaded, else from the backend. Null for a root or when the
+   * lookup fails.
+   */
+  private async resolveParentId(nodeId: string): Promise<string | null> {
+    const known = structureTree?.getParent(nodeId);
+    if (known && known !== '__root__') return known;
+
+    const { backendAdapter } = await import('./backend-adapter');
+    try {
+      const epoch = sharedNodeStore.currentEpoch();
+      const parent = await backendAdapter.getParent(nodeId);
+      return sharedNodeStore.currentEpoch() === epoch ? (parent?.id ?? null) : null;
+    } catch (error) {
+      log.error(`Failed to look up the parent of ${nodeId}:`, error);
+      return null;
+    }
   }
 
   /**
@@ -299,6 +324,24 @@ export class NavigationService {
   } | null> {
     const target = await this.resolveNodeTarget(nodeId);
     if (!target) return null;
+
+    // A node whose type its parent's viewer owns (a chat message) is never a
+    // page of its own: open its parent chat and scroll to it.
+    if (isOwnedByParentViewer(target.nodeType)) {
+      const parentId = await this.resolveParentId(target.nodeId);
+      const parentTarget = parentId ? await this.resolveNodeTarget(parentId) : null;
+      if (!parentTarget) {
+        log.warn(`Cannot open ${target.nodeId}: its parent is not known`);
+        return null;
+      }
+      return {
+        target,
+        navNodeId: parentTarget.nodeId,
+        navNodeType: parentTarget.nodeType,
+        navTitle: parentTarget.title,
+        isNonRoot: true
+      };
+    }
 
     const ancestorId = this.findNavigationAncestor(target.nodeId);
     const isNonRoot = ancestorId !== target.nodeId;
@@ -388,6 +431,21 @@ export class NavigationService {
     if (isNonRoot) {
       this.scrollToNode(target.nodeId);
     }
+  }
+
+  /**
+   * Re-point a tab showing a node its parent's viewer owns (a chat message)
+   * at that parent, scrolled to the node; close the tab when the parent is not
+   * known. Used where a tab already carries such a node id (a restored tab).
+   */
+  async retargetTabToParent(tabId: string, nodeId: string): Promise<void> {
+    const resolved = await this.resolveWithNavigationAncestor(nodeId);
+    if (!resolved) {
+      closeTab(tabId);
+      return;
+    }
+    updateTabContent(tabId, { nodeId: resolved.navNodeId, nodeType: resolved.navNodeType });
+    this.scrollToNode(resolved.target.nodeId);
   }
 
   /**

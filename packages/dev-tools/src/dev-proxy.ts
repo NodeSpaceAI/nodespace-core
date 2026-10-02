@@ -30,6 +30,7 @@ import { storageNodeToApiFields } from '../../desktop-app/src/lib/services/node-
 import { createNodeSpaceClients, createRunOnceGuard } from './grpc-client.ts';
 import { mapGrpcError } from './grpc-error-mapping.ts';
 import { createModelLoadRelay } from './model-load-progress.ts';
+import { watchEventToSse, type ProtoWatchEvent } from './watch-event-mapping.ts';
 
 const PORT = parseInt(process.env.DEV_PROXY_PORT ?? '3001', 10);
 
@@ -92,12 +93,6 @@ interface ProtoNodeData {
   title?: string;
 }
 
-interface ProtoNodeEvent {
-  created?: ProtoNodeData;
-  updated?: ProtoNodeData;
-  deleted?: { nodeId: string; nodeType: string };
-}
-
 // Resolves once the daemon->dev-proxy gRPC watch stream is attached and
 // broadcasting. `/api/events` awaits this before telling a browser client
 // it is connected: the dev-proxy's own HTTP server (and thus `/health`)
@@ -140,12 +135,12 @@ function startWatchBridge(): void {
       return;
     }
 
-    let stream: grpc.ClientReadableStream<ProtoNodeEvent>;
+    let stream: grpc.ClientReadableStream<ProtoWatchEvent>;
     try {
       stream = (watchClient as unknown as Record<string, Function>).watchNodes({
         nodeType: '',
         rootId: ''
-      }) as grpc.ClientReadableStream<ProtoNodeEvent>;
+      }) as grpc.ClientReadableStream<ProtoWatchEvent>;
     } catch (err) {
       // watchNodes() itself isn't expected to throw synchronously (gRPC-js
       // surfaces connection failures via the stream's own 'error' event
@@ -184,25 +179,9 @@ function startWatchBridge(): void {
       });
     }
 
-    stream.on('data', (event: ProtoNodeEvent) => {
-      if (event.created) {
-        broadcast({
-          type: 'nodeCreated',
-          nodeId: event.created.id,
-          nodeType: event.created.nodeType
-        });
-      } else if (event.updated) {
-        broadcast({
-          type: 'nodeUpdated',
-          nodeId: event.updated.id
-        });
-      } else if (event.deleted) {
-        broadcast({
-          type: 'nodeDeleted',
-          nodeId: event.deleted.nodeId,
-          nodeType: event.deleted.nodeType
-        });
-      }
+    stream.on('data', (event: ProtoWatchEvent) => {
+      const sseEvent = watchEventToSse(event);
+      if (sseEvent) broadcast(sseEvent);
     });
 
     stream.on('error', (err: Error) => {
@@ -1034,8 +1013,36 @@ async function handleRequest(req: Request): Promise<Response> {
         (nodeClient as unknown as Record<string, Function>).getMentioningRoots,
         { nodeId }
       );
-      // Backend adapter expects string[] (node IDs) for getMentioningContainers
-      return json((res.references ?? []).map((r) => r.id));
+      // The same `NodeReference[]` the Tauri command returns.
+      return json(
+        (res.references ?? []).map((r) => ({
+          id: r.id,
+          title: r.title ?? null,
+          nodeType: r.nodeType
+        }))
+      );
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
+  // GET /api/nodes/:id/parent-node
+  const parentNodeMatch = pathname.match(HTTP_ROUTE_PATTERNS.getParent);
+  if (method === 'GET' && parentNodeMatch) {
+    const nodeId = decodeURIComponent(parentNodeMatch[1]);
+    try {
+      const res = await call<
+        { nodeId: string; relationshipName: string; direction: string },
+        { relatedNodesJson: string }
+      >((nodeClient as unknown as Record<string, Function>).getRelatedNodes, {
+        nodeId,
+        relationshipName: 'has_child',
+        direction: 'in'
+      });
+      const related: Array<{ id: string; nodeType: string; title?: string | null }> =
+        res.relatedNodesJson ? JSON.parse(res.relatedNodesJson) : [];
+      const parent = related[0];
+      return json(parent ? { id: parent.id, title: parent.title ?? null, nodeType: parent.nodeType } : null);
     } catch (err) {
       return grpcError(err as grpc.ServiceError);
     }

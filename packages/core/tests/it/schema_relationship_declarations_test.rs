@@ -721,7 +721,30 @@ async fn create_relationship_refuses_schema_node_endpoints() -> Result<()> {
         .expect_err("schema node as relationship source must be refused");
     assert!(err.to_string().contains("schema node"), "got: {err}");
 
-    // Schema node as target of an untyped relationship.
+    // Schema node as target of a relationship that names a target type: the
+    // `widget` schema node is not a widget.
+    make_node(&svc, "85b8139f-92d2-5b40-959c-140253882714", "assembly").await?;
+    let err = svc
+        .create_relationship(
+            "85b8139f-92d2-5b40-959c-140253882714",
+            "widgets",
+            "widget",
+            json!({}),
+        )
+        .await
+        .expect_err("schema node as a typed relationship's target must be refused");
+    assert!(err.to_string().contains("schema node"), "got: {err}");
+    Ok(())
+}
+
+/// A relationship declared with no target type reaches any node, a schema
+/// node included. The edge is an instance edge: its source is not a schema,
+/// which is what every declaration read keys on, so the target schema's own
+/// declarations are untouched and it stays deletable.
+#[tokio::test]
+async fn an_untyped_relationship_may_target_a_schema_node() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_widget_pair(&svc).await?;
     handle_create_schema(
         &svc,
         json!({
@@ -732,17 +755,50 @@ async fn create_relationship_refuses_schema_node_endpoints() -> Result<()> {
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))?;
-    make_node(&svc, "1aa41ebc-ae40-5059-ab0c-19b72e2c9c72", "board").await?;
-    let err = svc
-        .create_relationship(
-            "1aa41ebc-ae40-5059-ab0c-19b72e2c9c72",
-            "pins",
-            "widget",
-            json!({}),
-        )
+    handle_create_schema(&svc, json!({ "name": "Gizmo", "fields": [] }))
         .await
-        .expect_err("schema node as relationship target must be refused");
-    assert!(err.to_string().contains("schema node"), "got: {err}");
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    make_node(&svc, "1aa41ebc-ae40-5059-ab0c-19b72e2c9c72", "board").await?;
+
+    let declared_before = svc.store().get_schema_declarations("gizmo").await?;
+    svc.create_relationship(
+        "1aa41ebc-ae40-5059-ab0c-19b72e2c9c72",
+        "pins",
+        "gizmo",
+        json!({}),
+    )
+    .await?;
+
+    let pinned = svc
+        .get_related_nodes("1aa41ebc-ae40-5059-ab0c-19b72e2c9c72", "pins", "out")
+        .await?;
+    assert_eq!(pinned.len(), 1);
+    assert_eq!(pinned[0].id, "gizmo");
+
+    // Not a declaration of the target schema's, and not one of the board
+    // schema's either.
+    assert_eq!(
+        svc.store().get_schema_declarations("gizmo").await?,
+        declared_before
+    );
+    assert_eq!(
+        svc.store().count_schema_declaration_edges("gizmo").await?,
+        0
+    );
+    assert_eq!(svc.store().get_schema_declarations("board").await?.len(), 1);
+    assert_eq!(
+        svc.store()
+            .count_instance_edges_for_declaration("board", "pins")
+            .await?,
+        1
+    );
+
+    // The schema is still deletable, and the edge goes with it.
+    svc.store().delete_node("gizmo", None).await?;
+    assert!(svc
+        .get_related_nodes("1aa41ebc-ae40-5059-ab0c-19b72e2c9c72", "pins", "out")
+        .await?
+        .is_empty());
     Ok(())
 }
 

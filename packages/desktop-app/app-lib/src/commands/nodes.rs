@@ -15,11 +15,11 @@ use nodespace_proto::nodespace::{
     ChildMove, CreateMentionRequest, CreateNodeRequest, CreateRelationshipRequest,
     DeleteMentionRequest, DeleteNodeRequest, DeleteRelationshipRequest, ExecuteQueryRequest,
     FindDuplicateRequest, GetChildrenRequest, GetChildrenTreeRequest, GetNodeRelationshipsRequest,
-    GetNodeRequest, GetSchemaDefinitionRequest, MentionAutocompleteRequest, MentionTargetRequest,
-    MoveChildrenToParentRequest, MoveNodeRequest, NodeData, NodeResponse, NodeSortOrder,
-    OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest, ReorderNodeRequest,
-    UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
-    UpdatePersonNodeRequest, UpdatePlayNodeRequest, UpdateProjectNodeRequest,
+    GetNodeRequest, GetRelatedNodesRequest, GetSchemaDefinitionRequest, MentionAutocompleteRequest,
+    MentionTargetRequest, MoveChildrenToParentRequest, MoveNodeRequest, NodeData, NodeResponse,
+    NodeSortOrder, OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
+    ReorderNodeRequest, UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest,
+    UpdateNodeRequest, UpdatePersonNodeRequest, UpdatePlayNodeRequest, UpdateProjectNodeRequest,
     UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest, UpdateSkillNodeRequest,
     UpdateTaskNodeRequest,
 };
@@ -1119,6 +1119,52 @@ pub async fn get_mentioning_roots(
     Ok(references)
 }
 
+/// The related-node fields `get_parent` reads from a `GetRelatedNodes` payload,
+/// whose entries are full nodes in the camelCase wire shape.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RelatedNodePayload {
+    id: String,
+    node_type: String,
+    title: Option<String>,
+}
+
+/// Get a node's parent: the one node it is a `has_child` child of, or `None` for a root.
+#[tauri::command]
+pub async fn get_parent(
+    client: State<'_, GrpcClient>,
+    node_id: String,
+) -> Result<Option<NodeReference>, CommandError> {
+    let mut c = client.client().await;
+    let resp = c
+        .get_related_nodes(Request::new(GetRelatedNodesRequest {
+            node_id,
+            relationship_name: "has_child".to_string(),
+            direction: "in".to_string(),
+        }))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let json = resp.into_inner().related_nodes_json;
+    parse_parent(&json).map_err(|e| CommandError {
+        message: format!("Failed to parse parent JSON: {}", e),
+        code: "PARSE_ERROR".to_string(),
+        details: Some(json),
+        conflict_data: None,
+        requires_extension: None,
+    })
+}
+
+/// The first related node of a `GetRelatedNodes` payload, as a reference.
+fn parse_parent(related_nodes_json: &str) -> Result<Option<NodeReference>, serde_json::Error> {
+    let related: Vec<RelatedNodePayload> = serde_json::from_str(related_nodes_json)?;
+    Ok(related.into_iter().next().map(|r| NodeReference {
+        id: r.id,
+        title: r.title,
+        node_type: r.node_type,
+    }))
+}
+
 /// Encode a tri-state update field for the proto's clearable wrapper:
 /// `None` → unset (no change), `Some(None)` → clear, `Some(Some(v))` → set.
 fn string_clear(value: Option<Option<String>>) -> Option<OptionalStringClear> {
@@ -1795,5 +1841,23 @@ mod tests {
             hooks < reprobe,
             "the hooks run before the re-probe, so recovery reports healthy only after them"
         );
+    }
+
+    #[test]
+    fn parse_parent_reads_the_single_parent_and_none_for_a_root() {
+        let parent = parse_parent(
+            r#"[{"id":"chat-1","nodeType":"ai-chat-native","title":null,"content":"","version":1}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parent,
+            Some(NodeReference {
+                id: "chat-1".to_string(),
+                title: None,
+                node_type: "ai-chat-native".to_string(),
+            })
+        );
+        assert_eq!(parse_parent("[]").unwrap(), None);
+        assert!(parse_parent("not json").is_err());
     }
 }

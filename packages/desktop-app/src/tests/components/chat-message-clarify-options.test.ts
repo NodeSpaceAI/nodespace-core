@@ -38,7 +38,6 @@ describe('ChatMessage clarify options', () => {
   it('renders each option as a clickable button, not markdown bullet prose', () => {
     const { container } = render(ChatMessage, {
       message: makeMessage({
-        question: 'Did you want to track debts or search notes?',
         options: ['Track who owes me money', 'Search existing notes'],
       }),
       isLatest: true,
@@ -64,7 +63,6 @@ describe('ChatMessage clarify options', () => {
     const onSelectOption = vi.fn();
     const { container } = render(ChatMessage, {
       message: makeMessage({
-        question: 'Did you want to track debts or search notes?',
         options: ['Track who owes me money', 'Search existing notes'],
       }),
       isLatest: true,
@@ -78,7 +76,7 @@ describe('ChatMessage clarify options', () => {
 
   it('renders no option chips for an ordinary reply with no options', () => {
     const { container } = render(ChatMessage, {
-      message: makeMessage({ options: undefined, question: undefined }),
+      message: makeMessage({ options: undefined }),
       isLatest: true,
       onSelectOption: vi.fn(),
     });
@@ -95,7 +93,6 @@ describe('ChatMessage clarify options', () => {
     const onSelectOption = vi.fn();
     const { container } = render(ChatMessage, {
       message: makeMessage({
-        question: 'Which one did you mean?',
         options: ['Rotate signing keys', 'Rotate signing keys'],
       }),
       isLatest: true,
@@ -111,7 +108,6 @@ describe('ChatMessage clarify options', () => {
   it('disables option buttons once the turn is no longer the latest message', () => {
     const { container } = render(ChatMessage, {
       message: makeMessage({
-        question: 'Did you want to track debts or search notes?',
         options: ['Track who owes me money', 'Search existing notes'],
       }),
       isLatest: false,

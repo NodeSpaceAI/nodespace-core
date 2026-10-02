@@ -228,6 +228,14 @@ class TauriAdapter implements BackendAdapter {
     );
   }
 
+  async getParent(nodeId: string): Promise<NodeReference | null> {
+    return withDiagnosticLogging(
+      'getParent',
+      () => invoke<NodeReference | null>('get_parent', { nodeId }),
+      [nodeId]
+    );
+  }
+
   async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
     // Tauri 2.x auto-converts snake_case to camelCase
     return withDiagnosticLogging(
@@ -617,6 +625,11 @@ export class HttpAdapter implements BackendAdapter {
     );
   }
 
+  async getParent(nodeId: string): Promise<NodeReference | null> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getParent(nodeId)}`);
+    return await handleResponse<NodeReference | null>(response);
+  }
+
   async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.getChildrenTree(parentId)}`);
     const result = await handleResponse<NodeWithChildren | Record<string, never>>(response);
@@ -950,6 +963,9 @@ class MockAdapter implements BackendAdapter {
   }
   async getChildren(_parentId: string): Promise<Node[]> {
     return [];
+  }
+  async getParent(_nodeId: string): Promise<NodeReference | null> {
+    return null;
   }
   async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
     // Return null for non-existent parent (consistent with API contract)

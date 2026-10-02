@@ -95,14 +95,21 @@ const UNIVERSAL_RELATIONS = ["member_of", "has_child", "mentions", "has_role"];
  * Node types excluded from a snapshot.
  *
  * Chat nodes are the eval's own scaffolding — the runner creates one per group
- * and every turn appends messages to it — so counting them as graph state would
- * fail `noUnexpectedNodes` on every scenario for the harness's own bookkeeping.
- * The whole chat family is listed: a chat is always one of the subtypes, and a
- * query for the abstract `ai-chat` base returns them all.
+ * and every turn appends message nodes under it — so counting them as graph
+ * state would fail `noUnexpectedNodes` on every scenario for the harness's own
+ * bookkeeping. The whole chat family is listed, with the message type: a chat
+ * is always one of the subtypes, and a query for the abstract `ai-chat` base
+ * returns them all.
  * `date` nodes are auto-created by the daemon as containers rather than by any
  * model action, and would fail the same clause for the same reason.
  */
-const SCAFFOLDING_TYPES = ["ai-chat", "ai-chat-native", "ai-chat-pty", "date"];
+const SCAFFOLDING_TYPES = [
+  "ai-chat",
+  "ai-chat-native",
+  "ai-chat-pty",
+  "ai-chat-message",
+  "date",
+];
 
 /**
  * The types a snapshot queries: the caller's predicted types plus every

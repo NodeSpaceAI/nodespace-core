@@ -100,6 +100,26 @@ impl SqliteStore {
         ))
     }
 
+    /// Whether another node may reference a node of `node_type`: false for a
+    /// chat, a chat message, and anything extending either (ADR-061 §8,
+    /// ADR-088 §3).
+    pub async fn accepts_inbound_references(&self, node_type: &str) -> Result<bool> {
+        Ok(self
+            .core_type_of(node_type)
+            .await?
+            .is_none_or(CoreNodeType::accepts_inbound_references))
+    }
+
+    /// `_in_tx` twin of [`Self::accepts_inbound_references`].
+    pub(crate) async fn accepts_inbound_references_in_tx(
+        tx: &Tx<'_>,
+        node_type: &str,
+    ) -> Result<bool> {
+        Ok(Self::core_type_of_in_tx(tx, node_type)
+            .await?
+            .is_none_or(CoreNodeType::accepts_inbound_references))
+    }
+
     /// Whether `node_type` is `base` or extends it, however far down the
     /// chain.
     pub async fn type_is_a(&self, node_type: &str, base: CoreNodeType) -> Result<bool> {

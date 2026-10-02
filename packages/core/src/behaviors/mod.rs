@@ -1658,12 +1658,8 @@ macro_rules! inherit_ai_chat_rules {
 }
 
 /// Behavior for `ai-chat-native` nodes: a conversation run by NodeSpace's
-/// agent loop. Adds to [`AiChatNodeBehavior`].
-///
-/// The closed `provider` and `turn_status` vocabularies are the schema's to
-/// enforce. This checks what the schema's `array` of `object` cannot: that
-/// every message is one the chat can read back, with a role from the closed
-/// vocabulary. A message the reader would leave out is refused when written.
+/// agent loop. Adds nothing to [`AiChatNodeBehavior`]: its fields are scalars
+/// the schema validates, and its messages are its `ai-chat-message` children.
 pub struct AiChatNativeNodeBehavior;
 
 impl NodeBehavior for AiChatNativeNodeBehavior {
@@ -1671,27 +1667,7 @@ impl NodeBehavior for AiChatNativeNodeBehavior {
         "ai-chat-native"
     }
 
-    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        if let Some(messages) = get_namespaced_prop(&node.properties, self.type_name(), "messages")
-        {
-            if messages.is_null() {
-                return Ok(());
-            }
-            let Some(messages) = messages.as_array() else {
-                return Err(NodeValidationError::InvalidProperties(
-                    "messages must be an array".to_string(),
-                ));
-            };
-            for (index, message) in messages.iter().enumerate() {
-                if let Err(error) =
-                    <crate::models::AiChatMessage as serde::Deserialize>::deserialize(message)
-                {
-                    return Err(NodeValidationError::InvalidProperties(format!(
-                        "messages[{index}] is not a valid message: {error}"
-                    )));
-                }
-            }
-        }
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
         Ok(())
     }
 
@@ -1713,6 +1689,48 @@ impl NodeBehavior for AiChatPtyNodeBehavior {
     }
 
     inherit_ai_chat_rules!();
+}
+
+/// Behavior for `ai-chat-message` nodes: one message of a native chat
+/// (ADR-088 §3).
+///
+/// The closed `role` and `outcome` vocabularies are the schema's to enforce.
+/// This checks the one rule that spans two fields: only an assistant message
+/// records how its turn ended.
+///
+/// A message is not embedded and contributes nothing to its chat's embedding:
+/// conversation fragments are not general knowledge (ADR-061 §4).
+pub struct AiChatMessageNodeBehavior;
+
+impl NodeBehavior for AiChatMessageNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "ai-chat-message"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        let field = |name: &str| {
+            get_namespaced_prop(&node.properties, self.type_name(), name).filter(|v| !v.is_null())
+        };
+        let assistant = serde_json::json!(crate::models::AiChatMessageRole::Assistant);
+        if field("outcome").is_some() && field("role") != Some(&assistant) {
+            return Err(NodeValidationError::InvalidProperties(
+                "outcome is recorded on an assistant message only".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false // Rendered by the chat viewer, not the markdown pipeline
+    }
+
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
+    }
+
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
+    }
 }
 
 /// Behavior for agent-guidance nodes (unconditional base system-prompt sections)
@@ -2295,6 +2313,7 @@ impl NodeBehaviorRegistry {
         registry.register_core(Arc::new(AiChatNodeBehavior));
         registry.register_core(Arc::new(AiChatNativeNodeBehavior));
         registry.register_core(Arc::new(AiChatPtyNodeBehavior));
+        registry.register_core(Arc::new(AiChatMessageNodeBehavior));
         registry.register_core(Arc::new(AgentGuidanceNodeBehavior));
         registry.register_core(Arc::new(SkillNodeBehavior));
         registry.register_core(Arc::new(ToolNodeBehavior));
@@ -4579,8 +4598,7 @@ mod tests {
                 "agent": "nodespace",
                 "provider": "native",
                 "model": "gemma-4-e4b-q4km",
-                "turn_status": "idle",
-                "messages": []
+                "turn_status": "idle"
             }),
         );
         assert!(registry
@@ -4632,71 +4650,60 @@ mod tests {
         }
     }
 
-    /// A message is validated when it is written: a role outside the closed
-    /// vocabulary, or a message missing a required field, is refused with the
-    /// message's index, in either property shape.
+    /// Only an assistant message records how its turn ended, in either
+    /// property shape. A message's text is its content and may be anything.
     #[test]
-    fn test_ai_chat_native_node_refuses_a_message_it_could_not_read_back() {
+    fn test_ai_chat_message_outcome_is_an_assistant_messages() {
         let registry = NodeBehaviorRegistry::new();
-        let cases = [
-            (
-                json!({ "role": "tool_call", "content": "search" }),
-                "tool_call",
-            ),
-            (json!({ "role": "User", "content": "hi" }), "User"),
-            (json!({ "content": "no role" }), "role"),
-            (json!({ "role": "user" }), "content"),
-        ];
-        for (message, expected) in cases {
-            let messages = json!([{ "role": "user", "content": "ok" }, message]);
-            for properties in [
-                json!({ "messages": messages }),
-                json!({ "ai-chat-native": { "messages": messages } }),
-            ] {
-                let node = Node::new("ai-chat-native".to_string(), "Chat".to_string(), properties);
-                let err = registry
-                    .validate_node(&node, &chat_chain("ai-chat-native"))
-                    .unwrap_err()
-                    .to_string();
-                assert!(
-                    err.contains("messages[1]") && err.contains(expected),
-                    "{message} must be refused by index, got: {err}"
-                );
-            }
+        let chain = ["ai-chat-message"];
+        let message = |properties: serde_json::Value| {
+            Node::new("ai-chat-message".to_string(), "hi".to_string(), properties)
+        };
+
+        for properties in [
+            json!({}),
+            json!({ "role": "user" }),
+            json!({ "role": "user", "outcome": null }),
+            json!({ "role": "assistant", "outcome": "replied", "options": ["a"] }),
+            json!({ "ai-chat-message": { "role": "assistant", "outcome": "acted" } }),
+            json!({ "role": "system" }),
+        ] {
+            assert!(
+                registry
+                    .validate_node(&message(properties.clone()), &chain)
+                    .is_ok(),
+                "{properties} must be accepted"
+            );
         }
 
-        let readable = Node::new(
-            "ai-chat-native".to_string(),
-            "Chat".to_string(),
-            json!({ "messages": [
-                { "role": "user", "content": "hi" },
-                { "role": "assistant", "content": "hello", "outcome": "replied" },
-                { "role": "system", "content": "context" }
-            ] }),
-        );
-        assert!(registry
-            .validate_node(&readable, &chat_chain("ai-chat-native"))
-            .is_ok());
+        for properties in [
+            json!({ "outcome": "replied" }),
+            json!({ "role": "user", "outcome": "replied" }),
+            json!({ "ai-chat-message": { "role": "system", "outcome": "acted" } }),
+        ] {
+            let err = registry
+                .validate_node(&message(properties.clone()), &chain)
+                .expect_err("an outcome off an assistant message must be refused");
+            assert!(
+                err.to_string().contains("assistant message only"),
+                "{properties}: {err}"
+            );
+        }
     }
 
+    /// A message is never embedded and adds nothing to its chat's embedding.
     #[test]
-    fn test_ai_chat_native_node_invalid_messages_type() {
+    fn test_ai_chat_message_is_never_embeddable() {
         let registry = NodeBehaviorRegistry::new();
-        for properties in [
-            json!({ "messages": "not an array" }),
-            json!({ "ai-chat-native": { "messages": "not an array" } }),
-        ] {
-            let node = Node::new("ai-chat-native".to_string(), "Chat".to_string(), properties);
-            let err = registry
-                .validate_node(&node, &chat_chain("ai-chat-native"))
-                .unwrap_err();
-            match err {
-                NodeValidationError::InvalidProperties(msg) => {
-                    assert!(msg.contains("messages must be an array"));
-                }
-                _ => panic!("Expected InvalidProperties error"),
-            }
-        }
+        let behavior = registry.get("ai-chat-message").expect("registered");
+        let node = Node::new(
+            "ai-chat-message".to_string(),
+            "Help me implement the webhook handler".to_string(),
+            json!({ "role": "user" }),
+        );
+        assert!(!behavior.supports_markdown());
+        assert!(behavior.get_embeddable_content(&node).is_none());
+        assert!(behavior.get_parent_contribution(&node).is_none());
     }
 
     /// A chat may hold children, and every subtype inherits the rule.
@@ -4717,16 +4724,8 @@ mod tests {
         for node_type in ["ai-chat-native", "ai-chat-pty"] {
             let behavior = registry.resolve(&chat_chain(node_type));
 
-            // Rich conversation with user + assistant messages: still not
-            // embeddable. Nor is an empty one, or one with a summary.
+            // Not embeddable, with or without a summary.
             for props in [
-                json!({
-                    "messages": [
-                        {"role": "user", "content": "Help me implement the webhook handler"},
-                        {"role": "assistant", "content": "Based on the spec, here is my approach"}
-                    ]
-                }),
-                json!({ "messages": [] }),
                 json!({ "summary": "Implemented the webhook handler" }),
                 json!({}),
             ] {
@@ -4874,25 +4873,17 @@ mod tests {
             "schema nodes with content should be embeddable"
         );
 
-        // ai-chat: conversations are deliberately NOT embedded, even with messages
+        // ai-chat: conversations are deliberately NOT embedded
         let chat_node = Node::new(
             "ai-chat-native".to_string(),
             "Chat about webhooks".to_string(),
-            json!({
-                "messages": [
-                    {"role": "user", "content": "How do I implement webhooks?"},
-                    {"role": "assistant", "content": "Here is an approach..."}
-                ]
-            }),
+            json!({ "summary": "How to implement webhooks" }),
         );
         let chat_content = registry
             .get("ai-chat-native")
             .unwrap()
             .get_embeddable_content(&chat_node);
-        assert!(
-            chat_content.is_none(),
-            "ai-chat should never be embeddable, even with messages"
-        );
+        assert!(chat_content.is_none(), "ai-chat should never be embeddable");
 
         // --- Types that should NOT be embeddable (return None) ---
 

@@ -123,95 +123,42 @@ describe('decideRemoteUpdate', () => {
 });
 
 describe('shouldSkipStaleAiChatUpdate', () => {
+  const chat = (version?: number): Node =>
+    ({ ...makeNode({ nodeType: 'ai-chat-native' }), version }) as Node;
+
   it('returns false for non-ai-chat nodes', () => {
     expect(
       shouldSkipStaleAiChatUpdate(
-        makeNode({ nodeType: 'text' }),
-        makeNode({ nodeType: 'text' }),
+        makeNode({ nodeType: 'text', version: 1 }),
+        makeNode({ nodeType: 'text', version: 5 }),
         databaseSource
       )
     ).toBe(false);
   });
 
   it('returns false for viewer-sourced updates', () => {
-    const existing = { ...makeNode({ nodeType: 'ai-chat' }), messages: [1, 2, 3] } as Node;
-    const incoming = { ...makeNode({ nodeType: 'ai-chat' }), messages: [1] } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, viewerSource)).toBe(false);
+    expect(shouldSkipStaleAiChatUpdate(chat(1), chat(5), viewerSource)).toBe(false);
   });
 
   it('returns false when there is no existing node', () => {
-    const incoming = { ...makeNode({ nodeType: 'ai-chat' }), messages: [1] } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, undefined, databaseSource)).toBe(false);
+    expect(shouldSkipStaleAiChatUpdate(chat(1), undefined, databaseSource)).toBe(false);
   });
 
-  it('returns true when the incoming snapshot has fewer messages than the existing one', () => {
-    const existing = { ...makeNode({ nodeType: 'ai-chat' }), messages: [1, 2, 3] } as Node;
-    const incoming = { ...makeNode({ nodeType: 'ai-chat' }), messages: [1] } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(true);
+  it('skips a snapshot whose version is older', () => {
+    expect(shouldSkipStaleAiChatUpdate(chat(4), chat(5), databaseSource)).toBe(true);
   });
 
-  it('returns false when the incoming snapshot has the same or more messages', () => {
-    const existing = { ...makeNode({ nodeType: 'ai-chat' }), messages: [1, 2] } as Node;
-    const incoming = { ...makeNode({ nodeType: 'ai-chat' }), messages: [1, 2, 3] } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(false);
+  it('applies a strictly newer snapshot', () => {
+    expect(shouldSkipStaleAiChatUpdate(chat(6), chat(5), databaseSource)).toBe(false);
   });
 
-  it('treats a missing messages array as zero-length', () => {
-    const existing = { ...makeNode({ nodeType: 'ai-chat' }), messages: [1] } as Node;
-    const incoming = makeNode({ nodeType: 'ai-chat' });
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(true);
+  it('applies an equal-version snapshot when nothing is pending', () => {
+    expect(shouldSkipStaleAiChatUpdate(chat(3), chat(3), databaseSource)).toBe(false);
+    expect(shouldSkipStaleAiChatUpdate(chat(3), chat(3), databaseSource, false)).toBe(false);
   });
 
-  it('skips a snapshot whose version is older, even with more messages', () => {
-    const existing = {
-      ...makeNode({ nodeType: 'ai-chat', version: 5 }),
-      messages: [1]
-    } as Node;
-    const incoming = {
-      ...makeNode({ nodeType: 'ai-chat', version: 4 }),
-      messages: [1, 2, 3]
-    } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(true);
-  });
-
-  it('applies a newer snapshot that legitimately has fewer messages', () => {
-    // A cancelled turn drops its partial reply: newer version, shorter history.
-    // Count-only comparison would discard this permanently and strand the UI on
-    // a message list the daemon has already superseded.
-    const existing = {
-      ...makeNode({ nodeType: 'ai-chat', version: 4 }),
-      messages: [1, 2, 3]
-    } as Node;
-    const incoming = {
-      ...makeNode({ nodeType: 'ai-chat', version: 5 }),
-      messages: [1, 2]
-    } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(false);
-  });
-
-  it('falls back to message count when versions are equal', () => {
-    const existing = {
-      ...makeNode({ nodeType: 'ai-chat', version: 7 }),
-      messages: [1, 2, 3]
-    } as Node;
-    const incoming = {
-      ...makeNode({ nodeType: 'ai-chat', version: 7 }),
-      messages: [1]
-    } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(true);
-  });
-
-  it('falls back to message count when a version is missing', () => {
-    const existing = {
-      ...makeNode({ nodeType: 'ai-chat' }),
-      version: undefined,
-      messages: [1, 2, 3]
-    } as unknown as Node;
-    const incoming = {
-      ...makeNode({ nodeType: 'ai-chat', version: 9 }),
-      messages: [1]
-    } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(true);
+  it('applies when a version is missing', () => {
+    expect(shouldSkipStaleAiChatUpdate(chat(9), chat(undefined), databaseSource)).toBe(false);
   });
 
   // Regression coverage for the model-selection revert bug: a property-only
@@ -219,63 +166,12 @@ describe('shouldSkipStaleAiChatUpdate', () => {
   // `.version` — only the write's own response does — so while it is still
   // in flight, an unrelated echo (e.g. the node's own creation broadcast)
   // can race in and report the SAME version the local node is still sitting
-  // at, while actually being the pre-write snapshot. The `pending` param
-  // makes an equal-version snapshot untrusted outright whenever a local
-  // write is still outstanding, rather than falling through to the message
-  // count (which a property-only change like model selection never moves).
-  it('skips an equal-version snapshot when a local write is pending, even with equal message counts', () => {
-    const existing = {
-      ...makeNode({ nodeType: 'ai-chat', version: 1 }),
-      messages: []
-    } as Node;
-    const incoming = {
-      ...makeNode({ nodeType: 'ai-chat', version: 1 }),
-      messages: []
-    } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource, true)).toBe(true);
-  });
-
-  it('skips an equal-version snapshot when pending, even if it has MORE messages', () => {
-    // The old message-count-only tiebreak would have accepted this (more
-    // messages reads as "not stale") — `pending` overrides that for the
-    // equal-version case specifically, since a property-only write in
-    // flight is not reflected in message count at all.
-    const existing = {
-      ...makeNode({ nodeType: 'ai-chat', version: 2 }),
-      messages: [1]
-    } as Node;
-    const incoming = {
-      ...makeNode({ nodeType: 'ai-chat', version: 2 }),
-      messages: [1, 2]
-    } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource, true)).toBe(true);
-  });
-
-  it('does not skip an equal-version snapshot when nothing is pending (default, unchanged behavior)', () => {
-    const existing = {
-      ...makeNode({ nodeType: 'ai-chat', version: 3 }),
-      messages: [1]
-    } as Node;
-    const incoming = {
-      ...makeNode({ nodeType: 'ai-chat', version: 3 }),
-      messages: [1, 2]
-    } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(false);
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource, false)).toBe(false);
+  // at, while actually being the pre-write snapshot.
+  it('skips an equal-version snapshot when a local write is pending', () => {
+    expect(shouldSkipStaleAiChatUpdate(chat(1), chat(1), databaseSource, true)).toBe(true);
   });
 
   it('a strictly newer incoming version still applies even while pending', () => {
-    // `pending` only tightens the EQUAL-version case — a genuinely newer
-    // broadcast (the in-flight write's own confirmation, or a real foreign
-    // write) must still win.
-    const existing = {
-      ...makeNode({ nodeType: 'ai-chat', version: 1 }),
-      messages: []
-    } as Node;
-    const incoming = {
-      ...makeNode({ nodeType: 'ai-chat', version: 2 }),
-      messages: ['unrelated']
-    } as Node;
-    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource, true)).toBe(false);
+    expect(shouldSkipStaleAiChatUpdate(chat(2), chat(1), databaseSource, true)).toBe(false);
   });
 });

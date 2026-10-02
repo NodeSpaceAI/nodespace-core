@@ -86,10 +86,10 @@ describe('mergeProperties', () => {
 
 describe('promoteTypedFields', () => {
   it('promotes only fields present in a flat native-chat write', () => {
-    const changes = { messages: [{ role: 'user', content: 'hi' }], turn_status: 'processing' };
+    const changes = { turn_status: 'processing' };
     const promoted = promoteTypedFields('ai-chat-native', changes, changes);
     // provider/model omitted → not promoted (guards against undefined-clobber)
-    expect(promoted).toEqual({ messages: changes.messages, turnStatus: 'processing' });
+    expect(promoted).toEqual({ turnStatus: 'processing' });
     expect('provider' in promoted).toBe(false);
     expect('model' in promoted).toBe(false);
   });
@@ -122,14 +122,12 @@ describe('promoteTypedFields', () => {
     // Mirrors the actual writes in ai-chat-native-node-viewer.svelte: canonical
     // snake_case property keys, promoted to camelCase top-level fields.
     const changes = {
-      messages: [{ role: 'user', content: 'hi' }],
       turn_status: 'processing',
       provider: 'native',
       model: 'claude-sonnet-5'
     };
     const promoted = promoteTypedFields('ai-chat-native', changes, changes);
     expect(promoted).toEqual({
-      messages: changes.messages,
       turnStatus: 'processing',
       provider: 'native',
       model: 'claude-sonnet-5'
@@ -239,8 +237,7 @@ describe('storageNodeToApiFields', () => {
       'ai-chat-native': {
         provider: 'native',
         turn_status: 'processing',
-        context_tokens: 42,
-        messages: [{ role: 'user', content: 'hi' }]
+        context_tokens: 42
       }
     });
     expect(fields).toEqual({
@@ -251,7 +248,29 @@ describe('storageNodeToApiFields', () => {
       provider: 'native',
       turnStatus: 'processing',
       contextTokens: 42,
-      messages: [{ role: 'user', content: 'hi' }],
+      properties: {}
+    });
+  });
+
+  it('moves a chat message\'s declared fields to typed keys and defaults its role', () => {
+    expect(
+      storageNodeToApiFields('ai-chat-message', {
+        'ai-chat-message': {
+          role: 'assistant',
+          timestamp: '2026-01-02T00:00:00Z',
+          outcome: 'clarified',
+          options: ['a', 'b']
+        }
+      })
+    ).toEqual({
+      role: 'assistant',
+      timestamp: '2026-01-02T00:00:00Z',
+      outcome: 'clarified',
+      options: ['a', 'b'],
+      properties: {}
+    });
+    expect(storageNodeToApiFields('ai-chat-message', {})).toEqual({
+      role: 'user',
       properties: {}
     });
   });
@@ -284,7 +303,6 @@ describe('storageNodeToApiFields', () => {
       provider: 'native',
       turnStatus: 'idle',
       contextTokens: 0,
-      messages: [],
       properties: {}
     });
     expect(storageNodeToApiFields('ai-chat-pty', { 'ai-chat': { agent: 'codex' } })).toEqual({

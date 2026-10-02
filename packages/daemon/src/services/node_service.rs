@@ -17,9 +17,9 @@ use nodespace_agent::local_agent::deletion_confirmation::{self, DeletionStop};
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::ChildPlacement;
 use nodespace_core::models::{
-    AiChatPendingDeletion, CollectionNodeUpdate, DatabaseSettingsNodeUpdate, Node, NodeQuery,
-    NodeUpdate, OrderBy, PersonNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate,
-    ProjectStatus, QueryNodeUpdate, SkillNodeUpdate, TaskNodeUpdate, TaskStatus,
+    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, Node, NodeQuery, NodeUpdate, OrderBy,
+    PersonNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate,
+    SkillNodeUpdate, TaskNodeUpdate, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -2869,7 +2869,7 @@ async fn confirmed_delete(
             "a confirmed delete needs the version its preview showed",
         ));
     };
-    let target = AiChatPendingDeletion {
+    let target = deletion_confirmation::PendingDeletion {
         version,
         descendant_count: req.expected_descendant_count.unwrap_or_default(),
         ..preview
@@ -5236,7 +5236,7 @@ mod tests {
             collection_ids: Vec::new(),
             lifecycle_status: None,
             properties: serde_json::json!({
-                "agent": "nodespace", "turn_status": "processing", "messages": []
+                "agent": "nodespace", "turn_status": "processing"
             })
             .to_string(),
             position: None,
@@ -5251,10 +5251,7 @@ mod tests {
                 nodespace_core::models::NodeUpdate {
                     content: None,
                     node_type: None,
-                    properties: Some(serde_json::json!({
-                        "turn_status": "idle",
-                        "messages": [{ "role": "assistant", "content": "hi" }]
-                    })),
+                    properties: Some(serde_json::json!({ "turn_status": "idle" })),
                     title: None,
                     lifecycle_status: None,
                 },
@@ -5297,9 +5294,9 @@ mod tests {
             current["turnStatus"], "idle",
             "current_node must carry flattened top-level turnStatus (got {current})"
         );
-        assert!(
-            current["messages"].is_array(),
-            "current_node must carry flattened top-level messages (got {current})"
+        assert_eq!(
+            current["provider"], "native",
+            "current_node must carry the subtype's own fields at the top level (got {current})"
         );
     }
 

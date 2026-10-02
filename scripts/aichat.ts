@@ -5,11 +5,12 @@
  * Used to iterate on agent prompting. Talks to a freshly-built nodespaced over a
  * dedicated test socket/DB so it never touches the user's real ~/.nodespace data.
  *
- * Mechanism: there is no "send message" RPC. The daemon's event watcher runs an
+ * Mechanism: there is no "send message" RPC. A chat's messages are its
+ * `ai-chat-message` child nodes, and the daemon's event watcher runs an
  * inference turn when an ai-chat-native node has turn_status:"processing" AND
- * a trailing role:"user" message. On completion it appends the assistant reply
- * and sets turn_status:"idle". So a turn is: batch-update (append user msg +
- * turn_status:processing) → poll get until idle.
+ * its last message is the user's. On completion it appends the assistant reply
+ * as another message node and sets turn_status:"idle". So a turn is: create the
+ * user's message under the chat, set turn_status:processing → poll until idle.
  *
  * Commands:
  *   bun run scripts/aichat.ts new                  Create a native chat; prints its ID.
@@ -39,12 +40,19 @@ const TIMEOUT_MS = Number(process.env.NS_TIMEOUT_MS ?? 180_000);
 /** The type of the chat this harness drives: one NodeSpace's own agent loop runs. */
 export const CHAT_NODE_TYPE = "ai-chat-native";
 
+/** The type of a chat's messages: its children, in conversation order. */
+export const MESSAGE_NODE_TYPE = "ai-chat-message";
+
 interface AiChat {
   agent: string;
   provider: string;
   model: string;
   turn_status: string;
-  messages: Array<{ role: string; content: string; timestamp?: string }>;
+}
+
+interface ChatMessage {
+  role: string;
+  content: string;
 }
 
 /** Run the nodespace CLI with --json and parse stdout. Throws on non-zero exit. */
@@ -82,7 +90,7 @@ interface NodeJson {
   id: string;
   version: number;
   // The CLI's `--json` output is flat — the chat's fields (turn_status,
-  // messages, ...), inherited ones included, sit directly on `properties`.
+  // model, ...), inherited ones included, sit directly on `properties`.
   // Writes are flat too: the daemon places each key in the bucket of the
   // schema that declares it.
   properties: Partial<AiChat>;
@@ -98,8 +106,36 @@ function defaultAiChat(): AiChat {
     provider: "native",
     model: NS_MODEL,
     turn_status: "idle",
-    messages: [],
   };
+}
+
+/**
+ * A chat's messages, in order, out of a `node children` payload. A chat may
+ * hold other children; only its message nodes are the conversation.
+ */
+export function readMessages(payload: unknown): ChatMessage[] {
+  if (typeof payload !== "object" || payload === null) return [];
+  const nodes = (payload as { nodes?: unknown }).nodes;
+  if (!Array.isArray(nodes)) return [];
+  const messages: ChatMessage[] = [];
+  for (const raw of nodes) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const node = raw as {
+      node_type?: unknown;
+      content?: unknown;
+      properties?: { role?: unknown };
+    };
+    if (node.node_type !== MESSAGE_NODE_TYPE) continue;
+    messages.push({
+      role: typeof node.properties?.role === "string" ? node.properties.role : "user",
+      content: typeof node.content === "string" ? node.content : "",
+    });
+  }
+  return messages;
+}
+
+function getMessages(id: string): ChatMessage[] {
+  return readMessages(ns(["node", "children", id]));
 }
 
 function batchUpdateProps(
@@ -395,11 +431,9 @@ function reportTurnLog(sinceByte: number): void {
 }
 
 async function cmdSend(id: string, message: string): Promise<void> {
-  const node = getNode(id);
-  const aichat: AiChat = { ...defaultAiChat(), ...node.properties };
-  const beforeAssistant = aichat.messages.filter(
-    (m) => m.role === "assistant",
-  ).length;
+  const assistantCount = (messages: ChatMessage[]) =>
+    messages.filter((m) => m.role === "assistant").length;
+  const beforeAssistant = assistantCount(getMessages(id));
 
   const logSize = (() => {
     try {
@@ -409,43 +443,45 @@ async function cmdSend(id: string, message: string): Promise<void> {
     }
   })();
 
-  aichat.messages.push({
-    role: "user",
-    content: message,
-    timestamp: new Date().toISOString(),
-  });
-  aichat.turn_status = "processing";
-  batchUpdateProps(id, node.version, {
-    turn_status: aichat.turn_status,
-    messages: aichat.messages,
-  });
+  // The user's message is a node under the chat; asking for the turn is the
+  // chat's `processing` status. The daemon starts the turn once it has both.
+  ns([
+    "node",
+    "create",
+    "--type",
+    MESSAGE_NODE_TYPE,
+    "--parent",
+    id,
+    "--content",
+    message,
+    "--property",
+    "role=user",
+    "--property",
+    `timestamp=${new Date().toISOString()}`,
+  ]);
+  batchUpdateProps(id, getNode(id).version, { turn_status: "processing" });
 
   const deadline = Date.now() + TIMEOUT_MS;
-  let latest = aichat;
+  let turnStatus = "processing";
+  let messages: ChatMessage[] = [];
   while (Date.now() < deadline) {
     await sleep(1000);
-    const cur = getNode(id);
-    latest = { ...latest, ...cur.properties };
-    const afterAssistant = latest.messages.filter(
-      (m) => m.role === "assistant",
-    ).length;
-    if (latest.turn_status === "idle" && afterAssistant > beforeAssistant) break;
+    turnStatus = getNode(id).properties.turn_status ?? turnStatus;
+    messages = getMessages(id);
+    if (turnStatus === "idle" && assistantCount(messages) > beforeAssistant) break;
   }
-  if (latest.turn_status !== "idle") {
-    console.error(`(timeout after ${TIMEOUT_MS}ms; turn_status=${latest.turn_status})`);
+  if (turnStatus !== "idle") {
+    console.error(`(timeout after ${TIMEOUT_MS}ms; turn_status=${turnStatus})`);
   }
 
   if (logSize > 0) reportTurnLog(logSize);
 
-  const reply = [...latest.messages]
-    .reverse()
-    .find((m) => m.role === "assistant");
+  const reply = [...messages].reverse().find((m) => m.role === "assistant");
   console.log(`assistant> ${reply?.content ?? "(no assistant reply)"}`);
 }
 
 function cmdShow(id: string): void {
-  const node = getNode(id);
-  for (const m of node.properties.messages ?? []) {
+  for (const m of getMessages(id)) {
     console.log(`${m.role}> ${m.content}`);
   }
 }

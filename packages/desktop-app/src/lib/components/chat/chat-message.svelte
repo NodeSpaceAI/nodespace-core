@@ -22,8 +22,7 @@
   /**
    * The text to show above the option chips: `content` minus the bullet list
    * (rendered as chips instead), keeping the backend's opener + question
-   * framing ("I can take that a couple of ways...") intact rather than
-   * dropping it in favor of the bare `question` field.
+   * framing ("I can take that a couple of ways...") intact.
    */
   const clarifyHeaderText = $derived(
     message.options && message.options.length > 0
@@ -46,6 +45,7 @@
   class="chat-message"
   class:user-message={isUser}
   class:assistant-message={isAssistant}
+  data-message-id={message.id}
   role="listitem"
   onmouseenter={() => { if (isAssistant) showCopyButton = true; }}
   onmouseleave={() => { showCopyButton = false; copied = false; }}

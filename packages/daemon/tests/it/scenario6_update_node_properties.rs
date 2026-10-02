@@ -40,7 +40,8 @@ use nodespace_agent::agent_types::{
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::prompt_templates;
 use nodespace_agent::local_agent::tools::all_tool_definitions;
-use nodespace_core::models::{AiChatMessage, AiChatMessageRole};
+use nodespace_core::models::AiChatMessageRole;
+use nodespace_daemon::services::chat_messages::StoredMessage;
 use nodespace_daemon::services::local_agent_service::{
     completed_writes_from, node_history_from_messages,
 };
@@ -74,7 +75,7 @@ fn exec(name: &str, args: serde_json::Value, result: serde_json::Value) -> ToolE
 
 /// Turns 1 and 2 of the golden sequence, in their real persisted shape, using
 /// the actual outputs recorded for the golden sequence.
-fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
+fn turn1_and_turn2_messages() -> Vec<StoredMessage> {
     let turn1_writes = completed_writes_from(&[exec(
         "create_schema",
         serde_json::json!({
@@ -102,7 +103,7 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
     )]);
 
     vec![
-        AiChatMessage {
+        StoredMessage {
             role: AiChatMessageRole::User,
             content: "I want to keep a record of the equipment my team checks out, whether \
                 it's been returned, and what each item costs to replace"
@@ -111,24 +112,24 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
             reasoning: None,
             completed_writes: Vec::new(),
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,
         },
-        AiChatMessage {
+        StoredMessage {
             role: AiChatMessageRole::Assistant,
             content: "I've created an Equipment Checkout Record type for you.".to_string(),
             timestamp: None,
             reasoning: None,
             completed_writes: turn1_writes,
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,
         },
-        AiChatMessage {
+        StoredMessage {
             role: AiChatMessageRole::User,
             content: "Log a laser cutter checked out on the 12th, replacement cost 2400"
                 .to_string(),
@@ -136,19 +137,19 @@ fn turn1_and_turn2_messages() -> Vec<AiChatMessage> {
             reasoning: None,
             completed_writes: Vec::new(),
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,
         },
-        AiChatMessage {
+        StoredMessage {
             role: AiChatMessageRole::Assistant,
             content: "Logged it — Laser Cutter, replacement cost $2,400.".to_string(),
             timestamp: None,
             reasoning: None,
             completed_writes: turn2_writes,
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,

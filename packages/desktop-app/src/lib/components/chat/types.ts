@@ -5,7 +5,8 @@
  * owned by `AiChatNativeNodeViewer`. It is deliberately distinct from the two other
  * message shapes in play (see [[project_frontend_type_layering]]):
  *   - `ChatMessage` (`$lib/types/agent-types`) — the protocol/wire shape.
- *   - the ADR-028 persisted JSON shape in `ai-chat-native` node `messages`.
+ *   - `AiChatMessageNode` (`$lib/types/ai-chat-node`) — the persisted
+ *     `ai-chat-message` child node of a chat (ADR-088 §3).
  * These three do NOT converge; converters bridge them at the viewer boundary.
  */
 
@@ -13,6 +14,7 @@ import type { ChatMessage, ToolExecutionRecord } from '$lib/types/agent-types';
 
 /** UI display message with tool executions and streaming state. */
 export interface DisplayMessage {
+  /** The message node's id; `streaming` for the in-flight overlay. */
   readonly id: string;
   readonly role: ChatMessage['role'];
   content: string;
@@ -21,11 +23,10 @@ export interface DisplayMessage {
   /** Model chain-of-thought, rendered as a collapsible section under the answer. */
   readonly reasoning?: string;
   /**
-   * A `route_clarify` question (ADR-038), when this turn is a structured
-   * clarification rather than an ordinary reply. `content` still carries the
-   * flattened text as a fallback; when `options` is non-empty the UI renders
-   * them as clickable choices instead of relying on markdown bullet prose.
+   * The choices of a structured clarification (ADR-038). `content` carries the
+   * flattened text ("opener. question" then a bullet list); when `options` is
+   * non-empty the UI renders them as clickable choices instead of relying on
+   * markdown bullet prose.
    */
-  readonly question?: string;
   readonly options?: string[];
 }

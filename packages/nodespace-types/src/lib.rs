@@ -48,9 +48,10 @@ mod skill;
 mod task;
 
 pub use ai_chat::{
-    AiChatBase, AiChatCompletedWrite, AiChatMessage, AiChatMessageRole, AiChatNativeNode,
-    AiChatPendingDeletion, AiChatProvider, AiChatPtyNode, AiChatResolvedEntity,
-    AiChatSessionStatus, AiChatTurnOutcome, AiChatTurnStatus, NODESPACE_AGENT,
+    AiChatBase, AiChatMessageNode, AiChatMessageRole, AiChatNativeNode, AiChatPendingDeleteEdge,
+    AiChatProvider, AiChatPtyNode, AiChatResolvedEdge, AiChatSessionStatus, AiChatTurnOutcome,
+    AiChatTurnStatus, AiChatWrite, AiChatWroteEdge, AI_CHAT_PENDING_DELETE, AI_CHAT_RESOLVED,
+    AI_CHAT_WROTE, NODESPACE_AGENT,
 };
 pub use collection::{CollectionNode, CollectionNodeUpdate};
 pub use convert::{

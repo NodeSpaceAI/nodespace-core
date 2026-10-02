@@ -556,7 +556,7 @@ pub struct ClarifyPrompt {
     /// question is a delete confirmation — see
     /// `local_agent::deletion_confirmation`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_deletions: Vec<nodespace_core::models::AiChatPendingDeletion>,
+    pub pending_deletions: Vec<crate::local_agent::deletion_confirmation::PendingDeletion>,
 }
 
 /// Result of a complete agent turn (one round of generation + tool execution).

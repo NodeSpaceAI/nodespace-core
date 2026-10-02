@@ -8,6 +8,7 @@ pub mod ai_chat_title;
 pub mod assembly;
 pub mod capture_service;
 pub mod chat_idle_gate;
+pub mod chat_messages;
 pub mod database_manager;
 pub mod database_service;
 pub mod embeddings_service;

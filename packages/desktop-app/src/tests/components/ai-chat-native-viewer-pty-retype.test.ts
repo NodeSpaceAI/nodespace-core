@@ -31,7 +31,6 @@ function seedNativeChat(): void {
     agent: 'nodespace',
     provider: 'native',
     model: 'test-model',
-    messages: [],
     turnStatus: 'idle',
     contextTokens: 0
   } as unknown as Node;

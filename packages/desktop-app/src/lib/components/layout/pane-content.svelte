@@ -5,6 +5,8 @@
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { resolveViewerNodeType } from '$lib/utils/viewer-node-type';
+  import { getNavigationService } from '$lib/services/navigation-service';
+  import { isOwnedByParentViewer } from '$lib/types/core-node-types';
   import { onDaemonReconnect } from '$lib/services/daemon-status';
   import type { Pane } from '$lib/stores/navigation.svelte';
   import { createLogger } from '$lib/utils/logger';
@@ -81,14 +83,25 @@
   // tab — but only if that tab still points at this nodeId, so a superseded navigation can't
   // close the newly-active tab (checked against live tab state, the single source of truth,
   // not a tracked "latest requested" variable).
+  //
+  // A node whose type its parent's viewer owns (a chat message) is never shown as a page of
+  // its own: the tab is re-pointed at its parent, or closed when that parent is not known.
   async function hydrateNode(nodeId: string, tabId: string) {
-    if (sharedNodeStore.getNode(nodeId) && !sharedNodeStore.isPossiblyStale(nodeId)) return;
+    let node = sharedNodeStore.getNode(nodeId);
+    if (!node || sharedNodeStore.isPossiblyStale(nodeId)) {
+      try {
+        node = await sharedNodeStore.ensureNode(nodeId);
+      } catch (error) {
+        log.error(`Failed to hydrate node ${nodeId}:`, error);
+        return;
+      }
+    }
 
-    let node;
-    try {
-      node = await sharedNodeStore.ensureNode(nodeId);
-    } catch (error) {
-      log.error(`Failed to hydrate node ${nodeId}:`, error);
+    if (node && isOwnedByParentViewer(node.nodeType)) {
+      const tab = untrack(() => navigationStore.state.tabs.find((t) => t.id === tabId));
+      if (tab?.content?.nodeId === nodeId) {
+        await getNavigationService().retargetTabToParent(tabId, nodeId);
+      }
       return;
     }
 
@@ -127,8 +140,10 @@
   const isNodeHydrated = $derived.by(() => {
     const nodeId = activeTab?.content?.nodeId;
     if (!nodeId) return true; // settings tabs and placeholder tabs need no hydration
-    // Read the store's per-node cell directly: a node is hydrated once it is present.
-    return sharedNodeStore.getNode(nodeId) != null;
+    // Read the store's per-node cell directly: a node is hydrated once it is present. A node
+    // its parent's viewer owns never mounts a viewer of its own (see hydrateNode).
+    const node = sharedNodeStore.getNode(nodeId);
+    return node != null && !isOwnedByParentViewer(node.nodeType);
   });
 
   // When the active tab changes, push the two side effects it requires into their

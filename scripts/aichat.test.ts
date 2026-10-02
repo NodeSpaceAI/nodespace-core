@@ -23,7 +23,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { formatTurnLogLines } from "./aichat.ts";
+import { formatTurnLogLines, readMessages } from "./aichat.ts";
 
 /** Build a daemon-log-shaped raw-generation line the way agent_loop.rs emits it. */
 function rawGenerationLine(iteration: number, text: string): string {
@@ -245,5 +245,31 @@ describe("formatTurnLogLines", () => {
       '2026-07-30T22:27:39Z  WARN nodespace_daemon: inference turn failed error="connection reset"';
     const lines = formatTurnLogLines(slice);
     expect(lines.filter((l) => l === "[empty-generation]")).toEqual([]);
+  });
+});
+
+describe("readMessages", () => {
+  test("reads a chat's message children in order, with their roles", () => {
+    const payload = {
+      count: 3,
+      nodes: [
+        { node_type: "ai-chat-message", content: "add a task", properties: { role: "user" } },
+        { node_type: "text", content: "a note kept under the chat", properties: {} },
+        {
+          node_type: "ai-chat-message",
+          content: "Added.",
+          properties: { role: "assistant", outcome: "acted" },
+        },
+      ],
+    };
+    expect(readMessages(payload)).toEqual([
+      { role: "user", content: "add a task" },
+      { role: "assistant", content: "Added." },
+    ]);
+  });
+
+  test("a payload with no node list is an empty conversation", () => {
+    expect(readMessages(null)).toEqual([]);
+    expect(readMessages({ count: 0 })).toEqual([]);
   });
 });

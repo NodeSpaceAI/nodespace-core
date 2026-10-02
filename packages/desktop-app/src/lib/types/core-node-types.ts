@@ -168,3 +168,23 @@ export function canHaveChild(parentType: string, childType: string): boolean {
 export function canBeRoot(nodeType: string): boolean {
   return structuralRules(nodeType).parent.rule !== 'must_have_parent_of';
 }
+
+/**
+ * Whether a node of `nodeType` is shown by its parent's viewer and never as a
+ * page or an outline row of its own (an `ai-chat-message` is shown by its
+ * chat): an outline lists it neither as a row nor under an expand control, and
+ * opening its id opens its parent.
+ *
+ * Two registry rules together say so. The type is left out of lists (the
+ * `excludedFromDefaultQueries` flag on the nearest core type in the `extends`
+ * chain, so a subtype of an excluded core type is excluded too), and it must
+ * sit under a parent. Neither is enough alone: a user-defined type with a
+ * parent rule is an ordinary outline row, and a type left out of lists that
+ * may be a root still opens as itself.
+ */
+export function isOwnedByParentViewer(nodeType: string): boolean {
+  const core = nearestCoreType(nodeType);
+  const leftOutOfLists =
+    core !== undefined && CORE_ENTRIES.get(core)?.excludedFromDefaultQueries === true;
+  return leftOutOfLists && !canBeRoot(nodeType);
+}

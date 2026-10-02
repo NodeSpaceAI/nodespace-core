@@ -8,7 +8,7 @@
 //! command layer and mirrors the gRPC JSON blob returned by the daemon.
 
 pub use nodespace_types::{
-    node_to_typed_value, nodes_to_typed_values, AiChatMessage, AiChatNativeNode, AiChatPtyNode,
+    node_to_typed_value, nodes_to_typed_values, AiChatMessageNode, AiChatNativeNode, AiChatPtyNode,
     CollectionNodeUpdate, DatabaseSettingsNodeUpdate, DeleteResult, EdgeField, EnumValue, Node,
     NodeQuery, NodeReference, NodeUpdate, OrderBy, PersonNodeUpdate, PlayNodeUpdate, Priority,
     ProjectNodeUpdate, QueryNodeUpdate, RelationshipCardinality, RelationshipDirection,

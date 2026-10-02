@@ -1,9 +1,12 @@
 /**
  * AI chat node helpers.
  *
- * The chat types, `AiChatMessage` and the records a message carries are
- * generated from Rust's `nodespace-types` (`./generated`): the backend promotes
- * a chat's fields to the top level of the node for every transport.
+ * The chat types and `AiChatMessageNode` are generated from Rust's
+ * `nodespace-types` (`./generated`): the backend promotes a chat's fields to
+ * the top level of the node for every transport.
+ *
+ * A native chat's messages are not a field of it: each is an `ai-chat-message`
+ * child node (ADR-088 §3), converted with `nodeToAiChatMessageNode()`.
  *
  * `ai-chat` is an abstract base (ADR-088): no node is ever of exactly that
  * type. A chat is an `ai-chat-native` (NodeSpace's own agent loop answers) or
@@ -15,18 +18,21 @@
  */
 
 import type { Node } from './node';
-import type { AiChatBase, AiChatNativeNode, AiChatPtyNode } from './generated';
+import type {
+  AiChatBase,
+  AiChatMessageNode,
+  AiChatNativeNode,
+  AiChatPtyNode
+} from './generated';
 import { isA, isExactly } from './core-node-types';
 
 export type {
   AiChatBase,
-  AiChatCompletedWrite,
-  AiChatMessage,
+  AiChatMessageNode,
+  AiChatMessageRole,
   AiChatNativeNode,
-  AiChatPendingDeletion,
   AiChatProvider,
   AiChatPtyNode,
-  AiChatResolvedEntity,
   AiChatSessionStatus,
   AiChatTurnOutcome,
   AiChatTurnStatus
@@ -51,6 +57,10 @@ export function isAiChatPtyNode(node: Node | AiChatNode): node is AiChatPtyNode 
   return isExactly(node.nodeType, 'ai-chat-pty');
 }
 
+export function isAiChatMessageNode(node: Node | AiChatMessageNode): node is AiChatMessageNode {
+  return isExactly(node.nodeType, 'ai-chat-message');
+}
+
 /** Whether a node is a chat of either subtype. */
 export function isAiChatNode(node: Node | AiChatNode): node is AiChatNode {
   return isA(node.nodeType, 'ai-chat');
@@ -71,8 +81,20 @@ export function nodeToAiChatNativeNode(node: Node): AiChatNativeNode {
     ...aiChatBase(node),
     provider: chat.provider ?? 'native',
     turnStatus: chat.turnStatus ?? 'idle',
-    contextTokens: chat.contextTokens ?? 0,
-    messages: Array.isArray(chat.messages) ? chat.messages : []
+    contextTokens: chat.contextTokens ?? 0
+  };
+}
+
+/** Convert a generic Node to AiChatMessageNode; see {@link nodeToAiChatNativeNode}. */
+export function nodeToAiChatMessageNode(node: Node): AiChatMessageNode {
+  const message = node as Node & Partial<AiChatMessageNode>;
+  return {
+    ...envelope(node),
+    role: message.role ?? 'user',
+    timestamp: message.timestamp,
+    reasoning: message.reasoning,
+    outcome: message.outcome,
+    options: Array.isArray(message.options) ? message.options : undefined
   };
 }
 

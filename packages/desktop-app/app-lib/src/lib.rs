@@ -836,6 +836,7 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             commands::nodes::get_outgoing_mentions,
             commands::nodes::get_incoming_mentions,
             commands::nodes::get_mentioning_roots,
+            commands::nodes::get_parent,
             commands::nodes::get_node_relationships,
             commands::nodes::create_relationship,
             commands::nodes::delete_relationship,

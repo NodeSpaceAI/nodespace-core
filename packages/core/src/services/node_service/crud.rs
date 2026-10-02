@@ -77,15 +77,14 @@ impl NodeService {
             return Ok(());
         }
         self.ensure_instantiable(&updated.node_type).await?;
-        if self
-            .type_is_a(&updated.node_type, crate::models::CoreNodeType::AiChat)
-            .await?
-            && !self
-                .type_is_a(&existing.node_type, crate::models::CoreNodeType::AiChat)
-                .await?
+        // A node that may be referenced never becomes one that may not: its
+        // inbound references would outlive the change (ADR-061 §8).
+        if !self.accepts_inbound_references(&updated.node_type).await?
+            && self.accepts_inbound_references(&existing.node_type).await?
         {
             return Err(NodeServiceError::invalid_update(format!(
-                "Node '{}' cannot be converted to an ai-chat node; create a new ai-chat instead",
+                "Node '{}' cannot be converted to an ai-chat node or a chat message; create a \
+                 new one instead",
                 existing.id
             )));
         }
@@ -435,12 +434,40 @@ impl NodeService {
             );
         }
 
+        self.sync_created_mentions(&created_id, &node.content).await;
+
         tracing::debug!(
             node_id = %created_id,
             "create_node: COMPLETE at {}ms",
             start.elapsed().as_millis()
         );
         Ok(created_id)
+    }
+
+    /// Create the `mentions` edges of a node created with content, as an
+    /// update to that content would (see [`Self::sync_mentions`]). A node
+    /// written whole in one create (a chat message, a node the CLI or an
+    /// agent creates) links what it mentions without waiting for an edit.
+    ///
+    /// Called by the single-node creates. A markdown import links its
+    /// mentions in bulk, and a node a Play's action creates is linked when
+    /// its content is next edited.
+    ///
+    /// Best-effort, after the create has committed: a mention that cannot be
+    /// linked never fails or undoes the create.
+    pub(super) async fn sync_created_mentions(&self, node_id: &str, content: &str) {
+        if extract_mentions(content).is_empty() {
+            return;
+        }
+        // Boxed: linking a mentioned date page creates it, which comes back
+        // through `create_node`.
+        if let Err(e) = Box::pin(self.sync_mentions(node_id, "", content)).await {
+            tracing::warn!(
+                "Failed to sync mentions for created node {}: {}",
+                node_id,
+                e
+            );
+        }
     }
 
     /// `_in_tx` twin of [`Self::create_node`] (ADR-069 §1b/S2). Delegates the
@@ -692,6 +719,7 @@ impl NodeService {
     ) -> Result<(String, Option<crate::db::ChildPlacement>), NodeServiceError> {
         let (node, parent, node_type) = self.prepare_create_node_with_parent(params).await?;
         let has_parent = parent.is_some();
+        let content = node.content.clone();
 
         let (created_id, placement) = if let Some((parent_id, position)) = parent {
             let service = self.clone();
@@ -718,6 +746,10 @@ impl NodeService {
 
         self.queue_created_root_for_embedding(&created_id, &node_type, has_parent)
             .await;
+        // A root went through `create_node`, which linked its mentions.
+        if has_parent {
+            self.sync_created_mentions(&created_id, &content).await;
+        }
 
         Ok((created_id, placement))
     }
@@ -954,7 +986,7 @@ impl NodeService {
     /// outside the transaction boundary (ADR-069 §5) — embedding markers are
     /// derived state with their own reconciliation loop, and a queueing
     /// failure must never fail or roll back a create that already committed.
-    async fn queue_created_root_for_embedding(
+    pub(super) async fn queue_created_root_for_embedding(
         &self,
         created_id: &str,
         node_type: &str,

@@ -237,7 +237,7 @@ async fn ai_chat_nodes_do_not_leak_across_databases() {
         collections: Vec::new(),
         collection_ids: Vec::new(),
         lifecycle_status: None,
-        properties: serde_json::json!({ "agent": "nodespace", "messages": [] }).to_string(),
+        properties: serde_json::json!({ "agent": "nodespace" }).to_string(),
         position: None,
     });
     create.extensions_mut().insert(manager.clone());

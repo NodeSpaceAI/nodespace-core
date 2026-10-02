@@ -158,12 +158,13 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         UpdateSchemaParams,
         SchemaUpdateOutput,
         // ai-chat
-        AiChatCompletedWrite,
-        AiChatResolvedEntity,
-        AiChatPendingDeletion,
+        AiChatWrite,
+        AiChatWroteEdge,
+        AiChatResolvedEdge,
+        AiChatPendingDeleteEdge,
         AiChatTurnOutcome,
         AiChatMessageRole,
-        AiChatMessage,
+        AiChatMessageNode,
         AiChatProvider,
         AiChatTurnStatus,
         AiChatSessionStatus,
@@ -206,6 +207,9 @@ struct CoreTypeEntry {
     is_abstract: bool,
     /// Offered by the `@` mention picker (the effective rule: it narrows down the chain).
     mentionable: bool,
+    /// Left out of default queries, counts and lists, a page outline among
+    /// them (the effective rule: it widens down the chain).
+    excluded_from_default_queries: bool,
     /// Whether the type's typed fields are written through a typed update
     /// command. A type without one writes them as a `properties` patch keyed
     /// by storage name.
@@ -280,6 +284,7 @@ fn core_node_types_file() -> File {
             parent: core.parent(),
             is_abstract: core.is_abstract(),
             mentionable: core.participation().mentionable,
+            excluded_from_default_queries: core.participation().excluded_from_default_queries,
             typed_update: core.wire() == (WireShape::Typed { update: true }),
             structure: StructuralRules {
                 children: core.declared_structure().children.into(),

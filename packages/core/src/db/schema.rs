@@ -83,9 +83,10 @@ CREATE INDEX IF NOT EXISTS idx_project_priority ON node (json_extract(properties
 -- nodes (in_node = declaring schema, out_node = target schema, or a self-edge
 -- when untyped) under the declared name, with the full SchemaRelationship JSON
 -- in `properties` (ADR-070). The two kinds share relationship_type values and
--- are distinguished by endpoint node_type ('schema' vs instance), never by
--- name — which is why declared names may not collide with the built-in
--- structural types.
+-- are told apart by the source's node_type, never by name: a declaration's
+-- source is a schema node and an instance edge's never is. (An instance edge
+-- of an untyped relationship may point at a schema node.) That is why
+-- declared names may not collide with the built-in structural types.
 CREATE TABLE IF NOT EXISTS relationship (
     id                TEXT    PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
     in_node           TEXT    NOT NULL REFERENCES node(id) ON DELETE CASCADE,

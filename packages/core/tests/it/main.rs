@@ -9,6 +9,7 @@
 //! Prefer nextest over a plain `cargo test` for anything but a single test:
 //! `cargo test` runs the whole binary's tests as threads of one process.
 
+mod ai_chat_message_test;
 mod ai_chat_reference_test;
 mod ai_chat_subtypes_test;
 mod bulk_invariant_dispatch_test;

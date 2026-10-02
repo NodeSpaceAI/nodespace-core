@@ -14,15 +14,39 @@
 //! - anything else is an ordinary turn, and the held deletes lapse. A model
 //!   that deletes again in that turn is held again.
 //!
-//! The held records travel on the confirmation message itself
-//! ([`AiChatPendingDeletion`]), so only a reply to *that* message can
-//! confirm them.
+//! The held records travel on the confirmation message itself, as its
+//! `pending_delete` edges ([`PendingDeletion`]), so only a reply to *that*
+//! message can confirm them.
 
-use nodespace_core::models::AiChatPendingDeletion;
 use nodespace_core::services::{NodeService, NodeServiceError};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::agent_types::ToolExecutionRecord;
+
+/// A node a delete was asked for, held until someone confirms it.
+///
+/// `version` and `descendant_count` are what the confirmation showed. A
+/// change to either between the question and the answer aborts the delete
+/// rather than removing something nobody saw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingDeletion {
+    /// Bare node id (no `nodespace://` prefix).
+    pub node_id: String,
+
+    /// How the node was named to the user.
+    pub title: String,
+
+    /// The node's type (e.g. `"task"`).
+    pub node_type: String,
+
+    /// The node's version when the delete was proposed.
+    pub version: i64,
+
+    /// Nodes beneath it that the delete cascades to (ADR-041).
+    pub descendant_count: u64,
+}
 
 /// The option that confirms a held delete.
 pub const CONFIRM_OPTION: &str = "Yes, delete";
@@ -58,7 +82,7 @@ pub fn landed_write(record: &ToolExecutionRecord) -> bool {
 pub async fn preview_deletion(
     node_service: &NodeService,
     node_id: &str,
-) -> Result<Option<AiChatPendingDeletion>, NodeServiceError> {
+) -> Result<Option<PendingDeletion>, NodeServiceError> {
     let Some(node) = node_service.get_node(node_id).await? else {
         return Ok(None);
     };
@@ -68,7 +92,7 @@ pub async fn preview_deletion(
         .as_deref()
         .filter(|t| !t.trim().is_empty())
         .unwrap_or_else(|| node.content.lines().next().unwrap_or_default());
-    Ok(Some(AiChatPendingDeletion {
+    Ok(Some(PendingDeletion {
         node_id: node.id.clone(),
         title: clip_title(title),
         node_type: node.node_type.clone(),
@@ -134,7 +158,7 @@ pub async fn ancestor_ids(
 const MAX_ANCESTOR_DEPTH: usize = 100;
 
 /// The tool result a held `delete_node` returns to the model.
-pub fn held_result(pending: &AiChatPendingDeletion, ancestors: &[String]) -> Value {
+pub fn held_result(pending: &PendingDeletion, ancestors: &[String]) -> Value {
     json!({
         HELD_KEY: true,
         "id": super::tools::node_uri(&pending.node_id),
@@ -149,12 +173,12 @@ pub fn held_result(pending: &AiChatPendingDeletion, ancestors: &[String]) -> Val
     })
 }
 
-fn pending_from_result(result: &Value) -> Option<(AiChatPendingDeletion, Vec<String>)> {
+fn pending_from_result(result: &Value) -> Option<(PendingDeletion, Vec<String>)> {
     if !is_held_deletion(result) {
         return None;
     }
     let id = result.get("id")?.as_str()?;
-    let pending = AiChatPendingDeletion {
+    let pending = PendingDeletion {
         node_id: id.strip_prefix("nodespace://").unwrap_or(id).to_string(),
         title: result.get("title")?.as_str()?.to_string(),
         node_type: result.get("node_type")?.as_str()?.to_string(),
@@ -175,8 +199,8 @@ fn pending_from_result(result: &Value) -> Option<(AiChatPendingDeletion, Vec<Str
 /// A target nested under another held target is left out: the outer target's
 /// cascade removes it, and its own subtree is already inside the outer
 /// target's descendant count.
-pub fn held_deletions(executions: &[ToolExecutionRecord]) -> Vec<AiChatPendingDeletion> {
-    let mut held: Vec<(AiChatPendingDeletion, Vec<String>)> = Vec::new();
+pub fn held_deletions(executions: &[ToolExecutionRecord]) -> Vec<PendingDeletion> {
+    let mut held: Vec<(PendingDeletion, Vec<String>)> = Vec::new();
     for (pending, ancestors) in executions
         .iter()
         .filter(|r| !r.is_error)
@@ -193,7 +217,7 @@ pub fn held_deletions(executions: &[ToolExecutionRecord]) -> Vec<AiChatPendingDe
         .collect()
 }
 
-fn named(p: &AiChatPendingDeletion) -> String {
+fn named(p: &PendingDeletion) -> String {
     format!("\"{}\" ({})", p.title, p.node_type)
 }
 
@@ -208,7 +232,7 @@ fn nested(count: u64) -> String {
 /// The confirmation question: every target, and the nested nodes the delete
 /// cascades to. One paragraph, because the chat UI renders only the first
 /// paragraph above the option chips.
-pub fn confirmation_question(targets: &[AiChatPendingDeletion]) -> String {
+pub fn confirmation_question(targets: &[PendingDeletion]) -> String {
     let nested_total: u64 = targets.iter().map(|t| t.descendant_count).sum();
     match targets {
         [only] if nested_total == 0 => {
@@ -320,9 +344,9 @@ pub fn classify_reply(message: &str) -> ConfirmationReply {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfirmedDeletion {
     /// Targets deleted, with how many nodes each removed (itself included).
-    pub deleted: Vec<(AiChatPendingDeletion, u64)>,
+    pub deleted: Vec<(PendingDeletion, u64)>,
     /// Targets already gone when the delete ran.
-    pub already_gone: Vec<AiChatPendingDeletion>,
+    pub already_gone: Vec<PendingDeletion>,
     /// Why the delete stopped short, when it did. Targets not listed in
     /// `deleted` or `already_gone` were left in place.
     pub stopped: Option<DeletionStop>,
@@ -355,7 +379,7 @@ impl std::fmt::Display for DeletionStop {
 /// rather than deleting the newer node.
 pub async fn execute_confirmed(
     node_service: &NodeService,
-    targets: &[AiChatPendingDeletion],
+    targets: &[PendingDeletion],
 ) -> ConfirmedDeletion {
     let mut outcome = ConfirmedDeletion {
         deleted: Vec::new(),
@@ -478,8 +502,8 @@ pub const DECLINED_TEXT: &str = "OK — nothing was deleted.";
 mod tests {
     use super::*;
 
-    fn target(id: &str, title: &str, descendants: u64) -> AiChatPendingDeletion {
-        AiChatPendingDeletion {
+    fn target(id: &str, title: &str, descendants: u64) -> PendingDeletion {
+        PendingDeletion {
             node_id: id.to_string(),
             title: title.to_string(),
             node_type: "task".to_string(),
