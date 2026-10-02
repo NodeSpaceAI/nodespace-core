@@ -70,6 +70,9 @@ export { isProjectNode, nodeToProjectNode } from './project-node';
 export type { QueryNode, QueryNodeUpdate, QueryGeneratedBy } from './query';
 export { nodeToQueryNode } from './query';
 
+// A play's wire shapes are generated from Rust's `nodespace-types`.
+export type { PlayNode, PlayNodeUpdate } from './generated';
+
 export type {
   SchemaNode,
   SchemaField,

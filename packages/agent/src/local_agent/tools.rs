@@ -787,14 +787,14 @@ fn def_search_nodes() -> ToolDefinition {
                                 "type": "boolean",
                                 "description": "For 'contains' operator: case sensitivity (default: true)"
                             },
-                            "relationship_type": {
-                                "type": "string",
-                                "enum": ["parent", "children", "mentions", "mentioned_by"],
-                                "description": "For 'relationship' filters: which graph edge direction to traverse"
+                            "path": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "For 'relationship' filters: the relationship names to follow from each node, in order. [\"child_of\"] is the node's parent, [\"has_child\"] its children, [\"mentions\"] the nodes it mentions, [\"mentioned_by\"] the nodes that mention it. A schema-declared relationship or its reverseName works too, e.g. [\"project\"]."
                             },
                             "node_id": {
                                 "type": "string",
-                                "description": "For 'relationship' filters: the anchor node ID to traverse from"
+                                "description": "For 'relationship' filters: the node the path must reach. {\"path\": [\"child_of\"], \"node_id\": X} selects the children of X."
                             }
                         },
                         "required": ["type", "operator"]
@@ -2663,8 +2663,6 @@ impl GraphToolExecutor {
                     property: Some("title".to_string()),
                     value: Some(Value::String(q)),
                     case_sensitive: Some(false),
-                    relationship_type: None,
-                    node_id: None,
                     ..Default::default()
                 });
             }

@@ -23,6 +23,8 @@ import type {
   NodeWithChildren,
   PersonNode,
   PersonNodeUpdate,
+  PlayNode,
+  PlayNodeUpdate,
   ProjectNode,
   ProjectNodeUpdate,
   QueryNode,
@@ -145,6 +147,7 @@ export interface BackendAdapter {
   updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode>;
   updateProjectNode(id: string, version: number, update: ProjectNodeUpdate): Promise<ProjectNode>;
   updateQueryNode(id: string, version: number, update: QueryNodeUpdate): Promise<QueryNode>;
+  updatePlayNode(id: string, version: number, update: PlayNodeUpdate): Promise<PlayNode>;
   deleteNode(id: string, version: number): Promise<DeleteResult>;
 
   // Hierarchy
@@ -456,6 +459,24 @@ export function encodeSortField(field: string): string {
 }
 
 /**
+ * One filter in the snake_case `AgentFilterItem` deserializes. A `path`
+ * travels as written (a hop's own keys are already snake_case), and a
+ * related-node filter's nested `filter` is encoded the same way.
+ */
+function encodeFilter(f: QueryFilter): Record<string, unknown> {
+  return {
+    type: f.type,
+    operator: f.operator,
+    ...(f.property !== undefined ? { property: f.property } : {}),
+    ...(f.value !== undefined ? { value: f.value } : {}),
+    ...(f.caseSensitive !== undefined ? { case_sensitive: f.caseSensitive } : {}),
+    ...(f.nodeId !== undefined ? { node_id: f.nodeId } : {}),
+    ...(f.path !== undefined && f.path !== null ? { path: f.path } : {}),
+    ...(f.filter !== undefined && f.filter !== null ? { filter: encodeFilter(f.filter) } : {}),
+  };
+}
+
+/**
  * Encode a query definition for the `ExecuteQuery` wire.
  *
  * `limit` uses 0 as the "unset" sentinel, matching the proto: the server then
@@ -466,15 +487,7 @@ export function encodeSortField(field: string): string {
  * missing key does.
  */
 export function buildExecuteQueryWire(input: ExecuteQueryInput): ExecuteQueryWire {
-  const filters = (input.filters ?? []).map((f) => ({
-    type: f.type,
-    operator: f.operator,
-    ...(f.property !== undefined ? { property: f.property } : {}),
-    ...(f.value !== undefined ? { value: f.value } : {}),
-    ...(f.caseSensitive !== undefined ? { case_sensitive: f.caseSensitive } : {}),
-    ...(f.relationshipType !== undefined ? { relationship_type: f.relationshipType } : {}),
-    ...(f.nodeId !== undefined ? { node_id: f.nodeId } : {}),
-  }));
+  const filters = (input.filters ?? []).map(encodeFilter);
 
   const sorting = input.sorting?.map((s) => ({
     field: encodeSortField(s.field),
@@ -543,6 +556,7 @@ export const HTTP_ROUTES = {
   updatePersonNode: (id: string) => `/api/persons/${encodeURIComponent(id)}`,
   updateProjectNode: (id: string) => `/api/projects/${encodeURIComponent(id)}`,
   updateQueryNode: (id: string) => `/api/queries/${encodeURIComponent(id)}`,
+  updatePlayNode: (id: string) => `/api/plays/${encodeURIComponent(id)}`,
   moveNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}/parent`,
   moveChildrenToParent: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/move-children`,
   getChildren: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/children`,
@@ -582,6 +596,7 @@ export const HTTP_ROUTE_PATTERNS = {
   updatePersonNode: /^\/api\/persons\/([^/]+)$/,
   updateProjectNode: /^\/api\/projects\/([^/]+)$/,
   updateQueryNode: /^\/api\/queries\/([^/]+)$/,
+  updatePlayNode: /^\/api\/plays\/([^/]+)$/,
   moveNode: /^\/api\/nodes\/([^/]+)\/parent$/,
   moveChildrenToParent: /^\/api\/nodes\/([^/]+)\/move-children$/,
   getChildren: /^\/api\/nodes\/([^/]+)\/children$/,

@@ -224,6 +224,42 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     expect(reread.filters).toHaveLength(1);
   });
 
+  it('create → typed play update → read back carries typed fields', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({
+      id,
+      nodeType: 'play',
+      content: 'Greet new tasks',
+      properties: { rules: [] },
+    });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { rules?: unknown[] }).rules).toEqual([]);
+
+    const updated = await h.adapter.updatePlayNode(id, created!.version, {
+      rules: [
+        {
+          name: 'greet',
+          trigger: { type: 'graph_event', on: 'node_created', select: { target_type: 'task' } },
+          conditions: ["node.content == 'hello'"],
+          actions: [],
+        },
+      ],
+      description: 'Greets new tasks',
+    });
+    expect(updated.rules[0].name).toBe('greet');
+    expect(updated.rules[0].trigger.select).toEqual({ target_type: 'task' });
+    expect(updated.description).toBe('Greets new tasks');
+    expect(updated.properties).toEqual({});
+
+    // null clears.
+    const cleared = await h.adapter.updatePlayNode(id, updated.version, { description: null });
+    expect(cleared.description).toBeUndefined();
+
+    // A fresh read agrees — the write is durable.
+    const reread = (await h.adapter.getNode(id)) as unknown as { rules?: unknown[] };
+    expect(reread.rules).toHaveLength(1);
+  });
+
   it('createNode honors an explicit InsertPosition the same way move/reorder do', async () => {
     const parentId = crypto.randomUUID();
     const firstId = crypto.randomUUID();

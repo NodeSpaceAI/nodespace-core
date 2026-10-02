@@ -317,6 +317,20 @@ pub fn is_a_sql(column: &str, bases: &[crate::models::CoreNodeType]) -> String {
     )
 }
 
+/// [`is_a_sql`] for a type known only when the statement runs: a SQL predicate
+/// that is true when `column` holds the type bound at `placeholder`, or a
+/// type extending it.
+///
+/// A user-defined type is not in the registry, so it cannot be inlined the
+/// way a core type is; it is bound, and resolved through the same ancestry
+/// table. The equality arm covers a type with no schema, which has no
+/// ancestry rows and is its own chain.
+pub fn is_a_bound_sql(column: &str, placeholder: &str) -> String {
+    format!(
+        "({column} = {placeholder} OR {column} IN (SELECT node_type FROM {TYPE_ANCESTRY_TABLE} WHERE ancestor = {placeholder}))"
+    )
+}
+
 /// The negation of [`is_a_sql`]: `column` is none of `bases` and extends none
 /// of them.
 pub fn is_not_a_sql(column: &str, bases: &[crate::models::CoreNodeType]) -> String {

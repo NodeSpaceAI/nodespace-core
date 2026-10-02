@@ -32,6 +32,10 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'last_executed', wire: 'lastExecuted', readOnly: true },
     { storage: 'view_config', wire: 'viewConfig', structured: 'object' }
   ],
+  play: [
+    { storage: 'rules', wire: 'rules', structured: 'array' },
+    { storage: 'description', wire: 'description' }
+  ],
   'ai-chat': [
     { storage: 'agent', wire: 'agent' },
     { storage: 'model', wire: 'model' },
@@ -68,6 +72,7 @@ export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string
   task: { status: 'open' },
   project: { status: 'planning' },
   query: { executionCount: 0, filters: [], generatedBy: 'user', targetType: '*' },
+  play: { rules: [] },
   'ai-chat-native': {
     agent: '',
     contextTokens: 0,

@@ -595,6 +595,12 @@ impl NodeService {
         {
             self.validate_play_rules(&node.properties).await?;
         }
+        if self
+            .type_is_a(&node.node_type, crate::models::CoreNodeType::Query)
+            .await?
+        {
+            self.validate_query_paths(&node.properties).await?;
+        }
 
         crate::db::SqliteStore::create_node_in_tx(tx.store_tx(), &node)
             .await
@@ -1759,6 +1765,14 @@ impl NodeService {
         {
             self.validate_play_rules(&updated.properties).await?;
         }
+        // The same gate for a saved query's relationship paths.
+        if properties_changed
+            && self
+                .type_is_a(&updated.node_type, crate::models::CoreNodeType::Query)
+                .await?
+        {
+            self.validate_query_paths(&updated.properties).await?;
+        }
 
         // Sync title when content, node_type, or properties change
         // Schema-driven title_template — also trigger on properties_changed
@@ -2493,6 +2507,34 @@ impl NodeService {
             return Err(NodeServiceError::play_validation_failed(&errors));
         }
 
+        Ok(())
+    }
+
+    /// Resolve a saved query's relationship paths before persisting.
+    ///
+    /// A path names relationships as an author writes them, and what a name
+    /// means depends on the schemas. Resolving it here means a name that
+    /// resolves to nothing is an error when the query is saved, rather than a
+    /// query that quietly matches nothing each time it runs. The resolved
+    /// form is not stored: a query's paths are resolved again whenever it
+    /// runs, so they always follow the current schemas.
+    pub(crate) async fn validate_query_paths(
+        &self,
+        properties: &serde_json::Value,
+    ) -> Result<(), NodeServiceError> {
+        let fields = crate::models::QueryFields::from_properties(properties)
+            .map_err(|e| NodeServiceError::invalid_update(e.to_string()))?;
+        if fields.filters.iter().all(|filter| filter.path.is_none()) {
+            return Ok(());
+        }
+        crate::ops::query_ops::resolve_filters(self, &fields.target_type, fields.filters)
+            .await
+            .map_err(|e| match e {
+                crate::ops::OpsError::InvalidParams(message) => {
+                    NodeServiceError::invalid_update(message)
+                }
+                other => NodeServiceError::query_failed(other.to_string()),
+            })?;
         Ok(())
     }
 

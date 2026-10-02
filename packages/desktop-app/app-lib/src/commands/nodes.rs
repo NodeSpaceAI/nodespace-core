@@ -6,8 +6,8 @@
 use crate::types::{
     node_to_typed_value as types_node_to_typed_value,
     nodes_to_typed_values as types_nodes_to_typed_values, DeleteResult, Node, NodeQuery,
-    NodeReference, NodeUpdate, PersonNodeUpdate, Priority, ProjectNodeUpdate, QueryNodeUpdate,
-    TaskNodeUpdate,
+    NodeReference, NodeUpdate, PersonNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate,
+    QueryNodeUpdate, TaskNodeUpdate,
 };
 use chrono::{DateTime, Utc};
 use nodespace_proto::nodespace::{
@@ -17,8 +17,8 @@ use nodespace_proto::nodespace::{
     GetNodeRequest, GetSchemaDefinitionRequest, MentionAutocompleteRequest, MentionTargetRequest,
     MoveChildrenToParentRequest, MoveNodeRequest, NodeData, NodeResponse, NodeSortOrder,
     OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest, ReorderNodeRequest,
-    UpdateNodeRequest, UpdatePersonNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
-    UpdateRelationshipPropertiesRequest, UpdateTaskNodeRequest,
+    UpdateNodeRequest, UpdatePersonNodeRequest, UpdatePlayNodeRequest, UpdateProjectNodeRequest,
+    UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest, UpdateTaskNodeRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1241,6 +1241,36 @@ pub async fn update_query_node(
     };
     let resp = c
         .update_query_node(Request::new(req))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let node = proto_node_response_to_node(resp.into_inner())?;
+    node_to_typed_value(node)
+}
+
+/// Update a play's fields (rules, description).
+#[tauri::command]
+pub async fn update_play_node(
+    client: State<'_, GrpcClient>,
+    id: String,
+    version: i64,
+    update: PlayNodeUpdate,
+) -> Result<Value, CommandError> {
+    let mut c = client.echo_suppressed_client().await;
+    let update_json = serde_json::to_string(&update).map_err(|e| CommandError {
+        message: format!("Failed to serialize play update: {}", e),
+        code: "SERIALIZE_ERROR".to_string(),
+        details: None,
+        conflict_data: None,
+        requires_extension: None,
+    })?;
+    let req = UpdatePlayNodeRequest {
+        node_id: id,
+        version,
+        update_json,
+    };
+    let resp = c
+        .update_play_node(Request::new(req))
         .await
         .map_err(status_to_command_error)?;
 

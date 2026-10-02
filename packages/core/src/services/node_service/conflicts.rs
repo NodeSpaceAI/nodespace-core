@@ -157,8 +157,8 @@ impl NodeService {
         // redeclared) by a subtype was therefore invisible here, so a real
         // duplicate value on an inherited unique field never got journaled
         // as a `UniqueFieldCollision` conflict. Same fix pattern as
-        // `workflow_state.rs`, `validation.rs`, `graph_resolver.rs`'s
-        // `is_declared_many_relationship`, and `rel_ops.rs`'s
+        // `workflow_state.rs`, `validation.rs`, `path_ops.rs`'s
+        // `resolve_hop`, and `rel_ops.rs`'s
         // `resolve_relationship_name`/`get_node_relationships`. When
         // `node.node_type` has no schema at all, `resolve_field_owners`
         // returns an empty field set — same "nothing to journal" outcome

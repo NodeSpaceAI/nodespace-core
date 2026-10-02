@@ -28,8 +28,8 @@ use crate::playbook::actions::{
 use crate::playbook::graph_resolver::declared_collection_type;
 use crate::playbook::path_extractor;
 use crate::playbook::types::{
-    namespaced_property_key, ActionType, GraphEventType, ParsedAction, ParsedRule, ParsedTrigger,
-    RuleClass,
+    is_local_write, namespaced_property_key, ActionType, GraphEventType, ParsedAction, ParsedRule,
+    ParsedTrigger, RuleClass, Selector,
 };
 use crate::services::NodeService;
 use std::collections::HashMap;
@@ -135,14 +135,6 @@ pub enum PlayValidationError {
     /// this is caught at save time rather than silently no-op'd (or errored
     /// generically) at runtime.
     RejectActionOnReactiveRule { location: String },
-    /// A `reject` action declares a `for_each`. `reject`'s condition
-    /// (evaluated against the trigger node, not a collection item) is
-    /// already the gate for whether it fires — iterating it over a
-    /// collection adds nothing but a real correctness hazard: if the
-    /// resolved collection is empty, the loop body never runs and the
-    /// action silently no-ops, vetoing nothing, with no save-time or
-    /// runtime warning. Rejected outright rather than accepted-with-a-caveat.
-    RejectActionHasForEach { location: String },
     /// Two different rules within the SAME play have byte-identical action
     /// lists -- the same `action_type`, `params`, and `for_each` sequence,
     /// in order, for every action (the same serialized shape
@@ -223,6 +215,14 @@ pub enum PlayValidationError {
         message: String,
         location: String,
     },
+    /// A scheduled trigger's selector cannot be run: the saved query it names
+    /// does not exist or is not a query, or one of its filters walks a
+    /// relationship the schemas do not declare.
+    ///
+    /// Rejected at save time because the alternative is a scan that selects
+    /// nothing every time it fires, which reads exactly like "no node matched
+    /// yet".
+    InvalidSelector { message: String, location: String },
     /// A condition reads the node's lifecycle, or an action takes it as a
     /// parameter. Plays neither read nor write it (ADR-087 §5): whether a
     /// node takes part is governance, decided by the participation check
@@ -339,14 +339,6 @@ impl std::fmt::Display for PlayValidationError {
                  remove the reject action)",
                 location
             ),
-            Self::RejectActionHasForEach { location } => write!(
-                f,
-                "reject action at {} declares a for_each (reject's condition already gates \
-                 whether it fires — iterating it adds a correctness hazard: an empty \
-                 collection would silently no-op instead of vetoing the write; remove the \
-                 for_each)",
-                location
-            ),
             Self::DuplicateActionList {
                 rule_name,
                 duplicate_of_rule_name,
@@ -394,6 +386,9 @@ impl std::fmt::Display for PlayValidationError {
                 "invalid .where() filter '{}' at {}: {}",
                 filter, location, message
             ),
+            Self::InvalidSelector { message, location } => {
+                write!(f, "invalid selector at {}: {}", location, message)
+            }
             Self::LifecycleReference { location } => write!(
                 f,
                 "a play can't read or set a node's lifecycle (at {}): archived nodes \
@@ -429,11 +424,11 @@ impl PlayValidationError {
             | Self::InvariantUnsupportedTrigger { location, .. }
             | Self::InvariantRelationshipNeedsExplicitOrder { location, .. }
             | Self::RejectActionOnReactiveRule { location }
-            | Self::RejectActionHasForEach { location }
             | Self::DuplicateActionList { location, .. }
             | Self::UnnamespacedPropertyChangedKey { location, .. }
             | Self::SchemaResolutionFailed { location, .. }
             | Self::InvalidWhereFilter { location, .. }
+            | Self::InvalidSelector { location, .. }
             | Self::LifecycleReference { location } => location,
         }
     }
@@ -459,11 +454,11 @@ impl PlayValidationError {
                 "invariant_relationship_needs_explicit_order"
             }
             Self::RejectActionOnReactiveRule { .. } => "reject_action_on_reactive_rule",
-            Self::RejectActionHasForEach { .. } => "reject_action_has_for_each",
             Self::DuplicateActionList { .. } => "duplicate_action_list",
             Self::UnnamespacedPropertyChangedKey { .. } => "unnamespaced_property_changed_key",
             Self::SchemaResolutionFailed { .. } => "schema_resolution_failed",
             Self::InvalidWhereFilter { .. } => "invalid_where_filter",
+            Self::InvalidSelector { .. } => "invalid_selector",
             Self::LifecycleReference { .. } => "lifecycle_reference",
         }
     }
@@ -517,8 +512,8 @@ pub async fn validate_play(
     let mut schema_cache: SchemaCache = HashMap::new();
 
     for (rule_idx, rule) in rules.iter().enumerate() {
-        // -- Validate trigger node_type --
-        let trigger_node_type = trigger_node_type(rule);
+        // -- Validate the trigger's selector, and find the type it selects --
+        let trigger_node_type = trigger_node_type(rule, rule_idx, node_service, &mut errors).await;
         if let Some(nt) = &trigger_node_type {
             ensure_schema_cached(nt, node_service, &mut schema_cache).await;
             // Cheap membership check first so the `format!` below (and the
@@ -772,11 +767,62 @@ fn validate_no_duplicate_action_lists(
     }
 }
 
-/// Extract the node_type from a parsed trigger.
-fn trigger_node_type(rule: &ParsedRule) -> Option<String> {
-    match &rule.trigger {
-        ParsedTrigger::GraphEvent { node_type, .. } => Some(node_type.clone()),
-        ParsedTrigger::Scheduled { node_type, .. } => Some(node_type.clone()),
+/// The type a rule's trigger selects: the type its conditions and paths are
+/// validated against.
+///
+/// A graph event and an inline selector name it. A saved-query selector
+/// names a query node, whose `target_type` is read here; a query that does
+/// not exist, is not a query, or cannot be run is an error against the rule.
+///
+/// A scheduled selector is also resolved as the query it stands for, so a
+/// filter walking a relationship the schemas do not declare is rejected when
+/// the play is saved rather than selecting nothing every time it fires.
+///
+/// `None` when the type could not be determined; the reason is in `errors`.
+async fn trigger_node_type(
+    rule: &ParsedRule,
+    rule_idx: usize,
+    node_service: &NodeService,
+    errors: &mut Vec<PlayValidationError>,
+) -> Option<String> {
+    use crate::playbook::selectors::{selector_query, SelectorError};
+
+    let select = match &rule.trigger {
+        ParsedTrigger::GraphEvent { node_type, .. } => return Some(node_type.clone()),
+        ParsedTrigger::Scheduled { select, .. } => select,
+    };
+    // A bare inline type needs no query to validate: whether the type exists
+    // is checked against the schema cache by the caller.
+    if let Selector::Inline(inline) = select {
+        if inline.filters.is_empty() {
+            return Some(inline.target_type.clone());
+        }
+    }
+
+    let location = format!("rule[{}].trigger.select", rule_idx);
+    match selector_query(node_service, select).await {
+        Ok(query) => Some(query.target_type),
+        Err(SelectorError::Lookup(error)) => {
+            errors.push(PlayValidationError::SchemaResolutionFailed {
+                node_type: rule
+                    .trigger
+                    .registered_type()
+                    .unwrap_or_default()
+                    .to_string(),
+                error,
+                location,
+            });
+            rule.trigger.registered_type().map(str::to_string)
+        }
+        Err(e) => {
+            errors.push(PlayValidationError::InvalidSelector {
+                message: e.to_string(),
+                location,
+            });
+            // An inline selector still names its type, so the rest of the
+            // rule is validated against it.
+            rule.trigger.registered_type().map(str::to_string)
+        }
     }
 }
 
@@ -846,79 +892,6 @@ fn cached_schema<'a>(
     }
 }
 
-/// If `segment` is the declared reverse name of a relationship reaching
-/// `node_type`, the type on the other end — i.e. where the walk continues.
-///
-/// Mirrors the reverse half of [`crate::ops::rel_ops::resolve_relationship_name`],
-/// minus the parts that need a concrete node. That resolver probes an untyped
-/// declaration (`target_type: None`) against a real node to avoid resolving to
-/// a guaranteed-empty traversal; validation has no node, so an untyped
-/// declaration is accepted on the strength of its name alone.
-///
-/// Checked across `node_type`'s whole `extends` chain, not just the type
-/// itself: `issue extends task`, and `task.blocks` declares `blocked_by`
-/// targeting `task`, so an issue reaches that reverse name through
-/// inheritance (ADR-078). Matching only the concrete type would refuse
-/// `node.blocked_by` on an issue while allowing it on a task.
-///
-/// Takes the caller's `schema_cache`, but never reads it back: the
-/// inbound-relationship data below always comes from a fresh
-/// `get_inbound_relationships` call, which is not cache-backed. Warming the
-/// cache here still isn't wasted — it means a scope's schema, once fetched by
-/// whichever check runs first for a given segment, is a cache hit for the
-/// forward lookup (and for the next segment's [`ensure_schema_cached`] call
-/// at the top of the loop) — but the
-/// per-scope `get_inbound_relationships` cost this function actually incurs
-/// is untouched by it.
-///
-/// Returns `Ok(None)` when `segment` is genuinely not a declared reverse name
-/// anywhere in the chain — a real "not found" the caller reports as
-/// [`PlayValidationError::BrokenPath`]. A DB error while resolving the
-/// `extends` chain or reading a scope's inbound relationships is a distinct
-/// outcome, `Err(PlayValidationError::SchemaResolutionFailed)`, propagated
-/// rather than swallowed: collapsing either failure to "no match" — falling
-/// back to `vec![node_type]` for the chain, or silently skipping a scope
-/// whose inbound lookup errored — would report a legitimate inherited
-/// reverse relationship as a broken path, blaming the play's own expression
-/// for what is actually a transient/internal error. Same rationale as
-/// `SchemaResolutionFailed`'s doc comment and the forward-resolution
-/// `tokio::try_join!` above in [`validate_schema_path`].
-async fn resolve_reverse_segment(
-    node_type: &str,
-    segment: &str,
-    location: &str,
-    node_service: &NodeService,
-    schema_cache: &mut SchemaCache,
-) -> Result<Option<String>, PlayValidationError> {
-    let chain = node_service
-        .resolve_type_chain(node_type)
-        .await
-        .map_err(|e| PlayValidationError::SchemaResolutionFailed {
-            node_type: node_type.to_string(),
-            error: e.to_string(),
-            location: location.to_string(),
-        })?;
-
-    for scope in chain {
-        ensure_schema_cached(&scope, node_service, schema_cache).await;
-        let inbound = node_service
-            .get_inbound_relationships(&scope)
-            .await
-            .map_err(|e| PlayValidationError::SchemaResolutionFailed {
-                node_type: scope.clone(),
-                error: e.to_string(),
-                location: location.to_string(),
-            })?;
-        if let Some(source) = inbound
-            .into_iter()
-            .find_map(|(source_type, rel)| (rel.reverse_name == segment).then_some(source_type))
-        {
-            return Ok(Some(source));
-        }
-    }
-    Ok(None)
-}
-
 /// Validate a dot-path against the schema graph.
 ///
 /// Walks the path segments starting from the trigger schema, checking each segment:
@@ -967,6 +940,25 @@ async fn validate_schema_path(
             return;
         }
 
+        // A core node field (`id`, `content`, …) is on every node, whatever
+        // its type and whatever its schema declares: the resolver reads it
+        // before any property or relationship of the same name. It is
+        // terminal, like a schema field.
+        if crate::playbook::cel::is_core_key(segment) {
+            if i + 1 < segments.len() - 1 {
+                errors.push(PlayValidationError::BrokenPath {
+                    path: full_path.clone(),
+                    segment: segment.clone(),
+                    message: format!(
+                        "'{}' is a field every node carries, not a relationship (cannot traverse further)",
+                        segment
+                    ),
+                    location: location.to_string(),
+                });
+            }
+            return;
+        }
+
         // Resolve which schema in `current_type`'s ADR-078 `extends` chain
         // declares `segment` — as a field, or as a relationship — together
         // with the full chain order, nearest first.
@@ -999,12 +991,12 @@ async fn validate_schema_path(
         // reason (the same chain walk against the same `current_type`) and
         // `SchemaResolutionFailed`'s `node_type`/`location` stay identical
         // either way.
-        let (field_owners, chain, relationships, rel_owners) = match tokio::try_join!(
+        let (field_owners, chain, rel_owners) = match tokio::try_join!(
             node_service.resolve_field_owners(&current_type),
             node_service.resolve_relationships(&current_type)
         ) {
-            Ok(((_fields, owners, chain), (relationships, rel_owners))) => {
-                (owners, chain, relationships, rel_owners)
+            Ok(((_fields, owners, chain), (_relationships, rel_owners))) => {
+                (owners, chain, rel_owners)
             }
             Err(e) => {
                 errors.push(PlayValidationError::SchemaResolutionFailed {
@@ -1076,66 +1068,50 @@ async fn validate_schema_path(
             continue;
         }
 
-        // Forward first, and from the *effective* set — own declarations plus
-        // everything inherited across the `extends` chain
-        // (`resolve_relationships`), so a name declared on `task` resolves on
-        // an `issue` without a second chain walk here.
+        // Not a field, and not a built-in: resolve the name as the
+        // relationship hop the runtime resolves it as
+        // ([`crate::ops::path_ops::resolve_hop`]). One resolver for both
+        // means validation can never route a path differently from the
+        // engine that walks it: a forward name the type declares or
+        // inherits, a declared reverse name, or the forward name of a
+        // relationship that targets this type, in that order.
         //
-        // Ordering mirrors `rel_ops::resolve_relationship_name`: a forward
-        // name always wins over a same-spelled reverse name on another schema.
-        // Checking reverse first would let validation route a path differently
-        // from the runtime resolver that actually walks it.
-        let relationship = relationships.iter().find(|r| r.name == *segment);
-        if let Some(rel) = relationship {
-            if let Some(ref target_type) = rel.target_type {
-                // Follow the relationship to the target schema
-                current_type = target_type.clone();
-                continue;
-            } else {
-                // Relationship has no target_type — can't traverse further
-                if i + 1 < segments.len() - 1 {
-                    errors.push(PlayValidationError::BrokenPath {
-                        path: full_path.clone(),
-                        segment: segment.clone(),
-                        message: format!(
-                            "relationship '{}' on '{}' has no target_type (cannot traverse further)",
-                            segment, current_type
-                        ),
-                        location: location.to_string(),
-                    });
-                }
-                return;
-            }
-        }
-
-        // A segment may also spell the far end of a DECLARED relationship.
-        // The forward name lives on this schema; a reverse name (`blocked_by`
-        // for `task.blocks`) lives on whichever schema declares the forward
-        // half and targets this type. `GraphResolver` resolves both —
-        // direction is decided per segment in `fetch_related_nodes` — so
-        // validating only the forward spelling would refuse Plays the engine
-        // runs fine. Checked only once the forward check above comes back
-        // empty, for the same precedence reason.
-        //
-        // Matched against inbound declarations by schema alone, with no node
-        // in hand: this asks whether the name is *declarable* here, which is
-        // all save-time validation can know.
-        //
-        // A DB error here (`Err`) is distinct from a genuine miss (`Ok(None)`)
-        // — see `resolve_reverse_segment`'s doc comment — and is reported the
-        // same way the forward-resolution failure above is: push
-        // `SchemaResolutionFailed` and stop, rather than falling through to
+        // A lookup failure (`Err`) is distinct from an undeclared name: it is
+        // reported as `SchemaResolutionFailed` rather than falling through to
         // `BrokenPath` and blaming the play's own expression for it.
-        match resolve_reverse_segment(&current_type, segment, location, node_service, schema_cache)
-            .await
-        {
-            Ok(Some(target)) => {
-                current_type = target;
-                continue;
+        let hop = nodespace_types::RelationshipHop::fixed(segment.as_str());
+        match crate::ops::path_ops::resolve_hop(node_service, Some(&current_type), &hop).await {
+            Ok(crate::ops::path_ops::HopResolution::Resolved(resolved)) => {
+                match resolved.far_type {
+                    Some(target_type) => {
+                        // Follow the relationship to the type it reaches.
+                        current_type = target_type;
+                        continue;
+                    }
+                    None => {
+                        // No declared target type — can't traverse further
+                        if i + 1 < segments.len() - 1 {
+                            errors.push(PlayValidationError::BrokenPath {
+                                path: full_path.clone(),
+                                segment: segment.clone(),
+                                message: format!(
+                                    "relationship '{}' on '{}' has no target_type (cannot traverse further)",
+                                    segment, current_type
+                                ),
+                                location: location.to_string(),
+                            });
+                        }
+                        return;
+                    }
+                }
             }
-            Ok(None) => {}
+            Ok(_) => {}
             Err(e) => {
-                errors.push(e);
+                errors.push(PlayValidationError::SchemaResolutionFailed {
+                    node_type: current_type.clone(),
+                    error: e.to_string(),
+                    location: location.to_string(),
+                });
                 return;
             }
         }
@@ -1372,7 +1348,7 @@ async fn for_each_item_type(
     action: &ParsedAction,
     trigger_type: &str,
     node_service: &NodeService,
-) -> Result<Option<String>, crate::services::NodeServiceError> {
+) -> Result<Option<String>, String> {
     let Some(for_each) = &action.for_each else {
         return Ok(None);
     };
@@ -1411,15 +1387,10 @@ async fn validate_action(
             .await;
         }
         ActionType::UpdateNode => {
-            if action.params.as_object().is_some_and(|params| {
-                params
-                    .keys()
-                    .any(|k| crate::governance::is_lifecycle_field(k))
-            }) {
-                errors.push(PlayValidationError::LifecycleReference {
-                    location: location.to_string(),
-                });
-            }
+            // The typed params take no lifecycle (ADR-087 §5): a rule that
+            // names it as a param does not decode, so there is nothing to
+            // check for here.
+            //
             // update_node may optionally reference a node_type for type conversion
             if let Some(nt) = action.params.get("node_type").and_then(|v| v.as_str()) {
                 ensure_schema_cached(nt, node_service, schema_cache).await;
@@ -1445,10 +1416,10 @@ async fn validate_action(
     }
 }
 
-/// Validate a `reject` action: `message` is required (either a literal
-/// string or a `{binding}` template — both resolve to a string at execution
-/// time, see `playbook::actions::execute_reject`), and `for_each` is
-/// disallowed (see [`PlayValidationError::RejectActionHasForEach`]).
+/// Validate a `reject` action: its `message` must say something. A literal
+/// string or a `{binding}` template both resolve to a string at execution
+/// time (see `playbook::actions::execute_reject`); an empty one would refuse a
+/// write without telling the user why.
 fn validate_reject_action(
     action: &ParsedAction,
     location: &str,
@@ -1462,11 +1433,6 @@ fn validate_reject_action(
             location: location.to_string(),
         });
     }
-    if action.for_each.is_some() {
-        errors.push(PlayValidationError::RejectActionHasForEach {
-            location: location.to_string(),
-        });
-    }
 }
 
 /// Validate `create_node` action: node_type must exist, version must match.
@@ -1477,20 +1443,9 @@ async fn validate_create_node_action(
     schema_cache: &mut SchemaCache,
     errors: &mut Vec<PlayValidationError>,
 ) {
-    // node_type is required
-    let node_type = match params.get("node_type").and_then(|v| v.as_str()) {
-        Some(nt) => nt,
-        None => {
-            if params.get("node_type").is_some() {
-                // Non-string node_type (e.g., number, object) — can't validate, skip
-                return;
-            }
-            errors.push(PlayValidationError::MissingActionParam {
-                param: "node_type".to_string(),
-                location: location.to_string(),
-            });
-            return;
-        }
+    // The typed params make `node_type` a required string.
+    let Some(node_type) = params.get("node_type").and_then(|v| v.as_str()) else {
+        return;
     };
 
     // Skip validation for binding templates like "{trigger.node.node_type}"
@@ -1540,15 +1495,9 @@ async fn validate_relationship_action(
     schema_cache: &mut SchemaCache,
     errors: &mut Vec<PlayValidationError>,
 ) {
-    let rel_type = match params.get("relationship_type").and_then(|v| v.as_str()) {
-        Some(rt) => rt,
-        None => {
-            errors.push(PlayValidationError::MissingActionParam {
-                param: "relationship_type".to_string(),
-                location: location.to_string(),
-            });
-            return;
-        }
+    // The typed params make `relationship_type` a required string.
+    let Some(rel_type) = params.get("relationship_type").and_then(|v| v.as_str()) else {
+        return;
     };
 
     // Skip validation for binding templates
@@ -1701,7 +1650,7 @@ fn validate_invariant_eligibility(
 
     // Local writes only.
     for (action_idx, action) in rule.actions.iter().enumerate() {
-        if !action.action_type.is_local_write() {
+        if !is_local_write(action.action_type) {
             errors.push(PlayValidationError::InvariantNonLocalAction {
                 action: action.action_type.as_str().to_string(),
                 location: format!("rule[{}].action[{}]", rule_idx, action_idx),
@@ -2084,11 +2033,10 @@ pub async fn check_schema_change_impact(
                 Err(_) => continue,
             };
 
-            // Check trigger node_type
-            let trigger_nt = match &parsed.trigger {
-                ParsedTrigger::GraphEvent { node_type, .. } => Some(node_type.as_str()),
-                ParsedTrigger::Scheduled { node_type, .. } => Some(node_type.as_str()),
-            };
+            // Check the type the trigger's selector names. A saved-query
+            // selector names a query node rather than a type; the query's own
+            // paths are resolved again each time it runs.
+            let trigger_nt = parsed.trigger.registered_type();
             if trigger_nt == Some(schema_node_type) {
                 broken_paths.push(format!("trigger.node_type={}", schema_node_type));
             }
@@ -2309,7 +2257,7 @@ mod tests {
             class: RuleClass::Reactive,
             trigger: ParsedTrigger::Scheduled {
                 cron: cron.to_string(),
-                node_type: node_type.to_string(),
+                select: Selector::of_type(node_type),
             },
             conditions: compile_conditions(conditions),
             actions: vec![],
@@ -2397,10 +2345,10 @@ mod tests {
     #[test]
     fn test_trigger_node_type_extraction() {
         let rule = make_rule("task", vec![], vec![]);
-        assert_eq!(trigger_node_type(&rule), Some("task".to_string()));
+        assert_eq!(rule.trigger.registered_type(), Some("task"));
 
         let rule = make_scheduled_rule("0 * * * * * *", "invoice", vec![]);
-        assert_eq!(trigger_node_type(&rule), Some("invoice".to_string()));
+        assert_eq!(rule.trigger.registered_type(), Some("invoice"));
     }
 
     #[test]
@@ -3781,10 +3729,10 @@ mod tests {
         /// A reverse name declared on ANOTHER schema must validate, including
         /// through an `extends` chain.
         ///
-        /// This branch had no unit-level coverage: disabling
-        /// `resolve_reverse_segment` entirely left all of this module's tests
-        /// green, because the only thing pinning it was the Linear Playbook's
-        /// integration suite. The sibling precedence test does not help —
+        /// Without this test, disabling reverse-name resolution entirely
+        /// leaves the rest of this module's tests green, because the only
+        /// other thing pinning it is the Linear Playbook's integration
+        /// suite. The sibling precedence test does not help —
         /// it asserts the FORWARD name wins, so it passes whether or not the
         /// reverse branch works at all.
         ///
@@ -3871,13 +3819,14 @@ mod tests {
             );
         }
 
-        /// `resolve_reverse_segment` called directly: a name declared toward
-        /// an ancestor resolves to `Ok(Some(source_type))`, not bundled up
-        /// inside a full `validate_play` run. Regression coverage for the
-        /// function's `Result`-returning contract (previously `Option`) —
-        /// the success arm must still work exactly as before.
+        /// The hop resolver called directly: a reverse name declared toward
+        /// an ancestor resolves from the subtype, to the declaring type, not
+        /// bundled up inside a full `validate_play` run.
         #[tokio::test]
-        async fn test_resolve_reverse_segment_finds_name_declared_on_an_ancestor() {
+        async fn test_a_reverse_name_declared_toward_an_ancestor_resolves_from_the_subtype() {
+            use crate::ops::path_ops::{resolve_hop, HopResolution};
+            use nodespace_types::RelationshipHop;
+
             let (svc, _tmp) = create_test_service().await;
 
             create_schema(&svc, "vrs_task", 1, json!([])).await;
@@ -3924,55 +3873,54 @@ mod tests {
             )
             .await;
 
-            let mut schema_cache = HashMap::new();
-            let result = resolve_reverse_segment(
-                "vrs_child",
-                "blocked_by",
-                "rule[0].condition[0]",
+            let resolved = resolve_hop(
                 &svc,
-                &mut schema_cache,
+                Some("vrs_child"),
+                &RelationshipHop::fixed("blocked_by"),
             )
-            .await;
+            .await
+            .unwrap();
 
-            assert_eq!(
-                result,
-                Ok(Some("vrs_blocker".to_string())),
-                "a reverse name declared toward an ancestor must resolve through \
-                 the extends chain to Ok(Some(..)), not collapse to None"
-            );
+            let HopResolution::Resolved(hop) = resolved else {
+                panic!(
+                    "a reverse name declared toward an ancestor must resolve through \
+                     the extends chain, got {resolved:?}"
+                );
+            };
+            assert_eq!(hop.relationship_type, "blocks");
+            assert_eq!(hop.far_type.as_deref(), Some("vrs_blocker"));
         }
 
-        /// A segment that matches no declared reverse name anywhere in the
-        /// chain is a genuine miss — `Ok(None)` — never conflated with the
-        /// `Err(SchemaResolutionFailed)` a DB error produces. Previously both
-        /// a genuine miss and a DB error collapsed to the same `None`, so the
-        /// caller always reported `BrokenPath`, blaming the play's own
-        /// expression even when the real cause was a transient DB error.
+        /// A segment that matches no declared name anywhere in the chain is
+        /// a genuine miss — `Undeclared` — never conflated with the `Err` a
+        /// DB error produces. Collapsing the two would report `BrokenPath`,
+        /// blaming the play's own expression, when the real cause was a
+        /// transient DB error.
         #[tokio::test]
-        async fn test_resolve_reverse_segment_returns_ok_none_for_undeclared_name() {
+        async fn test_an_undeclared_name_is_undeclared_not_an_error() {
+            use crate::ops::path_ops::{resolve_hop, HopResolution};
+            use nodespace_types::RelationshipHop;
+
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vrs_widget", 1, json!([])).await;
 
-            let mut schema_cache = HashMap::new();
-            let result = resolve_reverse_segment(
-                "vrs_widget",
-                "nonexistent_reverse_name",
-                "rule[0].condition[0]",
+            let resolved = resolve_hop(
                 &svc,
-                &mut schema_cache,
+                Some("vrs_widget"),
+                &RelationshipHop::fixed("nonexistent_reverse_name"),
             )
             .await;
 
             assert_eq!(
-                result,
-                Ok(None),
-                "a segment declared nowhere is a genuine miss and must stay \
-                 Ok(None), distinct from a DB-error Err"
+                resolved.ok(),
+                Some(HopResolution::Undeclared),
+                "a segment declared nowhere is a genuine miss, distinct from a \
+                 DB-error Err"
             );
         }
 
-        /// `resolve_reverse_segment`'s two failure points — the ancestor-chain
-        /// resolution and the per-scope inbound-relationship lookup — now
+        /// Resolving a reverse name has two failure points — the ancestor-chain
+        /// resolution and the per-scope inbound-relationship lookup — which
         /// report `PlayValidationError::SchemaResolutionFailed` instead of
         /// silently degrading (an `unwrap_or_else` chain-collapse, or a
         /// silent `continue` on lookup failure) into the same outcome a
@@ -4036,7 +3984,7 @@ mod tests {
                 "ac2ab371-c058-5784-80fb-d3ba0e2ebb68",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vi_task" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi_task" } },
                     "conditions": ["node.status == 'open'"],
                     "actions": []
                 }]),
@@ -4084,7 +4032,7 @@ mod tests {
                 "a7d0f4c6-f08e-5bb7-b51e-aabd45cc9d5c",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vi_order" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi_order" } },
                     "conditions": ["node.status == 'open'"],
                     "actions": []
                 }]),
@@ -4131,7 +4079,7 @@ mod tests {
                 "6b693b96-4fad-5846-bca3-545b1a7e53a7",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vi_story" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi_story" } },
                     "conditions": ["node.vi_epic.status == 'active'"],
                     "actions": []
                 }]),
@@ -4314,7 +4262,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
-                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "nonexistent_type" },
+                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "nonexistent_type" } },
                         "conditions": [],
                         "actions": []
                     }]
@@ -4349,7 +4297,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
-                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vg_widget" },
+                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg_widget" } },
                         "conditions": ["node.status == 'open'"],
                         "actions": []
                     }]
@@ -4376,7 +4324,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
-                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vg_item" },
+                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg_item" } },
                         "conditions": ["1 + + 2"],
                         "actions": []
                     }]
@@ -4405,7 +4353,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
-                        "trigger": { "type": "scheduled", "cron": "not a cron expression", "node_type": "vg_cron_item" },
+                        "trigger": { "type": "scheduled", "cron": "not a cron expression", "select": { "target_type": "vg_cron_item" } },
                         "conditions": [],
                         "actions": []
                     }]
@@ -4438,7 +4386,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
-                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vg_part" },
+                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg_part" } },
                         "conditions": [],
                         "actions": []
                     }]
@@ -4451,7 +4399,7 @@ mod tests {
                 properties: Some(json!({
                     "rules": [{
                         "name": "r1_updated",
-                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vanished_type" },
+                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vanished_type" } },
                         "conditions": [],
                         "actions": []
                     }]
@@ -4486,7 +4434,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
-                        "trigger": { "type": "bad_trigger_type", "on": "node_created", "node_type": "task" },
+                        "trigger": { "type": "bad_trigger_type", "on": "node_created", "select": { "target_type": "task" } },
                         "conditions": [],
                         "actions": []
                     }]
@@ -4498,10 +4446,13 @@ mod tests {
                 result.is_err(),
                 "play with invalid trigger type should be rejected"
             );
+            // The rule does not decode as a typed rule, so it is refused
+            // before the schema-aware checks run. The error names the rule
+            // and what in it is wrong.
             let msg = result.unwrap_err().to_string();
             assert!(
-                msg.contains("Play validation failed"),
-                "error should indicate validation failure: {}",
+                msg.contains("rule[0] ('r1')") && msg.contains("bad_trigger_type"),
+                "error should name the rule and the unknown trigger type: {}",
                 msg
             );
         }
@@ -4601,7 +4552,7 @@ mod tests {
                 ActionType::RemoveRelationship,
                 ActionType::Reject,
             ] {
-                assert!(at.is_local_write(), "{:?} should be a local write", at);
+                assert!(is_local_write(at), "{:?} should be a local write", at);
             }
         }
 
@@ -5118,13 +5069,7 @@ mod tests {
                 GraphEventType::RelationshipAdded,
                 GraphEventType::RelationshipRemoved,
             ] {
-                let rule = invariant_rule(
-                    on.clone(),
-                    "task",
-                    None,
-                    vec!["node.status == 'done'"],
-                    vec![],
-                );
+                let rule = invariant_rule(on, "task", None, vec!["node.status == 'done'"], vec![]);
                 let errors = eligibility_errors(&rule);
                 assert!(
                     !errors.iter().any(|e| matches!(
@@ -5143,7 +5088,7 @@ mod tests {
                 class: RuleClass::Invariant,
                 trigger: ParsedTrigger::Scheduled {
                     cron: "0 0 * * *".to_string(),
-                    node_type: "task".to_string(),
+                    select: Selector::of_type("task"),
                 },
                 conditions: vec![],
                 actions: vec![],
@@ -5460,40 +5405,6 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn reject_action_with_for_each_fails_validate_play() {
-            // reject's condition already gates whether it fires; iterating
-            // it over a (possibly empty) collection adds a silent-no-op
-            // hazard with no corresponding benefit, so it is rejected
-            // outright rather than accepted. This check lives in
-            // `validate_action` (via `validate_reject_action`), reached
-            // through `validate_play` — not `validate_invariant_eligibility`
-            // — so it is exercised end-to-end here, not through
-            // `eligibility_errors`.
-            let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vi_reject_for_each").await;
-
-            let rule = Arc::new(invariant_rule(
-                GraphEventType::NodeCreated,
-                "vi_reject_for_each",
-                None,
-                vec![],
-                vec![ParsedAction {
-                    action_type: ActionType::Reject,
-                    params: json!({ "message": "no" }),
-                    for_each: Some("{trigger.node.items}".to_string()),
-                }],
-            ));
-            let errors = validate_play(&[rule], &svc).await.unwrap_err();
-            assert!(
-                errors
-                    .iter()
-                    .any(|e| matches!(e, PlayValidationError::RejectActionHasForEach { .. })),
-                "expected RejectActionHasForEach, got {:?}",
-                errors
-            );
-        }
-
-        #[tokio::test]
         async fn reject_action_without_for_each_passes_validate_play() {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vi_reject_no_for_each").await;
@@ -5537,10 +5448,11 @@ mod tests {
         }
 
         fn with_property_changed_trigger(rule: &Arc<ParsedRule>) -> Arc<ParsedRule> {
-            let node_type = match &rule.trigger {
-                ParsedTrigger::GraphEvent { node_type, .. } => node_type.clone(),
-                ParsedTrigger::Scheduled { node_type, .. } => node_type.clone(),
-            };
+            let node_type = rule
+                .trigger
+                .registered_type()
+                .expect("these rules name their type")
+                .to_string();
             // Namespaced to `node_type`, matching what `validate_play` now
             // requires of a `property_changed` trigger's `property_key` —
             // this helper exists to give a rule a *different trigger type*
@@ -5708,6 +5620,231 @@ mod tests {
 
             let result = validate_play(&[rule_a, rule_b], &svc).await;
             assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Selectors (ADR-086 §11)
+    // -----------------------------------------------------------------------
+
+    mod selectors {
+        use super::*;
+        use crate::db::SqliteStore;
+        use crate::models::Node;
+        use crate::playbook::types::{parse_rule, RuleDefinition};
+        use serde_json::json;
+        use tempfile::TempDir;
+
+        async fn service() -> (Arc<NodeService>, TempDir) {
+            let dir = TempDir::new().unwrap();
+            let mut store = Arc::new(SqliteStore::new(dir.path().join("test.db")).await.unwrap());
+            (Arc::new(NodeService::new(&mut store).await.unwrap()), dir)
+        }
+
+        /// A scheduled rule over `select`, with one condition.
+        fn scheduled(select: serde_json::Value, condition: &str) -> Arc<ParsedRule> {
+            let definition: RuleDefinition = serde_json::from_value(json!({
+                "name": "scan",
+                "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": select },
+                "conditions": [condition]
+            }))
+            .expect("the rule must decode");
+            Arc::new(parse_rule(&definition).expect("the rule must compile"))
+        }
+
+        async fn saved_query(svc: &NodeService, id: &str, properties: serde_json::Value) {
+            svc.create_node(Node::new_with_id(
+                id.to_string(),
+                "query".to_string(),
+                "A saved query".to_string(),
+                properties,
+            ))
+            .await
+            .unwrap();
+        }
+
+        const QUERY_ID: &str = "d1000000-0000-4000-8000-000000000001";
+
+        /// An inline selector with filters validates when its filters can
+        /// run, including a filter that walks a declared relationship.
+        #[tokio::test]
+        async fn an_inline_selector_with_runnable_filters_validates() {
+            let (svc, _dir) = service().await;
+            let rule = scheduled(
+                json!({
+                    "target_type": "task",
+                    "filters": [
+                        { "type": "property", "operator": "equals", "property": "status", "value": "open" },
+                        {
+                            "type": "related", "operator": "equals", "path": ["project"],
+                            "filter": { "type": "property", "operator": "equals", "property": "status", "value": "active" }
+                        }
+                    ]
+                }),
+                "node.status == 'open'",
+            );
+            let result = validate_play(&[rule], &svc).await;
+            assert!(result.is_ok(), "{result:?}");
+        }
+
+        /// A selector filter that walks a relationship the type does not
+        /// declare is refused when the play is saved, rather than selecting
+        /// nothing every time the schedule fires.
+        #[tokio::test]
+        async fn a_selector_filter_with_an_undeclared_path_is_rejected() {
+            let (svc, _dir) = service().await;
+            let rule = scheduled(
+                json!({
+                    "target_type": "task",
+                    "filters": [{
+                        "type": "relationship", "operator": "equals",
+                        "path": ["no_such_relationship"], "nodeId": "x"
+                    }]
+                }),
+                "node.status == 'open'",
+            );
+            let errors = validate_play(&[rule], &svc).await.unwrap_err();
+            assert!(
+                errors.iter().any(|e| matches!(e,
+                    PlayValidationError::InvalidSelector { message, location }
+                        if message.contains("no_such_relationship")
+                            && location == "rule[0].trigger.select")),
+                "{errors:?}"
+            );
+            assert!(has_genuine_failure(&errors));
+        }
+
+        /// A saved-query selector takes its type from the query: the rule's
+        /// conditions are validated against that type, exactly as if the rule
+        /// had named it.
+        #[tokio::test]
+        async fn a_saved_query_selector_validates_conditions_against_the_querys_type() {
+            let (svc, _dir) = service().await;
+            saved_query(
+                &svc,
+                QUERY_ID,
+                json!({
+                    "target_type": "task",
+                    "filters": [{ "type": "property", "operator": "equals", "property": "status", "value": "open" }]
+                }),
+            )
+            .await;
+
+            let good = scheduled(
+                json!({ "query_id": QUERY_ID }),
+                "node.project.status == 'active'",
+            );
+            let result = validate_play(&[good], &svc).await;
+            assert!(result.is_ok(), "{result:?}");
+
+            // `sprint` is not a relationship of `task`, the query's type.
+            let bad = scheduled(
+                json!({ "query_id": QUERY_ID }),
+                "node.sprint.status == 'active'",
+            );
+            let errors = validate_play(&[bad], &svc).await.unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::BrokenPath { segment, .. } if segment == "sprint")),
+                "{errors:?}"
+            );
+        }
+
+        /// A core node field is a valid end of a path on any node, including
+        /// one reached through a built-in relationship whose far type the
+        /// schemas do not name. It is terminal.
+        #[tokio::test]
+        async fn a_core_field_ends_a_path_on_any_node() {
+            let (svc, _dir) = service().await;
+
+            let reads_parent = scheduled(
+                json!({ "target_type": "task" }),
+                "node.child_of.content != '' && node.project.id != ''",
+            );
+            let result = validate_play(&[reads_parent], &svc).await;
+            assert!(result.is_ok(), "{result:?}");
+
+            let walks_through = scheduled(
+                json!({ "target_type": "task" }),
+                "node.project.id.status == 'x'",
+            );
+            let errors = validate_play(&[walks_through], &svc).await.unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::BrokenPath { segment, .. } if segment == "id")),
+                "{errors:?}"
+            );
+        }
+
+        /// A selector naming a query that does not exist, or a node that is
+        /// not a query, is refused when the play is saved.
+        #[tokio::test]
+        async fn a_selector_naming_a_missing_or_non_query_node_is_rejected() {
+            let (svc, _dir) = service().await;
+            let task_id = "d1000000-0000-4000-8000-000000000002";
+            svc.create_node(Node::new_with_id(
+                task_id.to_string(),
+                "task".to_string(),
+                "Not a query".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+            for (query_id, expected) in [
+                ("d1000000-0000-4000-8000-00000000dead", "does not exist"),
+                (task_id, "not a query"),
+            ] {
+                let rule = scheduled(json!({ "query_id": query_id }), "true");
+                let errors = validate_play(&[rule], &svc).await.unwrap_err();
+                assert!(
+                    errors.iter().any(|e| matches!(e,
+                        PlayValidationError::InvalidSelector { message, .. } if message.contains(expected))),
+                    "{query_id}: {errors:?}"
+                );
+            }
+        }
+
+        /// The whole path through the save gate: a play selecting through a
+        /// saved query saves, and one whose graph_event trigger asks for
+        /// filters does not.
+        #[tokio::test]
+        async fn the_save_gate_applies_selector_rules() {
+            let (svc, _dir) = service().await;
+            saved_query(&svc, QUERY_ID, json!({ "target_type": "task" })).await;
+
+            let play = |id: &str, trigger: serde_json::Value| {
+                Node::new_with_id(
+                    id.to_string(),
+                    "play".to_string(),
+                    "Selector play".to_string(),
+                    json!({ "rules": [{ "name": "r", "trigger": trigger }] }),
+                )
+            };
+
+            svc.create_node(play(
+                "d2000000-0000-4000-8000-000000000001",
+                json!({ "type": "scheduled", "cron": "0 * * * * * *", "select": { "query_id": QUERY_ID } }),
+            ))
+            .await
+            .expect("a play selecting through a saved query saves");
+
+            let err = svc
+                .create_node(play(
+                    "d2000000-0000-4000-8000-000000000002",
+                    json!({
+                        "type": "graph_event", "on": "node_created",
+                        "select": {
+                            "target_type": "task",
+                            "filters": [{ "type": "property", "operator": "equals", "property": "status", "value": "open" }]
+                        }
+                    }),
+                ))
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("selects by type only"), "{err}");
         }
     }
 }

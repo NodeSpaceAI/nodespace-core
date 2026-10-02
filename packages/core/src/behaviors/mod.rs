@@ -12,7 +12,7 @@
 use crate::models::schema::SchemaField;
 use crate::models::CoreNodeType;
 use crate::models::{
-    Node, QueryFields, SchemaNode, SkillNode, ValidationError as NodeValidationError,
+    Node, PlayFields, QueryFields, SchemaNode, SkillNode, ValidationError as NodeValidationError,
 };
 use crate::services::NodeAccessor;
 use serde_json::Value;
@@ -1756,7 +1756,14 @@ impl NodeBehavior for PlayNodeBehavior {
         CoreNodeType::Play.as_str()
     }
 
-    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+    /// Every field must decode through [`PlayFields`], the one reader of a
+    /// stored play, so a rule with an unknown trigger or action, a missing
+    /// param, or a param its action does not take is rejected on write
+    /// rather than saved and never run.
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Decoded from the properties rather than the node, so a type
+        // extending `play` is held to the same field shapes.
+        PlayFields::from_properties(&node.properties)?;
         Ok(())
     }
 

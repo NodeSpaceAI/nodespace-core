@@ -14,10 +14,10 @@
 //! real edge that this read-side resolver refused to recognize as declared in
 //! either direction at all -- distinct from (and deeper than) a cardinality
 //! misclassification: the fetch itself never found the row. Per
-//! `resolve_relationship_name`'s own doc comment this resolution is shared
-//! with the CLI's read path and with `GraphResolver::fetch_related_nodes`
-//! (which treats `InvalidParams` here as "undeclared, not a failure" and
-//! silently returns an empty result), so the bug reached both.
+//! `resolve_relationship_name`'s own doc comment this resolution serves the
+//! CLI's read path, where an undeclared name is an error. A play's resolver
+//! (`path_ops::resolve_hop`) resolves names in the same order and treats an
+//! undeclared one as an empty result, so the same gap there was silent.
 //!
 //! These tests cover the fix directly at the `rel_ops` layer: the forward
 //! name resolves as `Forward` (not an error) for a subtype instance, and a
@@ -135,8 +135,7 @@ async fn inherited_forward_name_resolves_as_forward_not_invalid_params() -> Resu
 /// The actual bug: classification alone isn't enough -- a real edge attached
 /// to a subtype instance (via the already chain-aware write path) must be
 /// readable back through `get_related_nodes`, not just resolve without
-/// erroring. Before the fix this returned `Err(InvalidParams)` here, which
-/// `GraphResolver::fetch_related_nodes` turns into a silent empty result.
+/// erroring. Before the fix this returned `Err(InvalidParams)` here.
 #[tokio::test]
 async fn real_edge_on_subtype_instance_is_readable_through_inherited_forward_name() -> Result<()> {
     let (svc, _t) = create_test_service().await?;

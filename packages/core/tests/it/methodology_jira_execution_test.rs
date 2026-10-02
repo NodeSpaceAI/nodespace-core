@@ -553,7 +553,7 @@ async fn a_cardinality_eviction_dispatches_its_removal() -> Result<()> {
                 "trigger": {
                     "type": "graph_event",
                     "on": "relationship_removed",
-                    "node_type": "epic",
+                    "select": { "target_type": "epic" },
                 },
                 "conditions": ["node.status == 'in_progress'"],
                 "actions": [{

@@ -35,9 +35,11 @@ mod helpers;
 mod incompatible_database;
 mod node;
 mod person;
+mod play;
 mod priority;
 mod project;
 mod query;
+mod relationship_path;
 mod schema;
 mod skill;
 mod task;
@@ -63,12 +65,19 @@ pub use node::{
     ValidationError,
 };
 pub use person::{PersonNode, PersonNodeUpdate};
+pub use play::{
+    Action, ActionType, AddRelationshipParams, CreateNodeParams, GraphEventType, InlineSelector,
+    PlayFields, PlayNode, PlayNodeUpdate, RejectParams, RemoveRelationshipParams, RuleClass,
+    RuleDefinition, SavedQuerySelector, Selector, Trigger, UpdateNodeParams, PLAY_NODE_TYPE,
+};
 pub use priority::Priority;
 pub use project::{ProjectNode, ProjectNodeUpdate, ProjectStatus};
 pub use query::{
     FilterOperator, FilterType, QueryFields, QueryFilter, QueryGeneratedBy, QueryNode,
-    QueryNodeUpdate, RelationshipType, ResolvedRelationship, SortConfig, SortDirection,
-    ALL_TYPES_TARGET, QUERY_NODE_TYPE,
+    QueryNodeUpdate, SortConfig, SortDirection, ALL_TYPES_TARGET, QUERY_NODE_TYPE,
+};
+pub use relationship_path::{
+    HopDirection, RelationshipHop, RelationshipPath, ResolvedHop, ResolvedPath,
 };
 pub use schema::{
     derive_friendly_name, EdgeField, EnumValue, RelationshipCardinality, RelationshipDirection,

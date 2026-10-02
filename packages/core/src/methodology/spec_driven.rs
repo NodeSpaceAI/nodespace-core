@@ -325,7 +325,7 @@ fn plan_approval_gate() -> PlayStep {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "plan",
+                    "select": { "target_type": "plan" },
                     // Namespaced: a trigger's property_key matches the
                     // `{node_type}.{field}` form `update_node` reports.
                     "property_key": "plan.plan_status",
@@ -355,7 +355,7 @@ fn plan_approval_gate() -> PlayStep {
                 "trigger": {
                     "type": "graph_event",
                     "on": "node_created",
-                    "node_type": "plan",
+                    "select": { "target_type": "plan" },
                 },
                 "conditions": ["node.plan_status == 'approved'"],
                 "actions": [{
@@ -395,7 +395,7 @@ fn task_lineage_gate() -> PlayStep {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": "task",
+                "select": { "target_type": "task" },
                 "property_key": "task.status",
             },
             "conditions": [
@@ -434,7 +434,7 @@ fn task_verification_gate() -> PlayStep {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": "task",
+                "select": { "target_type": "task" },
                 "property_key": "task.status",
             },
             "conditions": [
@@ -483,7 +483,7 @@ fn supersession_lock() -> PlayStep {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": node_type,
+                    "select": { "target_type": node_type },
                     "property_key": format!("{node_type}.{field}"),
                 },
                 "conditions": [format!("node.{status_field} == 'superseded'")],
@@ -508,7 +508,7 @@ fn supersession_lock() -> PlayStep {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": node_type,
+                "select": { "target_type": node_type },
                 "property_key": format!("{node_type}.{status_field}"),
             },
             "conditions": [

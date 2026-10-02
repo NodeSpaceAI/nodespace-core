@@ -17,11 +17,11 @@
 //! as exactly one of the two suites failing.
 
 use nodespace_app_lib::commands::nodes::{
-    create_node, get_children, get_node, move_node, update_person_node, update_query_node,
-    update_task_node, CreateNodeInput, InsertPositionInput,
+    create_node, get_children, get_node, move_node, update_person_node, update_play_node,
+    update_query_node, update_task_node, CreateNodeInput, InsertPositionInput,
 };
 use nodespace_app_lib::types::{
-    PersonNodeUpdate, Priority, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
+    PersonNodeUpdate, PlayNodeUpdate, Priority, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
 };
 use nodespace_app_test_support::{SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT};
 use serde_json::json;
@@ -230,6 +230,77 @@ async fn query_typed_update_matches_the_http_adapter_contract() {
         .expect("get_node failed")
         .expect("query must exist");
     assert_eq!(reread["filters"][0]["value"], json!("open"));
+}
+
+/// Mirrors `adapter-contract.e2e.ts`'s "create → typed play update → read
+/// back carries typed fields".
+#[tokio::test]
+async fn play_typed_update_matches_the_http_adapter_contract() {
+    let daemon = SpawnedDaemon::spawn();
+    let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
+    let state = harness.client_state();
+
+    let id = uuid::Uuid::new_v4().to_string();
+    create_node(
+        state.clone(),
+        CreateNodeInput {
+            id: id.clone(),
+            node_type: "play".to_string(),
+            content: "Greet new tasks".to_string(),
+            parent_id: None,
+            insert_position: None,
+            properties: json!({ "rules": [] }),
+        },
+    )
+    .await
+    .expect("create play failed");
+
+    let update: PlayNodeUpdate = serde_json::from_value(json!({
+        "rules": [{
+            "name": "greet",
+            "trigger": {
+                "type": "graph_event",
+                "on": "node_created",
+                "select": { "target_type": "task" }
+            },
+            "conditions": ["node.content == 'hello'"],
+            "actions": []
+        }],
+        "description": "Greets new tasks",
+    }))
+    .unwrap();
+    let updated = update_play_node(state.clone(), id.clone(), 1, update)
+        .await
+        .expect("update_play_node (set) failed");
+    assert_eq!(updated["rules"][0]["name"], json!("greet"));
+    assert_eq!(
+        updated["rules"][0]["trigger"]["select"],
+        json!({ "target_type": "task" })
+    );
+    assert_eq!(updated["description"], json!("Greets new tasks"));
+    assert_eq!(updated["properties"], json!({}));
+    let version = updated["version"]
+        .as_i64()
+        .expect("version must be a number");
+
+    let cleared = update_play_node(
+        state.clone(),
+        id.clone(),
+        version,
+        serde_json::from_value(json!({ "description": null })).unwrap(),
+    )
+    .await
+    .expect("update_play_node (clear) failed");
+    assert!(
+        cleared.get("description").is_none(),
+        "cleared description must be absent"
+    );
+
+    let reread = get_node(state.clone(), id.clone())
+        .await
+        .expect("get_node failed")
+        .expect("play must exist");
+    assert_eq!(reread["rules"][0]["name"], json!("greet"));
 }
 
 /// Mirrors `adapter-contract.e2e.ts`'s "createNode honors an explicit

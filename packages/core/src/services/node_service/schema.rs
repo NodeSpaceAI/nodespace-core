@@ -67,8 +67,8 @@ impl NodeService {
         // redeclared) by a subtype was therefore invisible here, so a real
         // conflicting value on a subtype instance never surfaced a duplicate
         // suggestion. Same fix pattern as `workflow_state.rs`,
-        // `validation.rs`, `graph_resolver.rs`'s
-        // `is_declared_many_relationship`, and `rel_ops.rs`'s
+        // `validation.rs`, `path_ops.rs`'s
+        // `resolve_hop`, and `rel_ops.rs`'s
         // `resolve_relationship_name`/`get_node_relationships`. When
         // `node_type` has no schema at all, `resolve_field_owners` returns
         // an empty field set — same outcome the old direct lookup produced
@@ -216,6 +216,26 @@ impl NodeService {
             ));
         }
         self.update_typed_fields(id, "query", expected_version, update.to_properties_patch())
+            .await
+    }
+
+    /// Update a play's fields (`rules`, `description`) with optimistic
+    /// concurrency control. See [`Self::update_person_node`] for why this
+    /// delegates to the generic pipeline: the rules are decoded there by
+    /// `PlayNodeBehavior::validate` and checked against the schemas by the
+    /// play validation gate, exactly as for any other write.
+    pub async fn update_play_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::PlayNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "PlayNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(id, "play", expected_version, update.to_properties_patch())
             .await
     }
 
@@ -1292,8 +1312,8 @@ impl NodeService {
         // redeclared) by a subtype was therefore invisible here, so a
         // subtype instance genuinely missing that inherited required
         // relationship was silently reported complete. Same fix pattern as
-        // `workflow_state.rs`, `validation.rs`, `graph_resolver.rs`'s
-        // `is_declared_many_relationship`, and `rel_ops.rs`'s
+        // `workflow_state.rs`, `validation.rs`, `path_ops.rs`'s
+        // `resolve_hop`, and `rel_ops.rs`'s
         // `resolve_relationship_name`/relationship graph helpers. When
         // `node_type` has no schema at all, `resolve_relationships` returns
         // an empty relationship set — same "nothing required → complete by
@@ -1372,8 +1392,8 @@ mod typed_update_tests {
     use super::*;
     use crate::db::SqliteStore;
     use crate::models::{
-        PersonNodeUpdate, Priority, ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate,
-        TaskNodeUpdate, TaskStatus,
+        PersonNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate, ProjectStatus,
+        QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
     };
     use crate::services::{CreateNodeParams, InsertPositionOwned};
     use serde_json::json;
@@ -1945,6 +1965,291 @@ mod typed_update_tests {
             .update_query_node(&query.id, query.version, QueryNodeUpdate::default())
             .await
             .is_err());
+    }
+
+    /// A saved query's relationship paths are resolved against the schemas
+    /// when it is saved: a name the target type does not declare is refused
+    /// then, rather than stored as a query that quietly matches nothing.
+    #[tokio::test]
+    async fn a_query_with_an_undeclared_path_is_rejected_on_write() {
+        let (service, _t) = create_test_service().await;
+
+        let relationship_filter = |path: serde_json::Value| {
+            json!({
+                "target_type": "task",
+                "filters": [{
+                    "type": "relationship", "operator": "equals",
+                    "path": path, "nodeId": "some-node"
+                }]
+            })
+        };
+
+        // Declared and built-in names save, by forward or reverse name.
+        for path in [
+            json!(["project"]),
+            json!(["child_of"]),
+            json!(["blocked_by"]),
+        ] {
+            create(&service, "query", relationship_filter(path)).await;
+        }
+
+        let err = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "query".to_string(),
+                content: "Bad path".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: relationship_filter(json!(["no_such_relationship"])),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no_such_relationship"), "{err}");
+
+        // The same gate on update.
+        let query = create(&service, "query", saved_query_properties()).await;
+        let update: QueryNodeUpdate = serde_json::from_value(json!({
+            "filters": [{
+                "type": "related", "operator": "equals",
+                "path": ["no_such_relationship"],
+                "filter": { "type": "property", "operator": "equals", "property": "status", "value": "open" }
+            }]
+        }))
+        .unwrap();
+        let err = service
+            .update_query_node(&query.id, query.version, update)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no_such_relationship"), "{err}");
+    }
+
+    fn play_properties() -> serde_json::Value {
+        json!({
+            "description": "Close a task's parent",
+            "rules": [{
+                "name": "close-parent",
+                "trigger": {
+                    "type": "graph_event",
+                    "on": "property_changed",
+                    "select": { "target_type": "task" },
+                    "property_key": "task.status"
+                },
+                "conditions": ["node.status == 'done'"],
+                "actions": [{
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.child_of.id}", "properties": { "status": "done" } }
+                }]
+            }],
+            "custom:owner": "ada"
+        })
+    }
+
+    #[tokio::test]
+    async fn play_update_writes_fields_and_leaves_others() {
+        let (service, _t) = create_test_service().await;
+        let play = create(&service, "play", play_properties()).await;
+
+        let update: PlayNodeUpdate =
+            serde_json::from_value(json!({ "description": "Roll completion up" })).unwrap();
+        let updated = service
+            .update_play_node(&play.id, play.version, update)
+            .await
+            .expect("typed play update succeeds");
+
+        assert_eq!(updated.version, play.version + 1);
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert_eq!(typed["description"], "Roll completion up");
+        assert_eq!(
+            typed["rules"][0]["name"], "close-parent",
+            "an untouched field survives"
+        );
+        assert_eq!(
+            typed["rules"][0]["trigger"]["select"]["target_type"],
+            "task"
+        );
+        assert_eq!(typed["lifecycleStatus"], "active");
+        assert_eq!(typed["properties"], json!({ "custom:owner": "ada" }));
+    }
+
+    #[tokio::test]
+    async fn play_update_replaces_rules_whole_and_null_clears_the_description() {
+        let (service, _t) = create_test_service().await;
+        let play = create(&service, "play", play_properties()).await;
+
+        let update: PlayNodeUpdate = serde_json::from_value(json!({
+            "description": null,
+            "rules": [{
+                "name": "greet",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
+                "actions": [{
+                    "action_type": "update_node",
+                    "params": { "node_id": "{trigger.node.id}", "content": "hello" }
+                }]
+            }]
+        }))
+        .unwrap();
+        let updated = service
+            .update_play_node(&play.id, play.version, update)
+            .await
+            .unwrap();
+
+        let typed = crate::models::node_to_typed_value(updated).unwrap();
+        assert!(typed.get("description").is_none(), "{typed}");
+        let rules = typed["rules"].as_array().unwrap();
+        assert_eq!(rules.len(), 1, "rules are replaced, not merged: {typed}");
+        assert_eq!(rules[0]["name"], "greet");
+    }
+
+    #[tokio::test]
+    async fn play_update_on_a_stale_version_conflicts() {
+        let (service, _t) = create_test_service().await;
+        let play = create(&service, "play", play_properties()).await;
+
+        let err = service
+            .update_play_node(
+                &play.id,
+                play.version + 5,
+                PlayNodeUpdate {
+                    description: Some(Some("stale".to_string())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, NodeServiceError::VersionConflict { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn play_update_rejects_a_node_of_another_type() {
+        let (service, _t) = create_test_service().await;
+        let task = create(&service, "task", json!({})).await;
+
+        let err = service
+            .update_play_node(
+                &task.id,
+                task.version,
+                PlayNodeUpdate {
+                    description: Some(Some("x".to_string())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("not a play node"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn empty_play_update_is_rejected() {
+        let (service, _t) = create_test_service().await;
+        let play = create(&service, "play", play_properties()).await;
+
+        assert!(service
+            .update_play_node(&play.id, play.version, PlayNodeUpdate::default())
+            .await
+            .is_err());
+    }
+
+    /// The typed update lowers into the shared pipeline, so new rules pass
+    /// the same schema-aware gate a created play does: a rule that decodes
+    /// but names a type that does not exist is refused.
+    #[tokio::test]
+    async fn play_update_validates_new_rules_against_the_schemas() {
+        let (service, _t) = create_test_service().await;
+        let play = create(&service, "play", play_properties()).await;
+
+        let update: PlayNodeUpdate = serde_json::from_value(json!({
+            "rules": [{
+                "name": "ghost",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "no_such_type" } }
+            }]
+        }))
+        .unwrap();
+        let err = service
+            .update_play_node(&play.id, play.version, update)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no_such_type"), "{err}");
+    }
+
+    /// One case per action: a play whose action names a param the engine
+    /// never reads does not save, through any write path. Before the rules
+    /// were typed such a play saved and silently did nothing.
+    #[tokio::test]
+    async fn a_play_with_an_unknown_action_param_is_rejected_on_save() {
+        let (service, _t) = create_test_service().await;
+        let relationship = json!({
+            "source_id": "{trigger.node.id}", "relationship_type": "blocks",
+            "target_id": "{trigger.node.id}"
+        });
+        let with = |mut params: serde_json::Value, key: &str| {
+            params[key] = json!("x");
+            params
+        };
+        let cases = [
+            (
+                "create_node",
+                with(json!({ "node_type": "task" }), "parent_id"),
+                "parent_id",
+            ),
+            (
+                "update_node",
+                with(
+                    json!({ "node_id": "{trigger.node.id}" }),
+                    "lifecycle_status",
+                ),
+                "lifecycle_status",
+            ),
+            (
+                "add_relationship",
+                with(relationship.clone(), "weight"),
+                "weight",
+            ),
+            (
+                "remove_relationship",
+                with(relationship, "edge_data"),
+                "edge_data",
+            ),
+            ("reject", with(json!({ "message": "no" }), "code"), "code"),
+        ];
+
+        for (action_type, params, unknown) in cases {
+            let rules = json!([{
+                "name": "typo",
+                "class": if action_type == "reject" { "invariant" } else { "reactive" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
+                "actions": [{ "action_type": action_type, "params": params }]
+            }]);
+
+            let err = service
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "play".to_string(),
+                    content: "Typo".to_string(),
+                    parent_id: None,
+                    position: InsertPositionOwned::End,
+                    properties: json!({ "rules": rules }),
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(unknown),
+                "{action_type}: the error must name `{unknown}`: {err}"
+            );
+
+            // The typed update refuses it before it reaches the service at
+            // all: the update itself does not decode.
+            assert!(
+                serde_json::from_value::<PlayNodeUpdate>(json!({ "rules": rules })).is_err(),
+                "{action_type}: a PlayNodeUpdate carrying `{unknown}` must not decode"
+            );
+        }
     }
 
     /// A query whose filters the query service could not execute is refused

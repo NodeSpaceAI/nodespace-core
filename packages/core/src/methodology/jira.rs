@@ -357,7 +357,7 @@ fn sprint_transition_gate() -> PlayStep {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "sprint",
+                    "select": { "target_type": "sprint" },
                     // Namespaced: a trigger's property_key matches the
                     // `{node_type}.{field}` form `update_node` reports.
                     "property_key": "sprint.sprint_status",
@@ -379,7 +379,7 @@ fn sprint_transition_gate() -> PlayStep {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "sprint",
+                    "select": { "target_type": "sprint" },
                     "property_key": "sprint.sprint_status",
                 },
                 "conditions": [
@@ -401,7 +401,7 @@ fn sprint_transition_gate() -> PlayStep {
                 "trigger": {
                     "type": "graph_event",
                     "on": "node_created",
-                    "node_type": "sprint",
+                    "select": { "target_type": "sprint" },
                 },
                 "conditions": [
                     "(has(node.sprint_status) && node.sprint_status != 'future') \
@@ -442,7 +442,7 @@ fn sprint_completion_stamp() -> PlayStep {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": "sprint",
+                "select": { "target_type": "sprint" },
                 "property_key": "sprint.sprint_status",
             },
             "conditions": [status_moved(&["active"], "closed")],
@@ -481,7 +481,7 @@ fn sprint_close_lock() -> PlayStep {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "sprint",
+                    "select": { "target_type": "sprint" },
                     "property_key": format!("sprint.{field}"),
                 },
                 "conditions": ["node.sprint_status == 'closed'"],
@@ -507,7 +507,7 @@ fn sprint_close_lock() -> PlayStep {
         "trigger": {
             "type": "graph_event",
             "on": "property_changed",
-            "node_type": "sprint",
+            "select": { "target_type": "sprint" },
             "property_key": "sprint.completed_date",
         },
         // Three ways to reject: the sprint is not closed; the value was
@@ -541,7 +541,7 @@ fn sprint_close_lock() -> PlayStep {
             "trigger": {
                 "type": "graph_event",
                 "on": on,
-                "node_type": "sprint",
+                "select": { "target_type": "sprint" },
             },
             "conditions": [
                 "trigger.relationship.name == 'issues'",

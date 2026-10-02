@@ -5,11 +5,11 @@
 //! and delegates to `QueryService::execute`.
 
 use crate::models::Node;
-use crate::ops::rel_ops::{resolve_relationship_name_for_type, ResolvedRelName};
+use crate::ops::path_ops::resolve_path;
 use crate::ops::OpsError;
 use crate::services::node_service::NodeService;
 use crate::services::query_service::{
-    FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, ResolvedRelationship,
+    FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipPath,
     SortConfig, SortDirection,
 };
 use serde::Deserialize;
@@ -27,11 +27,11 @@ use std::sync::Arc;
 /// routinely omits the category discriminator, and rejecting an otherwise
 /// complete and correct filter over a token that is derivable from the other
 /// fields turns a solved query into a tool error. [`AgentFilterItem::category`]
-/// infers it: a filter naming a `relationship_type` or an anchor `node_id` is a
-/// relationship filter, and anything naming a `property` is a property filter —
-/// the only two shapes the omission is observed for. An item that names none of
-/// them is genuinely under-specified and still errors, so the inference never
-/// has to guess between `content` and `metadata`.
+/// infers it: a filter naming a nested `filter` is a related-node filter, one
+/// naming a `path` or an anchor `node_id` is a relationship filter, and
+/// anything naming a `property` is a property filter. An item that names none
+/// of them is genuinely under-specified and still errors, so the inference
+/// never has to guess between `content` and `metadata`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentFilterItem {
@@ -52,20 +52,18 @@ pub struct AgentFilterItem {
     /// Case sensitivity for text comparisons (default: true).
     #[serde(default)]
     pub case_sensitive: Option<bool>,
-    /// Relationship type for relationship filters.
-    #[serde(default)]
-    pub relationship_type: Option<String>,
-    /// Target node ID for relationship filters.
+    /// The node a relationship filter's `path` must reach.
     #[serde(default)]
     pub node_id: Option<String>,
-    /// Relationship name for a related-node filter (`type: "related"`) — a
-    /// schema-declared name (forward or reverse) or a built-in structural
-    /// name, resolved against the enclosing query's `target_type` at
-    /// conversion time.
+    /// The relationships to follow from each candidate node, for a
+    /// relationship or related-node filter: built-in names (`has_child`,
+    /// `mentions`), schema-declared names, or the reverse name of either
+    /// (`child_of`, `project`). Resolved against the enclosing query's
+    /// `target_type` at conversion time.
     #[serde(default)]
-    pub relationship_name: Option<String>,
-    /// The nested filter a related-node filter evaluates against the
-    /// related node(s). Recursive by construction; validated to at most one
+    pub path: Option<RelationshipPath>,
+    /// The nested filter a related-node filter evaluates against the nodes
+    /// `path` reaches. Recursive by construction; validated to at most one
     /// level of `related` nesting (see
     /// `query_service::validate_filter_identifiers`/`MAX_RELATED_DEPTH`).
     #[serde(default)]
@@ -145,29 +143,6 @@ fn parse_sort_direction(s: &str) -> SortDirection {
     }
 }
 
-fn parse_relationship_type(
-    s: &str,
-) -> Result<crate::services::query_service::RelationshipType, OpsError> {
-    use crate::services::query_service::RelationshipType;
-    match s {
-        "parent" => Ok(RelationshipType::Parent),
-        "children" => Ok(RelationshipType::Children),
-        "mentions" => Ok(RelationshipType::Mentions),
-        "mentioned_by" => Ok(RelationshipType::MentionedBy),
-        // A relationship *filter* spans only the structural graph. A
-        // schema-declared name — forward or reverse — is a traversal, not a
-        // filter, and belongs to `get_related_nodes`; say so, because the name
-        // itself is usually correct and only the verb is wrong.
-        other => Err(OpsError::InvalidParams(format!(
-            "Unknown relationship type '{}'. Supported: parent, children, mentions, \
-             mentioned_by. Schema-declared relationship names (and their reverseName) \
-             are not filterable here — traverse them with get_related_nodes / \
-             `nodespace relationship get <id> --type {}` instead.",
-            other, other
-        ))),
-    }
-}
-
 impl AgentFilterItem {
     /// The filter category, as given or inferred from the other fields.
     ///
@@ -194,15 +169,12 @@ impl AgentFilterItem {
                 return Ok(t);
             }
         }
-        // Checked before `relationship_type`/`node_id`: a filter naming
-        // `relationship_name` is unambiguously the recursive related-node
-        // shape, never the closed-enum bare-membership one, so there is no
-        // precedence question between the two the way there is between
-        // `property` and `content`/`metadata` below.
-        if self.relationship_name.is_some() || self.filter.is_some() {
+        // Checked before `path`/`node_id`: both relationship shapes carry a
+        // `path`, and only the related-node one carries a nested `filter`.
+        if self.filter.is_some() {
             return Ok("related");
         }
-        if self.relationship_type.is_some() || self.node_id.is_some() {
+        if self.path.is_some() || self.node_id.is_some() {
             return Ok("relationship");
         }
         if let Some(prop) = self.property.as_deref() {
@@ -229,10 +201,10 @@ impl AgentFilterItem {
                 "Unknown filter type '{given}'. Supported: property, content, relationship, \
                  metadata. Note 'type' is the filter category, not the node type — use the \
                  'node_type' parameter for that. This filter also names no 'property' or \
-                 'relationship_type' to infer the category from."
+                 'path' to infer the category from."
             ),
             None => "filter must specify 'type' (property, content, relationship, metadata), \
-                     or name a 'property' or 'relationship_type' it can be inferred from"
+                     or name a 'property' or 'path' it can be inferred from"
                 .to_string(),
         }))
     }
@@ -246,158 +218,34 @@ fn is_known_category(s: &str) -> bool {
     parse_filter_type(s).is_ok()
 }
 
-/// Convert one agent filter item to its `QueryService` shape, resolving a
-/// [`FilterType::Related`] filter's `relationshipName` against `target_type`
-/// along the way.
-///
-/// `target_type` is the type the *enclosing* query or `Related` filter
-/// evaluates the filter against — the root query's own `target_type` for a
-/// top-level filter, or the outer filter's resolved `related_type` for a
-/// nested one — since that is what a relationship name is resolved relative
-/// to (`resolve_relationship_name_for_type`'s `node_type` argument). `"*"`
-/// (wildcard) cannot resolve a `Related` filter: there is no single schema to
-/// resolve `relationship_name` against, so a `Related` filter under a
-/// wildcard query errors rather than guessing which type's declaration
-/// applies.
-///
-/// Async because resolving `relationshipName` is a schema lookup
-/// (`resolve_relationships`/`get_inbound_relationships`, both async) — the
-/// one reason this whole conversion path, and `to_query_definition` above it,
-/// is no longer synchronous.
-///
-/// Explicitly boxed (`Pin<Box<dyn Future>>`) rather than a plain `async fn`:
-/// this function calls itself for a `Related` filter's nested item, and a
-/// self-recursive `async fn` is an infinitely-sized future type by
-/// construction — boxing is what gives the recursive call a fixed size,
-/// exactly as `QueryFilter::validate_identifiers`' depth cap keeps the
-/// recursion itself finite at runtime.
-fn to_query_filter<'a>(
-    node_service: &'a Arc<NodeService>,
-    target_type: &'a str,
-    item: AgentFilterItem,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<QueryFilter, OpsError>> + Send + 'a>>
-{
-    Box::pin(to_query_filter_inner(node_service, target_type, item))
-}
-
-async fn to_query_filter_inner(
-    node_service: &Arc<NodeService>,
-    target_type: &str,
-    item: AgentFilterItem,
-) -> Result<QueryFilter, OpsError> {
+/// Convert one agent filter item to a [`QueryFilter`]. The filter's path is
+/// carried as written; [`resolve_filters`] resolves it against the schemas.
+fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
     let filter_type = parse_filter_type(item.category()?)?;
     let operator = parse_filter_operator(&item.operator)?;
 
-    let relationship_type = match &item.relationship_type {
-        Some(rt) => Some(parse_relationship_type(rt)?),
-        None => None,
-    };
-
-    let (relationship_name, filter, resolved_relationship) = if filter_type == FilterType::Related {
-        let relationship_name = item.relationship_name.clone().ok_or_else(|| {
-            OpsError::InvalidParams("Related filter missing 'relationshipName'".to_string())
-        })?;
-        let nested_item = *item.filter.ok_or_else(|| {
-            OpsError::InvalidParams("Related filter missing 'filter'".to_string())
-        })?;
-
-        if target_type == "*" {
-            return Err(OpsError::InvalidParams(format!(
-                "Related filter on relationship '{relationship_name}' cannot be resolved under \
-                 a wildcard ('*') target_type — a related-node filter is resolved against one \
-                 specific schema, and a wildcard query has none. Scope the query to a concrete \
-                 target_type to use a related-node filter."
-            )));
+    let walks = matches!(filter_type, FilterType::Relationship | FilterType::Related);
+    if walks && item.path.is_none() {
+        return Err(OpsError::InvalidParams(format!(
+            "A '{}' filter needs a 'path': the relationships to follow from each node, e.g. \
+             [\"child_of\"] for its parent, [\"has_child\"] for its children, or a \
+             schema-declared name or reverse name such as [\"project\"]",
+            item.category()?
+        )));
+    }
+    if filter_type == FilterType::Relationship && item.node_id.is_none() {
+        return Err(OpsError::InvalidParams(
+            "Relationship filter missing 'node_id': the node the path must reach".to_string(),
+        ));
+    }
+    let filter = match (filter_type == FilterType::Related, item.filter) {
+        (true, Some(nested)) => Some(Box::new(to_query_filter(*nested)?)),
+        (true, None) => {
+            return Err(OpsError::InvalidParams(
+                "Related filter missing 'filter'".to_string(),
+            ));
         }
-
-        let resolved =
-            resolve_relationship_name_for_type(node_service, target_type, &relationship_name)
-                .await
-                .map_err(|e| match e {
-                    OpsError::InvalidParams(msg) => OpsError::InvalidParams(format!(
-                        "Related filter's relationshipName '{relationship_name}' could not be \
-                 resolved against '{target_type}': {msg}"
-                    )),
-                    other => other,
-                })?;
-
-        let (stored_type, outer_is_in_node, source_type, related_type) = match &resolved {
-            // `resolve_relationship_name_for_type` only returns `Builtin`
-            // when `relationship_name` IS one of `BUILTIN_RELATIONSHIP_NAMES`
-            // — the name itself is already the stored `relationship_type`.
-            ResolvedRelName::Builtin => (relationship_name.clone(), true, None, None),
-            ResolvedRelName::Forward => {
-                let (rels, _owners) = node_service
-                    .resolve_relationships(target_type)
-                    .await
-                    .map_err(|e| {
-                        OpsError::Internal(format!("Failed to resolve relationships: {e}"))
-                    })?;
-                let declared = rels.iter().find(|r| r.name == relationship_name);
-                let related_type = declared.and_then(|r| r.target_type.clone());
-                (relationship_name.clone(), true, None, related_type)
-            }
-            ResolvedRelName::InboundForward => {
-                // The outer node sits at the target end of ANOTHER schema's
-                // forward declaration — the related type is that declaring
-                // schema's own type, the source side of the edge. Resolved
-                // here (rather than left `None`, falling back to the
-                // per-row `node_type` wildcard path) because, unlike a
-                // reverse match, more than one schema may declare the same
-                // forward name toward this type — see
-                // `rel_ops::get_related_nodes`'s doc comment on why
-                // `InboundForward` is deliberately NOT narrowed the way
-                // `Reverse` is. Not narrowing here would let the nested
-                // filter's property lookup silently read the wrong
-                // schema's field when two declarers share both a name and a
-                // property key, so this looks up the first declarer by
-                // name — the same "first match wins" precedence
-                // `resolve_relationship_name` itself uses for an untyped
-                // declaration.
-                let inbound = node_service
-                    .get_inbound_relationships(target_type)
-                    .await
-                    .map_err(|e| {
-                        OpsError::Internal(format!("Failed to resolve inbound relationships: {e}"))
-                    })?;
-                let related_type = inbound
-                    .iter()
-                    .find(|(_, rel)| rel.name == relationship_name)
-                    .map(|(source_type, _)| source_type.clone());
-                (relationship_name.clone(), false, None, related_type)
-            }
-            ResolvedRelName::Reverse {
-                forward_name,
-                source_type,
-            } => (
-                forward_name.clone(),
-                false,
-                source_type.clone(),
-                source_type.clone(),
-            ),
-        };
-
-        let nested = Box::new(
-            to_query_filter(
-                node_service,
-                related_type.as_deref().unwrap_or(target_type),
-                nested_item,
-            )
-            .await?,
-        );
-
-        (
-            Some(relationship_name),
-            Some(nested),
-            Some(ResolvedRelationship {
-                stored_type,
-                outer_is_in_node,
-                source_type,
-                related_type,
-            }),
-        )
-    } else {
-        (None, None, None)
+        (false, _) => None,
     };
 
     Ok(QueryFilter {
@@ -406,11 +254,69 @@ async fn to_query_filter_inner(
         property: item.property,
         value: item.value,
         case_sensitive: item.case_sensitive,
-        relationship_type,
         node_id: item.node_id,
-        relationship_name,
+        path: item.path.filter(|_| walks),
         filter,
-        resolved_relationship,
+        resolved_path: None,
+    })
+}
+
+/// Resolve the paths of `filters` against the schemas, so the query service
+/// can compile them.
+///
+/// `target_type` is the type the filters are evaluated against: the query's
+/// own `target_type`. A nested filter of a related-node filter is evaluated
+/// against the nodes the outer path reaches, so its own path resolves against
+/// their declared type. Under a wildcard (`"*"`) there is no schema to
+/// resolve against, so only built-in relationships resolve; a
+/// schema-declared name errors rather than guessing which type's declaration
+/// applies.
+///
+/// A stored query and a play's selector carry their paths as written, so
+/// both come through here every time they run, and when they are saved: a
+/// name that resolves to nothing is an error then, not an empty result later.
+pub async fn resolve_filters(
+    node_service: &NodeService,
+    target_type: &str,
+    filters: Vec<QueryFilter>,
+) -> Result<Vec<QueryFilter>, OpsError> {
+    let mut resolved = Vec::with_capacity(filters.len());
+    for filter in filters {
+        resolved.push(resolve_filter(node_service, target_type, filter).await?);
+    }
+    Ok(resolved)
+}
+
+/// Explicitly boxed (`Pin<Box<dyn Future>>`) rather than a plain `async fn`:
+/// this function calls itself for a related-node filter's nested filter, and
+/// a self-recursive `async fn` is an infinitely-sized future type by
+/// construction — boxing is what gives the recursive call a fixed size.
+fn resolve_filter<'a>(
+    node_service: &'a NodeService,
+    target_type: &'a str,
+    mut filter: QueryFilter,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<QueryFilter, OpsError>> + Send + 'a>>
+{
+    Box::pin(async move {
+        let Some(path) = &filter.path else {
+            return Ok(filter);
+        };
+        if path.is_empty() {
+            return Err(OpsError::InvalidParams(
+                "filter 'path' must name at least one relationship".to_string(),
+            ));
+        }
+        let start_type = (target_type != "*").then_some(target_type);
+        let resolved = resolve_path(node_service, start_type, path).await?;
+
+        if let Some(nested) = filter.filter.take() {
+            let related_type = resolved.far_type().unwrap_or("*").to_string();
+            filter.filter = Some(Box::new(
+                resolve_filter(node_service, &related_type, *nested).await?,
+            ));
+        }
+        filter.resolved_path = Some(resolved);
+        Ok(filter)
     })
 }
 
@@ -450,24 +356,22 @@ pub async fn execute_query_nodes(
 /// the identifier validation and the filter/sort mapping are what decide which
 /// set that is.
 ///
-/// Async because a [`FilterType::Related`] filter's `relationshipName` is
-/// resolved here, against `input.target_type`, via
-/// [`resolve_relationship_name_for_type`] — a schema lookup — before the
-/// resulting [`QueryDefinition`] ever reaches [`QueryService`]'s (synchronous)
-/// SQL compilation. See [`to_query_filter`].
+/// Async because a relationship or related-node filter's `path` is resolved
+/// here, against `input.target_type` — a schema lookup — before the resulting
+/// [`QueryDefinition`] ever reaches [`QueryService`]'s (synchronous) SQL
+/// compilation. See [`resolve_filters`].
 async fn to_query_definition(
     node_service: &Arc<NodeService>,
     input: ExecuteQueryInput,
 ) -> Result<QueryDefinition, OpsError> {
     let limit = input.limit.unwrap_or(50);
 
-    // Sequential, not `join_all`: filter count is small (a handful per
-    // query), and each conversion is at most a couple of schema lookups, so
-    // the concurrency isn't worth the added complexity here.
-    let mut filters: Vec<QueryFilter> = Vec::with_capacity(input.filters.len());
-    for item in input.filters {
-        filters.push(to_query_filter(node_service, &input.target_type, item).await?);
-    }
+    let filters = input
+        .filters
+        .into_iter()
+        .map(to_query_filter)
+        .collect::<Result<Vec<_>, _>>()?;
+    let filters = resolve_filters(node_service, &input.target_type, filters).await?;
 
     let sorting: Option<Vec<SortConfig>> = input.sorting.map(|items| {
         items
@@ -548,10 +452,8 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    /// A bare `NodeService` for tests that call [`to_query_filter`] with a
-    /// non-`Related` filter — the resolver it would otherwise need
-    /// (`resolve_relationship_name_for_type`) is never reached for those, but
-    /// the function always takes a `node_service` argument.
+    /// A `NodeService` over a fresh database: the core schemas and nothing
+    /// else.
     async fn make_test_service() -> (Arc<NodeService>, TempDir) {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("test.db");
@@ -591,9 +493,8 @@ mod tests {
         assert!(parse_filter_type("unknown").is_err());
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn to_query_filter_property() {
-        let (svc, _tmp) = make_test_service().await;
+    #[test]
+    fn to_query_filter_property() {
         let item = AgentFilterItem {
             filter_type: Some("property".to_string()),
             operator: "equals".to_string(),
@@ -601,7 +502,7 @@ mod tests {
             value: Some(json!("open")),
             ..Default::default()
         };
-        let qf = to_query_filter(&svc, "task", item).await.unwrap();
+        let qf = to_query_filter(item).unwrap();
         assert_eq!(qf.filter_type, FilterType::Property);
         assert_eq!(qf.operator, FilterOperator::Equals);
         assert_eq!(qf.property.as_deref(), Some("status"));
@@ -611,9 +512,8 @@ mod tests {
     /// A filter that names a property but omits `type` is complete enough to
     /// run: the category is derivable, and rejecting it turns a correct query
     /// into a tool error over a token the model gains nothing by restating.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn filter_type_is_inferred_for_a_property_filter() {
-        let (svc, _tmp) = make_test_service().await;
+    #[test]
+    fn filter_type_is_inferred_for_a_property_filter() {
         let item: AgentFilterItem = serde_json::from_value(json!({
             "operator": "equals",
             "property": "replacement_cost",
@@ -621,7 +521,7 @@ mod tests {
         }))
         .expect("`type` must be optional on the wire");
         assert_eq!(item.category().unwrap(), "property");
-        let qf = to_query_filter(&svc, "task", item).await.unwrap();
+        let qf = to_query_filter(item).unwrap();
         assert_eq!(qf.filter_type, FilterType::Property);
         assert_eq!(qf.property.as_deref(), Some("replacement_cost"));
     }
@@ -632,9 +532,8 @@ mod tests {
     /// …)` that is structurally always NULL and silently returns zero results (an
     /// existing "Buy cereal" task returns `count: 0`). A non-content property is
     /// unaffected and still infers the property category.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn content_property_infers_the_content_filter_not_json_extract() {
-        let (svc, _tmp) = make_test_service().await;
+    #[test]
+    fn content_property_infers_the_content_filter_not_json_extract() {
         let item: AgentFilterItem = serde_json::from_value(json!({
             "operator": "contains",
             "property": "content",
@@ -643,10 +542,7 @@ mod tests {
         .expect("`type` must be optional on the wire");
         assert_eq!(item.category().unwrap(), "content");
         assert_eq!(
-            to_query_filter(&svc, "task", item)
-                .await
-                .unwrap()
-                .filter_type,
+            to_query_filter(item).unwrap().filter_type,
             FilterType::Content
         );
 
@@ -658,10 +554,7 @@ mod tests {
         .unwrap();
         assert_eq!(prop.category().unwrap(), "property");
         assert_eq!(
-            to_query_filter(&svc, "task", prop)
-                .await
-                .unwrap()
-                .filter_type,
+            to_query_filter(prop).unwrap().filter_type,
             FilterType::Property
         );
     }
@@ -672,7 +565,7 @@ mod tests {
     fn filter_type_is_inferred_for_a_relationship_filter() {
         let item: AgentFilterItem = serde_json::from_value(json!({
             "operator": "equals",
-            "relationship_type": "children",
+            "path": ["child_of"],
             "node_id": "abc-123"
         }))
         .unwrap();
@@ -697,9 +590,8 @@ mod tests {
     /// slot while `node_type` carried the same value alongside. The filter names
     /// `status`, so its subject is unambiguous and it must run as a property
     /// filter rather than being rejected over the mislabelled slot.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn node_type_in_the_category_slot_falls_through_to_inference() {
-        let (svc, _tmp) = make_test_service().await;
+    #[test]
+    fn node_type_in_the_category_slot_falls_through_to_inference() {
         let item: AgentFilterItem = serde_json::from_value(json!({
             "type": "task",
             "operator": "equals",
@@ -708,7 +600,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(item.category().unwrap(), "property");
-        assert!(to_query_filter(&svc, "task", item).await.is_ok());
+        assert!(to_query_filter(item).is_ok());
     }
 
     /// Falling through must not become "accept anything". With the category slot
@@ -733,16 +625,15 @@ mod tests {
     /// Inference must not paper over a filter with no subject at all — there is
     /// nothing to infer from, and silently picking a category would run a query
     /// the caller never described.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn filter_with_nothing_to_infer_from_still_errors() {
-        let (svc, _tmp) = make_test_service().await;
+    #[test]
+    fn filter_with_nothing_to_infer_from_still_errors() {
         let item: AgentFilterItem = serde_json::from_value(json!({
             "operator": "exists",
             "value": true
         }))
         .unwrap();
         assert!(item.category().is_err());
-        assert!(to_query_filter(&svc, "task", item).await.is_err());
+        assert!(to_query_filter(item).is_err());
     }
 
     #[test]
@@ -986,7 +877,7 @@ mod tests {
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
-                    "relationship_name": "project",
+                    "path": ["project"],
                     "filter": {
                         "type": "property",
                         "operator": "equals",
@@ -1113,7 +1004,7 @@ mod tests {
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
-                    "relationship_name": "tasks",
+                    "path": ["tasks"],
                     "filter": {
                         "type": "property",
                         "operator": "equals",
@@ -1193,7 +1084,7 @@ mod tests {
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
-                    "relationship_name": "has_child",
+                    "path": ["has_child"],
                     "filter": {
                         "type": "property",
                         "operator": "equals",
@@ -1278,7 +1169,7 @@ mod tests {
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
-                    "relationship_name": "epic",
+                    "path": ["epic"],
                     "filter": {
                         "type": "property",
                         "operator": "equals",
@@ -1343,11 +1234,11 @@ mod tests {
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
-                    "relationship_name": "project",
+                    "path": ["project"],
                     "filter": {
                         "type": "related",
                         "operator": "equals",
-                        "relationship_name": "owner",
+                        "path": ["owner"],
                         "filter": {
                             "type": "property",
                             "operator": "exists",
@@ -1377,7 +1268,7 @@ mod tests {
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
-                    "relationship_name": "not_a_real_relationship",
+                    "path": ["not_a_real_relationship"],
                     "filter": {
                         "type": "property",
                         "operator": "equals",
@@ -1392,11 +1283,11 @@ mod tests {
             assert!(matches!(err, OpsError::InvalidParams(_)));
         }
 
-        /// A Related filter cannot be resolved under a wildcard target_type
-        /// -- there is no single schema to resolve relationship_name
-        /// against, so this errors rather than guessing.
+        /// A schema-declared name cannot be resolved under a wildcard
+        /// target_type: there is no single schema to resolve it against, so
+        /// this errors rather than guessing.
         #[tokio::test(flavor = "multi_thread")]
-        async fn related_filter_under_wildcard_target_type_errors() {
+        async fn a_declared_name_under_a_wildcard_target_type_errors() {
             let (svc, _tmp) = make_test_service().await;
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
@@ -1404,7 +1295,7 @@ mod tests {
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
-                    "relationship_name": "has_child",
+                    "path": ["project"],
                     "filter": {
                         "type": "property",
                         "operator": "equals",
@@ -1416,7 +1307,63 @@ mod tests {
             .unwrap();
 
             let err = execute_query(&svc, input).await.unwrap_err();
-            assert!(matches!(err, OpsError::InvalidParams(_)));
+            assert!(
+                matches!(&err, OpsError::InvalidParams(m) if m.contains("'*'")),
+                "{err:?}"
+            );
+        }
+
+        /// A built-in relationship needs no schema, so it resolves under a
+        /// wildcard too: any node whose child is an open task.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_builtin_name_resolves_under_a_wildcard_target_type() {
+            let (svc, _tmp) = make_test_service().await;
+
+            svc.create_node(node(
+                "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2a01",
+                "text",
+                json!({}),
+            ))
+            .await
+            .unwrap();
+            svc.create_node(task_node(
+                "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2a02",
+                "open",
+                None,
+            ))
+            .await
+            .unwrap();
+            svc.create_relationship(
+                "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2a01",
+                "has_child",
+                "5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2a02",
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+            let input: ExecuteQueryInput = serde_json::from_value(json!({
+                "target_type": "*",
+                "filters": [{
+                    "type": "related",
+                    "operator": "equals",
+                    "path": ["has_child"],
+                    "filter": {
+                        "type": "metadata",
+                        "operator": "equals",
+                        "property": "node_type",
+                        "value": "task"
+                    }
+                }]
+            }))
+            .unwrap();
+
+            let output = execute_query(&svc, input).await.unwrap();
+            assert_eq!(output.count, 1, "{:?}", output.nodes);
+            assert_eq!(
+                output.nodes[0].get("id").and_then(|v| v.as_str()),
+                Some("5b7e0b5e-6f0e-4d0a-9d0e-0a8b6f1f2a01")
+            );
         }
 
         /// The forward name of an inbound relationship, walked backwards
@@ -1482,7 +1429,7 @@ mod tests {
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
-                    "relationship_name": "project",
+                    "path": ["project"],
                     "filter": {
                         "type": "metadata",
                         "operator": "equals",
@@ -1538,7 +1485,7 @@ mod tests {
                 "filters": [{
                     "type": "relationship",
                     "operator": "equals",
-                    "relationship_type": "parent",
+                    "path": ["has_child"],
                     "node_id": "dd996f5b-a763-58e3-a836-e9bc25d0827c"
                 }]
             }))
@@ -1550,6 +1497,301 @@ mod tests {
                 output.nodes[0].get("id").and_then(|v| v.as_str()),
                 Some("038ebfa1-35f7-5d7c-941f-7502434c9955")
             );
+        }
+
+        // -- Paths: several hops, reverse names, open-ended walks --
+
+        /// project ← tasks — task ← has_child — text, with ids that say what
+        /// each node is.
+        const ACTIVE_PROJECT: &str = "a1000000-0000-4000-8000-000000000001";
+        const DONE_PROJECT: &str = "a1000000-0000-4000-8000-000000000002";
+        const ACTIVE_TASK: &str = "a1000000-0000-4000-8000-000000000003";
+        const DONE_TASK: &str = "a1000000-0000-4000-8000-000000000004";
+        const NOTE_UNDER_ACTIVE_TASK: &str = "a1000000-0000-4000-8000-000000000005";
+        const NOTE_UNDER_NOTE: &str = "a1000000-0000-4000-8000-000000000006";
+        const NOTE_UNDER_DONE_TASK: &str = "a1000000-0000-4000-8000-000000000007";
+
+        /// Two projects, a task in each, and notes nested under the tasks.
+        async fn seed_project_tree(svc: &Arc<NodeService>) {
+            create_schema(
+                svc,
+                json!({"name": "pt_project", "fields": [{"name": "status", "type": "text"}]}),
+            )
+            .await;
+            create_schema(
+                svc,
+                json!({
+                    "name": "pt_task",
+                    "fields": [],
+                    "relationships": [{
+                        "name": "project",
+                        "targetType": "pt_project",
+                        "direction": "out",
+                        "cardinality": "one",
+                        "reverseName": "tasks",
+                        "reverseCardinality": "many"
+                    }]
+                }),
+            )
+            .await;
+
+            for (id, node_type, props) in [
+                (ACTIVE_PROJECT, "pt_project", json!({"status": "active"})),
+                (DONE_PROJECT, "pt_project", json!({"status": "done"})),
+                (ACTIVE_TASK, "pt_task", json!({})),
+                (DONE_TASK, "pt_task", json!({})),
+                (NOTE_UNDER_ACTIVE_TASK, "text", json!({})),
+                (NOTE_UNDER_NOTE, "text", json!({})),
+                (NOTE_UNDER_DONE_TASK, "text", json!({})),
+            ] {
+                svc.create_node(node(id, node_type, props)).await.unwrap();
+            }
+            for (from, name, to) in [
+                (ACTIVE_TASK, "project", ACTIVE_PROJECT),
+                (DONE_TASK, "project", DONE_PROJECT),
+                (ACTIVE_TASK, "has_child", NOTE_UNDER_ACTIVE_TASK),
+                (NOTE_UNDER_ACTIVE_TASK, "has_child", NOTE_UNDER_NOTE),
+                (DONE_TASK, "has_child", NOTE_UNDER_DONE_TASK),
+            ] {
+                svc.create_relationship(from, name, to, json!({}))
+                    .await
+                    .unwrap();
+            }
+        }
+
+        async fn matching_ids(svc: &Arc<NodeService>, input: serde_json::Value) -> Vec<String> {
+            let input: ExecuteQueryInput = serde_json::from_value(input).unwrap();
+            let mut ids: Vec<String> = execute_query(svc, input)
+                .await
+                .unwrap()
+                .nodes
+                .iter()
+                .map(|n| n["id"].as_str().unwrap().to_string())
+                .collect();
+            ids.sort();
+            ids
+        }
+
+        /// A relationship filter takes a schema-declared name, not only the
+        /// structural ones: the tasks of one project.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn relationship_filter_follows_a_declared_name() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_project_tree(&svc).await;
+
+            let tasks = matching_ids(
+                &svc,
+                json!({
+                    "target_type": "pt_task",
+                    "filters": [{
+                        "type": "relationship", "operator": "equals",
+                        "path": ["project"], "node_id": ACTIVE_PROJECT
+                    }]
+                }),
+            )
+            .await;
+            assert_eq!(tasks, [ACTIVE_TASK]);
+
+            // The same edge from the other end, by its reverse name: the
+            // project of one task.
+            let projects = matching_ids(
+                &svc,
+                json!({
+                    "target_type": "pt_project",
+                    "filters": [{
+                        "type": "relationship", "operator": "equals",
+                        "path": ["tasks"], "node_id": DONE_TASK
+                    }]
+                }),
+            )
+            .await;
+            assert_eq!(projects, [DONE_PROJECT]);
+        }
+
+        /// Two hops in one filter: notes whose parent task belongs to an
+        /// active project. The second name is resolved against the type the
+        /// first one reaches.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn related_filter_walks_several_hops() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_project_tree(&svc).await;
+
+            let tasks = matching_ids(
+                &svc,
+                json!({
+                    "target_type": "pt_project",
+                    "filters": [{
+                        "type": "relationship", "operator": "equals",
+                        "path": ["tasks", "has_child"], "node_id": NOTE_UNDER_ACTIVE_TASK
+                    }]
+                }),
+            )
+            .await;
+            assert_eq!(tasks, [ACTIVE_PROJECT]);
+
+            // A declared name after a built-in hop has no type to be resolved
+            // against: any type may be a parent.
+            let input: ExecuteQueryInput = serde_json::from_value(json!({
+                "target_type": "text",
+                "filters": [{
+                    "type": "related", "operator": "equals",
+                    "path": ["child_of", "project"],
+                    "filter": {
+                        "type": "property", "operator": "equals",
+                        "property": "status", "value": "active"
+                    }
+                }]
+            }))
+            .unwrap();
+            let err = execute_query(&svc, input).await.unwrap_err();
+            assert!(
+                matches!(&err, OpsError::InvalidParams(m) if m.contains("child_of")),
+                "{err:?}"
+            );
+        }
+
+        /// An open-ended hop follows the relationship to every depth:
+        /// everything under a task, however deeply nested.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn relationship_filter_open_ended_hop_reaches_every_depth() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_project_tree(&svc).await;
+
+            let under_task = matching_ids(
+                &svc,
+                json!({
+                    "target_type": "text",
+                    "filters": [{
+                        "type": "relationship", "operator": "equals",
+                        "path": [{ "name": "child_of", "open_ended": true }],
+                        "node_id": ACTIVE_TASK
+                    }]
+                }),
+            )
+            .await;
+            assert_eq!(under_task, [NOTE_UNDER_ACTIVE_TASK, NOTE_UNDER_NOTE]);
+
+            // The fixed hop reaches the direct child only.
+            let direct = matching_ids(
+                &svc,
+                json!({
+                    "target_type": "text",
+                    "filters": [{
+                        "type": "relationship", "operator": "equals",
+                        "path": ["child_of"], "node_id": ACTIVE_TASK
+                    }]
+                }),
+            )
+            .await;
+            assert_eq!(direct, [NOTE_UNDER_ACTIVE_TASK]);
+        }
+
+        /// A query's type selects its subtypes too (ADR-078).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_target_type_matches_its_subtypes() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({"name": "st_ticket", "fields": [{"name": "state", "type": "text"}]}),
+            )
+            .await;
+            create_schema(
+                &svc,
+                json!({"name": "st_bug", "extends": "st_ticket", "fields": []}),
+            )
+            .await;
+            svc.create_node(node(
+                "a2000000-0000-4000-8000-000000000001",
+                "st_ticket",
+                json!({"state": "open"}),
+            ))
+            .await
+            .unwrap();
+            // The inherited field is written on the subtype's node and stored
+            // in the base type's bucket, where the base-scoped filter reads it.
+            svc.create_node(node(
+                "a2000000-0000-4000-8000-000000000002",
+                "st_bug",
+                json!({"state": "open"}),
+            ))
+            .await
+            .unwrap();
+
+            let tickets = matching_ids(
+                &svc,
+                json!({
+                    "target_type": "st_ticket",
+                    "filters": [{
+                        "type": "property", "operator": "equals",
+                        "property": "state", "value": "open"
+                    }]
+                }),
+            )
+            .await;
+            assert_eq!(
+                tickets,
+                [
+                    "a2000000-0000-4000-8000-000000000001",
+                    "a2000000-0000-4000-8000-000000000002"
+                ]
+            );
+
+            let bugs = matching_ids(&svc, json!({ "target_type": "st_bug", "filters": [] })).await;
+            assert_eq!(bugs, ["a2000000-0000-4000-8000-000000000002"]);
+        }
+
+        /// A base-type query sorts a subtype's row by the value it holds.
+        /// The inherited field lives in the base type's bucket on a subtype's
+        /// node, so a sort that read each row's own-type bucket would find no
+        /// value on the subtype row and put it first.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn sorting_a_base_type_query_orders_subtype_rows_by_their_value() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({"name": "so_ticket", "fields": [{"name": "rank", "type": "text"}]}),
+            )
+            .await;
+            create_schema(
+                &svc,
+                json!({"name": "so_bug", "extends": "so_ticket", "fields": []}),
+            )
+            .await;
+            for (id, node_type, rank) in [
+                ("a3000000-0000-4000-8000-000000000001", "so_ticket", "a"),
+                ("a3000000-0000-4000-8000-000000000002", "so_bug", "m"),
+                ("a3000000-0000-4000-8000-000000000003", "so_ticket", "z"),
+            ] {
+                svc.create_node(node(id, node_type, json!({ "rank": rank })))
+                    .await
+                    .unwrap();
+            }
+
+            let ranks = |direction: &'static str| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    let input: ExecuteQueryInput = serde_json::from_value(json!({
+                        "target_type": "so_ticket",
+                        "filters": [],
+                        "sorting": [{ "field": "rank", "direction": direction }]
+                    }))
+                    .unwrap();
+                    execute_query_nodes(&svc, input)
+                        .await
+                        .unwrap()
+                        .iter()
+                        .map(|n| {
+                            n.properties["so_ticket"]["rank"]
+                                .as_str()
+                                .unwrap()
+                                .to_string()
+                        })
+                        .collect::<Vec<_>>()
+                }
+            };
+
+            assert_eq!(ranks("asc").await, ["a", "m", "z"]);
+            assert_eq!(ranks("desc").await, ["z", "m", "a"]);
         }
     }
 }

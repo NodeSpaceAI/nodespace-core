@@ -13,7 +13,7 @@
 //! completeness result.
 //!
 //! Same fix pattern as `workflow_state.rs`, `validation.rs`,
-//! `graph_resolver.rs`'s `is_declared_many_relationship`, and `rel_ops.rs`'s
+//! `path_ops.rs`'s `resolve_hop`, and `rel_ops.rs`'s
 //! `resolve_relationship_name`/`get_node_relationships`: resolve via
 //! `NodeService::resolve_relationships` (the extends-chain-merged set)
 //! instead of a direct own-schema lookup.

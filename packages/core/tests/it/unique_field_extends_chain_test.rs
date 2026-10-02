@@ -10,7 +10,7 @@
 //! suggestion and never got journaled as a `UniqueFieldCollision` conflict.
 //!
 //! Same fix pattern as `workflow_state.rs`, `validation.rs`,
-//! `graph_resolver.rs`'s `is_declared_many_relationship`, and
+//! `path_ops.rs`'s `resolve_hop`, and
 //! `rel_ops.rs`'s `resolve_relationship_name`/`get_node_relationships`.
 
 use anyhow::Result;

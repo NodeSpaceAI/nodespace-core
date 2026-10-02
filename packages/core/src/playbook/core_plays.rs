@@ -69,7 +69,7 @@ pub fn parent_task_completion_rules() -> serde_json::Value {
         "trigger": {
             "type": "graph_event",
             "on": "property_changed",
-            "node_type": "task",
+            "select": { "target_type": "task" },
             "property_key": "task.status"
         },
         "conditions": [

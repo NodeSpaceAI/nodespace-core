@@ -12,7 +12,7 @@ parameters_schema:
             "type": "boolean"
           },
           "node_id": {
-            "description": "For 'relationship' filters: the anchor node ID to traverse from",
+            "description": "For 'relationship' filters: the node the path must reach. {\"path\": [\"child_of\"], \"node_id\": X} selects the children of X.",
             "type": "string"
           },
           "operator": {
@@ -29,18 +29,15 @@ parameters_schema:
             ],
             "type": "string"
           },
+          "path": {
+            "description": "For 'relationship' filters: the relationship names to follow from each node, in order. [\"child_of\"] is the node's parent, [\"has_child\"] its children, [\"mentions\"] the nodes it mentions, [\"mentioned_by\"] the nodes that mention it. A schema-declared relationship or its reverseName works too, e.g. [\"project\"].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "property": {
             "description": "Property key. Example: {\"type\": \"property\", \"property\": \"status\", \"operator\": \"equals\", \"value\": \"open\"} — status is a property filter, not metadata.",
-            "type": "string"
-          },
-          "relationship_type": {
-            "description": "For 'relationship' filters: which graph edge direction to traverse",
-            "enum": [
-              "parent",
-              "children",
-              "mentions",
-              "mentioned_by"
-            ],
             "type": "string"
           },
           "type": {

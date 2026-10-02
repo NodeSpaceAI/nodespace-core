@@ -211,19 +211,20 @@ impl PlaybookLifecycleManager {
                         entries.sort();
                     }
                 }
-                ParsedTrigger::Scheduled { cron, node_type } => {
-                    // Find existing cron entry or create new one
+                ParsedTrigger::Scheduled { cron, select } => {
+                    // Rules sharing a cron expression and a selector share an
+                    // entry, so the scan runs their one query once.
                     if let Some(entry) = self
                         .cron_registry
                         .iter_mut()
-                        .find(|e| e.cron_expression == *cron && e.node_type == *node_type)
+                        .find(|e| e.cron_expression == *cron && e.select == *select)
                     {
                         entry.rules.push(ordered_ref);
                         entry.rules.sort();
                     } else {
                         self.cron_registry.push(CronEntry {
                             cron_expression: cron.clone(),
-                            node_type: node_type.clone(),
+                            select: select.clone(),
                             rules: vec![ordered_ref],
                         });
                     }
@@ -459,11 +460,13 @@ fn renamespace_property_key(key: &str, from_type: &str, to_type: &str) -> String
     }
 }
 
+/// Whether one of a play's triggers names `node_type` in its selector. A
+/// saved-query selector names a query node rather than a type, so it never
+/// matches here; the query's own paths are resolved each time it runs.
 fn play_references_node_type(play: &ParsedPlay, node_type: &str) -> bool {
-    play.rules.iter().any(|rule| match &rule.trigger {
-        ParsedTrigger::GraphEvent { node_type: nt, .. } => nt == node_type,
-        ParsedTrigger::Scheduled { node_type: nt, .. } => nt == node_type,
-    })
+    play.rules
+        .iter()
+        .any(|rule| rule.trigger.registered_type() == Some(node_type))
 }
 
 /// Check if any of a play's conditions contain dot-paths that might traverse
@@ -641,7 +644,7 @@ mod tests {
             "pb-1",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
             }]),
@@ -658,7 +661,7 @@ mod tests {
             "pb-2",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
             }]),
@@ -678,7 +681,7 @@ mod tests {
             "pb-3",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
             }]),
@@ -700,7 +703,7 @@ mod tests {
             "pb-4",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": ["node.status == 'open'"],
                 "actions": []
             }]),
@@ -724,7 +727,7 @@ mod tests {
             "pb-5",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
             }]),
@@ -765,7 +768,7 @@ mod tests {
             "pb-zebra",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
             }]),
@@ -775,7 +778,7 @@ mod tests {
             "pb-apple",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
             }]),
@@ -814,7 +817,7 @@ mod tests {
 
         let rules_json = json!([{
             "name": "r1",
-            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
             "conditions": [],
             "actions": []
         }]);
@@ -872,19 +875,19 @@ mod tests {
             json!([
                 {
                     "name": "third",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "first",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "second",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
                 }
@@ -924,7 +927,7 @@ mod tests {
             "pb-drift-1",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": ["node.status == 'open'"],
                 "actions": []
             }]),
@@ -951,7 +954,7 @@ mod tests {
             "pb-drift-2",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": ["node.story.epic.status == 'active'"],
                 "actions": []
             }]),
@@ -970,7 +973,7 @@ mod tests {
             "pb-drift-3",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": ["node.status == 'open'"],
                 "actions": []
             }]),
@@ -993,7 +996,7 @@ mod tests {
             "pb-drift-4",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
             }]),
@@ -1237,7 +1240,7 @@ mod tests {
             "pb-base",
             json!([{
                 "name": "r1",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
                 "conditions": [],
                 "actions": []
             }]),
@@ -1348,13 +1351,13 @@ mod tests {
             json!([
                 {
                     "name": "on_task",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "on_issue",
-                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "issue" },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "issue" } },
                     "conditions": [],
                     "actions": []
                 }
@@ -1393,7 +1396,7 @@ mod tests {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "task",
+                    "select": { "target_type": "task" },
                     "property_key": "task.status"
                 },
                 "conditions": [],
@@ -1448,7 +1451,7 @@ mod tests {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "task",
+                    "select": { "target_type": "task" },
                     "property_key": "task.status"
                 },
                 "conditions": [],

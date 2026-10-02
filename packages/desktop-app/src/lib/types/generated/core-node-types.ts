@@ -152,7 +152,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
-    typedUpdate: false,
+    typedUpdate: true,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
   {

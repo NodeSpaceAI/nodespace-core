@@ -11,11 +11,49 @@ mod tests {
     use crate::services::node_service::{CreateNodeParams, NodeService};
     use crate::services::query_service::{
         BoundSql, FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
-        RelationshipType, ResolvedRelationship, SortConfig, SortDirection,
+        RelationshipPath, ResolvedPath, SortConfig, SortDirection,
     };
+    use nodespace_types::{HopDirection, ResolvedHop};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    /// A one-hop walk: the path as written, and what it resolves to. The
+    /// built-in names resolve without a schema (`child_of` is `has_child`
+    /// walked from its target end); a declared name is given its stored type
+    /// and direction by the test.
+    fn walk(
+        name: &str,
+        relationship_type: &str,
+        direction: HopDirection,
+        far_type: Option<&str>,
+    ) -> (Option<RelationshipPath>, Option<ResolvedPath>) {
+        (
+            Some(RelationshipPath::from_names([name])),
+            Some(ResolvedPath {
+                hops: vec![ResolvedHop {
+                    name: name.to_string(),
+                    relationship_type: relationship_type.to_string(),
+                    direction,
+                    source_type: None,
+                    far_type: far_type.map(str::to_string),
+                    declared_many: false,
+                    untyped: false,
+                    open_ended: false,
+                }],
+            }),
+        )
+    }
+
+    /// "Reaches this node through `child_of`": the node's children.
+    fn child_of() -> (Option<RelationshipPath>, Option<ResolvedPath>) {
+        walk("child_of", "has_child", HopDirection::Inbound, None)
+    }
+
+    /// "Reaches this node through `has_child`": the node's parent.
+    fn has_child() -> (Option<RelationshipPath>, Option<ResolvedPath>) {
+        walk("has_child", "has_child", HopDirection::Outbound, None)
+    }
 
     /// Helper to create test services with SQLite database
     async fn create_test_services() -> (Arc<QueryService>, Arc<NodeService>, TempDir) {
@@ -129,7 +167,6 @@ mod tests {
                 property: Some("status".to_string()),
                 value: Some(json!("open")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -175,7 +212,6 @@ mod tests {
                 // string instead of an array.
                 value: Some(json!("open,in_progress")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -223,7 +259,6 @@ mod tests {
                 property: Some("status".to_string()),
                 value: Some(json!(["open", "in_progress"])),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -277,7 +312,6 @@ mod tests {
                 property: None,
                 value: Some(json!("Important")),
                 case_sensitive: Some(true),
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -332,7 +366,6 @@ mod tests {
                 property: None,
                 value: Some(json!("important")),
                 case_sensitive: Some(false),
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -397,7 +430,8 @@ mod tests {
                 property: None,
                 value: None,
                 case_sensitive: None,
-                relationship_type: Some(RelationshipType::Children),
+                path: child_of().0,
+                resolved_path: child_of().1,
                 node_id: Some(parent_id.clone()),
                 ..Default::default()
             }],
@@ -525,7 +559,6 @@ mod tests {
                     property: Some("status".to_string()),
                     value: Some(json!("open")),
                     case_sensitive: None,
-                    relationship_type: None,
                     node_id: None,
                     ..Default::default()
                 },
@@ -535,7 +568,6 @@ mod tests {
                     property: Some("priority".to_string()),
                     value: Some(json!("high")),
                     case_sensitive: None,
-                    relationship_type: None,
                     node_id: None,
                     ..Default::default()
                 },
@@ -591,7 +623,6 @@ mod tests {
                 property: Some("node_type".to_string()),
                 value: Some(json!("task")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -618,7 +649,6 @@ mod tests {
                 property: Some("status".to_string()),
                 value: Some(json!("nonexistent_status")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -666,7 +696,6 @@ mod tests {
                 property: None,
                 value: Some(json!("Exact Match")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -800,7 +829,8 @@ mod tests {
                 property: None,
                 value: None,
                 case_sensitive: None,
-                relationship_type: Some(RelationshipType::Parent),
+                path: has_child().0,
+                resolved_path: has_child().1,
                 node_id: Some(child_id.clone()),
                 ..Default::default()
             }],
@@ -853,7 +883,6 @@ mod tests {
                 property: Some("node_type".to_string()),
                 value: Some(json!("task")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -901,7 +930,6 @@ mod tests {
                 property: None,
                 value: Some(json!("Important")),
                 case_sensitive: Some(true),
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -941,7 +969,6 @@ mod tests {
                 property: Some("node_type".to_string()),
                 value: Some(json!("task")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -975,7 +1002,6 @@ mod tests {
                 property: Some("invalid_field".to_string()),
                 value: Some(json!("value")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -1002,7 +1028,8 @@ mod tests {
                 property: None,
                 value: None,
                 case_sensitive: None,
-                relationship_type: Some(RelationshipType::Children),
+                path: child_of().0,
+                resolved_path: child_of().1,
                 node_id: None, // Missing!
                 ..Default::default()
             }],
@@ -1013,23 +1040,19 @@ mod tests {
         let result = query_service.execute(&query).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("Missing nodeId"));
+        assert!(err_msg.contains("missing 'nodeId'"), "{err_msg}");
     }
 
     #[tokio::test]
-    async fn test_relationship_filter_missing_type() {
+    async fn test_relationship_filter_missing_path() {
         let (query_service, _node_service, _temp) = create_test_services().await;
 
-        // Missing relationship_type
+        // No path: nothing says which relationship to follow.
         let query = QueryDefinition {
             target_type: "*".to_string(),
             filters: vec![QueryFilter {
                 filter_type: FilterType::Relationship,
                 operator: FilterOperator::Equals,
-                property: None,
-                value: None,
-                case_sensitive: None,
-                relationship_type: None, // Missing!
                 node_id: Some("test-id".to_string()),
                 ..Default::default()
             }],
@@ -1038,9 +1061,32 @@ mod tests {
         };
 
         let result = query_service.execute(&query).await;
-        assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("Missing relationshipType"));
+        assert!(err_msg.contains("missing 'path'"), "{err_msg}");
+    }
+
+    /// A path that was never resolved against the schemas cannot be compiled:
+    /// the names alone do not say which stored edges they mean.
+    #[tokio::test]
+    async fn test_relationship_filter_unresolved_path_is_refused() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let query = QueryDefinition {
+            target_type: "*".to_string(),
+            filters: vec![QueryFilter {
+                filter_type: FilterType::Relationship,
+                operator: FilterOperator::Equals,
+                node_id: Some("test-id".to_string()),
+                path: child_of().0,
+                resolved_path: None,
+                ..Default::default()
+            }],
+            sorting: None,
+            limit: None,
+        };
+
+        let err_msg = query_service.execute(&query).await.unwrap_err().to_string();
+        assert!(err_msg.contains("was not resolved"), "{err_msg}");
     }
 
     #[tokio::test]
@@ -1056,7 +1102,6 @@ mod tests {
                 property: None, // Missing!
                 value: Some(json!("value")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -1180,7 +1225,6 @@ mod tests {
                 property: Some("status".to_string()),
                 value: None,
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -1221,7 +1265,6 @@ mod tests {
                 property: None,
                 value: Some(json!("EXACT Match")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -1274,7 +1317,6 @@ mod tests {
                     property: Some("node_type".to_string()),
                     value: Some(json!("task")),
                     case_sensitive: None,
-                    relationship_type: None,
                     node_id: None,
                     ..Default::default()
                 },
@@ -1284,7 +1326,6 @@ mod tests {
                     property: None,
                     value: Some(json!("Open")),
                     case_sensitive: Some(true),
-                    relationship_type: None,
                     node_id: None,
                     ..Default::default()
                 },
@@ -1315,7 +1356,6 @@ mod tests {
                 property: Some("status".to_string()),
                 value: Some(json!("nonexistent")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -1498,7 +1538,6 @@ mod tests {
                 property: None,
                 value: Some(serde_json::Value::String("50%".to_string())),
                 case_sensitive: Some(false),
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -1951,7 +1990,6 @@ mod tests {
             property: Some("status".to_string()),
             value: Some(json!("open")),
             case_sensitive: None,
-            relationship_type: None,
             node_id: None,
             ..Default::default()
         };
@@ -1967,22 +2005,14 @@ mod tests {
         );
     }
 
-    /// Regression test for a placeholder-renumbering bug found in code
-    /// review: `renumber_placeholders` corrupted a nested filter's bound
-    /// parameter positions when a repeated whole-string `str::replace`'s
-    /// OUTPUT for one placeholder happened to contain another, not-yet-
-    /// renumbered placeholder's literal text as a substring (e.g. offset 10:
-    /// `?2` -> `?12` written first, then the later `?1` -> `?11` replacement
-    /// also matched the `"?1"` prefix INSIDE the just-written `"?12"`,
-    /// corrupting it to `"?112"`). Reachable through an entirely ordinary
-    /// query shape — any `Related` filter that isn't the query's first
-    /// filter (giving it a nonzero offset) with a nested filter binding 2+
-    /// parameters (`FilterOperator::In` with multiple values). Verifies the
-    /// bound VALUES land at the right placeholder positions, not merely that
-    /// the query runs without error — the corruption was silent (a
-    /// misdirected bound value), not a SQL syntax failure.
+    /// A related-node filter that is not the query's first filter binds its
+    /// values after the ones already bound, each at its own placeholder. The
+    /// failure this guards is silent: a misdirected bound value, not a SQL
+    /// syntax error. So it checks where the VALUES land, with enough prior
+    /// parameters that the placeholders are two digits (`?1` is a prefix of
+    /// `?10`, which is where a text-level renumbering goes wrong).
     #[tokio::test]
-    async fn test_related_filter_placeholder_renumbering_survives_a_double_digit_offset() {
+    async fn test_related_filter_binds_its_values_after_a_double_digit_offset() {
         let (query_service, _node_service, _temp) = create_test_services().await;
 
         let nested_in_filter = QueryFilter {
@@ -1992,23 +2022,19 @@ mod tests {
             value: Some(json!(["active", "planning"])),
             ..Default::default()
         };
+        let (path, resolved_path) =
+            walk("project", "tasks", HopDirection::Inbound, Some("project"));
         let related_filter = QueryFilter {
             filter_type: FilterType::Related,
             operator: FilterOperator::Equals,
-            relationship_name: Some("project".to_string()),
+            path,
+            resolved_path,
             filter: Some(Box::new(nested_in_filter)),
-            resolved_relationship: Some(ResolvedRelationship {
-                stored_type: "project".to_string(),
-                outer_is_in_node: true,
-                source_type: None,
-                related_type: Some("project".to_string()),
-            }),
             ..Default::default()
         };
 
         // Nine placeholders already bound ahead of the Related filter, so
-        // its own nested params land at offset 9 -- reproducing the
-        // double-digit-offset collision the bug required.
+        // its own values land from ?10 on.
         let mut built = BoundSql::default();
         for i in 0..9 {
             built.bind(libsql::Value::Text(format!("prior-{i}")));
@@ -2019,30 +2045,21 @@ mod tests {
             .unwrap();
 
         assert!(
-            condition.contains("?11)"),
-            "expected the relationship_type placeholder to be ?11 (offset 9 + 2 nested params \
-             renumbered to ?10, ?11), got: {condition}"
+            condition.contains("IN (?10, ?11)"),
+            "expected the IN list's two values at ?10 and ?11, got: {condition}"
         );
         assert!(
-            condition.contains("(?10, ?11)") || condition.contains("(?10,?11)"),
-            "expected the IN list's two nested placeholders to renumber to ?10 and ?11 \
-             (not e.g. a corrupted ?1010 or ?1011), got: {condition}"
+            condition.contains("relationship_type = ?12"),
+            "expected the relationship type at ?12, got: {condition}"
         );
-
-        // The values themselves must land at the positions the SQL text
-        // claims -- this is what the corruption actually broke, not the
-        // text shape alone.
         assert_eq!(
-            built.params.len(),
-            12,
-            "9 prior + 2 nested + 1 relationship_type"
+            built.params[9..],
+            [
+                libsql::Value::Text("active".to_string()),
+                libsql::Value::Text("planning".to_string()),
+                libsql::Value::Text("tasks".to_string()),
+            ]
         );
-        assert_eq!(built.params[9], libsql::Value::Text("active".to_string()));
-        assert_eq!(
-            built.params[10],
-            libsql::Value::Text("planning".to_string())
-        );
-        assert_eq!(built.params[11], libsql::Value::Text("project".to_string()));
     }
 
     // ========== count ==========
@@ -2094,7 +2111,6 @@ mod tests {
                 property: Some("status".to_string()),
                 value: Some(json!("open")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -2193,7 +2209,6 @@ mod tests {
                 property: Some("status".to_string()),
                 value: Some(json!("open")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -2272,7 +2287,6 @@ mod tests {
                 property: Some("status".to_string()),
                 value: Some(json!("open")),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -2317,7 +2331,6 @@ mod tests {
                 property: Some("status".to_string()),
                 value: Some(json!(["open", "in_progress", "done"])),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -2380,7 +2393,6 @@ mod tests {
                 property: None,
                 value: Some(json!(quoted)),
                 case_sensitive: None,
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -2451,7 +2463,6 @@ mod tests {
                 property: None,
                 value: Some(json!("IT'S A")),
                 case_sensitive: Some(false),
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -2497,7 +2508,6 @@ mod tests {
                 // A bare `%` would match both rows if it reached LIKE unescaped.
                 value: Some(json!("100% ")),
                 case_sensitive: Some(false),
-                relationship_type: None,
                 node_id: None,
                 ..Default::default()
             }],
@@ -2527,7 +2537,8 @@ mod tests {
                 property: None,
                 value: None,
                 case_sensitive: None,
-                relationship_type: Some(RelationshipType::Children),
+                path: child_of().0,
+                resolved_path: child_of().1,
                 node_id: Some("parent-1".to_string()),
                 ..Default::default()
             }],
@@ -2543,13 +2554,16 @@ mod tests {
             built.sql
         );
         assert!(
-            built.sql.contains("in_node = ?1"),
-            "the subquery must filter on a placeholder: {}",
+            built.sql.contains("SELECT ?1"),
+            "the walk must start from a placeholder: {}",
             built.sql
         );
         assert_eq!(
             built.params,
-            vec![libsql::Value::Text("parent-1".to_string())]
+            vec![
+                libsql::Value::Text("parent-1".to_string()),
+                libsql::Value::Text("has_child".to_string()),
+            ]
         );
     }
 
@@ -2567,7 +2581,6 @@ mod tests {
                     property: Some("count".to_string()),
                     value: Some(json!(3)),
                     case_sensitive: None,
-                    relationship_type: None,
                     node_id: None,
                     ..Default::default()
                 },
@@ -2577,7 +2590,6 @@ mod tests {
                     property: Some("ratio".to_string()),
                     value: Some(json!(1.5)),
                     case_sensitive: None,
-                    relationship_type: None,
                     node_id: None,
                     ..Default::default()
                 },
@@ -2587,7 +2599,6 @@ mod tests {
                     property: Some("done".to_string()),
                     value: Some(json!(true)),
                     case_sensitive: None,
-                    relationship_type: None,
                     node_id: None,
                     ..Default::default()
                 },
@@ -2661,7 +2672,6 @@ mod tests {
                     property: Some(p.to_string()),
                     value: None,
                     case_sensitive: None,
-                    relationship_type: None,
                     node_id: None,
                     ..Default::default()
                 })

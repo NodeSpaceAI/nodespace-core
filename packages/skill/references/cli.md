@@ -186,11 +186,15 @@ nodespace query --type task --filters '[{"type":"property","operator":"gte","pro
 
 **Options:**
 - `--type <type>` — target node type, or `*` for all types
-- `--filters <json>` — array of filter conditions: `{"type":"property"|"content"|"relationship"|"metadata","operator":"equals"|"contains"|"gt"|"lt"|"gte"|"lte"|"in"|"exists","property":"...","value":...}`
+- `--filters <json>` — array of filter conditions: `{"type":"property"|"content"|"metadata"|"relationship"|"related","operator":"equals"|"contains"|"gt"|"lt"|"gte"|"lte"|"in"|"exists","property":"...","value":...}`
+  - A `relationship` filter selects the nodes connected to one node: `{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}` is the children of `<id>` (each matching node reaches `<id>` by following `child_of`).
+  - A `related` filter selects by a condition on the connected nodes: `{"type":"related","operator":"equals","path":["project"],"filter":{"type":"property","operator":"equals","property":"status","value":"active"}}` is the tasks whose project is active.
+  - `path` lists the relationship names to follow from each candidate node, in order: built-in names (`has_child`, `member_of`, `mentions`), schema-declared names, or the reverse name of either (`child_of`, `mentioned_by`, a declared `reverseName`). `{"name":"child_of","open_ended":true}` in place of a name follows it to every depth (all ancestors). A name the type does not declare is an error naming the ones it does. With `--type '*'` only built-in names resolve.
 - `--sorting <json>` — array of `{"field":"...","direction":"asc"|"desc"}`
 - `--limit <n>` — max results (0 = server default of 50; server caps at 500 regardless of the value passed)
 
 Worked examples:
+- "the tasks of this project" → `nodespace query --type task --filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<project-id>"}]'`
 - "find all my open tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"status","value":"open"}]'`
 - "tasks due tomorrow" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"due_date","value":"<YYYY-MM-DD>"}]' --sorting '[{"field":"due_date","direction":"asc"}]'`
 - "tasks due this week" → `nodespace query --type task --filters '[{"type":"property","operator":"gte","property":"due_date","value":"<week start>"},{"type":"property","operator":"lte","property":"due_date","value":"<week end>"}]'`
@@ -325,7 +329,7 @@ nodespace relationship get <person-id> --type decisions --direction in    # also
 
 A `reverseName` (or a built-in's fixed inverse, like `child_of`) names exactly one traversal — the forward relationship, read from the target end — so `--direction` has nothing to select once `--type` already resolved to one: `--type decisions --direction in` runs the identical query as `--type decisions` with no flag at all, not a second, further-reversed one. Pairing `--direction` with the forward name is where direction still does something (`--type decided_by --direction in` vs. `--direction out`, from the person and the ADR respectively).
 
-Reverse names are for *traversal*, not for `relationship create`: an edge is always created under its forward name, from the source node. They are also not usable in `node query --filters`, whose `relationship` filters cover only the structural graph (`parent`, `children`, `mentions`, `mentioned_by`) — use `relationship get` to traverse a schema-declared name.
+Reverse names are for *traversal*, not for `relationship create`: an edge is always created under its forward name, from the source node. A `relationship` or `related` filter's `path` in `query --filters` takes them like any other relationship name.
 
 Both node IDs must already exist — look up missing IDs first (`nodespace node query --title-contains` by name; `nodespace search` for notes and documents). Apart from the built-in names below, the relationship name must be defined on the source node's schema; define it there (`nodespace schema create`/`update`) if it isn't yet. `relationship create` on a node whose schema doesn't define that relationship name fails with an error naming the undefined relationship.
 
@@ -710,7 +714,7 @@ Semantic search across the knowledge graph
 Structured property query with comparison operators (equals/contains/gt/lt/gte/lte/in/exists)
 
 - `--type <TARGET_TYPE>` — Target node type ("task", "text", etc.) or "*" for all types (required)
-- `--filters <FILTERS>` — JSON array of filter conditions, e.g. `[{"type":"property","operator":"equals","property":"status","value":"open"}]`. Supported types: property, content, relationship, metadata. Supported operators: equals, contains, gt, lt, gte, lte, in, exists
+- `--filters <FILTERS>` — JSON array of filter conditions, e.g. `[{"type":"property","operator":"equals","property":"status","value":"open"}]`. Supported types: property, content, metadata, relationship, related. A relationship filter names a `path` of relationship names and the `node_id` it must reach, e.g. `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`. Supported operators: equals, contains, gt, lt, gte, lte, in, exists
 - `--sorting <SORTING>` — JSON array of sort configs, e.g. `[{"field":"due_date","direction":"desc"}]`
 - `--limit <LIMIT>` — Max results to return (0 = server default of 50)
 

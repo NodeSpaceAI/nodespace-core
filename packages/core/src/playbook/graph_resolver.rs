@@ -1,22 +1,28 @@
 //! Graph Resolver for the Playbook Engine
 //!
-//! Resolves dot-paths by walking the data graph via NodeService.
-//! Created per rule evaluation, with a segment cache to prevent
-//! redundant DB queries for overlapping paths.
+//! Resolves the dot-paths of a play's conditions and bindings against the
+//! data graph.
 //!
-//! All graph traversal happens here, ahead of CEL evaluation: paths are
-//! resolved with plain `async`/`.await` against NodeService, and the
-//! results are injected into the CEL context before `Program::execute()`
-//! (which is synchronous) ever runs. This keeps the sync/async boundary
-//! at the CEL-evaluation edge instead of bridging it internally.
+//! A dot-path such as `node.story.epic.status` is a [`RelationshipPath`]
+//! ending in a property. The resolver turns its relationship segments into
+//! resolved hops ([`crate::ops::path_ops`]) and hands them to the store,
+//! which walks the whole run of hops in one SQL statement for every root at
+//! once ([`crate::db::SqliteStore::resolve_relationship_path`]). Nothing here
+//! walks the graph one hop, or one node, at a time.
+//!
+//! All of it happens ahead of CEL evaluation: paths are resolved with plain
+//! `async`/`.await`, and the results are injected into the CEL context before
+//! `Program::execute()` (which is synchronous) ever runs. This keeps the
+//! sync/async boundary at the CEL-evaluation edge instead of bridging it
+//! internally.
 
 use crate::models::Node;
-use crate::ops::rel_ops::{self, ResolvedRelName};
-use crate::ops::OpsError;
+use crate::ops::path_ops::{resolve_hop, HopResolution};
 use crate::playbook::cel::{json_to_cel, key, scoped_node_value, CelScope};
 use crate::playbook::path_extractor::{CollectionPath, ExtractedPath};
 use crate::services::NodeService;
 use cel_interpreter::Value;
+use nodespace_types::{RelationshipHop, RelationshipPath, ResolvedHop, ResolvedPath};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -39,21 +45,43 @@ pub enum ResolvedValue {
     Unresolved(String),
 }
 
+/// Resolved paths, keyed by the node each was resolved from and then by the
+/// path's segments.
+///
+/// The root id is part of the key because the same path means different
+/// things from different nodes — `child_of` from one task is not `child_of`
+/// from another. Keying on segments alone would silently serve one node's
+/// answer for another's.
+pub type PathCache = HashMap<String, HashMap<Vec<String>, ResolvedValue>>;
+
+/// Where a root's walk starts.
+enum Start {
+    /// From this point in the path.
+    Walk(Walk),
+    /// Nowhere: an already-resolved prefix decides the whole path.
+    Settled(ResolvedValue),
+}
+
+/// A walk in progress: where one root's resolution of a path has got to.
+struct Walk {
+    /// The node the path is being resolved for. Results are keyed by it.
+    root_id: String,
+    /// The single node the walk currently stands on.
+    current: Node,
+    /// Index of the next segment to resolve.
+    position: usize,
+}
+
 /// Resolves dot-paths against the live data graph.
 ///
-/// Created per work item in the RuleProcessor. Caches resolved segments
-/// to avoid redundant DB queries for overlapping paths across conditions
-/// in the same rule.
+/// Created per work item in the RuleProcessor, and per scan in the
+/// CronRunner. Caches resolved paths so overlapping paths across the
+/// conditions of a rule cost one resolution.
 pub struct GraphResolver {
     node_service: Arc<NodeService>,
-    /// Cache: (root node id, path segments) → resolved value.
-    ///
-    /// The root id is part of the key because the same path means different
-    /// things from different nodes — `child_of` from one task is not `child_of`
-    /// from another. Callers create one resolver per work item, so in practice
-    /// a single root dominates, but keying on segments alone would silently
-    /// serve one node's answer for another's the moment that stopped holding.
-    cache: HashMap<(String, Vec<String>), ResolvedValue>,
+    /// Cache: (root node id, path segments) → resolved value. See
+    /// [`PathCache`] for why the root id is part of the key.
+    cache: PathCache,
     /// The type the rule reading through this resolver was registered on
     /// (ADR-078).
     ///
@@ -76,6 +104,13 @@ pub struct GraphResolver {
     /// The scope each concrete node type is read at under `reading_type`,
     /// built once per type. Cleared whenever `reading_type` changes.
     node_scopes: HashMap<String, Option<CelScope>>,
+    /// What each relationship name resolves to from each type. A name's
+    /// meaning depends only on the schemas, so it is resolved once per type
+    /// however many nodes of that type the walk meets.
+    hops: HashMap<(Option<String>, String), HopResolution>,
+    /// How many path statements this resolver has run. A path resolved for a
+    /// whole scan costs one, however many nodes the scan holds.
+    statements: usize,
 }
 
 impl GraphResolver {
@@ -86,6 +121,8 @@ impl GraphResolver {
             reading_type: None,
             chains: HashMap::new(),
             node_scopes: HashMap::new(),
+            hops: HashMap::new(),
+            statements: 0,
         }
     }
 
@@ -105,7 +142,7 @@ impl GraphResolver {
     /// Point an existing resolver at a different reading type.
     ///
     /// One resolver is reused across the rules of a work item, and each rule
-    /// carries its own registered type. The segment cache holds `ResolvedValue`s
+    /// carries its own registered type. The path cache holds `ResolvedValue`s
     /// — raw `Node`s, not yet projected — so it stays valid across a change
     /// and is deliberately kept: projection happens at read time in
     /// `enrich_context`, after the cache is consulted.
@@ -114,6 +151,41 @@ impl GraphResolver {
             self.reading_type = reading_type;
             self.node_scopes.clear();
         }
+    }
+
+    /// How many path statements this resolver has run against the store.
+    pub fn statements_run(&self) -> usize {
+        self.statements
+    }
+
+    /// Hand over everything this resolver resolved, keyed by root. A scan
+    /// resolves its rules' paths for every node at once and passes the result
+    /// to the work items it enqueues.
+    pub fn into_cache(self) -> PathCache {
+        self.cache
+    }
+
+    /// Start from paths already resolved for `root_id` — the ones a scan
+    /// resolved for all of its nodes at once. Only that root's entries are
+    /// taken: another root's answers are never this root's.
+    pub fn seed(&mut self, root_id: &str, resolved: &PathCache) {
+        if let Some(paths) = resolved.get(root_id) {
+            self.cache
+                .entry(root_id.to_string())
+                .or_default()
+                .extend(paths.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+    }
+
+    fn cached(&self, root_id: &str, segments: &[String]) -> Option<&ResolvedValue> {
+        self.cache.get(root_id)?.get(segments)
+    }
+
+    fn remember(&mut self, root_id: &str, segments: &[String], value: ResolvedValue) {
+        self.cache
+            .entry(root_id.to_string())
+            .or_default()
+            .insert(segments.to_vec(), value);
     }
 
     /// `node_type`'s own chain, nearest-first.
@@ -144,6 +216,34 @@ impl GraphResolver {
         let chain = self.chain_of(&node.node_type).await?;
         let chain: Vec<&str> = chain.iter().map(String::as_str).collect();
         Ok(get_node_property_at_scope(node, key, &chain))
+    }
+
+    /// What `segment` reads as on `node` itself, without leaving it: a core
+    /// field or a property. `None` when the node holds neither, which is when
+    /// the segment is tried as a relationship.
+    ///
+    /// A core Node field is not a property and lives in no bucket, so the
+    /// property lookup cannot see it. Without the first check, walking to a
+    /// related node and reading its identity — `node.child_of.id`, the shape
+    /// an action needs to address that node — would not resolve.
+    ///
+    /// Core fields are checked before properties so these names mean the
+    /// node's identity consistently, rather than being shadowed by a
+    /// same-named user property on some types but not others. That holds for
+    /// the root node's own first segment as well as for traversed nodes: a
+    /// task storing a user property literally named `content` resolves
+    /// `node.content` to the struct field. Core-wins is the deliberate choice
+    /// — it matches what `node.id` already means in every CEL condition
+    /// (`cel.rs`'s `is_core_key`).
+    async fn own_value(
+        &mut self,
+        node: &Node,
+        segment: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        if let Some(core) = core_field_value(node, segment) {
+            return Ok(Some(core));
+        }
+        self.node_property(node, segment).await
     }
 
     /// A traversed node's CEL value (ADR-078).
@@ -192,238 +292,384 @@ impl GraphResolver {
         Ok(list)
     }
 
+    /// What `name` resolves to from `node_type`, resolved once per type.
+    async fn hop(&mut self, node_type: Option<&str>, name: &str) -> Result<HopResolution, String> {
+        let key = (node_type.map(str::to_string), name.to_string());
+        if let Some(known) = self.hops.get(&key) {
+            return Ok(known.clone());
+        }
+        let resolution = resolve_hop(&self.node_service, node_type, &RelationshipHop::fixed(name))
+            .await
+            .map_err(|e| format!("failed to resolve relationship '{name}': {e}"))?;
+        self.hops.insert(key, resolution.clone());
+        Ok(resolution)
+    }
+
+    /// The run of relationship hops `segments` names from a node of
+    /// `node_type`: as many leading segments as the schemas alone can
+    /// resolve.
+    ///
+    /// The run ends at the first segment that is not a relationship the
+    /// schemas can name from here: a name the type does not declare (it may
+    /// be a property of the node the walk reaches), or a schema-declared name
+    /// after a hop with no declared target type (it can only be resolved from
+    /// the concrete node that hop reaches). The walk picks up from there with
+    /// the nodes in hand.
+    async fn run_of_hops(
+        &mut self,
+        node_type: &str,
+        segments: &[String],
+    ) -> Result<Vec<ResolvedHop>, String> {
+        let mut run = Vec::new();
+        let mut current = Some(node_type.to_string());
+        for segment in segments {
+            match self.hop(current.as_deref(), segment).await? {
+                HopResolution::Resolved(hop) => {
+                    current = hop.far_type.clone();
+                    run.push(hop);
+                }
+                HopResolution::Undeclared | HopResolution::TypeUnknown => break,
+            }
+        }
+        Ok(run)
+    }
+
     /// Resolve a dot-path starting from a root node.
     ///
-    /// Walks segments left-to-right:
-    /// 1. Check if the segment is a property on the current node → Scalar
-    /// 2. If not, try as a relationship name → fetch related node(s)
-    /// 3. For "one" relationships, continue walking with the target node
-    /// 4. For "many" relationships, return Collection
+    /// Each segment is read, in order, as:
+    /// 1. a core field or a property of the node the walk stands on → Scalar
+    /// 2. otherwise a relationship → the related node(s)
+    ///
+    /// A relationship reaching one node continues the walk from it; one
+    /// declared `many`, or reaching several nodes, is a Collection and ends
+    /// it.
     ///
     /// A relationship segment may name either side of an edge: `has_child`
     /// walks to the children, `child_of` to the parent. Reverse segments walk
-    /// and chain exactly like forward ones (`node.assignee.email`), since
-    /// direction is resolved per segment inside `fetch_related_nodes`.
-    ///
-    /// Uses the segment cache: if a prefix has already been resolved, starts from there.
+    /// and chain exactly like forward ones (`node.assignee.email`).
     ///
     /// A failed lookup anywhere in the walk yields `Unresolved`, never
     /// `Missing`, and is not cached — see [`ResolvedValue::Unresolved`].
     pub async fn resolve_path(&mut self, root_node: &Node, segments: &[String]) -> ResolvedValue {
-        if segments.is_empty() {
-            return ResolvedValue::Node(root_node.clone());
-        }
+        self.resolve_path_for(std::slice::from_ref(root_node), segments)
+            .await
+            .remove(&root_node.id)
+            .unwrap_or(ResolvedValue::Missing)
+    }
 
-        // Every cache entry is scoped to the node this walk started from.
-        let root_id = root_node.id.clone();
-        let cache_key = |segs: &[String]| (root_id.clone(), segs.to_vec());
+    /// Resolve one dot-path for every root at once.
+    ///
+    /// The relationship hops of the path run as one statement for all the
+    /// roots of a type ([`crate::db::SqliteStore::resolve_relationship_path`]),
+    /// so the cost grows with the number of distinct paths, not with roots
+    /// times hops. Returns each root's value, keyed by root id, and caches
+    /// every one that resolved.
+    pub async fn resolve_path_for(
+        &mut self,
+        roots: &[Node],
+        segments: &[String],
+    ) -> HashMap<String, ResolvedValue> {
+        let mut results: HashMap<String, ResolvedValue> = HashMap::new();
+        let mut walks: Vec<Walk> = Vec::new();
 
-        // Check cache for the full path first
-        if let Some(cached) = self.cache.get(&cache_key(segments)) {
-            return cached.clone();
-        }
-
-        // Find the longest cached prefix
-        let mut start_idx = 0;
-        let mut current_node = root_node.clone();
-
-        for i in (1..segments.len()).rev() {
-            let prefix = &segments[..i];
-            if let Some(cached) = self.cache.get(&cache_key(prefix)) {
-                match cached {
-                    ResolvedValue::Node(n) => {
-                        current_node = n.clone();
-                        start_idx = i;
-                        break;
+        for root in roots {
+            if results.contains_key(&root.id) {
+                continue;
+            }
+            if segments.is_empty() {
+                results.insert(root.id.clone(), ResolvedValue::Node(root.clone()));
+                continue;
+            }
+            if let Some(cached) = self.cached(&root.id, segments) {
+                results.insert(root.id.clone(), cached.clone());
+                continue;
+            }
+            match self.resume_point(root, segments) {
+                Start::Walk(walk) => walks.push(walk),
+                Start::Settled(value) => {
+                    if !matches!(value, ResolvedValue::Unresolved(_)) {
+                        self.remember(&root.id, segments, value.clone());
                     }
-                    ResolvedValue::Collection(_) | ResolvedValue::Scalar(_) => {
-                        // Can't continue walking from a collection or scalar
-                        let result = ResolvedValue::Missing;
-                        self.cache.insert(cache_key(segments), result.clone());
-                        return result;
-                    }
-                    ResolvedValue::Missing => {
-                        let result = ResolvedValue::Missing;
-                        self.cache.insert(cache_key(segments), result.clone());
-                        return result;
-                    }
-                    // Never inserted — the arm exists for exhaustiveness.
-                    ResolvedValue::Unresolved(reason) => {
-                        return ResolvedValue::Unresolved(reason.clone());
-                    }
+                    results.insert(root.id.clone(), value);
                 }
             }
         }
 
-        // Walk remaining segments
-        for i in start_idx..segments.len() {
-            let segment = &segments[i];
-            let is_last = i == segments.len() - 1;
+        while !walks.is_empty() {
+            walks = self.advance(walks, segments, &mut results).await;
+        }
+        results
+    }
 
-            // A core Node field is not a property and lives in no bucket, so
-            // the property lookup below cannot see it. Without this, walking to
-            // a related node and reading its identity — `node.child_of.id`, the
-            // shape an action needs to address that node — resolves to
-            // `Missing` and fails the action, even though `node.child_of`
-            // alone resolves fine.
-            //
-            // Checked before properties so these names mean the node's
-            // identity consistently, rather than being shadowed by a
-            // same-named user property on some types but not others.
-            //
-            // This walk starts at `i == 0`, so the rule applies to the ROOT
-            // node's own first segment as well as to traversed nodes: a task
-            // storing a user property literally named `content` resolves
-            // `node.content` to the struct field, not that property. Core-wins
-            // is the deliberate choice — it matches what `node.id` already
-            // means in every CEL condition (`cel.rs`'s `is_core_key`), and the
-            // alternative would make a path's meaning depend on which types
-            // happen to declare a colliding field.
-            if let Some(core_val) = core_field_value(&current_node, segment) {
-                let result = ResolvedValue::Scalar(core_val);
-                self.cache
-                    .insert(cache_key(&segments[..=i]), result.clone());
-                if is_last {
-                    self.cache.insert(cache_key(segments), result.clone());
-                    return result;
+    /// Where a root's walk starts: at the root, or at the node its longest
+    /// already-resolved prefix reached. Settled when a cached prefix already
+    /// decides the path — nothing can be walked through a collection, a
+    /// scalar or a missing relationship.
+    fn resume_point(&self, root: &Node, segments: &[String]) -> Start {
+        for position in (1..segments.len()).rev() {
+            match self.cached(&root.id, &segments[..position]) {
+                Some(ResolvedValue::Node(node)) => {
+                    return Start::Walk(Walk {
+                        root_id: root.id.clone(),
+                        current: node.clone(),
+                        position,
+                    });
                 }
-                // A scalar is terminal: there is nothing to walk into.
-                let missing = ResolvedValue::Missing;
-                self.cache.insert(cache_key(segments), missing.clone());
-                return missing;
+                Some(
+                    ResolvedValue::Collection(_)
+                    | ResolvedValue::Scalar(_)
+                    | ResolvedValue::Missing,
+                ) => return Start::Settled(ResolvedValue::Missing),
+                // Never cached — the arm exists for exhaustiveness.
+                Some(ResolvedValue::Unresolved(reason)) => {
+                    return Start::Settled(ResolvedValue::Unresolved(reason.clone()));
+                }
+                None => {}
             }
+        }
+        Start::Walk(Walk {
+            root_id: root.id.clone(),
+            current: root.clone(),
+            position: 0,
+        })
+    }
 
-            // Try as a property first (check node.properties)
-            let prop = match self.node_property(&current_node, segment).await {
-                Ok(prop) => prop,
-                Err(reason) => return ResolvedValue::Unresolved(reason),
+    /// Finish a root's walk with `value` at `position`, the segment it was
+    /// decided on. A value that is not the path's last segment makes the
+    /// whole path `Missing`: nothing can be walked through a scalar or a
+    /// collection.
+    fn settle(
+        &mut self,
+        results: &mut HashMap<String, ResolvedValue>,
+        root_id: &str,
+        segments: &[String],
+        position: usize,
+        value: ResolvedValue,
+    ) {
+        // A lookup that failed says nothing about the path, so it is reported
+        // but never remembered.
+        if matches!(value, ResolvedValue::Unresolved(_)) {
+            results.insert(root_id.to_string(), value);
+            return;
+        }
+        let is_last = position + 1 == segments.len();
+        self.remember(root_id, &segments[..=position], value.clone());
+        let outcome = if is_last {
+            value
+        } else {
+            ResolvedValue::Missing
+        };
+        if !is_last {
+            self.remember(root_id, segments, outcome.clone());
+        }
+        results.insert(root_id.to_string(), outcome);
+    }
+
+    /// Move every walk forward by one run of hops: read the next segment off
+    /// each walk's own node where it is a field, and resolve the rest as
+    /// relationships, one statement per node type. Returns the walks that
+    /// still have segments to resolve.
+    async fn advance(
+        &mut self,
+        walks: Vec<Walk>,
+        segments: &[String],
+        results: &mut HashMap<String, ResolvedValue>,
+    ) -> Vec<Walk> {
+        // Walks whose next segment is a relationship, by the type of the node
+        // they stand on: a name's meaning depends on that type alone.
+        let mut by_type: Vec<(String, Vec<Walk>)> = Vec::new();
+        for walk in walks {
+            match self
+                .own_value(&walk.current, &segments[walk.position])
+                .await
+            {
+                Ok(Some(value)) => self.settle(
+                    results,
+                    &walk.root_id,
+                    segments,
+                    walk.position,
+                    ResolvedValue::Scalar(value),
+                ),
+                Ok(None) => {
+                    match by_type.iter_mut().find(|(node_type, group)| {
+                        *node_type == walk.current.node_type && group[0].position == walk.position
+                    }) {
+                        Some((_, group)) => group.push(walk),
+                        None => by_type.push((walk.current.node_type.clone(), vec![walk])),
+                    }
+                }
+                Err(reason) => {
+                    results.insert(walk.root_id, ResolvedValue::Unresolved(reason));
+                }
+            }
+        }
+
+        let mut continuing = Vec::new();
+        for (node_type, group) in by_type {
+            let position = group[0].position;
+            let run = match self.run_of_hops(&node_type, &segments[position..]).await {
+                Ok(run) => run,
+                Err(reason) => {
+                    for walk in group {
+                        results.insert(walk.root_id, ResolvedValue::Unresolved(reason.clone()));
+                    }
+                    continue;
+                }
             };
-            if let Some(prop_val) = prop {
-                let result = ResolvedValue::Scalar(prop_val);
-                self.cache
-                    .insert(cache_key(&segments[..=i]), result.clone());
-                if is_last {
-                    self.cache.insert(cache_key(segments), result.clone());
-                    return result;
+            if run.is_empty() {
+                // Neither a field of the node nor a relationship of its type:
+                // the ordinary way a path turns out missing. Not an error —
+                // CEL renders it as a false condition.
+                for walk in group {
+                    self.settle(
+                        results,
+                        &walk.root_id,
+                        segments,
+                        position,
+                        ResolvedValue::Missing,
+                    );
                 }
-                // Can't walk further into a scalar
-                let missing = ResolvedValue::Missing;
-                self.cache.insert(cache_key(segments), missing.clone());
-                return missing;
+                continue;
             }
 
-            // Try as a relationship
-            let related = self.fetch_related_nodes(&current_node, segment).await;
-
-            // A relationship's DECLARED "many" cardinality means its
-            // resolved shape must always be a Collection, regardless of how
-            // many rows CURRENTLY match (0, 1, or N) -- inferring shape
-            // purely from the current row count, as the fallback below does
-            // for relationships this lookup can't identify (an undeclared
-            // segment/typo, or one of the four built-ins, which predate
-            // per-relationship cardinality metadata), makes a declared
-            // "many" relationship's resolved type silently flip between
-            // Missing/Node/Collection as its item count crosses 0 and 1.
-            // That's wrong on both sides: a Cycle with exactly one Issue is
-            // not "the Issue itself" the way walking a genuine "one"
-            // relationship would be, and a Cycle with zero Issues yet is an
-            // ordinary state, not a missing/misconfigured path. Returning
-            // Missing/Node instead of an empty/one-item Collection here made
-            // `for_each` (and this engine's `sum`/`count` aggregate calls,
-            // which resolve their collection through this same function)
-            // hard-fail an action -- disabling the WHOLE play (see
-            // `rule_processor_loop`'s `ActionResult::Failed` handling) --
-            // for a Cycle with zero or exactly one Issue, an entirely
-            // ordinary and common state.
-            //
-            // Only checked for 0/1 current matches: for N>=2 the fallback
-            // below already returns Collection(nodes) when `is_last` (and
-            // Missing otherwise) regardless of declared cardinality, so the
-            // outcome is identical either way -- skipping the schema lookup
-            // there avoids an extra DB round trip on the common multi-match
-            // path, where it can't change anything.
-            //
-            // Walking FURTHER into a many-relationship (any current count)
-            // past this segment stays unsupported by this simple dot-path
-            // walk, same as the existing N>=2 case already enforced -- this
-            // only changes the TERMINAL-segment shape.
-            //
-            // A fetch error is not a statement about the path: whether "no
-            // epic" or "the epic lookup failed", `Missing` would let
-            // `!has(node.epic)` fire. Report it as `Unresolved` instead.
-            let related = match related {
-                Ok(nodes) => nodes,
+            // One statement walks the whole run from every node in the group.
+            let mut start_ids: Vec<String> =
+                group.iter().map(|walk| walk.current.id.clone()).collect();
+            start_ids.sort_unstable();
+            start_ids.dedup();
+            let path = ResolvedPath { hops: run };
+            self.statements += 1;
+            let reach = match self
+                .node_service
+                .store()
+                // An archived node is no target of a play (ADR-087 §2): it
+                // is in no collection a condition counts or a `for_each`
+                // iterates, and the walk does not pass through one.
+                .resolve_relationship_path(&start_ids, &path, false)
+                .await
+            {
+                Ok(reach) => reach,
                 Err(e) => {
-                    return ResolvedValue::Unresolved(format!(
-                        "failed to fetch related nodes for {}.{}: {}",
-                        current_node.id, segment, e
-                    ));
+                    // A failed walk is not a statement about the path:
+                    // whether "no epic" or "the epic lookup failed",
+                    // `Missing` would let `!has(node.epic)` fire.
+                    let reason = format!(
+                        "failed to walk {} from '{node_type}' nodes: {e}",
+                        segments[position..position + path.len()].join(".")
+                    );
+                    for walk in group {
+                        results.insert(walk.root_id, ResolvedValue::Unresolved(reason.clone()));
+                    }
+                    continue;
                 }
             };
-            let declared_many = if related.len() <= 1 {
-                match self
-                    .is_declared_many_relationship(&current_node, segment)
+
+            for walk in group {
+                if let Some(next) = self
+                    .follow_run(walk, &path, &reach, segments, results)
                     .await
                 {
-                    Ok(many) => many,
-                    Err(reason) => return ResolvedValue::Unresolved(reason),
+                    continuing.push(next);
                 }
-            } else {
-                false
-            };
-            if declared_many {
-                let result = ResolvedValue::Collection(related);
-                self.cache
-                    .insert(cache_key(&segments[..=i]), result.clone());
-                if is_last {
-                    self.cache.insert(cache_key(segments), result.clone());
-                    return result;
+            }
+        }
+        continuing
+    }
+
+    /// Apply one run's results to one walk, hop by hop, until the walk is
+    /// settled or the run is used up. Returns the walk when it still stands
+    /// on a single node with segments left to resolve.
+    ///
+    /// A hop's shape follows its declaration, not how many nodes it reaches
+    /// today. A relationship DECLARED `many` is a Collection whether it holds
+    /// zero, one or twenty nodes: a cycle with exactly one issue is not "the
+    /// issue itself", and a cycle with none yet is an ordinary state rather
+    /// than a missing path. Inferring the shape from the row count would make
+    /// `for_each`, `sum` and `count` fail an action — suspending the whole
+    /// play — for those ordinary states.
+    ///
+    /// A relationship with no declared cardinality (a built-in) takes its
+    /// shape from what it reaches: nothing is Missing, one node is that node,
+    /// several are a Collection.
+    ///
+    /// Walking further into a collection is not supported by a dot-path: the
+    /// path is `Missing` there, whatever the later hops reached.
+    async fn follow_run(
+        &mut self,
+        walk: Walk,
+        run: &ResolvedPath,
+        reach: &crate::db::PathReach,
+        segments: &[String],
+        results: &mut HashMap<String, ResolvedValue>,
+    ) -> Option<Walk> {
+        let Walk {
+            root_id,
+            current,
+            position,
+        } = walk;
+        // The statement keys its rows by the node the run started from. Every
+        // later hop's rows are still keyed by that node, so they are only
+        // this walk's own while the walk has stood on a single node at every
+        // hop so far — which is exactly when the loop below is still running.
+        let start_id = current.id.clone();
+        let mut current = current;
+
+        for (index, hop) in run.hops.iter().enumerate() {
+            let at = position + index;
+            // The node the previous hop reached may hold this segment as a
+            // field of its own. A field wins over a relationship.
+            if index > 0 {
+                match self.own_value(&current, &segments[at]).await {
+                    Ok(Some(value)) => {
+                        self.settle(
+                            results,
+                            &root_id,
+                            segments,
+                            at,
+                            ResolvedValue::Scalar(value),
+                        );
+                        return None;
+                    }
+                    Ok(None) => {}
+                    Err(reason) => {
+                        results.insert(root_id, ResolvedValue::Unresolved(reason));
+                        return None;
+                    }
                 }
-                // Can't walk further into a collection with simple dot-path.
-                let missing = ResolvedValue::Missing;
-                self.cache.insert(cache_key(segments), missing.clone());
-                return missing;
             }
 
-            match related {
-                nodes if nodes.is_empty() => {
-                    let result = ResolvedValue::Missing;
-                    self.cache
-                        .insert(cache_key(&segments[..=i]), result.clone());
-                    self.cache.insert(cache_key(segments), result.clone());
-                    return result;
-                }
-                nodes if nodes.len() == 1 => {
-                    let node = nodes.into_iter().next().unwrap();
-                    self.cache.insert(
-                        cache_key(&segments[..=i]),
+            let related = reach.at(index, &start_id);
+            // A declaration with no target type may point at any type, so it
+            // names a relationship of this node only when an edge actually
+            // reaches it. Otherwise the segment resolves to nothing here.
+            let declared_many = hop.declared_many && !(hop.untyped && related.is_empty());
+            let value = match related {
+                nodes if declared_many => ResolvedValue::Collection(nodes.to_vec()),
+                [] => ResolvedValue::Missing,
+                [node] => ResolvedValue::Node(node.clone()),
+                nodes => ResolvedValue::Collection(nodes.to_vec()),
+            };
+            match value {
+                ResolvedValue::Node(node) if at + 1 < segments.len() => {
+                    self.remember(
+                        &root_id,
+                        &segments[..=at],
                         ResolvedValue::Node(node.clone()),
                     );
-                    if is_last {
-                        let result = ResolvedValue::Node(node);
-                        self.cache.insert(cache_key(segments), result.clone());
-                        return result;
-                    }
-                    current_node = node;
+                    current = node;
                 }
-                nodes => {
-                    // Multiple related nodes — this is a collection
-                    let result = ResolvedValue::Collection(nodes);
-                    self.cache
-                        .insert(cache_key(&segments[..=i]), result.clone());
-                    if is_last {
-                        self.cache.insert(cache_key(segments), result.clone());
-                        return result;
-                    }
-                    // Can't walk further into a collection with simple dot-path
-                    let missing = ResolvedValue::Missing;
-                    self.cache.insert(cache_key(segments), missing.clone());
-                    return missing;
+                value => {
+                    self.settle(results, &root_id, segments, at, value);
+                    return None;
                 }
             }
         }
 
-        ResolvedValue::Node(current_node)
+        Some(Walk {
+            root_id,
+            current,
+            position: position + run.len(),
+        })
     }
 
     /// Resolve a collection path and return the collection nodes.
@@ -449,253 +695,38 @@ impl GraphResolver {
         }
     }
 
-    /// Fetch related nodes via NodeService, in whichever direction the segment
-    /// names.
+    /// Resolve every graph path `paths` and `collections` name, for all of
+    /// `roots` at once, so a later [`Self::enrich_context`] for any of them
+    /// reads the cache.
     ///
-    /// A path segment may spell either side of a relationship. The forward name
-    /// traverses outbound, exactly as before; a reverse name — a built-in's
-    /// fixed inverse (`child_of`) or a schema's declared `reverse_name`
-    /// (`assignee`) — addresses the same stored row from its other end, so it
-    /// rewrites the name to the forward spelling and queries inbound. Resolution
-    /// is shared with the CLI's read path ([`rel_ops::resolve_relationship_name`])
-    /// so both answer a given name identically.
-    ///
-    /// Unlike that path, an unresolvable name is NOT an error here. The resolver
-    /// tries every segment as a relationship only after it fails as a property,
-    /// so "not a relationship either" is the ordinary way a path turns out to be
-    /// `Missing` — which CEL renders as a false condition. Surfacing it as an
-    /// error would make every non-matching Play condition log a warning.
-    async fn fetch_related_nodes(
-        &self,
-        node: &Node,
-        relationship_name: &str,
-    ) -> Result<Vec<Node>, String> {
-        let resolved = match rel_ops::resolve_relationship_name(
-            &self.node_service,
-            &node.id,
-            &node.node_type,
-            relationship_name,
-        )
-        .await
-        {
-            Ok(resolved) => resolved,
-            // Undeclared in either direction — an empty traversal, not a
-            // failure. This is the ordinary way a path turns out missing.
-            Err(OpsError::InvalidParams(_)) => return Ok(vec![]),
-            // Anything else is infrastructure failing (an unreadable schema, a
-            // locked database), not a statement about this path. Propagate it
-            // so the walk is `Unresolved` rather than quietly `Missing` — the
-            // same treatment the `get_related_nodes` call below already gets.
-            Err(e) => return Err(e.to_string()),
-        };
-
-        let (name, direction, source_type) = match &resolved {
-            ResolvedRelName::Builtin | ResolvedRelName::Forward => {
-                (relationship_name.to_string(), "out", None)
-            }
-            // The node sits at the far end of someone else's forward
-            // declaration, so the edge is already stored pointing at it.
-            ResolvedRelName::InboundForward => (relationship_name.to_string(), "in", None),
-            ResolvedRelName::Reverse {
-                forward_name,
-                source_type,
-            } => (forward_name.clone(), "in", source_type.clone()),
-        };
-
-        // An archived node is no target of a play (ADR-087 §2): it is in no
-        // collection a condition counts or a `for_each` iterates, so an
-        // archived, unfinished subtask doesn't hold its parent open.
-        let nodes: Vec<Node> = self
-            .node_service
-            .get_related_nodes(&node.id, &name, direction)
-            .await
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .filter(crate::governance::participates)
-            .collect();
-
-        // The store keys an "in" query on relationship_type alone, so every
-        // schema declaring this forward name toward this type answers. A reverse
-        // name belongs to exactly one of them — keep only that declarer's nodes.
-        // This is live, not hypothetical: `tasks` is declared both on `project`
-        // (reverse `project`) and on `person` (reverse `assignee`), so an
-        // unnarrowed `node.assignee` would return the project too.
-        //
-        // Matched against the declarer's whole descendant set, not its exact
-        // id: `task.blocks` declares reverse `blocked_by` with source_type
-        // `task`, and an `issue` IS a task (ADR-078), so an issue blocking an
-        // issue must survive this filter. Comparing the concrete type alone
-        // silently dropped every subtype instance, which read as "nothing
-        // blocks this" rather than as an error.
-        let Some(source_type) = source_type else {
-            return Ok(nodes);
-        };
-        //
-        // Memoized per node_type rather than per node: a traversal commonly
-        // returns many nodes of one type, and the chain is a property of the
-        // type, so resolving it once per distinct type is the same answer for
-        // a fraction of the queries.
-        let mut verdict: HashMap<String, bool> = HashMap::new();
-        let mut kept = Vec::with_capacity(nodes.len());
-        for n in nodes {
-            let satisfies = match verdict.get(&n.node_type) {
-                Some(known) => *known,
-                None => {
-                    let chain = self
-                        .node_service
-                        .resolve_type_chain(&n.node_type)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let answer = chain.contains(&source_type);
-                    verdict.insert(n.node_type.clone(), answer);
-                    answer
-                }
-            };
-            if satisfies {
-                kept.push(n);
+    /// This is what a scheduled scan calls: one statement per distinct path
+    /// for the whole scan, rather than a walk per node. A path that fails to
+    /// resolve here is simply not cached, and is resolved again — and
+    /// reported — when its node is evaluated.
+    pub async fn resolve_ahead(
+        &mut self,
+        roots: &[Node],
+        paths: &[ExtractedPath],
+        collections: &[CollectionPath],
+    ) {
+        let mut distinct: Vec<&[String]> = Vec::new();
+        let graph_paths = paths
+            .iter()
+            .chain(collections.iter().map(|c| &c.collection))
+            .filter(|path| path.root == "node" && path.segments.len() >= 2)
+            .map(|path| &path.segments[1..]);
+        for segments in graph_paths {
+            if !distinct.contains(&segments) {
+                distinct.push(segments);
             }
         }
-        Ok(kept)
-    }
-
-    /// Whether `segment` is declared as a "many" cardinality relationship on
-    /// `node`'s type, checked against the *effective* relationship set --
-    /// `node_type`'s own directly-declared relationships plus everything
-    /// inherited across the ADR-078 `extends` chain (`resolve_relationships`),
-    /// not just this schema's own declarations. A relationship declared only
-    /// on an ancestor schema and inherited (not redeclared) by `node_type`
-    /// must still be recognized here, the same extends-chain gap fixed for
-    /// `resolve_field_owners`/`resolve_relationships`'s other callers.
-    ///
-    /// `segment` may spell either side of a relationship, exactly as
-    /// [`fetch_related_nodes`](Self::fetch_related_nodes) resolves it via
-    /// [`rel_ops::resolve_relationship_name`] for the fetch itself: a forward
-    /// `name` declared BY `node_type` (or inherited), or a `reverse_name`
-    /// declared by some OTHER schema whose relationship targets `node_type`
-    /// (or an ancestor of it). Forward is checked first, mirroring
-    /// `resolve_relationship_name`'s precedence -- a forward name always
-    /// wins over a same-spelled reverse name declared elsewhere, so this
-    /// never disagrees with which direction the fetch actually walked. Each
-    /// side's cardinality comes from that side's own field: forward matches
-    /// read `cardinality`, reverse matches read `reverse_cardinality` -- the
-    /// two are independent (`task.project` can be cardinality "one" while
-    /// its `reverseCardinality` toward `project.tasks` is "many"), so a
-    /// reverse match must never fall back to checking `cardinality`.
-    ///
-    /// The inbound side is checked in the same two passes, same order, as
-    /// `resolve_relationship_name`'s own reverse resolution -- reverse_name
-    /// first (`ResolvedRelName::Reverse`), then, only if nothing matched,
-    /// the SAME forward name walked inbound (`ResolvedRelName::InboundForward`,
-    /// e.g. `project_node.owner_project` where `task` declares `owner_project`
-    /// targeting `project`). Both passes read `reverse_cardinality`, never
-    /// `cardinality`: both ask "how many sources may point at this ONE
-    /// target", which is exactly what `reverse_cardinality` means regardless
-    /// of which name spelling the caller used to walk inbound -- `cardinality`
-    /// describes the declaring schema's own OUTBOUND fan-out instead, a
-    /// different question.
-    ///
-    /// Each pass mirrors `resolve_relationship_name` in two further respects
-    /// it would otherwise silently diverge from:
-    /// - The `extends`/`extended_by` type-system relationship is excluded,
-    ///   the same exclusion `resolve_relationships` already applies to the
-    ///   forward set (see its doc comment) -- `get_inbound_relationships`
-    ///   does NOT exclude it, so without this an ancestor schema's own
-    ///   `extended_by` segment (present on every schema with a subtype) would
-    ///   be misread as a declared many-relationship, even though no data node
-    ///   ever carries such an edge.
-    /// - An UNTYPED declaration (`target_type: None`) only counts if it
-    ///   actually reaches `node` (probed via `get_related_nodes`), and the
-    ///   FIRST name match by `get_inbound_relationships`'s order wins rather
-    ///   than any match -- both exactly as `resolve_relationship_name` does,
-    ///   so a same-spelled name collision across schemas, or an untyped
-    ///   declaration that belongs to a different node entirely, can't force
-    ///   the wrong cardinality onto this traversal.
-    ///
-    /// Only called when a relationship fetch already returned zero or
-    /// exactly one row -- the only counts where cardinality can change the
-    /// resolved shape (see the call site's doc: for two or more rows the
-    /// outcome is identical regardless of declared cardinality, so callers
-    /// skip this lookup there). Distinguishes "no such relationship" from "a
-    /// declared many-relationship with zero or one current matches", which
-    /// the raw row count alone can't tell apart. A lookup failure (schema
-    /// not found, service error) is an `Err`, not `false`: falling back to
-    /// the row count would turn a declared many-relationship with zero
-    /// current matches into `Missing`, which a negative condition matches.
-    async fn is_declared_many_relationship(
-        &self,
-        node: &Node,
-        segment: &str,
-    ) -> Result<bool, String> {
-        let node_type = &node.node_type;
-
-        // Forward first: `node_type`'s own (or inherited) relationship set.
-        let (rels, _owners) = self
-            .node_service
-            .resolve_relationships(node_type)
-            .await
-            .map_err(|e| format!("failed to resolve forward relationships for {node_type}: {e}"))?;
-        if let Some(r) = rels.iter().find(|r| r.name == segment) {
-            return Ok(r.cardinality == crate::models::schema::RelationshipCardinality::Many);
+        // Longest first: a walk remembers every hop it passes, so resolving
+        // `story.epic` also answers `story`, and the shorter path then costs
+        // no statement of its own.
+        distinct.sort_by_key(|segments| std::cmp::Reverse(segments.len()));
+        for segments in distinct {
+            self.resolve_path_for(roots, segments).await;
         }
-
-        // Inbound: some other schema's relationship targets `node_type` (or
-        // an ancestor of it, via `extends`) and `segment` names it -- either
-        // its `reverse_name`, or (checked second, only if nothing matched)
-        // its own forward `name` walked inbound. `get_inbound_relationships`
-        // already expands the `extends` chain internally, so a single call
-        // covers inheritance too -- no separate per-scope loop needed.
-        let inbound = self
-            .node_service
-            .get_inbound_relationships(node_type)
-            .await
-            .map_err(|e| format!("failed to resolve inbound relationships for {node_type}: {e}"))?;
-
-        for (_source_type, rel) in &inbound {
-            if rel.reverse_name == segment && self.inbound_candidate_applies(node, rel).await? {
-                return Ok(
-                    rel.reverse_cardinality == crate::models::schema::RelationshipCardinality::Many
-                );
-            }
-        }
-        for (_source_type, rel) in &inbound {
-            if rel.name == segment && self.inbound_candidate_applies(node, rel).await? {
-                return Ok(
-                    rel.reverse_cardinality == crate::models::schema::RelationshipCardinality::Many
-                );
-            }
-        }
-        Ok(false)
-    }
-
-    /// Whether an inbound relationship candidate (already known to name the
-    /// segment being resolved, by either `reverse_name` or `name`) actually
-    /// applies -- shared by both of
-    /// [`is_declared_many_relationship`](Self::is_declared_many_relationship)'s
-    /// passes. `Err` means the underlying lookup failed.
-    async fn inbound_candidate_applies(
-        &self,
-        node: &Node,
-        rel: &crate::models::schema::SchemaRelationship,
-    ) -> Result<bool, String> {
-        // Never a real data relationship -- see is_declared_many_relationship's
-        // doc comment above.
-        if crate::models::schema::is_type_system_relationship(&rel.name) {
-            return Ok(false);
-        }
-        if rel.target_type.is_some() {
-            return Ok(true);
-        }
-        // Untyped: only counts if it actually reaches THIS node.
-        self.node_service
-            .get_related_nodes(&node.id, &rel.name, "in")
-            .await
-            .map(|nodes| !nodes.is_empty())
-            .map_err(|e| {
-                format!(
-                    "failed to probe untyped relationship '{}' for {}: {}",
-                    rel.name, node.id, e
-                )
-            })
     }
 
     /// Build an enriched CEL context with graph-resolved paths.
@@ -832,8 +863,9 @@ fn core_field_value(node: &Node, name: &str) -> Option<serde_json::Value> {
 /// against it at save time (`playbook::validation`) and read at it per item at
 /// run time (`actions::BindingContext`), so an `issue` reached through
 /// `cycle.tasks → task` is read at `task` scope with its extended values
-/// resolved through `maps_to`. Both sides call this one walk, so the segment
-/// resolution rules cannot drift apart.
+/// resolved through `maps_to`. Both sides call this one function, which
+/// resolves the segments as the [`RelationshipPath`] they are
+/// ([`crate::ops::path_ops::resolve_path`]), so the two cannot drift apart.
 ///
 /// The START type can differ, though: validation starts from the rule's
 /// registered trigger type, the runtime from the trigger node's concrete type.
@@ -842,45 +874,27 @@ fn core_field_value(node: &Node, name: &str) -> Option<serde_json::Value> {
 /// target — the one case where a predicate could be evaluated at a type other
 /// than the one it was validated against.
 ///
-/// Segments resolve as `validate_schema_path` resolves them: a forward name
-/// from the effective (`extends`-merged) relationship set first, then a
-/// declared reverse name. `Ok(None)` means the path has no declared item type
-/// — it is empty, ends on a field, walks a built-in structural relationship
-/// (any type may sit at either end of one), or crosses a relationship with no
-/// `target_type`. `Err` is a schema lookup failure, never folded into `None`.
+/// `Ok(None)` means the path has no declared item type — it is empty, names
+/// something that is not a relationship, ends on a built-in structural
+/// relationship (any type may sit at either end of one), or crosses a
+/// relationship with no `target_type`. `Err` is a schema lookup failure,
+/// never folded into `None`.
 pub(crate) async fn declared_collection_type(
     node_service: &NodeService,
     start_type: &str,
     segments: &[&str],
-) -> Result<Option<String>, crate::services::NodeServiceError> {
+) -> Result<Option<String>, String> {
+    use crate::ops::path_ops::{resolve_path, PathResolveError};
+
     if segments.is_empty() {
         return Ok(None);
     }
-    let mut current = start_type.to_string();
-    for segment in segments {
-        if crate::models::schema::is_reserved_relationship_name(segment) {
-            return Ok(None);
-        }
-        let (relationships, _) = node_service.resolve_relationships(&current).await?;
-        if let Some(rel) = relationships.iter().find(|r| r.name == *segment) {
-            match &rel.target_type {
-                Some(target) => {
-                    current = target.clone();
-                    continue;
-                }
-                None => return Ok(None),
-            }
-        }
-        let inbound = node_service.get_inbound_relationships(&current).await?;
-        match inbound
-            .into_iter()
-            .find_map(|(source_type, rel)| (rel.reverse_name == *segment).then_some(source_type))
-        {
-            Some(source) => current = source,
-            None => return Ok(None),
-        }
+    let path = RelationshipPath::from_names(segments.iter().copied());
+    match resolve_path(node_service, Some(start_type), &path).await {
+        Ok(resolved) => Ok(resolved.far_type().map(str::to_string)),
+        Err(PathResolveError::Lookup { error, .. }) => Err(error),
+        Err(_) => Ok(None),
     }
-    Ok(Some(current))
 }
 
 /// Get a property value from a node, checking multiple formats.
@@ -1637,13 +1651,23 @@ mod tests {
                 "an issue with no story must match !has(node.story), got {healthy:?}"
             );
 
-            // Warm the extends-chain cache while the database is healthy. The
-            // chain lookup also reads the `relationship` table, so without this
-            // it would fail first and the fetch below would never run.
+            // Warm the resolver's schema knowledge while the database is
+            // healthy, with a second issue of the same type: the extends chain
+            // and what `story` means from this type are both read from the
+            // `relationship` table, so without this they would fail first and
+            // the walk below would never run.
+            let other_issue = make_node(
+                "17d5e68b-85b7-5f36-81fd-b137954515be",
+                "gr_issue_err",
+                json!({"status": "open"}),
+            );
+            svc.create_node(other_issue.clone()).await.unwrap();
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             assert!(matches!(
-                resolver.resolve_path(&issue, &["status".to_string()]).await,
-                ResolvedValue::Scalar(_)
+                resolver
+                    .resolve_path(&other_issue, &["story".to_string()])
+                    .await,
+                ResolvedValue::Missing
             ));
 
             svc.store()
@@ -1656,11 +1680,16 @@ mod tests {
             let result = resolver.resolve_path(&issue, &["story".to_string()]).await;
             match &result {
                 ResolvedValue::Unresolved(reason) => assert!(
-                    reason.contains("failed to fetch related nodes"),
-                    "expected the related-node fetch to be what failed: {reason}"
+                    reason.contains("failed to walk story"),
+                    "expected the walk to be what failed: {reason}"
                 ),
-                other => panic!("a failed fetch must be Unresolved, got {other:?}"),
+                other => panic!("a failed walk must be Unresolved, got {other:?}"),
             }
+            // A failure is never remembered: it says nothing about the path.
+            assert!(matches!(
+                resolver.resolve_path(&issue, &["story".to_string()]).await,
+                ResolvedValue::Unresolved(_)
+            ));
 
             let broken = evaluate_conditions_at_scope(
                 &conditions,
@@ -1948,7 +1977,7 @@ mod tests {
 
         /// Regression guard for the fix above: a segment that is NEITHER a
         /// property NOR any declared relationship (a genuine typo/nonexistent
-        /// path) must still resolve to Missing -- `is_declared_many_relationship`
+        /// path) must still resolve to Missing -- the declared-cardinality check
         /// must not produce a false positive just because the fetch happened
         /// to return zero rows.
         #[tokio::test(flavor = "multi_thread")]
@@ -3279,7 +3308,7 @@ mod tests {
         /// Regression: a "many" relationship declared only on an ancestor
         /// schema (ADR-078 `extends`), inherited but never redeclared by the
         /// subtype, must still be recognized as many-cardinality by
-        /// `is_declared_many_relationship`. Before the fix that check read
+        /// the declared-cardinality check. Before the fix that check read
         /// `node_type`'s own directly-declared relationships only
         /// (`get_schema_node` + `Schema::get_relationship`), so a bare
         /// subtype schema had nothing to find and the lookup silently
@@ -3357,7 +3386,7 @@ mod tests {
             }
         }
 
-        /// Regression: `is_declared_many_relationship` must also recognize a
+        /// Regression: the declared-cardinality check must also recognize a
         /// relationship whose "many" side is the REVERSE-declared end, not
         /// just the forward-declared end the sibling tests above cover.
         ///
@@ -3365,7 +3394,7 @@ mod tests {
         /// "one") with `reverseName: "tasks"` and `reverseCardinality:
         /// "many"` -- "many tasks belong to one project." Walking
         /// `project.tasks` on a project with ZERO attached tasks queries by
-        /// the reverse name, so before the fix `is_declared_many_relationship`
+        /// the reverse name, so before the fix the declared-cardinality check
         /// only ever checked `project`'s own forward-declared relationships
         /// (none), never found `tasks`, and fell through to count-based
         /// inference -- misclassifying it as not-many and resolving to
@@ -3553,7 +3582,7 @@ mod tests {
         /// not the reverse name -- on a project with ZERO currently-owned
         /// tasks is exactly the traversal `another_schemas_forward_name_walks_inbound`
         /// above exercises, but with a "many" reverse cardinality instead of
-        /// "one": before this fix, `is_declared_many_relationship` only ever
+        /// "one": before this fix, the declared-cardinality check only ever
         /// matched a segment against `reverse_name`, never against `name`, so
         /// this resolved to `Missing` instead of an empty `Collection` --
         /// InboundForward and Reverse are the same "walk inbound" direction
@@ -3671,16 +3700,12 @@ mod tests {
         /// the fix, this still resolved to an empty `Collection`,
         /// indistinguishable from "nothing attached".
         ///
-        /// `resolve_relationship_name`'s forward-name check (in
-        /// `ops::rel_ops`, which `fetch_related_nodes` calls into) looked up
-        /// `node_type`'s schema via `get_schema_node` -- the type's own
-        /// directly-declared relationships only, never the ADR-078
-        /// `extends`-chain-merged set `resolve_relationships` provides. So
-        /// `items`, declared only on `gr_ext_base` and inherited (not
-        /// redeclared) by `gr_ext_sub`, was invisible to it. Resolution fell
-        /// through to `OpsError::InvalidParams` ("undeclared in either
-        /// direction"), which `fetch_related_nodes` treats as "undeclared,
-        /// not a failure" and short-circuits to an empty result -- even
+        /// A forward name must be looked up in the ADR-078
+        /// `extends`-chain-merged set `resolve_relationships` provides, not
+        /// in the type's own directly-declared relationships. Looked up in
+        /// the latter, `items`, declared only on `gr_ext_base` and inherited
+        /// (not redeclared) by `gr_ext_sub`, is invisible: the name resolves
+        /// as undeclared, which a path treats as an empty result -- even
         /// though the write path (`create_relationship` ->
         /// `resolve_declared_relationship`) is already chain-aware and
         /// happily attached the edge below. The sibling test above only
@@ -3774,6 +3799,244 @@ mod tests {
                     "expected a populated Collection containing the real attached edge, got {:?}",
                     other
                 ),
+            }
+        }
+
+        // -- Batched resolution: one statement per path for a whole scan --
+
+        /// `count` items, each linked to its own story, each story to its own
+        /// epic: item i → story i → epic i. Returns the items.
+        async fn seed_item_chains(svc: &Arc<NodeService>, prefix: &str, count: usize) -> Vec<Node> {
+            let (epic, story, item) = (
+                format!("{prefix}_epic"),
+                format!("{prefix}_story"),
+                format!("{prefix}_item"),
+            );
+            create_schema(svc, &epic, json!([])).await;
+            create_schema(
+                svc,
+                &story,
+                json!([{
+                    "name": "epic", "targetType": epic, "direction": "out",
+                    "cardinality": "one", "reverseName": "stories", "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+            create_schema(
+                svc,
+                &item,
+                json!([{
+                    "name": "story", "targetType": story, "direction": "out",
+                    "cardinality": "one", "reverseName": "items", "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let id = |kind: u8, i: usize| format!("b{kind}000000-0000-4000-8000-{i:012}");
+            let mut items = Vec::with_capacity(count);
+            for i in 0..count {
+                let (epic_id, story_id, item_id) = (id(1, i), id(2, i), id(3, i));
+                svc.create_node(make_node(
+                    &epic_id,
+                    &epic,
+                    json!({"status": format!("epic-{i}")}),
+                ))
+                .await
+                .unwrap();
+                svc.create_node(make_node(&story_id, &story, json!({"status": "open"})))
+                    .await
+                    .unwrap();
+                let node = make_node(&item_id, &item, json!({"status": "open"}));
+                svc.create_node(node.clone()).await.unwrap();
+                svc.create_relationship(&story_id, "epic", &epic_id, json!({}))
+                    .await
+                    .unwrap();
+                svc.create_relationship(&item_id, "story", &story_id, json!({}))
+                    .await
+                    .unwrap();
+                items.push(node);
+            }
+            items
+        }
+
+        fn segments(path: &[&str]) -> Vec<String> {
+            path.iter().map(|s| s.to_string()).collect()
+        }
+
+        /// A path is resolved for every root of a scan in ONE statement: the
+        /// cost grows with the number of distinct paths, not with roots times
+        /// hops. And each root gets its own answer.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_path_resolves_for_every_root_in_one_statement() {
+            let (svc, _tmp) = create_test_service().await;
+            let items = seed_item_chains(&svc, "gr_batch", 25).await;
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let resolved = resolver
+                .resolve_path_for(&items, &segments(&["story", "epic", "status"]))
+                .await;
+
+            assert_eq!(
+                resolver.statements_run(),
+                1,
+                "two hops for 25 roots must be one statement, not 50 walks"
+            );
+            assert_eq!(resolved.len(), items.len());
+            for (i, item) in items.iter().enumerate() {
+                match &resolved[&item.id] {
+                    ResolvedValue::Scalar(status) => assert_eq!(
+                        status,
+                        &json!(format!("epic-{i}")),
+                        "item {i} must read its own epic, not another root's"
+                    ),
+                    other => panic!("item {i}: expected its epic's status, got {other:?}"),
+                }
+            }
+
+            // Everything the statement reached is now cached per root, so the
+            // prefixes and a second read cost nothing more.
+            for item in &items {
+                assert!(matches!(
+                    resolver.resolve_path(item, &segments(&["story"])).await,
+                    ResolvedValue::Node(_)
+                ));
+                assert!(matches!(
+                    resolver
+                        .resolve_path(item, &segments(&["story", "epic"]))
+                        .await,
+                    ResolvedValue::Node(_)
+                ));
+            }
+            assert_eq!(resolver.statements_run(), 1);
+        }
+
+        /// `resolve_ahead` is what a scheduled scan calls: every distinct
+        /// path the conditions read, one statement each, for all the nodes.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resolving_ahead_costs_one_statement_per_distinct_path() {
+            use crate::db::events::DomainEvent;
+            use crate::playbook::cel::{
+                evaluate_conditions_at_scope, CompiledCondition, ConditionResult,
+            };
+
+            let (svc, _tmp) = create_test_service().await;
+            let items = seed_item_chains(&svc, "gr_ahead", 10).await;
+
+            let conditions = [
+                // A prefix of the next path, a repeat of it, and a property
+                // of the node itself: none costs a statement of its own.
+                CompiledCondition::compile("node.story.status == 'open'").unwrap(),
+                CompiledCondition::compile("node.story.epic.status != 'done'").unwrap(),
+                CompiledCondition::compile("node.story.status != 'blocked'").unwrap(),
+                CompiledCondition::compile("node.status == 'open'").unwrap(),
+                // A different relationship is a different path.
+                CompiledCondition::compile("node.child_of.status != 'done'").unwrap(),
+            ];
+            let (paths, collections) = crate::playbook::cel::condition_paths(&conditions);
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            resolver.resolve_ahead(&items, &paths, &collections).await;
+            assert_eq!(
+                resolver.statements_run(),
+                2,
+                "one statement for `story.epic` (which also answers `story`), one for `child_of`"
+            );
+
+            // Evaluating each node afterwards reads the cache.
+            for item in &items {
+                let event = DomainEvent::NodeCreated {
+                    node_type: item.node_type.clone(),
+                    node_id: item.id.clone(),
+                };
+                let result = evaluate_conditions_at_scope(
+                    &conditions,
+                    item,
+                    &event,
+                    Some(&mut resolver),
+                    None,
+                )
+                .await;
+                // No item has a parent, so the last condition is not met; the
+                // point is that deciding so read nothing further.
+                assert!(
+                    matches!(result, ConditionResult::Fail { condition_index: 4 }),
+                    "{result:?}"
+                );
+            }
+            assert_eq!(resolver.statements_run(), 2);
+        }
+
+        /// What a scan resolved is handed to each work item's resolver keyed
+        /// by root: a node starts from its own answers and never another's.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn seeding_takes_only_the_roots_own_paths() {
+            let (svc, _tmp) = create_test_service().await;
+            let items = seed_item_chains(&svc, "gr_seed", 2).await;
+            let path = segments(&["story", "status"]);
+
+            let mut scan = GraphResolver::new(Arc::clone(&svc));
+            scan.resolve_path_for(&items, &path).await;
+            let resolved = scan.into_cache();
+            assert_eq!(resolved.len(), 2, "one entry per root");
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            resolver.seed(&items[0].id, &resolved);
+
+            // The seeded root reads its answer without a statement.
+            assert!(matches!(
+                resolver.resolve_path(&items[0], &path).await,
+                ResolvedValue::Scalar(_)
+            ));
+            assert_eq!(resolver.statements_run(), 0);
+
+            // The other root was not seeded, so it is resolved for itself.
+            assert!(matches!(
+                resolver.resolve_path(&items[1], &path).await,
+                ResolvedValue::Scalar(_)
+            ));
+            assert_eq!(resolver.statements_run(), 1);
+        }
+
+        /// A hop the schemas cannot name from here (a declared relationship
+        /// after a built-in one, which any type may sit at the end of) is
+        /// resolved from the concrete nodes the walk reached: a second
+        /// statement for the whole group, still not one per node.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_declared_hop_after_a_builtin_one_is_resolved_from_the_nodes_reached() {
+            let (svc, _tmp) = create_test_service().await;
+            let items = seed_item_chains(&svc, "gr_stage", 6).await;
+
+            // A note under each item: note → child_of → item → story.
+            let mut notes = Vec::new();
+            for (i, item) in items.iter().enumerate() {
+                let note = make_node(
+                    &format!("b4000000-0000-4000-8000-{i:012}"),
+                    "text",
+                    json!({}),
+                );
+                svc.create_node(note.clone()).await.unwrap();
+                svc.create_relationship(&item.id, "has_child", &note.id, json!({}))
+                    .await
+                    .unwrap();
+                notes.push(note);
+            }
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let resolved = resolver
+                .resolve_path_for(&notes, &segments(&["child_of", "story", "epic", "status"]))
+                .await;
+
+            assert_eq!(
+                resolver.statements_run(),
+                2,
+                "one statement to the parents, one from the parents on"
+            );
+            for (i, note) in notes.iter().enumerate() {
+                assert!(
+                    matches!(&resolved[&note.id], ResolvedValue::Scalar(v) if v == &json!(format!("epic-{i}"))),
+                    "note {i}: {:?}",
+                    resolved[&note.id]
+                );
             }
         }
     }

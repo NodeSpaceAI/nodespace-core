@@ -3724,7 +3724,7 @@ async fn playbook_get_workflow_state_round_trip() {
                 "play": {
                     "rules": [{
                         "name": "r1",
-                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
+                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "text" } },
                         "conditions": ["node.content == 'hello'"],
                         "actions": []
                     }]

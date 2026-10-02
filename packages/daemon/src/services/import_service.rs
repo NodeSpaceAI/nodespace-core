@@ -1716,7 +1716,7 @@ mod tests {
             serde_json::json!({ "play": { "rules": [{
                 "name": "reject-poison",
                 "class": "invariant",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "text" } },
                 "conditions": ["node.content.contains('POISON')"],
                 "actions": [{ "action_type": "reject", "params": { "message": "poisoned" } }]
             }] } }),

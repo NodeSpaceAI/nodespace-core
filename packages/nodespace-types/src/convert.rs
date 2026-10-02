@@ -4,6 +4,7 @@ use crate::ai_chat::{AiChatNativeNode, AiChatPtyNode};
 use crate::core_type::CoreNodeType;
 use crate::node::{Node, NodeEnvelope};
 use crate::person::PersonNode;
+use crate::play::{PlayFields, PlayNode};
 use crate::priority::priority_prop;
 use crate::project::{ProjectNode, ProjectStatus};
 use crate::query::{QueryFields, QueryNode};
@@ -56,6 +57,7 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         Some(CoreNodeType::Person) => person_node_to_value(node),
         Some(CoreNodeType::Project) => project_node_to_value(node),
         Some(CoreNodeType::Query) => query_node_to_value(node),
+        Some(CoreNodeType::Play) => play_node_to_value(node),
         Some(CoreNodeType::Schema) => SchemaNode::from_node(node).and_then(|s| {
             serde_json::to_value(s).map_err(|e| format!("Failed to serialize schema: {}", e))
         }),
@@ -73,7 +75,6 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
             | CoreNodeType::Collection
             | CoreNodeType::Skill
             | CoreNodeType::DatabaseSettings
-            | CoreNodeType::Play
             // Abstract: no node has it as its type, and a subtype read at its
             // scope keeps the generic shape rather than borrowing a struct.
             | CoreNodeType::AiChat
@@ -332,6 +333,14 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                 ]
             }
         }
+        CoreNodeType::Play => {
+            const {
+                &[
+                    F::new("rules", "rules", Array),
+                    F::text("description", "description"),
+                ]
+            }
+        }
         CoreNodeType::Text
         | CoreNodeType::Header
         | CoreNodeType::CodeBlock
@@ -346,7 +355,6 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
         | CoreNodeType::Skill
         | CoreNodeType::DatabaseSettings
         | CoreNodeType::Schema
-        | CoreNodeType::Play
         | CoreNodeType::Tool => &[],
         // The chat family (ADR-088). The base's fields come first in each
         // subtype's list, as each subtype's struct embeds them. None is marked
@@ -553,6 +561,24 @@ fn query_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     };
 
     serde_json::to_value(&query).map_err(|e| format!("Failed to serialize query node: {}", e))
+}
+
+/// A stored play whose fields do not decode keeps its node in the batch with
+/// the schema defaults, as a malformed query does. Writes are checked by
+/// `PlayNodeBehavior::validate`, so this only meets a row written around the
+/// service layer.
+fn play_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let fields = PlayFields::from_properties(&node.properties).unwrap_or_else(|e| {
+        eprintln!("play node '{}' has unreadable fields: {e}", node.id);
+        PlayFields::default()
+    });
+
+    let play = PlayNode {
+        envelope: extension_envelope(node, CoreNodeType::Play),
+        fields,
+    };
+
+    serde_json::to_value(&play).map_err(|e| format!("Failed to serialize play node: {}", e))
 }
 
 /// A chat with an unreadable message keeps the rest of its conversation: one
@@ -782,6 +808,75 @@ mod wire_contract {
             serde_json::json!({ "custom:pinned": true }),
             "properties carries only extension fields"
         );
+    }
+
+    #[test]
+    fn play_promotes_fields_top_level_and_empties_properties() {
+        let node = Node::new(
+            "play".to_string(),
+            "Roll completion up".to_string(),
+            serde_json::json!({
+                "play": {
+                    "description": "When every sub-task is done, mark the parent done",
+                    "rules": [{
+                        "name": "close-parent",
+                        "trigger": {
+                            "type": "graph_event",
+                            "on": "property_changed",
+                            "select": { "target_type": "task" },
+                            "property_key": "task.status"
+                        },
+                        "actions": [{
+                            "action_type": "update_node",
+                            "params": { "node_id": "{trigger.node.child_of.id}" }
+                        }]
+                    }],
+                    "custom:owner": "ada"
+                },
+                "_seed": { "tier": "core" }
+            }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["nodeType"], "play");
+        assert_eq!(out["lifecycleStatus"], "active");
+        assert_eq!(
+            out["description"],
+            "When every sub-task is done, mark the parent done"
+        );
+        // Rule keys are snake_case on the wire as in storage.
+        let rule = &out["rules"][0];
+        assert_eq!(rule["trigger"]["property_key"], "task.status");
+        assert_eq!(rule["trigger"]["select"]["target_type"], "task");
+        assert_eq!(rule["actions"][0]["action_type"], "update_node");
+        assert_eq!(
+            rule["class"], "reactive",
+            "the default class is written out"
+        );
+        assert_eq!(
+            out["properties"],
+            serde_json::json!({ "custom:owner": "ada" }),
+            "properties keeps extension fields only"
+        );
+    }
+
+    #[test]
+    fn play_with_malformed_rules_does_not_fail_an_unrelated_batch_read() {
+        let bad_play = Node::new(
+            "play".to_string(),
+            "Broken".to_string(),
+            serde_json::json!({ "play": { "rules": [{ "name": "r", "trigger": { "type": "nope" } }] } }),
+        );
+        let good_task = Node::new(
+            "task".to_string(),
+            "Fine".to_string(),
+            serde_json::json!({ "task": { "status": "open" } }),
+        );
+
+        let out = nodes_to_typed_values(vec![bad_play, good_task])
+            .expect("one malformed play must not fail the whole batch");
+        assert_eq!(out[0]["rules"], serde_json::json!([]));
+        assert_eq!(out[1]["status"], "open");
     }
 
     #[test]

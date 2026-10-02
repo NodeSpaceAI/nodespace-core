@@ -61,21 +61,22 @@ mod playbook_tests {
     // Rule parsing tests
     // -----------------------------------------------------------------------
 
+    /// Decode a rule from its stored JSON, as a play node's `rules` are.
+    fn rule_def(rule: serde_json::Value) -> RuleDefinition {
+        serde_json::from_value(rule).expect("the rule must decode")
+    }
+
+    fn on_created(target_type: &str) -> serde_json::Value {
+        json!({ "type": "graph_event", "on": "node_created", "select": { "target_type": target_type } })
+    }
+
     #[test]
     fn test_parse_graph_event_node_created() {
-        let def = RuleDefinition {
-            name: "test rule".to_string(),
-            class: RuleClass::Reactive,
-            trigger: TriggerDefinition {
-                trigger_type: "graph_event".to_string(),
-                on: Some("node_created".to_string()),
-                node_type: Some("invoice".to_string()),
-                property_key: None,
-                cron: None,
-            },
-            conditions: vec!["node.status == 'draft'".to_string()],
-            actions: vec![],
-        };
+        let def = rule_def(json!({
+            "name": "test rule",
+            "trigger": on_created("invoice"),
+            "conditions": ["node.status == 'draft'"],
+        }));
 
         let parsed = parse_rule(&def).unwrap();
         assert_eq!(parsed.name, "test rule");
@@ -92,37 +93,39 @@ mod playbook_tests {
             }
             _ => panic!("expected GraphEvent trigger"),
         }
+        assert_eq!(parsed.trigger.registered_type(), Some("invoice"));
     }
 
     #[test]
     fn test_parse_graph_event_property_changed() {
-        let def = RuleDefinition {
-            name: "status watcher".to_string(),
-            class: RuleClass::Reactive,
-            trigger: TriggerDefinition {
-                trigger_type: "graph_event".to_string(),
-                on: Some("property_changed".to_string()),
-                node_type: Some("invoice".to_string()),
-                property_key: Some("status".to_string()),
-                cron: None,
+        let def = rule_def(json!({
+            "name": "status watcher",
+            "trigger": {
+                "type": "graph_event",
+                "on": "property_changed",
+                "select": { "target_type": "invoice" },
+                "property_key": "invoice.status"
             },
-            conditions: vec![],
-            actions: vec![ActionDefinition {
-                action_type: "update_node".to_string(),
-                params: json!({"target": "trigger.node", "property": "status", "value": "overdue"}),
-                for_each: None,
+            "actions": [{
+                "action_type": "update_node",
+                "params": { "node_id": "{trigger.node.id}", "properties": { "status": "overdue" } }
             }],
-        };
+        }));
 
         let parsed = parse_rule(&def).unwrap();
         assert_eq!(parsed.actions.len(), 1);
         assert_eq!(parsed.actions[0].action_type, ActionType::UpdateNode);
+        // The typed params become the JSON the executor resolves bindings in.
+        assert_eq!(
+            parsed.actions[0].params,
+            json!({ "node_id": "{trigger.node.id}", "properties": { "status": "overdue" } })
+        );
         match &parsed.trigger {
             ParsedTrigger::GraphEvent {
                 on, property_key, ..
             } => {
                 assert_eq!(*on, GraphEventType::PropertyChanged);
-                assert_eq!(property_key.as_deref(), Some("status"));
+                assert_eq!(property_key.as_deref(), Some("invoice.status"));
             }
             _ => panic!("expected GraphEvent trigger"),
         }
@@ -130,111 +133,98 @@ mod playbook_tests {
 
     #[test]
     fn test_parse_scheduled_trigger() {
-        let def = RuleDefinition {
-            name: "daily check".to_string(),
-            class: RuleClass::Reactive,
-            trigger: TriggerDefinition {
-                trigger_type: "scheduled".to_string(),
-                on: None,
-                node_type: Some("invoice".to_string()),
-                property_key: None,
-                cron: Some("0 9 * * *".to_string()),
+        let def = rule_def(json!({
+            "name": "daily check",
+            "trigger": {
+                "type": "scheduled",
+                "cron": "0 9 * * *",
+                "select": { "target_type": "invoice" }
             },
-            conditions: vec![],
-            actions: vec![],
-        };
+        }));
 
         let parsed = parse_rule(&def).unwrap();
         match &parsed.trigger {
-            ParsedTrigger::Scheduled { cron, node_type } => {
+            ParsedTrigger::Scheduled { cron, select } => {
                 assert_eq!(cron, "0 9 * * *");
-                assert_eq!(node_type, "invoice");
+                assert_eq!(*select, Selector::of_type("invoice"));
             }
             _ => panic!("expected Scheduled trigger"),
+        }
+        assert_eq!(parsed.trigger.registered_type(), Some("invoice"));
+    }
+
+    /// A scheduled trigger may select through a saved query. The type it
+    /// selects is the query's, so the rule names none of its own.
+    #[test]
+    fn test_parse_scheduled_trigger_with_a_saved_query() {
+        let def = rule_def(json!({
+            "name": "overdue",
+            "trigger": {
+                "type": "scheduled",
+                "cron": "0 9 * * *",
+                "select": { "query_id": "q-overdue" }
+            },
+        }));
+
+        let parsed = parse_rule(&def).unwrap();
+        assert!(matches!(
+            &parsed.trigger,
+            ParsedTrigger::Scheduled { select, .. } if *select == Selector::saved_query("q-overdue")
+        ));
+        assert_eq!(parsed.trigger.registered_type(), None);
+    }
+
+    /// A graph event is matched against the type of the node it is about, so
+    /// its selector is a bare type. Filters and saved queries select by
+    /// running a query, which only a scheduled scan does.
+    #[test]
+    fn test_graph_event_selector_must_be_a_bare_type() {
+        for select in [
+            json!({ "query_id": "q-1" }),
+            json!({
+                "target_type": "invoice",
+                "filters": [{ "type": "property", "operator": "equals", "property": "status", "value": "sent" }]
+            }),
+        ] {
+            let def = rule_def(json!({
+                "name": "r",
+                "trigger": { "type": "graph_event", "on": "node_created", "select": select },
+            }));
+            assert!(
+                matches!(
+                    parse_rule(&def),
+                    Err(PlayParseError::UnsupportedSelector(_))
+                ),
+                "a graph_event trigger must refuse the selector {select}"
+            );
+        }
+    }
+
+    /// An unknown trigger type or event, or a trigger with no selector, no
+    /// longer reaches `parse_rule`: the typed rule does not decode.
+    #[test]
+    fn test_a_malformed_trigger_does_not_decode() {
+        for trigger in [
+            json!({ "type": "webhook", "select": { "target_type": "invoice" } }),
+            json!({ "type": "graph_event", "on": "node_exploded", "select": { "target_type": "invoice" } }),
+            json!({ "type": "graph_event", "on": "node_created" }),
+            json!({ "type": "scheduled", "select": { "target_type": "invoice" } }),
+        ] {
+            let rule = json!({ "name": "bad", "trigger": trigger });
+            assert!(
+                serde_json::from_value::<RuleDefinition>(rule.clone()).is_err(),
+                "{rule} must not decode"
+            );
         }
     }
 
     #[test]
-    fn test_parse_invalid_trigger_type() {
-        let def = RuleDefinition {
-            name: "bad".to_string(),
-            class: RuleClass::Reactive,
-            trigger: TriggerDefinition {
-                trigger_type: "webhook".to_string(),
-                on: None,
-                node_type: None,
-                property_key: None,
-                cron: None,
-            },
-            conditions: vec![],
-            actions: vec![],
-        };
-
-        assert!(matches!(
-            parse_rule(&def),
-            Err(PlayParseError::InvalidTriggerType(_))
-        ));
-    }
-
-    #[test]
-    fn test_parse_invalid_event_type() {
-        let def = RuleDefinition {
-            name: "bad".to_string(),
-            class: RuleClass::Reactive,
-            trigger: TriggerDefinition {
-                trigger_type: "graph_event".to_string(),
-                on: Some("node_exploded".to_string()),
-                node_type: Some("invoice".to_string()),
-                property_key: None,
-                cron: None,
-            },
-            conditions: vec![],
-            actions: vec![],
-        };
-
-        assert!(matches!(
-            parse_rule(&def),
-            Err(PlayParseError::InvalidEventType(_))
-        ));
-    }
-
-    #[test]
-    fn test_parse_missing_node_type() {
-        let def = RuleDefinition {
-            name: "bad".to_string(),
-            class: RuleClass::Reactive,
-            trigger: TriggerDefinition {
-                trigger_type: "graph_event".to_string(),
-                on: Some("node_created".to_string()),
-                node_type: None,
-                property_key: None,
-                cron: None,
-            },
-            conditions: vec![],
-            actions: vec![],
-        };
-
-        assert!(matches!(
-            parse_rule(&def),
-            Err(PlayParseError::MissingField(_))
-        ));
-    }
-
-    #[test]
     fn test_parse_invalid_cel_condition() {
-        let def = RuleDefinition {
-            name: "bad condition".to_string(),
-            class: RuleClass::Reactive,
-            trigger: TriggerDefinition {
-                trigger_type: "graph_event".to_string(),
-                on: Some("node_created".to_string()),
-                node_type: Some("invoice".to_string()),
-                property_key: None,
-                cron: None,
-            },
-            conditions: vec!["1 + + 2".to_string()],
-            actions: vec![],
-        };
+        let def = rule_def(json!({
+            "name": "bad condition",
+            "trigger": on_created("invoice"),
+            "conditions": ["1 + + 2"],
+        }));
 
         assert!(matches!(
             parse_rule(&def),
@@ -244,19 +234,11 @@ mod playbook_tests {
 
     #[test]
     fn test_parse_condition_compiles_program_once() {
-        let def = RuleDefinition {
-            name: "compiled rule".to_string(),
-            class: RuleClass::Reactive,
-            trigger: TriggerDefinition {
-                trigger_type: "graph_event".to_string(),
-                on: Some("node_created".to_string()),
-                node_type: Some("invoice".to_string()),
-                property_key: None,
-                cron: None,
-            },
-            conditions: vec!["node.status == 'draft'".to_string()],
-            actions: vec![],
-        };
+        let def = rule_def(json!({
+            "name": "compiled rule",
+            "trigger": on_created("invoice"),
+            "conditions": ["node.status == 'draft'"],
+        }));
 
         let parsed = parse_rule(&def).unwrap();
         assert_eq!(parsed.conditions[0].source, "node.status == 'draft'");
@@ -273,40 +255,59 @@ mod playbook_tests {
 
     #[test]
     fn test_parse_all_action_types() {
-        for (input, expected) in [
-            ("create_node", ActionType::CreateNode),
-            ("update_node", ActionType::UpdateNode),
-            ("add_relationship", ActionType::AddRelationship),
-            ("remove_relationship", ActionType::RemoveRelationship),
+        let relationship = json!({
+            "source_id": "{trigger.node.id}",
+            "relationship_type": "tasks",
+            "target_id": "{item.id}"
+        });
+        for (action_type, params, expected) in [
+            (
+                "create_node",
+                json!({ "node_type": "task" }),
+                ActionType::CreateNode,
+            ),
+            (
+                "update_node",
+                json!({ "node_id": "{trigger.node.id}" }),
+                ActionType::UpdateNode,
+            ),
+            (
+                "add_relationship",
+                relationship.clone(),
+                ActionType::AddRelationship,
+            ),
+            (
+                "remove_relationship",
+                relationship,
+                ActionType::RemoveRelationship,
+            ),
+            ("reject", json!({ "message": "no" }), ActionType::Reject),
         ] {
-            let def = ActionDefinition {
-                action_type: input.to_string(),
-                params: json!({}),
-                for_each: None,
-            };
-            let parsed = super::super::types::parse_action(&def).unwrap();
+            let action: Action =
+                serde_json::from_value(json!({ "action_type": action_type, "params": params }))
+                    .unwrap();
+            let parsed = super::super::types::parse_action(&action);
             assert_eq!(parsed.action_type, expected);
+            assert_eq!(parsed.action_type.as_str(), action_type);
+            assert_eq!(parsed.params, params);
         }
     }
 
     #[test]
-    fn test_parse_invalid_action_type() {
-        let def = ActionDefinition {
-            action_type: "spawn_agent".to_string(),
-            params: json!({}),
-            for_each: None,
-        };
-        assert!(super::super::types::parse_action(&def).is_err());
+    fn test_an_unknown_action_type_does_not_decode() {
+        let action = json!({ "action_type": "spawn_agent", "params": {} });
+        assert!(serde_json::from_value::<Action>(action).is_err());
     }
 
     #[test]
     fn test_parse_for_each_action() {
-        let def = ActionDefinition {
-            action_type: "update_node".to_string(),
-            params: json!({"target": "item.id", "property": "reviewed", "value": true}),
-            for_each: Some("trigger.node.tasks".to_string()),
-        };
-        let parsed = super::super::types::parse_action(&def).unwrap();
+        let action: Action = serde_json::from_value(json!({
+            "action_type": "update_node",
+            "params": { "node_id": "{item.id}", "properties": { "reviewed": true } },
+            "for_each": "trigger.node.tasks"
+        }))
+        .unwrap();
+        let parsed = super::super::types::parse_action(&action);
         assert_eq!(parsed.for_each, Some("trigger.node.tasks".to_string()));
     }
 
@@ -316,21 +317,8 @@ mod playbook_tests {
 
     #[test]
     fn test_rule_class_defaults_to_reactive() {
-        // A rule definition with no `class` field parses as Reactive, keeping
-        // every previously-authored rule's semantics unchanged.
-        let def = RuleDefinition {
-            name: "no class".to_string(),
-            class: RuleClass::default(),
-            trigger: TriggerDefinition {
-                trigger_type: "graph_event".to_string(),
-                on: Some("node_created".to_string()),
-                node_type: Some("task".to_string()),
-                property_key: None,
-                cron: None,
-            },
-            conditions: vec![],
-            actions: vec![],
-        };
+        // A rule definition with no `class` field parses as Reactive.
+        let def = rule_def(json!({ "name": "no class", "trigger": on_created("task") }));
         assert_eq!(RuleClass::default(), RuleClass::Reactive);
         assert_eq!(parse_rule(&def).unwrap().class, RuleClass::Reactive);
     }
@@ -340,7 +328,7 @@ mod playbook_tests {
         // JSON without a `class` key → Reactive via `#[serde(default)]`.
         let defs: Vec<RuleDefinition> = serde_json::from_value(json!([{
             "name": "r1",
-            "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+            "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
             "conditions": [],
             "actions": []
         }]))
@@ -355,14 +343,14 @@ mod playbook_tests {
             {
                 "name": "inv",
                 "class": "invariant",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             },
             {
                 "name": "react",
                 "class": "reactive",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             }
@@ -382,15 +370,15 @@ mod playbook_tests {
                 "rules": [
                     {
                         "name": "rule1",
-                        "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                        "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                         "conditions": [],
                         "actions": []
                     },
                     {
                         "name": "rule2",
-                        "trigger": {"type": "scheduled", "cron": "0 9 * * *", "node_type": "invoice"},
+                        "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
                         "conditions": ["node.status == 'overdue'"],
-                        "actions": [{"action_type": "update_node", "params": {}}]
+                        "actions": [{"action_type": "update_node", "params": {"node_id": "{trigger.node.id}"}}]
                     }
                 ]
             }
@@ -402,23 +390,41 @@ mod playbook_tests {
         assert_eq!(rules[1].name, "rule2");
     }
 
+    /// The stored shape wins: once a play has its type bucket, a stray
+    /// top-level `rules` is not the play's rules.
     #[test]
-    fn test_parse_rules_ignores_rules_outside_the_play_bucket() {
-        let properties = json!({
-            "rules": [
-                {
-                    "name": "unbucketed",
-                    "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
-                    "conditions": [],
-                    "actions": []
-                }
-            ]
-        });
+    fn test_parse_rules_prefers_the_play_bucket() {
+        let stray = json!([{ "name": "stray", "trigger": on_created("task") }]);
+        let properties = json!({ "play": { "rules": [] }, "rules": stray });
+        assert!(parse_rules_from_properties(&properties).unwrap().is_empty());
+    }
 
-        assert!(matches!(
-            parse_rules_from_properties(&properties),
-            Err(PlayParseError::MissingField(field)) if field == "rules"
-        ));
+    /// A play with no `rules` has none: the schema's default.
+    #[test]
+    fn test_parse_rules_defaults_to_no_rules() {
+        assert!(parse_rules_from_properties(&json!({ "play": {} }))
+            .unwrap()
+            .is_empty());
+    }
+
+    /// A rule that does not decode is an error naming the rule, not an empty
+    /// play.
+    #[test]
+    fn test_parse_rules_reports_a_rule_that_does_not_decode() {
+        let properties = json!({
+            "play": {
+                "rules": [{
+                    "name": "typo",
+                    "trigger": on_created("task"),
+                    "actions": [{ "action_type": "update_node", "params": { "node": "x" } }]
+                }]
+            }
+        });
+        let err = parse_rules_from_properties(&properties).unwrap_err();
+        assert!(
+            matches!(&err, PlayParseError::InvalidRules(m) if m.contains("rule[0] ('typo')")),
+            "{err}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -432,7 +438,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "on invoice created",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "invoice"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "invoice" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -461,7 +467,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -480,7 +486,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -507,7 +513,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -530,7 +536,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -566,7 +572,7 @@ mod playbook_tests {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "invoice",
+                    "select": { "target_type": "invoice" },
                     "property_key": "status"
                 },
                 "conditions": [],
@@ -605,7 +611,7 @@ mod playbook_tests {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "invoice"
+                    "select": { "target_type": "invoice" }
                 },
                 "conditions": [],
                 "actions": []
@@ -635,7 +641,7 @@ mod playbook_tests {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "invoice",
+                    "select": { "target_type": "invoice" },
                     "property_key": "status"
                 },
                 "conditions": [],
@@ -651,7 +657,7 @@ mod playbook_tests {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "invoice"
+                    "select": { "target_type": "invoice" }
                 },
                 "conditions": [],
                 "actions": []
@@ -784,13 +790,13 @@ mod playbook_tests {
             json!([
                 {
                     "name": "a-rule-0",
-                    "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                    "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "a-rule-1",
-                    "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                    "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                     "conditions": [],
                     "actions": []
                 }
@@ -803,7 +809,7 @@ mod playbook_tests {
             "pb-b",
             json!([{
                 "name": "b-rule-0",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -848,7 +854,7 @@ mod playbook_tests {
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
-                    "node_type": "invoice",
+                    "select": { "target_type": "invoice" },
                     "property_key": "status"
                 },
                 "conditions": [],
@@ -875,7 +881,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "task watcher",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -900,7 +906,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "daily invoice check",
-                "trigger": {"type": "scheduled", "cron": "0 9 * * *", "node_type": "invoice"},
+                "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
                 "conditions": ["node.status == 'overdue'"],
                 "actions": []
             }]),
@@ -911,7 +917,7 @@ mod playbook_tests {
         let registry = mgr.cron_registry();
         assert_eq!(registry.len(), 1);
         assert_eq!(registry[0].cron_expression, "0 9 * * *");
-        assert_eq!(registry[0].node_type, "invoice");
+        assert_eq!(registry[0].select, Selector::of_type("invoice"));
         assert_eq!(registry[0].rules.len(), 1);
     }
 
@@ -923,7 +929,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "check 1",
-                "trigger": {"type": "scheduled", "cron": "0 9 * * *", "node_type": "invoice"},
+                "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -933,7 +939,7 @@ mod playbook_tests {
             "pb2",
             json!([{
                 "name": "check 2",
-                "trigger": {"type": "scheduled", "cron": "0 9 * * *", "node_type": "invoice"},
+                "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -955,7 +961,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "daily check",
-                "trigger": {"type": "scheduled", "cron": "0 9 * * *", "node_type": "invoice"},
+                "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -982,7 +988,7 @@ mod playbook_tests {
                 "trigger": {
                     "type": "graph_event",
                     "on": "relationship_added",
-                    "node_type": "story"
+                    "select": { "target_type": "story" }
                 },
                 "conditions": [],
                 "actions": []
@@ -1015,7 +1021,7 @@ mod playbook_tests {
             "pb-node-only",
             json!([{
                 "name": "on created",
-                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
             }]),
@@ -1033,7 +1039,7 @@ mod playbook_tests {
                 "trigger": {
                     "type": "graph_event",
                     "on": "relationship_added",
-                    "node_type": "story"
+                    "select": { "target_type": "story" }
                 },
                 "conditions": [],
                 "actions": []
@@ -1065,13 +1071,13 @@ mod playbook_tests {
             json!([
                 {
                     "name": "on created",
-                    "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                    "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "daily scan",
-                    "trigger": {"type": "scheduled", "cron": "0 9 * * *", "node_type": "task"},
+                    "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "task" }},
                     "conditions": [],
                     "actions": []
                 },
@@ -1080,7 +1086,7 @@ mod playbook_tests {
                     "trigger": {
                         "type": "graph_event",
                         "on": "relationship_added",
-                        "node_type": "task"
+                        "select": { "target_type": "task" }
                     },
                     "conditions": [],
                     "actions": []
@@ -1113,7 +1119,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -1123,7 +1129,7 @@ mod playbook_tests {
             "pb2",
             json!([{
                 "name": "rule2",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
             }]),
@@ -1245,9 +1251,9 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "on task created",
-                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": ["node.status == 'open'"],
-                "actions": [{"action_type": "update_node", "params": {}}]
+                "actions": [{"action_type": "update_node", "params": {"node_id": "{trigger.node.id}"}}]
             }]),
         );
         mgr.activate_play(&pb_node).unwrap();
@@ -1289,6 +1295,7 @@ mod playbook_tests {
             rules: matched_rules,
             trigger_event: envelope,
             trigger_node,
+            scan: None,
         };
 
         // Verify the work item carries all the data the processor needs
@@ -1345,6 +1352,7 @@ mod playbook_tests {
             rules: vec![],
             trigger_event: envelope,
             trigger_node,
+            scan: None,
         };
 
         // Verify playbook_context is carried through for cycle detection
@@ -1398,6 +1406,7 @@ mod playbook_tests {
             rules: vec![],
             trigger_event: envelope,
             trigger_node,
+            scan: None,
         };
 
         tx.try_send(work_item).unwrap();
@@ -1439,6 +1448,7 @@ mod playbook_tests {
                 rules: vec![],
                 trigger_event: envelope,
                 trigger_node,
+                scan: None,
             }
         };
 
@@ -1549,6 +1559,7 @@ mod playbook_tests {
                 },
             },
             trigger_node,
+            scan: None,
         }
     }
 
@@ -1683,6 +1694,7 @@ mod playbook_tests {
                 },
             },
             trigger_node,
+            scan: None,
         }
     }
 

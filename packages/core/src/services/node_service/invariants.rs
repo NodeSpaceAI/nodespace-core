@@ -286,6 +286,7 @@ impl NodeService {
                 &scoped,
                 &rule_ref.rule,
                 node,
+                None,
             )
             .await
             .map_err(|e| {
@@ -298,6 +299,7 @@ impl NodeService {
             let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(scoped.clone())
                 .with_reading_type(crate::playbook::engine::PlaybookEngine::reading_type(
                     &rule_ref.rule,
+                    None,
                 ));
             let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,

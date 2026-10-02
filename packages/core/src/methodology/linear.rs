@@ -333,7 +333,7 @@ fn cycle_rollover_play() -> PlayStep {
             "trigger": {
                 "type": "scheduled",
                 "cron": DAILY_AFTER_MIDNIGHT,
-                "node_type": "cycle",
+                "select": { "target_type": "cycle" },
             },
             "conditions": [
                 "node.end_date == today()",
@@ -396,7 +396,7 @@ fn sub_issue_completion_gate() -> PlayStep {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": "issue",
+                "select": { "target_type": "issue" },
                 // Namespaced, not bare: `update_node` stores a schema field
                 // under the node's own type object and reports the change as
                 // `"{node_type}.{field}"`, so that is what a trigger's
@@ -439,7 +439,7 @@ fn blocker_gate() -> PlayStep {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": "issue",
+                "select": { "target_type": "issue" },
                 // Namespaced, not bare: `update_node` stores a schema field
                 // under the node's own type object and reports the change as
                 // `"{node_type}.{field}"`, so that is what a trigger's
@@ -636,12 +636,12 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_rules_declare_a_cron_and_a_node_type() {
+    fn scheduled_rules_declare_a_cron_and_a_selector() {
         for play in playbook().plays {
             for rule in play.rules.as_array().expect("rules array") {
                 if rule["trigger"]["type"] == "scheduled" {
                     assert!(rule["trigger"]["cron"].is_string());
-                    assert!(rule["trigger"]["node_type"].is_string());
+                    assert!(rule["trigger"]["select"]["target_type"].is_string());
                 }
             }
         }

@@ -1,6 +1,6 @@
 /**
  * `SharedNodeStore.updateTypedNode()` — the one write path for a core type's
- * typed fields (task, person, project, query), and `updateNode()`'s routing into it.
+ * typed fields (task, person, project, query, play), and `updateNode()`'s routing into it.
  *
  * The same-field and different-field clobber guards are covered by the
  * `updatetasknode-*-clobber-regression` suites, which drive this method
@@ -16,7 +16,15 @@ import {
 } from '../../lib/services/shared-node-store.svelte';
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
-import type { Node, PersonNode, ProjectNode, QueryNode, TaskNode } from '../../lib/types';
+import type {
+  Node,
+  PersonNode,
+  PlayNode,
+  ProjectNode,
+  QueryNode,
+  TaskNode
+} from '../../lib/types';
+import { hasTypedUpdate, TYPED_CORE_FIELDS } from '../../lib/types/typed-core-fields';
 
 const dbSource = { type: 'database' as const, reason: 'initial-load' };
 const viewerSource = { type: 'viewer' as const, viewerId: 'pane-1' };
@@ -164,6 +172,58 @@ describe('updateNode routing for typed core types', () => {
     expect(genericSpy).not.toHaveBeenCalled();
     expect((store.getNode('q1') as unknown as QueryNode).viewConfig).toEqual(viewConfig);
   });
+
+  it('routes a typed play field (e.g. a description edit) to updatePlayNode', async () => {
+    store.setNode(makeNode('pl1', 'play', { rules: [] }), dbSource);
+    const typedSpy = vi.spyOn(backendAdapter, 'updatePlayNode').mockImplementation(
+      async (id, version, update) =>
+        ({
+          ...makeNode(id, 'play', { rules: [], ...update }),
+          version: version + 1
+        }) as unknown as PlayNode
+    );
+    const genericSpy = vi.spyOn(backendAdapter, 'updateNode');
+
+    store.updateNode(
+      'pl1',
+      { description: 'Greets new tasks' } as unknown as Partial<Node>,
+      viewerSource
+    );
+
+    await vi.waitFor(() =>
+      expect(typedSpy).toHaveBeenCalledWith('pl1', 1, { description: 'Greets new tasks' })
+    );
+    expect(genericSpy).not.toHaveBeenCalled();
+    expect((store.getNode('pl1') as unknown as PlayNode).description).toBe('Greets new tasks');
+  });
+
+  // The store routes every type the registry gives a typed update to that
+  // update, so a type the backend adds one for without a route here has no
+  // write path.
+  it.each(Object.keys(TYPED_CORE_FIELDS).filter(hasTypedUpdate))(
+    'sends a typed %s field through a typed update, never the generic one',
+    async (nodeType) => {
+      const field = TYPED_CORE_FIELDS[nodeType].find((f) => !f.readOnly)!;
+      store.setNode(makeNode('n1', nodeType), dbSource);
+      const respond = async (id: string, version: number) =>
+        ({ ...makeNode(id, nodeType), version: version + 1 }) as never;
+      const typedSpies = [
+        vi.spyOn(backendAdapter, 'updateTaskNode').mockImplementation(respond),
+        vi.spyOn(backendAdapter, 'updatePersonNode').mockImplementation(respond),
+        vi.spyOn(backendAdapter, 'updateProjectNode').mockImplementation(respond),
+        vi.spyOn(backendAdapter, 'updateQueryNode').mockImplementation(respond),
+        vi.spyOn(backendAdapter, 'updatePlayNode').mockImplementation(respond)
+      ];
+      const genericSpy = vi.spyOn(backendAdapter, 'updateNode');
+
+      store.updateNode('n1', { [field.wire]: 'x' } as unknown as Partial<Node>, viewerSource);
+
+      await vi.waitFor(() =>
+        expect(typedSpies.filter((spy) => spy.mock.calls.length > 0)).toHaveLength(1)
+      );
+      expect(genericSpy).not.toHaveBeenCalled();
+    }
+  );
 
   it('never sends a read-only system field of a query to updateQueryNode', async () => {
     store.setNode(makeNode('q1', 'query', { targetType: 'task', executionCount: 0 }), dbSource);

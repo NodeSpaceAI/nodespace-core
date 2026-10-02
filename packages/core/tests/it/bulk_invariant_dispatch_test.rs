@@ -82,7 +82,7 @@ fn reject_on_create(node_type: &str, condition: &str, message: &str) -> serde_js
     json!([{
         "name": "reject-on-create",
         "class": "invariant",
-        "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
         "conditions": [condition],
         "actions": [{ "action_type": "reject", "params": { "message": message } }]
     }])
@@ -92,7 +92,7 @@ fn stamp_approved_on_create(node_type: &str) -> serde_json::Value {
     json!([{
         "name": "stamp-approved",
         "class": "invariant",
-        "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
         "conditions": ["node.status == 'pending'"],
         "actions": [{
             "action_type": "update_node",
@@ -518,7 +518,7 @@ fn reject_on_status_change(node_type: &str) -> serde_json::Value {
         "trigger": {
             "type": "graph_event",
             "on": "property_changed",
-            "node_type": node_type,
+            "select": { "target_type": node_type },
             "property_key": format!("{node_type}.status")
         },
         "conditions": ["node.status == 'blocked'"],
@@ -618,7 +618,7 @@ async fn bulk_update_runs_update_invariant_actions_for_changed_properties_only()
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "node_type": "bi_verify",
+                "select": { "target_type": "bi_verify" },
                 "property_key": "bi_verify.status"
             },
             "conditions": [],

@@ -25,7 +25,10 @@ pub struct QueryArgs {
     pub target_type: String,
     /// JSON array of filter conditions, e.g.
     /// `[{"type":"property","operator":"equals","property":"status","value":"open"}]`.
-    /// Supported types: property, content, relationship, metadata.
+    /// Supported types: property, content, metadata, relationship, related.
+    /// A relationship filter names a `path` of relationship names and the
+    /// `node_id` it must reach, e.g.
+    /// `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`.
     /// Supported operators: equals, contains, gt, lt, gte, lte, in, exists.
     #[arg(long)]
     pub filters: Option<String>,

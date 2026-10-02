@@ -416,7 +416,6 @@ fn bench_jsonpath_query(c: &mut Criterion) {
                         property: Some("category".to_string()),
                         value: Some(json!("alpha")),
                         case_sensitive: None,
-                        relationship_type: None,
                         node_id: None,
                         ..Default::default()
                     }],
@@ -479,7 +478,6 @@ fn bench_jsonpath_indexed_vs_non_indexed_at_scale(c: &mut Criterion) {
                                 property: Some("status".to_string()),
                                 value: Some(json!("open")),
                                 case_sensitive: None,
-                                relationship_type: None,
                                 node_id: None,
                                 ..Default::default()
                             }],
@@ -523,7 +521,6 @@ fn bench_jsonpath_indexed_vs_non_indexed_at_scale(c: &mut Criterion) {
                                 property: Some("category".to_string()),
                                 value: Some(json!("alpha")),
                                 case_sensitive: None,
-                                relationship_type: None,
                                 node_id: None,
                                 ..Default::default()
                             }],

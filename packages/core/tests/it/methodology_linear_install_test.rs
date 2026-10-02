@@ -947,9 +947,9 @@ async fn a_re_keyed_trigger_keeps_its_property_key_namespace_consistent() -> Res
             let Some(property_key) = trigger.get("property_key").and_then(|v| v.as_str()) else {
                 continue;
             };
-            let node_type = trigger["node_type"]
+            let node_type = trigger["select"]["target_type"]
                 .as_str()
-                .unwrap_or_else(|| panic!("{play_id}'s trigger should name a node_type"));
+                .unwrap_or_else(|| panic!("{play_id}'s trigger should select a type"));
 
             let (namespace, _field) = property_key
                 .split_once('.')

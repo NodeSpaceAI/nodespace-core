@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 
 use crate::helpers::deserialize_clearable;
 use crate::node::{Node, NodeEnvelope, ValidationError};
+use crate::relationship_path::{RelationshipPath, ResolvedPath};
 
 /// The `node_type` of every saved query.
 pub const QUERY_NODE_TYPE: &str = "query";
@@ -28,12 +29,13 @@ pub enum FilterType {
     #[default]
     Property,
     Content,
+    /// Is the node connected, through [`QueryFilter::path`], to the node
+    /// [`QueryFilter::node_id`] names?
     Relationship,
     Metadata,
     /// Filter by a *related* node's own properties — "tasks belonging to a
-    /// project with status active" — rather than bare membership in a fixed
-    /// relationship shape. See [`QueryFilter::relationship_name`] and
-    /// [`QueryFilter::filter`].
+    /// project with status active" — rather than by reaching one specific
+    /// node. See [`QueryFilter::path`] and [`QueryFilter::filter`].
     Related,
 }
 
@@ -57,18 +59,6 @@ pub enum FilterOperator {
     Exists,
 }
 
-/// Relationship type for graph traversal
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(rename_all = "lowercase")]
-pub enum RelationshipType {
-    Parent,
-    Children,
-    Mentions,
-    #[serde(rename = "mentioned_by")]
-    MentionedBy,
-}
-
 /// Sort direction
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
@@ -84,7 +74,7 @@ pub enum SortDirection {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(optional_fields = nullable))]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QueryFilter {
     /// Filter category
     #[serde(rename = "type")]
@@ -98,65 +88,28 @@ pub struct QueryFilter {
     pub value: Option<serde_json::Value>,
     /// Case sensitivity for text comparisons
     pub case_sensitive: Option<bool>,
-    /// Relationship type for relationship filters
-    pub relationship_type: Option<RelationshipType>,
-    /// Target node ID for relationship filters
+    /// The node a [`FilterType::Relationship`] filter's path must reach.
     pub node_id: Option<String>,
-    /// Relationship name for a [`FilterType::Related`] filter, exactly as the
-    /// caller supplied it — a schema-declared name (forward or reverse) or a
-    /// built-in structural name. This is the caller-facing identity of the
-    /// relationship; [`Self::resolved_relationship`] carries what it resolves
-    /// to and is what SQL compilation actually reads.
+    /// The walk a [`FilterType::Relationship`] or [`FilterType::Related`]
+    /// filter makes from each candidate node: built-in, schema-declared and
+    /// reverse names, fixed or open-ended. [`Self::resolved_path`] carries
+    /// what the names resolve to and is what SQL compilation reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relationship_name: Option<String>,
+    pub path: Option<RelationshipPath>,
     /// The nested filter a [`FilterType::Related`] filter evaluates against
-    /// the related node(s) reached by [`Self::relationship_name`]. Recursive
-    /// by construction, but validated by the query service to at most one
-    /// level of `Related` nesting.
+    /// the nodes [`Self::path`] reaches. Recursive by construction, but
+    /// validated by the query service to at most one level of `Related`
+    /// nesting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Box<QueryFilter>>,
-    /// How [`Self::relationship_name`] resolved against the query's
-    /// `target_type` — the stored `relationship_type`, which side of the edge
-    /// the target type sits on, and (for a reverse match) the declaring
-    /// type to narrow by. Resolving a name is an async schema lookup, so it
-    /// happens once, ahead of SQL compilation, in core's
-    /// `query_ops::to_query_definition` — not a caller-facing field (never
-    /// serialized, and so never stored on a saved query), but public so a
-    /// caller constructing a `QueryDefinition` directly can populate it
-    /// without a `NodeService` in hand.
+    /// [`Self::path`] resolved against the query's `target_type`. Resolving a
+    /// name is an async schema lookup, so it happens once, ahead of SQL
+    /// compilation, in core's `query_ops`. Never serialized, and so never
+    /// stored on a saved query: a stored path is resolved again each time it
+    /// runs. Public so a caller constructing a `QueryDefinition` directly can
+    /// populate it without a `NodeService` in hand.
     #[serde(skip)]
-    pub resolved_relationship: Option<ResolvedRelationship>,
-}
-
-/// Compiled form of a [`FilterType::Related`] filter's relationship name —
-/// what the query service's SQL builder needs to compile the join, with no
-/// schema lookup of its own.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedRelationship {
-    /// The `relationship_type` value actually stored in the `relationship`
-    /// table — the forward name, whichever end declared it.
-    pub stored_type: String,
-    /// Which column of the `relationship` row the OUTER (filtered) node
-    /// occupies: `true` when the outer node is `in_node` (a forward
-    /// traversal, or an inbound-forward walked backwards from the target's
-    /// end) and the related node is therefore `out_node`; `false` when the
-    /// outer node is `out_node` (a reverse-name traversal) and the related
-    /// node is `in_node`.
-    pub outer_is_in_node: bool,
-    /// For a reverse match, the type that declared the forward relationship —
-    /// narrows the related-node set to that type's `extends` descendants,
-    /// the same narrowing core's `rel_ops::get_related_nodes` applies.
-    /// `None` for a built-in reverse (no declaring schema) or a forward/
-    /// inbound-forward match (already unambiguous by construction).
-    pub source_type: Option<String>,
-    /// The node type the nested filter's own property paths resolve
-    /// against — the related node's declared type, when the schema names
-    /// one. `None` when the related side has no single declared type (a
-    /// built-in, or an untyped declaration), in which case the nested
-    /// filter's property access falls back to the same per-row
-    /// `'$.' || node_type || '.<field>'` path a wildcard top-level query
-    /// uses, since the joined rows may span more than one type.
-    pub related_type: Option<String>,
+    pub resolved_path: Option<ResolvedPath>,
 }
 
 /// Sorting configuration
@@ -452,6 +405,20 @@ mod tests {
 
         let err = QueryFields::from_properties(&json!({ "view_config": "kanban" })).unwrap_err();
         assert!(err.to_string().contains("'view_config'"), "{err}");
+    }
+
+    /// A filter key the struct does not know is refused, not dropped: a
+    /// dropped key is a filter that looks applied and is not. That includes a
+    /// snake_case spelling of a stored key.
+    #[test]
+    fn a_filter_with_an_unknown_key_is_rejected() {
+        for filter in [
+            json!({ "type": "property", "operator": "equals", "property": "status", "value": "open", "relationshipType": "children" }),
+            json!({ "type": "content", "operator": "contains", "value": "x", "case_sensitive": false }),
+        ] {
+            let err = QueryFields::from_properties(&json!({ "filters": [filter] })).unwrap_err();
+            assert!(err.to_string().contains("unknown field"), "{err}");
+        }
     }
 
     #[test]
