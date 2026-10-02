@@ -76,9 +76,47 @@ impl SkillSeed {
 pub const SKILL_SEEDS: &[SkillSeed] = &[
     SkillSeed {
         // Research & Search
+        //
+        // Names the retrieval verbs a user says, the way Node Creation
+        // and Node Deletion name theirs. The prior wording ("Search and
+        // explore the knowledge graph to find relevant information…")
+        // lost "find nodes in nodespace" to Organization, Node Creation
+        // and Node Deletion — each of which says "nodes" or "records"
+        // — and was not retrieved at all.
+        //
+        // "Search stored knowledge" is here because that is the query the
+        // system retrieves a lookup with (`routing::lookup_retrieval_query`):
+        // a question has no retrieval verb of its own, and bare, it
+        // embeds nearest whichever skill shares a noun with its topic.
+        // Measured on the locked embedding model, this wording puts
+        // every such query at rank 1 by 0.08 or more unless the topic
+        // is another skill's own subject ("the merge gate" beside Node
+        // Merge), where it places second. A draft without the phrase
+        // scored the bare find verbs about 0.02 higher and those
+        // queries 0.02–0.04 lower.
+        //
+        // Ends at the question forms on purpose. A closing "Explain,
+        // describe, or summarize a topic." added nothing a routed
+        // question needed and cost a write: with the Linear playbook
+        // installed it put this skill 0.002 above Relationship
+        // Management on "point rebuild task at the decision it has to
+        // respect", taking that skill's place in the top 3 and
+        // `create_relationship` with it. Without the sentence the
+        // margin is 0.006 the right way. An `exclusion` naming the
+        // linking verbs was measured too and rejected: it also dropped
+        // this skill out of the top 3 on short lookups ("list specs on
+        // sync"), which score low enough against any description to
+        // sit closer to an exclusion.
+        //
+        // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
+        // `lookups_route_research_and_search`,
+        // `unrouted_find_requests_still_route_research_and_search`,
+        // `lookups_naming_another_skills_subject_still_reach_research_and_search`,
+        // `research_and_search_does_not_displace_write_skills`, and
+        // `linear_playbook_skills_do_not_displace_built_ins`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c01",
         title: "Research & Search",
-        description: "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.",
+        description: "Find, look up, locate, list, or search for nodes, records, notes, and documents of any type that are already stored. Search stored knowledge to answer a question: how does something work, how is it applied, what is it, what does it do, why was it chosen.",
         tools: &["search_semantic", "search_nodes", "get_node"],
         max_iterations: 4,
         exclusion: None,

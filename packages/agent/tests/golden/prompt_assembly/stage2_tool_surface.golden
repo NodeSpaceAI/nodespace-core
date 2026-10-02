@@ -138,7 +138,7 @@ parameters_schema:
       "type": "boolean"
     },
     "include_markdown": {
-      "description": "Number of top results to include full markdown content for (0-5, default 1). Set to 0 for IDs and snippets only, or increase to get full content for multiple results.",
+      "description": "Number of top results to include full markdown content for (0-5, default 1). Set to 0 for IDs and snippets only, or increase to get full content for multiple results. Pass 3 when the user wants something explained, so the answer is read from several documents rather than one snippet.",
       "type": "integer"
     },
     "limit": {

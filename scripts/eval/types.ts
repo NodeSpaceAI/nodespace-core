@@ -126,7 +126,7 @@ export interface TurnRecord {
    */
   sendFailed?: boolean;
   /**
-   * Stage 1's routing outcome for this turn: `"query"`, `"multi"`,
+   * Stage 1's routing outcome for this turn: `"query"`, `"lookup"`, `"multi"`,
    * `"multi_rejected"` (route_multi called with fewer than two usable
    * queries — a single intent split as if compound), `"clarify"`,
    * `"clarify_suppressed"`, `"none"`, `"unavailable"`, or `"failed"`.
@@ -733,6 +733,12 @@ export interface RunAggregate {
 export interface EvalResults {
   eval: string;
   label: string;
+  /**
+   * The scenario ids `--only` named, when the run was a partial one. Absent on
+   * a full run. A partial run's totals describe the selection, not the suite,
+   * so a reader citing a score must check this is absent.
+   */
+  selection?: string[];
   /**
    * Provenance of the FIRST rep, for readers that want one block without
    * walking `reps`. The per-rep blocks in `reps[].provenance` are

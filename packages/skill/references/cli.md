@@ -263,6 +263,8 @@ nodespace search "" --type task    # list all nodes of a type (empty query)
 
 Matches on meaning and on title keywords, so tasks, date pages and typed records are found by name. Results are whole documents and records, never a line from inside one.
 
+**Answering a question about what's stored** (how something works, what it is, why it was decided): search before you answer or ask the user for context, with `--include-content` — a heading is not the document. Answer from every hit that bears on the question, not the first alone; when two disagree, or one is marked superseded or archived, say so and prefer the current one. Reading is part of answering — do it rather than offering to.
+
 **Output:** JSON array of matching nodes
 
 ### Import markdown files

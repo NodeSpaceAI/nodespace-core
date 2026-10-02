@@ -25,6 +25,22 @@ parameters_schema:
   "type": "object"
 }
 
+### route_lookup
+description: Use when the user asks a question about anything they may have written down or stored — how something works, what something is, why or when something was decided, who or where — or asks for something to be found, looked up, or listed. The answer is looked up in what they have stored, so this is always clear enough to route: an unfamiliar term is something to search for, never a reason to ask. Only when looking it up is the one thing the user wants: a request that also asks for something to be created, changed, or set up is route_multi, and a request to create, change, or delete something is route_query. Not for a question about you, the assistant — your skills, your tools, what you can do: nothing the user stored answers that, so use route_query with 'describe your own skills'.
+parameters_schema:
+{
+  "properties": {
+    "topic": {
+      "description": "What to look up, in the user's own words, complete enough to search on by itself — e.g. 'how invoices get approved'.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "topic"
+  ],
+  "type": "object"
+}
+
 ### route_clarify
 description: Use ONLY when the request is too ambiguous to describe as a capability. Ask one specific question and offer concrete alternatives — never a bare 'what do you mean?'.
 parameters_schema:

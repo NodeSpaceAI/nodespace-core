@@ -19,7 +19,7 @@
 //! tool and letting it call retrieval itself), because that removes the
 //! system's ability to bound K and enforce the trust boundary.
 
-use crate::agent_types::{SkillCandidate, ToolDefinition};
+use crate::agent_types::{SkillCandidate, ToolCallRaw, ToolDefinition};
 use nodespace_core::ops::context_ops::EXISTING_SCHEMAS_HEADER;
 use serde::Deserialize;
 
@@ -32,6 +32,58 @@ use super::tools::Tool;
 /// options in a clarification) while keeping the injected instruction payload
 /// small, since each candidate carries its full instruction subtree.
 pub const RETRIEVAL_TOP_K: usize = 3;
+
+/// How many candidates retrieval is asked for: one more than Stage 2 judges by
+/// default, so [`select_candidates`] has a write skill to restore when a
+/// read-only one took its place.
+pub const RETRIEVAL_FETCH: usize = RETRIEVAL_TOP_K + 1;
+
+/// The candidates Stage 2 judges, chosen from retrieval's ranking.
+///
+/// The first [`RETRIEVAL_TOP_K`], plus the next one when a read-only skill
+/// that does not lead the turn sits among them and the next one can write.
+///
+/// A read-only skill's vocabulary is the broadest in the registry — every
+/// request is about something stored — so it places on turns it does not
+/// lead, and each place it takes is one a write skill loses. That costs more
+/// than a rank: a write tool is reachable from only one or two skills, so the
+/// skill that falls to fourth takes the turn's write tool with it. Measured on
+/// the locked embedding model, "keep track of decisions behind each feature"
+/// ranked Graph Editing, Research & Search, Organization, Schema Creation: the
+/// lookup placed second and `create_schema` left the surface.
+///
+/// The bound this relaxes is the one [`RETRIEVAL_TOP_K`] exists for, the
+/// number of things a turn can be led to *do*. A read-only candidate adds
+/// nothing to that, so it is not counted against the skills that do. The
+/// payload bound moves by at most one candidate: never more than
+/// [`RETRIEVAL_FETCH`] are judged.
+///
+/// A lookup that leads keeps its place and takes no extra: the turn is a
+/// lookup, and the write skills behind it are the ordinary runners-up. A
+/// second read-only skill placing behind it still counts as one that took a
+/// write skill's place.
+///
+/// `ranked` must be sorted by score, descending, as `agent_loop`'s `route`
+/// leaves it.
+pub fn select_candidates(mut ranked: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
+    let leader_id = leading_tool_bearing_candidate(&ranked[..ranked.len().min(RETRIEVAL_TOP_K)])
+        .map(|c| c.id.clone());
+    let lookup_took_a_place = ranked.iter().take(RETRIEVAL_TOP_K).any(|c| {
+        is_tool_bearing_contender(c) && !skill_is_mutating(c) && Some(&c.id) != leader_id.as_ref()
+    });
+    // The same eligibility the first three are held to: a fourth candidate
+    // below its own bar would be kept and then never rendered or offered.
+    let next_can_write = ranked
+        .get(RETRIEVAL_TOP_K)
+        .is_some_and(|c| is_tool_bearing_contender(c) && skill_is_mutating(c));
+    let keep = if lookup_took_a_place && next_can_write {
+        RETRIEVAL_FETCH
+    } else {
+        RETRIEVAL_TOP_K
+    };
+    ranked.truncate(keep);
+    ranked
+}
 
 /// Minimum retrieval score for a **read-only** skill to be actionable.
 ///
@@ -94,7 +146,7 @@ pub const DESTRUCTIVE_SKILL_SCORE_BAR: f32 = 0.45;
 ///
 /// ADR-038 rejects gating on a self-reported confidence number: a numeric
 /// self-rating from a small model is not calibrated and invites anchoring.
-/// The choice is therefore *which of two typed tools* the model calls, which
+/// The choice is therefore *which typed tool* the model calls, which
 /// is also the channel measured strongest for structured output — a tool
 /// schema, rather than prose the model must be trusted to follow.
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +161,9 @@ pub enum RouteDecision {
         /// the failure mode to avoid.
         options: Vec<String>,
     },
+    /// The user asked about something they may have stored, or asked for it
+    /// to be found. Carries the topic to look up, in their words.
+    Lookup(String),
     /// The request bundles multiple distinct, unambiguous intents —
     /// one query per intent, each re-entering retrieval independently the
     /// same way a single `Query` does. Not for a single intent expressed
@@ -123,6 +178,83 @@ pub const ROUTE_QUERY_TOOL: &str = "route_query";
 pub const ROUTE_CLARIFY_TOOL: &str = "route_clarify";
 /// Wire name of the Stage-1 tool that emits multiple per-intent queries.
 pub const ROUTE_MULTI_TOOL: &str = "route_multi";
+/// Wire name of the Stage-1 tool that names a topic to look up.
+pub const ROUTE_LOOKUP_TOOL: &str = "route_lookup";
+
+/// Whether `message` has the shape of a lookup: it ends with a question
+/// mark, or opens with a question word or a retrieval verb.
+///
+/// This does not decide a route. It decides three things around one:
+///
+/// - whether Stage 1 is asked about the message alone before it is asked
+///   about the message in context. The model makes the call either way, and a
+///   message misread here costs one short generation, or is routed exactly as
+///   it was before this existed;
+/// - whether Stage 2 is shown the list of the agent's skills
+///   ([`render_skill_names_for_prompt`]), which only a question or a find
+///   request can be about. A message misread here gets the list it had no use
+///   for, or asks about skills without it and is answered from the routed
+///   procedures alone;
+/// - whether a prose reply is put back to act, in an intent that composed no
+///   clarification (see the re-prompt in `agent_loop`). Here a misread changes
+///   the reply: a request that only ends in a question mark, answered with a
+///   prose question, is not put back. It was measured against the case it was
+///   added for, a question answered correctly and then re-prompted into a
+///   search, and that trade is recorded in ADR-038.
+///
+/// English only, and deliberately loose: "could you add a task?" and "find
+/// and delete the old notes" both have the shape and are not lookups, which
+/// the first pass says.
+pub fn is_lookup_shaped(message: &str) -> bool {
+    const OPENERS: [&str; 16] = [
+        // question words
+        "how", "what", "why", "when", "where", "who", "which", // retrieval verbs
+        "find", "search", "look", "locate", "list", "show", "explain", "describe", "tell",
+    ];
+    let message = message.trim();
+    // The full-width form is what a CJK keyboard types.
+    if message.ends_with(['?', '？']) {
+        return true;
+    }
+    let first_word: String = message
+        .chars()
+        .take_while(|c| c.is_alphabetic())
+        .flat_map(char::to_lowercase)
+        .collect();
+    OPENERS.contains(&first_word.as_str())
+}
+
+/// Whether Stage 1 is asked about the message by itself before it is asked
+/// about the message blended with the turns ahead of it.
+///
+/// Three conditions, all structural:
+///
+/// - there are turns ahead of it (`blended_query` differs from the message),
+///   or the two passes would be the same question asked twice;
+/// - the message is shaped like a lookup;
+/// - it is not the answer to a clarifying question. That message has the
+///   least routing signal of any by itself — "the client ones?" — and it is
+///   the one turn that must be read in the light of what was asked.
+///
+/// The loop and the live Stage-1 tests both call this, so what the tests
+/// measure is the gate the loop runs.
+pub fn asks_about_the_message_first(
+    blended_query: &str,
+    message: &str,
+    answering_a_clarification: bool,
+) -> bool {
+    !answering_a_clarification && blended_query != message && is_lookup_shaped(message)
+}
+
+/// The retrieval query for a lookup: the capability, then the topic.
+///
+/// A topic alone embeds nearest whichever skill shares a noun with it ("the
+/// debounce logic" retrieved Node Deletion and Node Merge). Naming the
+/// capability ahead of it is what puts the search skill first, and the
+/// wording is the one that skill's description carries.
+pub fn lookup_retrieval_query(topic: &str) -> String {
+    format!("search stored knowledge for {topic}")
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,7 +276,13 @@ struct RouteMultiParams {
     queries: Vec<String>,
 }
 
-/// The three tools offered at Stage 1, and only these three.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteLookupParams {
+    topic: String,
+}
+
+/// The four tools offered at Stage 1, and only these four.
 ///
 /// Offering a fixed, small set makes the model's tool choice a discriminated
 /// output: there is no free text to parse, only a tool name and typed
@@ -155,15 +293,16 @@ pub fn stage1_tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: ROUTE_QUERY_TOOL.to_string(),
-            description: "Use when you understand what the user wants. Provide a short search \
-                 query describing the capability needed to fulfil it, keeping both the specific \
-                 nouns the user named (what kind of thing, what item) AND the action or \
+            description:
+                "Use when you understand what the user wants. Provide a short search query \
+                 describing the capability needed to fulfil it, keeping both the specific nouns \
+                 the user named (what kind of thing, what item) AND the action or \
                  distinguishing detail that determines what kind of capability is needed — a \
                  status word, a value, or a verb like update/create/delete/list — rather than \
                  replacing either with a paraphrase or generalizing to a category-level \
                  description. Describe the task using the user's own subject and intent, not a \
                  reinterpreted or flattened one."
-                .to_string(),
+                    .to_string(),
             parameters_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -181,6 +320,43 @@ pub fn stage1_tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["query"]
+            }),
+        },
+        // The scoping sentence ("Only when looking it up is the one thing the
+        // user wants…") is load-bearing, not tidying. Without it this tool's
+        // presence changed two requests that have nothing to do with lookups,
+        // measured on the locked model: "set up a way to track X, then
+        // separately find what I wrote about Y" stopped being split and kept
+        // only its first half, and "help me manage our roadmap" stopped being
+        // clarified. Removing the tool restored both; so did this sentence.
+        // The same goes for where questions about the agent are pointed: said
+        // here, they route as a query; said on route_query instead, they did
+        // not. Guarded in `tests/it/live_stage1_golden_prompts.rs`.
+        ToolDefinition {
+            name: ROUTE_LOOKUP_TOOL.to_string(),
+            description:
+                "Use when the user asks a question about anything they may have written down or \
+                 stored — how something works, what something is, why or when something was \
+                 decided, who or where — or asks for something to be found, looked up, or \
+                 listed. The answer is looked up in what they have stored, so this is always \
+                 clear enough to route: an unfamiliar term is something to search for, never a \
+                 reason to ask. Only when looking it up is the one thing the user wants: a \
+                 request that also asks for something to be created, changed, or set up is \
+                 route_multi, and a request to create, change, or delete something is \
+                 route_query. Not for a question about you, the assistant — your skills, your \
+                 tools, what you can do: nothing the user stored answers that, so use \
+                 route_query with 'describe your own skills'."
+                    .to_string(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "topic": {
+                        "type": "string",
+                        "description": "What to look up, in the user's own words, complete \
+                             enough to search on by itself — e.g. 'how invoices get approved'."
+                    }
+                },
+                "required": ["topic"]
             }),
         },
         ToolDefinition {
@@ -260,6 +436,14 @@ pub fn parse_route_decision(tool_name: &str, arguments_json: &str) -> Option<Rou
                 question: question.to_string(),
                 options: p.options,
             })
+        }
+        ROUTE_LOOKUP_TOOL => {
+            let p: RouteLookupParams = serde_json::from_str(arguments_json).ok()?;
+            let topic = p.topic.trim();
+            if topic.is_empty() {
+                return None;
+            }
+            Some(RouteDecision::Lookup(topic.to_string()))
         }
         ROUTE_MULTI_TOOL => {
             let p: RouteMultiParams = serde_json::from_str(arguments_json).ok()?;
@@ -455,6 +639,68 @@ pub fn leading_tool_bearing_candidate(candidates: &[SkillCandidate]) -> Option<&
         .iter()
         .filter(|c| is_tool_bearing_contender(c))
         .max_by(|a, b| a.score.total_cmp(&b.score))
+}
+
+/// The search the system runs for a lookup that Stage 2 left unsearched, or
+/// `None` when this turn's surface does not offer the tool to run it with.
+///
+/// `search_semantic`, because the topic is in the user's words and that is
+/// what it matches on; `search_nodes` matches a keyword against titles and
+/// would find nothing for a sentence. Three results come back with their
+/// text rather than a snippet, which is what answering a question needs. Long
+/// documents are cut off at the tool's own limit.
+///
+/// Only a tool on the surface is called. The lookup skill is retrieved for
+/// every lookup, so the tool is there unless a registry was edited to remove
+/// it — and then the turn is left as the model ended it.
+pub fn lookup_call(topic: &str, surface: &[ToolDefinition]) -> Option<ToolCallRaw> {
+    let tool = Tool::SearchSemantic.name();
+    surface.iter().any(|t| t.name == tool).then(|| ToolCallRaw {
+        // Unique per call: the id is replayed in the chat's history, and a
+        // chat with several lookups must not carry the same one twice.
+        id: format!("system_lookup_{}", uuid::Uuid::new_v4().simple()),
+        function_name: tool.to_string(),
+        arguments_json: serde_json::json!({
+            "query": topic,
+            "include_markdown": LOOKUP_FULL_RESULTS,
+        })
+        .to_string(),
+        provider_extra: None,
+    })
+}
+
+/// How many results a system-run lookup returns with their text.
+const LOOKUP_FULL_RESULTS: u32 = 3;
+
+/// Render the registry's skill names for the Stage-2 prompt, or `None` when
+/// there are none to name.
+///
+/// A question about the agent's own skills is not a question about the user's
+/// knowledge. Skills are system nodes, outside the default search scope, so a
+/// search for one finds nothing and the model reports that no such skill
+/// exists. The registry is the answer: this states it in the prompt, beside
+/// the routed procedures, and says where such a question is answered from.
+///
+/// It states a fact rather than forbidding the search. "Find the skill for X"
+/// reads as a find request, Stage 1 routes it as a lookup, and a lookup is
+/// always searched; an instruction never to search would contradict the turn
+/// it is shown on. What the model needs there is to know the search result is
+/// not where the answer is.
+///
+/// `names` is the list Stage 1 already carries
+/// ([`super::agent_loop::stage1_skill_names`]), so both stages name the same
+/// skills, normalised the same way.
+pub fn render_skill_names_for_prompt(names: &[String]) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "YOUR SKILLS: {}.\nA question about your own skills, or about what you can do, is \
+         answered from this list and from any procedure shown below, including when the user \
+         asks you to find one. Skills are not stored in the user's notes, so a search does not \
+         return them.",
+        names.join(", ")
+    ))
 }
 
 /// Names of the candidates that clear the score gate, comma-separated, for the
@@ -1062,12 +1308,17 @@ mod tests {
     }
 
     #[test]
-    fn stage1_offers_exactly_the_three_routing_tools() {
+    fn stage1_offers_exactly_the_four_routing_tools() {
         let defs = stage1_tool_definitions();
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(
             names,
-            vec![ROUTE_QUERY_TOOL, ROUTE_CLARIFY_TOOL, ROUTE_MULTI_TOOL]
+            vec![
+                ROUTE_QUERY_TOOL,
+                ROUTE_LOOKUP_TOOL,
+                ROUTE_CLARIFY_TOOL,
+                ROUTE_MULTI_TOOL
+            ]
         );
     }
 
@@ -1529,6 +1780,260 @@ mod tests {
     fn no_eligible_candidates_renders_nothing() {
         let cands = vec![candidate("weak", 0.001, &["create_schema"])];
         assert!(render_candidates_for_prompt(&cands).is_none());
+    }
+
+    fn names(candidates: &[SkillCandidate]) -> Vec<&str> {
+        candidates.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_lookup_that_does_not_lead_does_not_cost_a_write_skill_its_place() {
+        // The measured shape: the lookup placed second and Schema Creation
+        // fell to fourth, taking `create_schema` off the surface.
+        let ranked = vec![
+            candidate("Graph Editing", 0.891, &["update_node", "search_nodes"]),
+            candidate("Research & Search", 0.888, &["search_semantic", "get_node"]),
+            candidate("Organization", 0.882, &["create_relationship"]),
+            candidate("Schema Creation", 0.859, &["create_schema"]),
+            candidate("Node Deletion", 0.840, &["delete_node"]),
+        ];
+        assert_eq!(
+            names(&select_candidates(ranked)),
+            vec![
+                "Graph Editing",
+                "Research & Search",
+                "Organization",
+                "Schema Creation"
+            ],
+            "one more is kept, and only one"
+        );
+    }
+
+    #[test]
+    fn a_lookup_that_leads_takes_no_extra_candidate() {
+        let ranked = vec![
+            candidate("Research & Search", 0.94, &["search_semantic"]),
+            candidate("Schema Creation", 0.80, &["create_schema"]),
+            candidate("Node Deletion", 0.79, &["delete_node"]),
+            candidate("Node Creation", 0.78, &["create_node"]),
+        ];
+        assert_eq!(select_candidates(ranked).len(), RETRIEVAL_TOP_K);
+    }
+
+    #[test]
+    fn write_skills_alone_keep_the_usual_bound() {
+        let ranked = vec![
+            candidate("Node Creation", 0.9, &["create_node"]),
+            candidate("Graph Editing", 0.8, &["update_node"]),
+            candidate("Schema Creation", 0.7, &["create_schema"]),
+            candidate("Organization", 0.6, &["create_relationship"]),
+        ];
+        assert_eq!(select_candidates(ranked).len(), RETRIEVAL_TOP_K);
+    }
+
+    #[test]
+    fn a_second_read_only_skill_behind_a_leading_lookup_still_yields_a_place() {
+        // The leader takes no extra for itself. The read-only skill behind it
+        // did take a write skill's place, so that place is given back.
+        let ranked = vec![
+            candidate("Research & Search", 0.94, &["search_semantic"]),
+            candidate(
+                "Play Workflow State",
+                0.80,
+                &["get_workflow_state", "search_nodes"],
+            ),
+            candidate("Node Creation", 0.79, &["create_node"]),
+            candidate("Schema Creation", 0.78, &["create_schema"]),
+        ];
+        assert_eq!(
+            names(&select_candidates(ranked)),
+            vec![
+                "Research & Search",
+                "Play Workflow State",
+                "Node Creation",
+                "Schema Creation"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_fourth_candidate_below_its_bar_is_not_kept() {
+        // It would never be rendered or offered: the extra place is for a
+        // skill the turn can actually use.
+        let ranked = vec![
+            candidate("Graph Editing", 0.9, &["update_node"]),
+            candidate("Research & Search", 0.8, &["search_semantic"]),
+            candidate("Organization", 0.7, &["create_relationship"]),
+            candidate("Schema Creation", 0.2, &["create_schema"]),
+        ];
+        assert_eq!(select_candidates(ranked).len(), RETRIEVAL_TOP_K);
+    }
+
+    #[test]
+    fn a_displaced_read_only_skill_is_not_restored() {
+        // The extra place exists to give a write tool back. A read-only skill
+        // in fourth has none to give.
+        let ranked = vec![
+            candidate("Graph Editing", 0.9, &["update_node"]),
+            candidate("Research & Search", 0.8, &["search_semantic"]),
+            candidate("Organization", 0.7, &["create_relationship"]),
+            candidate(
+                "Play Workflow State",
+                0.6,
+                &["get_workflow_state", "search_nodes"],
+            ),
+        ];
+        assert_eq!(select_candidates(ranked).len(), RETRIEVAL_TOP_K);
+    }
+
+    #[test]
+    fn a_lookup_outside_the_window_changes_nothing() {
+        let ranked = vec![
+            candidate("Node Creation", 0.9, &["create_node"]),
+            candidate("Graph Editing", 0.8, &["update_node"]),
+            candidate("Schema Creation", 0.7, &["create_schema"]),
+            candidate("Research & Search", 0.6, &["search_semantic"]),
+        ];
+        assert_eq!(
+            names(&select_candidates(ranked)),
+            vec!["Node Creation", "Graph Editing", "Schema Creation"]
+        );
+    }
+
+    #[test]
+    fn fewer_candidates_than_the_bound_are_all_kept() {
+        let ranked = vec![
+            candidate("Graph Editing", 0.9, &["update_node"]),
+            candidate("Research & Search", 0.8, &["search_semantic"]),
+        ];
+        assert_eq!(select_candidates(ranked).len(), 2);
+        assert!(select_candidates(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn a_question_or_a_retrieval_verb_makes_a_message_lookup_shaped() {
+        for message in [
+            "How do we onboard a new sponsor?",
+            "what is the merge gate",
+            "  Why did we pick sqlite  ",
+            "could you add a task?",
+            "the retry policy, how does it work?",
+            "find the record for the Lisbon offsite",
+            "Explain our retry policy",
+            "list the specs we have on sync",
+            "tell me how we onboard a sponsor",
+            "Look up the release checklist",
+        ] {
+            assert!(is_lookup_shaped(message), "{message:?}");
+        }
+        for message in [
+            "Add a task to renew the domain",
+            "however you like, mark it done",
+            "whatever",
+            "finding nothing, mark it done",
+            "",
+        ] {
+            assert!(!is_lookup_shaped(message), "{message:?}");
+        }
+    }
+
+    #[test]
+    fn the_message_is_asked_about_first_only_as_a_question_with_turns_ahead_of_it() {
+        let blended = "PRIOR CONTEXT: …\nCURRENT REQUEST: How do we onboard a sponsor?";
+        let question = "How do we onboard a sponsor?";
+        assert!(asks_about_the_message_first(blended, question, false));
+        // The first turn of a chat: the blended view is the message.
+        assert!(!asks_about_the_message_first(question, question, false));
+        // Not a question.
+        assert!(!asks_about_the_message_first(
+            "PRIOR CONTEXT: …",
+            "mark it paid",
+            false
+        ));
+        // An answer to a clarifying question, whatever its punctuation.
+        assert!(!asks_about_the_message_first(
+            blended,
+            "the client ones?",
+            true
+        ));
+    }
+
+    #[test]
+    fn a_full_width_question_mark_is_a_question_mark() {
+        assert!(is_lookup_shaped("これは何ですか？"));
+    }
+
+    #[test]
+    fn route_lookup_parses_into_a_lookup_decision() {
+        assert_eq!(
+            parse_route_decision(
+                ROUTE_LOOKUP_TOOL,
+                r#"{"topic":" how invoices get approved "}"#
+            ),
+            Some(RouteDecision::Lookup(
+                "how invoices get approved".to_string()
+            )),
+            "the topic is trimmed"
+        );
+    }
+
+    #[test]
+    fn a_lookup_with_no_topic_yields_no_decision() {
+        // Nothing to search for: fall through to retrieval on the raw message
+        // rather than run a lookup for the empty string.
+        assert_eq!(
+            parse_route_decision(ROUTE_LOOKUP_TOOL, r#"{"topic":"  "}"#),
+            None
+        );
+        assert_eq!(parse_route_decision(ROUTE_LOOKUP_TOOL, "{}"), None);
+    }
+
+    #[test]
+    fn a_lookup_is_retrieved_as_the_capability_then_the_topic() {
+        assert_eq!(
+            lookup_retrieval_query("the merge gate"),
+            "search stored knowledge for the merge gate"
+        );
+    }
+
+    #[test]
+    fn the_system_lookup_searches_the_topic_and_reads_three_results() {
+        let call = lookup_call("how invoices get approved", &[tool("search_semantic")])
+            .expect("search_semantic is on the surface");
+        assert_eq!(call.function_name, "search_semantic");
+        let again = lookup_call("how invoices get approved", &[tool("search_semantic")])
+            .expect("search_semantic is on the surface");
+        assert_ne!(call.id, again.id, "each call carries its own id");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&call.arguments_json).unwrap(),
+            serde_json::json!({"query": "how invoices get approved", "include_markdown": 3})
+        );
+    }
+
+    #[test]
+    fn the_system_lookup_calls_only_a_tool_the_surface_offers() {
+        assert!(lookup_call("anything", &[tool("search_nodes"), tool("get_node")]).is_none());
+        assert!(lookup_call("anything", &[]).is_none());
+    }
+
+    #[test]
+    fn skill_names_render_as_one_list_with_where_to_answer_from() {
+        let rendered = render_skill_names_for_prompt(&[
+            "Node Creation".to_string(),
+            "Research & Search".to_string(),
+        ])
+        .expect("names render");
+        assert!(rendered.starts_with("YOUR SKILLS: Node Creation, Research & Search.\n"));
+        assert!(
+            rendered.contains("a search does not return them"),
+            "must say a skill is not found by searching: {rendered}"
+        );
+    }
+
+    #[test]
+    fn no_skill_names_render_nothing() {
+        // An empty list must not claim the agent has no skills.
+        assert!(render_skill_names_for_prompt(&[]).is_none());
     }
 
     #[test]

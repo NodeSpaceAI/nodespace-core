@@ -28,11 +28,13 @@ import {
   parseTurnOutput,
   partitionExcluded,
   readBaselineReliability,
+  selectScenarios,
   setupLeftStateMissing,
+  UnknownScenarioError,
 } from "./runner.ts";
 import { assertExpectation } from "./fixtures/agent-matrix.ts";
 import { EnvironmentError } from "./preflight.ts";
-import type { ScenarioResult } from "./types.ts";
+import type { EvalFixture, Scenario, ScenarioResult } from "./types.ts";
 
 function result(overrides: Partial<ScenarioResult> = {}): ScenarioResult {
   return {
@@ -1125,5 +1127,68 @@ describe("checkUniformity: full pass with tool diversity", () => {
   test("a partial result is unaffected either way", () => {
     expect(checkUniformity(17, 21, undefined, 6)).toBeNull();
     expect(checkUniformity(17, 21, undefined, 0)).toBeNull();
+  });
+});
+
+describe("selectScenarios", () => {
+  const sc = (id: string, setup = false): Scenario =>
+    ({ id, scenario: id, prompt: id, ...(setup ? { setup: true } : {}) }) as Scenario;
+  const fixture = {
+    name: "t",
+    description: "t",
+    groups: [
+      [sc("setup-a", true), sc("a1"), sc("a2"), sc("a3")],
+      [sc("setup-b", true), sc("b1")],
+      [sc("c1"), sc("c2")],
+    ],
+    score: () => ({ passed: true }),
+  } as unknown as EvalFixture;
+  const ids = (f: EvalFixture) => f.groups.map((g) => g.map((s) => s.id));
+
+  test("keeps only the chats holding a selected scenario", () => {
+    expect(ids(selectScenarios(fixture, ["b1"]))).toEqual([["setup-b", "b1"]]);
+  });
+
+  test("keeps the setup turns of a kept chat", () => {
+    // Without them the scenario runs on a workspace that was never set up and
+    // scores as a model failure.
+    expect(ids(selectScenarios(fixture, ["a1"]))).toEqual([["setup-a", "a1"]]);
+  });
+
+  test("keeps the scenarios ahead of the selected one in its chat", () => {
+    // A chat is one conversation: a2 is asked after a1 in a full run, so it is
+    // asked after a1 here too, or the two results are not comparable.
+    expect(ids(selectScenarios(fixture, ["a2"]))).toEqual([["setup-a", "a1", "a2"]]);
+  });
+
+  test("drops the scenarios after the last selected one", () => {
+    expect(ids(selectScenarios(fixture, ["c1"]))).toEqual([["c1"]]);
+  });
+
+  test("selections across chats keep fixture order, whatever order they are named in", () => {
+    expect(ids(selectScenarios(fixture, ["c2", "a1"]))).toEqual([
+      ["setup-a", "a1"],
+      ["c1", "c2"],
+    ]);
+  });
+
+  test("an unknown id is an error naming it and the ids that exist", () => {
+    // A typo must not select nothing and report a clean, empty run.
+    let caught: unknown;
+    try {
+      selectScenarios(fixture, ["a1", "nope"]);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(UnknownScenarioError);
+    const err = caught as UnknownScenarioError;
+    expect(err.unknown).toEqual(["nope"]);
+    expect(err.known).toContain("b1");
+  });
+
+  test("leaves the fixture it was given untouched", () => {
+    selectScenarios(fixture, ["b1"]);
+    expect(fixture.groups).toHaveLength(3);
+    expect(fixture.groups[0]).toHaveLength(4);
   });
 });

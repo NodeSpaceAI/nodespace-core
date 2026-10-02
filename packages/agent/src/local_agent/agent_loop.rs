@@ -1906,6 +1906,17 @@ fn session_prompt_override(session: &AgentSession) -> Option<&str> {
     session.system_prompt_override.as_deref()
 }
 
+/// What one Stage-1 generation produced.
+struct Stage1Decision {
+    /// The routing decision, or `None` when the model called no routing tool
+    /// or its arguments would not parse.
+    decision: Option<RouteDecision>,
+    /// Every tool call the generation made, for telling a rejected
+    /// `route_multi` from no decision at all.
+    tool_calls: Vec<ToolCallRaw>,
+    usage: InferenceUsage,
+}
+
 /// What Stage 1 and the retrieval step produced for Stage 2 to work with.
 #[derive(Default)]
 struct RoutingOutcome {
@@ -1928,6 +1939,14 @@ struct RoutingOutcome {
     /// Tokens spent on the Stage-1 turn, so the turn's reported usage covers
     /// the whole two-stage flow rather than under-reporting it.
     usage: InferenceUsage,
+    /// The registry's skill names, as Stage 1 was shown them. Stage 2 is shown
+    /// the same list, so a question about the agent's own skills is answered
+    /// from it (see [`routing::render_skill_names_for_prompt`]). Empty when
+    /// routing did not run.
+    skill_names: Vec<String>,
+    /// The topic Stage 1 asked to have looked up, when it chose `route_lookup`.
+    /// `Some` marks the turn as a lookup by the model's own structural choice.
+    lookup_topic: Option<String>,
 }
 
 /// Build the message Stage 1 routes on: prior turns blended with the current one.
@@ -2033,7 +2052,9 @@ pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> Stri
 /// reply is re-prompted once (with a nudge that assumes a clarification was
 /// asked — see [`ALREADY_CLARIFIED_NUDGE`] for why, and what that costs) and an
 /// ambiguous request falls through to retrieval instead of being clarified,
-/// until something is written.
+/// until something is written. The re-prompt leaves out one case: a message
+/// shaped like a question or a find request, in an intent with no composed
+/// clarification, where a prose reply is an answer.
 ///
 /// A prose reply never closes the intent either, so it cannot erase a composed
 /// clarification before it — which reading every non-composed reply as a
@@ -2466,6 +2487,10 @@ fn grounded_node_uris(executions: &[ToolExecutionRecord]) -> HashSet<String> {
     out
 }
 
+/// What opens the system message that replaces summarized history. What
+/// follows it is the model's text, not the system's.
+const CONVERSATION_SUMMARY_PREFIX: &str = "[Conversation summary]";
+
 /// Every `nodespace://` id grounded by a PRIOR turn's tool activity, read back
 /// from `session.messages`.
 ///
@@ -2481,10 +2506,30 @@ fn grounded_node_uris(executions: &[ToolExecutionRecord]) -> HashSet<String> {
 /// cheaper: `extract_node_uris` only needs substring matches, and a tool
 /// result's serialized form always carries `nodespace://` ids as plain string
 /// values, unescaped, since `node_uri()` never emits characters JSON escapes.
+///
+/// System messages are read as well as tool results. A history rebuilt from a
+/// stored chat holds no tool messages: what an earlier turn looked up or wrote
+/// comes back as a system-role record of those ids, written by the system from
+/// tool results. Reading tool messages alone made every id from an earlier
+/// turn look invented in a stored chat, and a follow-up that linked the node
+/// it had just been asked about was replaced with a request to confirm.
+///
+/// One system message is not the system's own text: the conversation summary
+/// ([`CONVERSATION_SUMMARY_PREFIX`]) is a generation over the turns it
+/// replaces, what the user typed and the model said included, so an id in it
+/// grounds nothing. That has a cost. The tool results and records the summary
+/// replaced did ground their ids, and once they are summarized away a reply
+/// that links one of those nodes is taken for an invention. It errs the way
+/// the check is meant to: a real link refused, not a dead one let through.
 fn grounded_node_uris_from_history(session: &AgentSession) -> HashSet<String> {
     let mut out = HashSet::new();
     for msg in &session.messages {
-        if matches!(msg.role, Role::Tool) {
+        let system_written = match msg.role {
+            Role::Tool => true,
+            Role::System => !msg.content.starts_with(CONVERSATION_SUMMARY_PREFIX),
+            _ => false,
+        };
+        if system_written {
             for uri in extract_node_uris(&msg.content) {
                 out.insert(uri.to_string());
             }
@@ -2948,6 +2993,15 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         if !session_already_clarified(session) {
             tools = routing::with_stage2_clarify(tools, &all_tools);
         }
+        // A lookup is searched, not clarified. `route_clarify` is a tool call,
+        // so with it on the surface Stage 2 could end the turn by asking the
+        // user what they meant without a search having run — the same failure
+        // as asking in prose, by the one channel the system-run search below
+        // does not see. It comes off whichever way it got on: the addition
+        // above, or a runner-up skill's own whitelist.
+        if routed.lookup_topic.is_some() {
+            tools.retain(|t| t.name != routing::ROUTE_CLARIFY_TOOL);
+        }
 
         // A destructive tool withheld because its skill placed but did not win
         // retrieval. Logged because the *absence* of a tool is otherwise
@@ -3120,10 +3174,34 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         //
         // This is the injection point where the KV-cache prefix diverges from
         // Stage 1 — the cost ADR-038 accepts and requires be measured.
-        let system_content = match &candidate_block {
-            Some(block) => format!("{base_system_content}\n\n{block}"),
-            None => base_system_content,
+        //
+        // The skill list goes ahead of the candidates, and only on a turn
+        // that can be asking about skills: a message shaped like a question
+        // or a request to find something (`routing::is_lookup_shaped`). On
+        // any other turn it is text about something the user did not ask,
+        // and it is not free. Shown on every turn, it cost a write: asked to
+        // add a company that already existed, in a chat whose setup had
+        // failed, the model wrote malformed `create_node` arguments five
+        // times and the turn ended on "node creation failed". Without the
+        // list the same turn reached the duplicate check and was settled.
+        //
+        // It is withheld from a model probed unsafe for injection, like the
+        // candidate block — the matrix found the block's presence suppressing
+        // tool-calling whatever it contained.
+        let skills_block = if session.routing_disabled || !routing::is_lookup_shaped(user_message) {
+            None
+        } else {
+            routing::render_skill_names_for_prompt(&routed.skill_names)
         };
+        let system_content = [
+            Some(base_system_content),
+            skills_block,
+            candidate_block.clone(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n");
 
         // prompt_assembly child span: records full assembled system prompt and tools offered.
         {
@@ -3186,9 +3264,15 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         let mut consecutive_malformed_calls = 0usize;
         // Whether this turn has already been re-prompted for replying in prose
         // after an answered clarification. Once only: a model that declines
-        // twice has its reply accepted, and the turn is recorded as one that
-        // did not act.
+        // twice keeps the reply it gave first, and the turn is recorded as one
+        // that did not act.
         let mut clarify_nudged = false;
+        // The reply that re-prompt set aside, kept in case the re-prompt gets
+        // no call out of the model.
+        let mut reply_before_nudge: Option<String> = None;
+        // Whether the system has already run this turn's lookup for the model.
+        // Once only: it is a backstop for a turn that made no call at all.
+        let mut lookup_run = false;
         // Seeded with the Stage-1 routing turn's usage: it is part of what this
         // turn cost, and reporting only the Stage-2 tokens would hide the price
         // of the extra turn from everything that reads this figure.
@@ -3239,12 +3323,32 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 Arc::new(std::sync::Mutex::new(Vec::new()));
             let collected_for_cb = Arc::clone(&collected_chunks);
             let on_chunk_clone = Arc::clone(&on_chunk);
+            // A lookup's first round may be a reply the system is about to
+            // drop and replace with a search. Forwarded live, the user would
+            // watch "I do not have any information on that" stream past and
+            // then vanish. So that round is held and forwarded once it is
+            // known to stand. Little is lost by waiting: a round that is kept
+            // is nearly always one that called a tool, which carries no answer
+            // text. The exception is a surface with no search tool to run,
+            // where the reply stands and arrives in one piece.
+            let hold_for_lookup =
+                routed.lookup_topic.is_some() && !lookup_run && !any_real_tool_calls;
+            // The round after the clarification re-prompt is held for the same
+            // reason: if it makes no call, the reply the user already has
+            // stands, and this one must not be shown and then taken away.
+            // Only until a call is made. From then on the reply set aside can
+            // no longer be the one that stands, and the rounds that follow —
+            // the answer among them — stream as they are generated.
+            let hold_for_reprompt = reply_before_nudge.is_some() && !any_real_tool_calls;
+            let hold_stream = hold_for_lookup || hold_for_reprompt;
 
             // Wrap on_chunk so we can also collect
             let chunk_callback: Box<dyn Fn(StreamingChunk) + Send> =
                 Box::new(move |chunk: StreamingChunk| {
                     // Forward to caller
-                    on_chunk_clone(chunk.clone());
+                    if !hold_stream {
+                        on_chunk_clone(chunk.clone());
+                    }
                     // Collect for parsing
                     if let Ok(mut guard) = collected_for_cb.lock() {
                         guard.push(chunk);
@@ -3457,6 +3561,79 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 "Agent loop: raw generation"
             );
 
+            // Stage 1 routed this turn as a lookup and Stage 2 made no call:
+            // it answered from the conversation alone, or asked the user for
+            // context a search would have supplied. The system runs the search
+            // for it and the model answers from what comes back.
+            //
+            // Not a re-prompt. One was measured first — a system message
+            // telling the model to search before replying — and on the locked
+            // model it changed nothing: asked how a retry policy works, the
+            // model replied "I do not have a tool or information regarding
+            // that", was told to search, and said so again. This is the shape
+            // the duplicate-entity guard already has: where the model's choice
+            // stays wrong, the system makes the call it holds the facts for.
+            //
+            // Keyed on structure alone — Stage 1's own `route_lookup`, and a
+            // turn with no call in it — never on what the reply says. The
+            // prose is dropped, as it is beside any tool call. The decision
+            // records above still show the model selected nothing.
+            //
+            // `any_real_tool_calls` is also set by a call that was malformed
+            // and never ran, so a lookup whose only call was an unparseable
+            // search is not searched for here. That turn ends on the
+            // malformed-call guards, which tell the user what happened.
+            //
+            // `route_clarify` is off a lookup turn's surface, but a surface is
+            // advice to an engine that does not constrain its output to it: a
+            // remote endpoint can still emit the call, and the name is in
+            // front of the model in a runner-up's instructions. So the rule is
+            // held here too. Until a search has run, a clarify call on a
+            // lookup is not a call, and the search below takes its place.
+            // Only when there is a search to put there: on a surface with no
+            // search tool the call is left alone, or the round would be left
+            // with nothing at all.
+            let system_lookup = if lookup_run || any_real_tool_calls {
+                None
+            } else {
+                routed
+                    .lookup_topic
+                    .as_deref()
+                    .and_then(|topic| routing::lookup_call(topic, &tools))
+            };
+            if system_lookup.is_some() {
+                tool_calls.retain(|tc| tc.function_name != routing::ROUTE_CLARIFY_TOOL);
+            }
+            if tool_calls.is_empty() {
+                if let Some(call) = system_lookup {
+                    lookup_run = true;
+                    let (preview, preview_truncated) = char_preview(&response_text, 120);
+                    tracing::info!(
+                        session_id = %session.id,
+                        iteration,
+                        tool = %call.function_name,
+                        arguments = %call.arguments_json,
+                        response_preview = %preview,
+                        response_preview_truncated = preview_truncated,
+                        "Lookup with no search: running the search for the model"
+                    );
+                    tool_calls.push(call);
+                }
+            }
+            // The held round stands: the system did not replace it. After a
+            // re-prompt that means it made a call; a second prose reply is
+            // the one being discarded.
+            let held_round_stands = if hold_for_reprompt {
+                !tool_calls.is_empty()
+            } else {
+                hold_for_lookup && !lookup_run
+            };
+            if held_round_stands {
+                for chunk in &chunks {
+                    on_chunk(chunk.clone());
+                }
+            }
+
             if tool_calls.is_empty() {
                 // The intent is already clarified — nothing earlier in it wrote
                 // — and the model is replying without acting, possibly asking
@@ -3469,14 +3646,42 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // two turns that did not write) — never on the reply's wording.
                 // The prose is dropped rather than kept as history: the model
                 // re-reading its own question is what to avoid.
+                //
+                // Not for a lookup-shaped message in an intent that composed
+                // no clarification. The re-prompt says a clarifying question
+                // was answered and the reply should act on it. There none was
+                // asked, and a question answered in prose is an answer with
+                // nothing left to act on: asked which skills it has, in a chat
+                // that had only read, the model listed them, was re-prompted,
+                // and searched the user's notes for its own skills instead.
+                //
+                // The shape is read off the message
+                // (`routing::is_lookup_shaped`), so a request that only ends
+                // in a question mark is exempt too: "can you add a task?"
+                // answered with a prose question, in such an intent, is not
+                // put back. The user's answer to that question is, unless it
+                // is itself shaped like one.
+                let a_question_nothing_clarified =
+                    composed_clarifications.is_empty() && routing::is_lookup_shaped(user_message);
                 if !clarify_nudged
                     && !any_real_tool_calls
                     && already_clarified
+                    && !a_question_nothing_clarified
                     && !tools.is_empty()
                     && !response_text.trim().is_empty()
                     && iteration + 1 < MAX_TOOL_ITERATIONS
                 {
                     clarify_nudged = true;
+                    // Kept only in an intent that composed no clarification.
+                    // There the re-prompt's premise is false — nothing was
+                    // asked, the chat has only read — and this reply is most
+                    // likely an answer. Where a clarification was composed and
+                    // answered, this reply is most likely the question again,
+                    // which is what the contract exists to stop: the reply
+                    // made after being told not to ask is the better one.
+                    if composed_clarifications.is_empty() {
+                        reply_before_nudge = Some(response_text.clone());
+                    }
                     let (preview, preview_truncated) = char_preview(&response_text, 120);
                     tracing::info!(
                         session_id = %session.id,
@@ -3490,6 +3695,33 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         .push(ChatMessage::text(Role::System, ALREADY_CLARIFIED_NUDGE));
                     continue;
                 }
+
+                // The re-prompt asked for a call and did not get one, in an
+                // intent that has only read. Its premise — that a
+                // clarifying question was answered — does not hold there, and
+                // the first reply was an answer: asked to say an answer again
+                // more simply, the model said it, was told to act instead,
+                // and replied that it did not know what was meant. So in that
+                // chat the re-prompt counts only when it produces a call.
+                // Otherwise the reply it set aside stands, and the re-prompt
+                // leaves the history, where it would tell every later turn
+                // that a question had been answered.
+                let response_text = match reply_before_nudge.take() {
+                    Some(first) if !any_real_tool_calls => {
+                        if session.messages.last().is_some_and(|m| {
+                            m.role == Role::System && m.content == ALREADY_CLARIFIED_NUDGE
+                        }) {
+                            session.messages.pop();
+                        }
+                        tracing::info!(
+                            session_id = %session.id,
+                            iteration,
+                            "Clarification contract: the re-prompt produced no call — keeping the first reply"
+                        );
+                        first
+                    }
+                    _ => response_text,
+                };
 
                 // No tool calls — final response
                 on_status(LocalAgentStatus::Streaming);
@@ -4658,6 +4890,53 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         ))
     }
 
+    /// One Stage-1 generation over `routing_query`: the routing tools, a small
+    /// token ceiling, and the decision recovered from whichever tool was
+    /// called.
+    ///
+    /// Stage 1 is internal routing, not user-facing content: its chunks are
+    /// collected here and never forwarded, so the user does not see the
+    /// routing turn stream past.
+    async fn stage1_decide(
+        &self,
+        system_prompt: &str,
+        routing_query: String,
+    ) -> Result<Stage1Decision, InferenceError> {
+        let request = InferenceRequest {
+            messages: vec![
+                ChatMessage::text(Role::System, system_prompt.to_string()),
+                ChatMessage::text(Role::User, routing_query),
+            ],
+            tools: Some(routing::stage1_tool_definitions()),
+            temperature: Some(0.1),
+            max_tokens: Some(STAGE1_MAX_TOKENS),
+        };
+        let chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = chunks.clone();
+        let usage = self
+            .engine
+            .generate(
+                request,
+                Box::new(move |c| {
+                    if let Ok(mut g) = sink.lock() {
+                        g.push(c);
+                    }
+                }),
+            )
+            .await?;
+        let collected = chunks.lock().map(|g| g.clone()).unwrap_or_default();
+        let (_, _, tool_calls, _) = Self::parse_chunks(&collected);
+        let decision = tool_calls
+            .iter()
+            .find_map(|tc| routing::parse_route_decision(&tc.function_name, &tc.arguments_json));
+        Ok(Stage1Decision {
+            decision,
+            tool_calls,
+            usage,
+        })
+    }
+
     /// Parse collected streaming chunks into response text and tool calls.
     /// Parse a streamed chunk sequence into `(answer_text, reasoning_text, tool_calls)`.
     ///
@@ -4667,7 +4946,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
     /// Run Stage 1 and the deterministic retrieval step (ADR-038).
     ///
     /// Stage 1 asks the model for a *structural* choice — form a search query,
-    /// or ask to clarify — expressed as which of two typed tools it calls. A
+    /// look a topic up, or ask to clarify — expressed as which typed tool it calls. A
     /// tool schema is the strongest measured channel for structured output,
     /// and using the tool-call path means there is no free text to parse and
     /// so no parser failure to confuse with a model failure. ADR-038 rejects
@@ -4724,7 +5003,6 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         let mut span = tracer.start_with_context("stage1_routing", turn_cx);
         let started = Instant::now();
 
-        let stage1_tools = routing::stage1_tool_definitions();
         // Blend the preceding turns into Stage 1's view, the same way schema
         // retrieval does. A follow-up naming its subject only by pronoun or
         // ellipsis ("mark it paid", "add another one") gives the model nothing
@@ -4739,58 +5017,99 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // two context constructions cannot drift apart.
         let routing_query = stage1_query(session, user_message);
         let skill_names = self.tool_executor.skill_names().await;
+        outcome.skill_names = skill_names.clone();
         let type_names =
             stage1_type_names(self.tool_executor.user_type_names().await, user_message);
-        let messages = vec![
-            ChatMessage::text(
-                Role::System,
-                stage1_system_prompt(&skill_names, &type_names),
-            ),
-            ChatMessage::text(Role::User, routing_query),
-        ];
-        let request = InferenceRequest {
-            messages,
-            tools: Some(stage1_tools),
-            temperature: Some(0.1),
-            max_tokens: Some(STAGE1_MAX_TOKENS),
-        };
+        let system_prompt = stage1_system_prompt(&skill_names, &type_names);
 
-        let chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
-        let sink = chunks.clone();
-        // Stage 1 is internal routing, not user-facing content: its chunks are
-        // collected here and deliberately not forwarded to `on_chunk`, so the
-        // user never sees the routing turn stream past.
-        let usage = match self
-            .engine
-            .generate(
-                request,
-                Box::new(move |c| {
-                    if let Ok(mut g) = sink.lock() {
-                        g.push(c);
+        // Whether a message asks a question is read off the message itself,
+        // before the turns ahead of it are blended in. Blended, a question
+        // takes on the chat's subject: after two turns that set up record
+        // types, "How do we onboard a new sponsor?" was routed as a request to
+        // create one ("onboard a new sponsor record"), three times in three,
+        // and the reply was that nothing could be done. Alone, the same
+        // message routes as a lookup every time. No wording of the routing
+        // tools closed the gap without opening another.
+        //
+        // So a message shaped like a lookup — a question, or one that opens
+        // with a retrieval verb — is put to Stage 1 by itself first. A lookup
+        // is taken as it stands. Anything else, such as a request that only
+        // happens to end in a question mark, is decided on the blended view
+        // exactly as before, at the cost of that first pass.
+        //
+        // A follow-up that leans on its context ("and who approved it?") can
+        // come back a lookup from that pass too, with a topic that names no
+        // referent. The decision is right: it is a lookup, and Stage 2, which
+        // has the conversation, makes the search. The topic is what the
+        // system searches on only when Stage 2 does not, and there it is a
+        // poor query. Taking the topic from a second, blended pass would cost
+        // every question in a chat a generation to improve that one fallback.
+        let mut stage1 = None;
+        let answering_a_clarification = session
+            .prior_turns
+            .last()
+            .is_some_and(|t| t.outcome == AiChatTurnOutcome::Clarified);
+        let message_alone = user_message.trim();
+        let mut passes = 0usize;
+        if routing::asks_about_the_message_first(
+            &routing_query,
+            message_alone,
+            answering_a_clarification,
+        ) {
+            passes += 1;
+            match self
+                .stage1_decide(&system_prompt, message_alone.to_string())
+                .await
+            {
+                Ok(alone) => {
+                    outcome.usage.prompt_tokens += alone.usage.prompt_tokens;
+                    outcome.usage.completion_tokens += alone.usage.completion_tokens;
+                    if matches!(alone.decision, Some(RouteDecision::Lookup(_))) {
+                        stage1 = Some(alone);
                     }
-                }),
-            )
-            .await
-        {
-            Ok(u) => u,
-            Err(e) => {
-                tracing::warn!(
-                    routing_decision = "failed",
-                    error = %e,
-                    "stage-1 routing failed; continuing unrouted"
-                );
-                span.set_attribute(KeyValue::new("routing.failed", true));
-                return outcome;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "stage-1 routing on the message alone failed; deciding on the blended view"
+                    );
+                }
             }
+        }
+        // Which view the decision was made on, and how many generations it
+        // took. In the text log as well as the span: an eval reads the log,
+        // and one latency figure now covers one pass or two.
+        let decided_on = if stage1.is_some() {
+            "message"
+        } else {
+            "blended"
         };
-        outcome.usage = usage;
-
-        let collected = chunks.lock().map(|g| g.clone()).unwrap_or_default();
-        let (_, _, tool_calls, _) = Self::parse_chunks(&collected);
-        let decision = tool_calls
-            .iter()
-            .find_map(|tc| routing::parse_route_decision(&tc.function_name, &tc.arguments_json));
+        span.set_attribute(KeyValue::new("routing.decided_on", decided_on));
+        let stage1 = match stage1 {
+            Some(decided) => decided,
+            None => match self.stage1_decide(&system_prompt, routing_query).await {
+                Ok(blended) => {
+                    passes += 1;
+                    outcome.usage.prompt_tokens += blended.usage.prompt_tokens;
+                    outcome.usage.completion_tokens += blended.usage.completion_tokens;
+                    blended
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        routing_decision = "failed",
+                        error = %e,
+                        "stage-1 routing failed; continuing unrouted"
+                    );
+                    span.set_attribute(KeyValue::new("routing.failed", true));
+                    return outcome;
+                }
+            },
+        };
+        let Stage1Decision {
+            decision,
+            tool_calls,
+            ..
+        } = stage1;
 
         let routing_decision_tag: &str;
         // A single query for Query/None/clarify-suppressed; two or more for
@@ -4803,6 +5122,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 span.set_attribute(KeyValue::new("routing.decision", "query"));
                 span.set_attribute(KeyValue::new("routing.query", q.clone()));
                 vec![q]
+            }
+            Some(RouteDecision::Lookup(topic)) => {
+                routing_decision_tag = "lookup";
+                span.set_attribute(KeyValue::new("routing.decision", "lookup"));
+                span.set_attribute(KeyValue::new("routing.topic", topic.clone()));
+                let query = routing::lookup_retrieval_query(&topic);
+                outcome.lookup_topic = Some(topic);
+                vec![query]
             }
             Some(RouteDecision::Multi(qs)) => {
                 routing_decision_tag = "multi";
@@ -4838,12 +5165,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     // `routing_decision` as a plain text field (not only an OTel span
                     // attribute) so an eval scraping the daemon's text log — which has
                     // no OTel exporter attached — can observe which of Stage 1's
-                    // outcomes (query/multi/multi_rejected/clarify/
+                    // outcomes (query/lookup/multi/multi_rejected/clarify/
                     // clarify_suppressed/none) fired, rather than inferring it
                     // from reply text or downstream tool effects.
                     tracing::info!(
                         routing_decision = "clarify",
                         routing_latency_ms = elapsed_ms,
+                        routing_decided_on = decided_on,
+                        routing_passes = passes,
                         "stage-1 routing decision"
                     );
                     return outcome;
@@ -4868,17 +5197,19 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         }
 
         // Merge candidates across every query, deduped by skill id (a skill
-        // matching more than one intent's query counts once) and capped at
-        // the same RETRIEVAL_TOP_K the single-query path already respects —
-        // a compound request must not silently widen Stage 2's candidate
-        // bound past the system-owned limit ADR-038 requires.
+        // matching more than one intent's query counts once) and capped by
+        // the same `select_candidates` the single-query path already respects
+        // — a compound request must not silently widen Stage 2's candidate
+        // bound past the system-owned limit ADR-038 requires. Each query asks
+        // for one more than that bound, which `select_candidates` keeps only
+        // when a read-only skill took a write skill's place.
         let mut merged: Vec<crate::agent_types::SkillCandidate> = Vec::new();
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut top_score: f32 = 0.0;
         for query in &queries {
             match self
                 .tool_executor
-                .retrieve_skills(query, routing::RETRIEVAL_TOP_K)
+                .retrieve_skills(query, routing::RETRIEVAL_FETCH)
                 .await
             {
                 Ok(r) => {
@@ -4901,7 +5232,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        merged.truncate(routing::RETRIEVAL_TOP_K);
+        let merged = routing::select_candidates(merged);
 
         span.set_attribute(KeyValue::new("routing.candidates", merged.len() as i64));
         span.set_attribute(KeyValue::new("routing.top_score", top_score as f64));
@@ -4913,7 +5244,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         let elapsed_ms = started.elapsed().as_millis() as i64;
         span.set_attribute(KeyValue::new("routing.latency_ms", elapsed_ms));
         // `routing_decision` here covers the outcomes that reach this line
-        // (query/multi/multi_rejected/clarify_suppressed/none); the plain
+        // (query/lookup/multi/multi_rejected/clarify_suppressed/none); the plain
         // `clarify` outcome returns earlier and logs its own "stage-1 routing decision" line above. Both
         // carry the same field name so a log scraper (an eval, a dashboard) can
         // grep one key regardless of which path a turn took.
@@ -4933,6 +5264,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         tracing::info!(
             routing_decision = routing_decision_tag,
             routing_latency_ms = elapsed_ms,
+            routing_decided_on = decided_on,
+            routing_passes = passes,
             candidates = outcome.candidates.len(),
             routed_skills = %routing::routed_skill_names(&outcome.candidates),
             all_scores = %routing::all_candidate_scores(&outcome.candidates),
@@ -5185,7 +5518,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             // Fallback: just note that history was truncated
             "Previous conversation context was summarized due to token limits.".to_string()
         } else {
-            format!("[Conversation summary]: {}", summary_text)
+            format!("{CONVERSATION_SUMMARY_PREFIX}: {summary_text}")
         };
 
         // Prepend summary as a system-like message at the start of remaining history
@@ -5527,6 +5860,9 @@ mod tests {
         /// Effective context window reported by `model_info` — the summarization
         /// gate budgets against this, so tests can exercise a reduced window.
         context_window: u32,
+        /// The last user message of each request, in call order: what each
+        /// generation was actually asked.
+        asked: std::sync::Mutex<Vec<String>>,
     }
 
     impl MockEngine {
@@ -5535,6 +5871,7 @@ mod tests {
                 responses: tokio::sync::Mutex::new(responses),
                 generate_count: AtomicUsize::new(0),
                 context_window: 8192,
+                asked: std::sync::Mutex::new(Vec::new()),
             }
         }
 
@@ -5544,6 +5881,7 @@ mod tests {
                 responses: tokio::sync::Mutex::new(responses),
                 generate_count: AtomicUsize::new(0),
                 context_window,
+                asked: std::sync::Mutex::new(Vec::new()),
             }
         }
 
@@ -5603,10 +5941,19 @@ mod tests {
     impl ChatInferenceEngine for MockEngine {
         async fn generate(
             &self,
-            _request: InferenceRequest,
+            request: InferenceRequest,
             on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
         ) -> Result<InferenceUsage, InferenceError> {
             let idx = self.generate_count.fetch_add(1, Ordering::SeqCst);
+            self.asked.lock().unwrap().push(
+                request
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == Role::User)
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default(),
+            );
             let responses = self.responses.lock().await;
 
             if idx >= responses.len() {
@@ -8855,6 +9202,58 @@ mod tests {
         ));
         let text = "That was the task created earlier as nodespace://old-real-id.";
         assert!(ungrounded_node_uris(text, &session_grounded_node_uris(&[], &session)).is_empty());
+    }
+
+    /// The summary that replaces old turns is the model's text in a system
+    /// message. An id in it is no more grounded than it was in those turns.
+    #[test]
+    fn ungrounded_node_uris_is_not_grounded_by_the_conversation_summary() {
+        let mut session = new_session();
+        session.messages.push(ChatMessage::text(
+            Role::System,
+            format!(
+                "{CONVERSATION_SUMMARY_PREFIX}: the user asked about nodespace://from-a-summary."
+            ),
+        ));
+        let text = "See nodespace://from-a-summary.";
+        assert_eq!(
+            ungrounded_node_uris(text, &session_grounded_node_uris(&[], &session)),
+            vec!["nodespace://from-a-summary".to_string()]
+        );
+    }
+
+    /// A chat rebuilt from storage carries an earlier turn's lookups as a
+    /// system-role record, with no tool message behind it.
+    #[test]
+    fn ungrounded_node_uris_is_grounded_by_a_prior_turns_system_record() {
+        let mut session = new_session();
+        session.messages.push(ChatMessage::text(
+            Role::System,
+            "Record of graph entities looked up in the previous turn.\n\
+             - nodespace://looked-up-id \"Northwind Trading\" (company)",
+        ));
+        let text = "It is recorded in [Northwind Trading](nodespace://looked-up-id).";
+        assert!(ungrounded_node_uris(text, &session_grounded_node_uris(&[], &session)).is_empty());
+    }
+
+    /// What the model or the user wrote grounds nothing: an id is real because
+    /// a tool produced it, not because it was said before.
+    #[test]
+    fn ungrounded_node_uris_is_not_grounded_by_what_was_said_in_the_chat() {
+        let mut session = new_session();
+        session.messages.push(ChatMessage::text(
+            Role::User,
+            "open nodespace://typed-by-the-user",
+        ));
+        session.messages.push(ChatMessage::text(
+            Role::Assistant,
+            "See nodespace://said-by-the-model.",
+        ));
+        let text = "nodespace://typed-by-the-user and nodespace://said-by-the-model";
+        assert_eq!(
+            ungrounded_node_uris(text, &session_grounded_node_uris(&[], &session)).len(),
+            2
+        );
     }
 
     #[test]
@@ -13726,6 +14125,94 @@ mod tests {
         );
     }
 
+    /// A question about the agent's own skills is answered from the registry,
+    /// so Stage 2 is shown it: every skill by name, ahead of the candidates.
+    /// Without it the model searched the user's knowledge for a skill, found
+    /// nothing — skills are outside that scope — and said none existed.
+    #[tokio::test]
+    async fn stage2_prompt_names_the_registry_skills_ahead_of_the_candidates() {
+        let engine = RecordingEngine::new(routed_engine(
+            "find a skill",
+            "search_nodes",
+            r#"{"query":"x"}"#,
+            "Done.",
+        ));
+        let prompts = engine.system_prompts_handle();
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![
+                skill_candidate("Research & Search", 0.9, &["search_nodes"]),
+                skill_candidate("Node Deletion", 0.2, &["delete_node"]),
+            ],
+        );
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+
+        loop_
+            .run_turn(
+                &mut session,
+                "which skill finds nodes?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let stage2_prompt = &prompts.lock().unwrap()[1];
+        // Node Deletion is below its bar and is not a candidate, but it is
+        // still one of the agent's skills.
+        let skills = stage2_prompt
+            .find("YOUR SKILLS: Research & Search, Node Deletion.")
+            .unwrap_or_else(|| panic!("Stage 2 must name every skill: {stage2_prompt}"));
+        let candidates = stage2_prompt
+            .find("REFERENCE — procedures relevant")
+            .expect("Stage 2 must carry the candidate block");
+        assert!(
+            skills < candidates,
+            "the skill list goes ahead of the per-turn candidates"
+        );
+    }
+
+    /// The skill list is for a turn that can be asking about skills. A
+    /// request to change something is not one, and gets a prompt without it.
+    #[tokio::test]
+    async fn stage2_prompt_leaves_the_skill_list_out_of_a_turn_that_is_not_a_question() {
+        let engine = RecordingEngine::new(routed_engine(
+            "add a company",
+            "search_nodes",
+            r#"{"query":"x"}"#,
+            "Done.",
+        ));
+        let prompts = engine.system_prompts_handle();
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![skill_candidate("Research & Search", 0.9, &["search_nodes"])],
+        );
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+
+        loop_
+            .run_turn(
+                &mut new_session(),
+                "Add Northwind Trading to the companies we sell to.",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let stage2_prompt = &prompts.lock().unwrap()[1];
+        assert!(
+            stage2_prompt.contains("REFERENCE — procedures relevant"),
+            "the turn is still routed: {stage2_prompt}"
+        );
+        assert!(
+            !stage2_prompt.contains("YOUR SKILLS:"),
+            "a write request must not carry the skill list: {stage2_prompt}"
+        );
+    }
+
     #[tokio::test]
     async fn stage1_prompt_names_the_registry_skills() {
         let engine = RecordingEngine::new(routed_engine(
@@ -14366,6 +14853,11 @@ mod tests {
             !stage2_prompt.contains("REFERENCE — procedures relevant"),
             "a disabled session must not receive the candidate block header at all: \
              {stage2_prompt}"
+        );
+        assert!(
+            !stage2_prompt.contains("YOUR SKILLS:"),
+            "a disabled session must not receive the skill list either: any injected \
+             block was measured suppressing tool-calling: {stage2_prompt}"
         );
         // Tool scoping is a separate mechanism (ADR-038's trust boundary) from
         // prompt injection, and the matrix did not implicate it — it must stay
@@ -15935,10 +16427,979 @@ mod tests {
         );
     }
 
-    /// Once only: a model that replies in prose again has that reply
-    /// accepted, and the turn is recorded as one that did not act.
+    /// Runs a question through Stage 1 as `stage1` routes it, then `stage2`,
+    /// on a surface offering `search_semantic`. Returns the result, how many
+    /// generations ran, and the arguments each `search_semantic` call carried.
+    async fn run_question_turn(
+        session: &mut AgentSession,
+        stage1: Vec<StreamingChunk>,
+        stage2: Vec<Vec<StreamingChunk>>,
+    ) -> (AgentTurnResult, usize, Vec<serde_json::Value>) {
+        let mut rounds = vec![stage1];
+        rounds.extend(stage2);
+        let engine = Arc::new(MockEngine::new(rounds));
+        let inner = MockToolExecutor::new().with_tool(
+            "search_semantic",
+            json!({"type": "object", "properties": {"query": {"type": "string"}}}),
+            json!({"count": 1, "results": [{"id": "abc123", "title": "Retry policy"}]}),
+        );
+        let exec = RoutingToolExecutor::new(
+            inner,
+            vec![skill_candidate(
+                "Research & Search",
+                0.9,
+                &["search_semantic", "search_nodes", "get_node"],
+            )],
+        );
+        let loop_ = LocalAgentLoop::new(engine.clone(), Arc::new(exec));
+        let result = loop_
+            .run_turn(
+                session,
+                "how does our retry policy work?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+        let searches = result
+            .tool_calls_made
+            .iter()
+            .filter(|r| r.name == "search_semantic")
+            .map(|r| r.args.clone())
+            .collect();
+        (
+            result,
+            engine.generate_count.load(Ordering::SeqCst),
+            searches,
+        )
+    }
+
+    fn lookup_round(topic: &str) -> Vec<StreamingChunk> {
+        tool_round(
+            "r1",
+            routing::ROUTE_LOOKUP_TOOL,
+            &json!({ "topic": topic }).to_string(),
+        )
+    }
+
+    /// The reported failure, and the reply the locked model actually gave: a
+    /// question about the user's own knowledge answered without a search. The
+    /// system runs the search Stage 1 routed, and the model answers from it.
     #[tokio::test]
-    async fn a_second_prose_reply_after_the_put_back_is_accepted() {
+    async fn a_lookup_stage2_did_not_search_is_searched_by_the_system() {
+        let mut session = new_session();
+        let from_nothing = "I do not have a tool or information regarding a retry policy.";
+
+        let (result, generations, searches) = run_question_turn(
+            &mut session,
+            lookup_round("how our retry policy works"),
+            vec![
+                text_round(from_nothing),
+                text_round("Retries back off for an hour."),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "Retries back off for an hour.");
+        assert_eq!(
+            generations, 3,
+            "Stage 1, the reply made from nothing, and the answer — no re-prompt between"
+        );
+        assert_eq!(
+            searches,
+            vec![json!({"query": "how our retry policy works", "include_markdown": 3})],
+            "one search, on Stage 1's topic, returning three results in full"
+        );
+        assert!(
+            !session.messages.iter().any(|m| m.content == from_nothing),
+            "the dropped reply must not stay in history for the model to re-read"
+        );
+    }
+
+    /// A request for context is the same failure as an answer from nothing:
+    /// the rule reads the turn's structure, not the reply's wording.
+    #[tokio::test]
+    async fn a_lookup_that_asked_the_user_for_context_is_searched_by_the_system() {
+        let mut session = new_session();
+
+        let (result, _, searches) = run_question_turn(
+            &mut session,
+            lookup_round("how our retry policy works"),
+            vec![
+                text_round(
+                    "I don't see that in this conversation. Could you provide more context?",
+                ),
+                text_round("Retries back off for an hour."),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "Retries back off for an hour.");
+        assert_eq!(searches.len(), 1);
+    }
+
+    /// A lookup the model searched itself is left alone: no second search,
+    /// whatever it goes on to say.
+    #[tokio::test]
+    async fn a_lookup_stage2_searched_itself_is_not_searched_again() {
+        let mut session = new_session();
+
+        let (result, generations, searches) = run_question_turn(
+            &mut session,
+            lookup_round("how our retry policy works"),
+            vec![
+                tool_round("tc_1", "search_semantic", r#"{"query":"retry policy"}"#),
+                text_round("Which service do you mean?"),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "Which service do you mean?");
+        assert_eq!(generations, 3, "Stage 1 and two Stage-2 generations only");
+        assert_eq!(searches, vec![json!({"query": "retry policy"})]);
+    }
+
+    /// Once only. If the model again replies without a call after the search
+    /// result is in front of it, that reply is its answer.
+    #[tokio::test]
+    async fn the_system_runs_a_lookup_once() {
+        let mut session = new_session();
+
+        let (result, generations, searches) = run_question_turn(
+            &mut session,
+            lookup_round("how our retry policy works"),
+            vec![
+                text_round("I do not have that."),
+                text_round("Nothing I found covers it."),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "Nothing I found covers it.");
+        assert_eq!(generations, 3);
+        assert_eq!(searches.len(), 1);
+    }
+
+    /// Only Stage 1's own `route_lookup` marks a turn as a lookup. A turn it
+    /// routed as a query keeps its reply even when the search skill leads it:
+    /// "which skills do you have?" retrieves that skill too, and is answered
+    /// from the prompt, not from the user's notes.
+    #[tokio::test]
+    async fn a_turn_stage1_did_not_route_as_a_lookup_is_not_searched() {
+        let mut session = new_session();
+
+        let (result, generations, searches) = run_question_turn(
+            &mut session,
+            tool_round(
+                "r1",
+                routing::ROUTE_QUERY_TOOL,
+                r#"{"query":"describe your own skills"}"#,
+            ),
+            vec![text_round("I have eleven skills.")],
+        )
+        .await;
+
+        assert_eq!(result.response, "I have eleven skills.");
+        assert_eq!(generations, 2, "Stage 1 and one Stage-2 generation only");
+        assert!(searches.is_empty());
+    }
+
+    /// The search takes the place of the clarification contract's re-prompt on
+    /// a lookup: once the system has made a call the turn has acted, and there
+    /// is nothing left to tell the model to act on.
+    #[tokio::test]
+    async fn a_lookup_in_a_clarified_intent_is_searched_not_told_to_act() {
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Which policy?"),
+        );
+        assert!(session_already_clarified(&session));
+
+        let (result, generations, searches) = run_question_turn(
+            &mut session,
+            lookup_round("how our retry policy works"),
+            vec![
+                text_round("Which retry policy do you mean?"),
+                text_round("Retries back off for an hour."),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "Retries back off for an hour.");
+        assert_eq!(generations, 3);
+        assert_eq!(searches.len(), 1);
+        assert!(!session
+            .messages
+            .iter()
+            .any(|m| m.content == ALREADY_CLARIFIED_NUDGE));
+    }
+
+    /// Stage 2 cannot end a lookup by asking the user what they meant:
+    /// `route_clarify` is a tool call, so the system-run search would never see
+    /// that turn. It is off the surface however it would have got there — the
+    /// Stage-2 clarify addition, or a runner-up skill that whitelists it.
+    #[tokio::test]
+    async fn a_lookup_turn_offers_stage2_no_way_to_clarify_before_searching() {
+        let engine = RecordingEngine::new(MockEngine::new(vec![
+            lookup_round("how our retry policy works"),
+            tool_round("tc_1", "search_semantic", r#"{"query":"retry policy"}"#),
+            text_round("Retries back off for an hour."),
+        ]));
+        let tool_names = engine.tool_names_handle();
+        let inner = MockToolExecutor::new()
+            .with_tool(
+                "search_semantic",
+                json!({"type": "object", "properties": {"query": {"type": "string"}}}),
+                json!({"count": 0, "results": []}),
+            )
+            .with_tool(
+                routing::ROUTE_CLARIFY_TOOL,
+                json!({"type": "object", "properties": {"question": {"type": "string"}}}),
+                json!({}),
+            );
+        let exec = RoutingToolExecutor::new(
+            inner,
+            vec![
+                skill_candidate("Research & Search", 0.9, &["search_semantic"]),
+                // A runner-up that whitelists the tool itself.
+                skill_candidate(
+                    "Graph Editing",
+                    0.8,
+                    &["search_nodes", routing::ROUTE_CLARIFY_TOOL],
+                ),
+            ],
+        );
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+
+        loop_
+            .run_turn(
+                &mut new_session(),
+                "how does our retry policy work?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let stage2_tools = &tool_names.lock().unwrap()[1];
+        assert!(
+            stage2_tools.contains(&"search_semantic".to_string()),
+            "the surface is still the lookup's: {stage2_tools:?}"
+        );
+        assert!(
+            !stage2_tools.contains(&routing::ROUTE_CLARIFY_TOOL.to_string()),
+            "a lookup must not be able to ask before it searches: {stage2_tools:?}"
+        );
+    }
+
+    /// The same request routed as a query keeps `route_clarify`: only a lookup
+    /// loses it.
+    #[tokio::test]
+    async fn a_turn_that_is_not_a_lookup_keeps_the_stage2_clarify_tool() {
+        let engine = RecordingEngine::new(MockEngine::new(vec![
+            tool_round(
+                "r1",
+                routing::ROUTE_QUERY_TOOL,
+                r#"{"query":"update the retry policy"}"#,
+            ),
+            text_round("Which policy?"),
+        ]));
+        let tool_names = engine.tool_names_handle();
+        let inner = MockToolExecutor::new().with_tool(
+            routing::ROUTE_CLARIFY_TOOL,
+            json!({"type": "object", "properties": {"question": {"type": "string"}}}),
+            json!({}),
+        );
+        let exec = RoutingToolExecutor::new(
+            inner,
+            vec![skill_candidate("Graph Editing", 0.9, &["search_nodes"])],
+        );
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+
+        loop_
+            .run_turn(
+                &mut new_session(),
+                "update the retry policy",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        assert!(tool_names.lock().unwrap()[1].contains(&routing::ROUTE_CLARIFY_TOOL.to_string()));
+    }
+
+    /// Text the caller was streamed during a turn, in order.
+    async fn streamed_text(
+        stage1: Vec<StreamingChunk>,
+        stage2: Vec<Vec<StreamingChunk>>,
+    ) -> String {
+        let mut rounds = vec![stage1];
+        rounds.extend(stage2);
+        let engine = Arc::new(MockEngine::new(rounds));
+        let inner = MockToolExecutor::new().with_tool(
+            "search_semantic",
+            json!({"type": "object", "properties": {"query": {"type": "string"}}}),
+            json!({"count": 0, "results": []}),
+        );
+        let exec = RoutingToolExecutor::new(
+            inner,
+            vec![skill_candidate(
+                "Research & Search",
+                0.9,
+                &["search_semantic"],
+            )],
+        );
+        let loop_ = LocalAgentLoop::new(engine, Arc::new(exec));
+        let streamed = Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = Arc::clone(&streamed);
+        loop_
+            .run_turn(
+                &mut new_session(),
+                "how does our retry policy work?",
+                |_| {},
+                move |chunk| {
+                    if let StreamingChunk::Token { text } = chunk {
+                        sink.lock().unwrap().push_str(&text);
+                    }
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+        let text = streamed.lock().unwrap().clone();
+        text
+    }
+
+    /// The reply the system drops is never shown. Streamed live, the user
+    /// would watch it appear and then vanish when the real answer arrived.
+    #[tokio::test]
+    async fn a_lookup_reply_the_system_drops_is_not_streamed_to_the_user() {
+        let streamed = streamed_text(
+            lookup_round("how our retry policy works"),
+            vec![
+                text_round("I do not have any information on that."),
+                text_round("Retries back off for an hour."),
+            ],
+        )
+        .await;
+
+        assert_eq!(streamed, "Retries back off for an hour.");
+    }
+
+    /// Every chunk the caller was streamed during a lookup turn, in order.
+    async fn streamed_chunks(stage2: Vec<Vec<StreamingChunk>>) -> Vec<StreamingChunk> {
+        let mut rounds = vec![lookup_round("how our retry policy works")];
+        rounds.extend(stage2);
+        let engine = Arc::new(MockEngine::new(rounds));
+        let inner = MockToolExecutor::new().with_tool(
+            "search_semantic",
+            json!({"type": "object", "properties": {"query": {"type": "string"}}}),
+            json!({"count": 0, "results": []}),
+        );
+        let exec = RoutingToolExecutor::new(
+            inner,
+            vec![skill_candidate(
+                "Research & Search",
+                0.9,
+                &["search_semantic"],
+            )],
+        );
+        let loop_ = LocalAgentLoop::new(engine, Arc::new(exec));
+        let streamed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&streamed);
+        loop_
+            .run_turn(
+                &mut new_session(),
+                "how does our retry policy work?",
+                |_| {},
+                move |chunk| sink.lock().unwrap().push(chunk),
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+        let chunks = streamed.lock().unwrap().clone();
+        chunks
+    }
+
+    /// A held round that stands is forwarded, once, and ahead of what follows
+    /// it. This is the usual lookup: the model searched by itself, and the
+    /// caller must still see that call start.
+    #[tokio::test]
+    async fn a_lookup_round_that_stands_is_forwarded_once_and_in_order() {
+        let chunks = streamed_chunks(vec![
+            tool_round("tc_1", "search_semantic", r#"{"query":"retry policy"}"#),
+            text_round("Retries back off for an hour."),
+        ])
+        .await;
+
+        let call_starts: Vec<usize> = chunks
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| matches!(c, StreamingChunk::ToolCallStart { id, .. } if id == "tc_1"))
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(call_starts.len(), 1, "forwarded exactly once: {chunks:?}");
+        let answer = chunks
+            .iter()
+            .position(|c| matches!(c, StreamingChunk::Token { text } if text.contains("Retries")))
+            .expect("the answer is streamed");
+        assert!(
+            call_starts[0] < answer,
+            "the held round is forwarded before the answer that follows it"
+        );
+    }
+
+    /// An engine that does not hold its output to the offered tools can still
+    /// emit `route_clarify` on a lookup. Until a search has run, that call is
+    /// dropped and the system searches in its place.
+    #[tokio::test]
+    async fn a_clarify_call_on_an_unsearched_lookup_is_replaced_by_the_search() {
+        let mut session = new_session();
+
+        let (result, _, searches) = run_question_turn(
+            &mut session,
+            lookup_round("how our retry policy works"),
+            vec![
+                tool_round(
+                    "c_1",
+                    routing::ROUTE_CLARIFY_TOOL,
+                    r#"{"question":"Which retry policy?","options":["uploads","webhooks"]}"#,
+                ),
+                text_round("Retries back off for an hour."),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "Retries back off for an hour.");
+        assert!(
+            result.clarify.is_none(),
+            "the turn must not end on a question"
+        );
+        assert_eq!(
+            searches,
+            vec![json!({"query": "how our retry policy works", "include_markdown": 3})]
+        );
+    }
+
+    /// The clarify call is dropped only when a search takes its place. On a
+    /// surface with no search tool there is nothing to run, and dropping the
+    /// call would leave the round with neither a call nor a reply.
+    #[tokio::test]
+    async fn a_clarify_call_on_a_lookup_with_no_search_tool_is_left_alone() {
+        let engine = Arc::new(MockEngine::new(vec![
+            lookup_round("how our retry policy works"),
+            tool_round(
+                "c_1",
+                routing::ROUTE_CLARIFY_TOOL,
+                r#"{"question":"Which retry policy?","options":["uploads","webhooks"]}"#,
+            ),
+        ]));
+        // The lookup's candidate offers only `search_nodes`, which the system
+        // lookup does not use.
+        let inner = MockToolExecutor::new().with_tool(
+            routing::ROUTE_CLARIFY_TOOL,
+            json!({"type": "object", "properties": {"question": {"type": "string"}}}),
+            json!({}),
+        );
+        let exec = RoutingToolExecutor::new(
+            inner,
+            vec![skill_candidate("Research & Search", 0.9, &["search_nodes"])],
+        );
+        let loop_ = LocalAgentLoop::new(engine, Arc::new(exec));
+
+        let result = loop_
+            .run_turn(
+                &mut new_session(),
+                "how does our retry policy work?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("the turn must not fail on an empty round");
+
+        assert!(
+            result
+                .tool_calls_made
+                .iter()
+                .any(|r| r.name == routing::ROUTE_CLARIFY_TOOL),
+            "with no search to run, the model's call is left in place: {:?}",
+            result.tool_calls_made
+        );
+    }
+
+    /// Holding the first round is only for a lookup. Any other turn streams
+    /// its reply as it is generated.
+    #[tokio::test]
+    async fn a_reply_on_a_turn_that_is_not_a_lookup_streams_as_before() {
+        let streamed = streamed_text(
+            tool_round(
+                "r1",
+                routing::ROUTE_QUERY_TOOL,
+                r#"{"query":"describe your own skills"}"#,
+            ),
+            vec![text_round("I have eleven skills.")],
+        )
+        .await;
+
+        assert_eq!(streamed, "I have eleven skills.");
+    }
+
+    /// What a turn's routing did: the queries retrieval was asked for, what each
+    /// generation was asked (its last user message), and how many ran.
+    struct Routed {
+        retrieved: Vec<String>,
+        asked: Vec<String>,
+        generations: usize,
+    }
+
+    /// Runs `message` in a chat that already holds an unrelated exchange, with
+    /// `rounds` as the engine's generations in order. `clarified` records that
+    /// exchange as one the agent ended on a composed clarifying question.
+    async fn route_after_an_earlier_exchange(
+        message: &str,
+        clarified: bool,
+        rounds: Vec<Vec<StreamingChunk>>,
+    ) -> Routed {
+        let engine = Arc::new(MockEngine::new(rounds));
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![skill_candidate("Research & Search", 0.9, &["search_nodes"])],
+        );
+        let queries = exec.queries_handle();
+        let loop_ = LocalAgentLoop::new(engine.clone(), Arc::new(exec));
+        let mut session = new_session();
+        session.messages.push(ChatMessage::text(
+            Role::User,
+            "Set up a new type for the places we hold events",
+        ));
+        if clarified {
+            seed_turn(
+                &mut session,
+                AiChatTurnOutcome::Clarified,
+                &format!("{CLARIFICATION_OPENER}. Client venues or vendor venues?"),
+            );
+        } else {
+            session.messages.push(ChatMessage::text(
+                Role::Assistant,
+                "The Event Venue type already exists.",
+            ));
+        }
+
+        loop_
+            .run_turn(
+                &mut session,
+                message,
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let retrieved = queries.lock().unwrap().clone();
+        let asked = engine.asked.lock().unwrap().clone();
+        Routed {
+            retrieved,
+            asked,
+            generations: engine.generate_count.load(Ordering::SeqCst),
+        }
+    }
+
+    /// A question in a chat with history is put to Stage 1 by itself first,
+    /// and a lookup from that pass is taken as it stands: one routing
+    /// generation, not two, and what it was asked is the bare message.
+    #[tokio::test]
+    async fn a_question_with_history_is_routed_on_the_message_alone() {
+        let routed = route_after_an_earlier_exchange(
+            "  How do we onboard a new sponsor?  ",
+            false,
+            vec![
+                lookup_round("how we onboard a new sponsor"),
+                text_round("Done."),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            routed.asked[0], "How do we onboard a new sponsor?",
+            "Stage 1 is asked about the message, trimmed, with nothing blended in"
+        );
+        assert_eq!(
+            routed.retrieved,
+            vec!["search stored knowledge for how we onboard a new sponsor".to_string()]
+        );
+        assert_eq!(
+            routed.generations, 2,
+            "one Stage-1 pass and one Stage-2 generation"
+        );
+    }
+
+    /// A question-shaped message that is not a lookup — a request that ends
+    /// in a question mark — is decided on the blended view, as it was before.
+    /// The first pass's answer is not used.
+    #[tokio::test]
+    async fn a_question_shaped_request_falls_back_to_the_blended_view() {
+        let routed = route_after_an_earlier_exchange(
+            "could you mark it booked?",
+            false,
+            vec![
+                // On the message alone: nothing to route on.
+                tool_round(
+                    "r0",
+                    routing::ROUTE_QUERY_TOOL,
+                    r#"{"query":"mark something booked"}"#,
+                ),
+                // Blended with the turns before it.
+                tool_round(
+                    "r1",
+                    routing::ROUTE_QUERY_TOOL,
+                    r#"{"query":"mark the event venue booked"}"#,
+                ),
+                text_round("Done."),
+            ],
+        )
+        .await;
+
+        assert_eq!(routed.asked[0], "could you mark it booked?");
+        assert!(
+            routed.asked[1].starts_with("PRIOR CONTEXT")
+                && routed.asked[1].contains("could you mark it booked?"),
+            "the second pass is the blended view: {:?}",
+            routed.asked[1]
+        );
+        assert_eq!(
+            routed.retrieved,
+            vec!["mark the event venue booked".to_string()]
+        );
+        assert_eq!(
+            routed.generations, 3,
+            "two Stage-1 passes and one Stage-2 generation"
+        );
+    }
+
+    /// A message that is not shaped like a question costs no extra pass, and
+    /// is asked about in context.
+    #[tokio::test]
+    async fn a_message_that_is_not_a_question_is_routed_in_one_pass() {
+        let routed = route_after_an_earlier_exchange(
+            "mark it booked",
+            false,
+            vec![
+                tool_round(
+                    "r1",
+                    routing::ROUTE_QUERY_TOOL,
+                    r#"{"query":"mark the event venue booked"}"#,
+                ),
+                text_round("Done."),
+            ],
+        )
+        .await;
+
+        assert!(routed.asked[0].starts_with("PRIOR CONTEXT"));
+        assert_eq!(
+            routed.retrieved,
+            vec!["mark the event venue booked".to_string()]
+        );
+        assert_eq!(routed.generations, 2);
+    }
+
+    /// The answer to a clarifying question is read in the light of what was
+    /// asked, whatever its punctuation. By itself "the client ones?" is the
+    /// message with the least to route on, and a lookup for it would search
+    /// for those three words and drop the request being clarified.
+    #[tokio::test]
+    async fn an_answer_to_a_clarification_is_never_asked_about_alone() {
+        let routed = route_after_an_earlier_exchange(
+            "the client ones?",
+            true,
+            vec![
+                tool_round(
+                    "r1",
+                    routing::ROUTE_QUERY_TOOL,
+                    r#"{"query":"set up a type for client venues"}"#,
+                ),
+                // The intent is already clarified, so Stage 2 acts.
+                tool_round("tc_1", "search_nodes", r#"{"query":"client venues"}"#),
+                text_round("Done."),
+            ],
+        )
+        .await;
+
+        assert!(
+            routed.asked[0].starts_with("PRIOR CONTEXT"),
+            "the one Stage-1 pass is the blended view: {:?}",
+            routed.asked[0]
+        );
+        assert_eq!(
+            routed.retrieved,
+            vec!["set up a type for client venues".to_string()]
+        );
+        assert_eq!(
+            routed.generations, 3,
+            "one Stage-1 pass and two Stage-2 generations"
+        );
+    }
+
+    /// Stage 1's lookup reaches retrieval as the capability and then the
+    /// topic, which is what ranks the search skill first.
+    #[tokio::test]
+    async fn a_lookup_is_retrieved_as_a_search_for_its_topic() {
+        let engine = Arc::new(MockEngine::new(vec![
+            lookup_round("the merge gate"),
+            text_round("Done."),
+        ]));
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![skill_candidate("Research & Search", 0.9, &["search_nodes"])],
+        );
+        let queries = exec.queries_handle();
+        let loop_ = LocalAgentLoop::new(engine, Arc::new(exec));
+
+        loop_
+            .run_turn(
+                &mut new_session(),
+                "what is the merge gate?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        assert_eq!(
+            *queries.lock().unwrap(),
+            vec!["search stored knowledge for the merge gate".to_string()]
+        );
+    }
+
+    /// A chat that has only asked questions counts as already clarified, and
+    /// there the reply set aside is an answer. If the re-prompt gets no call
+    /// out of the model, that answer is what the user gets: the re-prompt can
+    /// turn a question into an action, it cannot replace an answer.
+    #[tokio::test]
+    async fn in_a_chat_that_only_read_a_second_prose_reply_keeps_the_first() {
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Here is the policy.",
+        );
+        seed_turn(&mut session, AiChatTurnOutcome::Replied, "Signed in March.");
+        assert!(session_already_clarified(&session));
+
+        let (result, generations) = run_routed_turn(
+            &mut session,
+            vec![
+                text_round("You signed them on March 14, 2025."),
+                text_round("I'm not sure what you mean."),
+            ],
+        )
+        .await;
+
+        assert_eq!(result.response, "You signed them on March 14, 2025.");
+        assert_eq!(generations, 3, "Stage 1, the put-back reply, and one retry");
+        assert_eq!(
+            session.prior_turns.last().map(|t| t.outcome),
+            Some(AiChatTurnOutcome::Replied)
+        );
+        assert!(
+            !session
+                .messages
+                .iter()
+                .any(|m| m.content == ALREADY_CLARIFIED_NUDGE),
+            "a re-prompt that produced nothing must not stay in the history"
+        );
+        assert_eq!(
+            session.messages.last().map(|m| m.content.as_str()),
+            Some("You signed them on March 14, 2025."),
+            "the history ends on the reply the user was shown"
+        );
+    }
+
+    /// A question answered in prose, in a chat that never composed a
+    /// clarification, is an answer. It is not put back to act: there is
+    /// nothing to act on, and the re-prompt has turned such an answer into a
+    /// search of the user's notes for the agent's own skills.
+    #[tokio::test]
+    async fn in_a_chat_that_only_read_a_question_answered_in_prose_is_not_put_back() {
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Here is the policy.",
+        );
+        seed_turn(&mut session, AiChatTurnOutcome::Replied, "Signed in March.");
+        assert!(session_already_clarified(&session));
+
+        let route = || {
+            tool_round(
+                "r",
+                routing::ROUTE_QUERY_TOOL,
+                r#"{"query":"describe your own skills"}"#,
+            )
+        };
+        let engine = Arc::new(MockEngine::new(vec![
+            // Asked about the message alone, then in context.
+            route(),
+            route(),
+            text_round("I have Research & Search and Node Creation."),
+            text_round("I searched and found nothing."),
+        ]));
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![skill_candidate("research", 0.9, &["search_nodes"])],
+        );
+        let loop_ = LocalAgentLoop::new(engine.clone(), Arc::new(exec));
+
+        let result = loop_
+            .run_turn(
+                &mut session,
+                "Which skills do you have?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        assert_eq!(
+            result.response,
+            "I have Research & Search and Node Creation."
+        );
+        assert_eq!(
+            engine.generate_count.load(Ordering::SeqCst),
+            3,
+            "two Stage-1 passes and one reply: no re-prompt"
+        );
+        assert!(!session
+            .messages
+            .iter()
+            .any(|m| m.content == ALREADY_CLARIFIED_NUDGE));
+    }
+
+    /// The exemption is for an intent that composed no clarification. Where
+    /// one was composed, its answer is put back to act even when it is shaped
+    /// like a question: "the client ones?" answered with another question is
+    /// the loop the contract exists to stop.
+    #[tokio::test]
+    async fn after_a_composed_clarification_a_question_shaped_answer_is_still_put_back() {
+        let mut session = new_session();
+        session
+            .messages
+            .push(ChatMessage::text(Role::User, "organize my contacts"));
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Clarified,
+            &format!("{CLARIFICATION_OPENER}. Client contacts or vendor contacts?"),
+        );
+        let engine = Arc::new(MockEngine::new(vec![
+            tool_round(
+                "r1",
+                routing::ROUTE_QUERY_TOOL,
+                r#"{"query":"organize client contacts"}"#,
+            ),
+            text_round("Which client contacts?"),
+            text_round("I will go with all of your client contacts."),
+        ]));
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![skill_candidate("research", 0.9, &["search_nodes"])],
+        );
+        let loop_ = LocalAgentLoop::new(engine.clone(), Arc::new(exec));
+
+        let result = loop_
+            .run_turn(
+                &mut session,
+                "the client ones?",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        assert!(
+            session
+                .messages
+                .iter()
+                .any(|m| m.role == Role::System && m.content == ALREADY_CLARIFIED_NUDGE),
+            "the prose reply to an answered clarification must be put back"
+        );
+        assert_eq!(
+            result.response,
+            "I will go with all of your client contacts."
+        );
+        assert_eq!(
+            engine.generate_count.load(Ordering::SeqCst),
+            3,
+            "one Stage-1 pass, the reply put back, and the retry"
+        );
+    }
+
+    /// When the re-prompt works, the held round is the call it asked for. The
+    /// answer that follows the call streams to the user like any other.
+    #[tokio::test]
+    async fn the_answer_after_a_re_prompt_that_produced_a_call_is_streamed() {
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Here is the policy.",
+        );
+        seed_turn(&mut session, AiChatTurnOutcome::Replied, "Signed in March.");
+        let engine = Arc::new(MockEngine::new(vec![
+            tool_round(
+                "r1",
+                routing::ROUTE_QUERY_TOOL,
+                r#"{"query":"search existing contacts"}"#,
+            ),
+            text_round("Could you tell me which list they are in?"),
+            tool_round("tc_1", "search_nodes", r#"{"query":"contacts"}"#),
+            text_round("Here are your contacts."),
+        ]));
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![skill_candidate("research", 0.9, &["search_nodes"])],
+        );
+        let loop_ = LocalAgentLoop::new(engine, Arc::new(exec));
+        let streamed = Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = Arc::clone(&streamed);
+
+        let result = loop_
+            .run_turn(
+                &mut session,
+                "just show me what I have",
+                |_| {},
+                move |chunk| {
+                    if let StreamingChunk::Token { text } = chunk {
+                        sink.lock().unwrap().push_str(&text);
+                    }
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        assert_eq!(result.response, "Here are your contacts.");
+        assert_eq!(
+            *streamed.lock().unwrap(),
+            "Could you tell me which list they are in?Here are your contacts.",
+            "the first reply, then the answer, each once"
+        );
+    }
+
+    /// Where a clarification was composed and answered, the reply set aside is
+    /// most likely the question again. The reply made after being told not to
+    /// ask is the one accepted, as the contract intends.
+    #[tokio::test]
+    async fn after_a_composed_clarification_a_second_prose_reply_is_the_one_accepted() {
         let mut session = new_session();
         seed_turn(
             &mut session,
@@ -15950,16 +17411,69 @@ mod tests {
             &mut session,
             vec![
                 text_round("Which contacts?"),
-                text_round("Which contacts, exactly?"),
+                text_round("I will go with your client contacts."),
             ],
         )
         .await;
 
-        assert_eq!(result.response, "Which contacts, exactly?");
+        assert_eq!(result.response, "I will go with your client contacts.");
         assert_eq!(generations, 3, "Stage 1, the put-back reply, and one retry");
+        assert!(
+            !session
+                .messages
+                .iter()
+                .any(|m| m.content == "Which contacts?"),
+            "the repeated question must not stay in the history"
+        );
+    }
+
+    /// The round after the re-prompt is not shown until it is known to stand.
+    /// In a chat that only read, a second prose reply is the one discarded,
+    /// so the user is streamed the first reply and nothing after it.
+    #[tokio::test]
+    async fn a_reply_discarded_after_the_re_prompt_is_not_streamed() {
+        let mut session = new_session();
+        seed_turn(
+            &mut session,
+            AiChatTurnOutcome::Replied,
+            "Here is the policy.",
+        );
+        seed_turn(&mut session, AiChatTurnOutcome::Replied, "Signed in March.");
+        let engine = Arc::new(MockEngine::new(vec![
+            tool_round(
+                "r1",
+                routing::ROUTE_QUERY_TOOL,
+                r#"{"query":"search existing contacts"}"#,
+            ),
+            text_round("You signed them on March 14, 2025."),
+            text_round("I'm not sure what you mean."),
+        ]));
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![skill_candidate("research", 0.9, &["search_nodes"])],
+        );
+        let loop_ = LocalAgentLoop::new(engine, Arc::new(exec));
+        let streamed = Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = Arc::clone(&streamed);
+
+        loop_
+            .run_turn(
+                &mut session,
+                "say that again more simply",
+                |_| {},
+                move |chunk| {
+                    if let StreamingChunk::Token { text } = chunk {
+                        sink.lock().unwrap().push_str(&text);
+                    }
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
         assert_eq!(
-            session.prior_turns.last().map(|t| t.outcome),
-            Some(AiChatTurnOutcome::Replied)
+            *streamed.lock().unwrap(),
+            "You signed them on March 14, 2025."
         );
     }
 

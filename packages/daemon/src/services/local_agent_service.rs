@@ -5993,6 +5993,26 @@ mod tests {
         assert!(resolved_entities_from(&[failed]).is_empty());
     }
 
+    /// The record of a turn's lookups carries each node as the URI the tool
+    /// returned, in a system message. The agent loop's fabricated-id check
+    /// reads that message to know which ids a tool produced: in a rebuilt
+    /// history it is the only place they are.
+    #[test]
+    fn the_record_of_looked_up_entities_carries_their_uris_in_a_system_message() {
+        let entities = resolved_entities_from(&[exec(
+            "get_node",
+            serde_json::json!({"id": "nodespace://t1"}),
+            serde_json::json!({"id": "nodespace://t1", "title": "Northwind Trading", "nodeType": "company"}),
+        )]);
+        let record = resolved_entities_message(&entities).expect("a record of the lookup");
+        assert_eq!(record.role, Role::System);
+        assert!(
+            record.content.contains("nodespace://t1"),
+            "the record must carry the node's URI as the tool returned it: {}",
+            record.content
+        );
+    }
+
     /// Duplicate node ids across multiple read calls in one turn collapse to a
     /// single entry, keeping the most recent occurrence.
     #[test]

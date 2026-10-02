@@ -887,7 +887,8 @@ export function formatReliabilityTable(aggregate: RunAggregate): string[] {
 function usage(fixture: EvalFixture): string {
   return (
     `usage: bun run scripts/eval/${fixture.name}.ts <label> [out.json] [--runs N]\n` +
-    `       [--between-runs <cmd>] [--baseline <path>]\n\n` +
+    `       [--between-runs <cmd>] [--baseline <path>] [--only <id,id,...>]\n` +
+    `       bun run scripts/eval/${fixture.name}.ts --list\n\n` +
     `  ${fixture.description}\n\n` +
     `  label          tag recorded in the results (e.g. 'e4b')\n` +
     `  out.json       where to write results (default: /tmp/${fixture.name}-<label>-<ts>.json)\n` +
@@ -898,10 +899,70 @@ function usage(fixture: EvalFixture): string {
     `                 after the last) — purge the database and restart the daemon\n` +
     `                 here. Reps run against the same daemon otherwise, and the\n` +
     `                 runner aborts if guidance drifts between them.\n` +
-    `  --baseline     compare against a recorded run and fail on regression\n\n` +
+    `  --baseline     compare against a recorded run and fail on regression\n` +
+    `  --only         run only these scenarios, by id (comma-separated). Their\n` +
+    `                 setup turns still run, and so does any scenario ahead of one\n` +
+    `                 in the same chat: it is the conversation the selected one is\n` +
+    `                 scored in. A partial run is marked as one in the results and\n` +
+    `                 cannot be compared against a baseline.\n` +
+    `  --list         print every scenario id, by chat, and exit\n\n` +
     ENV_USAGE +
     `\n\nExit codes: 0 all passed · 1 scenario failure/regression · 2 environment unusable · 64 usage`
   );
+}
+
+/** A request named scenario ids the fixture does not have. */
+export class UnknownScenarioError extends Error {
+  constructor(
+    readonly unknown: string[],
+    readonly known: string[],
+  ) {
+    super(`Unknown scenario id(s): ${unknown.join(", ")}`);
+  }
+}
+
+/**
+ * Narrow a fixture to the scenarios named in `ids`.
+ *
+ * A group is kept when it holds a selected scenario, and within it:
+ *
+ * - **setup turns always stay.** They establish the state the selected
+ *   scenario is scored against; without them it would run on a workspace that
+ *   was never set up and score as a model failure.
+ * - **scenarios ahead of the last selected one stay too, and are still
+ *   scored.** A group is one chat, so they are the conversation the selected
+ *   scenario is asked in. Dropping them would score it on a different
+ *   conversation from the one a full run scores it on, and the two results
+ *   would not be comparable. They ran, so they are reported.
+ * - **scenarios after the last selected one are dropped.** Nothing selected
+ *   depends on them.
+ *
+ * Throws `UnknownScenarioError` for an id no scored or setup scenario carries:
+ * a typo must not silently select nothing and report a clean, empty run.
+ */
+export function selectScenarios(fixture: EvalFixture, ids: string[]): EvalFixture {
+  const wanted = new Set(ids);
+  const known = fixture.groups.flat().map((s) => s.id);
+  const unknown = ids.filter((id) => !known.includes(id));
+  if (unknown.length > 0) throw new UnknownScenarioError(unknown, [...new Set(known)]);
+
+  const groups = fixture.groups.flatMap((group) => {
+    const last = group.map((s) => wanted.has(s.id)).lastIndexOf(true);
+    if (last === -1) return [];
+    // A setup turn after the last selected scenario has nothing left to set up.
+    return [group.slice(0, last + 1)];
+  });
+  return { ...fixture, groups };
+}
+
+/** Print every scenario id, one chat per block, for choosing `--only` values. */
+function listScenarios(fixture: EvalFixture): void {
+  fixture.groups.forEach((group, i) => {
+    console.log(`chat ${i + 1}`);
+    for (const s of group) {
+      console.log(`  ${s.id}${s.setup ? "  (setup)" : ""}  — ${s.scenario}`);
+    }
+  });
 }
 
 /** Pull `--flag <value>` out of argv, or `undefined`. Exits on a missing value. */
@@ -1291,8 +1352,36 @@ function runBetween(fixture: EvalFixture, cmd: string, rep: number): void {
  * Run an eval end to end. Call this from a fixture's CLI wrapper; it owns the
  * process lifetime and exits rather than returning.
  */
-export async function runEval(fixture: EvalFixture): Promise<never> {
+export async function runEval(fullFixture: EvalFixture): Promise<never> {
   const argv = process.argv.slice(2);
+
+  // Needs no daemon: it describes the fixture, not a run of it.
+  if (argv.includes("--list")) {
+    listScenarios(fullFixture);
+    process.exit(0);
+  }
+
+  const onlyArg = takeFlag(argv, "--only", fullFixture);
+  const selection = onlyArg
+    ?.split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+  let fixture = fullFixture;
+  if (selection !== undefined) {
+    if (selection.length === 0) {
+      console.error(`--only needs at least one scenario id\n\n${usage(fullFixture)}`);
+      process.exit(EXIT_USAGE);
+    }
+    try {
+      fixture = selectScenarios(fullFixture, selection);
+    } catch (e) {
+      if (!(e instanceof UnknownScenarioError)) throw e;
+      console.error(
+        `${e.message}\n\nScenario ids in ${fullFixture.name}:\n  ${e.known.join("\n  ")}`,
+      );
+      process.exit(EXIT_USAGE);
+    }
+  }
 
   const baselinePath = takeFlag(argv, "--baseline", fixture);
   const betweenRuns = takeFlag(argv, "--between-runs", fixture);
@@ -1307,6 +1396,16 @@ export async function runEval(fixture: EvalFixture): Promise<never> {
       );
       process.exit(EXIT_USAGE);
     }
+  }
+  // A partial run has no entry for the scenarios it left out, and a baseline
+  // diff would report each of them as removed. Comparing like with like means
+  // comparing full runs.
+  if (selection !== undefined && baselinePath !== undefined) {
+    console.error(
+      `--only cannot be combined with --baseline: a partial run is not comparable ` +
+        `to a recorded full one.\n\n${usage(fixture)}`,
+    );
+    process.exit(EXIT_USAGE);
   }
   if (betweenRuns !== undefined && runs === 1) {
     console.error(
@@ -1354,6 +1453,12 @@ export async function runEval(fixture: EvalFixture): Promise<never> {
       (firstProvenance.dirty ? " (working tree dirty)" : "") +
       (runs > 1 ? ` runs=${runs}` : ""),
   );
+  if (selection !== undefined) {
+    console.error(
+      `[${fixture.name}] PARTIAL RUN — only: ${selection.join(", ")} ` +
+        `(${fixture.groups.length} of ${fullFixture.groups.length} chats)`,
+    );
+  }
   for (const [nodeType, entries] of Object.entries(
     firstProvenance.guidance ?? {},
   )) {
@@ -1455,7 +1560,13 @@ export async function runEval(fixture: EvalFixture): Promise<never> {
         undefined,
         distinctToolsCalled,
       );
-      if (uniformityError) abortOnEnvironment(fixture.name, uniformityError);
+      // Not applied to a partial run. The guard reads a uniform result as a
+      // harness signature because a whole suite is varied enough that a real
+      // run never is; a selection is narrow on purpose, and five lookups that
+      // all pass by calling the same search tool are a result.
+      if (uniformityError && selection === undefined) {
+        abortOnEnvironment(fixture.name, uniformityError);
+      }
 
       reps.push({
         rep,
@@ -1487,6 +1598,7 @@ export async function runEval(fixture: EvalFixture): Promise<never> {
   const evalResults: EvalResults = {
     eval: fixture.name,
     label,
+    ...(selection !== undefined ? { selection } : {}),
     provenance: firstProvenance,
     aggregate,
     reps,
@@ -1528,6 +1640,9 @@ export async function runEval(fixture: EvalFixture): Promise<never> {
     `   Commit:   ${firstProvenance.evalCommit}${firstProvenance.dirty ? " (dirty)" : ""}`,
   );
   console.log(`   Reps:     ${aggregate.reps}`);
+  if (selection !== undefined) {
+    console.log(`   Partial:  only ${selection.join(", ")} — not a full-suite score`);
+  }
   // pass^k first, deliberately: it is the number to cite. pass^1 is printed
   // right under it because it is the number every earlier run quoted, and the
   // distance between them is the finding. At k=1 the two are the same number
