@@ -972,6 +972,12 @@ fn comparable_title(s: &str) -> String {
 /// against this turn's message — not the whole graph, so a create naming
 /// something the user did not refer to is never touched.
 ///
+/// A call that names no type matches on the title alone. It cannot run: the
+/// executor refuses it for the missing `node_type`. Left to that, the model is
+/// told its own call was malformed, and the locked model then ended the turn
+/// apologising for the tool error, with the user never asked about the record
+/// they named. A call that names a different type is still not a duplicate.
+///
 /// Compared against the create's `content`, so a type whose stored title comes
 /// from a `title_template` rather than the content never matches. That is the
 /// safe direction — no false refusal — and deliberately not widened into a
@@ -1003,14 +1009,19 @@ fn mentioned_entity_duplicated_by<'a>(
     if tool != "create_node" || mentioned_entities.is_empty() {
         return None;
     }
-    let node_type = args.get("node_type")?.as_str()?;
+    let node_type = args
+        .get("node_type")
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.trim().is_empty());
     let title = comparable_title(args.get("content")?.as_str()?);
     if title.is_empty() {
         return None;
     }
     mentioned_entities
         .iter()
-        .find(|e| e.node_type == node_type && comparable_title(&e.title) == title)
+        .find(|e| {
+            node_type.is_none_or(|t| e.node_type == t) && comparable_title(&e.title) == title
+        })
         .filter(|e| {
             !composed_clarifications
                 .iter()
@@ -12016,6 +12027,58 @@ mod tests {
                 .is_none(),
             "a near-miss may be a distinct record and must not be refused"
         );
+    }
+
+    #[test]
+    fn a_create_naming_no_type_matches_a_mentioned_entity_by_title() {
+        let session = session_mentioning_northwind();
+        let duplicated = |args: serde_json::Value| {
+            mentioned_entity_duplicated_by(&session.mentioned_entities, &[], "create_node", &args)
+                .is_some()
+        };
+        assert!(duplicated(json!({"content": "Northwind Trading"})));
+        assert!(duplicated(
+            json!({"content": "Northwind Trading", "node_type": " "})
+        ));
+        assert!(
+            !duplicated(json!({"content": "Northwind Trading", "node_type": "event_venue"})),
+            "a record of another type that shares the title is not a duplicate"
+        );
+        assert!(
+            !duplicated(json!({"content": "Tailspin Toys"})),
+            "a title the user did not refer to is the executor's error to report"
+        );
+    }
+
+    /// The call the locked model made for "Add Northwind Trading to the
+    /// companies we sell to": the title, a half-written field value, and no
+    /// type. The user is asked about the record, not told a tool call failed.
+    #[tokio::test]
+    async fn a_malformed_create_of_a_mentioned_entity_asks_the_user() {
+        let mut session = session_mentioning_northwind();
+        let (result, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round(
+                    "tc_1",
+                    "create_node",
+                    r#"{"content":"Northwind Trading","field_values":{"name":"Northwind Trading`, signed_date:"}}"#,
+                ),
+                text_round("I'm sorry, I encountered an error while trying to add Northwind Trading."),
+            ],
+        )
+        .await;
+
+        assert!(
+            !calls.iter().any(|c| c == "create_node"),
+            "the create must not reach the executor, got {calls:?}"
+        );
+        assert!(
+            result.response.starts_with(CLARIFICATION_OPENER),
+            "the apology must be replaced by the question, got {:?}",
+            result.response
+        );
+        assert!(result.response.contains("nodespace://nw-1"));
     }
 
     // -- Cross-turn duplicate-write guard --------------------------------
