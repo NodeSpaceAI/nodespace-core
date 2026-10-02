@@ -225,6 +225,9 @@ impl AgentSessionService for AgentSessionHandler {
                     exit_status,
                     harness_session_id,
                 };
+                // Deriving the summary can wait a long time for the model;
+                // the finished PTY session is not kept alive for it.
+                drop(session);
 
                 if let Err(e) = finalize_capture(
                     &completed,
@@ -236,7 +239,7 @@ impl AgentSessionService for AgentSessionHandler {
                 .await
                 {
                     tracing::warn!(
-                        session_id = %session.id,
+                        session_id = %completed.id,
                         error = %e,
                         "failed to record the session's end on its node (non-fatal)"
                     );

@@ -111,10 +111,7 @@ RD_*.md
 debug_*.rs
 research_*.rs
 *_investigation.rs
-session*.rs
-!**/src/acp/session.rs
-!**/src/pty/session.rs
-!**/src/commands/session.rs
+/session*.rs
 *_test.rs.bak
 check_*.rs
 temp_*.rs

@@ -10,15 +10,23 @@
 //!
 //! A model asked to describe output can repeat it instead. Two things are
 //! enforced on its reply whatever it wrote: it holds no escape sequence or
-//! control character ([`sanitize_summary`]), and it repeats no line of the
-//! output and no long unbroken run of its characters, the shape of a path, a
-//! URL, a key or a hash ([`copies_output`]). A reply that fails the second is
-//! discarded, and the chat has no summary.
+//! control character ([`sanitize_summary`]), and it is not a copy of the
+//! output ([`copied_from_output`]). A copy is a reply that:
 //!
-//! That is a check for copying, not for secrets. A short secret the model
-//! restates is not caught, and nothing here detects one: scrubbing content is
-//! a separate, best-effort problem (ADR-061 §7), and this module does not
-//! claim to solve it.
+//! - is itself a passage of the output;
+//! - repeats eight words running of it; or
+//! - shares with it a long unbroken run of characters shaped like a path, a
+//!   URL, an assignment or a key (it holds `/`, `\`, `:`, `=` or `@`, or is
+//!   heavy with digits).
+//!
+//! A copy is discarded, and the chat has no summary. A long plain name (a
+//! file, a function, a branch) is not a copy: naming what was worked on is
+//! what a summary is for.
+//!
+//! That is a check for copying, not for secrets. A short secret, a key made
+//! only of letters, or a bare host name that the model restates is not
+//! caught, and nothing here detects one: scrubbing content is a separate, best-effort problem
+//! (ADR-061 §7), and this module does not claim to solve it.
 //!
 //! # Only a model on this machine
 //!
@@ -63,15 +71,20 @@ const SUMMARY_INPUT_ELISION: &str = "\n[…]\n";
 /// ignores "two or three sentences" is cut at a sentence end.
 const MAX_SUMMARY_CHARS: usize = 600;
 
-/// The shortest line of output whose appearance in the reply, word for word,
-/// marks the reply as a copy. Shorter lines ("All 42 tests pass") are phrases
-/// a faithful summary may well use.
-const COPIED_LINE_MIN_CHARS: usize = 40;
+/// How many words running the reply may not share with the output. Shorter
+/// phrases ("all 42 tests pass") are ones a faithful summary may well use.
+const COPIED_WORDS: usize = 8;
 
-/// The shortest run of characters with no space in it that the reply may not
-/// share with the output. A run that long is an identifier rather than a
-/// word: a path, a URL, a key, a hash. Ordinary words are shorter.
-const COPIED_RUN_MIN_CHARS: usize = 20;
+/// The length of an unbroken run of characters, with no space in it, that the
+/// reply may not share with the output when the run is shaped like a path, a
+/// URL, an assignment or a key (see [`is_machine_text`]). Ordinary words are
+/// shorter.
+const COPIED_RUN_CHARS: usize = 20;
+
+/// How many digits make a run of [`COPIED_RUN_CHARS`] characters read as a
+/// key, a hash or a token rather than a name. A branch or a versioned file
+/// name carries a few; a key carries many.
+const KEY_LIKE_DIGITS: usize = 8;
 
 /// Sampling temperature. Low, but not zero, for the same reason as titling:
 /// greedy decoding on some local models degenerates on short prose.
@@ -131,7 +144,13 @@ pub fn sanitize_summary(raw: &str) -> Option<String> {
     // A runaway reply is cut at the last sentence end that fits, or failing
     // that at a word boundary.
     let truncated: String = paragraph.chars().take(MAX_SUMMARY_CHARS).collect();
-    if let Some(end) = truncated.rfind(['.', '!', '?']) {
+    // A sentence ends at punctuation followed by a space: the `.` inside
+    // `parser.rs` or `v1.2` is not one.
+    let sentence_end = [". ", "! ", "? "]
+        .iter()
+        .filter_map(|end| truncated.rfind(end))
+        .max();
+    if let Some(end) = sentence_end {
         return Some(truncated[..=end].to_string());
     }
     let cut = match truncated.rsplit_once(char::is_whitespace) {
@@ -141,25 +160,54 @@ pub fn sanitize_summary(raw: &str) -> Option<String> {
     Some(format!("{cut}…"))
 }
 
-/// Whether `summary` repeats the session's output instead of describing it.
+/// How a reply repeats the session's output instead of describing it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopiedOutput {
+    /// The whole reply is a passage of the output.
+    Passage,
+    /// The reply repeats [`COPIED_WORDS`] words running of the output.
+    Words,
+    /// The reply shares with the output a run of [`COPIED_RUN_CHARS`]
+    /// characters shaped like a path, a URL, an assignment or a key.
+    MachineText,
+}
+
+/// How `summary` copies the session's output, if it does.
 ///
-/// True when the summary holds, word for word, a line of the output at least
-/// [`COPIED_LINE_MIN_CHARS`] long (whitespace compared collapsed, as
-/// [`sanitize_summary`] leaves it), or shares with the output any run of
-/// [`COPIED_RUN_MIN_CHARS`] characters with no space in it. The run need not
-/// be a whole word of either: the value copied out of `KEY=value` counts.
-pub fn copies_output(summary: &str, plain_text: &str) -> bool {
-    let shares_a_long_run = summary.split_whitespace().any(|word| {
+/// Words are compared with whitespace collapsed, as [`sanitize_summary`]
+/// leaves it, so a copy that runs across a line break of the output is still
+/// one. A shared run need not be a whole word of either side: the value
+/// copied out of `KEY=value` counts.
+pub fn copied_from_output(summary: &str, plain_text: &str) -> Option<CopiedOutput> {
+    let output = plain_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let words: Vec<&str> = summary.split_whitespace().collect();
+
+    if !words.is_empty() && output.contains(&words.join(" ")) {
+        return Some(CopiedOutput::Passage);
+    }
+    // The punctuation a sentence puts around a quoted run is not part of it.
+    if words
+        .windows(COPIED_WORDS)
+        .any(|run| output.contains(run.join(" ").trim_matches(|c: char| !c.is_alphanumeric())))
+    {
+        return Some(CopiedOutput::Words);
+    }
+    let shares_machine_text = words.iter().any(|word| {
         let chars: Vec<char> = word.chars().collect();
         chars
-            .windows(COPIED_RUN_MIN_CHARS)
-            .any(|run| plain_text.contains(&run.iter().collect::<String>()))
+            .windows(COPIED_RUN_CHARS)
+            .any(|run| is_machine_text(run) && output.contains(&run.iter().collect::<String>()))
     });
-    shares_a_long_run
-        || plain_text.lines().any(|line| {
-            let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
-            line.chars().count() >= COPIED_LINE_MIN_CHARS && summary.contains(&line)
-        })
+    shares_machine_text.then_some(CopiedOutput::MachineText)
+}
+
+/// Whether an unbroken run of characters is shaped like a path, a URL, an
+/// assignment or a key, as opposed to a long name such as
+/// `build_session_end_properties`.
+fn is_machine_text(run: &[char]) -> bool {
+    run.iter()
+        .any(|c| matches!(c, '/' | '\\' | ':' | '=' | '@'))
+        || run.iter().filter(|c| c.is_ascii_digit()).count() >= KEY_LIKE_DIGITS
 }
 
 /// Summarize a session's plain-text output with a one-shot request to
@@ -204,8 +252,12 @@ pub async fn generate_summary(
 
     let raw = collected.lock().ok()?.clone();
     let summary = sanitize_summary(&raw)?;
-    if copies_output(&summary, plain_text) {
-        tracing::debug!("terminal session summary repeated the session's output; discarded");
+    if let Some(copied) = copied_from_output(&summary, plain_text) {
+        // Logged without the reply: it is the output it copied.
+        tracing::info!(
+            ?copied,
+            "terminal session summary discarded: it repeated the session's output"
+        );
         return None;
     }
     Some(summary)
@@ -394,6 +446,8 @@ mod tests {
             "export API_KEY=sk-live-9f8e7d6c5b4a39281706f5e4 Running the parser test suite against the new grammar All 42 tests pass",
             // One line of it, inside prose.
             "The agent said: Running the parser test suite against the new grammar.",
+            // Part of a line, running on into the next.
+            "It was parser test suite against the new grammar All 42 tests, roughly.",
             // The value of the key alone, lifted out of its line.
             "The agent set the key (sk-live-9f8e7d6c5b4a39281706f5e4) and ran the tests.",
         ] {
@@ -404,6 +458,12 @@ mod tests {
                 "{echo}"
             );
         }
+
+        // A short session echoed back whole: too short for a run of words or
+        // a long token, and still nothing but the output.
+        let short = "Edit parser.rs\nAll 42 tests pass\nexport TOKEN=abc123def456";
+        let scripted = ScriptedEngine::replying("Edit parser.rs All 42 tests pass");
+        assert_eq!(generate_summary(&engine(&scripted), short).await, None);
 
         // Prose about the output, short phrases of it included, is kept.
         let scripted =
@@ -417,23 +477,86 @@ mod tests {
     }
 
     #[test]
-    fn copying_is_a_long_line_or_a_long_unbroken_run_word_for_word() {
-        let output = "  cd   /Users/sam/projects/nodespace/core  \nshort line\nRefactored the tokenizer to handle nested brackets";
+    fn a_copy_is_a_passage_a_run_of_words_or_machine_text() {
+        let output = "  cd   /Users/sam/projects/nodespace/core  \nshort line\n\
+                      Refactored the tokenizer so that it can handle\n nested brackets";
 
-        // A long line, with its whitespace collapsed as the summary's is.
-        assert!(copies_output(
-            "It printed: Refactored the tokenizer to handle nested brackets",
-            output
-        ));
-        // A long unbroken run, whatever punctuation the summary wraps it in.
-        assert!(copies_output(
-            "Worked in (/Users/sam/projects/nodespace/core).",
-            output
-        ));
-        // Short lines and ordinary words are not copies.
-        assert!(!copies_output("A short line about the tokenizer.", output));
-        assert!(!copies_output("Refactored the tokenizer.", output));
-        assert!(!copies_output("Anything at all.", ""));
+        // The reply is a passage of the output, however short.
+        assert_eq!(
+            copied_from_output("short line", output),
+            Some(CopiedOutput::Passage)
+        );
+        // Eight words running, whitespace collapsed, across a line break.
+        assert_eq!(
+            copied_from_output(
+                "It printed: tokenizer so that it can handle nested brackets, then stopped.",
+                output
+            ),
+            Some(CopiedOutput::Words)
+        );
+        // A path, whatever punctuation the summary wraps it in.
+        assert_eq!(
+            copied_from_output("Worked in (/Users/sam/projects/nodespace/core).", output),
+            Some(CopiedOutput::MachineText)
+        );
+
+        // Seven words running, and phrases of the output, are not copies.
+        assert_eq!(
+            copied_from_output(
+                "It refactored the tokenizer so that it can cope with nested brackets.",
+                output
+            ),
+            None
+        );
+        assert_eq!(
+            copied_from_output("A short line about the tokenizer.", output),
+            None
+        );
+        assert_eq!(copied_from_output("Anything at all.", ""), None);
+    }
+
+    /// Naming what was worked on is what a summary is for: a long file,
+    /// function or branch name taken from the output is not a copy. A path,
+    /// a URL, an assignment and a key are.
+    #[test]
+    fn a_long_name_is_not_machine_text_and_a_path_or_a_key_is() {
+        let output = "Update(packages/daemon/src/services/local_agent_service.rs)\n\
+                      warning: unused variable in build_session_end_properties\n\
+                      On branch issue-3454-pty-capture-summary\n\
+                      Published https://staging-worker.sam-dev-account.workers.dev\n\
+                      export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCY\n\
+                      commit 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432";
+
+        for kept in [
+            "Edited local_agent_service.rs and ran the tests.",
+            "Fixed a warning in build_session_end_properties.",
+            "Worked on branch issue-3454-pty-capture-summary.",
+        ] {
+            assert_eq!(copied_from_output(kept, output), None, "{kept}");
+        }
+
+        for copied in [
+            "Edited packages/daemon/src/services/local_agent_service.rs.",
+            "Deployed to https://staging-worker.sam-dev-account.workers.dev.",
+            "Set AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCY first.",
+            "Made commit 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432.",
+        ] {
+            assert_eq!(
+                copied_from_output(copied, output),
+                Some(CopiedOutput::MachineText),
+                "{copied}"
+            );
+        }
+
+        // What the check does not claim to catch: a key of letters alone
+        // lifted out of its assignment, and a bare host name. Neither can be
+        // told from a long name.
+        for missed in [
+            "The key is wJalrXUtnFEMIK7MDENGbPxRfiCY.",
+            "Published to staging-worker.sam-dev-account.workers.dev for testing.",
+        ] {
+            assert_eq!(copied_from_output(missed, output), None, "{missed}");
+        }
     }
 
     #[test]
@@ -492,6 +615,16 @@ mod tests {
         let summary = sanitize_summary(&rambling).unwrap();
         assert!(summary.chars().count() <= MAX_SUMMARY_CHARS);
         assert!(summary.ends_with("tests."), "{summary}");
+
+        // The `.` in a file name or a version is not a sentence end.
+        let dotted = format!(
+            "The session fixed the parser. {}",
+            "It then touched parser.rs and v1.2 again ".repeat(30)
+        );
+        assert_eq!(
+            sanitize_summary(&dotted).as_deref(),
+            Some("The session fixed the parser.")
+        );
 
         let unbroken = "word ".repeat(300);
         let summary = sanitize_summary(&unbroken).unwrap();

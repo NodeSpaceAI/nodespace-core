@@ -8,7 +8,7 @@
 //!
 //! Live run:
 //! ```text
-//! cargo test -p nodespace-daemon --test it live_terminal_summary:: -- --ignored --nocapture --test-threads=1
+//! .tools/bin/cargo-nextest nextest run -p nodespace-daemon --test it live_terminal_summary:: --run-ignored only --no-capture
 //! ```
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use chrono::Utc;
 use nodespace_agent::agent_types::{ChatInferenceEngine, ModelFamily};
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::pty::{OutputChunk, SessionCapture};
-use nodespace_daemon::services::terminal_summary::{copies_output, generate_summary};
+use nodespace_daemon::services::terminal_summary::{copied_from_output, generate_summary};
 use nodespace_nlp_engine::chat::ChatConfig;
 
 /// Independent repetitions per session. Single runs on this stack are not
@@ -35,7 +35,7 @@ fn model_path() -> String {
 
 /// A session's raw PTY output: a title sequence, colours, a repainted status
 /// line, and the things a summary must not carry (an absolute path, a key).
-const SESSIONS: [(&str, &str); 2] = [
+const SESSIONS: [(&str, &str); 3] = [
     (
         "a bug fix",
         "\x1b]0;claude\x07\x1b[1m> fix the failing date parser test\x1b[0m\r\n\
@@ -62,6 +62,20 @@ const SESSIONS: [(&str, &str); 2] = [
          https://staging-worker.sam-dev-account.workers.dev\r\n\
          \x1b[31mwarning:\x1b[0m the compatibility date is more than a year old\r\n\
          The staging worker is deployed. The compatibility date in wrangler.toml should be updated.\r\n",
+    ),
+    // Long plain names. A summary that names them is doing its job, and must
+    // not be discarded as a copy.
+    (
+        "a refactor that names long files and functions",
+        "\x1b]0;claude\x07\x1b[1m> the session end write should clear stale fields\x1b[0m\r\n\
+         On branch issue-3454-pty-capture-summary\r\n\
+         \x1b[32m\u{25cf}\x1b[0m Read(packages/daemon/src/services/capture_service.rs)\r\n\
+         build_session_end_properties only clears the summary when capture saves one.\r\n\
+         \x1b[32m\u{25cf}\x1b[0m Update(packages/daemon/src/services/capture_service.rs)\r\n\
+         \x1b[32m\u{25cf}\x1b[0m Bash(cargo nextest run -p nodespace-daemon capture_service)\r\n\
+         \x1b[33mwarning\x1b[0m: unused variable `saves_transcript` in build_session_end_properties\r\n\
+         Summary: 14 tests run: 14 passed, 0 skipped\r\n\
+         build_session_end_properties now writes every field each time, and the capture_service tests pass.\r\n",
     ),
 ];
 
@@ -100,7 +114,11 @@ async fn the_native_model_summarizes_a_terminal_session_in_prose() {
 
             // Enforced whatever the model wrote.
             assert!(!summary.chars().any(char::is_control), "{summary:?}");
-            assert!(!copies_output(&summary, &plain_text), "{summary:?}");
+            assert_eq!(
+                copied_from_output(&summary, &plain_text),
+                None,
+                "{summary:?}"
+            );
             assert!(!summary.contains("cf-live-"), "{summary:?}");
             assert!(!summary.contains("/Users/"), "{summary:?}");
             // And it is prose of a few sentences, not a fragment.
