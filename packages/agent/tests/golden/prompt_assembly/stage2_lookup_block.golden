@@ -1,3 +1,11 @@
+YOUR SKILLS: Bulk Import, Conflict Journal, Graph Editing, Node Creation, Node Deletion, Node Merge, Organization, Play Workflow State, Relationship Management, Research & Search, Schema Creation.
+A question about your own skills, or about what you can do, is answered from this list and from any procedure shown below, including when the user asks you to find one. Skills are not stored in the user's notes, so a search does not return them.
+
+REFERENCE — procedures relevant to this request. Use whichever applies and IGNORE the rest. Do not describe, quote, or summarise any of it. Your reply must be the tool call itself. If none applies, answer the user normally.
+
+--- Candidate 1: Research & Search
+Purpose: Find, look up, locate, list, or search for nodes, records, notes, and documents of any type that are already stored. Search stored knowledge to answer a question: how does something work, how is it applied, what is it, what does it do, why was it chosen.
+
 # Research & Search Guidance
 
 When the user asks about anything they may have stored:
@@ -9,6 +17,7 @@ READ BEFORE ANSWERING: To explain how something works, what something is, or why
 SYNTHESIZE: Build the answer from every result that bears on the question, not from the first one alone. When two results disagree, or one is marked superseded, deprecated, or archived, say so and prefer the current one.
 
 RESULT STRUCTURE: Each result contains:
+
 - id: node ID (use this for follow-up get_node calls)
 - title: document title
 - score: similarity score (0-1, higher = more relevant)
@@ -20,6 +29,7 @@ USE MARKDOWN DIRECTLY: A non-empty 'markdown' field is the document's own text. 
 FETCH ADDITIONAL CONTENT: Call get_node with format=markdown when a result you need came back without markdown.
 
 PARAMETER GUIDANCE:
+
 - Use 'collection' to narrow search to a namespace/folder (e.g. collection="Architecture").
 - Use 'node_types' to filter by type (e.g. node_types=["task"]) — prefer over 'collection' for type-based filtering.
 - Use 'threshold' to tune precision: default 0.3. Lower to 0.1-0.2 for broader recall when results are sparse.
@@ -34,10 +44,12 @@ MULTIPLE DOCUMENTS: If the user asks about multiple topics, call search_semantic
 search_nodes is the single tool for finding, listing, and filtering nodes — by title, by type, and by typed property. It returns each node's properties.
 
 LISTING BY TYPE: To list all nodes of a type, use search_nodes with an empty query. Examples:
+
 - "list all tasks" → `search_nodes(query="", node_type="task")`
 - "show me our ADRs" → `search_nodes(query="", node_type="<adr-schema-id>")`
 
 STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc.) or comparison operators (gt, lt, gte, lte, in), pass filters to search_nodes. Copy the type id and the field name exactly as they appear in EXISTING SCHEMAS, and use the exact enum member for a status filter — never a paraphrase. Examples:
+
 - "which tickets are still in dev?" → `search_nodes(node_type="ticket", filters=[{"type":"property","operator":"equals","property":"status","value":"in_dev"}])`
 - "tasks due tomorrow" → `search_nodes(node_type="task", filters=[{"type":"property","operator":"equals","property":"due_date","value":"<tomorrow's date in YYYY-MM-DD>"}], sorting=[{"field":"due_date","direction":"asc"}])`
 - "tasks due this week" → `search_nodes(node_type="task", filters=[{"type":"property","operator":"gte","property":"due_date","value":"<today's date in YYYY-MM-DD>"},{"type":"property","operator":"lte","property":"due_date","value":"<end of week in YYYY-MM-DD>"}])`

@@ -32,7 +32,7 @@ use std::sync::Arc;
 /// anything naming a `property` is a property filter. An item that names none
 /// of them is genuinely under-specified and still errors, so the inference
 /// never has to guess between `content` and `metadata`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentFilterItem {
     /// Filter category: "property", "content", "relationship", "metadata".
@@ -71,7 +71,7 @@ pub struct AgentFilterItem {
 }
 
 /// A single sort config item as passed by the agent tool.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSortItem {
     pub field: String,

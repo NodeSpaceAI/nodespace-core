@@ -99,7 +99,7 @@ use nodespace_agent::agent_types::{SkillCandidate, ToolDefinition};
 use nodespace_agent::local_agent::agent_loop::stage1_system_prompt;
 use nodespace_agent::local_agent::routing::{
     declare_write_tool_fields, hold_to_offered_types, offered_types, render_candidates_for_prompt,
-    stage1_tool_definitions, stage2_tools,
+    render_skill_names_for_prompt, stage1_tool_definitions, stage2_tools,
 };
 use nodespace_agent::local_agent::tools::model_facing_tool_definitions;
 use nodespace_agent::prompt_assembler::PromptAssembler;
@@ -657,6 +657,41 @@ fn stage2_candidate_block_matches_golden() {
     let rendered = render_candidates_for_prompt(&candidates)
         .expect("fixture candidates must clear the score gate and render a non-empty block");
     golden::assert_matches("stage2_candidate_block", &rendered);
+}
+
+/// What Stage 2 is shown on a lookup, as `agent_loop.rs` appends it to the
+/// resident prompt: the registry's skill list
+/// (`routing::render_skill_names_for_prompt`), then the candidate block for a
+/// turn Research & Search leads.
+///
+/// A separate golden from site 2 because that fixture's candidates are both
+/// write skills: the search-before-answering and read-before-answering
+/// instructions a question about the user's knowledge depends on live in
+/// Research & Search's own subtree, and nothing else pins them.
+#[test]
+fn stage2_lookup_block_matches_golden() {
+    let skills = render_skill_names_for_prompt(&seeded_skill_names())
+        .expect("a seeded registry names its skills");
+    let seeds = seed_skill_nodes();
+    let research = seeds
+        .iter()
+        .find(|t| t.title == "Research & Search")
+        .expect("seed_skill_nodes must still seed a Research & Search skill");
+    let candidates = vec![SkillCandidate {
+        id: "fixture-skill-research-and-search".to_string(),
+        name: research.title.clone(),
+        description: skill_description(research),
+        score: 0.85,
+        tools: skill_whitelist(research),
+        instructions: render_seed_instructions(research),
+        // Research & Search declares no `node_types`, and a workspace with no
+        // custom schema leaves its unscoped fallback empty.
+        schema_metadata: serde_json::json!([]),
+        schemas_linked: false,
+    }];
+    let block = render_candidates_for_prompt(&candidates)
+        .expect("a read-only candidate at 0.85 clears its score gate");
+    golden::assert_matches("stage2_lookup_block", &format!("{skills}\n\n{block}"));
 }
 
 /// Site 3: the scoped Stage-2 tool surface — names, descriptions, and full

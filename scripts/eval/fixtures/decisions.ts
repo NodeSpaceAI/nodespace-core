@@ -94,6 +94,27 @@ type Expected =
    */
   | { decision: "outcome"; noDuplicateOf: string }
   /**
+   * The turn must search the user's stored knowledge before its reply reaches
+   * them.
+   *
+   * An outcome rather than an operation decision for the same reason
+   * `noDuplicateOf` is: the loop closes this case when the model does not, by
+   * running the search itself. A turn whose first round replied in prose
+   * still searched before the user saw anything, which is what is worth
+   * pinning. Whether the model searched unprompted stays visible in
+   * `operationDecision`.
+   */
+  | { decision: "outcome"; searchesBeforeReplying: true }
+  /**
+   * The reply must match this pattern, whatever the turn did to get there.
+   *
+   * For a question whose answer is in the prompt rather than the graph, where
+   * the tools called say nothing about whether the user got it: asked to find
+   * one of the agent's own skills, a turn may or may not search first, and
+   * either way the reply has to name the skill.
+   */
+  | { decision: "outcome"; replyMatches: RegExp }
+  /**
    * The reply must name every one of these types, off a `search_nodes` call
    * that succeeded.
    *
@@ -172,6 +193,17 @@ interface DecisionScenario extends Scenario {
    * the summary distinguishes "reads intent" from "writes on any declarative".
    */
   declarative?: boolean;
+  /**
+   * Asks about what the user has stored, or about the agent itself, rather
+   * than asking for a change.
+   *
+   * Scored as its own dimension because these fail at a layer the write
+   * scenarios never reach. A question carries no verb for retrieval to match,
+   * so it routes on whichever skill shares a noun with its topic, and a turn
+   * that reaches no lookup skill answers from the conversation or asks the
+   * user for context instead of searching.
+   */
+  knowledgeQuestion?: boolean;
   /**
    * Runs against skills linked to a schema through `applies_to`, seeded for
    * this scenario's group (see `seedLinkedSkills`).
@@ -641,6 +673,127 @@ const FIXTURES: DecisionScenario[] = [
     instanceVsType: true,
   },
 
+  // ── Skill routing (questions about stored knowledge) ───────────────────
+  //
+  // A request to find something and a question about how something works are
+  // both lookups, and neither says so in a way retrieval can match unaided:
+  // "find" appears in several skills' vocabulary, and a question has no verb
+  // at all. These score whether the turn leads with the lookup skill. None of
+  // the topics below exists in the seeded workspace, and none needs to — the
+  // skill decision is recorded before any search runs.
+  //
+  // The topics deliberately avoid every seeded skill's own subject (merging,
+  // conflicts, deleting, importing). A question about one of those is
+  // genuinely close to two skills, and scoring it would measure which noun
+  // the fixture happened to pick.
+  {
+    id: "skill-find-request",
+    scenario: "Skill: a request to find stored material routes to Research & Search",
+    prompt: "Could you find the write-up on how we rotate API keys?",
+    expected: { decision: "skill", matches: /research/i },
+    knowledgeQuestion: true,
+  },
+  {
+    id: "skill-question-how",
+    scenario: "Skill: a how-does-it-work question routes to Research & Search",
+    prompt: "How does our retry policy for failed uploads work?",
+    expected: { decision: "skill", matches: /research/i },
+    knowledgeQuestion: true,
+  },
+  {
+    id: "skill-question-what",
+    scenario: "Skill: a what-is question routes to Research & Search",
+    prompt: "What is the rollout plan for the billing change?",
+    expected: { decision: "skill", matches: /research/i },
+    knowledgeQuestion: true,
+  },
+  {
+    id: "skill-question-explain",
+    scenario: "Skill: an explain-why request routes to Research & Search",
+    prompt: "Explain why the scheduler got split into two services.",
+    expected: { decision: "skill", matches: /research/i },
+    knowledgeQuestion: true,
+  },
+  {
+    id: "outcome-question-searches-first",
+    scenario: "Outcome: a question about stored knowledge is searched before it is answered",
+    // The failure this pins is a turn that made no call at all: it replied
+    // that nothing in the conversation covered the topic and asked the user
+    // for more. Whether the search then finds anything is not scored — the
+    // workspace holds nothing on this topic, and "I searched and found
+    // nothing" is the correct answer.
+    prompt: "How do we decide which venue gets a deposit refund?",
+    expected: { decision: "outcome", searchesBeforeReplying: true },
+    knowledgeQuestion: true,
+  },
+  {
+    id: "op-own-skills-no-search",
+    scenario: "Operation: a question about the agent's own skills is not a search",
+    // Skills are system nodes, outside the default search scope, so a search
+    // for one comes back empty and the turn reports that no such skill
+    // exists. The registry is listed in the prompt; the answer is there.
+    prompt: "Which skills do you have?",
+    expected: { decision: "operation", oneOf: [] },
+    knowledgeQuestion: true,
+  },
+  {
+    id: "outcome-find-own-skill",
+    scenario: "Outcome: asked to find one of its own skills, the agent names it",
+    // Phrased as a find request, so Stage 1 routes it as a lookup and the turn
+    // is searched. A search cannot return a skill, and the reported failure
+    // was the reply that followed: "I couldn't find a specific skill". The
+    // skill list is in the prompt; the reply has to come from it.
+    prompt: "Could you find the skill you would use to look something up?",
+    // The skill's name, not the word: "I researched your notes and couldn't
+    // find a specific skill" is the reported failure with one word changed.
+    expected: { decision: "outcome", replyMatches: /research\s*(&|and)\s*search/i },
+    knowledgeQuestion: true,
+  },
+  {
+    id: "outcome-follow-up-keeps-its-answer",
+    scenario: "Outcome: a follow-up on the last answer still answers about it",
+    // A follow-up has nothing to look up and nothing to change, so the reply
+    // is the model's own, from the conversation. Two things in the loop could
+    // take that reply away: a follow-up routed as a lookup is searched first,
+    // and a chat that has only asked questions had a tool-free reply put back
+    // once to act. Measured then: the model answered "March 14, 2025", was
+    // told to act, and said it did not know what was meant. A question is no
+    // longer put back in an intent that composed no clarifying question, so
+    // this one scores the first path, and the scenario after it the second.
+    priorTurns: ["When did we sign Northwind Trading?"],
+    prompt: "Can you say that again more simply?",
+    // The company, not the date. Whether the turn before found the date is
+    // not this scenario's subject, and it does not always: the model reads
+    // the record as JSON on some runs and as markdown, which leaves the
+    // properties out, on others. Either answer said again names the company.
+    // Every reply this scenario exists to catch ("I'm not sure what you
+    // mean", "I don't see a record of that in this conversation", a request
+    // to confirm) names nothing.
+    expected: { decision: "outcome", replyMatches: /northwind/i },
+    knowledgeQuestion: true,
+    entityResolution: true,
+  },
+  {
+    id: "outcome-follow-up-statement-keeps-its-answer",
+    scenario:
+      "Outcome: a follow-up that is not a question still answers about the last answer",
+    // The same follow-up without the shape of a question. This one is put
+    // back to act when the reply makes no call, and the reply set aside is
+    // the one that stands unless the put-back produces a call.
+    //
+    // The put-back needs two turns behind it that wrote nothing, so there are
+    // two questions ahead of the follow-up: the chat's setup turns write, and
+    // one question alone would leave the reply to stand untouched.
+    priorTurns: [
+      "When did we sign Northwind Trading?",
+      "Which company was that about?",
+    ],
+    prompt: "Say that again more simply.",
+    expected: { decision: "outcome", replyMatches: /northwind/i },
+    knowledgeQuestion: true,
+    entityResolution: true,
+  },
+
   // ── Schema selection ───────────────────────────────────────────────────
   //
   // Every type asserted on here is USER-DEFINED, created by the setup turns
@@ -887,6 +1040,24 @@ function assertNoDuplicate(title: string, turns: TurnRecord[]): Verdict {
   };
 }
 
+/** The tools that look things up in the user's stored knowledge. */
+const SEARCH_TOOLS = ["search_semantic", "search_nodes"];
+
+/** Score a turn that must have searched before replying. */
+function assertSearched(turns: TurnRecord[]): Verdict {
+  const called = turns.flatMap((t) => t.toolsCalled);
+  if (called.some((name) => SEARCH_TOOLS.includes(name))) {
+    return { passed: true };
+  }
+  const reply = turns.at(-1)?.reply ?? "";
+  return {
+    passed: false,
+    failure:
+      `Replied without searching. Tools: ${called.join(", ") || "(none)"}. ` +
+      `Reply: ${reply.slice(0, 300)}`,
+  };
+}
+
 /**
  * Score a turn that must list the workspace's types: a `search_nodes` call
  * must have succeeded, and the reply must name every type in `types`.
@@ -1045,9 +1216,21 @@ function assertFixture(
   const { expected } = fixture;
   if (expected.decision === "outcome") {
     if ("heldToOfferedTypes" in expected) return assertHeldToOfferedTypes(turns);
-    return "listsTypes" in expected
-      ? assertListsTypes(expected.listsTypes, turns)
-      : assertNoDuplicate(expected.noDuplicateOf, turns);
+    if ("listsTypes" in expected) {
+      return assertListsTypes(expected.listsTypes, turns);
+    }
+    if ("replyMatches" in expected) {
+      const reply = turns.at(-1)?.reply ?? "";
+      return expected.replyMatches.test(reply)
+        ? { passed: true }
+        : {
+            passed: false,
+            failure: `The reply does not match ${expected.replyMatches}. Reply: ${reply.slice(0, 300)}`,
+          };
+    }
+    return "noDuplicateOf" in expected
+      ? assertNoDuplicate(expected.noDuplicateOf, turns)
+      : assertSearched(turns);
   }
   // A linked-skill scenario scores a held turn. On an open one its assertion
   // can still pass, having measured nothing about holding.
@@ -1117,11 +1300,20 @@ function assertFixture(
     // agent that reaches for a tool on every message is failing a decision even
     // when its reply reads fine.
     if (expected.oneOf.length === 0) {
-      return selected === null
+      if (selected !== null) {
+        return {
+          passed: false,
+          failure: `Expected no tool call, but called '${selected}'. Offered: ${decision.candidates.join(", ")}`,
+        };
+      }
+      // The first round is not the whole turn: the loop can make a call the
+      // model did not. "No tool" means none anywhere in it.
+      const called = turns.flatMap((t) => t.toolsCalled);
+      return called.length === 0
         ? { passed: true }
         : {
             passed: false,
-            failure: `Expected no tool call, but called '${selected}'. Offered: ${decision.candidates.join(", ")}`,
+            failure: `Expected no tool call. The first round made none, but the turn went on to call: ${called.join(", ")}`,
           };
     }
     if (selected === null) {
@@ -1255,6 +1447,7 @@ const fixture: EvalFixture = {
       loadBearing: s.loadBearing ?? false,
       entityResolution: s.entityResolution ?? false,
       declarative: s.declarative ?? false,
+      knowledgeQuestion: s.knowledgeQuestion ?? false,
       linkedSkills: s.linkedSkills ?? false,
       skillDecision: firstDecision(turns, "skill") ?? null,
       operationDecision: firstDecision(turns, "operation") ?? null,
@@ -1321,6 +1514,7 @@ const fixture: EvalFixture = {
       `Operation selection: ${count((e) => (e.expected as { decision?: string })?.decision === "operation")}`,
       `Schema selection:    ${count((e) => (e.expected as { decision?: string })?.decision === "schema")}`,
       `Instance-vs-type boundary: ${count((e) => e.instanceVsType === true)}`,
+      `Questions about stored knowledge: ${count((e) => e.knowledgeQuestion === true)}`,
       // Reported separately from everything else: an aggregate hides the one
       // asymmetry three independently-measured models have all shown, and this
       // is the dimension the entity tier is NOT expected to have fixed.
@@ -1335,7 +1529,7 @@ const fixture: EvalFixture = {
         `${after("created")} created the record as an offered type`,
       `Requests for a type outside a held turn's set: ${offMenuRequests.length}; ` +
         `${wrongTypeRecords} created a record as an offered type instead`,
-      `Stage-1 decision cost: ${meanRouting}ms mean (one generative pass for a 3-way structural choice)`,
+      `Stage-1 decision cost: ${meanRouting}ms mean (one or two generative passes for a 4-way structural choice)`,
     ];
   },
 };

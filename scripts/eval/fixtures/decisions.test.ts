@@ -184,7 +184,7 @@ describe("setup state", () => {
   });
 });
 
-describe("duplicate-entity outcome scoring", () => {
+describe("outcome and no-tool scoring", () => {
   const scenario = fixture.groups
     .flat()
     .find((s) => s.id === "schema-on-menu-company");
@@ -231,6 +231,67 @@ describe("duplicate-entity outcome scoring", () => {
 
   test("neither asking nor acting fails", () => {
     expect(passes(turn("It already exists.", [["create_node", true]]))).toBe(false);
+  });
+
+  test("a turn the system searched for passes the search outcome", () => {
+    // The first round replied in prose and the loop ran the search itself; it
+    // still ran before the user saw a reply, which is what this scores.
+    const searches = fixture.groups
+      .flat()
+      .find((s) => s.id === "outcome-question-searches-first");
+    if (!searches) throw new Error("outcome-question-searches-first is missing");
+    const score = (t: TurnRecord) => fixture.score(searches, [t]).passed;
+
+    expect(score(turn("Here is what I found.", [["search_semantic", false]]))).toBe(true);
+    expect(score(turn("Here is what I found.", [["search_nodes", false]]))).toBe(true);
+    expect(score(turn("Could you provide more context?", []))).toBe(false);
+    // Reading a node is not searching for one.
+    expect(score(turn("It says so here.", [["get_node", false]]))).toBe(false);
+  });
+
+  test("a no-tool expectation covers the whole turn, not its first round", () => {
+    // A first round with no call is recorded as "selected nothing", but the
+    // loop can go on to run a search for it. That turn called a tool.
+    const noTool = fixture.groups
+      .flat()
+      .find((s) => s.id === "op-own-skills-no-search");
+    if (!noTool) throw new Error("op-own-skills-no-search is missing");
+    const firstRoundCalledNothing = {
+      kind: "operation",
+      selected: null,
+      candidates: ["search_semantic", "search_nodes", "get_node"],
+      offMenu: false,
+    };
+    const withDecision = (t: TurnRecord): TurnRecord =>
+      ({ ...t, decisions: [firstRoundCalledNothing] }) as TurnRecord;
+
+    expect(
+      fixture.score(noTool, [withDecision(turn("I have eleven skills.", []))]).passed,
+    ).toBe(true);
+    expect(
+      fixture.score(noTool, [
+        withDecision(turn("No such skill exists.", [["search_semantic", false]])),
+      ]).passed,
+    ).toBe(false);
+  });
+
+  test("a reply outcome is scored on the reply alone", () => {
+    const named = fixture.groups.flat().find((s) => s.id === "outcome-find-own-skill");
+    if (!named) throw new Error("outcome-find-own-skill is missing");
+    const score = (t: TurnRecord) => fixture.score(named, [t]).passed;
+
+    // Whether the turn searched first is not what is scored.
+    expect(score(turn("That would be Research & Search.", []))).toBe(true);
+    expect(
+      score(turn("That would be Research & Search.", [["search_semantic", false]])),
+    ).toBe(true);
+    expect(score(turn("I couldn't find a specific skill.", [["search_semantic", false]]))).toBe(
+      false,
+    );
+    // The reported failure with one word changed must not pass on that word.
+    expect(
+      score(turn("I researched your notes and couldn't find a specific skill.", [])),
+    ).toBe(false);
   });
 
   test("the clarification opener matches the agent's", () => {

@@ -31,7 +31,7 @@ use nodespace_agent::local_agent::agent_loop::{
 };
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::routing::{
-    parse_route_decision, stage1_tool_definitions, RouteDecision,
+    asks_about_the_message_first, parse_route_decision, stage1_tool_definitions, RouteDecision,
 };
 use nodespace_nlp_engine::chat::ChatConfig;
 
@@ -183,6 +183,7 @@ async fn stage1_reformulation_for_start_tracking_albums() {
             println!("GOLDEN[8a] route_clarify(\"{question}\")");
         }
         Some(RouteDecision::Multi(qs)) => println!("GOLDEN[8a] route_multi({qs:?})"),
+        Some(RouteDecision::Lookup(t)) => println!("GOLDEN[8a] route_lookup(\"{t}\")"),
         None => println!("GOLDEN[8a] no valid tool call parsed"),
     }
 }
@@ -208,6 +209,7 @@ async fn stage1_reformulation_for_venue_tracker_control() {
             println!("GOLDEN[8b control] route_clarify(\"{question}\")");
         }
         Some(RouteDecision::Multi(qs)) => println!("GOLDEN[8b control] route_multi({qs:?})"),
+        Some(RouteDecision::Lookup(t)) => println!("GOLDEN[8b control] route_lookup(\"{t}\")"),
         None => println!("GOLDEN[8b control] no valid tool call parsed"),
     }
 }
@@ -232,6 +234,7 @@ async fn stage1_reformulation_for_instance_creation_scenario_4() {
             println!("GOLDEN[4] route_clarify(\"{question}\")");
         }
         Some(RouteDecision::Multi(qs)) => println!("GOLDEN[4] route_multi({qs:?})"),
+        Some(RouteDecision::Lookup(t)) => println!("GOLDEN[4] route_lookup(\"{t}\")"),
         None => println!("GOLDEN[4] no valid tool call parsed"),
     }
 }
@@ -301,14 +304,366 @@ async fn stage1_reformulation_for_scenario_6_update() {
                  route_multi({qs:?}) instead — this turn has one intent, not several."
             );
         }
+        Some(RouteDecision::Lookup(topic)) => {
+            panic!(
+                "GOLDEN[6] expected route_query for this update, got route_lookup(\"{topic}\") \
+                 instead — the request changes a record, it does not ask about one."
+            );
+        }
         None => panic!("GOLDEN[6] Stage 1 called no tool or emitted unparseable arguments"),
     }
+}
+
+/// A question about what the user has stored, or a request to find it, is a
+/// lookup — Stage 1's own structural choice, `route_lookup`, rather than a
+/// query worded a particular way.
+///
+/// Before that choice existed these went wrong at Stage 1 itself. Four of the
+/// first seven below came back as `route_clarify` ("Are you asking about the
+/// concept of 'merge gate' … or are you referring to a physical object?"), and
+/// the rest as queries that kept only the topic, which retrieval matches to
+/// whichever skill shares a noun with it. A convention asking for the query to
+/// be worded as a search caught most of them and missed the ones that read as
+/// an action ("How do we decide which venue gets a deposit refund?" became
+/// "decide which venue gets a deposit refund").
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_routes_a_knowledge_question_as_a_lookup() {
+    let engine = load_engine();
+    let mut not_a_lookup = Vec::new();
+    for message in [
+        "how our front end persistence layer works exactly?",
+        "how is the debounce logic applied?",
+        "what does our shared data layer on the front end",
+        "what is the merge gate?",
+        "why did we pick sqlite over postgres?",
+        "explain how sync conflicts get detected",
+        "could you find the write-up on the embedding pipeline?",
+        "look up the release checklist",
+        "locate the onboarding notes",
+        "list the specs we have on sync",
+        "find the record for the Lisbon offsite",
+        "How do we decide which venue gets a deposit refund?",
+        "How do we handle refunds for a cancelled event?",
+        "How do we onboard a new sponsor?",
+        "Who approves a venue booking?",
+        "When did we sign Northwind?",
+        "Who owns the billing service?",
+        "Where is the deploy runbook?",
+        "How does our retry policy for failed uploads work?",
+    ] {
+        let decision = run_stage1(&engine, message).await;
+        println!("GOLDEN[question] {message:?} -> {decision:?}");
+        if !matches!(decision, Some(RouteDecision::Lookup(_))) {
+            not_a_lookup.push(format!("{message:?} -> {decision:?}"));
+        }
+    }
+    assert!(
+        not_a_lookup.is_empty(),
+        "Stage 1 did not route these as a lookup:\n{}",
+        not_a_lookup.join("\n")
+    );
+}
+
+/// The cost side of offering `route_lookup`: a request to change, record, or
+/// remove something is not a lookup, however it is phrased — including as a
+/// question ("could you…?"). A write routed as a lookup retrieves the
+/// read-only search skill and loses its write tool.
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_does_not_route_a_write_request_as_a_lookup() {
+    let engine = load_engine();
+    let mut lost = Vec::new();
+    for message in [
+        "Add a task to renew the domain next month",
+        "mark the outage report done",
+        "delete the notes from the cancelled offsite",
+        "Start keeping the calls we make on how the system is built, and who made each one",
+        "could you add Contoso to the companies we sell to?",
+        "can you mark the invoice from Fabrikam as paid?",
+    ] {
+        let decision = run_stage1(&engine, message).await;
+        println!("GOLDEN[write control] {message:?} -> {decision:?}");
+        if !matches!(decision, Some(RouteDecision::Query(_))) {
+            lost.push(format!("{message:?} -> {decision:?}"));
+        }
+    }
+    assert!(
+        lost.is_empty(),
+        "Stage 1 no longer routes these writes as a query:\n{}",
+        lost.join("\n")
+    );
+}
+
+/// A message about the agent itself, or with nothing to look up, is not a
+/// lookup either: a lookup that ends without a search has one run for it, and
+/// searching the user's notes for "what can you do" answers nothing. It is not
+/// a reason to ask the user what they meant either.
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_does_not_route_talk_about_the_agent_as_a_lookup() {
+    let engine = load_engine();
+    let mut lookups = Vec::new();
+    for message in [
+        "Which skills do you have?",
+        "what can you do?",
+        "which of your skills would I use to delete something?",
+        "thanks, that helps",
+        "hi",
+    ] {
+        let decision = run_stage1(&engine, message).await;
+        println!("GOLDEN[agent talk] {message:?} -> {decision:?}");
+        if matches!(
+            decision,
+            Some(RouteDecision::Lookup(_) | RouteDecision::Clarify { .. })
+        ) {
+            lookups.push(format!("{message:?} -> {decision:?}"));
+        }
+    }
+    assert!(
+        lookups.is_empty(),
+        "Stage 1 routed these as a lookup, or asked the user what they meant:\n{}",
+        lookups.join("\n")
+    );
+}
+
+/// The requests that really are too vague to route must still clarify: the
+/// lookup choice must not become the way out of every unclear message.
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_still_clarifies_a_request_too_vague_to_route() {
+    let engine = load_engine();
+    let mut not_clarified = Vec::new();
+    for message in [
+        "fix it",
+        "delete them",
+        "do the thing we talked about",
+        "help me manage our roadmap",
+    ] {
+        let decision = run_stage1(&engine, message).await;
+        println!("GOLDEN[vague control] {message:?} -> {decision:?}");
+        if !matches!(decision, Some(RouteDecision::Clarify { .. })) {
+            not_clarified.push(format!("{message:?} -> {decision:?}"));
+        }
+    }
+    assert!(
+        not_clarified.is_empty(),
+        "Stage 1 no longer clarifies these:\n{}",
+        not_clarified.join("\n")
+    );
+}
+
+/// A request with two separate things to do stays compound when one of them
+/// is a lookup: it is split with `route_multi`, not collapsed into the write
+/// or into the lookup alone, which would drop the other half.
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_splits_a_write_and_a_lookup_in_one_request() {
+    let engine = load_engine();
+    let mut not_split = Vec::new();
+    for message in [
+        "Set up a way to track our API deprecations, then separately find what I wrote about rate limiting last year",
+        "Add a task to rotate the staging API keys, and also pull up my notes on the auth redesign",
+    ] {
+        let decision = run_stage1(&engine, message).await;
+        println!("GOLDEN[compound control] {message:?} -> {decision:?}");
+        if !matches!(decision, Some(RouteDecision::Multi(_))) {
+            not_split.push(format!("{message:?} -> {decision:?}"));
+        }
+    }
+    assert!(
+        not_split.is_empty(),
+        "Stage 1 no longer splits these:\n{}",
+        not_split.join("\n")
+    );
+}
+
+/// What Stage 1 does with the messages its lookup routing is least sure of.
+/// Recorded, not asserted: each is a case where the right answer is a
+/// judgement, or where no wording of the routing tools moved the result
+/// without moving something that matters more. A change to Stage 1 should be
+/// read against this output.
+///
+/// - **A request to find one of the agent's own skills.** It reads as a find
+///   request. The turn is searched, and answered with the skill list that is
+///   in Stage 2's prompt either way (`eval:decisions`,
+///   `outcome-find-own-skill`).
+/// - **A follow-up on the agent's last answer** ("say that again more
+///   simply"). Routed as the loop routes it. If it comes back a lookup and
+///   Stage 2 answers from the conversation, the system runs the search first;
+///   `eval:decisions` scores that the reply is still about the earlier answer
+///   (`outcome-follow-up-keeps-its-answer`).
+/// - **A question that needs its context** ("and who approved it?"). Asked
+///   about alone it has no referent. What matters is the topic a lookup
+///   carries, because that is what the system searches for when Stage 2 does
+///   not: the view that decided is printed beside it.
+/// - **A lookup that is not a question** ("explain our retry policy"), after
+///   unrelated turns. It opens with a retrieval verb, so it is asked about
+///   alone first, like a question.
+/// - **A general question** ("what is 15% of 240?").
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_lookup_judgement_calls_on_record() {
+    let engine = load_engine();
+    let decision = run_stage1(
+        &engine,
+        "could you find the skill on how to find nodes in nodespace?",
+    )
+    .await;
+    println!("GOLDEN[own skill] -> {decision:?}");
+
+    let after_an_answer = [
+        "how does our retry policy work?",
+        "Uploads retry three times, backing off for an hour in total.",
+    ];
+    for message in [
+        "what did you mean by backing off?",
+        "summarise what you just found in one line",
+        "can you say that again more simply?",
+    ] {
+        let (decision, view) =
+            route_stage1_as_the_loop_does(&engine, &after_an_answer, message).await;
+        println!("GOLDEN[follow-up] {message:?} -> {decision:?} ({view})");
+    }
+    for message in [
+        "And who approved it?",
+        "How does that work for images?",
+        "Why was it set to an hour?",
+    ] {
+        let (decision, view) =
+            route_stage1_as_the_loop_does(&engine, &after_an_answer, message).await;
+        println!("GOLDEN[needs its context] {message:?} -> {decision:?} ({view})");
+    }
+
+    let after_setup = [
+        "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
+        "The schema for Event Venue already exists. You can create records of that type.",
+    ];
+    for message in [
+        "Explain our retry policy",
+        "find the record for the Lisbon offsite",
+        "list the specs we have on sync",
+        "tell me how we onboard a sponsor",
+    ] {
+        let (decision, view) = route_stage1_as_the_loop_does(&engine, &after_setup, message).await;
+        println!("GOLDEN[lookup, not a question] {message:?} -> {decision:?} ({view})");
+    }
+
+    let decision = run_stage1(&engine, "what is 15% of 240?").await;
+    println!("GOLDEN[general question] -> {decision:?}");
+}
+
+/// Stage 1 as `agent_loop`'s `route` runs it: when the loop's own gate
+/// (`routing::asks_about_the_message_first`) says so, the message is asked
+/// about by itself first and a lookup from that pass is taken; anything else
+/// is decided on the blended view. Returns the decision and which view made
+/// it.
+async fn route_stage1_as_the_loop_does(
+    engine: &LlamaChatInferenceEngine,
+    prior_turns: &[&str],
+    message: &str,
+) -> (Option<RouteDecision>, &'static str) {
+    let blended =
+        nodespace_agent::local_agent::agent_loop::stage1_query_from_turns(prior_turns, message);
+    if asks_about_the_message_first(&blended, message, false) {
+        let alone = run_stage1(engine, message).await;
+        if matches!(alone, Some(RouteDecision::Lookup(_))) {
+            return (alone, "message");
+        }
+    }
+    (
+        run_stage1_with_history(engine, prior_turns, message).await,
+        "blended",
+    )
+}
+
+/// A question is a lookup whatever the chat was doing before it.
+///
+/// Blended with the turns ahead of it, a question takes on the chat's subject.
+/// After two turns that set up record types, "How do we decide which venue
+/// gets a deposit refund?" was routed as a query ("decide which venue gets a
+/// deposit refund") and "How do we onboard a new sponsor?" as a request to
+/// create one, three times in three. Retrieval then matched skills that had
+/// nothing to do with either, and the reply was "I do not have a tool or
+/// information" with no search. No wording of the routing tools fixed these
+/// without breaking the compound split or a find request, so the loop asks
+/// about the message alone first. Each question is asked several times.
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_routes_a_question_as_a_lookup_after_unrelated_turns() {
+    const REPS: usize = 3;
+    let engine = load_engine();
+    let prior = [
+        "Set up a new type for the companies we sell to, with a name and the date we signed them.",
+        "The schema for Company Sold To already exists. You can create records of that type.",
+        "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
+        "The schema for Event Venue already exists. You can create records of that type.",
+    ];
+    let mut not_a_lookup = Vec::new();
+    for message in [
+        "How do we decide which venue gets a deposit refund?",
+        "How do we handle refunds for a cancelled event?",
+        "How do we onboard a new sponsor?",
+        "How does our retry policy for failed uploads work?",
+        "What is the rollout plan for the billing change?",
+        "When did we sign Northwind?",
+        "Who approves a venue booking?",
+        // Lookups that are not questions: they open with a retrieval verb.
+        "Explain our retry policy",
+        "find the record for the Lisbon offsite",
+        "list the specs we have on sync",
+        "tell me how we onboard a sponsor",
+    ] {
+        for rep in 1..=REPS {
+            let (decision, view) = route_stage1_as_the_loop_does(&engine, &prior, message).await;
+            println!("GOLDEN[question after setup] rep {rep} {message:?} -> {decision:?} ({view})");
+            if !matches!(decision, Some(RouteDecision::Lookup(_))) {
+                not_a_lookup.push(format!("rep {rep} {message:?} -> {decision:?}"));
+            }
+        }
+    }
+    assert!(
+        not_a_lookup.is_empty(),
+        "Stage 1 did not route these as a lookup:\n{}",
+        not_a_lookup.join("\n")
+    );
+}
+
+/// The cost side of asking about a question-shaped message alone first: a
+/// request that only ends in a question mark must not become a lookup on that
+/// pass. It falls through to the blended view and is routed as a query.
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_does_not_route_a_question_shaped_request_as_a_lookup_after_unrelated_turns() {
+    let engine = load_engine();
+    let prior = [
+        "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
+        "The schema for Event Venue already exists. You can create records of that type.",
+    ];
+    let mut lookups = Vec::new();
+    for message in [
+        "Could you add the Grand Hall as a venue?",
+        "Can you set the Grand Hall's capacity to 300?",
+        "Would you delete the venue we added by mistake?",
+    ] {
+        let (decision, view) = route_stage1_as_the_loop_does(&engine, &prior, message).await;
+        println!("GOLDEN[question-shaped write] {message:?} -> {decision:?} ({view})");
+        if !matches!(decision, Some(RouteDecision::Query(_))) {
+            lookups.push(format!("{message:?} -> {decision:?}"));
+        }
+    }
+    assert!(
+        lookups.is_empty(),
+        "Stage 1 did not route these as a query:\n{}",
+        lookups.join("\n")
+    );
 }
 
 /// A Stage-1 decision, by which routing tool was called.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Decision {
     Query,
+    Lookup,
     Multi,
     Clarify,
 }
@@ -365,31 +720,31 @@ const BUILT_IN_TYPE_WORDS: &[&str] = &[
 const HOW_MANY_TASKS: &str = "Could you tell me how many tasks we have here?";
 
 const TYPE_LINE_CASES: &[TypeLineCase] = &[
-    case(Group::KnownType, HOW_MANY_TASKS, Some(Decision::Query)),
+    case(Group::KnownType, HOW_MANY_TASKS, Some(Decision::Lookup)),
     case(
         Group::KnownType,
         "how many people do we have?",
-        Some(Decision::Query),
+        Some(Decision::Lookup),
     ),
     case(
         Group::KnownType,
         "what projects are there?",
-        Some(Decision::Query),
+        Some(Decision::Lookup),
     ),
     case(
         Group::KnownType,
         "how many invoices are still open?",
-        Some(Decision::Query),
+        Some(Decision::Lookup),
     ),
     case(
         Group::KnownType,
         "tell me about the vendors",
-        Some(Decision::Query),
+        Some(Decision::Lookup),
     ),
     case(
         Group::KnownType,
         "show me my collections",
-        Some(Decision::Query),
+        Some(Decision::Lookup),
     ),
     case(
         Group::KnownType,
@@ -427,7 +782,7 @@ const TYPE_LINE_CASES: &[TypeLineCase] = &[
     case(
         Group::Unrelated,
         "find the text about onboarding in my notes",
-        Some(Decision::Query),
+        Some(Decision::Lookup),
     ),
     case(
         Group::Unrelated,
@@ -442,7 +797,7 @@ const TYPE_LINE_CASES: &[TypeLineCase] = &[
     case(
         Group::Unrelated,
         "search for notes about the Apollo project kickoff",
-        Some(Decision::Query),
+        Some(Decision::Lookup),
     ),
 ];
 
@@ -500,15 +855,25 @@ fn type_words_added(message: &str, queries: &[String]) -> Vec<String> {
 /// which arm clarified more.
 ///
 /// As measured on the locked model, four reps per case, every rep of a case
-/// deciding alike. Of the seven requests about records of a known type, four
-/// routed without the line and all seven with it: "how many people do we
-/// have?", "what projects are there?" and "tell me about the vendors" moved
-/// from clarify to route. The eight unrelated requests with an expectation
-/// met it in both arms, with the same queries. "what's the date today?",
-/// which has none, clarified without the line and called no routing tool
-/// with it, which the loop treats as a query on the raw message. Mean prompt
-/// 792 → 803 tokens; mean generation 2313 ms → 2397 ms over 36 runs, 23
-/// tokens generated in each arm.
+/// deciding alike, with three routing tools (before `route_lookup`). Of the
+/// seven requests about records of a known type, four routed without the line
+/// and all seven with it: "how many people do we have?", "what projects are
+/// there?" and "tell me about the vendors" moved from clarify to route. The
+/// eight unrelated requests with an expectation met it in both arms, with the
+/// same queries. "what's the date today?", which has none, clarified without
+/// the line and called no routing tool with it, which the loop treats as a
+/// query on the raw message. Mean prompt 792 → 803 tokens; mean generation
+/// 2313 ms → 2397 ms over 36 runs, 23 tokens generated in each arm.
+///
+/// Measured again with `route_lookup` offered, the two arms decide alike on
+/// every case. All seven requests about records of a known type route in
+/// both: six as a lookup, "which tasks are overdue?" as a query. So do the two
+/// find requests among the unrelated cases, as lookups. A question about
+/// records is a question, and the lookup choice routes it whether or not the
+/// type is named, so on these cases the line is no longer what gets them
+/// routed. "what's the date today?" calls no routing tool in either arm. Mean
+/// prompt 1040 → 1051 tokens; mean generation 2373 ms → 2460 ms over 45 runs,
+/// 21 tokens generated in each arm.
 #[tokio::test]
 #[ignore = "requires the locked native GGUF on disk"]
 async fn stage1_type_line_routes_requests_that_name_a_known_type() {
@@ -523,7 +888,7 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
 
     // Per case, per arm: the reps that met the case's expectation.
     let mut met = vec![[0usize; 2]; TYPE_LINE_CASES.len()];
-    // Per case, per arm: the reps that routed (query or multi).
+    // Per case, per arm: the reps that routed (query, lookup or multi).
     let mut routed = vec![[0usize; 2]; TYPE_LINE_CASES.len()];
     // Per case: the type words the with-line arm's queries added.
     let mut added: Vec<Vec<String>> = vec![Vec::new(); TYPE_LINE_CASES.len()];
@@ -563,6 +928,9 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
 
                 let (kind, queries) = match decision {
                     Some(RouteDecision::Query(q)) => (Some(Decision::Query), vec![q]),
+                    // A lookup routes too: its topic is what retrieval is
+                    // asked for, behind the capability.
+                    Some(RouteDecision::Lookup(topic)) => (Some(Decision::Lookup), vec![topic]),
                     Some(RouteDecision::Multi(qs)) => (Some(Decision::Multi), qs),
                     Some(RouteDecision::Clarify { question, .. }) => {
                         println!(

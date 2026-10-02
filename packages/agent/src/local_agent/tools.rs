@@ -280,6 +280,47 @@ pub(crate) const DEFAULT_SEARCH_LIMIT: usize = 50;
 /// Default semantic search result limit.
 const DEFAULT_SEMANTIC_LIMIT: usize = 5;
 
+/// Extra rows an unscoped `search_nodes` asks for on its first fetch, so that
+/// dropping conversations from the page usually still leaves `limit` rows.
+///
+/// A first guess, not a bound: when a full page comes back short after the
+/// conversations are dropped, the fetch is repeated with a larger page until
+/// it is not (see `GraphToolExecutor::run_node_query`). A keyword search
+/// rarely matches more than the chat it was asked in; a search with no
+/// keyword, newest first, can match every chat there is.
+const CONVERSATION_FETCH_HEADROOM: usize = 25;
+
+/// How much larger each repeat of that fetch is.
+const CONVERSATION_FETCH_GROWTH: usize = 4;
+
+/// What a node search asks for, apart from how many rows: the part that stays
+/// the same when the fetch is repeated with a larger page.
+#[derive(Clone)]
+struct NodePageQuery {
+    node_type: Option<String>,
+    /// The title keyword, or `None` to enumerate.
+    query: Option<String>,
+    filters: Vec<query_ops::AgentFilterItem>,
+    sorting: Option<Vec<query_ops::AgentSortItem>>,
+}
+
+/// Whether `node_type` is a conversation with an agent, or a subtype of one.
+///
+/// Resolved through the type registry, so a chat subtype is a conversation
+/// too. An empty type — a schema row carries none — is not one.
+async fn is_conversation_type(
+    ns: &NodeService,
+    node_type: &str,
+    tool_name: &str,
+) -> Result<bool, ToolError> {
+    if node_type.is_empty() {
+        return Ok(false);
+    }
+    ns.type_is_a(node_type, nodespace_core::models::CoreNodeType::AiChat)
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("{tool_name}: {e}")))
+}
+
 /// Minimum similarity threshold for semantic search.
 const SEMANTIC_THRESHOLD: f32 = 0.3;
 
@@ -610,6 +651,13 @@ fn strip_node_uri(id: &str) -> &str {
     id.strip_prefix("nodespace://").unwrap_or(id)
 }
 
+/// The node type of a node as the ops layer returns it. `nodeType` is the wire
+/// spelling: `Node` is camelCase-serialized. A schema node has no such field,
+/// so a type row reports no type.
+fn wire_node_type(node: &Value) -> &str {
+    node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("")
+}
+
 /// One `search_nodes` result row, as the model sees it.
 fn search_result_summary(node: &Value) -> Value {
     let content = node.get("content").and_then(|v| v.as_str()).unwrap_or("");
@@ -620,12 +668,10 @@ fn search_result_summary(node: &Value) -> Value {
         .and_then(|v| v.as_str())
         .filter(|t| !t.is_empty())
         .unwrap_or(content);
-    // `nodeType` is the wire spelling: `Node` is camelCase-serialized.
-    let node_type = node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("");
     let mut summary = json!({
         "id": node_uri(node.get("id").and_then(|v| v.as_str()).unwrap_or("")),
         "title": truncate(title, 100),
-        "type": node_type,
+        "type": wire_node_type(node),
         "snippet": truncate(content, BODY_TRUNCATE_SUMMARY),
         // The flat, storage-keyed map (core fields folded back in) — the same
         // bare keys the model writes with update_node.
@@ -668,6 +714,36 @@ fn resolved_payload(row: &Value) -> Value {
         }
     }
     payload
+}
+
+/// One `search_semantic` result row, as the model sees it.
+fn semantic_result_summary(node: &Value) -> Value {
+    let mut item = json!({
+        "id": node_uri(node.get("id").and_then(|v| v.as_str()).unwrap_or("")),
+        "title": truncate(
+            node.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+            100
+        ),
+        "type": wire_node_type(node),
+        "score": node.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        "snippet": truncate(
+            node.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+            BODY_TRUNCATE_SUMMARY
+        ),
+    });
+    // Include the document's text if the ops layer returned it.
+    if let Some(md) = node.get("markdown").and_then(|v| v.as_str()) {
+        if !md.is_empty() {
+            item["markdown"] = json!(truncate(md, BODY_TRUNCATE_FULL));
+        }
+    }
+    // Include edge data if the ops layer returned it (include_edges=true).
+    if let Some(edges) = node.get("edges") {
+        if edges.is_array() {
+            item["edges"] = edges.clone();
+        }
+    }
+    item
 }
 
 // ---------------------------------------------------------------------------
@@ -906,7 +982,7 @@ fn def_search_semantic() -> ToolDefinition {
                 },
                 "include_markdown": {
                     "type": "integer",
-                    "description": "Number of top results to include full markdown content for (0-5, default 1). Set to 0 for IDs and snippets only, or increase to get full content for multiple results."
+                    "description": "Number of top results to include full markdown content for (0-5, default 1). Set to 0 for IDs and snippets only, or increase to get full content for multiple results. Pass 3 when the user wants something explained, so the answer is read from several documents rather than one snippet."
                 },
                 "collection": {
                     "type": "string",
@@ -2831,6 +2907,22 @@ impl GraphToolExecutor {
     ) -> Result<Vec<Value>, ToolError> {
         let ns = self.node_service()?;
 
+        // A conversation is not something to find. The chat a request arrives
+        // in is titled from the user's own words, so a keyword search for
+        // those words returns the chat itself as its best match — and the
+        // model then reports its own conversation back as the answer.
+        let scoped_to_conversations = match node_type.as_deref() {
+            Some(t) if !t.is_empty() && t != "*" => is_conversation_type(&ns, t, tool_name).await?,
+            _ => false,
+        };
+        if scoped_to_conversations {
+            return Err(ToolError::InvalidArguments {
+                tool: tool_name.to_string(),
+                reason: "Conversations cannot be searched. Search for the notes, documents, or \
+                         records the user is asking about instead."
+                    .to_string(),
+            });
+        }
         // "", whitespace-only, and the conventional wildcard "*" all mean
         // "enumerate — no title/content keyword filter" rather than a
         // literal search term (matches the CLI/gRPC `search_semantic` path's
@@ -2840,19 +2932,99 @@ impl GraphToolExecutor {
         // matches, silently returning zero results.
         let query = search_ops::normalize_enumerate_query(&query);
 
-        // `sorting` is only honoured by the QueryService path, so a sorted
-        // request routes there even with no property filters. Sending it down
-        // the `query_nodes` branch instead would accept the argument, drop it,
-        // and hand back an arbitrary row reported as a success — the shape a
-        // model reads as "the largest one" when asking for a superlative via
-        // `sorting` + `limit: 1`.
-        //
-        // Both branches match the keyword against TITLE, so which one runs
-        // cannot change what a keyword means. That matters because title is not
-        // simply the content: a schema carrying a `title_template` builds it
-        // from properties instead, so matching content there would silently
-        // return a DIFFERENT set — trading the dropped-sort bug for a
-        // dropped-keyword one.
+        // Only a search across every type can match a conversation, so only
+        // that search asks for more than `limit` rows.
+        let all_types = node_type
+            .as_deref()
+            .is_none_or(|t| t.is_empty() || t == "*");
+        let mut fetch_limit = if all_types {
+            limit.saturating_add(CONVERSATION_FETCH_HEADROOM)
+        } else {
+            limit
+        };
+
+        let wanted = NodePageQuery {
+            node_type,
+            query,
+            filters,
+            sorting,
+        };
+
+        // Resolved once per distinct type, across every page.
+        let mut conversation_types: std::collections::HashMap<String, bool> =
+            std::collections::HashMap::new();
+        loop {
+            let page = self
+                .fetch_node_page(&ns, wanted.clone(), fetch_limit, tool_name)
+                .await?;
+
+            // Truncate node data for token efficiency. Properties are always
+            // included so the model can see and act on typed fields (status,
+            // amount, etc.).
+            let mut summaries = Vec::with_capacity(limit.min(page.len()));
+            for node in &page {
+                if summaries.len() == limit {
+                    break;
+                }
+                let node_type = wire_node_type(node);
+                let is_conversation = match conversation_types.get(node_type) {
+                    Some(known) => *known,
+                    None => {
+                        let resolved = is_conversation_type(&ns, node_type, tool_name).await?;
+                        conversation_types.insert(node_type.to_string(), resolved);
+                        resolved
+                    }
+                };
+                if !is_conversation {
+                    summaries.push(search_result_summary(node));
+                }
+            }
+
+            // Conversations are dropped after the fetch, so a page full of
+            // them hides the rows behind it: thirty recent chats ahead of the
+            // notes in a newest-first listing would come back as nothing at
+            // all, and "nothing matches" is a wrong answer. A short page is
+            // the whole result; a full one that came up short is fetched
+            // again, larger.
+            let exhausted = page.len() < fetch_limit;
+            if summaries.len() == limit || exhausted {
+                return Ok(summaries);
+            }
+            fetch_limit = fetch_limit.saturating_mul(CONVERSATION_FETCH_GROWTH);
+        }
+    }
+
+    /// One page of raw nodes for [`Self::run_node_query`], conversations and
+    /// all.
+    ///
+    /// Routes by capability:
+    ///
+    /// `sorting` is only honoured by the QueryService path, so a sorted
+    /// request routes there even with no property filters. Sending it down
+    /// the `query_nodes` branch instead would accept the argument, drop it,
+    /// and hand back an arbitrary row reported as a success — the shape a
+    /// model reads as "the largest one" when asking for a superlative via
+    /// `sorting` + `limit: 1`.
+    ///
+    /// Both branches match the keyword against TITLE, so which one runs
+    /// cannot change what a keyword means. That matters because title is not
+    /// simply the content: a schema carrying a `title_template` builds it
+    /// from properties instead, so matching content there would silently
+    /// return a DIFFERENT set — trading the dropped-sort bug for a
+    /// dropped-keyword one.
+    async fn fetch_node_page(
+        &self,
+        ns: &Arc<NodeService>,
+        wanted: NodePageQuery,
+        fetch_limit: usize,
+        tool_name: &str,
+    ) -> Result<Vec<Value>, ToolError> {
+        let NodePageQuery {
+            node_type,
+            query,
+            filters,
+            sorting,
+        } = wanted;
         let sorted = sorting.as_ref().is_some_and(|s| !s.is_empty());
 
         let output = if filters.is_empty() && !sorted {
@@ -2866,10 +3038,10 @@ impl GraphToolExecutor {
             });
 
             node_ops::query_nodes(
-                &ns,
+                ns,
                 node_ops::QueryNodesInput {
                     node_type,
-                    limit: Some(limit),
+                    limit: Some(fetch_limit),
                     offset: None,
                     collection_id: None,
                     collection: None,
@@ -2896,21 +3068,18 @@ impl GraphToolExecutor {
             }
 
             query_ops::execute_query(
-                &ns,
+                ns,
                 query_ops::ExecuteQueryInput {
                     target_type: node_type.unwrap_or_else(|| "*".to_string()),
                     filters,
                     sorting,
-                    limit: Some(limit),
+                    limit: Some(fetch_limit),
                 },
             )
             .await
             .map_err(|e| ops_error_to_tool(e, tool_name))?
         };
-
-        // Truncate node data for token efficiency. Properties are always included
-        // so the model can see and act on typed fields (status, amount, etc.).
-        Ok(output.nodes.iter().map(search_result_summary).collect())
+        Ok(output.nodes)
     }
 
     async fn exec_search_nodes(
@@ -3300,38 +3469,7 @@ impl GraphToolExecutor {
             .map_err(|e| ops_error_to_tool(e, "search_semantic"))?;
 
         // Truncate for token efficiency
-        let items: Vec<Value> = output
-            .nodes
-            .iter()
-            .map(|v| {
-                let mut item = json!({
-                    "id": node_uri(v.get("id").and_then(|v| v.as_str()).unwrap_or("")),
-                    "title": truncate(
-                        v.get("title").and_then(|v| v.as_str()).unwrap_or(""),
-                        100
-                    ),
-                    "type": v.get("node_type").or(v.get("type")).and_then(|v| v.as_str()).unwrap_or(""),
-                    "score": v.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                    "snippet": truncate(
-                        v.get("content").and_then(|v| v.as_str()).unwrap_or(""),
-                        BODY_TRUNCATE_SUMMARY
-                    ),
-                });
-                // Include full markdown content if the ops layer returned it
-                if let Some(md) = v.get("markdown").and_then(|v| v.as_str()) {
-                    if !md.is_empty() {
-                        item["markdown"] = json!(truncate(md, BODY_TRUNCATE_FULL));
-                    }
-                }
-                // Include edge data if the ops layer returned it (include_edges=true)
-                if let Some(edges) = v.get("edges") {
-                    if edges.is_array() {
-                        item["edges"] = edges.clone();
-                    }
-                }
-                item
-            })
-            .collect();
+        let items: Vec<Value> = output.nodes.iter().map(semantic_result_summary).collect();
 
         Ok(ok_result(
             tool_call_id,
@@ -5459,6 +5597,58 @@ mod tests {
     }
 
     // -- Serde param parsing --
+
+    /// A search result names what kind of node it is. The ops layer's wire
+    /// shape is camelCase (`nodeType`); reading any other key reports every
+    /// result's type as the empty string.
+    #[test]
+    fn a_semantic_result_carries_the_nodes_type() {
+        let row = semantic_result_summary(&json!({
+            "id": "abc",
+            "title": "Retry policy",
+            "nodeType": "text",
+            "similarity": 0.8,
+            "content": "Retries back off.",
+        }));
+        assert_eq!(row["type"], "text");
+        assert_eq!(row["id"], "nodespace://abc");
+        assert_eq!(row["score"], 0.8);
+        assert!(
+            row.get("markdown").is_none(),
+            "absent unless the ops layer sent it"
+        );
+    }
+
+    /// Research & Search tells the model how much of a document a result
+    /// carries. That number is this module's truncation limit, so the two are
+    /// held together here: a changed limit fails until the guidance says so.
+    #[test]
+    fn research_guidance_states_the_real_markdown_cut() {
+        let guidance = crate::skill_pipeline::seed_skill_nodes()
+            .into_iter()
+            .find(|t| t.title == "Research & Search")
+            .expect("Research & Search must be seeded")
+            .markdown_content;
+        let thousands = BODY_TRUNCATE_FULL / 1000;
+        let rest = BODY_TRUNCATE_FULL % 1000;
+        let stated = format!("cut off after {thousands},{rest:03} characters");
+        assert!(
+            guidance.contains(&stated),
+            "the guidance must state the limit search results are cut at ({stated})"
+        );
+    }
+
+    #[test]
+    fn a_semantic_result_carries_text_and_edges_when_the_ops_layer_sent_them() {
+        let row = semantic_result_summary(&json!({
+            "id": "abc",
+            "nodeType": "text",
+            "markdown": "# Retry policy\n\nRetries back off.",
+            "edges": [{"type": "mentions", "to": "def"}],
+        }));
+        assert_eq!(row["markdown"], "# Retry policy\n\nRetries back off.");
+        assert_eq!(row["edges"][0]["to"], "def");
+    }
 
     #[test]
     fn search_nodes_params_parses_required_field() {

@@ -48,7 +48,7 @@ use nodespace_agent::local_agent::agent_loop::{stage1_system_prompt, STAGE1_MAX_
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_agent::local_agent::routing::{
-    self, RouteDecision, ROUTE_CLARIFY_TOOL, ROUTE_MULTI_TOOL, ROUTE_QUERY_TOOL,
+    self, RouteDecision, ROUTE_CLARIFY_TOOL, ROUTE_LOOKUP_TOOL, ROUTE_MULTI_TOOL, ROUTE_QUERY_TOOL,
 };
 use nodespace_nlp_engine::chat::types::{ChatMessage, Role};
 use nodespace_nlp_engine::ChatConfig;
@@ -355,6 +355,9 @@ fn display(outcome: &Stage1Outcome) -> String {
         Stage1Outcome::Decided(RouteDecision::Multi(qs)) => {
             format!("route_multi({qs:?})")
         }
+        Stage1Outcome::Decided(RouteDecision::Lookup(topic)) => {
+            format!("route_lookup(\"{topic}\")")
+        }
         Stage1Outcome::Decided(RouteDecision::Clarify { question, options }) => {
             format!("route_clarify(\"{question}\", options={options:?})")
         }
@@ -514,7 +517,12 @@ mod tests {
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(
             names,
-            vec![ROUTE_QUERY_TOOL, ROUTE_CLARIFY_TOOL, ROUTE_MULTI_TOOL]
+            vec![
+                ROUTE_QUERY_TOOL,
+                ROUTE_LOOKUP_TOOL,
+                ROUTE_CLARIFY_TOOL,
+                ROUTE_MULTI_TOOL
+            ]
         );
     }
 

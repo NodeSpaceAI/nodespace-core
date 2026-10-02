@@ -23,7 +23,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { formatTurnLogLines, readMessages } from "./aichat.ts";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { formatTurnLogLines, readMessages, readTurnLog } from "./aichat.ts";
 
 /** Build a daemon-log-shaped raw-generation line the way agent_loop.rs emits it. */
 function rawGenerationLine(iteration: number, text: string): string {
@@ -279,6 +282,47 @@ describe("formatTurnLogLines", () => {
       '2026-07-30T22:27:39Z  WARN nodespace_daemon: inference turn failed error="connection reset"';
     const lines = formatTurnLogLines(slice);
     expect(lines.filter((l) => l === "[empty-generation]")).toEqual([]);
+  });
+});
+
+describe("readTurnLog", () => {
+  function withLog(run: (log: string) => void): void {
+    const dir = mkdtempSync(join(tmpdir(), "aichat-log-"));
+    try {
+      run(join(dir, "daemon.log"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("returns what was appended since the turn began", () => {
+    withLog((log) => {
+      writeFileSync(log, "before\n");
+      const since = "before\n".length;
+      writeFileSync(log, "before\nduring\n");
+      expect(readTurnLog(log, since)).toBe("during\n");
+    });
+  });
+
+  test("follows a log rotated during the turn", () => {
+    withLog((log) => {
+      // Rotation happens at a size threshold, so the log the turn began on
+      // is far longer than what a turn writes to the new one.
+      const before = `${"earlier turns\n".repeat(20)}`;
+      writeFileSync(log, before);
+      const since = before.length;
+      // The daemon wrote, rotated, and wrote again.
+      writeFileSync(log, `${before}routed\n`);
+      renameSync(log, `${log}.1`);
+      writeFileSync(log, "called\n");
+      expect(readTurnLog(log, since)).toBe("routed\ncalled\n");
+    });
+  });
+
+  test("a log that is gone yields nothing", () => {
+    withLog((log) => {
+      expect(readTurnLog(log, 10)).toBe("");
+    });
   });
 });
 

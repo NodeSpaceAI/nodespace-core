@@ -26,6 +26,7 @@
  *   NS_TIMEOUT_MS      Turn timeout in ms (default: 180000).
  */
 
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -267,7 +268,7 @@ export function formatTurnLogLines(slice: string): string[] {
   // path a turn took (see agent_loop.rs::route): "routing unavailable for
   // this turn", "stage-1 routing failed", "stage-1 routing decision" (the
   // clarify path, which returns before the line below), or "two-stage
-  // routing overhead" (query/multi/multi_rejected/clarify_suppressed/none).
+  // routing overhead" (query/lookup/multi/multi_rejected/clarify_suppressed/none).
   // Take the last, in case a prior context turn in the same slice also routed.
   const routingLine = lines
     .filter(
@@ -298,8 +299,10 @@ export function formatTurnLogLines(slice: string): string[] {
     // on the line for exactly that reason. A quoted-only pattern silently
     // matched nothing and put this marker right back in the state the dead
     // `scoped tool list` scrape was in.
-    // Wall-clock spent on Stage 1 alone: one generative pass whose entire
-    // output is a structural choice among three routing tools. Captured
+    // Wall-clock spent on Stage 1 alone: one generative pass, or two for a
+    // lookup-shaped message that was asked about by itself first and turned
+    // out not to be a lookup. Its entire output is a structural choice among
+    // four routing tools. Captured
     // separately from the turn's total because it is the cost of *deciding*
     // rather than of answering, and the two are the terms of any
     // decision-model comparison — a replacement that is more accurate but no
@@ -428,24 +431,52 @@ export function formatTurnLogLines(slice: string): string[] {
   return out;
 }
 
+/**
+ * A file's bytes from `fromByte` on, or nothing when it can't be read. Reads
+ * only that tail: the log is megabytes long and this runs once a turn.
+ */
+function readLogFrom(path: string, fromByte: number): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const length = Math.max(0, fstatSync(fd).size - fromByte);
+    const tail = Buffer.alloc(length);
+    const read = readSync(fd, tail, 0, length, fromByte);
+    return tail.subarray(0, read).toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * What the daemon logged since its log was `sinceByte` long.
+ *
+ * The daemon rotates its own log once it passes a size threshold: `<log>`
+ * becomes `<log>.1` and a new `<log>` starts empty. A log now shorter than
+ * it was when the turn began was rotated during the turn, so the turn's lines
+ * are the rest of `<log>.1` followed by all of the new file. Reading the new
+ * file from the old offset would find nothing, and the turn would be scored
+ * as one that made no decision and called no tool.
+ *
+ * One rotation per turn is all this follows: a turn does not log a whole
+ * threshold's worth.
+ */
+export function readTurnLog(logPath: string, sinceByte: number): string {
+  let size = 0;
+  try {
+    size = statSync(logPath).size;
+  } catch {
+    return "";
+  }
+  if (size >= sinceByte) return readLogFrom(logPath, sinceByte);
+  return readLogFrom(`${logPath}.1`, sinceByte) + readLogFrom(logPath, 0);
+}
+
 /** Pull this turn's internal decisions out of the daemon log slice. */
 function reportTurnLog(sinceByte: number): void {
-  let slice = "";
-  try {
-    const buf = Bun.file(NS_LOG);
-    // Read only the bytes appended during this turn.
-    slice = stripAnsi(
-      Bun.spawnSync([
-        "tail",
-        "-c",
-        `+${sinceByte + 1}`,
-        NS_LOG,
-      ]).stdout.toString(),
-    );
-    if (!slice && buf) slice = "";
-  } catch {
-    return;
-  }
+  const slice = stripAnsi(readTurnLog(NS_LOG, sinceByte));
   for (const line of formatTurnLogLines(slice)) console.log(line);
 }
 

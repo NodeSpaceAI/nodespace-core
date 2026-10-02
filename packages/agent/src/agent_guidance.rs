@@ -220,6 +220,18 @@ mod tests {
             "agent_loop::ALREADY_CLARIFIED_NUDGE".to_string(),
             crate::local_agent::agent_loop::ALREADY_CLARIFIED_NUDGE.to_string(),
         ));
+        // Injected into Stage 2's system prompt on a routed turn whose
+        // message is shaped like a question or a find request. The
+        // names are the registry's; the sentence after them is fixed text.
+        if let Some(block) = crate::local_agent::routing::render_skill_names_for_prompt(
+            &crate::local_agent::agent_loop::stage1_skill_names(
+                crate::skill_pipeline::seed_skill_nodes()
+                    .into_iter()
+                    .map(|t| t.title),
+            ),
+        ) {
+            corpus.push(("routing::render_skill_names_for_prompt".to_string(), block));
+        }
         corpus
     }
 

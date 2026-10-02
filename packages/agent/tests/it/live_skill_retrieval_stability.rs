@@ -27,7 +27,10 @@
 
 use std::sync::Arc;
 
-use nodespace_agent::local_agent::routing::RETRIEVAL_TOP_K;
+use nodespace_agent::agent_types::SkillCandidate;
+use nodespace_agent::local_agent::routing::{
+    lookup_retrieval_query, select_candidates, RETRIEVAL_FETCH, RETRIEVAL_TOP_K,
+};
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate};
@@ -426,13 +429,13 @@ async fn skill_confidence(
 /// Queries whose top-`RETRIEVAL_TOP_K` ranking misses `skill` on any rep, or —
 /// with `rank_one` — does not put it first. Prints each query's wider ranking
 /// with scores so a miss shows by how much.
-async fn routing_misses(
+async fn routing_misses<'a>(
     embedding_service: &Arc<NodeEmbeddingService>,
     node_service: &Arc<NodeService>,
-    queries: &[&'static str],
+    queries: &[&'a str],
     skill: &str,
     rank_one: bool,
-) -> Vec<&'static str> {
+) -> Vec<&'a str> {
     let mut misses = Vec::new();
     for &query in queries {
         eprintln!(
@@ -709,6 +712,281 @@ async fn graph_editing_exclusion_leaves_completion_state_scores_unchanged() {
     assert!(
         changed.is_empty(),
         "Graph Editing's exclusion changed its score on completion-state requests {changed:?}"
+    );
+}
+
+/// Retrieval queries for the lookups below, as the system builds them from the
+/// topics Stage 1 was measured producing
+/// (`live_stage1_golden_prompts::stage1_routes_a_knowledge_question_as_a_lookup`).
+fn lookup_queries(topics: &[&str]) -> Vec<String> {
+    topics
+        .iter()
+        .map(|topic| lookup_retrieval_query(topic))
+        .collect()
+}
+
+/// A lookup must put Research & Search at rank 1: a question about what the
+/// user has stored, or a request to find, look up, or list it.
+///
+/// Rank 1, not merely top 3: the leading candidate is the one a turn is
+/// recorded as routed to. The skill's description used to name no retrieval
+/// verb a user says, so "find nodes in nodespace" ranked Organization, Node
+/// Creation and Node Deletion — each of which says "nodes" or "records" — and
+/// did not retrieve it at all. A question fared worse: it has no verb, so it
+/// embeds nearest whichever skill shares a noun with its topic, and "how is
+/// the debounce logic applied?" retrieved Node Deletion and Node Merge.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn lookups_route_research_and_search() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let queries = lookup_queries(&[
+        "how to find nodes in nodespace",
+        "how our front end persistence layer works exactly",
+        "debounce logic applied",
+        "shared data layer on the front end",
+        "why we picked sqlite over postgres",
+        "write-up on the embedding pipeline",
+        "release checklist",
+        "onboarding notes",
+        "Lisbon offsite record",
+        "how to decide which venue gets a deposit refund",
+        "when we signed Northwind",
+        "who owns the billing service",
+        "deploy runbook",
+        "retry policy for failed uploads",
+    ]);
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &queries.iter().map(String::as_str).collect::<Vec<_>>(),
+        "Research & Search",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Research & Search lost rank 1 for {misses:?}"
+    );
+}
+
+/// The raw message is what retrieval embeds when Stage 1 emits no usable
+/// decision. A request that names a retrieval verb, or a question whose topic
+/// is no other skill's subject, still reaches Research & Search at rank 1
+/// unaided.
+///
+/// No wording of the description moved the remaining bare questions there —
+/// "how is the debounce logic applied?", "why did we pick sqlite over
+/// postgres?" — which is why a lookup is retrieved by capability rather than
+/// by topic.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn unrouted_find_requests_still_route_research_and_search() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "find nodes in nodespace",
+            "could you find the write-up on the embedding pipeline?",
+            "locate the onboarding notes",
+            "search for anything mentioning the billing migration",
+            "how our front end persistence layer works exactly?",
+            "explain how the frontend persistence layer works",
+        ],
+        "Research & Search",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Research & Search lost rank 1 for {misses:?}"
+    );
+}
+
+/// A lookup whose topic is another skill's own subject — "the merge gate"
+/// beside Node Merge, "sync conflicts" beside Conflict Journal — may rank that
+/// skill first: the request is genuinely close to both. Research & Search must
+/// still clear the top 3, so `search_semantic` is on the surface for the
+/// model, and for the system to run when the model does not.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn lookups_naming_another_skills_subject_still_reach_research_and_search() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let queries = lookup_queries(&[
+        "merge gate",
+        "how sync conflicts get detected",
+        "specs on sync",
+    ]);
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &queries.iter().map(String::as_str).collect::<Vec<_>>(),
+        "Research & Search",
+        false,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Research & Search missed the top-{RETRIEVAL_TOP_K} for {misses:?}"
+    );
+}
+
+/// The cost side of Research & Search's retrieval vocabulary: naming "records"
+/// and "nodes of any type" must not pull it ahead of the skill that owns a
+/// write. Each request here must still lead with its own skill — a deletion
+/// that leads with a read-only skill has `delete_node` withheld, and a create
+/// or update that does loses its write tool to the top-3 lottery.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn research_and_search_does_not_displace_write_skills() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for (queries, skill) in [
+        (
+            &[
+                "delete the resolved incidents",
+                "remove the closed tickets",
+                "get rid of the paid invoices",
+            ][..],
+            "Node Deletion",
+        ),
+        (
+            &[
+                "Add a task to renew the domain",
+                "create a note about the offsite agenda",
+            ][..],
+            "Node Creation",
+        ),
+        (
+            &["mark the invoice as paid", "mark the outage report done"][..],
+            "Graph Editing",
+        ),
+        (
+            &["Start keeping the calls we make on how the system is built, and who made each one"]
+                [..],
+            "Schema Creation",
+        ),
+    ] {
+        for &query in queries {
+            let ranked = scored_ranking(&embedding_service, &node_service, query, 6).await;
+            eprintln!("{query:?}: {ranked:?}");
+            let rank = |name: &str| {
+                ranked
+                    .iter()
+                    .position(|r| r.starts_with(&format!("{name}=")))
+            };
+            let own = rank(skill);
+            if own.is_none() || rank("Research & Search").is_some_and(|r| Some(r) < own) {
+                misses.push(query);
+            }
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "Research & Search outranked the owning write skill for {misses:?}"
+    );
+}
+
+/// The candidates Stage 2 judges for `query`: retrieval's ranking, asked for
+/// one past the bound, through `routing::select_candidates` — what
+/// `agent_loop`'s `route` does with a single query.
+async fn stage2_candidate_names(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    query: &str,
+) -> Vec<String> {
+    let output = find_skills(
+        embedding_service,
+        node_service,
+        FindSkillsInput {
+            query: query.to_string(),
+            limit: Some(RETRIEVAL_FETCH),
+        },
+    )
+    .await
+    .expect("find_skills must succeed");
+    let ranked: Vec<SkillCandidate> = output
+        .skills
+        .iter()
+        .map(|s| {
+            let text = |key: &str| {
+                s.get(key)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            SkillCandidate {
+                id: text("id"),
+                name: text("name"),
+                description: text("description"),
+                score: s.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+                tools: s
+                    .get("tools")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|t| t.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                instructions: String::new(),
+                schema_metadata: serde_json::json!([]),
+                schemas_linked: false,
+            }
+        })
+        .collect();
+    select_candidates(ranked)
+        .into_iter()
+        .map(|c| c.name)
+        .collect()
+}
+
+/// A request to start tracking something reads, to an embedding, a good deal
+/// like a request to find it — both are about stored records — so Research &
+/// Search places on it. No wording of that skill's description kept its
+/// lookups at rank 1 and stayed below Schema Creation here: "keep track of
+/// decisions behind each feature" (what Stage 1 makes of "start keeping track
+/// of the decisions behind each feature") ranks Graph Editing, Research &
+/// Search, Organization, then Schema Creation. An `exclusion` naming the
+/// tracking verbs put Schema Creation back, and dropped Research & Search
+/// from the top 3 on short lookups ("list specs on sync").
+///
+/// So the place is not contested in the description at all: a read-only skill
+/// that does not lead a turn is not counted against the skills that write
+/// (`routing::select_candidates`). This pins that the skill owning
+/// `create_schema` reaches Stage 2 on that request, and that the lookup still
+/// does.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn a_lookup_placing_on_a_tracking_request_does_not_cost_schema_creation_its_place() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let query = "keep track of decisions behind each feature";
+    eprintln!(
+        "{query:?}: {:?}",
+        scored_ranking(&embedding_service, &node_service, query, 6).await
+    );
+    let judged = stage2_candidate_names(&embedding_service, &node_service, query).await;
+    assert!(
+        judged.iter().any(|n| n == "Schema Creation"),
+        "Schema Creation must reach Stage 2 for {query:?}; judged: {judged:?}"
+    );
+    assert!(
+        judged.iter().any(|n| n == "Research & Search"),
+        "the lookup keeps its place too; judged: {judged:?}"
+    );
+    assert!(
+        judged.len() <= RETRIEVAL_FETCH,
+        "never more than one past the bound; judged: {judged:?}"
     );
 }
 
