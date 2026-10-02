@@ -498,20 +498,22 @@ async fn properties_that_are_not_bucketed_are_refused() {
     let (service, _temp) = service_with_campaign_type().await;
 
     for node_type in ["campaign", "task"] {
-        let result = service
-            .create_node(Node::new(
-                node_type.to_string(),
-                "Launch".to_string(),
-                json!("not an object"),
-            ))
-            .await;
-        let error = result.expect_err("the properties were discarded instead of refused");
-        assert!(
-            error
-                .to_string()
-                .contains("Properties must be a JSON object"),
-            "{node_type}: {error}"
-        );
+        for properties in [json!("not an object"), json!(null)] {
+            let result = service
+                .create_node(Node::new(
+                    node_type.to_string(),
+                    "Launch".to_string(),
+                    properties.clone(),
+                ))
+                .await;
+            let error = result.expect_err("the properties were discarded instead of refused");
+            assert!(
+                error
+                    .to_string()
+                    .contains("Properties must be a JSON object"),
+                "{node_type}, {properties}: {error}"
+            );
+        }
     }
 
     // The declaring bucket holds a string: the dates addressed to it have
@@ -527,4 +529,37 @@ async fn properties_that_are_not_bucketed_are_refused() {
         error.to_string().contains("'project' in properties"),
         "{error}"
     );
+}
+
+/// An update whose patch would replace the stored properties, or a stored
+/// bucket, with something that is not an object is refused on every update
+/// path, and the stored properties stay as they were.
+#[tokio::test]
+async fn an_update_that_would_unbucket_stored_properties_is_refused() {
+    for path in UPDATE_PATHS {
+        let (service, _temp) = service_with_campaign_type().await;
+        let id = create_valid_campaign(&service).await;
+        let stored = service.get_node(&id).await.unwrap().unwrap().properties;
+
+        for (patch, refusal) in [
+            (json!(null), "Properties must be a JSON object"),
+            (
+                json!({ "campaign": {}, "project": "oops" }),
+                "'project' in properties",
+            ),
+        ] {
+            let error = update_via(&service, path, &id, patch.clone())
+                .await
+                .expect_err("the stored properties were replaced instead of the patch refused");
+            assert!(
+                error.to_string().contains(refusal),
+                "{path:?}, {patch}: {error}"
+            );
+            assert_eq!(
+                service.get_node(&id).await.unwrap().unwrap().properties,
+                stored,
+                "{path:?}, {patch}: a refused update stores nothing"
+            );
+        }
+    }
 }

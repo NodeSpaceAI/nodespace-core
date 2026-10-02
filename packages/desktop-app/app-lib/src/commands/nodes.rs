@@ -466,7 +466,6 @@ pub fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<Value>, CommandErro
 pub struct CreateRootNodeInput {
     pub content: String,
     pub node_type: String,
-    #[serde(default)]
     pub properties: serde_json::Value,
     #[serde(default)]
     pub mentioned_by: Option<String>,
