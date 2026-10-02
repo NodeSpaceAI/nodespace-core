@@ -147,13 +147,22 @@ function isEmpty(value: unknown): boolean {
   return value === null || value === undefined || value === '';
 }
 
-/** Exact, as the backend's SQL `=` is: `case_sensitive` applies to `contains` only. */
-function equals(actual: unknown, expected: unknown): boolean {
+/**
+ * The backend's SQL `=`. It never folds case (`case_sensitive` applies to
+ * `contains` only), and an unset subject equals nothing. A property is
+ * compared as the JSON value it is, so `500` is not `"500"`; a node column
+ * (`metadata`, `content`) is text, and SQL converts the operand to text.
+ */
+function equals(actual: unknown, expected: unknown, sameTypeOnly: boolean): boolean {
+  if (actual === null || actual === undefined) return false;
   if (actual === expected) return true;
-  if (typeof actual === 'number' && typeof expected === 'number') return actual === expected;
-  return String(actual) === String(expected);
+  return !sameTypeOnly && String(actual) === String(expected);
 }
 
+/**
+ * Case-insensitive matching folds every letter here and only ASCII letters in
+ * SQL, so `Élan` matches `élan` here and not there.
+ */
 function contains(actual: unknown, expected: unknown, caseSensitive: boolean): boolean {
   if (isEmpty(actual)) return false;
   const a = String(actual);
@@ -235,17 +244,18 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
   }
 
   const actual = filterSubject(node, filter);
+  const sameTypeOnly = filter.type === 'property';
 
   switch (filter.operator) {
     case 'exists':
       return !isEmpty(actual);
     case 'equals':
-      return equals(actual, filter.value);
+      return equals(actual, filter.value, sameTypeOnly);
     case 'contains':
       return contains(actual, filter.value, caseSensitive);
     case 'in':
       return (
-        Array.isArray(filter.value) && filter.value.some((v) => equals(actual, v))
+        Array.isArray(filter.value) && filter.value.some((v) => equals(actual, v, sameTypeOnly))
       );
     case 'gt':
       return !isEmpty(actual) && ordered(actual, filter.value) > 0;

@@ -225,6 +225,30 @@ describe('matchesFilter', () => {
     }
   });
 
+  it('compares a property as the JSON value it is, and a node column as text', () => {
+    // `amount` is the number 500: SQL does not convert it to match "500".
+    const amount = { type: 'property', property: 'amount' } as const;
+    expect(matchesFilter(invoice, { ...amount, operator: 'equals', value: 500 })).toBe(true);
+    expect(matchesFilter(invoice, { ...amount, operator: 'equals', value: '500' })).toBe(false);
+    expect(matchesFilter(invoice, { ...amount, operator: 'in', value: ['500'] })).toBe(false);
+    expect(matchesFilter(invoice, { ...amount, operator: 'in', value: [1, 500] })).toBe(true);
+
+    // A column is text, so a number operand is compared as text.
+    const numbered = { ...invoice, content: '500' };
+    expect(matchesFilter(numbered, { type: 'content', operator: 'equals', value: 500 })).toBe(true);
+  });
+
+  it('never equals an unset subject, not even the text "null"', () => {
+    for (const value of ['null', 'undefined', null]) {
+      expect(
+        matchesFilter(invoice, { type: 'property', operator: 'equals', property: 'missing', value })
+      ).toBe(false);
+    }
+    expect(
+      matchesFilter(invoice, { type: 'metadata', operator: 'equals', property: 'nope', value: 'undefined' })
+    ).toBe(false);
+  });
+
   it('treats contains as case-sensitive unless case_sensitive is false', () => {
     const upper = { type: 'property', operator: 'contains', property: 'status', value: 'OP' } as const;
     expect(matchesFilter(invoice, upper)).toBe(false);

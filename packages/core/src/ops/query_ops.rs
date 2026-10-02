@@ -668,12 +668,20 @@ mod tests {
     /// the execute input must accept every key they carry and read each back
     /// to the same value. A key added to `QueryFilter` or `SortConfig` and not
     /// to the input fails here instead of failing every saved query.
+    ///
+    /// The fixtures name every field, with no `..Default::default()`, so a
+    /// field added to `QueryFilter` stops this test compiling until it is set
+    /// here, however the field is serialized.
     #[test]
     fn the_execute_input_accepts_what_the_stored_types_serialize() {
         let stored = vec![
             QueryFilter {
                 filter_type: FilterType::Related,
                 operator: FilterOperator::Exists,
+                property: None,
+                value: None,
+                case_sensitive: None,
+                node_id: None,
                 path: Some(
                     serde_json::from_value(
                         json!([{ "name": "child_of", "open_ended": true }, "project"]),
@@ -686,16 +694,23 @@ mod tests {
                     property: Some("status".to_string()),
                     value: Some(json!("act")),
                     case_sensitive: Some(false),
-                    ..Default::default()
+                    node_id: None,
+                    path: None,
+                    filter: None,
+                    resolved_path: None,
                 })),
-                ..Default::default()
+                resolved_path: None,
             },
             QueryFilter {
                 filter_type: FilterType::Relationship,
                 operator: FilterOperator::Equals,
-                path: Some(serde_json::from_value(json!(["mentions"])).unwrap()),
+                property: None,
+                value: None,
+                case_sensitive: None,
                 node_id: Some("n1".to_string()),
-                ..Default::default()
+                path: Some(serde_json::from_value(json!(["mentions"])).unwrap()),
+                filter: None,
+                resolved_path: None,
             },
         ];
         for filter in stored {
