@@ -36,7 +36,7 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::nodespace::SearchRequest;
-use nodespace_types::SkillNode;
+use nodespace_types::SkillFields;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -482,7 +482,7 @@ fn sanitize_for_terminal(s: &str) -> String {
 fn skill_description(node: &nodespace_daemon::NodeData) -> String {
     serde_json::from_str(&node.properties)
         .ok()
-        .and_then(|properties| SkillNode::from_properties(&node.content, &properties).ok())
+        .and_then(|properties| SkillFields::from_properties(&properties).ok())
         .map(|skill| skill.description)
         .unwrap_or_default()
 }

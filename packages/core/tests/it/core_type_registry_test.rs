@@ -592,13 +592,15 @@ async fn a_typed_clients_generic_update_may_not_name_a_typed_core_field() {
         .await
         .expect("a subtype is written through the generic update");
 
-    // A core type with no typed update is written through the generic one.
+    // The same holds for every core type with a typed update.
     let collection = create(&svc, "collection", "notes", json!({}))
         .await
         .unwrap();
-    svc.ensure_no_typed_core_fields(&collection, None, &json!({ "description": "My notes" }))
-        .await
-        .expect("collection has no typed update");
+    let error = message(
+        svc.ensure_no_typed_core_fields(&collection, None, &json!({ "description": "My notes" }))
+            .await,
+    );
+    assert!(error.contains("typed collection update"), "{error}");
 
     // The flat update itself — the CLI's `node update --property status=done`
     // — writes the same field through the validated pipeline.

@@ -848,6 +848,9 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             commands::nodes::update_project_node,
             commands::nodes::update_query_node,
             commands::nodes::update_play_node,
+            commands::nodes::update_collection_node,
+            commands::nodes::update_skill_node,
+            commands::nodes::update_database_settings_node,
             // Collection commands (browsing and management UI)
             commands::collections::get_all_collections,
             commands::collections::get_collection_members,

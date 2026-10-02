@@ -2933,7 +2933,7 @@ impl NodeAccessor for NodeService {
 mod tests {
     use super::*;
     use crate::db::SqliteStore;
-    use crate::models::SkillNode;
+    use crate::models::SkillFields;
 
     /// A UUID derived from a readable name, for a test that creates many
     /// nodes and needs to name them again.
@@ -10148,7 +10148,7 @@ mod tests {
 
         let root_after = service.get_node(&root.id).await.unwrap().unwrap();
         assert_eq!(
-            SkillNode::from_node(&root_after).unwrap().description,
+            SkillFields::from_node(&root_after).unwrap().description,
             "Search v2",
             "sanity: config must have actually replaced"
         );
@@ -10348,7 +10348,7 @@ mod tests {
             "replace must not leave the stale skill node behind"
         );
         assert_eq!(
-            SkillNode::from_node(&nodes[0]).unwrap().description,
+            SkillFields::from_node(&nodes[0]).unwrap().description,
             "Search v2"
         );
     }
@@ -10426,7 +10426,7 @@ mod tests {
         let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
         assert_eq!(
-            SkillNode::from_node(&nodes[0]).unwrap().description,
+            SkillFields::from_node(&nodes[0]).unwrap().description,
             "Search v2",
             "unmodified config must still replace even though guidance is protected"
         );
@@ -10507,7 +10507,7 @@ mod tests {
         let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
         assert_eq!(
-            SkillNode::from_node(&nodes[0]).unwrap().description,
+            SkillFields::from_node(&nodes[0]).unwrap().description,
             "User's own description",
             "user-modified config must survive reseed despite the template changing"
         );
@@ -10639,7 +10639,7 @@ mod tests {
 
         let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(
-            SkillNode::from_node(&nodes[0]).unwrap().description,
+            SkillFields::from_node(&nodes[0]).unwrap().description,
             "Search v1",
             "--all reset must restore config to the template"
         );
@@ -10789,7 +10789,7 @@ mod tests {
             "unchanged skill template must not be duplicated by the prompt's replace"
         );
         assert_eq!(
-            SkillNode::from_node(&skills[0]).unwrap().description,
+            SkillFields::from_node(&skills[0]).unwrap().description,
             "Skill v1",
             "unchanged skill content must be untouched"
         );

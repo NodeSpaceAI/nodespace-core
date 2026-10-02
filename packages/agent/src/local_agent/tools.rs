@@ -4527,8 +4527,8 @@ impl AgentToolExecutor for GraphToolExecutor {
             Ok(nodes) => super::agent_loop::stage1_skill_names(
                 nodes
                     .iter()
-                    .filter_map(|n| nodespace_core::models::SkillNode::from_node(n).ok())
-                    .map(|s| s.name),
+                    .filter(|n| nodespace_core::models::SkillFields::from_node(n).is_ok())
+                    .map(|n| n.content.clone()),
             ),
             Err(e) => {
                 tracing::warn!(error = %e, "Could not read skill names for Stage 1; routing without them");

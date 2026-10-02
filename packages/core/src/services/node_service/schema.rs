@@ -239,6 +239,74 @@ impl NodeService {
             .await
     }
 
+    /// Update a collection's core field (`description`) with optimistic
+    /// concurrency control. See [`Self::update_person_node`] for why this
+    /// delegates to the generic pipeline. The collection's name is its
+    /// `content`, written through the rename operation.
+    pub async fn update_collection_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::CollectionNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "CollectionNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(
+            id,
+            "collection",
+            expected_version,
+            update.to_properties_patch(),
+        )
+        .await
+    }
+
+    /// Update a skill's core fields (`description`, `exclusion`,
+    /// `tool_whitelist`, `max_iterations`, `node_types`) with optimistic
+    /// concurrency control. See [`Self::update_person_node`] for why this
+    /// delegates to the generic pipeline; the resulting field shapes are
+    /// checked there by `SkillNodeBehavior::validate`.
+    pub async fn update_skill_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::SkillNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "SkillNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(id, "skill", expected_version, update.to_properties_patch())
+            .await
+    }
+
+    /// Update the database-settings node's core field
+    /// (`required_extensions`) with optimistic concurrency control. See
+    /// [`Self::update_person_node`] for why this delegates to the generic
+    /// pipeline.
+    pub async fn update_database_settings_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::DatabaseSettingsNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "DatabaseSettingsNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(
+            id,
+            "database-settings",
+            expected_version,
+            update.to_properties_patch(),
+        )
+        .await
+    }
+
     /// Write a typed update's flat properties patch to a node that must be of
     /// `node_type`.
     ///

@@ -1,7 +1,9 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::ai_chat::{AiChatNativeNode, AiChatPtyNode};
+use crate::collection::CollectionNode;
 use crate::core_type::CoreNodeType;
+use crate::database_settings::DatabaseSettingsNode;
 use crate::node::{Node, NodeEnvelope};
 use crate::person::PersonNode;
 use crate::play::{PlayFields, PlayNode};
@@ -9,6 +11,7 @@ use crate::priority::priority_prop;
 use crate::project::{ProjectNode, ProjectStatus};
 use crate::query::{QueryFields, QueryNode};
 use crate::schema::SchemaNode;
+use crate::skill::{SkillFields, SkillNode};
 use crate::task::{TaskNode, TaskStatus};
 
 fn normalize_date_field(s: &str) -> String {
@@ -56,6 +59,9 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         Some(CoreNodeType::AiChatPty) => ai_chat_pty_node_to_value(node),
         Some(CoreNodeType::Person) => person_node_to_value(node),
         Some(CoreNodeType::Project) => project_node_to_value(node),
+        Some(CoreNodeType::Collection) => collection_node_to_value(node),
+        Some(CoreNodeType::Skill) => skill_node_to_value(node),
+        Some(CoreNodeType::DatabaseSettings) => database_settings_node_to_value(node),
         Some(CoreNodeType::Query) => query_node_to_value(node),
         Some(CoreNodeType::Play) => play_node_to_value(node),
         Some(CoreNodeType::Schema) => SchemaNode::from_node(node).and_then(|s| {
@@ -72,9 +78,6 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
             | CoreNodeType::Table
             | CoreNodeType::Date
             | CoreNodeType::AgentGuidance
-            | CoreNodeType::Collection
-            | CoreNodeType::Skill
-            | CoreNodeType::DatabaseSettings
             // Abstract: no node has it as its type, and a subtype read at its
             // scope keeps the generic shape rather than borrowing a struct.
             | CoreNodeType::AiChat
@@ -318,6 +321,21 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                 ]
             }
         }
+        CoreNodeType::Collection => const { &[F::text("description", "description")] },
+        CoreNodeType::Skill => {
+            const {
+                &[
+                    F::text("description", "description"),
+                    F::text("exclusion", "exclusion"),
+                    F::new("tool_whitelist", "toolWhitelist", Array),
+                    F::new("max_iterations", "maxIterations", Number),
+                    F::new("node_types", "nodeTypes", Array),
+                ]
+            }
+        }
+        CoreNodeType::DatabaseSettings => {
+            const { &[F::new("required_extensions", "requiredExtensions", Array)] }
+        }
         CoreNodeType::Query => {
             const {
                 &[
@@ -351,9 +369,6 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
         | CoreNodeType::Table
         | CoreNodeType::Date
         | CoreNodeType::AgentGuidance
-        | CoreNodeType::Collection
-        | CoreNodeType::Skill
-        | CoreNodeType::DatabaseSettings
         | CoreNodeType::Schema
         | CoreNodeType::Tool => &[],
         // The chat family (ADR-088). The base's fields come first in each
@@ -543,6 +558,61 @@ fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     serde_json::to_value(&project).map_err(|e| format!("Failed to serialize project node: {}", e))
 }
 
+fn collection_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let description = string_prop(&node.properties, "description");
+
+    let collection = CollectionNode {
+        envelope: extension_envelope(node, CoreNodeType::Collection),
+        description,
+    };
+
+    serde_json::to_value(&collection)
+        .map_err(|e| format!("Failed to serialize collection node: {}", e))
+}
+
+/// A stored skill whose fields do not decode keeps its node in the batch with
+/// the schema defaults, as a malformed query does. Writes are checked by
+/// `SkillNodeBehavior::validate`, so this only meets a row written around the
+/// service layer.
+fn skill_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let fields = SkillFields::from_properties(&node.properties).unwrap_or_else(|e| {
+        eprintln!("skill node '{}' has unreadable fields: {e}", node.id);
+        SkillFields::default()
+    });
+
+    let skill = SkillNode {
+        envelope: extension_envelope(node, CoreNodeType::Skill),
+        fields,
+    };
+
+    serde_json::to_value(&skill).map_err(|e| format!("Failed to serialize skill node: {}", e))
+}
+
+/// A stored list that is not a list of strings reads as empty here. Writes are
+/// checked by `DatabaseSettingsNodeBehavior::validate`, and the open guard
+/// reads the stored value itself rather than this shape.
+fn database_settings_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let required_extensions = node
+        .properties
+        .get("required_extensions")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let settings = DatabaseSettingsNode {
+        envelope: extension_envelope(node, CoreNodeType::DatabaseSettings),
+        required_extensions,
+    };
+
+    serde_json::to_value(&settings)
+        .map_err(|e| format!("Failed to serialize database-settings node: {}", e))
+}
+
 /// A stored query whose fields do not decode keeps its node in the batch with
 /// the schema defaults rather than failing every other node alongside it —
 /// the same batch-safety rule as a malformed schema node. Writes are checked
@@ -658,21 +728,151 @@ mod wire_contract {
         );
     }
 
-    /// The collection viewer's header reads `properties.description`: the
-    /// collection bucket's field, flattened for the wire like any other.
     #[test]
-    fn collection_description_reaches_the_wire_from_its_bucket() {
+    fn collection_promotes_its_description_and_keeps_the_envelope() {
         let node = Node::new(
             "collection".to_string(),
             "Clients".to_string(),
-            serde_json::json!({ "collection": { "description": "Accounts we bill" } }),
+            serde_json::json!({
+                "collection": { "description": "Accounts we bill", "custom:owner": "Ada" }
+            }),
         );
         let out = node_to_typed_value(node).unwrap();
 
+        assert_eq!(out["nodeType"], "collection");
+        assert_eq!(out["content"], "Clients");
+        assert_eq!(out["lifecycleStatus"], "active");
+        assert_eq!(out["version"], 1);
+        assert_eq!(out["description"], "Accounts we bill");
         assert_eq!(
             out["properties"],
-            serde_json::json!({ "description": "Accounts we bill" })
+            serde_json::json!({ "custom:owner": "Ada" })
         );
+    }
+
+    #[test]
+    fn collection_without_a_description_omits_it() {
+        for properties in [
+            serde_json::json!({}),
+            serde_json::json!({ "collection": { "description": null } }),
+        ] {
+            let node = Node::new("collection".to_string(), "Clients".to_string(), properties);
+            let out = node_to_typed_value(node).unwrap();
+            assert!(out.get("description").is_none());
+            assert_eq!(out["properties"], serde_json::json!({}));
+        }
+    }
+
+    #[test]
+    fn skill_promotes_fields_top_level_and_keeps_the_envelope() {
+        let node = Node::new(
+            "skill".to_string(),
+            "Graph Editing".to_string(),
+            serde_json::json!({
+                "skill": {
+                    "description": "Update a record",
+                    "exclusion": "Delete records",
+                    "tool_whitelist": ["update_node", "get_node"],
+                    "max_iterations": 3,
+                    "node_types": ["invoice"],
+                    "custom:team": "Agents"
+                },
+                "_seed": { "tier": "system" }
+            }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["nodeType"], "skill");
+        assert_eq!(out["content"], "Graph Editing");
+        assert_eq!(out["lifecycleStatus"], "active");
+        assert_eq!(out["description"], "Update a record");
+        assert_eq!(out["exclusion"], "Delete records");
+        assert_eq!(
+            out["toolWhitelist"],
+            serde_json::json!(["update_node", "get_node"])
+        );
+        assert_eq!(out["maxIterations"], 3);
+        assert_eq!(out["nodeTypes"], serde_json::json!(["invoice"]));
+        assert_eq!(
+            out["properties"],
+            serde_json::json!({ "custom:team": "Agents" })
+        );
+        assert_eq!(
+            flat_properties_view(&out),
+            serde_json::json!({
+                "description": "Update a record",
+                "exclusion": "Delete records",
+                "tool_whitelist": ["update_node", "get_node"],
+                "max_iterations": 3,
+                "node_types": ["invoice"],
+                "custom:team": "Agents"
+            })
+        );
+    }
+
+    #[test]
+    fn skill_without_fields_takes_the_schema_defaults() {
+        let node = Node::new(
+            "skill".to_string(),
+            "Research".to_string(),
+            serde_json::json!({}),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["description"], "");
+        assert!(out.get("exclusion").is_none());
+        assert_eq!(out["toolWhitelist"], serde_json::json!([]));
+        assert_eq!(out["maxIterations"], 2);
+        assert_eq!(out["nodeTypes"], serde_json::json!([]));
+    }
+
+    /// One malformed skill must not fail the batch it travels in.
+    #[test]
+    fn a_malformed_skill_keeps_its_node_with_the_defaults() {
+        let node = Node::new(
+            "skill".to_string(),
+            "Research".to_string(),
+            serde_json::json!({ "skill": { "tool_whitelist": "get_node" } }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["content"], "Research");
+        assert_eq!(out["toolWhitelist"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn database_settings_promotes_required_extensions_and_keeps_the_envelope() {
+        let node = Node::new_with_id(
+            "database-settings-singleton".to_string(),
+            "database-settings".to_string(),
+            "Database Settings".to_string(),
+            serde_json::json!({
+                "database-settings": { "required_extensions": ["fixture"] }
+            }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["id"], "database-settings-singleton");
+        assert_eq!(out["nodeType"], "database-settings");
+        assert_eq!(out["lifecycleStatus"], "active");
+        assert_eq!(out["requiredExtensions"], serde_json::json!(["fixture"]));
+        assert_eq!(out["properties"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn database_settings_without_a_list_reads_as_empty() {
+        for properties in [
+            serde_json::json!({}),
+            serde_json::json!({ "database-settings": { "required_extensions": null } }),
+        ] {
+            let node = Node::new(
+                "database-settings".to_string(),
+                "Database Settings".to_string(),
+                properties,
+            );
+            let out = node_to_typed_value(node).unwrap();
+            assert_eq!(out["requiredExtensions"], serde_json::json!([]));
+        }
     }
 
     #[test]

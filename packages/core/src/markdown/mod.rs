@@ -1317,8 +1317,8 @@ pub async fn handle_create_nodes_from_markdown(
 /// // markdown children (header/text, inferred from the markdown structure —
 /// // no child_node_type override).
 /// let tmpl = NodeTemplate::skill(
-///     SkillNode::new(
-///         "Research & Search",
+///     "Research & Search",
+///     SkillFields::new(
 ///         "Search and explore the knowledge graph…",
 ///         &["search_semantic", "search_nodes", "get_node"],
 ///         4,
@@ -1387,12 +1387,16 @@ pub struct NodeTemplate {
 }
 
 impl NodeTemplate {
-    /// A `System`-tier seed for `skill`, with `guidance` as its markdown
-    /// children. The skill's name is the template title and node content.
-    pub fn skill(skill: crate::models::SkillNode, guidance: impl Into<String>) -> Self {
+    /// A `System`-tier seed for the skill called `name`, with `guidance` as
+    /// its markdown children. The name is the template title and node content.
+    pub fn skill(
+        name: impl Into<String>,
+        skill: crate::models::SkillFields,
+        guidance: impl Into<String>,
+    ) -> Self {
         Self {
             root_properties: skill.properties(),
-            title: skill.name,
+            title: name.into(),
             content: None,
             markdown_content: guidance.into(),
             root_node_type: crate::models::SKILL_NODE_TYPE.to_string(),

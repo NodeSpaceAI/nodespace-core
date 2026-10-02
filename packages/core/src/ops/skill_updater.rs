@@ -17,7 +17,7 @@
 //!    the `NodeUpdated` event the update emits).
 
 use crate::db::events::{DomainEvent, EventEnvelope};
-use crate::models::{NodeQuery, NodeUpdate, SkillNode};
+use crate::models::{NodeQuery, NodeUpdate, SkillFields, SkillNodeUpdate};
 use crate::services::NodeService;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -161,7 +161,7 @@ impl SkillUpdater {
         };
 
         // 4. Check if update is needed (avoid unnecessary writes).
-        let skill = match SkillNode::from_node(&skill_node) {
+        let skill = match SkillFields::from_node(&skill_node) {
             Ok(skill) => skill,
             Err(e) => {
                 warn!(
@@ -179,7 +179,9 @@ impl SkillUpdater {
         // 5. Update only the description, so a concurrent edit to the rest
         // of the skill's config survives this write.
         let update = NodeUpdate {
-            properties: Some(SkillNode::description_patch(&new_description)),
+            properties: Some(
+                SkillNodeUpdate::description(new_description.as_str()).to_properties_patch(),
+            ),
             ..Default::default()
         };
 
