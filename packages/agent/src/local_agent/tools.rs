@@ -713,8 +713,9 @@ fn resolved_payload(row: &Value) -> Value {
 /// `typed_node` is the node in its typed wire shape. A node with no field set
 /// gets no key.
 ///
-/// Every row that stands for a node carries them, a row that carries the
-/// node's text included. A record's fields are not in its text: the text is
+/// `search_nodes` rows and `get_node` results always carry them; a
+/// `search_semantic` row carries them beside its text, and a row without text
+/// is one the model fetches. A record's fields are not in its text: the text is
 /// the node's content and its descendants', and a record's content is its
 /// title, so a record read as a document alone is a title. Asked when a
 /// company was signed, the model answered that the date was not visible.

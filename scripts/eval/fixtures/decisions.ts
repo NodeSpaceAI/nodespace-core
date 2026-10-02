@@ -435,6 +435,19 @@ function seedNorthwind(env: EvalEnv): void {
     throw new Error("company type missing after seed — schema create did not take");
   }
 
+  // The date field's name is model-derived too (`signed_date`, `date_signed`,
+  // `signed_on` have all appeared), so find it by type rather than by name.
+  // A company type with no date field fails the seed before it writes
+  // anything: a scenario is scored on the reply carrying this date
+  // (`outcome-record-field-is-answered`), and with nothing to answer from it
+  // would score a setup turn's missing field as the model failing to read one.
+  const dateField = company.fields.find((f) => f?.type === "date" && f?.name)?.name;
+  if (!dateField) {
+    throw new Error(
+      `company type '${companyType}' has no date field, so '${SEEDED_COMPANY_TITLE}' cannot be given its signing date — purge the database and re-run`,
+    );
+  }
+
   const existing = runNs(env, [
     "node",
     "query",
@@ -443,34 +456,26 @@ function seedNorthwind(env: EvalEnv): void {
     "--limit",
     "50",
   ]) as { nodes?: Array<{ content?: string; id?: string }> } | null;
-  const present = (existing?.nodes ?? []).some(
+  const present = (existing?.nodes ?? []).find(
     (n) => (n?.content ?? "").toLowerCase() === SEEDED_COMPANY_TITLE.toLowerCase(),
   );
-  if (present) return;
 
-  const created = runNs(env, [
-    "node",
-    "create",
-    "--type",
-    companyType,
-    "--content",
-    SEEDED_COMPANY_TITLE,
-  ]) as { id?: string } | null;
-  const id = created?.id;
+  // An existing Northwind is given the date too: a rep whose update failed
+  // after the create would otherwise leave it dateless for every rep after.
+  const id =
+    present?.id ??
+    (
+      runNs(env, [
+        "node",
+        "create",
+        "--type",
+        companyType,
+        "--content",
+        SEEDED_COMPANY_TITLE,
+      ]) as { id?: string } | null
+    )?.id;
   if (!id) throw new Error(`seeding '${SEEDED_COMPANY_TITLE}' returned no id`);
 
-  // The date field's name is model-derived too (`signed_date`, `date_signed`,
-  // `signed_on` have all appeared), so find it by type rather than by name.
-  // A company type with no date field fails the seed: a scenario is scored on
-  // the reply carrying this date (`outcome-record-field-is-answered`), and
-  // with nothing to answer from it would score a setup turn's missing field
-  // as the model failing to read one.
-  const dateField = company.fields.find((f) => f?.type === "date" && f?.name)?.name;
-  if (!dateField) {
-    throw new Error(
-      `company type '${companyType}' has no date field, so '${SEEDED_COMPANY_TITLE}' cannot be given its signing date — purge the database and re-run`,
-    );
-  }
   runNs(env, [
     "node",
     "update",

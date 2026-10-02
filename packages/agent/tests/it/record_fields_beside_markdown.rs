@@ -136,3 +136,23 @@ async fn a_document_read_as_markdown_carries_no_properties() {
     assert!(result.get("markdown").is_some(), "{result}");
     assert!(result.get("properties").is_none(), "{result}");
 }
+
+/// A missing node gets the same answer whichever format was asked for.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_missing_node_read_as_markdown_is_not_found() {
+    let (executor, _ns, _tmp) = make_executor().await;
+    let missing = "7d9f2c1e-0b4a-4e3f-9c8d-2a6b5e1f0c3d";
+
+    let got = executor
+        .execute("get_node", json!({ "id": missing, "format": "markdown" }))
+        .await
+        .expect("a missing node is a result for the model, not a tool failure");
+
+    assert!(got.is_error, "{:?}", got.result);
+    assert_eq!(
+        got.result["error"],
+        json!(format!("Node '{missing}' not found")),
+        "{:?}",
+        got.result
+    );
+}
