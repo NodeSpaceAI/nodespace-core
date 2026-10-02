@@ -191,7 +191,8 @@ const fn stage1_core_type_words(
         | T::AiChatNative
         | T::AiChatPty
         | T::AiChatMessage
-        | T::Tool => None,
+        | T::Tool
+        | T::ToolNative => None,
     }
 }
 
