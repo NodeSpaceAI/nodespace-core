@@ -4,8 +4,8 @@
 //! play nodes — the same DB-seeded, user-modifiable pattern ADR-030 uses for
 //! prompts and skills. A seeded play that carries an invariant rule gets two
 //! extra behaviors on top of that: it can be reset to its shipped default,
-//! and editing or disabling it surfaces a concrete warning rather than
-//! silently changing what future nodes get.
+//! and editing its rules or switching it off surfaces a concrete warning
+//! rather than silently changing what future nodes get.
 //!
 //! Convention: a seeded play's node carries `properties._seed.default_rules`
 //! — the play's `rules` JSON array exactly as shipped. This mirrors the
@@ -17,8 +17,8 @@
 //! beyond the node itself, and survives the registry that produced it ever
 //! changing shape.
 
-use crate::models::{Node, NodeUpdate};
-use crate::playbook::types::{ParsedRule, RuleClass};
+use crate::models::{Node, NodeUpdate, PlayFields};
+use crate::playbook::types::{ParsedPlay, ParsedRule, RuleClass};
 use crate::services::{NodeService, NodeServiceError};
 use std::sync::Arc;
 
@@ -40,6 +40,31 @@ pub fn invariant_rule_names(rules: &[Arc<ParsedRule>]) -> Vec<String> {
         .filter(|r| r.class == RuleClass::Invariant)
         .map(|r| r.name.clone())
         .collect()
+}
+
+/// The change to a seeded play that ADR-060 §8 warns about, as the verb the
+/// warning uses: `"disabled"` when `enabled` went from `true` to `false`,
+/// `"edited"` when its rules changed (ADR-087 §5). `None` for any other
+/// update, for a play that is not seeded, and for one that carried no
+/// invariant rule.
+///
+/// `previous` is the play as the engine last read it, which is the play
+/// BEFORE the update that produced `node`: the warning is about the invariant
+/// rule(s) it carried then.
+pub fn warned_change(previous: &ParsedPlay, node: &Node) -> Option<&'static str> {
+    if !is_seeded_play(node) || !carries_invariant(&previous.rules) {
+        return None;
+    }
+    let rules = PlayFields::stored_field(&node.properties, nodespace_types::PLAY_RULES_FIELD)
+        .cloned()
+        .unwrap_or_default();
+    if previous.enabled && !PlayFields::enabled_in(&node.properties) {
+        Some("disabled")
+    } else if rules != previous.stored_rules {
+        Some("edited")
+    } else {
+        None
+    }
 }
 
 /// Errors specific to resetting a seeded play.
@@ -164,6 +189,91 @@ mod tests {
         assert_eq!(
             names,
             vec!["invariant-one".to_string(), "invariant-two".to_string()]
+        );
+    }
+
+    /// A seeded play as the engine last read it, carrying `class` rules.
+    fn previous_play(class: RuleClass, stored_rules: serde_json::Value) -> ParsedPlay {
+        ParsedPlay {
+            id: "pb".to_string(),
+            created_at: chrono::Utc::now(),
+            rules: vec![rule("r1", class)],
+            status: crate::playbook::types::PlayStatus::Runnable,
+            enabled: true,
+            stored_rules,
+        }
+    }
+
+    fn seeded_node(play: serde_json::Value) -> Node {
+        Node::new_with_id(
+            "pb".to_string(),
+            "play".to_string(),
+            "Seeded Play".to_string(),
+            json!({ "play": play, "_seed": { "default_rules": [] } }),
+        )
+    }
+
+    #[test]
+    fn switching_a_seeded_invariant_play_off_is_warned_about() {
+        let rules = json!([{ "name": "r1" }]);
+        let previous = previous_play(RuleClass::Invariant, rules.clone());
+
+        let off = seeded_node(json!({ "rules": rules, "enabled": false }));
+        assert_eq!(warned_change(&previous, &off), Some("disabled"));
+
+        // Already off: nothing changed about the switch.
+        let mut was_off = previous.clone();
+        was_off.enabled = false;
+        assert_eq!(warned_change(&was_off, &off), None);
+    }
+
+    #[test]
+    fn editing_a_seeded_invariant_plays_rules_is_warned_about() {
+        let previous = previous_play(RuleClass::Invariant, json!([{ "name": "r1" }]));
+        let edited = seeded_node(json!({ "rules": [{ "name": "r2" }] }));
+        assert_eq!(warned_change(&previous, &edited), Some("edited"));
+    }
+
+    /// Neither archiving, nor an edit of another field, nor the engine's own
+    /// suspension write is the user switching the play off or editing rules.
+    #[test]
+    fn any_other_update_is_not_warned_about() {
+        let rules = json!([{ "name": "r1" }]);
+        let previous = previous_play(RuleClass::Invariant, rules.clone());
+
+        let described = seeded_node(json!({ "rules": rules, "description": "new" }));
+        assert_eq!(warned_change(&previous, &described), None);
+
+        let suspended = seeded_node(json!({
+            "rules": rules,
+            "suspended_reason": "action_failed",
+            "suspended_at": "2026-10-02T10:00:00Z"
+        }));
+        assert_eq!(warned_change(&previous, &suspended), None);
+
+        let mut archived = seeded_node(json!({ "rules": rules }));
+        archived.lifecycle_status = "archived".to_string();
+        assert_eq!(warned_change(&previous, &archived), None);
+    }
+
+    #[test]
+    fn a_play_that_is_not_seeded_or_carries_no_invariant_is_not_warned_about() {
+        let rules = json!([{ "name": "r1" }]);
+        let off = seeded_node(json!({ "rules": rules, "enabled": false }));
+        assert_eq!(
+            warned_change(&previous_play(RuleClass::Reactive, rules.clone()), &off),
+            None
+        );
+
+        let user_authored = Node::new_with_id(
+            "pb".to_string(),
+            "play".to_string(),
+            "User Play".to_string(),
+            json!({ "play": { "rules": rules, "enabled": false } }),
+        );
+        assert_eq!(
+            warned_change(&previous_play(RuleClass::Invariant, rules), &user_authored),
+            None
         );
     }
 

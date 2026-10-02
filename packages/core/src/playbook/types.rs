@@ -145,16 +145,54 @@ impl Ord for OrderedRuleRef {
 pub struct ParsedPlay {
     pub id: String,
     pub created_at: DateTime<Utc>,
+    /// The play's compiled rules. Empty for a play whose rules do not parse.
     pub rules: Vec<Arc<ParsedRule>>,
-    /// Lifecycle status: "active" or "disabled"
+    /// Whether the play runs, and if not, why.
     pub status: PlayStatus,
+    /// The user's switch as last read from the node.
+    pub enabled: bool,
+    /// The node's stored `rules` as last read, to tell a rule edit from any
+    /// other update.
+    pub stored_rules: serde_json::Value,
 }
 
-/// Play lifecycle status
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Whether a play runs, and if not, why (ADR-087 §5).
+///
+/// A cache of the runnable check, rebuilt from the play node at load and on
+/// every play update. Only a `Runnable` play has rules in the trigger index
+/// and the cron registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayStatus {
-    Active,
+    /// It participates, it is enabled, it is not suspended and its rules
+    /// validate.
+    Runnable,
+    /// The node is archived, so it participates in nothing.
+    Archived,
+    /// The user switched it off (`enabled` is `false`).
     Disabled,
+    /// The engine took it out of service on this device and recorded why on
+    /// the node.
+    Suspended,
+}
+
+impl PlayStatus {
+    /// The status a play node's own state gives it. `Runnable` here still
+    /// depends on the rules validating, which the engine checks next.
+    ///
+    /// This is the one place the engine decides whether a play runs: the
+    /// participation check, then the user's switch, then the suspension.
+    pub fn of_node(node: &crate::models::Node) -> Self {
+        use crate::models::PlayFields;
+        if !crate::governance::participates(node) {
+            Self::Archived
+        } else if !PlayFields::enabled_in(&node.properties) {
+            Self::Disabled
+        } else if PlayFields::suspended_in(&node.properties) {
+            Self::Suspended
+        } else {
+            Self::Runnable
+        }
+    }
 }
 
 /// A single parsed rule from a play's `rules` array.

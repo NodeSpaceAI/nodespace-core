@@ -13,7 +13,10 @@
 //! - Phase 7: Save-time validation before play activation
 
 use crate::db::events::{chain_depth_of_write, DomainEvent, EventEnvelope};
-use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
+use crate::models::PlaySuspensionReason;
+use crate::playbook::lifecycle::{
+    parse_play_rules, trigger_keys_for_event, PlaybookLifecycleManager,
+};
 use crate::playbook::types::*;
 use crate::services::{NodeService, NodeServiceError};
 use std::sync::{Arc, RwLock};
@@ -91,8 +94,8 @@ impl PlaybookEngine {
         let mut rx = self.node_service.subscribe_to_events();
         info!("Play engine subscribed to event channel");
 
-        // Step 2-3: Load active plays and build indexes
-        self.load_active_plays().await?;
+        // Step 2-3: Load every play and index the runnable ones
+        self.load_plays().await?;
 
         // Step 4: Create ExecutionQueue and spawn RuleProcessor
         let (queue_tx, queue_rx) = mpsc::channel::<ExecutionWorkItem>(EXECUTION_QUEUE_CAPACITY);
@@ -121,7 +124,17 @@ impl PlaybookEngine {
                             self.handle_event(envelope, &queue_tx).await;
                         }
                         Err(broadcast::error::RecvError::Lagged(count)) => {
-                            warn!("Play engine lagged, missed {} events", count);
+                            // A missed event may have been a play's own:
+                            // created, switched off, suspended, deleted. The
+                            // run state is a cache of the nodes, so rebuild
+                            // it from them rather than run on a stale one.
+                            warn!(
+                                "Play engine lagged, missed {} events; reloading plays",
+                                count
+                            );
+                            if let Err(e) = self.load_plays().await {
+                                error!("Failed to reload plays after lagging: {}", e);
+                            }
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             info!("Event channel closed, play engine shutting down");
@@ -153,9 +166,8 @@ impl PlaybookEngine {
 
     /// Report each error from a failed `validate_play` call.
     ///
-    /// Shared by `load_active_plays` / `handle_play_created` /
-    /// `handle_play_updated`, which all re-run the same save-time validation
-    /// and need identical error reporting.
+    /// Used by `sync_play`, which re-runs save-time validation at load and on
+    /// every play create and update.
     ///
     /// Every error is reported independently, so two structurally different
     /// problems on the same play both surface with their own message. This
@@ -180,21 +192,6 @@ impl PlaybookEngine {
         }
     }
 
-    /// Load all active play nodes from the database and activate them.
-    ///
-    /// Phase 7: save-time validation (belt-and-suspenders — primary gate is
-    /// in `NodeService`), same as `handle_play_created`/`handle_play_updated`.
-    /// A persisted play must not bypass this just because it is reaching
-    /// activation via the startup load path rather than the create/update
-    /// path: ADR-060 is explicitly about multi-device sync, so a play row
-    /// here may have been written by another device (or an earlier build)
-    /// whose validation rules differ, and the store layer does not
-    /// re-validate business rules on replicated writes. Without this check,
-    /// e.g. a `reject` action (ADR-060 §2) on a `Reactive` rule — invalid,
-    /// but only caught at save time — would reactivate unvalidated on every
-    /// restart and then, on first trigger, disable its *entire* play (not
-    /// just the offending rule): the async reactive dispatch loop treats any
-    /// `ActionResult::Failed` the same, and `execute_reject` always fails.
     /// Rebuild the lifecycle manager's `extends` ancestry cache (ADR-078).
     ///
     /// The manager itself has no store access, so the walk happens here and
@@ -306,7 +303,15 @@ impl PlaybookEngine {
         self.ancestry_dirty.store(false, Ordering::Relaxed);
     }
 
-    async fn load_active_plays(&self) -> anyhow::Result<()> {
+    /// Load every play node and bring the engine's state in line with each
+    /// (see [`Self::sync_play`]). A play that does not run is kept with its
+    /// reason; one whose rules fail validation is suspended, so the failure
+    /// is visible rather than silently skipped. Runs at startup, and again
+    /// when the subscriber lags and may have missed a play's event.
+    ///
+    /// The query leaves archived plays out, as every default query does: an
+    /// archived play participates in nothing (ADR-087 §2).
+    async fn load_plays(&self) -> anyhow::Result<()> {
         // Ancestry must be warm before any event is dispatched, or a
         // base-scoped Play would silently miss subtype events until the first
         // schema write of the process.
@@ -317,62 +322,150 @@ impl PlaybookEngine {
             .query_nodes_by_type(crate::models::CoreNodeType::Play.as_str(), false)
             .await?;
 
-        let mut loaded = 0;
         for node in &nodes {
-            let parsed_rules = match parse_rules_for_validation(node) {
-                Ok(rules) => rules,
-                Err(e) => {
-                    warn!("Failed to parse play {}: {}", node.id, e);
-                    continue;
-                }
-            };
-
-            if let Err(errors) =
-                crate::playbook::validation::validate_play(&parsed_rules, &self.node_service).await
-            {
-                self.log_validation_errors(&node.id, &errors);
-                if crate::playbook::validation::has_genuine_failure(&errors) {
-                    warn!(
-                        "Play {} failed save-time validation with {} error(s) at load time, \
-                         skipping activation",
-                        node.id,
-                        errors.len()
-                    );
-                    continue;
-                }
-                // Every error is SchemaResolutionFailed — inconclusive (a
-                // transient DB error), not evidence this play is broken.
-                // Unlike the other three call sites gated the same way,
-                // this one has no later event to retry validation on: a
-                // play skipped here at startup stays un-activated for the
-                // rest of the process's life, which is a worse outcome for
-                // a play a user already set active in a previous session
-                // than optimistically activating it despite the unconfirmed
-                // verdict. Falls through to activate below.
+            self.sync_play(node).await;
+            // A suspension outlives the run that recorded it, so say so at
+            // each start: the play stays off until someone enables it.
+            if PlayStatus::of_node(node) == PlayStatus::Suspended {
+                let field = |key: &str| {
+                    crate::models::PlayFields::stored_field(&node.properties, key)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                };
                 warn!(
-                    "Play {} save-time validation was inconclusive ({} resolution failure(s)) \
-                     at load time — activating anyway rather than leaving it off for the \
-                     process lifetime on an unconfirmed verdict",
-                    node.id,
-                    errors.len()
+                    play_id = %node.id,
+                    reason = %field(nodespace_types::PLAY_SUSPENDED_REASON_FIELD),
+                    suspended_at = %field(nodespace_types::PLAY_SUSPENDED_AT_FIELD),
+                    "Play '{}' is suspended and will not run until it is enabled: {}",
+                    node.content,
+                    field(nodespace_types::PLAY_SUSPENDED_MESSAGE_FIELD)
                 );
-            }
-
-            let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-            match lifecycle.activate_play(node) {
-                Ok(()) => loaded += 1,
-                Err(e) => {
-                    warn!("Failed to parse play {}: {}", node.id, e);
-                }
             }
         }
 
+        let runnable = {
+            let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+            // On a reload, a play no longer in the store's load was deleted
+            // or archived since. At startup there is nothing to forget.
+            lifecycle.retain_plays(&nodes.iter().map(|node| node.id.as_str()).collect());
+            lifecycle
+                .active_playbooks()
+                .values()
+                .filter(|play| play.status == PlayStatus::Runnable)
+                .count()
+        };
         info!(
-            "Loaded {} active plays ({} total found)",
-            loaded,
+            "Loaded {} runnable plays ({} total found)",
+            runnable,
             nodes.len()
         );
         Ok(())
+    }
+
+    /// Bring the engine's state for one play in line with its node.
+    ///
+    /// The one place the engine decides whether a play runs (ADR-087 §5): it
+    /// participates ∧ it is enabled ∧ it is not suspended
+    /// ([`PlayStatus::of_node`]) ∧ its rules parse and validate. Startup, a
+    /// created play and an updated play all come through here.
+    ///
+    /// - A play that does not run is parked with its reason, out of the
+    ///   indexes. No validation is needed to switch a play off.
+    /// - A play whose rules fail to parse, or genuinely fail validation, is
+    ///   suspended: the reason is recorded on the node, so it survives a
+    ///   restart and every client can see it.
+    /// - Otherwise it is indexed afresh from the node.
+    ///
+    /// Validation here is belt-and-suspenders (the primary gate is in
+    /// `NodeService`): a play row may have been written by another device or
+    /// an earlier build whose validation differs, and a schema may have
+    /// changed under a play since it was saved.
+    async fn sync_play(&self, node: &crate::models::Node) {
+        // Compiled once, before any lock is taken.
+        let parsed = parse_play_rules(node);
+
+        let status = PlayStatus::of_node(node);
+        if status != PlayStatus::Runnable {
+            let rules = parsed.unwrap_or_default();
+            let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+            lifecycle.park_play(node, status, rules);
+            return;
+        }
+
+        let parsed_rules = match parsed {
+            Ok(rules) => rules,
+            Err(e) => {
+                warn!(
+                    play_id = %node.id,
+                    error_type = "compile_error",
+                    error = %e,
+                    "Failed to parse play rules; suspending the play"
+                );
+                self.suspend_unrunnable(
+                    node,
+                    Vec::new(),
+                    format!("Failed to parse play rules: {e}"),
+                )
+                .await;
+                return;
+            }
+        };
+
+        if let Err(errors) =
+            crate::playbook::validation::validate_play(&parsed_rules, &self.node_service).await
+        {
+            self.log_validation_errors(&node.id, &errors);
+            if crate::playbook::validation::has_genuine_failure(&errors) {
+                warn!(
+                    "Play {} failed validation with {} error(s); suspending the play",
+                    node.id,
+                    errors.len()
+                );
+                let detail = errors
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                self.suspend_unrunnable(node, parsed_rules, detail).await;
+                return;
+            }
+            // Every error is SchemaResolutionFailed: validation could not
+            // reach a verdict (a transient DB error), which is not evidence
+            // the play is broken. Suspending on it would take a working
+            // automation offline over a hiccup, and skipping the play would
+            // leave an edit silently unapplied, so it is indexed anyway. A
+            // later schema or play write re-validates it.
+            warn!(
+                "Play {} validation was inconclusive ({} resolution failure(s)); indexing it \
+                 anyway rather than suspending on an unconfirmed verdict",
+                node.id,
+                errors.len()
+            );
+        }
+
+        let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+        lifecycle.reindex_play(node, parsed_rules);
+    }
+
+    /// Suspend a play whose rules do not parse or validate: park it and
+    /// record `validation_failed` on its node.
+    async fn suspend_unrunnable(
+        &self,
+        node: &crate::models::Node,
+        rules: Vec<Arc<ParsedRule>>,
+        message: String,
+    ) {
+        {
+            let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+            lifecycle.park_play(node, PlayStatus::Suspended, rules);
+        }
+        record_suspension(
+            &self.node_service,
+            &node.id,
+            PlaySuspensionReason::ValidationFailed,
+            &message,
+        )
+        .await;
     }
 
     /// Best-effort node fetch for `handle_event`'s two lookups below (a
@@ -893,78 +986,12 @@ impl PlaybookEngine {
         }
     }
 
-    /// Handle a new play node being created — validate, then parse and activate.
-    ///
-    /// Phase 7: runs save-time validation before activation. If validation fails,
-    /// the play is disabled and each error is logged.
+    /// Handle a new play node being created: the same path as startup
+    /// (see [`Self::sync_play`]), so a play created disabled, archived or
+    /// with rules that do not validate is known to the engine with its reason.
     async fn handle_play_created(&self, node_id: &str) {
         match self.node_service.get_node(node_id).await {
-            // An archived play takes part in nothing, so it never activates
-            // (ADR-087 §2).
-            Ok(Some(node)) if crate::governance::participates(&node) => {
-                // Parse rules first for validation
-                let parsed_rules = match parse_rules_for_validation(&node) {
-                    Ok(rules) => rules,
-                    Err(e) => {
-                        warn!(
-                            play_id = %node_id,
-                            error_type = "compile_error",
-                            error = %e,
-                            "Failed to parse play rules for validation"
-                        );
-                        let mut lifecycle =
-                            self.lifecycle.write().expect("lifecycle lock poisoned");
-                        lifecycle.disable_play(node_id);
-                        return;
-                    }
-                };
-
-                // Phase 7: Save-time validation (belt-and-suspenders — primary gate is in NodeService)
-                if let Err(errors) =
-                    crate::playbook::validation::validate_play(&parsed_rules, &self.node_service)
-                        .await
-                {
-                    self.log_validation_errors(node_id, &errors);
-                    if crate::playbook::validation::has_genuine_failure(&errors) {
-                        warn!(
-                            "Play {} failed save-time validation with {} error(s)",
-                            node_id,
-                            errors.len()
-                        );
-                        // Disable the play — do not activate
-                        let mut lifecycle =
-                            self.lifecycle.write().expect("lifecycle lock poisoned");
-                        lifecycle.disable_play(node_id);
-                        return;
-                    }
-                    // Every error is SchemaResolutionFailed — validation
-                    // could not reach a definitive verdict (a transient DB
-                    // error), not evidence this play is broken. Returning
-                    // here without activating would NOT "leave state
-                    // unchanged": this play has never been in the lifecycle
-                    // manager at all, so skipping activation makes it
-                    // invisible to `plays_referencing_schema` and therefore
-                    // to every future schema-drift re-validation too — a
-                    // permanent ghost, worse than disabling it. Fall
-                    // through and activate anyway, same as
-                    // `load_active_plays`'s identical reasoning.
-                    warn!(
-                        "Play {} save-time validation was inconclusive ({} resolution \
-                         failure(s)) — activating anyway rather than leaving it invisible to \
-                         future re-validation on an unconfirmed verdict",
-                        node_id,
-                        errors.len()
-                    );
-                }
-
-                let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-                if let Err(e) = lifecycle.activate_play(&node) {
-                    warn!("Failed to activate new play {}: {}", node_id, e);
-                }
-            }
-            Ok(Some(_)) => {
-                debug!("New play {} is not active, skipping", node_id);
-            }
+            Ok(Some(node)) => self.sync_play(&node).await,
             Ok(None) => {
                 warn!("Play {} not found after NodeCreated event", node_id);
             }
@@ -980,11 +1007,11 @@ impl PlaybookEngine {
         lifecycle.deactivate_play(play_id);
     }
 
-    /// Handle a play node being updated — detect participation changes.
+    /// Handle a play node being updated: re-read the node and recompute its
+    /// run state (see [`Self::sync_play`]).
     ///
-    /// If the play was unarchived, re-enable it (with validation).
-    /// If rules changed, re-parse (with validation).
-    /// Phase 7: validates before (re-)activation.
+    /// An update that touches only the suspension fields (the engine's own
+    /// write) lands here too and changes nothing: the play is already parked.
     async fn handle_play_updated(&self, node_id: &str) {
         let node = match self.node_service.get_node(node_id).await {
             Ok(Some(n)) => n,
@@ -998,130 +1025,38 @@ impl PlaybookEngine {
             }
         };
 
-        // The engine's only use of lifecycle: whether the play takes part
-        // (ADR-087 §2). An archived play doesn't run.
-        let participates = crate::governance::participates(&node);
+        self.warn_on_seeded_play_change(&node);
+        self.sync_play(&node).await;
+    }
 
-        // Read current status AND the pre-edit rule set (short lock) — the
-        // latter is what ADR-060 §8's warning needs to name (the invariant
-        // rule(s) this play carried BEFORE whatever update just landed), not
-        // whatever `node` now contains.
-        let (current_status, previously_carried_invariant) = {
+    /// ADR-060 §8: a seeded play carrying an invariant rule warns, naming the
+    /// concrete consequence, when `enabled` goes from `true` to `false` or
+    /// its rules are edited (ADR-087 §5).
+    ///
+    /// Compared against what the engine last read from the node, which is
+    /// the play as it was BEFORE the update that just landed: the warning
+    /// names the invariant rule(s) the play carried then.
+    fn warn_on_seeded_play_change(&self, node: &crate::models::Node) {
+        let (action, rule_names) = {
             let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
-            match lifecycle.get_play(node_id) {
-                Some(pb) => (
-                    Some(pb.status.clone()),
-                    crate::playbook::seeded::carries_invariant(&pb.rules),
-                ),
-                None => (None, false),
-            }
-        };
-
-        // ADR-060 §8: a seeded play carrying an invariant rule warns
-        // explicitly, naming the concrete consequence, on edit OR disable —
-        // both branches below reach this before doing anything else, so
-        // neither an edit-while-active nor a disable skips it. Only reached
-        // when this play was ALREADY active (a fresh first-time activation,
-        // `current_status == None`, is installation, not an edit). Best-
-        // effort: a warning-log failure must never block the underlying
-        // disable/re-activation it describes.
-        if current_status == Some(PlayStatus::Active)
-            && previously_carried_invariant
-            && crate::playbook::seeded::is_seeded_play(&node)
-        {
-            let old_rule_names = {
-                let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
-                lifecycle
-                    .get_play(node_id)
-                    .map(|pb| crate::playbook::seeded::invariant_rule_names(&pb.rules))
-                    .unwrap_or_default()
+            // First sight of the play is installation, not an edit.
+            let Some(previous) = lifecycle.get_play(&node.id) else {
+                return;
             };
-            let action = if participates { "edited" } else { "disabled" };
-            let message =
-                crate::playbook::seeded::edit_or_disable_warning(node_id, action, &old_rule_names);
-            warn!(
-                play_id = %node_id,
-                error_type = "seeded_play_warning",
-                "{}",
-                message
-            );
-        }
-
-        // A participating play is (re-)activated whatever its state in the
-        // manager: disabled, active (an edit), or not yet known.
-        let needs_activation = participates;
-
-        // Active → archived: just disable, no validation needed
-        if current_status == Some(PlayStatus::Active) && !participates {
-            let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-            lifecycle.disable_play(node_id);
-            return;
-        }
-
-        if needs_activation {
-            // Phase 7: validate before (re-)activation (belt-and-suspenders)
-            if let Ok(parsed_rules) = parse_rules_for_validation(&node) {
-                if let Err(errors) =
-                    crate::playbook::validation::validate_play(&parsed_rules, &self.node_service)
-                        .await
-                {
-                    self.log_validation_errors(node_id, &errors);
-                    if crate::playbook::validation::has_genuine_failure(&errors) {
-                        warn!(
-                            "Play {} failed validation on update with {} error(s)",
-                            node_id,
-                            errors.len()
-                        );
-                        let mut lifecycle =
-                            self.lifecycle.write().expect("lifecycle lock poisoned");
-                        lifecycle.disable_play(node_id);
-                        return;
-                    }
-                    // Every error is SchemaResolutionFailed — inconclusive,
-                    // not evidence of a real break. Returning here without
-                    // (re-)activating would NOT "leave state unchanged" in
-                    // any of the three cases `needs_activation` covers:
-                    // - `None -> active` (first-ever activation): the play
-                    //   was never in the lifecycle manager, so skipping
-                    //   leaves it permanently invisible to future
-                    //   schema-drift re-validation — a ghost, same failure
-                    //   mode `load_active_plays` guards against.
-                    // - `Disabled -> active` (re-enable): same — it stays
-                    //   disabled with no future retry, silently ignoring
-                    //   the user's re-enable.
-                    // - `Active -> active` (edit while running): the OLD,
-                    //   pre-edit rules would keep executing under the
-                    //   participating node the user just
-                    //   edited, silently discarding their change with
-                    //   nothing but a log line to show for it.
-                    // All three are worse than proceeding on an unconfirmed
-                    // verdict, so fall through and (re-)activate with the
-                    // new rules anyway, same reasoning as
-                    // `handle_play_created`/`load_active_plays`.
-                    warn!(
-                        "Play {} validation on update was inconclusive ({} resolution \
-                         failure(s)) — (re-)activating anyway rather than silently dropping \
-                         this update on an unconfirmed verdict",
-                        node_id,
-                        errors.len()
-                    );
-                }
-            }
-
-            let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-            match &current_status {
-                Some(PlayStatus::Disabled) | Some(PlayStatus::Active) => {
-                    if let Err(e) = lifecycle.reenable_play(&node) {
-                        warn!("Failed to re-enable/update play {}: {}", node_id, e);
-                    }
-                }
-                None => {
-                    if let Err(e) = lifecycle.activate_play(&node) {
-                        warn!("Failed to activate play {}: {}", node_id, e);
-                    }
-                }
-            }
-        }
+            let Some(action) = crate::playbook::seeded::warned_change(previous, node) else {
+                return;
+            };
+            (
+                action,
+                crate::playbook::seeded::invariant_rule_names(&previous.rules),
+            )
+        };
+        warn!(
+            play_id = %node.id,
+            error_type = "seeded_play_warning",
+            "{}",
+            crate::playbook::seeded::edit_or_disable_warning(&node.id, action, &rule_names)
+        );
     }
 
     /// Handle a schema node being updated — check for version drift.
@@ -1129,29 +1064,20 @@ impl PlaybookEngine {
         // A schema write may have added, re-targeted or removed an `extends`
         // edge, which changes what a base-scoped Play matches. Rebuild the
         // ancestry cache before the drift check below, so this hook cannot
-        // return early (a schema node missing `forNodeType`, say) and leave
-        // the cache stale.
+        // return early (the schema node is already gone, say) and leave the
+        // cache stale.
         self.refresh_ancestor_cache().await;
 
         match self.node_service.get_node(schema_node_id).await {
             Ok(Some(node)) => {
-                // Extract schema_node_type and version from the schema node
-                let schema_node_type = node
-                    .properties
-                    .get("schema")
-                    .and_then(|s| s.get("forNodeType"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                // A schema node's id is the type it defines, and its
+                // properties are flat (no bucket).
+                let schema_node_type = node.id.as_str();
                 let new_version = node
                     .properties
-                    .get("schema")
-                    .and_then(|s| s.get("schemaVersion"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0");
-
-                if schema_node_type.is_empty() {
-                    return;
-                }
+                    .get("schemaVersion")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
 
                 // Referencing the changed type is not the same as being broken
                 // by the change. Disabling every Play that merely mentions it
@@ -1160,10 +1086,9 @@ impl PlaybookEngine {
                 // that the change provably cannot break.
                 //
                 // So candidates are re-validated against the NEW schema and
-                // only genuinely-broken Plays are disabled. Validation needs
+                // only genuinely-broken Plays are suspended. Validation needs
                 // store access, so it runs outside the lifecycle lock: gather
-                // candidates under a read lock, validate, then take the write
-                // lock to disable.
+                // candidates under a read lock, validate, then suspend.
                 let candidates = {
                     let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
                     lifecycle
@@ -1205,38 +1130,38 @@ impl PlaybookEngine {
                     }
                 }
 
-                if !broken.is_empty() {
-                    let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-                    for (play_id, errors) in &broken {
-                        // Name the actual errors. This is the one path that
-                        // stops automation at runtime, and `validate_play`
-                        // checks the whole play against every schema it
-                        // references — not just the one that changed — so the
-                        // triggering schema is not necessarily the culprit.
-                        // Without the errors, the warning would misattribute a
-                        // pre-existing break to whichever schema was touched
-                        // first.
-                        let detail = errors
-                            .iter()
-                            .map(|e| e.to_string())
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        warn!(
-                            "Schema '{}' updated to version '{}', disabling play {} — its rules \
-                             no longer validate: {}",
-                            schema_node_type, new_version, play_id, detail
-                        );
-                        lifecycle.disable_play(play_id);
-                    }
-                    drop(lifecycle);
-
+                for (play_id, errors) in &broken {
+                    // Name the actual errors. This is the one path that
+                    // stops automation at runtime, and `validate_play`
+                    // checks the whole play against every schema it
+                    // references — not just the one that changed — so the
+                    // triggering schema is not necessarily the culprit.
+                    // Without the errors, the warning would misattribute a
+                    // pre-existing break to whichever schema was touched
+                    // first.
+                    let detail = errors
+                        .iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ");
                     warn!(
-                        "Schema drift: {} plays disabled due to schema '{}' update: {:?}",
-                        broken.len(),
-                        schema_node_type,
-                        broken.iter().map(|(id, _)| id).collect::<Vec<_>>()
+                        play_id = %play_id,
+                        error_type = "schema_drift",
+                        "Schema '{}' updated to version '{}', suspending play {} — its rules \
+                         no longer validate: {}",
+                        schema_node_type, new_version, play_id, detail
                     );
-                    // Each disabled play is logged by the caller
+                    suspend_play(
+                        &self.lifecycle,
+                        &self.node_service,
+                        play_id,
+                        PlaySuspensionReason::SchemaDrift,
+                        &format!(
+                            "Schema '{schema_node_type}' changed (version {new_version}) and the \
+                             play's rules no longer validate: {detail}"
+                        ),
+                    )
+                    .await;
                 }
             }
             Ok(None) => {
@@ -1271,22 +1196,53 @@ impl PlaybookEngine {
 }
 
 // ---------------------------------------------------------------------------
-// Validation helpers
+// Suspension
 // ---------------------------------------------------------------------------
 
-/// Parse a play node's rules into `Vec<Arc<ParsedRule>>` for validation.
+/// Take a running play out of service and record why on its node
+/// (ADR-087 §5).
 ///
-/// This is used by the engine before activation to feed the validator.
-/// It mirrors the parsing in `PlaybookLifecycleManager::activate_play`.
-fn parse_rules_for_validation(
-    node: &crate::models::Node,
-) -> Result<Vec<Arc<ParsedRule>>, PlayParseError> {
-    let rule_defs = parse_rules_from_properties(&node.properties)?;
-    let mut parsed = Vec::with_capacity(rule_defs.len());
-    for def in &rule_defs {
-        parsed.push(Arc::new(parse_rule(def)?));
+/// The play leaves the trigger index and the cron registry at once; the
+/// suspension is then written to the node, where it survives a restart. A
+/// play that is already out of service is left alone, so a failure that
+/// reaches several queued rules of one play records one suspension. The
+/// user's `enabled` switch is never touched.
+pub(crate) async fn suspend_play(
+    lifecycle: &Arc<RwLock<PlaybookLifecycleManager>>,
+    node_service: &NodeService,
+    play_id: &str,
+    reason: PlaySuspensionReason,
+    message: &str,
+) {
+    let was_running = {
+        let mut lm = lifecycle.write().expect("lifecycle lock poisoned");
+        lm.suspend_play(play_id)
+    };
+    if was_running {
+        record_suspension(node_service, play_id, reason, message).await;
     }
-    Ok(parsed)
+}
+
+/// Write a suspension to the play node. A failed write is logged, not
+/// propagated: the play is already out of the indexes for this run, and the
+/// diagnostic itself is in the log either way.
+async fn record_suspension(
+    node_service: &NodeService,
+    play_id: &str,
+    reason: PlaySuspensionReason,
+    message: &str,
+) {
+    if let Err(e) = node_service
+        .record_play_suspension(play_id, reason, message)
+        .await
+    {
+        error!(
+            play_id = %play_id,
+            reason = %reason,
+            error = %e,
+            "Failed to record a play's suspension on its node"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1301,7 +1257,12 @@ fn parse_rules_for_validation(
 ///
 /// Enforces cycle detection: when `exceeds_max_chain_depth` reports the next
 /// execution would pass `MAX_CHAIN_DEPTH`, the work item is skipped,
-/// offending plays are disabled, and the limit breach is logged.
+/// offending plays are suspended, and the limit breach is logged.
+///
+/// A rule runs only while its play does: a rule of a play that was switched
+/// off, archived, suspended or deleted since the work item was queued is
+/// skipped, which is also what stops a play's later rules in the same work
+/// item once one of its actions fails.
 pub(crate) async fn rule_processor_loop(
     mut rx: mpsc::Receiver<ExecutionWorkItem>,
     lifecycle: Arc<RwLock<PlaybookLifecycleManager>>,
@@ -1321,12 +1282,6 @@ pub(crate) async fn rule_processor_loop(
             );
 
             for rule_ref in &work_item.rules {
-                // Disable the play that would have fired
-                {
-                    let mut lm = lifecycle.write().expect("lifecycle lock poisoned");
-                    lm.disable_play(&rule_ref.play_id);
-                }
-
                 warn!(
                     play_id = %rule_ref.play_id,
                     rule = %rule_ref.rule.name,
@@ -1334,8 +1289,21 @@ pub(crate) async fn rule_processor_loop(
                     trigger_node_id = %work_item.trigger_node.id,
                     error_type = "cycle_limit",
                     max_chain_depth = MAX_CHAIN_DEPTH,
-                    "Cycle depth limit exceeded; play disabled"
+                    "Cycle depth limit exceeded; play suspended"
                 );
+
+                // Suspend the play that would have fired
+                suspend_play(
+                    &lifecycle,
+                    &node_service,
+                    &rule_ref.play_id,
+                    PlaySuspensionReason::CycleLimit,
+                    &format!(
+                        "Rule '{}' reached the cycle depth limit ({MAX_CHAIN_DEPTH}) on node {}",
+                        rule_ref.rule.name, work_item.trigger_node.id
+                    ),
+                )
+                .await;
             }
 
             continue;
@@ -1376,6 +1344,22 @@ pub(crate) async fn rule_processor_loop(
 
         // Process each matched rule in order
         for rule_ref in &work_item.rules {
+            // The rule was matched when the work item was queued. Its play
+            // may have gone out of service since: switched off, archived or
+            // deleted by the user, or suspended by an earlier rule's failure
+            // in this same work item.
+            let running = {
+                let lm = lifecycle.read().expect("lifecycle lock poisoned");
+                lm.is_running(&rule_ref.play_id)
+            };
+            if !running {
+                debug!(
+                    "Skipping rule '{}': play {} is no longer running",
+                    rule_ref.rule.name, rule_ref.play_id,
+                );
+                continue;
+            }
+
             debug!(
                 "Processing rule '{}' from play {} (index {})",
                 rule_ref.rule.name, rule_ref.play_id, rule_ref.rule_index,
@@ -1401,9 +1385,9 @@ pub(crate) async fn rule_processor_loop(
                     // unprojected properties would read the wrong bucket
                     // and silently fail to match. Skip this rule for this
                     // event rather than misevaluate it -- the play stays
-                    // active and gets another chance on the next matching
+                    // running and gets another chance on the next matching
                     // event, unlike the cycle-limit/action-failure cases
-                    // below, which disable the play outright because they
+                    // below, which suspend the play outright because they
                     // reflect an actual problem with the play itself
                     // rather than a transient resolver failure.
                     warn!(
@@ -1447,7 +1431,7 @@ pub(crate) async fn rule_processor_loop(
                 crate::playbook::cel::ConditionResult::Unresolved { reason } => {
                     // Same posture as the scope-resolution failure above: a
                     // failed graph lookup says nothing about the conditions,
-                    // so neither fire nor disable -- skip this event and let
+                    // so neither fire nor suspend -- skip this event and let
                     // the next matching one re-evaluate.
                     warn!(
                         play_id = %rule_ref.play_id,
@@ -1507,7 +1491,7 @@ pub(crate) async fn rule_processor_loop(
                     // play loaded from disk without re-validation, or an
                     // already-active play whose class changed underneath
                     // it) — and unlike every other action, `execute_reject`
-                    // ALWAYS errors when reached, so this rule would disable
+                    // ALWAYS errors when reached, so this rule suspends
                     // its whole play on its very first trigger. Logged with
                     // a distinct, actionable message rather than the generic
                     // "action failed" one, so this misconfiguration reads as
@@ -1519,7 +1503,7 @@ pub(crate) async fn rule_processor_loop(
                             warn!(
                                 "Rule '{}' (play {}) uses a 'reject' action on a Reactive-class \
                              rule -- reject is only meaningful on Invariant rules and should \
-                             have been caught at save time. Disabling the play. Reject's own \
+                             have been caught at save time. Suspending the play. Reject's own \
                              message was: {}",
                                 rule_ref.rule.name, rule_ref.play_id, message,
                             );
@@ -1535,11 +1519,6 @@ pub(crate) async fn rule_processor_loop(
                             );
                             format!("Action execution failed: {}", err)
                         };
-                    // Disable the play on action failure (per spec)
-                    {
-                        let mut lm = lifecycle.write().expect("lifecycle lock poisoned");
-                        lm.disable_play(&rule_ref.play_id);
-                    }
                     warn!(
                         play_id = %rule_ref.play_id,
                         rule = %rule_ref.rule.name,
@@ -1549,8 +1528,17 @@ pub(crate) async fn rule_processor_loop(
                         "{}",
                         log_message
                     );
-                    // Skip remaining rules from this play in the current batch
-                    continue;
+                    // Suspend the play on action failure. Its remaining rules
+                    // in this work item are skipped by the running check at
+                    // the top of the loop.
+                    suspend_play(
+                        &lifecycle,
+                        &node_service,
+                        &rule_ref.play_id,
+                        PlaySuspensionReason::ActionFailed,
+                        &format!("Rule '{}': {log_message}", rule_ref.rule.name),
+                    )
+                    .await;
                 }
             }
         }
@@ -2524,7 +2512,7 @@ mod ancestry_cache_tests {
         assert_eq!(cached_ancestors(&engine, "bug"), ["bug", "ticket"]);
     }
 
-    /// Call site 1 — engine startup (`load_active_plays`).
+    /// Call site 1 — engine startup (`load_plays`).
     ///
     /// Ancestry must be warm before the first event is dispatched. Without
     /// this refresh a base-scoped Play silently misses every subtype event
@@ -2537,10 +2525,7 @@ mod ancestry_cache_tests {
         // Nothing has refreshed yet, so `bug` still looks unextended.
         assert_eq!(cached_ancestors(&engine, "bug"), ["bug"]);
 
-        engine
-            .load_active_plays()
-            .await
-            .expect("load_active_plays failed");
+        engine.load_plays().await.expect("load_plays failed");
 
         assert_eq!(
             cached_ancestors(&engine, "bug"),
@@ -2765,5 +2750,964 @@ mod ancestry_cache_tests {
             !engine.ancestry_dirty.load(Ordering::Relaxed),
             "a successful retry must clear the dirty flag"
         );
+    }
+}
+
+/// When a play runs (ADR-087 §5): the user's `enabled` switch, the engine's
+/// suspensions, and the one check that reads both.
+///
+/// These drive the engine's handlers and the rule processor directly, against
+/// a real `NodeService`, so each state change is observed without waiting on
+/// the event loop.
+#[cfg(test)]
+mod run_state_tests {
+    use super::*;
+    use crate::db::events::{EventMetadata, PlaybookExecutionContext};
+    use crate::db::SqliteStore;
+    use crate::models::{Node, NodeUpdate, PlayFields, PlayNodeUpdate};
+    use crate::schema::{handle_create_schema, handle_update_schema};
+    use serde_json::{json, Value};
+    use tempfile::TempDir;
+
+    const WIDGET: &str = "widget";
+
+    async fn test_engine() -> (PlaybookEngine, Arc<NodeService>, TempDir) {
+        let temp_dir = TempDir::new().expect("tempdir creation failed");
+        let db_path = temp_dir.path().join("test.db");
+        let mut store = Arc::new(
+            SqliteStore::new(db_path)
+                .await
+                .expect("SqliteStore init failed"),
+        );
+        let node_service = Arc::new(
+            NodeService::new(&mut store)
+                .await
+                .expect("NodeService init failed"),
+        );
+        handle_create_schema(
+            &node_service,
+            json!({
+                "name": "Widget",
+                "fields": [
+                    { "name": "state", "type": "text", "protection": "user", "indexed": false },
+                    { "name": "marker", "type": "text", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("widget schema creation failed");
+        let engine = PlaybookEngine::new(Arc::clone(&node_service));
+        (engine, node_service, temp_dir)
+    }
+
+    /// One rule: when a widget is created, stamp `marker` on it.
+    fn marking_rule(name: &str) -> Value {
+        json!({
+            "name": name,
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": WIDGET } },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": { "node_id": "{trigger.node.id}", "properties": { "marker": "set" } }
+            }]
+        })
+    }
+
+    /// One rule whose action always fails: it updates a node that is not there.
+    fn failing_rule(name: &str) -> Value {
+        json!({
+            "name": name,
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": WIDGET } },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": { "node_id": "no-such-node", "properties": { "marker": "set" } }
+            }]
+        })
+    }
+
+    /// Rules that decode but never validate: `reject` is for invariant rules.
+    fn invalid_rules() -> Value {
+        json!([{
+            "name": "reject-on-reactive",
+            "class": "reactive",
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": WIDGET } },
+            "conditions": [],
+            "actions": [{ "action_type": "reject", "params": { "message": "no" } }]
+        }])
+    }
+
+    /// Create a play through the service and tell the engine about it.
+    async fn install_play(engine: &PlaybookEngine, svc: &NodeService, play: Value) -> String {
+        let node = Node::new("play".to_string(), "A play".to_string(), play);
+        let id = node.id.clone();
+        svc.create_node(node).await.expect("play creation failed");
+        engine.handle_play_created(&id).await;
+        id
+    }
+
+    /// Store a play with invalid rules around the service's save-time gate, as
+    /// a row written by another device or an earlier build would be.
+    async fn store_invalid_play(svc: &NodeService) -> String {
+        let node = Node::new(
+            "play".to_string(),
+            "A broken play".to_string(),
+            json!({ "play": { "rules": invalid_rules() } }),
+        );
+        let id = node.id.clone();
+        svc.store()
+            .create_node(node, None, None)
+            .await
+            .expect("direct play insert failed");
+        id
+    }
+
+    async fn play_node(svc: &NodeService, id: &str) -> Node {
+        svc.get_node(id)
+            .await
+            .expect("get_node failed")
+            .expect("the play exists")
+    }
+
+    async fn update_play(
+        svc: &NodeService,
+        id: &str,
+        update: Value,
+    ) -> Result<Node, NodeServiceError> {
+        let update: PlayNodeUpdate = serde_json::from_value(update).expect("a PlayNodeUpdate");
+        let version = play_node(svc, id).await.version;
+        svc.update_play_node(id, version, update).await
+    }
+
+    fn status(engine: &PlaybookEngine, id: &str) -> Option<PlayStatus> {
+        let lifecycle = engine.lifecycle.read().expect("lifecycle lock poisoned");
+        lifecycle.get_play(id).map(|play| play.status)
+    }
+
+    /// The rules the engine would fire for a newly created widget.
+    fn rules_for_a_new_widget(engine: &PlaybookEngine) -> Vec<OrderedRuleRef> {
+        let lifecycle = engine.lifecycle.read().expect("lifecycle lock poisoned");
+        lifecycle.lookup_rules(&[TriggerKey::NodeEvent {
+            event: NodeEventType::NodeCreated,
+            node_type: WIDGET.to_string(),
+            property_key: None,
+        }])
+    }
+
+    fn suspension(node: &Node) -> (Option<String>, Option<String>, Option<String>) {
+        let field = |key: &str| {
+            PlayFields::stored_field(&node.properties, key)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        (
+            field("suspended_reason"),
+            field("suspended_message"),
+            field("suspended_at"),
+        )
+    }
+
+    async fn create_widget(svc: &NodeService) -> Node {
+        let node = Node::new(WIDGET.to_string(), "a widget".to_string(), json!({}));
+        let id = svc.create_node(node).await.expect("widget creation failed");
+        svc.get_node(&id).await.unwrap().unwrap()
+    }
+
+    fn marker(node: &Node) -> Option<&Value> {
+        node.properties
+            .get(WIDGET)
+            .and_then(|bucket| bucket.get("marker"))
+    }
+
+    /// Run the rule processor over one work item for `widget`, to completion.
+    async fn process(
+        engine: &PlaybookEngine,
+        svc: &Arc<NodeService>,
+        rules: Vec<OrderedRuleRef>,
+        widget: &Node,
+        playbook_context: Option<PlaybookExecutionContext>,
+    ) {
+        let (tx, rx) = mpsc::channel::<ExecutionWorkItem>(4);
+        tx.send(ExecutionWorkItem {
+            rules,
+            trigger_event: EventEnvelope {
+                event: DomainEvent::NodeCreated {
+                    node_id: widget.id.clone(),
+                    node_type: widget.node_type.clone(),
+                },
+                metadata: EventMetadata {
+                    source_client_id: None,
+                    playbook_context,
+                },
+            },
+            trigger_node: widget.clone(),
+            scan: None,
+        })
+        .await
+        .expect("queue send failed");
+        drop(tx);
+        rule_processor_loop(rx, Arc::clone(&engine.lifecycle), Arc::clone(svc)).await;
+    }
+
+    #[tokio::test]
+    async fn a_runnable_play_is_indexed_and_fires() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Runnable));
+
+        let widget = create_widget(&svc).await;
+        process(
+            &engine,
+            &svc,
+            rules_for_a_new_widget(&engine),
+            &widget,
+            None,
+        )
+        .await;
+        assert_eq!(
+            marker(&play_node(&svc, &widget.id).await),
+            Some(&json!("set"))
+        );
+    }
+
+    /// The user's switch: a disabled play is known, with its reason, and has
+    /// no rules in the index. Switching it on indexes it.
+    #[tokio::test]
+    async fn a_disabled_play_does_not_run_until_it_is_enabled() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(
+            &engine,
+            &svc,
+            json!({ "rules": [marking_rule("mark")], "enabled": false }),
+        )
+        .await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Disabled));
+        assert!(rules_for_a_new_widget(&engine).is_empty());
+
+        update_play(&svc, &id, json!({ "enabled": true }))
+            .await
+            .unwrap();
+        engine.handle_play_updated(&id).await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Runnable));
+        assert_eq!(rules_for_a_new_widget(&engine).len(), 1);
+
+        update_play(&svc, &id, json!({ "enabled": false }))
+            .await
+            .unwrap();
+        engine.handle_play_updated(&id).await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Disabled));
+        assert!(rules_for_a_new_widget(&engine).is_empty());
+    }
+
+    /// A rule matched before its play was switched off does not run: the
+    /// processor asks again when it reaches the rule.
+    #[tokio::test]
+    async fn a_queued_rule_of_a_play_disabled_since_does_not_run() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+        let widget = create_widget(&svc).await;
+        let queued = rules_for_a_new_widget(&engine);
+        assert_eq!(queued.len(), 1);
+
+        update_play(&svc, &id, json!({ "enabled": false }))
+            .await
+            .unwrap();
+        engine.handle_play_updated(&id).await;
+
+        process(&engine, &svc, queued, &widget, None).await;
+        assert_eq!(marker(&play_node(&svc, &widget.id).await), None);
+    }
+
+    /// Archiving is governance, not the play's switch: an archived play does
+    /// not run, its `enabled` stays as the user left it, and a restart does
+    /// not bring it back.
+    #[tokio::test]
+    async fn an_archived_play_does_not_run() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+
+        let version = play_node(&svc, &id).await.version;
+        svc.update_node(
+            &id,
+            version,
+            NodeUpdate::default().with_lifecycle_status("archived".to_string()),
+        )
+        .await
+        .unwrap();
+        engine.handle_play_updated(&id).await;
+
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Archived));
+        assert!(rules_for_a_new_widget(&engine).is_empty());
+        assert!(PlayFields::enabled_in(
+            &play_node(&svc, &id).await.properties
+        ));
+
+        let restarted = PlaybookEngine::new(Arc::clone(&svc));
+        restarted.load_plays().await.unwrap();
+        assert!(rules_for_a_new_widget(&restarted).is_empty());
+    }
+
+    /// A play created with rules that do not validate is suspended, with the
+    /// reason on its node, rather than left unknown to the engine.
+    #[tokio::test]
+    async fn a_play_created_with_invalid_rules_is_suspended() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = store_invalid_play(&svc).await;
+        let version = play_node(&svc, &id).await.version;
+
+        engine.handle_play_created(&id).await;
+
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+        assert!(rules_for_a_new_widget(&engine).is_empty());
+        let node = play_node(&svc, &id).await;
+        let (reason, message, at) = suspension(&node);
+        assert_eq!(reason.as_deref(), Some("validation_failed"));
+        assert!(message.is_some_and(|m| !m.is_empty()));
+        assert!(at.is_some());
+        assert!(
+            PlayFields::enabled_in(&node.properties),
+            "the switch is the user's"
+        );
+        assert_eq!(node.version, version, "a suspension bumps no version");
+    }
+
+    /// The same at startup: a play whose rules fail validation at load is
+    /// suspended rather than silently skipped.
+    #[tokio::test]
+    async fn a_play_with_invalid_rules_is_suspended_at_load() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = store_invalid_play(&svc).await;
+
+        engine.load_plays().await.unwrap();
+
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+        assert_eq!(
+            suspension(&play_node(&svc, &id).await).0.as_deref(),
+            Some("validation_failed")
+        );
+    }
+
+    /// Rules that stop parsing suspend a running play; the play is not
+    /// dropped from the engine.
+    #[tokio::test]
+    async fn rules_that_no_longer_parse_suspend_the_play() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+
+        // Written around the service, which would refuse it.
+        svc.store()
+            .set_property_strings(
+                &id,
+                &[("$.play.rules".to_string(), "not rules".to_string())],
+            )
+            .await
+            .unwrap();
+        engine.handle_play_updated(&id).await;
+
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+        assert!(rules_for_a_new_widget(&engine).is_empty());
+        let (reason, message, _) = suspension(&play_node(&svc, &id).await);
+        assert_eq!(reason.as_deref(), Some("validation_failed"));
+        assert!(message.unwrap().contains("parse"));
+    }
+
+    /// An action failure suspends the play: the failure is on the node, the
+    /// play's later rules in the same work item do not run, and the user's
+    /// switch is untouched.
+    #[tokio::test]
+    async fn an_action_failure_suspends_the_play_and_skips_its_later_rules() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(
+            &engine,
+            &svc,
+            json!({ "rules": [failing_rule("fails"), marking_rule("mark")] }),
+        )
+        .await;
+        let version = play_node(&svc, &id).await.version;
+        let widget = create_widget(&svc).await;
+        let rules = rules_for_a_new_widget(&engine);
+        assert_eq!(rules.len(), 2);
+
+        process(&engine, &svc, rules, &widget, None).await;
+
+        assert_eq!(
+            marker(&play_node(&svc, &widget.id).await),
+            None,
+            "the play's later rule must not run in the same work item"
+        );
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+        assert!(rules_for_a_new_widget(&engine).is_empty());
+        let node = play_node(&svc, &id).await;
+        let (reason, message, at) = suspension(&node);
+        assert_eq!(reason.as_deref(), Some("action_failed"));
+        assert!(
+            message.unwrap().contains("fails"),
+            "the message names the rule"
+        );
+        assert!(at.is_some());
+        assert!(PlayFields::enabled_in(&node.properties));
+        assert_eq!(node.version, version);
+    }
+
+    /// Another play's rules in the same work item still run.
+    #[tokio::test]
+    async fn one_plays_failure_does_not_stop_another_plays_rules() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let failing =
+            install_play(&engine, &svc, json!({ "rules": [failing_rule("fails")] })).await;
+        let marking = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+        let widget = create_widget(&svc).await;
+
+        process(
+            &engine,
+            &svc,
+            rules_for_a_new_widget(&engine),
+            &widget,
+            None,
+        )
+        .await;
+
+        assert_eq!(status(&engine, &failing), Some(PlayStatus::Suspended));
+        assert_eq!(status(&engine, &marking), Some(PlayStatus::Runnable));
+        assert_eq!(
+            marker(&play_node(&svc, &widget.id).await),
+            Some(&json!("set"))
+        );
+    }
+
+    #[tokio::test]
+    async fn the_cycle_limit_suspends_the_play() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+        let widget = create_widget(&svc).await;
+
+        process(
+            &engine,
+            &svc,
+            rules_for_a_new_widget(&engine),
+            &widget,
+            Some(PlaybookExecutionContext {
+                originating_event_id: "evt".to_string(),
+                depth: MAX_CHAIN_DEPTH,
+                source_playbook_id: id.clone(),
+            }),
+        )
+        .await;
+
+        assert_eq!(marker(&play_node(&svc, &widget.id).await), None);
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+        assert_eq!(
+            suspension(&play_node(&svc, &id).await).0.as_deref(),
+            Some("cycle_limit")
+        );
+    }
+
+    /// A schema change that breaks a play's rules suspends it with
+    /// `schema_drift`; one that does not break them leaves it running.
+    #[tokio::test]
+    async fn a_schema_change_that_breaks_the_rules_suspends_the_play() {
+        let (engine, svc, _tmp) = test_engine().await;
+        // The rule pins the schema version it was written against.
+        let rule = json!({
+            "name": "pinned",
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": WIDGET } },
+            "conditions": ["node.state == 'ready'"],
+            "actions": [{
+                "action_type": "create_node",
+                "params": { "node_type": WIDGET, "version": 1, "content": "another" }
+            }]
+        });
+        let id = install_play(&engine, &svc, json!({ "rules": [rule] })).await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Runnable));
+
+        // An additive change: the play still validates.
+        handle_update_schema(
+            &svc,
+            json!({
+                "schema_id": WIDGET,
+                "add_fields": [{ "name": "colour", "type": "text", "indexed": false }]
+            }),
+        )
+        .await
+        .expect("schema update failed");
+        engine.handle_schema_updated(WIDGET).await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Runnable));
+        assert_eq!(suspension(&play_node(&svc, &id).await), (None, None, None));
+
+        // The schema moves to a version the rule was not written against.
+        let schema = play_node(&svc, WIDGET).await;
+        svc.update_node(
+            WIDGET,
+            schema.version,
+            NodeUpdate::default().with_properties(json!({ "schemaVersion": 2 })),
+        )
+        .await
+        .expect("schema version bump failed");
+        engine.handle_schema_updated(WIDGET).await;
+
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+        assert!(rules_for_a_new_widget(&engine).is_empty());
+        let (reason, message, _) = suspension(&play_node(&svc, &id).await);
+        assert_eq!(reason.as_deref(), Some("schema_drift"));
+        assert!(message.unwrap().contains(WIDGET));
+    }
+
+    /// A suspension is on the node, so a restart does not undo it, and it is
+    /// recorded once however many times the engine reads the play.
+    #[tokio::test]
+    async fn a_suspension_survives_a_restart_and_leaves_the_switch_on() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+        suspend_play(
+            &engine.lifecycle,
+            &svc,
+            &id,
+            PlaySuspensionReason::ActionFailed,
+            "boom",
+        )
+        .await;
+        let recorded = suspension(&play_node(&svc, &id).await);
+        assert_eq!(recorded.0.as_deref(), Some("action_failed"));
+        assert_eq!(recorded.1.as_deref(), Some("boom"));
+
+        let restarted = PlaybookEngine::new(Arc::clone(&svc));
+        restarted.load_plays().await.unwrap();
+
+        assert_eq!(status(&restarted, &id), Some(PlayStatus::Suspended));
+        assert!(rules_for_a_new_widget(&restarted).is_empty());
+        let node = play_node(&svc, &id).await;
+        assert_eq!(
+            suspension(&node),
+            recorded,
+            "the suspension is not rewritten"
+        );
+        assert!(PlayFields::enabled_in(&node.properties));
+
+        // The engine's own write arrives as an update and changes nothing.
+        restarted.handle_play_updated(&id).await;
+        assert_eq!(status(&restarted, &id), Some(PlayStatus::Suspended));
+        assert_eq!(suspension(&play_node(&svc, &id).await), recorded);
+    }
+
+    /// The suspension write is seen by watchers as a node update.
+    #[tokio::test]
+    async fn recording_a_suspension_emits_a_node_updated_event() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+        let mut events = svc.subscribe_to_events();
+
+        suspend_play(
+            &engine.lifecycle,
+            &svc,
+            &id,
+            PlaySuspensionReason::ActionFailed,
+            "boom",
+        )
+        .await;
+
+        let envelope = events.try_recv().expect("a node-updated event");
+        match envelope.event {
+            DomainEvent::NodeUpdated {
+                node_id,
+                node,
+                changed_properties,
+                ..
+            } => {
+                assert_eq!(node_id, id);
+                assert!(PlayFields::suspended_in(&node.properties));
+                assert!(!changed_properties.is_empty());
+            }
+            other => panic!("expected NodeUpdated, got {other:?}"),
+        }
+    }
+
+    /// Setting `enabled` to `true`, even when it already is, clears a
+    /// suspension; the engine re-validates and the play runs again.
+    #[tokio::test]
+    async fn enabling_a_suspended_play_clears_the_suspension() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+        suspend_play(
+            &engine.lifecycle,
+            &svc,
+            &id,
+            PlaySuspensionReason::ActionFailed,
+            "boom",
+        )
+        .await;
+        engine.handle_play_updated(&id).await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+
+        // Another field's edit leaves the suspension in place.
+        update_play(&svc, &id, json!({ "description": "still broken" }))
+            .await
+            .unwrap();
+        engine.handle_play_updated(&id).await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+
+        let enabled = update_play(&svc, &id, json!({ "enabled": true }))
+            .await
+            .unwrap();
+        assert_eq!(suspension(&enabled), (None, None, None));
+        engine.handle_play_updated(&id).await;
+
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Runnable));
+        assert_eq!(rules_for_a_new_widget(&engine).len(), 1);
+    }
+
+    /// Enabling a play whose problem remains suspends it again, with a new
+    /// diagnostic.
+    #[tokio::test]
+    async fn enabling_a_play_that_is_still_broken_suspends_it_again() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = store_invalid_play(&svc).await;
+        engine.handle_play_created(&id).await;
+        let first = suspension(&play_node(&svc, &id).await);
+
+        let enabled = update_play(&svc, &id, json!({ "enabled": true }))
+            .await
+            .unwrap();
+        assert_eq!(suspension(&enabled), (None, None, None));
+        engine.handle_play_updated(&id).await;
+
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+        let second = suspension(&play_node(&svc, &id).await);
+        assert_eq!(second.0.as_deref(), Some("validation_failed"));
+        assert_ne!(second.2, first.2, "the suspension is recorded afresh");
+    }
+
+    /// Saving fixed rules clears a suspension.
+    #[tokio::test]
+    async fn saving_fixed_rules_clears_a_suspension() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = store_invalid_play(&svc).await;
+        engine.handle_play_created(&id).await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Suspended));
+
+        let fixed = update_play(&svc, &id, json!({ "rules": [marking_rule("mark")] }))
+            .await
+            .unwrap();
+        assert_eq!(suspension(&fixed), (None, None, None));
+        engine.handle_play_updated(&id).await;
+
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Runnable));
+        assert_eq!(rules_for_a_new_widget(&engine).len(), 1);
+    }
+
+    /// Rules are validated only when they change, so a write of the switch or
+    /// the description succeeds for a play whose rules no longer validate.
+    #[tokio::test]
+    async fn a_switch_only_write_succeeds_for_a_play_with_invalid_rules() {
+        let (_engine, svc, _tmp) = test_engine().await;
+        let id = store_invalid_play(&svc).await;
+
+        let off = update_play(&svc, &id, json!({ "enabled": false }))
+            .await
+            .expect("switching a play off validates only the switch");
+        assert!(!PlayFields::enabled_in(&off.properties));
+        update_play(&svc, &id, json!({ "description": "to be fixed" }))
+            .await
+            .expect("a description edit does not validate the rules");
+        update_play(&svc, &id, json!({ "enabled": true }))
+            .await
+            .expect("switching it back on does not validate the rules either");
+
+        // Changing the rules does validate them.
+        let mut still_invalid = invalid_rules();
+        still_invalid[0]["name"] = json!("renamed");
+        let err = update_play(&svc, &id, json!({ "rules": still_invalid }))
+            .await
+            .expect_err("new rules are validated");
+        assert!(
+            matches!(err, NodeServiceError::PlayValidationFailed { .. }),
+            "{err}"
+        );
+    }
+
+    /// A rule matched before its play was deleted does not run either.
+    #[tokio::test]
+    async fn a_queued_rule_of_a_play_deleted_since_does_not_run() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+        let widget = create_widget(&svc).await;
+        let queued = rules_for_a_new_widget(&engine);
+        assert_eq!(queued.len(), 1);
+
+        engine.handle_play_deleted(&id);
+
+        process(&engine, &svc, queued, &widget, None).await;
+        assert_eq!(marker(&play_node(&svc, &widget.id).await), None);
+    }
+
+    /// A reload (the subscriber lagged and may have missed a play's event)
+    /// rebuilds the run state from the nodes: a play switched off, archived
+    /// or deleted in the gap stops running, and one created in it starts.
+    #[tokio::test]
+    async fn a_reload_rebuilds_the_run_state_from_the_nodes() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let switched_off =
+            install_play(&engine, &svc, json!({ "rules": [marking_rule("a")] })).await;
+        let archived = install_play(&engine, &svc, json!({ "rules": [marking_rule("b")] })).await;
+        let deleted = install_play(&engine, &svc, json!({ "rules": [marking_rule("c")] })).await;
+        assert_eq!(rules_for_a_new_widget(&engine).len(), 3);
+
+        // Everything below happens without the engine hearing of it.
+        update_play(&svc, &switched_off, json!({ "enabled": false }))
+            .await
+            .unwrap();
+        let version = play_node(&svc, &archived).await.version;
+        svc.update_node(
+            &archived,
+            version,
+            NodeUpdate::default().with_lifecycle_status("archived".to_string()),
+        )
+        .await
+        .unwrap();
+        let version = play_node(&svc, &deleted).await.version;
+        svc.delete_node(&deleted, version).await.unwrap();
+        let created = Node::new(
+            "play".to_string(),
+            "Created in the gap".to_string(),
+            json!({ "rules": [marking_rule("d")] }),
+        );
+        let created = svc.create_node(created).await.unwrap();
+
+        engine.load_plays().await.unwrap();
+
+        assert_eq!(status(&engine, &switched_off), Some(PlayStatus::Disabled));
+        assert_eq!(status(&engine, &archived), None);
+        assert_eq!(status(&engine, &deleted), None);
+        assert_eq!(status(&engine, &created), Some(PlayStatus::Runnable));
+        let running: Vec<String> = rules_for_a_new_widget(&engine)
+            .into_iter()
+            .map(|rule| rule.play_id)
+            .collect();
+        assert_eq!(running, vec![created]);
+    }
+
+    /// A play cannot be created already suspended.
+    #[tokio::test]
+    async fn a_play_cannot_be_created_with_a_suspension() {
+        let (_engine, svc, _tmp) = test_engine().await;
+        for play in [
+            json!({ "rules": [], "suspended_at": "2026-10-02T10:00:00Z" }),
+            json!({ "rules": [], "suspended_reason": "action_failed" }),
+            json!({ "play": { "rules": [], "suspended_message": "x" } }),
+        ] {
+            let node = Node::new("play".to_string(), "A play".to_string(), play.clone());
+            let err = svc
+                .create_node(node.clone())
+                .await
+                .expect_err("a new play carries no suspension");
+            assert!(err.to_string().contains("new play"), "{play}: {err}");
+
+            let err = svc
+                .bulk_create(vec![node])
+                .await
+                .expect_err("nor does one created in a batch");
+            assert!(err.to_string().contains("new play"), "{play}: {err}");
+        }
+    }
+
+    /// The suspension is settled on every update path, not only the
+    /// version-checked one a client uses: the path a play's own `update_node`
+    /// action takes, the unchecked one and the bulk one all refuse a write
+    /// that changes a suspension field, and all clear one on `enabled: true`.
+    #[tokio::test]
+    async fn every_update_path_settles_the_suspension() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let forge = json!({ "suspended_reason": "cycle_limit" });
+        let enable = json!({ "enabled": true });
+
+        // (path name, a closure-free dispatch by index)
+        for path in ["unchecked", "in_tx", "bulk"] {
+            let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+            let write = |properties: Value| {
+                let svc = Arc::clone(&svc);
+                let id = id.clone();
+                async move {
+                    let update = NodeUpdate::default().with_properties(properties);
+                    match path {
+                        "unchecked" => svc.update_node_unchecked(&id, update).await.map(|_| ()),
+                        "in_tx" => {
+                            let inner = Arc::clone(&svc);
+                            let id = id.clone();
+                            svc.with_transaction(move |tx| {
+                                Box::pin(async move {
+                                    inner.update_node_in_tx(tx, &id, update).await.map(|_| ())
+                                })
+                            })
+                            .await
+                        }
+                        _ => svc.bulk_update(vec![(id.clone(), update)]).await,
+                    }
+                }
+            };
+
+            let err = write(forge.clone())
+                .await
+                .expect_err("a suspension field is the engine's");
+            assert!(
+                err.to_string().contains("suspended_reason"),
+                "{path}: {err}"
+            );
+            assert_eq!(
+                suspension(&play_node(&svc, &id).await),
+                (None, None, None),
+                "{path}"
+            );
+
+            svc.record_play_suspension(&id, PlaySuspensionReason::ActionFailed, "boom")
+                .await
+                .unwrap();
+            // Carrying the stored value back unchanged is not a change.
+            write(json!({ "suspended_reason": "action_failed", "description": "kept" }))
+                .await
+                .unwrap_or_else(|e| panic!("{path}: an unchanged suspension field: {e}"));
+            assert!(
+                PlayFields::suspended_in(&play_node(&svc, &id).await.properties),
+                "{path}"
+            );
+
+            write(enable.clone())
+                .await
+                .unwrap_or_else(|e| panic!("{path}: enabling: {e}"));
+            assert_eq!(
+                suspension(&play_node(&svc, &id).await),
+                (None, None, None),
+                "{path}: enabling clears the suspension"
+            );
+        }
+    }
+
+    /// A type extending `play` is a play: its rules are validated when they
+    /// change, and saving fixed rules clears its suspension.
+    #[tokio::test]
+    async fn a_subtype_of_play_is_held_to_the_same_rules() {
+        let (engine, svc, _tmp) = test_engine().await;
+        handle_create_schema(
+            &svc,
+            json!({
+                "name": "Subplay",
+                "extends": "play",
+                "fields": [
+                    { "name": "owner", "type": "text", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("a schema extending play");
+        let node = Node::new(
+            "subplay".to_string(),
+            "A subplay".to_string(),
+            json!({ "rules": [marking_rule("mark")], "owner": "ada" }),
+        );
+        let id = svc
+            .create_node(node)
+            .await
+            .expect("subplay creation failed");
+        engine.handle_play_created(&id).await;
+        assert_eq!(status(&engine, &id), Some(PlayStatus::Runnable));
+
+        // New rules that do not validate are refused, as for a plain play.
+        let version = play_node(&svc, &id).await.version;
+        let err = svc
+            .update_node(
+                &id,
+                version,
+                NodeUpdate::default().with_properties(json!({ "rules": invalid_rules() })),
+            )
+            .await
+            .expect_err("a subtype's new rules are validated");
+        assert!(
+            matches!(err, NodeServiceError::PlayValidationFailed { .. }),
+            "{err}"
+        );
+
+        // Saving different rules clears a suspension.
+        svc.record_play_suspension(&id, PlaySuspensionReason::ActionFailed, "boom")
+            .await
+            .unwrap();
+        let version = play_node(&svc, &id).await.version;
+        let fixed = svc
+            .update_node(
+                &id,
+                version,
+                NodeUpdate::default().with_properties(json!({ "rules": [marking_rule("fixed")] })),
+            )
+            .await
+            .unwrap();
+        assert_eq!(suspension(&fixed), (None, None, None));
+        assert_eq!(
+            PlayFields::from_properties(&fixed.properties)
+                .unwrap()
+                .rules[0]
+                .name,
+            "fixed",
+            "the rules live in the play bucket"
+        );
+    }
+
+    /// The suspension fields are the engine's: no client write changes one,
+    /// in either the flat or the bucketed shape, and that includes clearing
+    /// one by hand instead of enabling the play.
+    #[tokio::test]
+    async fn a_client_cannot_write_a_suspension_field() {
+        let (engine, svc, _tmp) = test_engine().await;
+        let id = install_play(&engine, &svc, json!({ "rules": [marking_rule("mark")] })).await;
+        let write = |patch: Value| {
+            let svc = Arc::clone(&svc);
+            let id = id.clone();
+            async move {
+                let version = play_node(&svc, &id).await.version;
+                svc.update_node(&id, version, NodeUpdate::default().with_properties(patch))
+                    .await
+            }
+        };
+
+        for patch in [
+            json!({ "suspended_reason": "action_failed" }),
+            json!({ "suspended_at": "2026-10-02T10:00:00Z" }),
+            json!({ "play": { "suspended_message": "x" } }),
+        ] {
+            let err = write(patch.clone())
+                .await
+                .expect_err("a suspension field is not client-writable");
+            assert!(err.to_string().contains("suspended_"), "{patch}: {err}");
+        }
+        assert_eq!(suspension(&play_node(&svc, &id).await), (None, None, None));
+
+        // Clearing a field that holds nothing changes nothing.
+        write(json!({ "suspended_at": null })).await.unwrap();
+
+        // Clearing a recorded suspension by hand is refused: enabling the
+        // play is how it is cleared.
+        svc.record_play_suspension(&id, PlaySuspensionReason::ActionFailed, "boom")
+            .await
+            .unwrap();
+        let recorded = suspension(&play_node(&svc, &id).await);
+        for patch in [
+            json!({ "suspended_at": null }),
+            json!({ "suspended_reason": null, "suspended_message": null, "suspended_at": null }),
+            json!({ "suspended_message": "rewritten" }),
+        ] {
+            let err = write(patch.clone())
+                .await
+                .expect_err("a recorded suspension is not client-writable");
+            assert!(err.to_string().contains("suspended_"), "{patch}: {err}");
+        }
+        assert_eq!(suspension(&play_node(&svc, &id).await), recorded);
+
+        // A write that enables the play clears the suspension, so carrying
+        // the fields as cleared alongside it is not a contradiction.
+        let enabled = write(json!({
+            "enabled": true,
+            "suspended_reason": null,
+            "suspended_message": null,
+            "suspended_at": null
+        }))
+        .await
+        .expect("enabling clears the suspension, with or without the nulls");
+        assert_eq!(suspension(&enabled), (None, None, None));
     }
 }

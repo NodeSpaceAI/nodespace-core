@@ -459,7 +459,7 @@ pub async fn build_database_services(
     // `seed_agent_nodes` above (which DOES already write through
     // `node_service` — prompt/skill/tool template nodes): dispatch reads the
     // TriggerIndex `playbook_engine.lifecycle()` exposes, and that index is
-    // empty until `PlaybookEngine::start()` (`load_active_plays`, spawned
+    // empty until `PlaybookEngine::start()` (`load_plays`, spawned
     // further below, after every other database service is built) runs —
     // so no write anywhere in this function, seeding included, can match an
     // invariant rule yet. Injecting the handle here rather than there is

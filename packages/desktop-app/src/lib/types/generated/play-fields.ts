@@ -1,4 +1,5 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
+import type { PlaySuspensionReason } from './play-suspension-reason';
 import type { RuleDefinition } from './rule-definition';
 
 /**
@@ -15,4 +16,20 @@ export type PlayFields = {
    * What the play automates, in one line.
    */
   description?: string;
+  /**
+   * The user's switch. The engine never changes it.
+   */
+  enabled: boolean;
+  /**
+   * Why the engine suspended the play on this device, when it has.
+   */
+  suspendedReason?: PlaySuspensionReason;
+  /**
+   * The diagnostic the suspension was logged with.
+   */
+  suspendedMessage?: string;
+  /**
+   * When the engine suspended the play (RFC 3339).
+   */
+  suspendedAt?: string;
 };

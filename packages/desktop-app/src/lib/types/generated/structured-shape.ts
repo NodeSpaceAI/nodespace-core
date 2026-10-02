@@ -3,4 +3,4 @@
 /**
  * The JSON shape of a typed core field that is not a string.
  */
-export type StructuredShape = 'array' | 'number' | 'object';
+export type StructuredShape = 'array' | 'boolean' | 'number' | 'object';

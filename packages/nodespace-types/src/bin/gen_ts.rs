@@ -138,6 +138,7 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         PlayFields,
         PlayNode,
         PlayNodeUpdate,
+        PlaySuspensionReason,
         // schema
         EnumValue,
         SchemaProtectionLevel,
@@ -212,6 +213,7 @@ struct CoreTypeEntry {
 #[serde(rename_all = "lowercase")]
 enum StructuredShape {
     Array,
+    Boolean,
     Number,
     Object,
 }
@@ -247,6 +249,7 @@ impl From<&PromotedField> for TypedCoreField {
             structured: match field.shape {
                 PromotedShape::Text | PromotedShape::Date => None,
                 PromotedShape::Number => Some(StructuredShape::Number),
+                PromotedShape::Boolean => Some(StructuredShape::Boolean),
                 PromotedShape::Array => Some(StructuredShape::Array),
                 PromotedShape::Object => Some(StructuredShape::Object),
             },

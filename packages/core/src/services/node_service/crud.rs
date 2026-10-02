@@ -593,6 +593,7 @@ impl NodeService {
             .type_is_a(&node.node_type, crate::models::CoreNodeType::Play)
             .await?
         {
+            Self::ensure_play_created_unsuspended(&node)?;
             self.validate_play_rules(&node.properties).await?;
         }
         if self
@@ -1177,6 +1178,11 @@ impl NodeService {
         // NOTE: Sibling ordering is now handled via has_child relationship order field.
         // Use reorder_siblings() or move_node() for ordering changes.
 
+        // Read before the patch is merged: afterwards a patch that sets
+        // `enabled` to the value it already has can't be told from one that
+        // never named it.
+        let enables_play = Self::patch_enables_play(update.properties.as_ref());
+
         if let Some(properties) = update.properties {
             properties_changed = true;
             // Normalize flat client properties to namespaced format before merging
@@ -1219,6 +1225,9 @@ impl NodeService {
             self.rebucket_and_validate(&mut updated, node_type_changed)
                 .await?;
         }
+
+        self.settle_play_update(&existing, &mut updated, enables_play)
+            .await?;
 
         // Sync title when content, node_type, or properties change
         // Schema-driven title_template — also trigger on properties_changed
@@ -1310,6 +1319,11 @@ impl NodeService {
             updated.content = content;
         }
 
+        // Read before the patch is merged: afterwards a patch that sets
+        // `enabled` to the value it already has can't be told from one that
+        // never named it.
+        let enables_play = Self::patch_enables_play(update.properties.as_ref());
+
         if let Some(properties) = update.properties {
             properties_changed = true;
             if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
@@ -1334,6 +1348,9 @@ impl NodeService {
             self.rebucket_and_validate(&mut updated, node_type_changed)
                 .await?;
         }
+
+        self.settle_play_update(&existing, &mut updated, enables_play)
+            .await?;
 
         if content_changed || node_type_changed {
             self.validate_templated_content(&updated).await?;
@@ -1437,6 +1454,11 @@ impl NodeService {
             updated.content = content;
         }
 
+        // Read before the patch is merged: afterwards a patch that sets
+        // `enabled` to the value it already has can't be told from one that
+        // never named it.
+        let enables_play = Self::patch_enables_play(update.properties.as_ref());
+
         if let Some(properties) = update.properties {
             properties_changed = true;
             if crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
@@ -1466,6 +1488,9 @@ impl NodeService {
             self.rebucket_and_validate(&mut updated, node_type_changed)
                 .await?;
         }
+
+        self.settle_play_update(&existing, &mut updated, enables_play)
+            .await?;
 
         if content_changed || node_type_changed {
             self.validate_templated_content(&updated).await?;
@@ -1717,6 +1742,11 @@ impl NodeService {
         // NOTE: Sibling ordering is now handled via has_child relationship order field.
         // Use reorder_siblings() or move_node() for ordering changes.
 
+        // Read before the patch is merged: afterwards a patch that sets
+        // `enabled` to the value it already has can't be told from one that
+        // never named it.
+        let enables_play = Self::patch_enables_play(update.properties.as_ref());
+
         if let Some(properties) = update.properties {
             properties_changed = true;
             // Normalize flat client properties to namespaced format before merging
@@ -1757,12 +1787,16 @@ impl NodeService {
             self.rebucket_and_validate(&mut updated, false).await?;
         }
 
-        // Synchronous play validation gate — reject invalid rule changes before persist
-        if properties_changed
-            && self
-                .type_is_a(&updated.node_type, crate::models::CoreNodeType::Play)
-                .await?
-        {
+        let play_rules_changed = self
+            .settle_play_update(&existing, &mut updated, enables_play)
+            .await?;
+
+        // Synchronous play validation gate — reject invalid rule changes
+        // before persist. Only a write that changes the rules runs it: a
+        // write of the switch, the description or an extension field says
+        // nothing about the rules, so it succeeds for a play whose rules a
+        // schema change has since broken (ADR-087 §5).
+        if play_rules_changed {
             self.validate_play_rules(&updated.properties).await?;
         }
         // The same gate for a saved query's relationship paths.
@@ -2469,6 +2503,94 @@ impl NodeService {
             Ok(())
         } else {
             Err(NodeServiceError::unknown_node_type(node_type))
+        }
+    }
+
+    /// Whether a properties patch sets a play's `enabled` to `true`, in
+    /// either the flat or the bucketed (`{"play": {..}}`) shape.
+    pub(crate) fn patch_enables_play(patch: Option<&serde_json::Value>) -> bool {
+        let Some(patch) = patch else {
+            return false;
+        };
+        let enabled = patch
+            .get(crate::models::PLAY_NODE_TYPE)
+            .and_then(|bucket| bucket.get(nodespace_types::PLAY_ENABLED_FIELD))
+            .or_else(|| patch.get(nodespace_types::PLAY_ENABLED_FIELD));
+        enabled == Some(&serde_json::Value::Bool(true))
+    }
+
+    /// Settle what an update means for a play's suspension, and report
+    /// whether it changes the play's rules (ADR-087 §5). Every update
+    /// pipeline calls this once the merged properties are re-bucketed, so a
+    /// type extending `play` is read in the bucket its fields live in. A node
+    /// that is not a play is left alone.
+    ///
+    /// - The suspension fields are the engine's: an update that would change
+    ///   one is refused. One that carries a field's stored value back
+    ///   unchanged is not a change.
+    /// - Setting `enabled` to `true` (even when it already is) or saving
+    ///   different rules clears a suspension. The engine then re-validates
+    ///   the play and suspends it again if the problem remains.
+    pub(crate) async fn settle_play_update(
+        &self,
+        existing: &Node,
+        updated: &mut Node,
+        enables_play: bool,
+    ) -> Result<bool, NodeServiceError> {
+        use crate::models::PlayFields;
+        use nodespace_types::{PLAY_RULES_FIELD, PLAY_SUSPENSION_FIELDS};
+
+        if !self
+            .type_is_a(&updated.node_type, crate::models::CoreNodeType::Play)
+            .await?
+        {
+            return Ok(false);
+        }
+
+        let rules_changed = PlayFields::stored_field(&existing.properties, PLAY_RULES_FIELD)
+            != PlayFields::stored_field(&updated.properties, PLAY_RULES_FIELD);
+        let clears =
+            (rules_changed || enables_play) && PlayFields::suspended_in(&existing.properties);
+
+        for field in PLAY_SUSPENSION_FIELDS {
+            let before = PlayFields::stored_field(&existing.properties, field);
+            let after = PlayFields::stored_field(&updated.properties, field);
+            // A write that clears the suspension anyway may also carry the
+            // fields as cleared: it says the same thing twice.
+            if before != after && !(clears && after.is_none()) {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "'{field}' is recorded by the play engine and can't be written. Set \
+                     'enabled' to true to clear a suspension"
+                )));
+            }
+        }
+
+        if clears {
+            // A cleared field is stored as `null`, like any other clear.
+            if let Some(bucket) = updated
+                .properties
+                .get_mut(crate::models::PLAY_NODE_TYPE)
+                .and_then(|b| b.as_object_mut())
+            {
+                for field in PLAY_SUSPENSION_FIELDS {
+                    bucket.insert(field.to_string(), serde_json::Value::Null);
+                }
+            }
+        }
+        Ok(rules_changed)
+    }
+
+    /// A new play carries no suspension: only the engine records one.
+    pub(crate) fn ensure_play_created_unsuspended(node: &Node) -> Result<(), NodeServiceError> {
+        match nodespace_types::PLAY_SUSPENSION_FIELDS
+            .into_iter()
+            .find(|field| {
+                crate::models::PlayFields::stored_field(&node.properties, field).is_some()
+            }) {
+            Some(field) => Err(NodeServiceError::invalid_update(format!(
+                "'{field}' is recorded by the play engine and can't be set on a new play"
+            ))),
+            None => Ok(()),
         }
     }
 

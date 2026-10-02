@@ -219,11 +219,11 @@ impl NodeService {
             .await
     }
 
-    /// Update a play's fields (`rules`, `description`) with optimistic
-    /// concurrency control. See [`Self::update_person_node`] for why this
-    /// delegates to the generic pipeline: the rules are decoded there by
-    /// `PlayNodeBehavior::validate` and checked against the schemas by the
-    /// play validation gate, exactly as for any other write.
+    /// Update a play's fields (`rules`, `description`, `enabled`) with
+    /// optimistic concurrency control. See [`Self::update_person_node`] for
+    /// why this delegates to the generic pipeline: the rules are decoded there
+    /// by `PlayNodeBehavior::validate` and, when they change, checked against
+    /// the schemas by the play gate, exactly as for any other write.
     pub async fn update_play_node(
         &self,
         id: &str,
@@ -305,6 +305,72 @@ impl NodeService {
             update.to_properties_patch(),
         )
         .await
+    }
+
+    /// Record the engine's suspension of a play on the play node
+    /// (ADR-087 §5): why it was taken out of service on this device, the
+    /// diagnostic, and when.
+    ///
+    /// The three fields are system-owned and `local_only`. The write bumps no
+    /// version, so it cannot make a user's edit of the same play conflict, and
+    /// it emits a node-updated event so watchers see the suspension. The
+    /// user's `enabled` switch is not touched.
+    pub async fn record_play_suspension(
+        &self,
+        play_id: &str,
+        reason: crate::models::PlaySuspensionReason,
+        message: &str,
+    ) -> Result<Node, NodeServiceError> {
+        let before = self
+            .get_node(play_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(play_id))?;
+        if !self
+            .type_is_a(&before.node_type, crate::models::CoreNodeType::Play)
+            .await?
+        {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Node '{}' is a {} node, not a play",
+                play_id, before.node_type
+            )));
+        }
+
+        let path = |field: &str| format!("$.{}.{field}", crate::models::PLAY_NODE_TYPE);
+        self.store
+            .set_property_strings(
+                play_id,
+                &[
+                    (
+                        path(nodespace_types::PLAY_SUSPENDED_REASON_FIELD),
+                        reason.as_str().to_string(),
+                    ),
+                    (
+                        path(nodespace_types::PLAY_SUSPENDED_MESSAGE_FIELD),
+                        message.to_string(),
+                    ),
+                    (
+                        path(nodespace_types::PLAY_SUSPENDED_AT_FIELD),
+                        chrono::Utc::now().to_rfc3339(),
+                    ),
+                ],
+            )
+            .await
+            .map_err(NodeServiceError::from_store)?;
+
+        let node = self
+            .get_node(play_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(play_id))?;
+        self.emit_event(DomainEvent::NodeUpdated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+            node: node.clone(),
+            changed_properties: super::compute_property_changes(
+                &before.properties,
+                &node.properties,
+            ),
+        });
+        Ok(node)
     }
 
     /// Write a typed update's flat properties patch to a node that must be of

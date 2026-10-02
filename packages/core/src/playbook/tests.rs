@@ -507,7 +507,7 @@ mod playbook_tests {
     }
 
     #[test]
-    fn test_disable_play_removes_from_index_keeps_in_registry() {
+    fn test_suspend_play_removes_from_index_keeps_in_registry() {
         let mut mgr = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb1",
@@ -520,17 +520,17 @@ mod playbook_tests {
         );
 
         mgr.activate_play(&node).unwrap();
-        mgr.disable_play("pb1");
+        mgr.suspend_play("pb1");
 
-        // Still in active_playbooks but marked disabled
+        // Still in active_playbooks but marked suspended
         assert_eq!(mgr.active_playbooks().len(), 1);
-        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Disabled);
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Suspended);
         // Removed from trigger index
         assert!(mgr.trigger_index().is_empty());
     }
 
     #[test]
-    fn test_reenable_play() {
+    fn test_reindex_play() {
         let mut mgr = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb1",
@@ -543,13 +543,16 @@ mod playbook_tests {
         );
 
         mgr.activate_play(&node).unwrap();
-        mgr.disable_play("pb1");
+        mgr.suspend_play("pb1");
         assert!(mgr.trigger_index().is_empty());
 
-        mgr.reenable_play(&node).unwrap();
+        mgr.reindex_play(
+            &node,
+            crate::playbook::lifecycle::parse_play_rules(&node).unwrap(),
+        );
 
         // Back in index
-        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Runnable);
         let key = TriggerKey::NodeEvent {
             event: NodeEventType::NodeCreated,
             node_type: "task".to_string(),
@@ -863,14 +866,14 @@ mod playbook_tests {
         );
 
         mgr.activate_play(&node).unwrap();
-        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Runnable);
 
         // Schema for "invoice" is updated. Referencing it makes the play a
         // drift CANDIDATE; the engine re-validates before disabling anything,
         // so an additive change leaves it running.
         let candidates = mgr.plays_referencing_schema("invoice");
         assert_eq!(candidates, vec!["pb1"]);
-        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Runnable);
     }
 
     #[test]
@@ -892,7 +895,7 @@ mod playbook_tests {
         // Schema for "invoice" is updated — should NOT affect "task" play
         let candidates = mgr.plays_referencing_schema("invoice");
         assert!(candidates.is_empty());
-        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Runnable);
     }
 
     // -----------------------------------------------------------------------

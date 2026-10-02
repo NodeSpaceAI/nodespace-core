@@ -158,8 +158,8 @@ pub enum Command {
         #[command(subcommand)]
         action: commands::schema::SchemaAction,
     },
-    /// Inspect and control Play automation rule-sets (list, logs, enable,
-    /// disable, get-workflow-state).
+    /// Inspect and control Play automation rule-sets (list, enable, disable,
+    /// get-workflow-state).
     Playbook {
         #[command(subcommand)]
         action: commands::playbook::PlaybookAction,

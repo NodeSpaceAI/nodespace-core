@@ -826,6 +826,66 @@ mod search_and_context {
             .iter()
             .any(|p| p.name == "retitle-new-tasks"));
     }
+
+    /// A play the user switched off, or the engine suspended, is not active
+    /// automation, so the workspace context names neither.
+    #[tokio::test]
+    async fn the_workspace_context_names_only_the_plays_that_run() {
+        let (svc, _tmp) = test_service().await;
+        // The plays this test created; the seeded core play is listed too.
+        let names = |context: &nodespace_core::ops::context_ops::WorkspaceContext| {
+            context
+                .active_playbooks
+                .iter()
+                .filter(|p| ["running", "switched-off", "suspended"].contains(&p.name.as_str()))
+                .map(|p| (p.name.clone(), p.description.clone()))
+                .collect::<Vec<_>>()
+        };
+        let running = create(
+            &svc,
+            "play",
+            "running",
+            json!({ "rules": [], "description": "Runs" }),
+        )
+        .await;
+        create(
+            &svc,
+            "play",
+            "switched-off",
+            json!({ "rules": [], "enabled": false }),
+        )
+        .await;
+        let suspended = create(&svc, "play", "suspended", json!({ "rules": [] })).await;
+        svc.record_play_suspension(
+            &suspended,
+            nodespace_core::models::PlaySuspensionReason::ActionFailed,
+            "boom",
+        )
+        .await
+        .unwrap();
+
+        let context = build_workspace_context(&svc, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            names(&context),
+            vec![("running".to_string(), "Runs".to_string())]
+        );
+
+        // Switching the running one off takes it out too.
+        let version = svc.get_node(&running).await.unwrap().unwrap().version;
+        svc.update_node(
+            &running,
+            version,
+            NodeUpdate::default().with_properties(json!({ "enabled": false })),
+        )
+        .await
+        .unwrap();
+        let context = build_workspace_context(&svc, None, None, None)
+            .await
+            .unwrap();
+        assert!(names(&context).is_empty());
+    }
 }
 
 // ---------------------------------------------------------------------------

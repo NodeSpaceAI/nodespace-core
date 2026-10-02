@@ -175,6 +175,14 @@ impl NodeService {
             if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
                 self.rebucket_and_validate(node, false).await?;
             }
+            // A new play carries no suspension, on this create path as on
+            // the single-node one (ADR-087 §5).
+            if self
+                .type_is_a(&node.node_type, crate::models::CoreNodeType::Play)
+                .await?
+            {
+                Self::ensure_play_created_unsuspended(node)?;
+            }
 
             // Step 3: Title. An untemplated type's caller-supplied title is
             // honored as given, computed only when absent — matching the
@@ -965,6 +973,14 @@ impl NodeService {
                         ))
                     })?;
             }
+            // A play's suspension is the engine's, on this path as on every
+            // other (ADR-087 §5).
+            self.settle_play_update(
+                existing,
+                &mut updated,
+                Self::patch_enables_play(update.properties.as_ref()),
+            )
+            .await?;
 
             let changed_properties =
                 super::compute_property_changes(&old_props, &updated.properties);

@@ -400,13 +400,69 @@ pub struct RuleDefinition {
 // PlayFields: the play schema's fields
 // ============================================================================
 
+/// The storage key of a play's `rules`.
+pub const PLAY_RULES_FIELD: &str = "rules";
+/// The storage key of a play's user-owned switch.
+pub const PLAY_ENABLED_FIELD: &str = "enabled";
+/// The storage keys of a play's suspension, which only the engine writes.
+pub const PLAY_SUSPENDED_REASON_FIELD: &str = "suspended_reason";
+pub const PLAY_SUSPENDED_MESSAGE_FIELD: &str = "suspended_message";
+pub const PLAY_SUSPENDED_AT_FIELD: &str = "suspended_at";
+/// The three suspension fields together.
+pub const PLAY_SUSPENSION_FIELDS: [&str; 3] = [
+    PLAY_SUSPENDED_REASON_FIELD,
+    PLAY_SUSPENDED_MESSAGE_FIELD,
+    PLAY_SUSPENDED_AT_FIELD,
+];
+
+/// Why the engine took a play out of service on this device (ADR-087 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "snake_case")]
+pub enum PlaySuspensionReason {
+    /// The play's rules did not parse or validate.
+    ValidationFailed,
+    /// One of the play's actions failed.
+    ActionFailed,
+    /// A chain of rule firings reached the cycle limit.
+    CycleLimit,
+    /// A schema the play references changed and its rules no longer validate.
+    SchemaDrift,
+}
+
+impl PlaySuspensionReason {
+    /// Every reason, as `(variant, display label)`: the schema's enum.
+    pub const ALL: [(Self, &'static str); 4] = [
+        (Self::ValidationFailed, "Validation failed"),
+        (Self::ActionFailed, "Action failed"),
+        (Self::CycleLimit, "Cycle limit"),
+        (Self::SchemaDrift, "Schema drift"),
+    ];
+
+    /// The stored value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ValidationFailed => "validation_failed",
+            Self::ActionFailed => "action_failed",
+            Self::CycleLimit => "cycle_limit",
+            Self::SchemaDrift => "schema_drift",
+        }
+    }
+}
+
+impl std::fmt::Display for PlaySuspensionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// The play schema's fields, decoded from a play node's properties.
 ///
 /// The only reader of a stored play: storage keys are the schema's field
 /// names, hoisted by the store under `properties.play.*`.
 /// [`Self::from_properties`] reads that bucket, or the flat shape a node built
 /// in memory or a create payload carries.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
@@ -415,6 +471,31 @@ pub struct PlayFields {
     /// What the play automates, in one line.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// The user's switch. The engine never changes it.
+    pub enabled: bool,
+    /// Why the engine suspended the play on this device, when it has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suspended_reason: Option<PlaySuspensionReason>,
+    /// The diagnostic the suspension was logged with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suspended_message: Option<String>,
+    /// When the engine suspended the play (RFC 3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suspended_at: Option<String>,
+}
+
+impl Default for PlayFields {
+    /// The schema's defaults: no rules, switched on, not suspended.
+    fn default() -> Self {
+        Self {
+            rules: Vec::new(),
+            description: None,
+            enabled: true,
+            suspended_reason: None,
+            suspended_message: None,
+            suspended_at: None,
+        }
+    }
 }
 
 impl PlayFields {
@@ -438,7 +519,8 @@ impl PlayFields {
     /// flat shape, preferring the `play` bucket when there is one.
     ///
     /// An absent or `null` field takes the schema's default: no rules, no
-    /// description. Keys the schema does not declare are ignored.
+    /// description, switched on, not suspended. Keys the schema does not
+    /// declare are ignored.
     ///
     /// # Errors
     ///
@@ -446,25 +528,85 @@ impl PlayFields {
     /// the rule and what in it failed to decode: an unknown trigger type,
     /// event or action, a missing param, or a param the action does not take.
     pub fn from_properties(properties: &Value) -> Result<Self, ValidationError> {
-        let bucket = properties
-            .get(PLAY_NODE_TYPE)
-            .filter(|b| b.is_object())
-            .unwrap_or(properties);
-        let field = |key: &str| bucket.get(key).filter(|v| !v.is_null());
+        let bucket = play_bucket(properties);
 
         Ok(Self {
-            rules: field("rules")
+            rules: bucket
+                .get(PLAY_RULES_FIELD)
+                .filter(|v| !v.is_null())
                 .map(decode_rules)
                 .transpose()?
                 .unwrap_or_default(),
-            description: field("description")
-                .map(|v| {
-                    serde_json::from_value(v.clone())
-                        .map_err(|e| invalid("description", &e.to_string()))
-                })
-                .transpose()?,
+            description: decode_field(bucket, "description")?,
+            enabled: decode_field(bucket, PLAY_ENABLED_FIELD)?.unwrap_or(true),
+            suspended_reason: decode_field(bucket, PLAY_SUSPENDED_REASON_FIELD)?,
+            suspended_message: decode_field(bucket, PLAY_SUSPENDED_MESSAGE_FIELD)?,
+            suspended_at: decode_field(bucket, PLAY_SUSPENDED_AT_FIELD)?,
         })
     }
+
+    /// The fields of a play whose stored fields do not all decode: each field
+    /// that does decode, and the schema's default for each that does not.
+    ///
+    /// A play with broken rules is one the engine suspends, so its switch and
+    /// its suspension must still be readable.
+    pub fn readable_from_properties(properties: &Value) -> Self {
+        let bucket = play_bucket(properties);
+        Self {
+            rules: bucket
+                .get(PLAY_RULES_FIELD)
+                .and_then(|v| decode_rules(v).ok())
+                .unwrap_or_default(),
+            description: decode_field(bucket, "description").ok().flatten(),
+            enabled: Self::enabled_in(properties),
+            suspended_reason: decode_field(bucket, PLAY_SUSPENDED_REASON_FIELD)
+                .ok()
+                .flatten(),
+            suspended_message: decode_field(bucket, PLAY_SUSPENDED_MESSAGE_FIELD)
+                .ok()
+                .flatten(),
+            suspended_at: decode_field(bucket, PLAY_SUSPENDED_AT_FIELD).ok().flatten(),
+        }
+    }
+
+    /// One stored play field, in either shape, with `null` read as absent.
+    ///
+    /// For a reader that must not depend on the rules decoding: the engine
+    /// reads the switch and the suspension of a play whose rules are broken.
+    pub fn stored_field<'a>(properties: &'a Value, key: &str) -> Option<&'a Value> {
+        play_bucket(properties).get(key).filter(|v| !v.is_null())
+    }
+
+    /// The user's switch as stored: on unless it was set to `false`.
+    pub fn enabled_in(properties: &Value) -> bool {
+        Self::stored_field(properties, PLAY_ENABLED_FIELD).and_then(Value::as_bool) != Some(false)
+    }
+
+    /// Whether the engine has a suspension recorded on the play.
+    pub fn suspended_in(properties: &Value) -> bool {
+        Self::stored_field(properties, PLAY_SUSPENDED_AT_FIELD).is_some()
+    }
+}
+
+/// The `play` bucket of stored properties, or the properties themselves when
+/// they are flat.
+fn play_bucket(properties: &Value) -> &Value {
+    properties
+        .get(PLAY_NODE_TYPE)
+        .filter(|b| b.is_object())
+        .unwrap_or(properties)
+}
+
+/// Decode one scalar play field; absent and `null` are `None`.
+fn decode_field<T: serde::de::DeserializeOwned>(
+    bucket: &Value,
+    key: &str,
+) -> Result<Option<T>, ValidationError> {
+    bucket
+        .get(key)
+        .filter(|v| !v.is_null())
+        .map(|v| serde_json::from_value(v.clone()).map_err(|e| invalid(key, &e.to_string())))
+        .transpose()
 }
 
 /// Decode a stored `rules` value, one rule at a time so an error names the
@@ -517,7 +659,9 @@ pub struct PlayNode {
 ///
 /// `rules` is replaced whole and has no clear path (an empty list is how a
 /// play has no rules); `description` is tri-state: absent leaves it
-/// unchanged, `null` clears it, and a string sets it.
+/// unchanged, `null` clears it, and a string sets it. `enabled` is the user's
+/// switch; writing `true` also clears a suspension. The suspension fields are
+/// the engine's, so the update does not carry them.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(optional_fields))]
@@ -531,6 +675,8 @@ pub struct PlayNodeUpdate {
         deserialize_with = "deserialize_clearable"
     )]
     pub description: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 impl PlayNodeUpdate {
@@ -549,10 +695,13 @@ impl PlayNodeUpdate {
     pub fn to_properties_patch(&self) -> Value {
         let mut patch = Map::new();
         if let Some(rules) = &self.rules {
-            patch.insert("rules".to_string(), to_json(rules));
+            patch.insert(PLAY_RULES_FIELD.to_string(), to_json(rules));
         }
         if let Some(description) = &self.description {
             patch.insert("description".to_string(), to_json(description));
+        }
+        if let Some(enabled) = self.enabled {
+            patch.insert(PLAY_ENABLED_FIELD.to_string(), Value::Bool(enabled));
         }
         Value::Object(patch)
     }
@@ -869,6 +1018,101 @@ mod tests {
         assert!(patch["description"].is_null());
 
         assert!(PlayNodeUpdate::default().is_empty());
-        assert!(serde_json::from_value::<PlayNodeUpdate>(json!({ "enabled": true })).is_err());
+    }
+
+    #[test]
+    fn update_writes_the_switch_and_never_a_suspension() {
+        let update: PlayNodeUpdate = serde_json::from_value(json!({ "enabled": false })).unwrap();
+        assert!(!update.is_empty());
+        assert_eq!(update.to_properties_patch(), json!({ "enabled": false }));
+
+        for key in ["suspendedReason", "suspendedMessage", "suspendedAt"] {
+            assert!(
+                serde_json::from_value::<PlayNodeUpdate>(json!({ key: "x" })).is_err(),
+                "a typed update must not carry `{key}`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_play_is_on_and_unsuspended_by_default() {
+        let fields = PlayFields::from_properties(&json!({})).unwrap();
+        assert!(fields.enabled);
+        assert_eq!(fields.suspended_reason, None);
+        assert!(PlayFields::enabled_in(
+            &json!({ "play": { "enabled": null } })
+        ));
+        assert!(!PlayFields::suspended_in(
+            &json!({ "play": { "suspended_at": null } })
+        ));
+    }
+
+    #[test]
+    fn the_switch_and_suspension_decode_from_storage_and_travel_camel_case() {
+        let properties = json!({ "play": {
+            "rules": [],
+            "enabled": false,
+            "suspended_reason": "action_failed",
+            "suspended_message": "boom",
+            "suspended_at": "2026-10-02T10:00:00Z"
+        } });
+        let fields = PlayFields::from_properties(&properties).unwrap();
+        assert!(!fields.enabled);
+        assert_eq!(
+            fields.suspended_reason,
+            Some(PlaySuspensionReason::ActionFailed)
+        );
+        assert!(!PlayFields::enabled_in(&properties));
+        assert!(PlayFields::suspended_in(&properties));
+
+        let wire = serde_json::to_value(&fields).unwrap();
+        assert_eq!(wire["enabled"], false);
+        assert_eq!(wire["suspendedReason"], "action_failed");
+        assert_eq!(wire["suspendedMessage"], "boom");
+        assert_eq!(wire["suspendedAt"], "2026-10-02T10:00:00Z");
+
+        let err = PlayFields::from_properties(&json!({ "suspended_reason": "tired" }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("suspended_reason"), "{err}");
+    }
+
+    /// The switch and the suspension are read without decoding the rules, so
+    /// the engine can still tell that a play with broken rules is switched off.
+    #[test]
+    fn the_switch_is_readable_when_the_rules_are_not() {
+        let properties = json!({ "play": { "rules": "nope", "enabled": false } });
+        assert!(PlayFields::from_properties(&properties).is_err());
+        assert!(!PlayFields::enabled_in(&properties));
+    }
+
+    #[test]
+    fn a_play_with_broken_rules_keeps_its_readable_fields() {
+        let properties = json!({ "play": {
+            "rules": [{ "name": "r", "trigger": { "type": "nope" } }],
+            "description": "d",
+            "enabled": false,
+            "suspended_reason": "validation_failed",
+            "suspended_at": "2026-10-02T10:00:00Z"
+        } });
+        let fields = PlayFields::readable_from_properties(&properties);
+        assert!(fields.rules.is_empty());
+        assert_eq!(fields.description.as_deref(), Some("d"));
+        assert!(!fields.enabled);
+        assert_eq!(
+            fields.suspended_reason,
+            Some(PlaySuspensionReason::ValidationFailed)
+        );
+        assert!(fields.suspended_at.is_some());
+    }
+
+    #[test]
+    fn suspension_reasons_spell_their_stored_values() {
+        for (reason, _) in PlaySuspensionReason::ALL {
+            assert_eq!(
+                serde_json::to_value(reason).unwrap(),
+                json!(reason.as_str())
+            );
+        }
     }
 }

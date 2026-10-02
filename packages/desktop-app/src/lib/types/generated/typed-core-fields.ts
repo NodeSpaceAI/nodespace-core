@@ -45,7 +45,11 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
   ],
   play: [
     { storage: 'rules', wire: 'rules', structured: 'array' },
-    { storage: 'description', wire: 'description' }
+    { storage: 'description', wire: 'description' },
+    { storage: 'enabled', wire: 'enabled', structured: 'boolean' },
+    { storage: 'suspended_reason', wire: 'suspendedReason', readOnly: true },
+    { storage: 'suspended_message', wire: 'suspendedMessage', readOnly: true },
+    { storage: 'suspended_at', wire: 'suspendedAt', readOnly: true }
   ],
   'ai-chat': [
     { storage: 'agent', wire: 'agent' },
@@ -85,7 +89,7 @@ export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string
   skill: { description: '', maxIterations: 2, nodeTypes: [], toolWhitelist: [] },
   'database-settings': { requiredExtensions: [] },
   query: { executionCount: 0, filters: [], generatedBy: 'user', targetType: '*' },
-  play: { rules: [] },
+  play: { enabled: true, rules: [] },
   'ai-chat-native': {
     agent: '',
     contextTokens: 0,

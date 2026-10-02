@@ -41,6 +41,7 @@ export type { PersonNodeUpdate } from './person-node-update';
 export type { PlayFields } from './play-fields';
 export type { PlayNode } from './play-node';
 export type { PlayNodeUpdate } from './play-node-update';
+export type { PlaySuspensionReason } from './play-suspension-reason';
 export type { Priority } from './priority';
 export type { ProjectNode } from './project-node';
 export type { ProjectNodeUpdate } from './project-node-update';
