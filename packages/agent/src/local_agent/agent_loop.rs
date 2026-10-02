@@ -111,9 +111,9 @@ pub fn stage1_system_prompt(skill_names: &[String], type_names: &[String]) -> St
 
 /// Longest skill title or type name the Stage-1 prompt carries, in characters.
 ///
-/// Both are user-editable and every routed turn carries the whole list, so
-/// one runaway name must not grow every Stage-1 prompt. The seeded titles are
-/// all well under this.
+/// Both are user-editable, and every routed turn carries every skill title
+/// and each type name its message names, so one runaway name must not grow
+/// the Stage-1 prompt. The seeded titles are all well under this.
 const STAGE1_NAME_MAX_CHARS: usize = 60;
 
 /// One user-editable name as the Stage-1 prompt may carry it.
@@ -217,8 +217,9 @@ const fn stage1_core_type_words(
 /// before types were named at all.
 ///
 /// Built-in names lead, in registry order; the user's follow in the order
-/// given, normalised like skill titles. A name already listed, in any letter
-/// case, is dropped, and the list is capped at [`STAGE1_TYPES_MAX`].
+/// given (the store's, which is the same on every turn), normalised like
+/// skill titles. A name already listed, in any letter case, is dropped, and
+/// the list is capped at [`STAGE1_TYPES_MAX`].
 pub fn stage1_type_names(
     user_types: impl IntoIterator<Item = String>,
     message: &str,
@@ -11864,6 +11865,9 @@ mod tests {
             "somewhere for feature writeups",
             "Feature Writeup"
         ));
+        assert!(user_message_names_type("track our categories", "Category"));
+        // "ies" replaces a "y" only after a consonant.
+        assert!(!user_message_names_type("the daies", "Day"));
 
         // ...and the ones that must not.
         assert!(!user_message_names_type("create an ADR type", "Sprint"));

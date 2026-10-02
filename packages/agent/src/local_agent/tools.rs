@@ -4675,7 +4675,8 @@ impl AgentToolExecutor for GraphToolExecutor {
         }
     }
 
-    /// The display name of every schema the user defined.
+    /// The display name of every schema the user defined that takes part: an
+    /// archived type is in no context the agent is given.
     ///
     /// Read from the store, so a type whose embedding has not landed yet is
     /// named too. A failed read yields no names: Stage 1 is left with the
@@ -4687,7 +4688,9 @@ impl AgentToolExecutor for GraphToolExecutor {
         match ns.get_all_schemas().await {
             Ok(schemas) => schemas
                 .into_iter()
-                .filter(|schema| !schema.is_core)
+                .filter(|schema| {
+                    !schema.is_core && nodespace_core::governance::participates(&schema.envelope)
+                })
                 .map(|schema| schema.envelope.content)
                 .collect(),
             Err(e) => {
@@ -7562,10 +7565,10 @@ mod tests {
         assert!(test_executor().skill_names().await.is_empty());
     }
 
-    /// Stage 1 is offered the user's types by display name, and none of the
-    /// core ones: those it knows from the registry.
+    /// Stage 1 is offered the user's types by display name. Not the core
+    /// ones, which it knows from the registry, and not an archived one.
     #[tokio::test]
-    async fn user_type_names_lists_the_users_schemas_and_no_core_ones() {
+    async fn user_type_names_lists_the_users_active_schemas_and_no_core_ones() {
         use nodespace_core::db::SqliteStore;
         use tempfile::TempDir;
 
@@ -7573,11 +7576,26 @@ mod tests {
         let mut store: Arc<SqliteStore> =
             Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
         let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
-        for name in ["Vendor", "Incident Report"] {
+        for name in ["Vendor", "Incident Report", "Retired Type"] {
             handle_create_schema(&ns, json!({ "name": name, "fields": [] }))
                 .await
                 .expect("schema must be created");
         }
+        let retired = ns
+            .get_all_schemas()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|schema| schema.envelope.content == "Retired Type")
+            .expect("the schema was created")
+            .envelope;
+        ns.update_node(
+            &retired.id,
+            retired.version,
+            nodespace_core::models::NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+        )
+        .await
+        .expect("archiving the schema");
         let executor = GraphToolExecutor {
             node_service: Some(ns),
             embedding_service: Arc::new(RwLock::new(None)),

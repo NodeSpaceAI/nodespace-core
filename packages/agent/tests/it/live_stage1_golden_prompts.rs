@@ -85,8 +85,8 @@ async fn run_stage1_with_history(
     prior_turns: &[&str],
     message: &str,
 ) -> Option<RouteDecision> {
-    // The prompt production sends on a turn whose schema retrieval matched
-    // nothing: the skills, and the built-in types the message names.
+    // The prompt production sends in a workspace with no types of the user's
+    // own: the skills, and the built-in types the message names.
     let system_prompt =
         stage1_system_prompt(&seeded_skill_names(), &stage1_type_names([], message));
     let routing_query =
@@ -364,13 +364,6 @@ const BUILT_IN_TYPE_WORDS: &[&str] = &[
 
 const HOW_MANY_TASKS: &str = "Could you tell me how many tasks we have here?";
 
-/// The requests the type line moved from clarify to route when measured.
-const MOVED_TO_ROUTE: &[&str] = &[
-    "how many people do we have?",
-    "what projects are there?",
-    "tell me about the vendors",
-];
-
 const TYPE_LINE_CASES: &[TypeLineCase] = &[
     case(Group::KnownType, HOW_MANY_TASKS, Some(Decision::Query)),
     case(
@@ -492,12 +485,13 @@ fn type_words_added(message: &str, queries: &[String]) -> Vec<String> {
 /// `a_message_naming_no_type_gets_no_type_line` pins that without a model.
 ///
 /// Asserted, in the arm with the line:
-/// - [`HOW_MANY_TASKS`] and the [`MOVED_TO_ROUTE`] cases route on every rep;
+/// - every [`Group::KnownType`] case routes on every rep;
 /// - every [`Group::Unrelated`] case with an expectation meets it on every
-///   rep;
+///   rep, with the query it wrote without the line: a type's name read as a
+///   record type shows as a reworded query;
 /// - no [`Group::Unrelated`] query mentions a type the message did not
-///   ([`type_words_added`]), which is how a type line harms a request it was
-///   not meant for.
+///   ([`type_words_added`]), which is what listing a type the message does
+///   not name does.
 ///
 /// Every decision is printed, with each arm's prompt size. Latency is
 /// compared only over runs where both arms made the same decision, and never
@@ -518,7 +512,9 @@ fn type_words_added(message: &str, queries: &[String]) -> Vec<String> {
 #[tokio::test]
 #[ignore = "requires the locked native GGUF on disk"]
 async fn stage1_type_line_routes_requests_that_name_a_known_type() {
-    // Even, so each arm goes first as often as the other.
+    // Latency leaves rep 0 out, and over the other three the arm with the
+    // line goes first twice. Going first after the same arm's own run costs a
+    // full prompt evaluation, so the comparison counts against the line.
     const REPS: usize = 4;
     const ARMS: [&str; 2] = ["without", "with"];
 
@@ -531,6 +527,8 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
     let mut routed = vec![[0usize; 2]; TYPE_LINE_CASES.len()];
     // Per case: the type words the with-line arm's queries added.
     let mut added: Vec<Vec<String>> = vec![Vec::new(); TYPE_LINE_CASES.len()];
+    // Per case: the reps where the two arms wrote different queries.
+    let mut reworded = vec![0usize; TYPE_LINE_CASES.len()];
     let mut prompt_tokens = [0u64; 2];
     let mut same_decision_elapsed = [std::time::Duration::ZERO; 2];
     let mut same_decision_completion_tokens = [0u64; 2];
@@ -551,6 +549,7 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
 
         for rep in 0..REPS {
             let mut decisions = [None; 2];
+            let mut wrote: [Vec<String>; 2] = [Vec::new(), Vec::new()];
             let mut took = [std::time::Duration::ZERO; 2];
             let mut generated = [0u64; 2];
             let order = if rep % 2 == 0 { [0, 1] } else { [1, 0] };
@@ -592,12 +591,16 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
                         added[index].extend(type_words_added(case.message, &queries));
                     }
                 }
+                wrote[arm] = queries;
                 decisions[arm] = kind;
                 if case.expect.is_some() && kind == case.expect {
                     met[index][arm] += 1;
                 }
             }
             runs += 1;
+            if wrote[0] != wrote[1] {
+                reworded[index] += 1;
+            }
             // A case's first run without the line follows the previous case's
             // run without it: the same system prompt, already evaluated. That
             // run takes a quarter of the time of any other, in one arm only.
@@ -653,15 +656,11 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
 
     for (index, case) in TYPE_LINE_CASES.iter().enumerate() {
         match case.group {
-            Group::KnownType => {
-                if case.message == HOW_MANY_TASKS || MOVED_TO_ROUTE.contains(&case.message) {
-                    assert_eq!(
-                        routed[index][1], REPS,
-                        "{:?} names a known type and must route with the type named",
-                        case.message
-                    );
-                }
-            }
+            Group::KnownType => assert_eq!(
+                routed[index][1], REPS,
+                "{:?} names a known type and must route with the type named",
+                case.message
+            ),
             Group::Unrelated => {
                 if case.expect.is_some() {
                     assert_eq!(
@@ -669,6 +668,12 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
                         "{:?} was never in doubt and must decide as expected with its type \
                          named (without the line: {} of {REPS})",
                         case.message, met[index][0]
+                    );
+                    assert_eq!(
+                        reworded[index], 0,
+                        "{:?} was never in doubt, and naming its type changed the query \
+                         Stage 1 wrote for it",
+                        case.message
                     );
                 }
                 assert!(
