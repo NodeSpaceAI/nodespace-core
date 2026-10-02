@@ -147,6 +147,13 @@ describe('Backend Adapter - MockAdapter (Test Environment)', () => {
       expect(result).toBeNull();
     });
 
+    it('should return null from getParent', async () => {
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const adapter = getBackendAdapter();
+
+      expect(await adapter.getParent('node-id')).toBeNull();
+    });
+
     it('should handle moveNode and return updated node', async () => {
       const { getBackendAdapter } = await import('$lib/services/backend-adapter');
       const adapter = getBackendAdapter();
@@ -682,6 +689,32 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const result = await adapter.getChildrenTree('non-existent');
 
       expect(result).toBeNull();
+    });
+
+    it('should GET the parent node and pass a root through as null', async () => {
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const adapter = getBackendAdapter();
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => ({ id: 'chat-1', title: null, nodeType: 'ai-chat-native' })
+      });
+      expect(await adapter.getParent('msg-1')).toEqual({
+        id: 'chat-1',
+        title: null,
+        nodeType: 'ai-chat-native'
+      });
+      expect(mockFetch).toHaveBeenCalledWith('http://localhost:3001/api/nodes/msg-1/parent-node');
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => null
+      });
+      expect(await adapter.getParent('root-1')).toBeNull();
     });
 
     it('should move node with POST request', async () => {
@@ -1553,6 +1586,18 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const result = await adapter.getChildrenTree('non-existent');
 
       expect(result).toBeNull();
+    });
+
+    it('should look up the parent via IPC', async () => {
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const adapter = getBackendAdapter();
+
+      mockInvoke.mockResolvedValueOnce({ id: 'chat-1', title: null, nodeType: 'ai-chat-native' });
+
+      const result = await adapter.getParent('msg-1');
+
+      expect(mockInvoke).toHaveBeenCalledWith('get_parent', { nodeId: 'msg-1' });
+      expect(result?.id).toBe('chat-1');
     });
 
     it('should move node via IPC', async () => {

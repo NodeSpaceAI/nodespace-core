@@ -523,8 +523,8 @@ export const collectionNodePlugin: PluginDefinition = {
  * own page-level viewer.
  */
 const aiChatPluginConfig = {
-  // The conversation lives outside `.content`, not in a normal editable text
-  // field — a start-of-node Backspace must never silently delete or merge it
+  // The conversation lives in the chat's message children, not in a normal
+  // editable text field — a start-of-node Backspace must never silently delete or merge it
   // away (enforced in handleDeleteNode / handleCombineWithPrevious in
   // base-node-viewer.svelte), and it must not absorb a Backspace-merge from
   // the node below it (like code-block / quote-block).
@@ -541,7 +541,7 @@ const aiChatPluginConfig = {
   }
 } satisfies Partial<PluginDefinition>;
 
-/** A chat NodeSpace's own agent loop answers; messages live in a nested `messages[]` field. */
+/** A chat NodeSpace's own agent loop answers; its messages are `ai-chat-message` child nodes. */
 export const aiChatNativeNodePlugin: PluginDefinition = {
   ...aiChatPluginConfig,
   id: 'ai-chat-native',

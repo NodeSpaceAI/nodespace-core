@@ -73,9 +73,8 @@ export type RemoteUpdateDecision =
  * module's doc comment) and must not raise a phantom notification.
  *
  * ai-chat nodes are exempt from the focus/content-editing skip — see
- * `shouldSkipStaleAiChatUpdate` for that separate guard (version, then
- * message count, plus a same-version-with-a-pending-write check — not
- * focus).
+ * `shouldSkipStaleAiChatUpdate` for that separate guard (version, plus a
+ * same-version-with-a-pending-write check — not focus).
  */
 export function decideRemoteUpdate(
   incoming: Node,
@@ -100,27 +99,20 @@ export function decideRemoteUpdate(
 }
 
 /**
- * ai-chat nodes are never "typed into" — the messages array is written
- * programmatically via updateNode, and the daemon appends assistant replies
- * autonomously. Skipping daemon broadcasts for them (via `decideRemoteUpdate`)
- * would cause version drift: the store stays at the user-send version while
- * the daemon is N+1 ahead, so the next user send hits an OCC conflict.
- * Always accept daemon updates for ai-chat EXCEPT when the incoming snapshot
- * is a stale broadcast racing a newer one.
+ * ai-chat nodes are never "typed into" — the daemon writes the chat's
+ * `turn_status` and creates the assistant reply as a message child on its own.
+ * Skipping daemon broadcasts for them (via `decideRemoteUpdate`) would cause
+ * version drift: the store stays at the user-send version while the daemon is
+ * N+1 ahead, so the next user send hits an OCC conflict. Always accept daemon
+ * updates for ai-chat EXCEPT when the incoming snapshot is a stale broadcast
+ * racing a newer one.
  *
- * Staleness is decided by VERSION first, message count only as a tiebreak.
- * Message count alone is not a safe staleness signal: a turn that rewrites
- * history rather than appending (a cancelled turn dropping its partial reply,
- * say) legitimately produces a newer snapshot with fewer messages, and
- * count-only comparison would discard it permanently. Version is the
- * authority the daemon actually increments, so:
+ * Staleness is decided by VERSION, the authority the daemon increments:
  *
  *   - incoming version strictly older  → stale, skip.
  *   - incoming version strictly newer  → authoritative, apply.
  *   - versions equal, pending is true  → stale, skip (see `pending` below).
- *   - versions equal (or uncomparable), pending false → fall back to the
- *     message count, which is what distinguishes two broadcasts of the same
- *     generation.
+ *   - versions equal (or uncomparable), pending false → apply.
  *
  * This is the same policy the OCC hydration path applies, so the two writers
  * into this store (conflict hydration and daemon broadcast) can no longer
@@ -136,14 +128,11 @@ export function decideRemoteUpdate(
  * legitimately report the SAME version the local node is still sitting at,
  * while actually being the PRE-write snapshot arriving late (an unrelated
  * echo — e.g. the node's own creation broadcast, re-fetched unconditionally
- * — racing the in-flight write). Message count alone cannot always tell
- * these apart (an unset `model`/`provider` is not reflected in the message
- * array at all), so an equal-version snapshot is untrusted outright whenever
- * a local write is still outstanding, rather than relying solely on
- * `decideRemoteUpdate`'s separately-computed `hasPending` check downstream.
- * Worst case this skips an equal-version snapshot that would have been a
- * harmless no-op anyway (the in-flight write's own response carries the
- * same data) — never a wrongly-applied one.
+ * — racing the in-flight write). An equal-version snapshot is therefore
+ * untrusted outright whenever a local write is still outstanding. Worst case
+ * this skips an equal-version snapshot that would have been a harmless no-op
+ * anyway (the in-flight write's own response carries the same data) — never a
+ * wrongly-applied one.
  */
 export function shouldSkipStaleAiChatUpdate(
   incoming: Node,
@@ -157,19 +146,11 @@ export function shouldSkipStaleAiChatUpdate(
 
   const incomingVersion = incoming.version;
   const existingVersion = existingNode.version;
-  if (typeof incomingVersion === 'number' && typeof existingVersion === 'number') {
-    if (incomingVersion !== existingVersion) {
-      return incomingVersion < existingVersion;
-    }
-    if (pending) {
-      return true;
-    }
+  if (typeof incomingVersion !== 'number' || typeof existingVersion !== 'number') {
+    return false;
   }
-
-  type AiChatLike = Node & { messages?: unknown[] };
-  const incomingMsgs = (incoming as AiChatLike).messages;
-  const existingMsgs = (existingNode as AiChatLike).messages;
-  const incomingCount = Array.isArray(incomingMsgs) ? incomingMsgs.length : 0;
-  const existingCount = Array.isArray(existingMsgs) ? existingMsgs.length : 0;
-  return incomingCount < existingCount;
+  if (incomingVersion !== existingVersion) {
+    return incomingVersion < existingVersion;
+  }
+  return pending;
 }

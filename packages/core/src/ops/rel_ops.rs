@@ -740,6 +740,18 @@ pub async fn get_node_relationships(
         if BUILTIN_RELATIONSHIP_NAMES.contains(&rel.name.as_str()) {
             continue;
         }
+        // A type left out of default lists is not listed here either, and no
+        // edge from one is added by hand: a chat message's record of what it
+        // wrote or looked up is not a relationship group on every node
+        // (ADR-088 §3).
+        let unlisted_source = node_service
+            .core_type_of(&source_type)
+            .await
+            .map_err(|e| OpsError::Internal(format!("Failed to resolve type chain: {e}")))?
+            .is_some_and(|core| core.participation().excluded_from_default_queries);
+        if unlisted_source {
+            continue;
+        }
         let related = collect_related(node_service, node_id, &rel.name, "in").await?;
         // The "in" query keys only on relationship_type; two schemas can declare
         // the same relationship name targeting this type, so restrict this group

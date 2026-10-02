@@ -8,6 +8,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -16,6 +17,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -24,6 +26,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'none' }, parent: { rule: 'any' } }
   },
@@ -32,6 +35,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -40,6 +44,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'none' }, parent: { rule: 'any' } }
   },
@@ -48,6 +53,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -56,6 +62,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'none' }, parent: { rule: 'any' } }
   },
@@ -64,6 +71,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'none' }, parent: { rule: 'any' } }
   },
@@ -72,6 +80,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'must_be_root' } }
   },
@@ -80,6 +89,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -88,6 +98,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: true,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -96,6 +107,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: true,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -104,6 +116,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: true,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -112,6 +125,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: false,
+    excludedFromDefaultQueries: false,
     typedUpdate: true,
     structure: { children: { rule: 'any' }, parent: { rule: 'must_be_root' } }
   },
@@ -120,6 +134,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: true,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -128,6 +143,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: true,
     structure: { children: { rule: 'none' }, parent: { rule: 'any' } }
   },
@@ -136,6 +152,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: true,
     structure: { children: { rule: 'none' }, parent: { rule: 'any' } }
   },
@@ -144,6 +161,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: false,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'must_be_root' } }
   },
@@ -152,6 +170,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: true,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -160,6 +179,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: true,
     mentionable: false,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -168,6 +188,7 @@ export const CORE_NODE_TYPES = [
     parent: 'ai-chat',
     abstract: false,
     mentionable: false,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
@@ -176,14 +197,28 @@ export const CORE_NODE_TYPES = [
     parent: 'ai-chat',
     abstract: false,
     mentionable: false,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
+    id: 'ai-chat-message',
+    parent: null,
+    abstract: false,
+    mentionable: false,
+    excludedFromDefaultQueries: true,
+    typedUpdate: false,
+    structure: {
+      children: { rule: 'none' },
+      parent: { rule: 'must_have_parent_of', types: ['ai-chat-native'] }
+    }
   },
   {
     id: 'tool',
     parent: null,
     abstract: false,
     mentionable: true,
+    excludedFromDefaultQueries: false,
     typedUpdate: false,
     structure: { children: { rule: 'none' }, parent: { rule: 'any' } }
   }

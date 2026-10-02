@@ -3,7 +3,11 @@ import { nodeToTaskNode } from '$lib/types/task-node';
 import { nodeToPersonNode } from '$lib/types/person-node';
 import { nodeToProjectNode } from '$lib/types/project-node';
 import { nodeToQueryNode } from '$lib/types/query';
-import { nodeToAiChatNativeNode, nodeToAiChatPtyNode } from '$lib/types/ai-chat-node';
+import {
+  nodeToAiChatMessageNode,
+  nodeToAiChatNativeNode,
+  nodeToAiChatPtyNode
+} from '$lib/types/ai-chat-node';
 import { typeChain } from '$lib/types/core-node-types';
 import {
   hasTypedUpdate,
@@ -19,7 +23,8 @@ const TYPED_WIRE_CONVERTERS: ReadonlyMap<string, (node: Node) => Node> = new Map
   ['project', (node) => nodeToProjectNode(node) as unknown as Node],
   ['query', (node) => nodeToQueryNode(node) as unknown as Node],
   ['ai-chat-native', (node) => nodeToAiChatNativeNode(node) as unknown as Node],
-  ['ai-chat-pty', (node) => nodeToAiChatPtyNode(node) as unknown as Node]
+  ['ai-chat-pty', (node) => nodeToAiChatPtyNode(node) as unknown as Node],
+  ['ai-chat-message', (node) => nodeToAiChatMessageNode(node) as unknown as Node]
 ]);
 
 /**
@@ -65,7 +70,7 @@ export function mergeProperties(
  * Only promotes a field that is actually present in this write. That guard is
  * load-bearing: it prevents overwriting an existing top-level value with
  * `undefined` when a caller omits a field (e.g. sending a message writes
- * `properties.messages` but not `properties.model`).
+ * `properties.turn_status` but not `properties.model`).
  */
 export function promoteTypedFields(
   nodeType: string,

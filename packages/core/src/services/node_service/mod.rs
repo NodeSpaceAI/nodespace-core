@@ -49,7 +49,7 @@ pub(crate) mod schema;
 
 pub use conflicts::deterministic_conflict_id;
 pub use hierarchy::render_subtree_markdown;
-pub use relationship::{CreatedRelationship, StoredEdge};
+pub use relationship::{CreatedRelationship, NewRelationship, StoredEdge};
 
 /// Reserved ID for the DatabaseSettingsNode singleton instance.
 ///
@@ -2392,6 +2392,18 @@ impl NodeService {
     ) -> Result<Option<crate::models::CoreNodeType>, NodeServiceError> {
         self.store
             .core_type_of(node_type)
+            .await
+            .map_err(NodeServiceError::from_store)
+    }
+
+    /// Whether another node may reference a node of `node_type`. See
+    /// [`crate::models::CoreNodeType::accepts_inbound_references`].
+    pub async fn accepts_inbound_references(
+        &self,
+        node_type: &str,
+    ) -> Result<bool, NodeServiceError> {
+        self.store
+            .accepts_inbound_references(node_type)
             .await
             .map_err(NodeServiceError::from_store)
     }
@@ -13039,7 +13051,7 @@ mod tests {
             let node = Node::new(
                 "ai-chat-native".to_string(),
                 "Chat".to_string(),
-                json!({ "agent": "nodespace", "provider": provider, "messages": [] }),
+                json!({ "agent": "nodespace", "provider": provider }),
             );
             service
                 .create_node(node)
@@ -13051,7 +13063,7 @@ mod tests {
             let node = Node::new(
                 "ai-chat-native".to_string(),
                 "Chat".to_string(),
-                json!({ "agent": "nodespace", "provider": provider, "messages": [] }),
+                json!({ "agent": "nodespace", "provider": provider }),
             );
             let err = service
                 .create_node(node)
@@ -13080,7 +13092,7 @@ mod tests {
         let node = Node::new(
             "ai-chat-native".to_string(),
             "Deployment runbook".to_string(),
-            json!({ "agent": "nodespace", "messages": [] }),
+            json!({ "agent": "nodespace" }),
         );
         let node_id = service.create_node(node).await.unwrap();
         let created = service.get_node(&node_id).await.unwrap().unwrap();

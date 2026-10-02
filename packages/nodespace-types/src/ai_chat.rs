@@ -13,6 +13,11 @@
 //! fields are stored in the `ai-chat` bucket and each subtype's in its own
 //! (ADR-078); [`AiChatNativeNode::from_node`] and [`AiChatPtyNode::from_node`]
 //! read a node in either storage or flattened shape.
+//!
+//! A native chat's messages are [`AiChatMessageNode`]s (`ai-chat-message`):
+//! its `has_child` children, in conversation order. What a message wrote,
+//! looked up or asked to delete is recorded on edges from it
+//! ([`AiChatWroteEdge`], [`AiChatResolvedEdge`], [`AiChatPendingDeleteEdge`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -102,18 +107,24 @@ impl AiChatSessionStatus {
     }
 }
 
-/// Who sent a message in a native chat (ADR-088).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Who sent a message in a native chat (ADR-088). A message written without
+/// a role is the user's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum AiChatMessageRole {
+    #[default]
     User,
     Assistant,
     System,
 }
 
 impl AiChatMessageRole {
-    pub const ALL: [AiChatMessageRole; 3] = [Self::User, Self::Assistant, Self::System];
+    pub const ALL: [(AiChatMessageRole, &'static str); 3] = [
+        (AiChatMessageRole::User, "User"),
+        (AiChatMessageRole::Assistant, "Assistant"),
+        (AiChatMessageRole::System, "System"),
+    ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -124,183 +135,83 @@ impl AiChatMessageRole {
     }
 }
 
-/// A graph write completed during an assistant turn.
+/// The relationship from a message to a node it wrote (ADR-088 §3).
+pub const AI_CHAT_WROTE: &str = "wrote";
+/// The relationship from a message to a node its reads surfaced.
+pub const AI_CHAT_RESOLVED: &str = "resolved";
+/// The relationship from a message to a node it asked to delete, held until
+/// the user answers.
+pub const AI_CHAT_PENDING_DELETE: &str = "pending_delete";
+
+/// One successful write tool call, as its message's `wrote` edge records it.
 ///
-/// Only successful, state-changing tool calls are recorded. This is the durable
-/// evidence that a turn's write actually happened: the agent session is rebuilt
-/// from scratch on every turn, so without it the next turn sees the user's
-/// original instruction alongside a prose claim of completion and no proof the
-/// write occurred — and may repeat it.
-///
-/// Carries the tool name, the affected node, a short label, and the canonical
-/// arguments the call was made with. Tool *results* are not persisted: the
-/// purpose is to establish *that* the write happened and to recognise a later
-/// call as the same write, not to replay its output. The one exception is the
-/// edges a relationship write evicted (`replaced`) — a side effect the call's
-/// arguments do not describe, and which a later turn needs to undo it.
+/// The agent session is rebuilt from the stored conversation on every turn, so
+/// this is the durable evidence that a write happened. Tool results are not
+/// kept: the record establishes that the write happened and lets a later call
+/// be recognised as the same write. The one exception is the edges a
+/// relationship write evicted (`replaced`), a side effect the call's
+/// arguments do not describe and a later turn needs to undo it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(optional_fields))]
-#[serde(rename_all = "camelCase")]
-pub struct AiChatCompletedWrite {
-    /// Name of the tool that performed the write (e.g. `"create_node"`).
+#[serde(deny_unknown_fields)]
+pub struct AiChatWrite {
+    /// The call's position among the message's writes, across all of its
+    /// `wrote` edges.
+    pub seq: u32,
+
+    /// Name of the tool that performed the write (`create_node`, ...).
     pub tool: String,
 
-    /// ID of the node the write produced or affected, when the tool reported one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_id: Option<String>,
-
-    /// Short human-readable label for the written node, when available.
+    /// Short human-readable label for what was written, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
 
-    /// Edges the write evicted as a side effect, each rendered the way
-    /// `summary` renders a relationship (`"from -[type]-> to"`). Only
-    /// `create_relationship` populates it: a cardinality-one end is honored by
-    /// replacing the prior edge, and this is the only place a later turn can
-    /// still find the previous holder once the reply prose is gone from
-    /// history. Empty for every other write.
+    /// The call's arguments, canonicalised. With `tool` this is the write's
+    /// identity for the cross-turn duplicate guard: a later call matching both
+    /// is the same write. Either the canonical JSON verbatim or, when that is
+    /// too large to store, `sha256:<hex>` of it; canonical JSON always starts
+    /// with `{`, so the two forms cannot be confused.
+    pub canonical_args: String,
+
+    /// Edges the write evicted, each rendered `"from -[type]-> to"`. Only a
+    /// relationship write that replaced a cardinality-one edge has any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub replaced: Vec<String>,
-
-    /// The call's arguments, canonicalised (JSON key order normalised, parameter
-    /// aliases resolved). Together with `tool` this is the write's identity for
-    /// the cross-turn duplicate guard: a later call matching both is the same
-    /// write, not a new one.
-    ///
-    /// Two forms, both produced by `canonical_args_identity`: the canonical JSON
-    /// verbatim when it is small enough to store, or `sha256:<hex>` of that same
-    /// string when it is not (see `CANONICAL_ARGS_MAX_CHARS`). The digest keeps
-    /// large writes — an entire markdown import, say — guarded without copying
-    /// their content into this message history a second time. The forms cannot
-    /// be confused: canonical JSON always starts with `{`.
-    ///
-    /// Always present. An identity is what makes a recorded write enforceable,
-    /// so a write recorded without one would be indistinguishable from an
-    /// unguarded tool while still looking wired up.
-    pub canonical_args: String,
 }
 
-/// A concrete graph entity a read-only tool call surfaced during an assistant
-/// turn.
-///
-/// `completed_writes` gives the next turn durable proof of what a write-tool
-/// call did; nothing analogous existed for reads, so a turn that merely
-/// *looked up* a node (`search_nodes`, `get_node`, ...) left no structured
-/// trace once the ephemeral session ended — only the assistant's prose reply
-/// survived, with no node id in it. A follow-up like "update that" then has
-/// nothing to resolve "that" against. This is the read-side counterpart:
-/// minimal identity only (no mutable fields, so it cannot go stale in a way
-/// that misleads), populated from the same tool-execution records
-/// `completed_writes` already derives from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The fields of a `wrote` edge: every write the message made to the node,
+/// in call order. One edge joins a message and a node, and a turn may write
+/// the same node more than once (create it, then link it), so the edge holds
+/// a list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(optional_fields))]
-#[serde(rename_all = "camelCase")]
-pub struct AiChatResolvedEntity {
-    /// ID of the node a read tool surfaced (as a `nodespace://` URI, matching
-    /// the form the model uses to refer to nodes elsewhere).
-    pub node_id: String,
-
-    /// Short human-readable title for the node, when available.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-
-    /// The node's type (e.g. `"task"`), when available.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_type: Option<String>,
+#[serde(deny_unknown_fields)]
+pub struct AiChatWroteEdge {
+    pub writes: Vec<AiChatWrite>,
 }
 
-/// A node an agent turn asked to delete, held until the user confirms.
-///
-/// The agent's `delete_node` does not delete: it resolves the target and the
-/// turn ends asking the user to confirm. The confirmation message carries these
-/// records, and only an affirmative reply to that message deletes — against
-/// exactly these ids, not a re-resolution of the request. `version` and
-/// `descendant_count` are what the user was shown; a change to either between
-/// the question and the answer aborts the delete rather than removing
-/// something the user did not see.
+/// The fields of a `resolved` edge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[serde(rename_all = "camelCase")]
-pub struct AiChatPendingDeletion {
-    /// Bare node id (no `nodespace://` prefix).
-    pub node_id: String,
+#[serde(deny_unknown_fields)]
+pub struct AiChatResolvedEdge {
+    /// Name of the read tool that surfaced the node.
+    pub tool: String,
+}
 
-    /// How the node was named to the user.
-    pub title: String,
-
-    /// The node's type (e.g. `"task"`).
-    pub node_type: String,
-
-    /// The node's version when the user was asked.
+/// The fields of a `pending_delete` edge: what the user was shown when the
+/// delete was proposed. A node that differs from it when the user answers is
+/// not deleted, so nothing the user did not see is removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct AiChatPendingDeleteEdge {
+    /// The node's version.
     pub version: i64,
-
-    /// Nodes beneath it that the delete cascades to (ADR-041).
+    /// How many nodes beneath it the delete cascades to.
     pub descendant_count: u64,
-}
-
-/// A single message in an ai-chat conversation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
-#[cfg_attr(feature = "ts", ts(optional_fields))]
-#[serde(rename_all = "camelCase")]
-pub struct AiChatMessage {
-    /// Who sent the message.
-    pub role: AiChatMessageRole,
-
-    /// Message text.
-    pub content: String,
-
-    /// When the message was created (RFC3339), when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timestamp: Option<String>,
-
-    /// Model chain-of-thought reasoning toward the answer, when captured.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning: Option<String>,
-
-    /// Graph writes this assistant turn completed. Empty for user messages and
-    /// for assistant turns that only read.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[cfg_attr(feature = "ts", ts(optional = nullable))]
-    pub completed_writes: Vec<AiChatCompletedWrite>,
-
-    /// Concrete graph entities this assistant turn's read-only tool calls
-    /// surfaced (deduplicated by node id). Empty for user messages and for
-    /// assistant turns whose reads found nothing. See
-    /// [`AiChatResolvedEntity`].
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[cfg_attr(feature = "ts", ts(optional = nullable))]
-    pub resolved_entities: Vec<AiChatResolvedEntity>,
-
-    /// The clarifying question, when this message is a `route_clarify` turn
-    /// (ADR-038) rather than an ordinary reply. `content` still carries the
-    /// flattened `"{opener}. {question}\n\n- opt1\n- opt2"` text for plain-text
-    /// readers and the LLM-facing history; this field plus `options` is the
-    /// same data unflattened, so the frontend can render clickable options
-    /// instead of parsing markdown bullets back out of prose.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub question: Option<String>,
-
-    /// Concrete options offered alongside `question`. Only meaningful when
-    /// `question` is `Some`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[cfg_attr(feature = "ts", ts(optional = nullable))]
-    pub options: Vec<String>,
-
-    /// Deletes this assistant turn is asking the user to confirm. Only the
-    /// user's next message can confirm them; see [`AiChatPendingDeletion`].
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    #[cfg_attr(feature = "ts", ts(optional = nullable))]
-    pub pending_deletions: Vec<AiChatPendingDeletion>,
-
-    /// How this assistant turn ended, when an agent turn produced it. `None`
-    /// for user messages and for assistant text no turn produced (a failed
-    /// turn's error notice). See [`AiChatTurnOutcome`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<AiChatTurnOutcome>,
 }
 
 /// How an agent turn ended — the structural record ADR-038's "at most one
@@ -327,6 +238,22 @@ pub enum AiChatTurnOutcome {
     /// one clarification: reading and then replying looks the same whether the
     /// reply showed what was found or asked the user about it.
     Replied,
+}
+
+impl AiChatTurnOutcome {
+    pub const ALL: [(AiChatTurnOutcome, &'static str); 3] = [
+        (AiChatTurnOutcome::Acted, "Acted"),
+        (AiChatTurnOutcome::Clarified, "Clarified"),
+        (AiChatTurnOutcome::Replied, "Replied"),
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Acted => "acted",
+            Self::Clarified => "clarified",
+            Self::Replied => "replied",
+        }
+    }
 }
 
 /// The fields every chat carries, declared by the abstract `ai-chat` schema
@@ -376,53 +303,20 @@ pub struct AiChatNativeNode {
     pub turn_status: AiChatTurnStatus,
     /// Approximate token count of the conversation's context.
     pub context_tokens: u64,
-    /// The conversation, in order.
-    pub messages: Vec<AiChatMessage>,
 }
 
 impl AiChatNativeNode {
     /// Read a native chat from a node, in storage shape (bucketed per schema)
-    /// or already flattened.
-    ///
-    /// Reads only the declared snake_case names. Messages are decoded one by
-    /// one, not as one `Vec`: a single unreadable message would otherwise
-    /// discard the whole conversation, and a caller that then writes the
-    /// messages back would persist the loss. The unreadable ones are returned
-    /// by [`Self::from_node_reporting`] for a caller that logs them.
+    /// or already flattened. Its messages are its `ai-chat-message` children,
+    /// not part of the node.
     ///
     /// # Errors
     ///
     /// [`ValidationError::InvalidNodeType`] when the node is not exactly an
     /// `ai-chat-native` node.
     pub fn from_node(node: Node) -> Result<Self, ValidationError> {
-        Self::from_node_reporting(node).map(|(chat, _unreadable)| chat)
-    }
-
-    /// [`Self::from_node`], also returning the decode error of each message
-    /// that could not be read and was left out.
-    pub fn from_node_reporting(node: Node) -> Result<(Self, Vec<String>), ValidationError> {
-        let (envelope, props) = chat_envelope(node, CoreNodeType::AiChatNative)?;
-
-        let mut unreadable = Vec::new();
-        let messages = props
-            .get("messages")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(
-                        |m| match serde_json::from_value::<AiChatMessage>(m.clone()) {
-                            Ok(message) => Some(message),
-                            Err(e) => {
-                                unreadable.push(e.to_string());
-                                None
-                            }
-                        },
-                    )
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let chat = Self {
+        let (envelope, props) = typed_envelope(node, CoreNodeType::AiChatNative)?;
+        Ok(Self {
             envelope,
             base: AiChatBase::from_flat(&props),
             provider: enum_prop(&props, "provider"),
@@ -431,19 +325,6 @@ impl AiChatNativeNode {
                 .get("context_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or_default(),
-            messages,
-        };
-        Ok((chat, unreadable))
-    }
-
-    /// The conversation state a turn writes, as a properties patch: the turn
-    /// status and the whole message list, under their storage names. The
-    /// update pipeline places both in this type's bucket and leaves every
-    /// other field as stored.
-    pub fn conversation_patch(&self) -> serde_json::Value {
-        serde_json::json!({
-            "turn_status": self.turn_status,
-            "messages": self.messages,
         })
     }
 }
@@ -487,7 +368,7 @@ impl AiChatPtyNode {
     /// [`ValidationError::InvalidNodeType`] when the node is not exactly an
     /// `ai-chat-pty` node.
     pub fn from_node(node: Node) -> Result<Self, ValidationError> {
-        let (envelope, props) = chat_envelope(node, CoreNodeType::AiChatPty)?;
+        let (envelope, props) = typed_envelope(node, CoreNodeType::AiChatPty)?;
         Ok(Self {
             envelope,
             base: AiChatBase::from_flat(&props),
@@ -499,12 +380,78 @@ impl AiChatPtyNode {
     }
 }
 
-/// Split a chat node into its envelope and its flat field values.
+/// An `ai-chat-message` node: one message of a native chat (ADR-088 §3).
 ///
-/// The fields are read across the subtype's bucket and the inherited
-/// `ai-chat` one, nearest first. The envelope keeps what the chain does not
-/// declare: extension fields.
-fn chat_envelope(
+/// A `has_child` child of its chat, in conversation order. Its text is its
+/// `content`; a clarifying question is the content too, with the choices it
+/// offers in `options`. What the message wrote, looked up or asked to delete
+/// is on its `wrote`, `resolved` and `pending_delete` edges.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatMessageNode {
+    /// The fields every node carries. `properties` holds extension fields
+    /// only; the message's own fields are the typed ones below.
+    #[serde(flatten)]
+    pub envelope: NodeEnvelope,
+    /// Who sent the message.
+    pub role: AiChatMessageRole,
+    /// When the message was sent (RFC 3339), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+    /// The model's chain-of-thought toward the answer, when captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// How the turn that produced an assistant message ended. `None` for a
+    /// user message and for assistant text no turn produced (a failed turn's
+    /// error notice).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<AiChatTurnOutcome>,
+    /// The choices offered with a clarifying question.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub options: Vec<String>,
+}
+
+impl AiChatMessageNode {
+    /// Read a message from a node, in storage shape or already flattened.
+    ///
+    /// # Errors
+    ///
+    /// [`ValidationError::InvalidNodeType`] when the node is not exactly an
+    /// `ai-chat-message` node.
+    pub fn from_node(node: Node) -> Result<Self, ValidationError> {
+        let (envelope, props) = typed_envelope(node, CoreNodeType::AiChatMessage)?;
+        Ok(Self {
+            envelope,
+            role: enum_prop(&props, "role"),
+            timestamp: string_prop(&props, "timestamp"),
+            reasoning: string_prop(&props, "reasoning"),
+            outcome: props
+                .get("outcome")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()),
+            options: props
+                .get("options")
+                .and_then(|v| v.as_array())
+                .map(|options| {
+                    options
+                        .iter()
+                        .filter_map(|o| o.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+    }
+}
+
+/// Split a node of the chat family into its envelope and its flat field
+/// values.
+///
+/// The fields are read across the type's bucket and the ones it inherits,
+/// nearest first. The envelope keeps what the chain does not declare:
+/// extension fields.
+fn typed_envelope(
     node: Node,
     core: CoreNodeType,
 ) -> Result<(NodeEnvelope, serde_json::Value), ValidationError> {
@@ -553,6 +500,14 @@ mod tests {
         Node::new("ai-chat-native".to_string(), "Chat".to_string(), properties)
     }
 
+    fn message(content: &str, properties: serde_json::Value) -> Node {
+        Node::new(
+            "ai-chat-message".to_string(),
+            content.to_string(),
+            properties,
+        )
+    }
+
     #[test]
     fn a_native_chat_reads_its_own_bucket_and_the_inherited_one() {
         let node = native(json!({
@@ -561,7 +516,6 @@ mod tests {
                 "provider": "openai-compat",
                 "turn_status": "processing",
                 "context_tokens": 42,
-                "messages": [{ "role": "user", "content": "hi" }],
                 "custom:pinned": true
             },
             "task": { "status": "open" }
@@ -572,7 +526,6 @@ mod tests {
         assert_eq!(chat.provider, AiChatProvider::OpenaiCompat);
         assert_eq!(chat.turn_status, AiChatTurnStatus::Processing);
         assert_eq!(chat.context_tokens, 42);
-        assert_eq!(chat.messages.len(), 1);
         // Only the extension field is left; the dormant `task` bucket is not
         // part of the chain.
         assert_eq!(chat.envelope.properties, json!({ "custom:pinned": true }));
@@ -584,7 +537,6 @@ mod tests {
         assert_eq!(chat.provider, AiChatProvider::Native);
         assert_eq!(chat.turn_status, AiChatTurnStatus::Idle);
         assert_eq!(chat.context_tokens, 0);
-        assert!(chat.messages.is_empty());
         assert_eq!(chat.base.model, None);
     }
 
@@ -592,45 +544,59 @@ mod tests {
     fn a_flattened_node_reads_the_same_as_a_bucketed_one() {
         let chat = AiChatNativeNode::from_node(native(json!({
             "agent": "nodespace",
-            "turn_status": "processing",
-            "messages": []
+            "turn_status": "processing"
         })))
         .unwrap();
         assert_eq!(chat.base.agent, "nodespace");
         assert_eq!(chat.turn_status, AiChatTurnStatus::Processing);
     }
 
+    /// A native chat carries no messages: they are its children.
     #[test]
-    fn one_unreadable_message_is_left_out_and_reported() {
-        let node = native(json!({ "ai-chat-native": { "messages": [
-            { "role": "user", "content": "kept" },
-            { "content": "no role" },
-            { "role": "assistant", "content": "also kept" }
-        ] } }));
-        let (chat, unreadable) = AiChatNativeNode::from_node_reporting(node).unwrap();
-        let kept: Vec<&str> = chat.messages.iter().map(|m| m.content.as_str()).collect();
-        assert_eq!(kept, ["kept", "also kept"]);
-        assert_eq!(unreadable.len(), 1);
+    fn a_native_chat_has_no_messages_field() {
+        let chat = AiChatNativeNode::from_node(native(json!({}))).unwrap();
+        let wire = serde_json::to_value(&chat).unwrap();
+        assert!(wire.get("messages").is_none());
     }
 
-    /// A role is one of the three the type names. A message stored with any
-    /// other is unreadable like any malformed message: left out and reported,
-    /// and the chat still reads.
     #[test]
-    fn a_message_with_a_role_outside_the_vocabulary_is_left_out_and_reported() {
-        let node = native(json!({ "ai-chat-native": { "messages": [
-            { "role": "user", "content": "kept" },
-            { "role": "tool_call", "content": "search" },
-            { "role": "system", "content": "also kept" }
-        ] } }));
-        let (chat, unreadable) = AiChatNativeNode::from_node_reporting(node).unwrap();
-        let roles: Vec<AiChatMessageRole> = chat.messages.iter().map(|m| m.role).collect();
-        assert_eq!(roles, [AiChatMessageRole::User, AiChatMessageRole::System]);
-        assert_eq!(unreadable.len(), 1);
+    fn a_message_reads_its_fields_and_keeps_its_text_as_content() {
+        let node = message(
+            "Which one?",
+            json!({ "ai-chat-message": {
+                "role": "assistant",
+                "timestamp": "2026-10-02T10:00:00Z",
+                "reasoning": "Two tasks match.",
+                "outcome": "clarified",
+                "options": ["Login bug", "Logout bug"],
+                "custom:flag": 1
+            } }),
+        );
+        let message = AiChatMessageNode::from_node(node).unwrap();
+        assert_eq!(message.envelope.content, "Which one?");
+        assert_eq!(message.role, AiChatMessageRole::Assistant);
+        assert_eq!(message.timestamp.as_deref(), Some("2026-10-02T10:00:00Z"));
+        assert_eq!(message.reasoning.as_deref(), Some("Two tasks match."));
+        assert_eq!(message.outcome, Some(AiChatTurnOutcome::Clarified));
+        assert_eq!(message.options, ["Login bug", "Logout bug"]);
+        assert_eq!(message.envelope.properties, json!({ "custom:flag": 1 }));
+    }
+
+    #[test]
+    fn a_message_with_no_fields_is_a_user_message_with_nothing_optional() {
+        let message = AiChatMessageNode::from_node(message("hi", json!({}))).unwrap();
+        assert_eq!(message.role, AiChatMessageRole::User);
+        assert_eq!(message.outcome, None);
+        assert!(message.options.is_empty());
+        let wire = serde_json::to_value(&message).unwrap();
+        assert_eq!(wire["role"], "user");
+        for absent in ["timestamp", "reasoning", "outcome", "options"] {
+            assert!(wire.get(absent).is_none(), "{absent} is left off the wire");
+        }
     }
 
     /// No validated write stores a value outside a closed enum. One that got
-    /// there some other way reads as the field's default, and the chat still
+    /// there some other way reads as the field's default, and the node still
     /// reads.
     #[test]
     fn a_stored_value_outside_a_closed_enum_reads_as_the_default() {
@@ -648,35 +614,14 @@ mod tests {
         );
         let chat = AiChatPtyNode::from_node(pty).unwrap();
         assert_eq!(chat.session_status, AiChatSessionStatus::default());
-    }
 
-    #[test]
-    fn the_conversation_patch_names_only_the_turn_state_and_the_messages() {
-        let mut chat = AiChatNativeNode::from_node(native(json!({
-            "ai-chat": { "agent": "nodespace", "model": "m" },
-            "ai-chat-native": { "provider": "openai-compat", "messages": [] }
-        })))
+        let message = AiChatMessageNode::from_node(message(
+            "hi",
+            json!({ "ai-chat-message": { "role": "tool_call", "outcome": "done" } }),
+        ))
         .unwrap();
-        chat.turn_status = AiChatTurnStatus::Processing;
-        chat.messages.push(AiChatMessage {
-            role: AiChatMessageRole::User,
-            content: "hi".to_string(),
-            timestamp: None,
-            reasoning: None,
-            completed_writes: Vec::new(),
-            resolved_entities: Vec::new(),
-            question: None,
-            options: Vec::new(),
-            pending_deletions: Vec::new(),
-            outcome: None,
-        });
-        assert_eq!(
-            chat.conversation_patch(),
-            json!({
-                "turn_status": "processing",
-                "messages": [{ "role": "user", "content": "hi" }]
-            })
-        );
+        assert_eq!(message.role, AiChatMessageRole::default());
+        assert_eq!(message.outcome, None);
     }
 
     #[test]
@@ -705,12 +650,13 @@ mod tests {
     }
 
     #[test]
-    fn a_subtype_struct_is_not_borrowed_by_another_type() {
+    fn a_typed_struct_is_not_borrowed_by_another_type() {
         let pty = Node::new("ai-chat-pty".to_string(), "S".to_string(), json!({}));
         assert!(AiChatNativeNode::from_node(pty.clone()).is_err());
         let base = Node::new("ai-chat".to_string(), "S".to_string(), json!({}));
         assert!(AiChatNativeNode::from_node(base.clone()).is_err());
         assert!(AiChatPtyNode::from_node(base).is_err());
+        assert!(AiChatMessageNode::from_node(pty.clone()).is_err());
         assert!(AiChatPtyNode::from_node(pty).is_ok());
     }
 
@@ -734,8 +680,79 @@ mod tests {
                 json!(status.as_str())
             );
         }
-        for role in AiChatMessageRole::ALL {
+        for (role, _) in AiChatMessageRole::ALL {
             assert_eq!(serde_json::to_value(role).unwrap(), json!(role.as_str()));
         }
+        for (outcome, _) in AiChatTurnOutcome::ALL {
+            assert_eq!(
+                serde_json::to_value(outcome).unwrap(),
+                json!(outcome.as_str())
+            );
+        }
+    }
+
+    /// The edge shapes are stored with snake_case keys, and an unknown key is
+    /// refused, not carried.
+    #[test]
+    fn a_wrote_edge_round_trips_its_writes_and_refuses_an_unknown_key() {
+        let edge = AiChatWroteEdge {
+            writes: vec![
+                AiChatWrite {
+                    seq: 0,
+                    tool: "create_node".to_string(),
+                    summary: Some("Buy milk".to_string()),
+                    canonical_args: r#"{"content":"Buy milk"}"#.to_string(),
+                    replaced: Vec::new(),
+                },
+                AiChatWrite {
+                    seq: 1,
+                    tool: "create_relationship".to_string(),
+                    summary: None,
+                    canonical_args: "sha256:abc".to_string(),
+                    replaced: vec!["a -[assignee]-> b".to_string()],
+                },
+            ],
+        };
+        let stored = serde_json::to_value(&edge).unwrap();
+        assert_eq!(
+            stored,
+            json!({ "writes": [
+                {
+                    "seq": 0,
+                    "tool": "create_node",
+                    "summary": "Buy milk",
+                    "canonical_args": r#"{"content":"Buy milk"}"#
+                },
+                {
+                    "seq": 1,
+                    "tool": "create_relationship",
+                    "canonical_args": "sha256:abc",
+                    "replaced": ["a -[assignee]-> b"]
+                }
+            ] })
+        );
+        assert_eq!(
+            serde_json::from_value::<AiChatWroteEdge>(stored).unwrap(),
+            edge
+        );
+        assert!(serde_json::from_value::<AiChatWroteEdge>(json!({
+            "writes": [{ "seq": 0, "tool": "t", "canonical_args": "{}", "nodeId": "x" }]
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<AiChatPendingDeleteEdge>(
+            json!({ "version": 3, "descendant_count": 0, "count": 1 })
+        )
+        .is_err());
+        assert_eq!(
+            serde_json::to_value(AiChatPendingDeleteEdge {
+                version: 3,
+                descendant_count: 2
+            })
+            .unwrap(),
+            json!({ "version": 3, "descendant_count": 2 })
+        );
+        assert!(
+            serde_json::from_value::<AiChatResolvedEdge>(json!({ "tool": "get_node" })).is_ok()
+        );
     }
 }

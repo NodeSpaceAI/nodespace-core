@@ -2282,6 +2282,38 @@ impl Tool {
         }
     }
 
+    /// The node a successful call wrote, as the key of its result that names
+    /// it: what the call's `wrote` edge points at (ADR-088 §3).
+    ///
+    /// `None` for a read, and for a write that leaves no node to point at: a
+    /// delete removes its target, and a conflict resolution changes a conflict
+    /// record, which is not a node.
+    ///
+    /// An exhaustive match, for the same reason [`Tool::write_semantics`] is:
+    /// a write tool added later has to say here where its record goes.
+    pub fn written_node(self) -> Option<WrittenNode> {
+        match self {
+            Tool::CreateNode | Tool::UpdateNode | Tool::UpdateTaskStatus => {
+                Some(WrittenNode::Reported("id"))
+            }
+            Tool::CreateSchema | Tool::UpdateSchema => Some(WrittenNode::Reported("schemaId")),
+            Tool::CreateRelationship => Some(WrittenNode::Anchor("from_id")),
+            Tool::CreateNodesFromMarkdown => Some(WrittenNode::Anchor("root_id")),
+            Tool::MergeConflict => Some(WrittenNode::Anchor("survivor_id")),
+            Tool::DeleteNode | Tool::DismissConflict | Tool::AdoptExistingConflict => None,
+            Tool::SearchNodes
+            | Tool::ResolveQuery
+            | Tool::SearchSemantic
+            | Tool::GetNode
+            | Tool::GetRelatedNodes
+            | Tool::SearchSkills
+            | Tool::RouteClarify
+            | Tool::ListConflicts
+            | Tool::GetConflict
+            | Tool::GetWorkflowState => None,
+        }
+    }
+
     /// Whether this tool changes graph state.
     pub fn is_write(self) -> bool {
         !matches!(self.write_semantics(), WriteSemantics::Read)
@@ -2440,6 +2472,33 @@ impl Tool {
 /// `routing::tools_with_available_guidance` for the availability check.
 pub fn requires_routed_guidance_tool(tool: &str) -> bool {
     Tool::from_name(tool).is_some_and(Tool::requires_routed_guidance)
+}
+
+/// Where a write tool's result names the node it wrote. See
+/// [`Tool::written_node`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WrittenNode {
+    /// The result reports the node it produced or changed under this key, and
+    /// the model is shown that id as the write's node.
+    Reported(&'static str),
+    /// The write has no node of its own to report (a relationship, a merge, a
+    /// whole imported subtree): its record is kept on the node under this key.
+    Anchor(&'static str),
+}
+
+impl WrittenNode {
+    /// The result key naming the node.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Reported(key) | Self::Anchor(key) => key,
+        }
+    }
+}
+
+/// The node a successful call of `tool` wrote, by wire name. `None` for an
+/// unrecognised name.
+pub fn written_node(tool: &str) -> Option<WrittenNode> {
+    Tool::from_name(tool).and_then(Tool::written_node)
 }
 
 /// What a repeat of a tool call means for graph state.

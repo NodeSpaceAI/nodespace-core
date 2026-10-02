@@ -23,6 +23,11 @@ export type CoreTypeEntry = {
    */
   mentionable: boolean;
   /**
+   * Left out of default queries, counts and lists, a page outline among
+   * them (the effective rule: it widens down the chain).
+   */
+  excludedFromDefaultQueries: boolean;
+  /**
    * Whether the type's typed fields are written through a typed update
    * command. A type without one writes them as a `properties` patch keyed
    * by storage name.

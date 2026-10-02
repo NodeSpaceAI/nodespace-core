@@ -39,6 +39,7 @@ pub enum CoreNodeType {
     AiChat,
     AiChatNative,
     AiChatPty,
+    AiChatMessage,
     Tool,
 }
 
@@ -156,6 +157,12 @@ impl ParticipationRules {
             ..self
         }
     }
+    const fn excluded_from_default_queries(self) -> Self {
+        Self {
+            excluded_from_default_queries: true,
+            ..self
+        }
+    }
 }
 
 /// How a core type travels on the wire.
@@ -194,7 +201,7 @@ pub struct CoreTypeInfo {
 
 impl CoreNodeType {
     /// Every core type, in registry order.
-    pub const ALL: [CoreNodeType; 23] = [
+    pub const ALL: [CoreNodeType; 24] = [
         CoreNodeType::Text,
         CoreNodeType::Header,
         CoreNodeType::CodeBlock,
@@ -217,6 +224,7 @@ impl CoreNodeType {
         CoreNodeType::AiChat,
         CoreNodeType::AiChatNative,
         CoreNodeType::AiChatPty,
+        CoreNodeType::AiChatMessage,
         CoreNodeType::Tool,
     ];
 
@@ -370,13 +378,11 @@ impl CoreNodeType {
                     WireShape::Typed { update: false },
                 )
             },
-            // Structured while a conversation's messages are a nested
-            // `messages[]` field.
             Self::AiChatNative => CoreTypeInfo {
                 parent: Some(Self::AiChat),
                 ..entry(
                     "ai-chat-native",
-                    Structured,
+                    Flat,
                     Title,
                     NOT_EMBEDDED,
                     WireShape::Typed { update: false },
@@ -389,6 +395,23 @@ impl CoreNodeType {
                     Flat,
                     Title,
                     NOT_EMBEDDED,
+                    WireShape::Typed { update: false },
+                )
+            },
+            // A message of a native chat (ADR-088 §3): a child of its chat,
+            // in conversation order, and never a node on its own.
+            Self::AiChatMessage => CoreTypeInfo {
+                structure: StructuralRules {
+                    children: ChildrenRule::None,
+                    parent: ParentRule::MustHaveParentOf(&[Self::AiChatNative]),
+                },
+                ..entry(
+                    "ai-chat-message",
+                    Flat,
+                    Body,
+                    NOT_EMBEDDED
+                        .not_mentionable()
+                        .excluded_from_default_queries(),
                     WireShape::Typed { update: false },
                 )
             },
@@ -521,6 +544,22 @@ impl CoreNodeType {
         !self.is_a(Self::AiChat)
     }
 
+    /// Whether another node may reference a node of this type. No node may
+    /// reference a chat (ADR-061 §8) or one of its messages (ADR-088 §3): a
+    /// mention of one creates no edge, and no relationship may target one.
+    /// Placing one under a parent with `has_child` is not a reference.
+    pub fn accepts_inbound_references(self) -> bool {
+        !self.is_a(Self::AiChat) && self != Self::AiChatMessage
+    }
+
+    /// The core types no node may reference.
+    pub fn unreferenceable() -> Vec<Self> {
+        Self::ALL
+            .into_iter()
+            .filter(|t| !t.accepts_inbound_references())
+            .collect()
+    }
+
     /// Whether the type is titled by its content at any depth.
     pub fn always_titled(self) -> bool {
         self.chain().into_iter().any(|t| t.info().always_titled)
@@ -608,6 +647,7 @@ mod tests {
                 | CoreNodeType::AiChat
                 | CoreNodeType::AiChatNative
                 | CoreNodeType::AiChatPty
+                | CoreNodeType::AiChatMessage
                 | CoreNodeType::Tool => {}
             }
         }
@@ -696,8 +736,13 @@ mod tests {
                 CoreNodeType::Table,
                 CoreNodeType::DatabaseSettings,
                 CoreNodeType::Query,
+                CoreNodeType::AiChatMessage,
                 CoreNodeType::Tool
             ]
+        );
+        assert_eq!(
+            CoreNodeType::AiChatMessage.structure().parent,
+            ParentRule::MustHaveParentOf(&[CoreNodeType::AiChatNative])
         );
         // A chat holds its messages and may hold other nodes too.
         assert_eq!(CoreNodeType::AiChat.structure(), StructuralRules::ANY);
@@ -708,7 +753,21 @@ mod tests {
                 CoreNodeType::Schema,
                 CoreNodeType::AiChat,
                 CoreNodeType::AiChatNative,
-                CoreNodeType::AiChatPty
+                CoreNodeType::AiChatPty,
+                CoreNodeType::AiChatMessage
+            ]
+        );
+        assert_eq!(
+            CoreNodeType::excluded_from_default_queries(),
+            vec![CoreNodeType::AiChatMessage]
+        );
+        assert_eq!(
+            CoreNodeType::unreferenceable(),
+            vec![
+                CoreNodeType::AiChat,
+                CoreNodeType::AiChatNative,
+                CoreNodeType::AiChatPty,
+                CoreNodeType::AiChatMessage
             ]
         );
         assert_eq!(
@@ -737,5 +796,22 @@ mod tests {
             CoreNodeType::nearest(&["ai-chat-pty", "ai-chat"]),
             Some(CoreNodeType::AiChatPty)
         );
+    }
+
+    #[test]
+    fn a_chat_message_is_a_flat_leaf_that_takes_part_in_nothing() {
+        let message = CoreNodeType::AiChatMessage;
+        assert_eq!(message.kind(), CoreTypeKind::Concrete);
+        assert_eq!(message.category(), TypeCategory::Flat);
+        assert_eq!(message.content_role(), ContentRole::Body);
+        assert!(!message.is_a(CoreNodeType::AiChat));
+        let participation = message.participation();
+        assert!(!participation.embedded);
+        assert!(!participation.mentionable);
+        assert!(participation.excluded_from_default_queries);
+        assert!(!message.accepts_inbound_references());
+        assert!(CoreNodeType::Task.accepts_inbound_references());
+        // The messages left `ai-chat-native`: every field it keeps is a scalar.
+        assert_eq!(CoreNodeType::AiChatNative.category(), TypeCategory::Flat);
     }
 }

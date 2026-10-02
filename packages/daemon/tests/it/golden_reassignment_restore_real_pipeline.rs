@@ -31,7 +31,8 @@ use nodespace_agent::agent_types::{
     ToolDefinition, ToolExecutionRecord,
 };
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
-use nodespace_core::models::{AiChatMessage, AiChatMessageRole, AiChatResolvedEntity};
+use nodespace_core::models::AiChatMessageRole;
+use nodespace_daemon::services::chat_messages::{ResolvedEntity, StoredMessage};
 use nodespace_daemon::services::local_agent_service::{
     completed_writes_from, node_history_from_messages,
 };
@@ -95,15 +96,15 @@ fn search_nodes_tool() -> ToolDefinition {
     }
 }
 
-fn message(role: AiChatMessageRole, content: &str) -> AiChatMessage {
-    AiChatMessage {
+fn message(role: AiChatMessageRole, content: &str) -> StoredMessage {
+    StoredMessage {
         role,
         content: content.to_string(),
         timestamp: None,
         reasoning: None,
         completed_writes: Vec::new(),
         resolved_entities: Vec::new(),
-        question: None,
+        id: String::new(),
         options: Vec::new(),
         pending_deletions: Vec::new(),
         outcome: None,
@@ -113,7 +114,7 @@ fn message(role: AiChatMessageRole, content: &str) -> AiChatMessage {
 /// Turn 1 as the real agent loop records it: the lookups that resolved Bob
 /// and the task, then the reassignment whose result names Alice's evicted
 /// edge. Alice was never looked up, so her id exists only in `replaced`.
-fn reassignment_turn() -> Vec<AiChatMessage> {
+fn reassignment_turn() -> Vec<StoredMessage> {
     let writes = completed_writes_from(&[ToolExecutionRecord {
         tool_call_id: "tc_create_relationship".into(),
         name: "create_relationship".into(),
@@ -137,12 +138,14 @@ fn reassignment_turn() -> Vec<AiChatMessage> {
     );
     assistant.completed_writes = writes;
     assistant.resolved_entities = vec![
-        AiChatResolvedEntity {
+        ResolvedEntity {
+            tool: "search_nodes".to_string(),
             node_id: BOB.into(),
             title: Some("Bob".into()),
             node_type: Some("person".into()),
         },
-        AiChatResolvedEntity {
+        ResolvedEntity {
+            tool: "search_nodes".to_string(),
             node_id: TASK.into(),
             title: Some("Launch checklist".into()),
             node_type: Some("task".into()),

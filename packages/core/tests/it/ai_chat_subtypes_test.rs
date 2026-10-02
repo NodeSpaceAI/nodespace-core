@@ -184,8 +184,7 @@ async fn a_native_chat_stores_each_field_in_its_declaring_bucket() {
         json!({
             "provider": "openai-compat",
             "turn_status": "idle",
-            "context_tokens": 0,
-            "messages": []
+            "context_tokens": 0
         })
     );
 
@@ -194,7 +193,6 @@ async fn a_native_chat_stores_each_field_in_its_declaring_bucket() {
     assert_eq!(chat.base.model.as_deref(), Some("gemma-4-e4b"));
     assert_eq!(chat.provider, AiChatProvider::OpenaiCompat);
     assert_eq!(chat.turn_status, AiChatTurnStatus::Idle);
-    assert!(chat.messages.is_empty());
 }
 
 #[tokio::test]
@@ -232,7 +230,7 @@ async fn each_subtype_travels_as_its_own_typed_struct() {
     assert_eq!(native["agent"], "nodespace");
     assert_eq!(native["provider"], "native");
     assert_eq!(native["turnStatus"], "idle");
-    assert_eq!(native["messages"], json!([]));
+    assert!(native.get("messages").is_none());
     assert!(native.get("sessionStatus").is_none());
     assert_eq!(native["properties"], json!({}));
 
@@ -263,8 +261,10 @@ async fn a_chat_takes_only_its_own_declared_fields() {
     let (svc, _tmp) = test_service().await;
 
     for (subtype, agent, foreign) in [
-        // A native chat has no session state; a terminal chat no messages.
+        // A native chat has no session state, and no chat holds its
+        // messages as a field: they are its children.
         (NATIVE, "nodespace", json!({ "session_status": "active" })),
+        (NATIVE, "nodespace", json!({ "messages": [] })),
         (NATIVE, "nodespace", json!({ "transcript": "$ ls" })),
         (PTY, "codex", json!({ "messages": [] })),
         (PTY, "codex", json!({ "provider": "native" })),

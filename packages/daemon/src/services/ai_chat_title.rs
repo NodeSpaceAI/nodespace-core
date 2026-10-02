@@ -36,9 +36,9 @@
 //! # Isolation from the live conversation
 //!
 //! Generation builds its own [`InferenceRequest`] with `tools: None` and a
-//! single user message, and calls the engine directly — no session, no
-//! `properties.messages` write-back, nothing appended to the conversation. It
-//! reads the messages only to render a prompt string. This is the same shape
+//! single user message, and calls the engine directly — no session, and
+//! nothing appended to the conversation. It reads the messages only to render
+//! a prompt string. This is the same shape
 //! the ReAct loop's own history summarization uses.
 
 use std::sync::Arc;
@@ -48,6 +48,8 @@ use nodespace_agent::agent_types::{
 };
 use nodespace_agent::local_agent::prompt_templates::title_generation_prompt;
 use nodespace_core::models::{AiChatMessageRole, AiChatNativeNode, NodeUpdate};
+
+use crate::services::chat_messages::StoredMessage;
 use nodespace_core::services::{NodeService, NodeServiceError};
 
 /// The title a new ai-chat node carries until it is titled.
@@ -112,8 +114,8 @@ pub fn is_untitled(content: &str) -> bool {
 }
 
 /// Whether this chat should be titled: enough conversation, and no title yet.
-pub fn needs_title(chat: &AiChatNativeNode) -> bool {
-    is_untitled(&chat.envelope.content) && chat.messages.len() >= TITLE_MESSAGE_THRESHOLD
+pub fn needs_title(chat: &AiChatNativeNode, messages: &[StoredMessage]) -> bool {
+    is_untitled(&chat.envelope.content) && messages.len() >= TITLE_MESSAGE_THRESHOLD
 }
 
 /// Render the opening of a conversation as the prompt's input block.
@@ -121,8 +123,8 @@ pub fn needs_title(chat: &AiChatNativeNode) -> bool {
 /// Only `user` and `assistant` messages are included: `system` messages carry
 /// workspace scaffolding rather than anything the conversation is about, and
 /// feeding them in produces titles about NodeSpace itself.
-pub fn render_for_title(chat: &AiChatNativeNode) -> String {
-    chat.messages
+pub fn render_for_title(messages: &[StoredMessage]) -> String {
+    messages
         .iter()
         .filter(|m| m.role == AiChatMessageRole::User || m.role == AiChatMessageRole::Assistant)
         .take(TITLE_CONTEXT_MESSAGES)
@@ -194,8 +196,9 @@ pub fn sanitize_title(raw: &str) -> Option<String> {
 pub async fn generate_title(
     engine: &Arc<dyn ChatInferenceEngine>,
     chat: &AiChatNativeNode,
+    messages: &[StoredMessage],
 ) -> Option<String> {
-    let conversation = render_for_title(chat);
+    let conversation = render_for_title(messages);
     if conversation.trim().is_empty() {
         return None;
     }
@@ -297,25 +300,13 @@ pub async fn write_title_if_still_untitled(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nodespace_core::models::AiChatMessage;
     use nodespace_core::models::Node;
 
-    fn message(role: AiChatMessageRole, content: &str) -> AiChatMessage {
-        AiChatMessage {
-            role,
-            content: content.to_string(),
-            timestamp: None,
-            reasoning: None,
-            completed_writes: Vec::new(),
-            resolved_entities: Vec::new(),
-            question: None,
-            options: Vec::new(),
-            pending_deletions: Vec::new(),
-            outcome: None,
-        }
+    fn message(role: AiChatMessageRole, content: &str) -> StoredMessage {
+        StoredMessage::text(role, content)
     }
 
-    fn chat(content: &str, messages: Vec<AiChatMessage>) -> AiChatNativeNode {
+    fn chat(content: &str) -> AiChatNativeNode {
         AiChatNativeNode::from_node(Node::new_with_id(
             "920d4578-c2d0-54ad-8f1a-69c1db594eb9".to_string(),
             "ai-chat-native".to_string(),
@@ -323,7 +314,6 @@ mod tests {
             serde_json::json!({
                 "agent": "nodespace",
                 "model": "test-model",
-                "messages": messages,
             }),
         ))
         .expect("a native chat")
@@ -361,37 +351,31 @@ mod tests {
             message(AiChatMessageRole::Assistant, "b"),
             message(AiChatMessageRole::User, "c"),
         ];
-        assert!(needs_title(&chat(UNTITLED_CHAT_TITLE, msgs.clone())));
+        assert!(needs_title(&chat(UNTITLED_CHAT_TITLE), &msgs));
 
         // Enough messages, but the user named it.
-        assert!(!needs_title(&chat("My chat", msgs)));
+        assert!(!needs_title(&chat("My chat"), &msgs));
 
         // Untitled, but too early.
-        assert!(!needs_title(&chat(
-            UNTITLED_CHAT_TITLE,
-            vec![message(AiChatMessageRole::User, "a")]
-        )));
+        assert!(!needs_title(
+            &chat(UNTITLED_CHAT_TITLE),
+            &[message(AiChatMessageRole::User, "a")]
+        ));
     }
 
     #[test]
     fn render_skips_system_messages_and_caps_length() {
-        let rendered = render_for_title(&chat(
-            UNTITLED_CHAT_TITLE,
-            vec![
-                message(AiChatMessageRole::System, "workspace scaffolding"),
-                message(AiChatMessageRole::User, "how do I reset my password"),
-                message(AiChatMessageRole::Assistant, "Open settings."),
-            ],
-        ));
+        let rendered = render_for_title(&[
+            message(AiChatMessageRole::System, "workspace scaffolding"),
+            message(AiChatMessageRole::User, "how do I reset my password"),
+            message(AiChatMessageRole::Assistant, "Open settings."),
+        ]);
         assert!(!rendered.contains("scaffolding"));
         assert!(rendered.contains("reset my password"));
         assert!(rendered.starts_with("user:"));
 
         let long = "x".repeat(TITLE_CONTEXT_CHARS_PER_MESSAGE * 3);
-        let rendered = render_for_title(&chat(
-            UNTITLED_CHAT_TITLE,
-            vec![message(AiChatMessageRole::User, &long)],
-        ));
+        let rendered = render_for_title(&[message(AiChatMessageRole::User, &long)]);
         assert!(rendered.chars().count() <= TITLE_CONTEXT_CHARS_PER_MESSAGE + "user: ".len());
     }
 

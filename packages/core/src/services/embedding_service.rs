@@ -1528,17 +1528,12 @@ mod tests {
         let chat_node = Node::new(
             "ai-chat-native".to_string(),
             "Chat about testing".to_string(),
-            json!({
-                "messages": [
-                    {"role": "user", "content": "How do I write tests?"},
-                    {"role": "assistant", "content": "Here is a testing guide."}
-                ]
-            }),
+            json!({ "summary": "How to write tests" }),
         );
         let chat_behavior = behaviors.get("ai-chat-native").unwrap();
         assert!(
             chat_behavior.get_embeddable_content(&chat_node).is_none(),
-            "ai-chat should never be embeddable, even with messages"
+            "ai-chat should never be embeddable"
         );
 
         // --- CustomNodeBehavior fallback ---

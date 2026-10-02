@@ -152,9 +152,10 @@ pub struct SchemaDeclarationChanges {
 /// seeding one row per mentioning source and walking `has_child` upward from
 /// each seed in lockstep (one recursive step per depth level, not per source)
 /// until each branch runs out of parents. `top` keeps only the deepest row per
-/// source (its root), unless the source is itself a task or a chat (or of a
-/// type extending one), which is its own container. Takes one bound parameter
-/// (`?1`, the target node id).
+/// source (its root), unless the source is itself a task, a chat or a chat
+/// message (or of a type extending one), which is its own container: a
+/// message is reported as itself so a reader can open its chat at that
+/// message. Takes one bound parameter (`?1`, the target node id).
 ///
 /// IMPORTANT: the recursive step is written as a correlated subquery
 /// (`(SELECT r.in_node FROM relationship r WHERE r.out_node = w.nid AND
@@ -199,7 +200,8 @@ FROM top t WHERE t.rn = 1"#,
             "(SELECT node_type FROM node WHERE id = t.sid)",
             &[
                 crate::models::CoreNodeType::Task,
-                crate::models::CoreNodeType::AiChat
+                crate::models::CoreNodeType::AiChat,
+                crate::models::CoreNodeType::AiChatMessage,
             ],
         )
     )
@@ -334,11 +336,11 @@ impl SqliteStore {
     }
 
     /// The ids of the nodes that mention `node_id`. Backlinks are a list: an
-    /// archived node is not in it (ADR-087 §2).
+    /// archived node is not in it (ADR-087 §2). A chat message is.
     pub async fn get_incoming_mentions(&self, node_id: &str) -> Result<Vec<String>> {
         let sql = format!(
             "SELECT r.in_node FROM relationship r JOIN node n ON n.id = r.in_node WHERE r.out_node = ?1 AND r.relationship_type = 'mentions'{}",
-            Self::and_default_query_conditions("n", false)
+            Self::and_participates("n")
         );
         let mut rows = self
             .read()
@@ -393,11 +395,11 @@ impl SqliteStore {
         for chunk in container_id_list.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
             // Backlinks are a list: an archived container is not in it
-            // (ADR-087 §2).
+            // (ADR-087 §2). A chat message is.
             let sql = format!(
                 "SELECT id, title, node_type FROM node WHERE id IN ({}){}",
                 placeholders.join(", "),
-                Self::and_default_query_conditions("", false)
+                Self::and_participates("")
             );
             let params: Vec<libsql::Value> = chunk
                 .iter()
@@ -1664,11 +1666,14 @@ impl SqliteStore {
         let mut ai_chats: std::collections::HashSet<String> = std::collections::HashSet::new();
         for chunk in endpoint_ids.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            // Whether an endpoint is a chat is resolved through its type's
-            // chain, as the single-edge refusal resolves it.
+            // Whether an endpoint may be referenced is resolved through its
+            // type's chain, as the single-edge refusal resolves it.
             let sql = format!(
                 "SELECT id, {} FROM node WHERE id IN ({})",
-                crate::db::schema::is_a_sql("node_type", &[crate::models::CoreNodeType::AiChat]),
+                crate::db::schema::is_a_sql(
+                    "node_type",
+                    &crate::models::CoreNodeType::unreferenceable()
+                ),
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk
@@ -2046,6 +2051,57 @@ impl SqliteStore {
             let properties: serde_json::Value =
                 serde_json::from_str(&props_str).unwrap_or_else(|_| serde_json::json!({}));
             out.push((node, properties));
+        }
+        Ok(out)
+    }
+
+    /// The edges of the given relationship types that leave the `has_child`
+    /// children of `parent_id`, in the order they were created, each as
+    /// `(child id, relationship type, target node, edge properties)`.
+    ///
+    /// One read for a whole conversation: a chat's messages are its children,
+    /// and what each message wrote, looked up or asked to delete is on edges
+    /// from it (ADR-088 §3).
+    pub async fn get_child_edges(
+        &self,
+        parent_id: &str,
+        rel_types: &[&str],
+    ) -> Result<Vec<(String, String, Node, serde_json::Value)>> {
+        if rel_types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> = (2..rel_types.len() + 2).map(|i| format!("?{i}")).collect();
+        // `n.*` is the nine `node` columns (indices 0-8, as `row_to_node`
+        // reads them); the edge's columns follow.
+        let sql = format!(
+            "SELECT n.*, e.in_node, e.relationship_type, e.properties \
+             FROM relationship c \
+             JOIN relationship e ON e.in_node = c.out_node \
+             JOIN node n ON n.id = e.out_node \
+             WHERE c.in_node = ?1 AND c.relationship_type = 'has_child' \
+               AND e.relationship_type IN ({}) \
+             ORDER BY e.rowid ASC",
+            placeholders.join(", ")
+        );
+        let params: Vec<libsql::Value> = std::iter::once(parent_id)
+            .chain(rel_types.iter().copied())
+            .map(|value| libsql::Value::Text(value.to_string()))
+            .collect();
+        let mut rows = self
+            .read()
+            .await?
+            .query(&sql, params)
+            .await
+            .context("Failed to get the edges of a node's children")?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let node = Self::row_to_node(&row)?;
+            let source: String = row.get(9)?;
+            let rel_type: String = row.get(10)?;
+            let props_str: String = row.get(11)?;
+            let properties: serde_json::Value =
+                serde_json::from_str(&props_str).unwrap_or_else(|_| serde_json::json!({}));
+            out.push((source, rel_type, node, properties));
         }
         Ok(out)
     }

@@ -87,7 +87,6 @@ describe('SharedNodeStore', () => {
         aiChatNode.id,
         {
           properties: {
-            messages: [],
             turn_status: 'idle',
             provider: 'native',
             model: 'm1'
@@ -101,7 +100,6 @@ describe('SharedNodeStore', () => {
       expect(node.provider).toBe('native');
       expect(node.model).toBe('m1');
       expect(node.turnStatus).toBe('idle');
-      expect(Array.isArray(node.messages)).toBe(true);
     });
 
     it('preserves top-level provider/model when a later write omits them', () => {
@@ -113,16 +111,15 @@ describe('SharedNodeStore', () => {
         skip
       );
 
-      // Sending a message writes messages+turn_status but NOT provider/model.
+      // Sending a message writes turn_status but NOT provider/model.
       store.updateNode(
         aiChatNode.id,
-        { properties: { messages: [{ role: 'user', content: 'hi' }], turn_status: 'processing' } },
+        { properties: { turn_status: 'processing' } },
         viewerSource,
         skip
       );
 
       const node = store.getNode(aiChatNode.id) as unknown as Record<string, unknown>;
-      expect((node.messages as unknown[]).length).toBe(1);
       expect(node.turnStatus).toBe('processing');
       // The omitted-field guard must leave these intact
       expect(node.provider).toBe('native');

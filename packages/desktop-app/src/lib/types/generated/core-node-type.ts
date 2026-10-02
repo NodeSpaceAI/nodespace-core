@@ -26,4 +26,5 @@ export type CoreNodeType =
   | 'ai-chat'
   | 'ai-chat-native'
   | 'ai-chat-pty'
+  | 'ai-chat-message'
   | 'tool';

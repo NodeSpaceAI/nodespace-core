@@ -1,5 +1,4 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
-import type { AiChatMessage } from './ai-chat-message';
 import type { AiChatProvider } from './ai-chat-provider';
 import type { AiChatTurnStatus } from './ai-chat-turn-status';
 import type { NodeReference } from './node-reference';
@@ -14,10 +13,6 @@ export type AiChatNativeNode = {
    * Approximate token count of the conversation's context.
    */
   contextTokens: number;
-  /**
-   * The conversation, in order.
-   */
-  messages: Array<AiChatMessage>;
   id: string;
   nodeType: string;
   content: string;

@@ -4,11 +4,12 @@
 //!
 //! There is no dedicated "send chat message" Tauri command or gRPC RPC.
 //! Per `scripts/aichat.ts`'s doc comment (the existing CLI harness for this
-//! same mechanism): the daemon's event watcher runs an inference turn when
-//! an `ai-chat-native` node has `turn_status: "processing"` AND a trailing
-//! `role: "user"` message. So a turn is: create/update the node with that
-//! shape, then poll `get_node` until `turn_status` returns to `"idle"` with a
-//! new assistant message appended.
+//! same mechanism): a chat's messages are its `ai-chat-message` children, and
+//! the daemon's event watcher runs an inference turn when an `ai-chat-native`
+//! node has `turn_status: "processing"` AND its last message is the user's.
+//! So a turn is: create the user's message under the chat, set the status,
+//! then poll until `turn_status` returns to `"idle"` with a new assistant
+//! message among the chat's children.
 //!
 //! No lightweight stub/test-double model backend exists anywhere in this
 //! codebase (confirmed: `ChatInferenceEngine`'s only implementors are the
@@ -26,7 +27,9 @@
 
 use std::time::Duration;
 
-use nodespace_app_lib::commands::nodes::{create_node, get_node, update_node, CreateNodeInput};
+use nodespace_app_lib::commands::nodes::{
+    create_node, get_children, get_node, update_node, CreateNodeInput,
+};
 use nodespace_app_lib::types::NodeUpdate;
 use nodespace_app_test_support::{
     model_file_available, SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT,
@@ -43,12 +46,7 @@ const MODEL_ID: &str = "gemma-4-e4b-q4km";
 // mapping hasn't changed.
 const MODEL_FILENAME: &str = "gemma-4-E4B-it-Q4_K_M.gguf";
 
-fn ai_chat_input(
-    id: &str,
-    provider_model: &str,
-    turn_status: &str,
-    messages: serde_json::Value,
-) -> CreateNodeInput {
+fn ai_chat_input(id: &str, provider_model: &str, turn_status: &str) -> CreateNodeInput {
     CreateNodeInput {
         id: id.to_string(),
         node_type: "ai-chat-native".to_string(),
@@ -59,10 +57,23 @@ fn ai_chat_input(
             "agent": "nodespace",
             "provider": "native",
             "model": provider_model,
-            "turn_status": turn_status,
-            "messages": messages
+            "turn_status": turn_status
         }),
     }
+}
+
+/// The chat's messages: its `ai-chat-message` children, in order, as the
+/// frontend receives them.
+async fn chat_messages(
+    state: &tauri::State<'_, nodespace_app_lib::services::GrpcClient>,
+    chat_id: &str,
+) -> Vec<serde_json::Value> {
+    get_children(state.clone(), chat_id.to_string())
+        .await
+        .expect("get_children failed")
+        .into_iter()
+        .filter(|child| child["nodeType"] == json!("ai-chat-message"))
+        .collect()
 }
 
 async fn poll_until_idle_with_new_assistant_reply(
@@ -79,7 +90,7 @@ async fn poll_until_idle_with_new_assistant_reply(
             .expect("node must exist");
 
         let turn_status = node["turnStatus"].as_str().unwrap_or_default();
-        let messages = node["messages"].as_array().cloned().unwrap_or_default();
+        let messages = chat_messages(state, id).await;
         let assistant_count = messages
             .iter()
             .filter(|m| m["role"] == json!("assistant"))
@@ -144,34 +155,48 @@ async fn ai_chat_send_reaches_idle_with_no_stuck_processing_state() {
     }
 
     let id = uuid::Uuid::new_v4().to_string();
+    create_node(state.clone(), ai_chat_input(&id, MODEL_ID, "idle"))
+        .await
+        .expect("create ai-chat node failed");
+
+    // "Send a message": create the user's message under the chat and flip
+    // turn_status to processing — the exact mechanism scripts/aichat.ts's
+    // cmdSend documents, and the exact key shape the real frontend's
+    // handleSend actually sends: the declared snake_case `turn_status`.
     create_node(
         state.clone(),
-        ai_chat_input(&id, MODEL_ID, "idle", json!([])),
+        CreateNodeInput {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_type: "ai-chat-message".to_string(),
+            content: "Reply with exactly one word: OK".to_string(),
+            parent_id: Some(id.clone()),
+            insert_position: None,
+            properties: json!({ "role": "user" }),
+        },
     )
     .await
-    .expect("create ai-chat node failed");
+    .expect("create user message failed");
 
-    // "Send a message": append a user message and flip turn_status to
-    // processing — the exact mechanism scripts/aichat.ts's cmdSend
-    // documents, and the exact key shape the real frontend's handleSend
-    // actually sends: the declared snake_case `turn_status`. This matters
-    // more than it looks: a chat has no dedicated typed write command like
-    // task does, so the generic updateNode path carries the frontend's own
-    // keys, and only the schema's declared names are read back
-    // (`AiChatNativeNode::from_node`). The chat's bucket is closed, so a
+    // The key shape matters more than it looks: a chat has no dedicated typed
+    // write command like task does, so the generic updateNode path carries
+    // the frontend's own keys, and only the schema's declared names are read
+    // back (`AiChatNativeNode::from_node`). The chat's bucket is closed, so a
     // camelCase `turnStatus` is refused rather than stored unread.
+    let version = get_node(state.clone(), id.clone())
+        .await
+        .expect("get_node failed")
+        .expect("node must exist")["version"]
+        .as_i64()
+        .expect("a chat has a version");
     let after_send = update_node(
         state.clone(),
         id.clone(),
-        1,
+        version,
         NodeUpdate {
             properties: Some(json!({
                 "provider": "native",
                 "model": MODEL_ID,
-                "turn_status": "processing",
-                "messages": [
-                    { "role": "user", "content": "Reply with exactly one word: OK" }
-                ]
+                "turn_status": "processing"
             })),
             ..Default::default()
         },
@@ -195,9 +220,7 @@ async fn ai_chat_send_reaches_idle_with_no_stuck_processing_state() {
         poll_until_idle_with_new_assistant_reply(&state, &id, 0, Duration::from_secs(300)).await;
 
     assert_eq!(final_node["turnStatus"], json!("idle"));
-    let messages = final_node["messages"]
-        .as_array()
-        .expect("messages must be an array");
+    let messages = chat_messages(&state, &id).await;
     let assistant_reply = messages
         .iter()
         .rev()

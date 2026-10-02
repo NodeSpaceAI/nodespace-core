@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   isAiChatNode,
+  isAiChatMessageNode,
   isAiChatNativeNode,
   isAiChatPtyNode,
+  nodeToAiChatMessageNode,
   nodeToAiChatNativeNode,
-  nodeToAiChatPtyNode,
-  type AiChatMessage
+  nodeToAiChatPtyNode
 } from '$lib/types/ai-chat-node';
 import type { Node } from '$lib/types/node';
 
@@ -45,6 +46,53 @@ describe('chat node guards', () => {
   });
 });
 
+describe('chat message node', () => {
+  it('isAiChatMessageNode matches only the message type', () => {
+    expect(isAiChatMessageNode(makeNode({ nodeType: 'ai-chat-message' }))).toBe(true);
+    expect(isAiChatMessageNode(makeNode({ nodeType: 'ai-chat-native' }))).toBe(false);
+    expect(isAiChatMessageNode(makeNode({ nodeType: 'text' }))).toBe(false);
+  });
+
+  it('nodeToAiChatMessageNode fills the role default and leaves optional fields unset', () => {
+    const message = nodeToAiChatMessageNode(
+      makeNode({ id: 'm1', nodeType: 'ai-chat-message', content: 'hi there' })
+    );
+    expect(message.id).toBe('m1');
+    expect(message.content).toBe('hi there');
+    expect(message.role).toBe('user');
+    expect(message.timestamp).toBeUndefined();
+    expect(message.reasoning).toBeUndefined();
+    expect(message.outcome).toBeUndefined();
+    expect(message.options).toBeUndefined();
+  });
+
+  it('nodeToAiChatMessageNode carries the declared fields when present', () => {
+    const message = nodeToAiChatMessageNode(
+      makeNode({
+        nodeType: 'ai-chat-message',
+        role: 'assistant',
+        timestamp: '2026-01-01T00:00:05Z',
+        reasoning: 'thinking',
+        outcome: 'clarified',
+        options: ['a', 'b']
+      })
+    );
+    expect(message).toMatchObject({
+      role: 'assistant',
+      timestamp: '2026-01-01T00:00:05Z',
+      reasoning: 'thinking',
+      outcome: 'clarified',
+      options: ['a', 'b']
+    });
+  });
+
+  it('nodeToAiChatMessageNode drops an options value that is not an array', () => {
+    expect(
+      nodeToAiChatMessageNode(makeNode({ nodeType: 'ai-chat-message', options: 'a' })).options
+    ).toBeUndefined();
+  });
+});
+
 describe('nodeToAiChatNativeNode', () => {
   it('passes through id, content, version, createdAt, modifiedAt verbatim', () => {
     const chat = nodeToAiChatNativeNode(
@@ -72,19 +120,11 @@ describe('nodeToAiChatNativeNode', () => {
     expect(chat.provider).toBe('native');
     expect(chat.turnStatus).toBe('idle');
     expect(chat.contextTokens).toBe(0);
-    expect(chat.messages).toEqual([]);
   });
 
-  it('defaults messages to [] when present but not an array', () => {
-    expect(nodeToAiChatNativeNode(makeNode({ messages: 'not-an-array' })).messages).toEqual([]);
-  });
-
-  it('preserves a valid messages array', () => {
-    const messages: AiChatMessage[] = [
-      { role: 'user', content: 'hi' },
-      { role: 'assistant', content: 'hello there' }
-    ];
-    expect(nodeToAiChatNativeNode(makeNode({ messages })).messages).toEqual(messages);
+  it('carries no messages field: a chat\'s messages are its child nodes', () => {
+    const chat = nodeToAiChatNativeNode(makeNode({ messages: [{ role: 'user', content: 'hi' }] }));
+    expect('messages' in chat).toBe(false);
   });
 
   it('carries through the declared fields when present', () => {

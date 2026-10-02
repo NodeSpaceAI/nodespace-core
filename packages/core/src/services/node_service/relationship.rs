@@ -45,6 +45,17 @@ impl CreatedRelationship {
     }
 }
 
+/// A relationship to create from a node being created. See
+/// [`NodeService::create_node_with_relationships`].
+#[derive(Debug, Clone)]
+pub struct NewRelationship {
+    /// The declared relationship's name.
+    pub name: String,
+    pub target_id: String,
+    /// The edge's fields.
+    pub edge_data: serde_json::Value,
+}
+
 /// An invariant-rule dispatch a relationship write owes, deferred until the
 /// whole write has landed: the edge's forward source, and the
 /// `RelationshipCreated`/`RelationshipDeleted` event describing the change.
@@ -54,28 +65,34 @@ struct PendingRelationshipDispatch {
 }
 
 impl NodeService {
-    /// Refuse any edge whose (stored) target is an `ai-chat` node, or a node
-    /// of a type extending `ai-chat`.
+    /// Refuse any edge whose (stored) target is an `ai-chat` node, one of a
+    /// chat's messages, or a node of a type extending either.
     ///
-    /// No node may reference an ai-chat node (ADR-061 §8): a reference *to*
-    /// one — a `mentions` edge from an `@mention`/`[[wikilink]]`, a provenance
-    /// link from a node an agent created, or any schema-declared relationship —
-    /// is refused at creation, so there is never a chat reference to render. A
-    /// chat stays free to be an edge's *source*, and a `has_child` onto one is
-    /// outline placement — a chat nested under a page — not a reference, so it
-    /// is allowed.
+    /// No node may reference an ai-chat node (ADR-061 §8) or a message
+    /// (ADR-088 §3): a reference *to* one — a `mentions` edge from an
+    /// `@mention`/`[[wikilink]]`, a provenance link from a node an agent
+    /// created, or any schema-declared relationship — is refused at creation,
+    /// so there is never such a reference to render. Either stays free to be
+    /// an edge's *source*, and a `has_child` onto one is outline placement — a
+    /// chat nested under a page, a message under its chat — not a reference,
+    /// so it is allowed.
     ///
-    /// `target_is_chat` is the caller's chain-aware answer for `target`.
+    /// A declared relationship whose *source* is itself a chat or a message is
+    /// not a reference from outside, and is allowed too: a message records
+    /// that its turn looked up or asked to delete a chat. A `mentions` edge
+    /// never is.
+    ///
+    /// `accepts_references` is the caller's chain-aware answer for `target`.
     fn refuse_ai_chat_target(
         relationship_name: &str,
         target: &Node,
-        target_is_chat: bool,
+        accepts_references: bool,
     ) -> Result<(), NodeServiceError> {
-        if relationship_name != "has_child" && target_is_chat {
+        if relationship_name != "has_child" && !accepts_references {
             return Err(NodeServiceError::invalid_update(format!(
-                "Node '{}' is an ai-chat node; ai-chat nodes cannot be the target of a \
-                 mention or relationship",
-                target.id
+                "Node '{}' is an {} node; ai-chat nodes and their messages cannot be the \
+                 target of a mention or relationship",
+                target.id, target.node_type
             )));
         }
         Ok(())
@@ -139,10 +156,10 @@ impl NodeService {
             .get_node(mentioned_node_id)
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(mentioned_node_id))?;
-        let mentioned_is_chat = self
-            .type_is_a(&mentioned.node_type, crate::models::CoreNodeType::AiChat)
+        let accepts_references = self
+            .accepts_inbound_references(&mentioned.node_type)
             .await?;
-        Self::refuse_ai_chat_target("mentions", &mentioned, mentioned_is_chat)?;
+        Self::refuse_ai_chat_target("mentions", &mentioned, accepts_references)?;
 
         // Prevent root-level self-references (child mentioning its own root)
         // Get root ID via edge traversal for validation only
@@ -393,7 +410,8 @@ impl NodeService {
     /// Returns `NodeReference` with {id, title, nodeType} for efficient UI display.
     ///
     /// # Container Resolution Logic
-    /// - For task/ai-chat nodes: Uses the node itself (its own container)
+    /// - For task, ai-chat and ai-chat-message nodes: Uses the node itself
+    ///   (its own container)
     /// - For other nodes: Traverses up the hierarchy to find the root node
     ///
     /// # Performance
@@ -832,10 +850,8 @@ impl NodeService {
         // lookup on the hot outline path.
         if relationship_name != "has_child" {
             if let Some(target) = self.get_node(target_id).await? {
-                let target_is_chat = self
-                    .type_is_a(&target.node_type, crate::models::CoreNodeType::AiChat)
-                    .await?;
-                Self::refuse_ai_chat_target(relationship_name, &target, target_is_chat)?;
+                let accepts_references = self.accepts_inbound_references(&target.node_type).await?;
+                Self::refuse_ai_chat_target(relationship_name, &target, accepts_references)?;
             }
         }
 
@@ -1171,14 +1187,39 @@ impl NodeService {
         );
 
         if let Some(target) = Self::get_node_in_tx_or_virtual_date(tx, target_id).await? {
-            let target_is_chat = crate::db::SqliteStore::type_is_a_in_tx(
+            let accepts_references = crate::db::SqliteStore::accepts_inbound_references_in_tx(
                 tx.store_tx(),
                 &target.node_type,
-                crate::models::CoreNodeType::AiChat,
             )
             .await
             .map_err(NodeServiceError::from_store)?;
-            Self::refuse_ai_chat_target(relationship_name, &target, target_is_chat)?;
+            // The rule keeps other nodes from referencing a chat. A chat and
+            // its messages are on the inside of it: a message's record of
+            // what its turn wrote, looked up or asked to delete may point at
+            // a chat or a message (ADR-088 §3), or a delete of one could be
+            // asked for and never confirmed.
+            //
+            // Only a declared relationship is such a record: a builtin edge
+            // (a mention) to a chat is refused whatever its source. The
+            // source is read only when the target would be refused.
+            let from_inside = if accepts_references || is_builtin {
+                false
+            } else {
+                match Self::get_node_in_tx_or_virtual_date(tx, source_id).await? {
+                    Some(source) => !crate::db::SqliteStore::accepts_inbound_references_in_tx(
+                        tx.store_tx(),
+                        &source.node_type,
+                    )
+                    .await
+                    .map_err(NodeServiceError::from_store)?,
+                    None => false,
+                }
+            };
+            Self::refuse_ai_chat_target(
+                relationship_name,
+                &target,
+                accepts_references || from_inside,
+            )?;
         }
 
         // See `create_relationship` — a declared relationship's instance edge
@@ -1321,7 +1362,14 @@ impl NodeService {
                 .await?
                 .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
 
-            if crate::models::CoreNodeType::Schema.is_exactly(&target.node_type) {
+            // A relationship declared with no target type reaches any node, a
+            // schema included: a chat message's `wrote` edge points at the
+            // schema its turn created. That is an instance edge, told apart
+            // from a declaration by its source, which is not a schema. A
+            // relationship that names a target type never reaches one.
+            if crate::models::CoreNodeType::Schema.is_exactly(&target.node_type)
+                && relationship.target_type.is_some()
+            {
                 return Err(NodeServiceError::invalid_update(format!(
                     "'{}' is a schema node; typed relationships between schemas are declarations \
                      — declare them via update_schema, not create_relationship",
@@ -2371,6 +2419,81 @@ impl NodeService {
                     e
                 ))
             })
+    }
+
+    /// The edges of the given relationship types that leave the children of
+    /// `parent_id`, in the order they were created, each as `(child id,
+    /// relationship type, target node, edge properties)`.
+    ///
+    /// "What did this chat create?" is this read over its messages' `wrote`
+    /// edges (ADR-088 §3).
+    pub async fn get_child_edges(
+        &self,
+        parent_id: &str,
+        relationship_names: &[&str],
+    ) -> Result<Vec<(String, String, Node, serde_json::Value)>, NodeServiceError> {
+        self.store
+            .get_child_edges(parent_id, relationship_names)
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to get the edges of the children of {parent_id}: {e}"
+                ))
+            })
+    }
+
+    /// Create a node under a parent together with relationships from it, in
+    /// one transaction: the node and every edge commit, or none does.
+    ///
+    /// For a node whose edges are part of what it records: a chat message and
+    /// what its turn wrote, looked up or asked to delete (ADR-088 §3). A
+    /// relationship whose target no longer exists is left out, since an edge
+    /// to a deleted node would have gone with it anyway; its index in
+    /// `relationships` is returned. Any other failure fails the whole create.
+    ///
+    /// Returns the new node's id and the indexes of the relationships left
+    /// out.
+    pub async fn create_node_with_relationships(
+        &self,
+        params: CreateNodeParams,
+        relationships: Vec<NewRelationship>,
+    ) -> Result<(String, Vec<usize>), NodeServiceError> {
+        let content = params.content.clone();
+        let node_type = params.node_type.clone();
+        let has_parent = params.parent_id.is_some();
+        let service = self.clone();
+        let (node_id, skipped) = self
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    let node_id = service.create_node_with_parent_in_tx(tx, params).await?;
+                    let mut skipped = Vec::new();
+                    for (index, relationship) in relationships.into_iter().enumerate() {
+                        let target =
+                            Self::get_node_in_tx_or_virtual_date(tx, &relationship.target_id)
+                                .await?;
+                        if target.is_none() {
+                            skipped.push(index);
+                            continue;
+                        }
+                        service
+                            .create_relationship_in_tx(
+                                tx,
+                                &node_id,
+                                &relationship.name,
+                                &relationship.target_id,
+                                relationship.edge_data,
+                            )
+                            .await?;
+                    }
+                    Ok((node_id, skipped))
+                })
+            })
+            .await?;
+
+        self.queue_created_root_for_embedding(&node_id, &node_type, has_parent)
+            .await;
+        self.sync_created_mentions(&node_id, &content).await;
+        Ok((node_id, skipped))
     }
 
     /// Get inbound relationships for a node type

@@ -254,7 +254,7 @@ export interface PluginDefinition {
    * Whether this node type may be deleted or merged away by a Backspace at the
    * start of the node (the node acting as the *current* node, not the target).
    * Protects node types whose data lives outside `.content` — e.g. ai-chat,
-   * whose conversation is stored in `properties.messages` — from silent
+   * whose conversation is its message child nodes — from silent
    * whole-node loss.
    *
    * Default: true (most nodes can be deleted via Backspace)

@@ -17,6 +17,7 @@
 //! - **ai-chat** - Abstract base of the chat family (agent, model, summary)
 //! - **ai-chat-native** - A conversation run by NodeSpace's agent loop
 //! - **ai-chat-pty** - An external coding agent in a terminal
+//! - **ai-chat-message** - One message of a native chat, a child of its chat
 //! - **collection** - Collection containers
 //! - **horizontal-line** - Horizontal rule / thematic break
 //! - **table** - GFM markdown table
@@ -28,11 +29,12 @@
 //! Call `get_core_schemas()` to get all core schema definitions.
 
 use crate::models::schema::{
-    EnumValue, RelationshipCardinality, RelationshipDirection, SchemaField, SchemaProtectionLevel,
-    SchemaRelationship,
+    EdgeField, EnumValue, RelationshipCardinality, RelationshipDirection, SchemaField,
+    SchemaProtectionLevel, SchemaRelationship,
 };
 use crate::models::{
-    AiChatProvider, AiChatSessionStatus, AiChatTurnStatus, CoreNodeType, NodeEnvelope, SchemaNode,
+    AiChatMessageRole, AiChatProvider, AiChatSessionStatus, AiChatTurnOutcome, AiChatTurnStatus,
+    CoreNodeType, NodeEnvelope, SchemaNode,
 };
 use chrono::Utc;
 
@@ -747,25 +749,6 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
-                SchemaField {
-                    name: "messages".to_string(),
-                    friendly_name: "Messages".to_string(),
-                    field_type: crate::models::SchemaFieldType::Array,
-                    local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(true),
-                    extensible: None,
-                    default: Some(serde_json::json!([])),
-                    description: Some("Conversation messages array".to_string()),
-                    item_type: Some(crate::models::SchemaFieldType::Object),
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
             ],
             relationships: vec![],
             title_template: None,
@@ -862,6 +845,195 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 },
             ],
             relationships: vec![],
+            title_template: None,
+            properties_header_summary_template: None,
+        },
+        // AI chat message (ADR-088 §3): one message of a native chat, a child of
+        // its chat in conversation order. Its text is its content. What it
+        // wrote, looked up or asked to delete is on edges, so the graph sees it.
+        SchemaNode {
+            envelope: envelope("ai-chat-message", "AI Chat Message"),
+            extends: None,
+            is_core: true,
+            is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
+            schema_version: 1,
+            fields: vec![
+                SchemaField {
+                    name: "role".to_string(),
+                    friendly_name: "Role".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(enum_values(&AiChatMessageRole::ALL, AiChatMessageRole::as_str)),
+                    user_values: Some(vec![]),
+                    indexed: true,
+                    required: Some(true),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!(AiChatMessageRole::default())),
+                    description: Some("Who sent the message".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "timestamp".to_string(),
+                    friendly_name: "Timestamp".to_string(),
+                    field_type: crate::models::SchemaFieldType::Datetime,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("When the message was sent".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "reasoning".to_string(),
+                    friendly_name: "Reasoning".to_string(),
+                    field_type: crate::models::SchemaFieldType::Text,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("The model's chain-of-thought toward an assistant message".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "outcome".to_string(),
+                    friendly_name: "Outcome".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: Some(enum_values(&AiChatTurnOutcome::ALL, AiChatTurnOutcome::as_str)),
+                    user_values: Some(vec![]),
+                    indexed: false,
+                    required: Some(false),
+                    extensible: Some(false),
+                    default: None,
+                    description: Some("How the turn that produced an assistant message ended".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "options".to_string(),
+                    friendly_name: "Options".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("The choices offered with a clarifying question; the question is the content".to_string()),
+                    item_type: Some(crate::models::SchemaFieldType::Text),
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+            ],
+            relationships: vec![
+                SchemaRelationship {
+                    name: nodespace_types::AI_CHAT_WROTE.to_string(),
+                    target_type: None,
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "written_by".to_string(),
+                    reverse_cardinality: RelationshipCardinality::Many,
+                    edge_fields: Some(vec![
+                        EdgeField {
+                            name: "writes".to_string(),
+                            field_type: crate::models::SchemaFieldType::Array,
+                            core_values: None,
+                            indexed: None,
+                            required: Some(true),
+                            default: None,
+                            target_type: None,
+                            description: Some("Each write the message made to the node, in call order: its tool, summary, canonical_args and the edges it replaced".to_string()),
+                        },
+                    ]),
+                    description: Some("Nodes the message's turn wrote".to_string()),
+                },
+                SchemaRelationship {
+                    name: nodespace_types::AI_CHAT_RESOLVED.to_string(),
+                    target_type: None,
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "resolved_by".to_string(),
+                    reverse_cardinality: RelationshipCardinality::Many,
+                    edge_fields: Some(vec![
+                        EdgeField {
+                            name: "tool".to_string(),
+                            field_type: crate::models::SchemaFieldType::Text,
+                            core_values: None,
+                            indexed: None,
+                            required: Some(true),
+                            default: None,
+                            target_type: None,
+                            description: Some("The read tool that surfaced the node".to_string()),
+                        },
+                    ]),
+                    description: Some("Nodes the message's turn looked up".to_string()),
+                },
+                SchemaRelationship {
+                    name: nodespace_types::AI_CHAT_PENDING_DELETE.to_string(),
+                    target_type: None,
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "pending_delete_of".to_string(),
+                    reverse_cardinality: RelationshipCardinality::Many,
+                    edge_fields: Some(vec![
+                        EdgeField {
+                            name: "version".to_string(),
+                            field_type: crate::models::SchemaFieldType::Number,
+                            core_values: None,
+                            indexed: None,
+                            required: Some(true),
+                            default: None,
+                            target_type: None,
+                            description: Some("The node's version when the delete was proposed".to_string()),
+                        },
+                        EdgeField {
+                            name: "descendant_count".to_string(),
+                            field_type: crate::models::SchemaFieldType::Number,
+                            core_values: None,
+                            indexed: None,
+                            required: Some(true),
+                            default: None,
+                            target_type: None,
+                            description: Some("How many nodes beneath it the delete was shown to remove".to_string()),
+                        },
+                    ]),
+                    description: Some("Nodes the message asked to delete, held until the user answers".to_string()),
+                },
+            ],
             title_template: None,
             properties_header_summary_template: None,
         },
@@ -1689,6 +1861,7 @@ mod tests {
             [
                 "agent-guidance",
                 "ai-chat",
+                "ai-chat-message",
                 "ai-chat-native",
                 "ai-chat-pty",
                 "checkbox",
@@ -2221,7 +2394,7 @@ mod tests {
         assert!(!native.is_abstract);
         assert_eq!(
             field_names(native),
-            ["provider", "turn_status", "context_tokens", "messages"]
+            ["provider", "turn_status", "context_tokens"]
         );
 
         let pty = find("ai-chat-pty");
@@ -2238,6 +2411,69 @@ mod tests {
                 "{} extends ai-chat",
                 subtype.envelope.id
             );
+        }
+    }
+
+    /// A message is a type of its own, not a chat: its text is its content,
+    /// and what it wrote, looked up or asked to delete is three declared
+    /// relationships with their edge fields (ADR-088 §3).
+    #[test]
+    fn test_the_ai_chat_message_schema_declares_its_fields_and_edges() {
+        use crate::models::{SchemaChildrenRule, SchemaParentRule};
+
+        let message = core_schema(CoreNodeType::AiChatMessage).unwrap();
+        assert!(!message.is_abstract);
+        assert_eq!(
+            field_names(&message),
+            ["role", "timestamp", "reasoning", "outcome", "options"]
+        );
+        assert_eq!(message.extends, None);
+        assert_eq!(message.children, SchemaChildrenRule::None);
+        assert_eq!(
+            message.parent,
+            SchemaParentRule::MustHaveParentOf {
+                types: vec!["ai-chat-native".to_string()]
+            }
+        );
+
+        let edges: Vec<(&str, &str, Vec<&str>)> = message
+            .relationships
+            .iter()
+            .map(|rel| {
+                (
+                    rel.name.as_str(),
+                    rel.reverse_name.as_str(),
+                    rel.edge_fields
+                        .iter()
+                        .flatten()
+                        .map(|f| f.name.as_str())
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            edges,
+            [
+                ("wrote", "written_by", vec!["writes"]),
+                ("resolved", "resolved_by", vec!["tool"]),
+                (
+                    "pending_delete",
+                    "pending_delete_of",
+                    vec!["version", "descendant_count"]
+                ),
+            ]
+        );
+        // Any node can be written, looked up or held for deletion.
+        assert!(message
+            .relationships
+            .iter()
+            .all(|r| r.target_type.is_none()));
+
+        // The conversation left the chat node: no list of messages, and no
+        // list of the nodes it created.
+        let native = core_schema(CoreNodeType::AiChatNative).unwrap();
+        for gone in ["messages", "created_nodes"] {
+            assert!(native.get_field(gone).is_none(), "{gone}");
         }
     }
 
@@ -2350,6 +2586,7 @@ mod tests {
             CoreNodeType::AiChat,
             CoreNodeType::AiChatNative,
             CoreNodeType::AiChatPty,
+            CoreNodeType::AiChatMessage,
         ] {
             let mut declared: Vec<String> =
                 chain_fields(core).into_iter().map(|f| f.name).collect();

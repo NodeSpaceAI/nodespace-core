@@ -1,6 +1,6 @@
 use chrono::{DateTime, NaiveDate, Utc};
 
-use crate::ai_chat::{AiChatNativeNode, AiChatPtyNode};
+use crate::ai_chat::{AiChatMessageNode, AiChatNativeNode, AiChatPtyNode};
 use crate::collection::CollectionNode;
 use crate::core_type::CoreNodeType;
 use crate::database_settings::DatabaseSettingsNode;
@@ -57,6 +57,7 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         Some(CoreNodeType::Task) => task_node_to_value(node),
         Some(CoreNodeType::AiChatNative) => ai_chat_native_node_to_value(node),
         Some(CoreNodeType::AiChatPty) => ai_chat_pty_node_to_value(node),
+        Some(CoreNodeType::AiChatMessage) => ai_chat_message_node_to_value(node),
         Some(CoreNodeType::Person) => person_node_to_value(node),
         Some(CoreNodeType::Project) => project_node_to_value(node),
         Some(CoreNodeType::Collection) => collection_node_to_value(node),
@@ -419,7 +420,6 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::text("provider", "provider"),
                     F::text("turn_status", "turnStatus"),
                     F::new("context_tokens", "contextTokens", Number),
-                    F::new("messages", "messages", Array),
                 ]
             }
         }
@@ -434,6 +434,18 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::text("session_id", "sessionId"),
                     F::text("transcript", "transcript"),
                     F::new("exit_code", "exitCode", Number),
+                ]
+            }
+        }
+        // A message's text is its `content`; these are its other fields.
+        CoreNodeType::AiChatMessage => {
+            const {
+                &[
+                    F::text("role", "role"),
+                    F::text("timestamp", "timestamp"),
+                    F::text("reasoning", "reasoning"),
+                    F::text("outcome", "outcome"),
+                    F::new("options", "options", Array),
                 ]
             }
         }
@@ -676,18 +688,15 @@ fn play_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     serde_json::to_value(&play).map_err(|e| format!("Failed to serialize play node: {}", e))
 }
 
-/// A chat with an unreadable message keeps the rest of its conversation: one
-/// bad message must not blank the whole chat in the UI.
 fn ai_chat_native_node_to_value(node: Node) -> Result<serde_json::Value, String> {
-    let (chat, unreadable) =
-        AiChatNativeNode::from_node_reporting(node).map_err(|e| e.to_string())?;
-    for error in unreadable {
-        eprintln!(
-            "ai-chat-native node '{}' has an unreadable message: {error}",
-            chat.envelope.id
-        );
-    }
+    let chat = AiChatNativeNode::from_node(node).map_err(|e| e.to_string())?;
     serde_json::to_value(&chat).map_err(|e| format!("Failed to serialize ai-chat-native node: {e}"))
+}
+
+fn ai_chat_message_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let message = AiChatMessageNode::from_node(node).map_err(|e| e.to_string())?;
+    serde_json::to_value(&message)
+        .map_err(|e| format!("Failed to serialize ai-chat-message node: {e}"))
 }
 
 fn ai_chat_pty_node_to_value(node: Node) -> Result<serde_json::Value, String> {
@@ -1136,7 +1145,6 @@ mod wire_contract {
                     "turn_status": "processing",
                     "provider": "openai-compat",
                     "context_tokens": 12,
-                    "messages": [{ "role": "user", "content": "hi" }],
                     "custom:pinned": true
                 }
             }),
@@ -1149,10 +1157,11 @@ mod wire_contract {
         assert_eq!(out["turnStatus"], "processing");
         assert_eq!(out["provider"], "openai-compat");
         assert_eq!(out["contextTokens"], 12);
-        assert_eq!(out["messages"][0]["content"], "hi");
-        // A native chat has no session state, and an unset optional field is
-        // absent rather than null.
+        // A native chat has no session state and carries no messages (they
+        // are its children), and an unset optional field is absent rather
+        // than null.
         assert!(out.get("sessionStatus").is_none());
+        assert!(out.get("messages").is_none());
         assert!(out.get("summary").is_none());
         // Each declared field has one home: `properties` keeps extension
         // fields only.
@@ -1207,7 +1216,14 @@ mod wire_contract {
         assert_eq!(native["provider"], "native");
         assert_eq!(native["turnStatus"], "idle");
         assert_eq!(native["contextTokens"], 0);
-        assert_eq!(native["messages"], serde_json::json!([]));
+
+        let message = node_to_typed_value(Node::new(
+            "ai-chat-message".to_string(),
+            "hi".to_string(),
+            serde_json::json!({}),
+        ))
+        .unwrap();
+        assert_eq!(message["role"], "user");
 
         let pty = node_to_typed_value(Node::new(
             "ai-chat-pty".to_string(),
@@ -1228,7 +1244,7 @@ mod wire_contract {
             "ai-chat-native".to_string(),
             "Chat".to_string(),
             serde_json::json!({
-                "ai-chat-native": { "turnStatus": "processing", "messages": [] }
+                "ai-chat-native": { "turnStatus": "processing" }
             }),
         );
         let out = node_to_typed_value(node).unwrap();
@@ -1236,40 +1252,42 @@ mod wire_contract {
         assert_eq!(out["turnStatus"], "idle", "camelCase must not be read");
     }
 
-    /// One unreadable message must not blank the whole conversation in the UI.
-    ///
-    /// `canonicalArgs` is required on a completed write, so a record without one
-    /// fails to decode. Decoding the array as a single `Vec` would fail
-    /// wholesale on that one element and send the frontend an empty history for
-    /// a conversation that still has readable messages.
+    /// A message's text stays in `content`; its other fields are promoted and
+    /// `properties` keeps extension fields only.
     #[test]
-    fn ai_chat_one_unreadable_message_does_not_blank_the_conversation() {
+    fn ai_chat_message_promotes_its_fields_and_empties_properties() {
         let node = Node::new(
-            "ai-chat-native".to_string(),
-            "Chat".to_string(),
+            "ai-chat-message".to_string(),
+            "Which one?".to_string(),
             serde_json::json!({
-                "ai-chat-native": {
-                    "turn_status": "idle",
-                    "messages": [
-                        { "role": "user", "content": "hi" },
-                        {
-                            "role": "assistant",
-                            "content": "Added.",
-                            "completedWrites": [
-                                { "tool": "create_node", "nodeId": "nodespace://n1" }
-                            ]
-                        },
-                        { "role": "user", "content": "thanks" }
-                    ]
+                "ai-chat-message": {
+                    "role": "assistant",
+                    "timestamp": "2026-10-02T10:00:00Z",
+                    "reasoning": "Two match.",
+                    "outcome": "clarified",
+                    "options": ["A", "B"],
+                    "custom:flag": true
                 }
             }),
         );
         let out = node_to_typed_value(node).unwrap();
 
-        let messages = out["messages"].as_array().expect("messages array");
-        assert_eq!(messages.len(), 2, "only the unreadable message may be lost");
-        assert_eq!(messages[0]["content"], "hi");
-        assert_eq!(messages[1]["content"], "thanks");
+        assert_eq!(out["nodeType"], "ai-chat-message");
+        assert_eq!(out["content"], "Which one?");
+        assert_eq!(out["role"], "assistant");
+        assert_eq!(out["timestamp"], "2026-10-02T10:00:00Z");
+        assert_eq!(out["reasoning"], "Two match.");
+        assert_eq!(out["outcome"], "clarified");
+        assert_eq!(out["options"], serde_json::json!(["A", "B"]));
+        assert_eq!(
+            out["properties"],
+            serde_json::json!({ "custom:flag": true })
+        );
+        assert_eq!(
+            flat_properties_view(&out)["role"],
+            serde_json::json!("assistant")
+        );
+        assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
     }
 
     /// A chat subtype's promoted fields are exactly its wire struct's own
@@ -1279,7 +1297,7 @@ mod wire_contract {
         let full_native = serde_json::json!({
             "agent": "nodespace", "model": "m", "summary": "s",
             "last_active": "2026-01-01T00:00:00Z", "provider": "native",
-            "turn_status": "idle", "context_tokens": 1, "messages": []
+            "turn_status": "idle", "context_tokens": 1
         });
         let full_pty = serde_json::json!({
             "agent": "codex", "model": "m", "summary": "s",
@@ -1452,7 +1470,6 @@ mod promotion_proptests {
             model in "[a-zA-Z0-9._:-]{1,25}",
             summary in "[ -~]{1,40}",
             context_tokens in 0u64..1_000_000,
-            message in "[ -~]{0,40}",
         ) {
             let turn_status = if processing { "processing" } else { "idle" };
             let provider = if remote { "openai-compat" } else { "native" };
@@ -1470,7 +1487,6 @@ mod promotion_proptests {
                         "turn_status": turn_status,
                         "provider": provider,
                         "context_tokens": context_tokens,
-                        "messages": [{ "role": "user", "content": message }],
                     }
                 }),
             );
@@ -1484,7 +1500,6 @@ mod promotion_proptests {
             prop_assert_eq!(&out["turnStatus"], &serde_json::json!(turn_status));
             prop_assert_eq!(&out["provider"], &serde_json::json!(provider));
             prop_assert_eq!(&out["contextTokens"], &serde_json::json!(context_tokens));
-            prop_assert_eq!(&out["messages"][0]["content"], &serde_json::json!(message));
             prop_assert_eq!(&out["properties"], &serde_json::json!({}));
             prop_assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
         }

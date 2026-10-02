@@ -7,6 +7,7 @@ import {
   isA,
   isCoreNodeType,
   isExactly,
+  isOwnedByParentViewer,
   nearestCoreType,
   setTypeResolver,
   structuralRules,
@@ -83,6 +84,8 @@ describe('structural rules', () => {
     'tool',
     'database-settings'
   ];
+  // Only ever a leaf under a native chat; covered by the chat message tests below.
+  const MESSAGES = ['ai-chat-message'];
 
   it('keeps collection, schema and date at the root', () => {
     for (const type of ROOT_ONLY) {
@@ -105,7 +108,7 @@ describe('structural rules', () => {
 
   it('leaves every other core type open, a chat included', () => {
     const open = CORE_NODE_TYPES.map((t) => t.id as string).filter(
-      (id) => !ROOT_ONLY.includes(id) && !LEAVES.includes(id)
+      (id) => !ROOT_ONLY.includes(id) && !LEAVES.includes(id) && !MESSAGES.includes(id)
     );
     expect(open).toContain('ai-chat');
     for (const type of open) {
@@ -184,5 +187,46 @@ describe('structural rules', () => {
     // The nearest parent declaration is the one in force.
     expect(canHaveChild('thread', 'support-reply')).toBe(false);
     expect(canHaveChild('support-thread', 'support-reply')).toBe(true);
+  });
+});
+
+describe('chat message structure (ADR-088 §3)', () => {
+  afterEach(() => setTypeResolver(() => undefined));
+
+  it('lives only directly under a native chat', () => {
+    expect(canHaveChild('ai-chat-native', 'ai-chat-message')).toBe(true);
+    expect(canHaveChild('ai-chat-pty', 'ai-chat-message')).toBe(false);
+    expect(canHaveChild('text', 'ai-chat-message')).toBe(false);
+  });
+
+  it('is refused every position an indent, outdent or drag could move it to', () => {
+    // Indent under a sibling message: a message holds no children.
+    expect(canHaveChild('ai-chat-message', 'ai-chat-message')).toBe(false);
+    // Outdent to the chat's parent (a page) or to the root.
+    expect(canHaveChild('text', 'ai-chat-message')).toBe(false);
+    expect(canBeRoot('ai-chat-message')).toBe(false);
+  });
+
+  it('is owned by its parent viewer, unlike an outline row', () => {
+    expect(isOwnedByParentViewer('ai-chat-message')).toBe(true);
+    expect(isOwnedByParentViewer('text')).toBe(false);
+    expect(isOwnedByParentViewer('ai-chat-native')).toBe(false);
+    expect(isOwnedByParentViewer('task')).toBe(false);
+  });
+
+  it('is inherited by a subtype of an excluded core type', () => {
+    setTypeResolver((id) => (id === 'pinned-message' ? { extends: 'ai-chat-message' } : undefined));
+    expect(isOwnedByParentViewer('pinned-message')).toBe(true);
+  });
+
+  it('is not claimed by a user type that only declares a parent rule', () => {
+    setTypeResolver((id) =>
+      id === 'reply'
+        ? { extends: 'text', parent: { rule: 'must_have_parent_of', types: ['thread'] } }
+        : undefined
+    );
+    expect(canBeRoot('reply')).toBe(false);
+    expect(isOwnedByParentViewer('reply')).toBe(false);
+    expect(isOwnedByParentViewer('unknown-type')).toBe(false);
   });
 });

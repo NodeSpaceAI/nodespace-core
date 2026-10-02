@@ -23,20 +23,25 @@ use nodespace_agent::agent_types::{
 use nodespace_agent::local_agent::agent_loop::{
     canonical_args, canonical_args_identity, LocalAgentService,
 };
-use nodespace_agent::local_agent::deletion_confirmation::{self, landed_write, ConfirmationReply};
+use nodespace_agent::local_agent::deletion_confirmation::{
+    self, landed_write, ConfirmationReply, PendingDeletion,
+};
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_agent::local_agent::tools::{
     is_cross_turn_guarded_tool, resolves_entities_tool, GraphToolExecutor, SharedEmbeddingService,
 };
 use nodespace_core::models::{
-    AiChatCompletedWrite, AiChatMessage, AiChatMessageRole, AiChatNativeNode,
-    AiChatPendingDeletion, AiChatResolvedEntity, AiChatTurnOutcome, AiChatTurnStatus, NodeFilter,
-    NodeUpdate,
+    AiChatMessageRole, AiChatNativeNode, AiChatTurnOutcome, AiChatTurnStatus, CoreNodeType,
+    NodeFilter, NodeUpdate,
 };
 use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceError};
 
 use crate::services::ai_chat_title;
 use crate::services::chat_idle_gate::ChatIdleGate;
+use crate::services::chat_messages::{
+    self, clip_summary, flatten_label, write_target, CompletedWrite, NewMessage, ResolvedEntity,
+    StoredMessage,
+};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -673,10 +678,12 @@ impl LocalAgentServiceImpl {
                         };
 
                         // Only a native chat takes inference turns; a terminal
-                        // chat's harness runs its own.
-                        if !nodespace_core::models::CoreNodeType::AiChatNative
-                            .is_exactly(&node_type)
-                        {
+                        // chat's harness runs its own. A turn is asked for by
+                        // the chat's `processing` status, written after the
+                        // user's message is stored: the status write is the
+                        // one trigger, so the message it answers is never in
+                        // doubt.
+                        if !CoreNodeType::AiChatNative.is_exactly(&node_type) {
                             continue;
                         }
 
@@ -711,7 +718,7 @@ impl LocalAgentServiceImpl {
             }
         };
 
-        let ai_chat = match read_native_chat(node) {
+        let ai_chat = match AiChatNativeNode::from_node(node) {
             Ok(c) => c,
             Err(_) => return,
         };
@@ -722,18 +729,45 @@ impl LocalAgentServiceImpl {
             return;
         }
 
-        // Check that the last message is from the user.
-        match ai_chat.messages.last() {
-            Some(last) if last.role == AiChatMessageRole::User => {}
-            _ => return,
-        }
-
+        // Claim the chat before looking at its messages: while a turn runs,
+        // the chat is `processing` and its latest message stops being the
+        // user's the moment the reply is stored.
         let Some(cancel) = self.begin_turn(node_id).await else {
             return;
         };
 
+        // A turn answers the user's latest message, which the client stores
+        // before asking. With no such message there is nothing to answer, and
+        // a chat left `processing` would lock its composer for good.
+        if !self.last_message_is_from_user(node_id).await {
+            tracing::warn!(
+                node_id,
+                "ai-chat asked for a turn with no user message to answer; resetting to idle"
+            );
+            if let Err(e) = self
+                .write_ai_chat_turn_status(node_id, AiChatTurnStatus::Idle)
+                .await
+            {
+                tracing::warn!(node_id, error = %e, "failed to reset ai-chat status to idle");
+            }
+            self.end_turn(node_id).await;
+            return;
+        }
+
         tracing::info!(node_id, "ai-chat turn triggered");
         self.run_ai_chat_turn(node_id.to_string(), cancel).await;
+    }
+
+    /// Whether the chat's latest message is the user's: the half of a turn
+    /// request that lives on the conversation.
+    async fn last_message_is_from_user(&self, chat_id: &str) -> bool {
+        match chat_messages::last_message_role(&self.inner.node_service, chat_id).await {
+            Ok(role) => role == Some(AiChatMessageRole::User),
+            Err(e) => {
+                tracing::warn!(chat_id, error = %e, "failed to read ai-chat messages");
+                false
+            }
+        }
     }
 
     /// Execute a full inference turn for the given ai-chat node.
@@ -750,19 +784,32 @@ impl LocalAgentServiceImpl {
         // or cancellation — releases it rather than wedging the gate busy.
         let active_turn = self.inner.shared.idle_gate().begin_turn();
 
-        // One read of the chat node serves both of the things this turn needs
-        // from it: the rendered inference history, and the record of what
-        // earlier turns wrote (which seeds the duplicate guard below).
+        // One read of the conversation serves both of the things this turn
+        // needs from it: the rendered inference history, and the record of
+        // what earlier turns wrote (which seeds the duplicate guard below).
         let messages = load_chat_messages(&self.inner.node_service, &node_id).await;
 
         // A yes or no to a delete confirmation is answered here, without the
         // model: only the user's unqualified yes deletes, and it deletes the
         // ids they were shown. See `deletion_confirmation`.
-        if let Some((targets, answer)) = pending_deletion_answer(&messages) {
-            self.answer_deletion_confirmation(&node_id, &targets, answer)
+        //
+        // Whatever the user said, the held deletes end with their message: a
+        // yes or no answers them, and anything else lets them lapse. Their
+        // edges are removed either way, so a later message can never reach
+        // them.
+        if let Some(asked) = held_deletion_message(&messages) {
+            let (asked_id, targets) = asked;
+            let answer = pending_deletion_answer(&messages);
+            if let Some(answer) = answer {
+                self.answer_deletion_confirmation(&node_id, &targets, answer)
+                    .await;
+            }
+            chat_messages::clear_pending_deletions(&self.inner.node_service, &asked_id, &targets)
                 .await;
-            self.end_turn(&node_id).await;
-            return;
+            if answer.is_some() {
+                self.end_turn(&node_id).await;
+                return;
+            }
         }
 
         let prior_writes = prior_writes_from_history(&messages);
@@ -1066,10 +1113,10 @@ impl LocalAgentServiceImpl {
     async fn answer_deletion_confirmation(
         &self,
         node_id: &str,
-        targets: &[AiChatPendingDeletion],
+        targets: &[PendingDeletion],
         answer: DeletionAnswer,
     ) {
-        let (text, writes) = match answer {
+        let text = match answer {
             DeletionAnswer::Confirmed => {
                 let outcome =
                     deletion_confirmation::execute_confirmed(&self.inner.node_service, targets)
@@ -1081,14 +1128,9 @@ impl LocalAgentServiceImpl {
                     stopped = ?outcome.stopped,
                     "confirmed agent delete ran"
                 );
-                (
-                    deletion_confirmation::confirmed_deletion_text(&outcome),
-                    confirmed_deletion_writes(&outcome),
-                )
+                deletion_confirmation::confirmed_deletion_text(&outcome)
             }
-            DeletionAnswer::Declined => {
-                (deletion_confirmation::DECLINED_TEXT.to_string(), Vec::new())
-            }
+            DeletionAnswer::Declined => deletion_confirmation::DECLINED_TEXT.to_string(),
         };
 
         let _ = self.inner.token_tx.send(AgentChunk {
@@ -1103,8 +1145,9 @@ impl LocalAgentServiceImpl {
             .append_assistant_message(
                 node_id,
                 &text,
+                // A deleted node leaves nothing for a `wrote` edge to point
+                // at, so the reply's text is the record of the delete.
                 AssistantRecord {
-                    completed_writes: writes,
                     outcome: Some(AiChatTurnOutcome::Acted),
                     ..Default::default()
                 },
@@ -1141,7 +1184,7 @@ impl LocalAgentServiceImpl {
         let Ok(chat) = AiChatNativeNode::from_node(node) else {
             return;
         };
-        if !ai_chat_title::needs_title(&chat) {
+        if !ai_chat_title::is_untitled(&chat.envelope.content) {
             return;
         }
 
@@ -1166,12 +1209,15 @@ impl LocalAgentServiceImpl {
             let Ok(chat) = AiChatNativeNode::from_node(node) else {
                 return;
             };
-            if !ai_chat_title::needs_title(&chat) {
+            let Ok(messages) = chat_messages::load_messages(&node_service, &node_id).await else {
+                return;
+            };
+            if !ai_chat_title::needs_title(&chat, &messages) {
                 return;
             }
 
             let engine = shared.engine().await;
-            let Some(title) = ai_chat_title::generate_title(&engine, &chat).await else {
+            let Some(title) = ai_chat_title::generate_title(&engine, &chat, &messages).await else {
                 return;
             };
 
@@ -1209,7 +1255,7 @@ impl LocalAgentServiceImpl {
 
         for node in nodes {
             let node_id = node.id.clone();
-            let ai_chat = match read_native_chat(node) {
+            let ai_chat = match AiChatNativeNode::from_node(node) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -1217,11 +1263,7 @@ impl LocalAgentServiceImpl {
                 continue;
             }
             // Verify last message is from user before retrying.
-            let is_trailing_user = ai_chat
-                .messages
-                .last()
-                .map(|m| m.role == AiChatMessageRole::User)
-                .unwrap_or(false);
+            let is_trailing_user = self.last_message_is_from_user(&node_id).await;
 
             if is_trailing_user {
                 tracing::info!(node_id = %node_id, "recovering stuck ai-chat turn");
@@ -1261,7 +1303,7 @@ impl LocalAgentServiceImpl {
     /// properties, so nothing else on the node is rewritten.
     ///
     /// Retries on version conflict: the frontend writes to the same node
-    /// (appending a user message, setting `processing`), so a conflict here
+    /// (setting `processing`, choosing a model), so a conflict here
     /// is an ordinary race, not a fault. Giving up early would drop the
     /// turn's terminal status write and strand the node in `processing`
     /// forever.
@@ -1309,17 +1351,17 @@ impl LocalAgentServiceImpl {
         ))
     }
 
-    /// Append an assistant message to the chat's `messages`.
+    /// Append an assistant message to the chat, then mark the turn finished.
     ///
-    /// Retries the full read-modify-write on version conflict for the same
-    /// reason as `write_ai_chat_turn_status` — losing this write loses the reply.
-    /// `reasoning` is the model's captured
-    /// chain-of-thought, persisted alongside the answer when present.
+    /// The message is one node, created as the chat's last child, with the
+    /// edges recording what the turn did (see [`chat_messages`]). The agent
+    /// session is rebuilt from the stored conversation on every turn, so the
+    /// `wrote` edges are the only durable evidence that the turn's writes
+    /// happened; without them the next turn can re-execute an instruction it
+    /// already satisfied.
     ///
-    /// `completed_writes` records the graph writes this turn performed. The agent
-    /// session is rebuilt from these persisted messages on every turn, so this is
-    /// the only durable evidence that the turn's write actually happened; without
-    /// it the next turn can re-execute an instruction it already satisfied.
+    /// The status write comes last: `idle` is what lets the next message in,
+    /// and by then the reply and its edges are stored.
     async fn append_assistant_message(
         &self,
         node_id: &str,
@@ -1333,65 +1375,27 @@ impl LocalAgentServiceImpl {
             clarify,
             outcome,
         } = record;
-        for attempt in 0..MAX_WRITE_ATTEMPTS {
-            let node = self
-                .inner
-                .node_service
-                .get_node(node_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| format!("node {node_id} not found"))?;
-
-            let version = node.version;
-            let mut ai_chat = read_native_chat(node)?;
-
-            // Persist reasoning only when the model produced some, keeping the
-            // message shape minimal for plain answers.
-            let reasoning = reasoning
-                .filter(|r| !r.trim().is_empty())
-                .map(|r| r.to_string());
-            ai_chat.messages.push(AiChatMessage {
+        chat_messages::append_message(
+            &self.inner.node_service,
+            node_id,
+            NewMessage {
                 role: AiChatMessageRole::Assistant,
-                content: content.to_string(),
-                timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                content,
                 reasoning,
-                completed_writes: completed_writes.clone(),
-                resolved_entities: resolved_entities.clone(),
-                question: clarify.map(|c| c.question.clone()),
-                options: clarify.map(|c| c.options.clone()).unwrap_or_default(),
-                pending_deletions: clarify
-                    .map(|c| c.pending_deletions.clone())
-                    .unwrap_or_default(),
                 outcome,
-            });
+                options: clarify.map(|c| c.options.as_slice()).unwrap_or_default(),
+                completed_writes: &completed_writes,
+                resolved_entities: &resolved_entities,
+                pending_deletions: clarify
+                    .map(|c| c.pending_deletions.as_slice())
+                    .unwrap_or_default(),
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
-            // Set status to idle here too (atomic with message append).
-            ai_chat.turn_status = AiChatTurnStatus::Idle;
-
-            let update = NodeUpdate::new().with_properties(ai_chat.conversation_patch());
-            match self
-                .inner
-                .node_service
-                .update_node(node_id, version, update)
-                .await
-            {
-                Ok(_) => return Ok(()),
-                // Retry only a lost race — see write_ai_chat_turn_status.
-                Err(NodeServiceError::VersionConflict { .. })
-                    if attempt + 1 < MAX_WRITE_ATTEMPTS =>
-                {
-                    tracing::debug!(
-                        node_id,
-                        attempt,
-                        "version conflict appending assistant message, retrying"
-                    );
-                }
-                Err(e) => return Err(e.to_string()),
-            }
-        }
-        Err(format!(
-            "failed to append assistant message to {node_id} after {MAX_WRITE_ATTEMPTS} attempts"
-        ))
+        self.write_ai_chat_turn_status(node_id, AiChatTurnStatus::Idle)
+            .await
     }
 }
 
@@ -2327,9 +2331,6 @@ fn streaming_chunk_to_proto(chunk: StreamingChunk) -> AgentChunk {
     }
 }
 
-/// Maximum length of an evidence summary before it is clipped.
-const SUMMARY_MAX_CHARS: usize = 120;
-
 /// Which argument identifies the thing a write acted on, per tool.
 ///
 /// An explicit mapping rather than a probe across likely key names: the write
@@ -2363,29 +2364,11 @@ fn write_summary_arg(tool: &str) -> Option<&'static [&'static str]> {
     }
 }
 
-/// Clip an evidence label, marking it when clipped so a truncated summary is
-/// not mistaken for a complete one.
-fn clip_summary(s: &str) -> String {
-    let flat = flatten_label(s);
-    if flat.chars().count() > SUMMARY_MAX_CHARS {
-        let head: String = flat.chars().take(SUMMARY_MAX_CHARS).collect();
-        format!("{head}…")
-    } else {
-        flat
-    }
-}
-
-/// Newlines would let user-supplied content shape the evidence block's line
-/// structure; a label is a single line by construction.
-fn flatten_label(s: &str) -> String {
-    s.replace(['\n', '\r'], " ")
-}
-
 /// Pull the successful graph writes out of a turn's tool executions.
 ///
 /// Failed calls are excluded: a write that errored did not happen, and recording
 /// it would tell the next turn not to retry work that never landed.
-pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCompletedWrite> {
+pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<CompletedWrite> {
     executions
         .iter()
         .filter(|r| landed_write(r))
@@ -2456,12 +2439,13 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
             // is what keeps the two comparable.
             let canonical_args = canonical_args_identity(&canonical_args(&r.args.to_string()));
 
-            AiChatCompletedWrite {
+            CompletedWrite {
                 tool: r.name.clone(),
                 node_id,
                 summary,
                 replaced,
                 canonical_args,
+                target: write_target(&r.name, &r.result),
             }
         })
         .collect()
@@ -2474,15 +2458,13 @@ enum DeletionAnswer {
     Declined,
 }
 
-/// The held deletes the user's latest message answers, and how.
+/// The delete confirmation the user's latest message follows: its message id
+/// and the deletes it holds. `None` when the message before the user's holds
+/// none.
 ///
-/// `None` unless that message directly follows a delete confirmation and is an
-/// unqualified yes or no. Anything else is an ordinary turn and the held
-/// deletes lapse: they ride on the confirmation message, so a later message
-/// can never reach them.
-fn pending_deletion_answer(
-    messages: &[AiChatMessage],
-) -> Option<(Vec<AiChatPendingDeletion>, DeletionAnswer)> {
+/// The held deletes ride on the confirmation message, so only the message
+/// right after it can answer them.
+fn held_deletion_message(messages: &[StoredMessage]) -> Option<(String, Vec<PendingDeletion>)> {
     let [.., asked, reply] = messages else {
         return None;
     };
@@ -2492,34 +2474,29 @@ fn pending_deletion_answer(
     {
         return None;
     }
-    let answer = match deletion_confirmation::classify_reply(&reply.content) {
-        ConfirmationReply::Confirm => DeletionAnswer::Confirmed,
-        ConfirmationReply::Decline => DeletionAnswer::Declined,
-        ConfirmationReply::Other => return None,
-    };
-    Some((asked.pending_deletions.clone(), answer))
+    Some((asked.id.clone(), asked.pending_deletions.clone()))
 }
 
-/// Record a confirmed delete the way a completed tool write is recorded, so
-/// later turns see it in history and the cross-turn guard knows it happened.
-fn confirmed_deletion_writes(
-    outcome: &deletion_confirmation::ConfirmedDeletion,
-) -> Vec<AiChatCompletedWrite> {
-    outcome
-        .deleted
-        .iter()
-        .map(|(target, _)| {
-            let uri = format!("nodespace://{}", target.node_id);
-            let args = serde_json::json!({ "id": uri });
-            AiChatCompletedWrite {
-                tool: "delete_node".to_string(),
-                node_id: Some(uri),
-                summary: Some(clip_summary(&target.title)),
-                replaced: Vec::new(),
-                canonical_args: canonical_args_identity(&canonical_args(&args.to_string())),
-            }
-        })
-        .collect()
+/// How the user's latest message answers the delete confirmation before it.
+///
+/// `None` unless that message directly follows a delete confirmation and is an
+/// unqualified yes or no. Anything else is an ordinary turn and the held
+/// deletes lapse.
+fn pending_deletion_answer(messages: &[StoredMessage]) -> Option<DeletionAnswer> {
+    let [.., asked, reply] = messages else {
+        return None;
+    };
+    if reply.role != AiChatMessageRole::User
+        || asked.role != AiChatMessageRole::Assistant
+        || asked.pending_deletions.is_empty()
+    {
+        return None;
+    }
+    match deletion_confirmation::classify_reply(&reply.content) {
+        ConfirmationReply::Confirm => Some(DeletionAnswer::Confirmed),
+        ConfirmationReply::Decline => Some(DeletionAnswer::Declined),
+        ConfirmationReply::Other => None,
+    }
 }
 
 /// Render an edge as `"from -[type]-> to"` from a `create_relationship`
@@ -2582,7 +2559,7 @@ fn edge_label(edge: &serde_json::Value) -> String {
 /// load, if warranted.
 async fn unlinked_pair_note(
     node_service: &Arc<NodeService>,
-    completed_writes: &[AiChatCompletedWrite],
+    completed_writes: &[CompletedWrite],
 ) -> Option<String> {
     let created_ids: Vec<&str> = completed_writes
         .iter()
@@ -2689,7 +2666,7 @@ const MAX_RESOLVED_ENTITIES: usize = 20;
 /// nothing. Deduplicated by node id (last occurrence wins, so a later, more
 /// specific mention of the same node overrides an earlier one) and capped to
 /// `MAX_RESOLVED_ENTITIES` distinct entities, most-recent-first.
-pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatResolvedEntity> {
+pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<ResolvedEntity> {
     // Every entity-resolving tool's per-node JSON uses the same `id`/`title`
     // key names (see `run_node_query`, `exec_get_node`, `exec_get_related_nodes`
     // in `nodespace-agent`), and `id` itself is uniform too: `exec_get_node`
@@ -2705,18 +2682,19 @@ pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatR
             .and_then(|t| t.as_str())
             .map(str::to_string)
     };
-    let entity_from_node = |v: &serde_json::Value| -> Option<AiChatResolvedEntity> {
+    let entity_from_node = |v: &serde_json::Value, tool: &str| -> Option<ResolvedEntity> {
         let node_id = v.get("id").and_then(|id| id.as_str())?.to_string();
         let title = v.get("title").and_then(|t| t.as_str()).map(clip_summary);
         let node_type = node_type_of(v);
-        Some(AiChatResolvedEntity {
+        Some(ResolvedEntity {
             node_id,
             title,
             node_type,
+            tool: tool.to_string(),
         })
     };
 
-    let mut entities: Vec<AiChatResolvedEntity> = Vec::new();
+    let mut entities: Vec<ResolvedEntity> = Vec::new();
     for r in executions
         .iter()
         .filter(|r| !r.is_error && resolves_entities_tool(&r.name))
@@ -2733,8 +2711,12 @@ pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatR
             .or_else(|| r.result.get("candidates"))
             .and_then(|v| v.as_array())
         {
-            entities.extend(candidates.iter().filter_map(entity_from_node));
-        } else if let Some(entity) = entity_from_node(&r.result) {
+            entities.extend(
+                candidates
+                    .iter()
+                    .filter_map(|candidate| entity_from_node(candidate, &r.name)),
+            );
+        } else if let Some(entity) = entity_from_node(&r.result, &r.name) {
             entities.push(entity);
         }
     }
@@ -2742,7 +2724,7 @@ pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatR
     // Dedup by node id, keeping the last (most recent) occurrence, then cap
     // to the most recent MAX_RESOLVED_ENTITIES distinct entities.
     let mut seen = std::collections::HashSet::new();
-    let mut deduped: Vec<AiChatResolvedEntity> = Vec::new();
+    let mut deduped: Vec<ResolvedEntity> = Vec::new();
     for entity in entities.into_iter().rev() {
         if seen.insert(entity.node_id.clone()) {
             deduped.push(entity);
@@ -2759,9 +2741,9 @@ struct AssistantRecord<'a> {
     /// The model's captured chain-of-thought.
     reasoning: Option<&'a str>,
     /// Graph writes the turn performed.
-    completed_writes: Vec<AiChatCompletedWrite>,
+    completed_writes: Vec<CompletedWrite>,
     /// Graph entities the turn's reads surfaced.
-    resolved_entities: Vec<AiChatResolvedEntity>,
+    resolved_entities: Vec<ResolvedEntity>,
     /// The composed question, when the turn asked one.
     clarify: Option<&'a ClarifyPrompt>,
     /// How the turn ended. `None` for text no agent turn produced.
@@ -2774,7 +2756,7 @@ struct AssistantRecord<'a> {
 /// An assistant message with no outcome — a failed turn's error notice — is
 /// left out rather than guessed at. It neither asked the user anything nor
 /// resolved what they asked, so the intent around it is unchanged.
-fn prior_turns_from_history(messages: &[AiChatMessage]) -> Vec<PriorTurn> {
+fn prior_turns_from_history(messages: &[StoredMessage]) -> Vec<PriorTurn> {
     messages
         .iter()
         .filter(|m| m.role == AiChatMessageRole::Assistant)
@@ -2797,7 +2779,7 @@ fn prior_turns_from_history(messages: &[AiChatMessage]) -> Vec<PriorTurn> {
 /// Bob", "put it back on Alice" — is not a repeat, and refusing it would claim
 /// a write still stands that does not. Walked newest-first so a write is only
 /// ever cancelled by an eviction that came after it.
-fn prior_writes_from_history(messages: &[AiChatMessage]) -> Vec<PriorWrite> {
+fn prior_writes_from_history(messages: &[StoredMessage]) -> Vec<PriorWrite> {
     let mut evicted_later = std::collections::HashSet::new();
     let mut writes = Vec::new();
     for w in messages
@@ -2839,7 +2821,7 @@ fn prior_writes_from_history(messages: &[AiChatMessage]) -> Vec<PriorWrite> {
 /// tool-role message here would be an orphan tool result — the shape the
 /// summarization back-off in `agent_loop.rs` exists specifically to avoid,
 /// and which can abort a turn with llama.cpp `ffi error -3`.
-fn completed_writes_message(writes: &[AiChatCompletedWrite]) -> Option<ChatMessage> {
+fn completed_writes_message(writes: &[CompletedWrite]) -> Option<ChatMessage> {
     if writes.is_empty() {
         return None;
     }
@@ -2878,7 +2860,7 @@ fn completed_writes_message(writes: &[AiChatCompletedWrite]) -> Option<ChatMessa
 /// `Role::System` for the same reason `completed_writes_message` uses it, not
 /// `Role::Tool`: no tool-call turn precedes it in persisted history, so a
 /// tool-role message here would be an orphan result.
-fn resolved_entities_message(entities: &[AiChatResolvedEntity]) -> Option<ChatMessage> {
+fn resolved_entities_message(entities: &[ResolvedEntity]) -> Option<ChatMessage> {
     if entities.is_empty() {
         return None;
     }
@@ -2903,50 +2885,21 @@ fn resolved_entities_message(entities: &[AiChatResolvedEntity]) -> Option<ChatMe
     ))
 }
 
-/// Load an ai-chat node's persisted messages.
+/// Load a chat's stored conversation.
 ///
-/// The single read a turn makes of its own chat node. Both things a turn needs
-/// from it — the rendered history and the completed-write record — derive from
-/// these messages, so fetching once and deriving twice avoids a redundant read
-/// per turn. Any failure is logged here, once, and yields no messages.
-async fn load_chat_messages(node_service: &Arc<NodeService>, node_id: &str) -> Vec<AiChatMessage> {
-    let node = match node_service.get_node(node_id).await {
-        Ok(Some(n)) => n,
-        Ok(None) => {
-            tracing::warn!(node_id, "ai-chat node not found for history");
-            return vec![];
-        }
+/// The single read a turn makes of its own conversation. Both things a turn
+/// needs from it — the rendered history and the completed-write record —
+/// derive from these messages, so loading once and deriving twice avoids a
+/// redundant read per turn. A failure is logged here, once, and yields no
+/// messages.
+async fn load_chat_messages(node_service: &Arc<NodeService>, node_id: &str) -> Vec<StoredMessage> {
+    match chat_messages::load_messages(node_service, node_id).await {
+        Ok(messages) => messages,
         Err(e) => {
-            tracing::error!(node_id, error = %e, "failed to load ai-chat node for history");
-            return vec![];
-        }
-    };
-
-    match read_native_chat(node) {
-        Ok(c) => c.messages,
-        Err(e) => {
-            tracing::warn!(node_id, error = %e, "node is not a native ai-chat node");
+            tracing::error!(node_id, error = %e, "failed to load ai-chat messages for history");
             vec![]
         }
     }
-}
-
-/// Read a native chat from its node, logging each message that could not be
-/// decoded. Such a message is left out and the rest of the conversation is
-/// kept; a caller that then writes the messages back persists that, so the
-/// loss must not be silent.
-fn read_native_chat(node: nodespace_core::models::Node) -> Result<AiChatNativeNode, String> {
-    let node_id = node.id.clone();
-    let (chat, unreadable) =
-        AiChatNativeNode::from_node_reporting(node).map_err(|e| e.to_string())?;
-    for error in unreadable {
-        tracing::error!(
-            node_id = %node_id,
-            error = %error,
-            "dropping unreadable ai-chat message; the rest of the conversation is preserved"
-        );
-    }
-    Ok(chat)
 }
 
 /// Render a single completed write as a short "Fact: ..." statement, pulling
@@ -2969,7 +2922,7 @@ fn read_native_chat(node: nodespace_core::models::Node) -> Result<AiChatNativeNo
 /// Returns `None` for a write this function does not yet know how to phrase
 /// as a fact (e.g. `create_relationship`, `create_nodes_from_markdown`); the
 /// caller falls back to `w.summary` for those so no write goes unrecorded.
-fn terse_write_fact(w: &AiChatCompletedWrite) -> Option<String> {
+fn terse_write_fact(w: &CompletedWrite) -> Option<String> {
     // `canonical_args` is either the canonical call JSON verbatim or a
     // `sha256:`-prefixed digest of it (see `canonical_args_identity`) when the
     // call was too large to store — the digest form starts with that prefix
@@ -3112,7 +3065,7 @@ fn replaced_clause(replaced: &[String]) -> Option<String> {
 /// `None` when the turn made no writes (a read-only or conversational turn) —
 /// callers fall back to the turn's own reply text in that case, since there is
 /// no structured record to render instead.
-fn terse_assistant_facts(writes: &[AiChatCompletedWrite]) -> Option<String> {
+fn terse_assistant_facts(writes: &[CompletedWrite]) -> Option<String> {
     if writes.is_empty() {
         return None;
     }
@@ -3167,7 +3120,7 @@ fn terse_assistant_facts(writes: &[AiChatCompletedWrite]) -> Option<String> {
 /// history. Replacing it with write facts would re-ask the same question on
 /// the answer — the writes themselves still follow as the completed-writes
 /// record below.
-pub fn node_history_from_messages(messages: Vec<AiChatMessage>) -> Vec<ChatMessage> {
+pub fn node_history_from_messages(messages: Vec<StoredMessage>) -> Vec<ChatMessage> {
     messages
         .into_iter()
         .flat_map(|m| {
@@ -3176,7 +3129,7 @@ pub fn node_history_from_messages(messages: Vec<AiChatMessage>) -> Vec<ChatMessa
                 AiChatMessageRole::Assistant => Role::Assistant,
                 AiChatMessageRole::System => return Vec::new(),
             };
-            let content = if role == Role::Assistant && m.question.is_none() {
+            let content = if role == Role::Assistant && !m.asks() {
                 terse_assistant_facts(&m.completed_writes).unwrap_or(m.content)
             } else {
                 m.content
@@ -3299,6 +3252,7 @@ async fn build_workspace_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::chat_messages::SUMMARY_MAX_CHARS;
     use nodespace_agent::local_agent::agent_loop::CANONICAL_ARGS_MAX_CHARS;
     use nodespace_agent::local_agent::tools::is_write_tool;
     use nodespace_core::models::Node;
@@ -3442,7 +3396,7 @@ mod tests {
         let node = Node::new(
             "ai-chat-native".to_string(),
             "Test chat".to_string(),
-            serde_json::json!({ "agent": "nodespace", "messages": [] }),
+            serde_json::json!({ "agent": "nodespace" }),
         );
         node_service
             .create_node(node)
@@ -3461,10 +3415,11 @@ mod tests {
         node_service.create_node(node).await.expect("create schema")
     }
 
-    /// An `AiChatCompletedWrite` shaped the way `unlinked_pair_note` reads it
+    /// An `CompletedWrite` shaped the way `unlinked_pair_note` reads it
     /// — only `tool` and `node_id` factor into its detection.
-    fn schema_create_write(schema_id: &str) -> AiChatCompletedWrite {
-        AiChatCompletedWrite {
+    fn schema_create_write(schema_id: &str) -> CompletedWrite {
+        CompletedWrite {
+            target: None,
             tool: "create_schema".to_string(),
             node_id: Some(schema_id.to_string()),
             summary: None,
@@ -3705,49 +3660,70 @@ mod tests {
         );
     }
 
-    /// Create an ai-chat node already sitting in `status: "processing"` with a
-    /// trailing user message — the exact shape the frontend produces via
-    /// batch-update before triggering a turn (mirrors `scripts/aichat.ts`).
+    /// Send a user message the way a client does: the message node, then the
+    /// chat's `processing` status (mirrors `scripts/aichat.ts`).
+    async fn send_user_message(node_service: &Arc<NodeService>, chat_id: &str, user_text: &str) {
+        chat_messages::append_message(
+            node_service,
+            chat_id,
+            NewMessage::text(AiChatMessageRole::User, user_text),
+        )
+        .await
+        .expect("append user message");
+        let version = node_service
+            .get_node(chat_id)
+            .await
+            .expect("get node")
+            .expect("node exists")
+            .version;
+        node_service
+            .update_node(
+                chat_id,
+                version,
+                NodeUpdate::new()
+                    .with_properties(serde_json::json!({ "turn_status": "processing" })),
+            )
+            .await
+            .expect("set processing");
+    }
+
+    /// Create an ai-chat node already sitting in `turn_status: "processing"`
+    /// with a trailing user message: a turn request awaiting the daemon.
     async fn create_processing_node_with_user_message(
         node_service: &Arc<NodeService>,
         user_text: &str,
     ) -> String {
         let node_id = create_ai_chat_node(node_service).await;
-        let node = node_service
-            .get_node(&node_id)
-            .await
-            .expect("get node")
-            .expect("node exists");
-        let version = node.version;
-        let mut ai_chat = AiChatNativeNode::from_node(node).expect("from_node");
-        ai_chat.turn_status = AiChatTurnStatus::Processing;
-        ai_chat.messages.push(AiChatMessage {
-            role: AiChatMessageRole::User,
-            content: user_text.to_string(),
-            timestamp: Some(chrono::Utc::now().to_rfc3339()),
-            reasoning: None,
-            completed_writes: Vec::new(),
-            resolved_entities: Vec::new(),
-            question: None,
-            options: Vec::new(),
-            pending_deletions: Vec::new(),
-            outcome: None,
-        });
-        let props = ai_chat.conversation_patch();
-        node_service
-            .update_node(&node_id, version, NodeUpdate::new().with_properties(props))
-            .await
-            .expect("set processing + user message");
+        send_user_message(node_service, &node_id, user_text).await;
         node_id
     }
 
-    async fn get_ai_chat(node_service: &Arc<NodeService>, node_id: &str) -> AiChatNativeNode {
+    /// A chat as the tests read it: the node, and its conversation.
+    struct TestChat {
+        node: AiChatNativeNode,
+        messages: Vec<StoredMessage>,
+    }
+
+    impl std::ops::Deref for TestChat {
+        type Target = AiChatNativeNode;
+
+        fn deref(&self) -> &AiChatNativeNode {
+            &self.node
+        }
+    }
+
+    async fn get_ai_chat(node_service: &Arc<NodeService>, node_id: &str) -> TestChat {
         let node = node_service
             .get_node(node_id)
             .await
             .expect("get node")
             .expect("node exists");
-        AiChatNativeNode::from_node(node).expect("from_node")
+        TestChat {
+            node: AiChatNativeNode::from_node(node).expect("from_node"),
+            messages: chat_messages::load_messages(node_service, node_id)
+                .await
+                .expect("load messages"),
+        }
     }
 
     // -- Stub inference engine -------------------------------------------
@@ -4577,17 +4553,220 @@ mod tests {
         );
     }
 
+    /// A chat asked for a turn with no user message to answer is put back to
+    /// `idle`, not left `processing` with its composer locked: a client that
+    /// writes the status without a message stored (its create failed, or it
+    /// never sent one) gets a chat it can use again.
+    #[tokio::test]
+    async fn a_turn_request_with_no_user_message_resets_to_idle() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        svc.replace_engine(Arc::new(StubEngine::new("must not be used")))
+            .await;
+
+        // No message at all, and a conversation whose latest message is the
+        // assistant's.
+        for seeded in [0, 2] {
+            let chat_id = create_ai_chat_node(&node_service).await;
+            append_history(&node_service, &chat_id, seeded).await;
+            let version = node_service
+                .get_node(&chat_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .version;
+            node_service
+                .update_node(
+                    &chat_id,
+                    version,
+                    NodeUpdate::new()
+                        .with_properties(serde_json::json!({ "turn_status": "processing" })),
+                )
+                .await
+                .expect("set processing");
+
+            svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+            let chat = get_ai_chat(&node_service, &chat_id).await;
+            assert_eq!(chat.turn_status, AiChatTurnStatus::Idle, "seeded={seeded}");
+            assert_eq!(chat.messages.len(), seeded, "no reply was produced");
+            assert!(
+                svc.inner.turn_tokens.lock().await.get(&chat_id).is_none(),
+                "no lingering turn token"
+            );
+        }
+    }
+
+    /// The message a turn answers is the one stored when the turn is asked
+    /// for. After a cancelled turn the cancelled message is still the chat's
+    /// latest; the next send stores its message and then asks, so the reply
+    /// follows the new message and the turn saw both.
+    #[tokio::test]
+    async fn a_send_after_a_cancelled_turn_answers_the_new_message() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        svc.replace_engine(Arc::new(StubEngine::new("Hello back!")))
+            .await;
+        let chat_id = create_ai_chat_node(&node_service).await;
+        // A cancelled turn leaves its user message and nothing after it.
+        chat_messages::append_message(
+            &node_service,
+            &chat_id,
+            NewMessage::text(AiChatMessageRole::User, "first try"),
+        )
+        .await
+        .unwrap();
+
+        send_user_message(&node_service, &chat_id, "rephrased").await;
+        svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+        let chat = get_ai_chat(&node_service, &chat_id).await;
+        assert_eq!(chat.turn_status, AiChatTurnStatus::Idle);
+        let shape: Vec<(AiChatMessageRole, &str)> = chat
+            .messages
+            .iter()
+            .map(|m| (m.role, m.content.as_str()))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (AiChatMessageRole::User, "first try"),
+                (AiChatMessageRole::User, "rephrased"),
+                (AiChatMessageRole::Assistant, "Hello back!"),
+            ]
+        );
+    }
+
+    /// A message stored on its own asks for nothing: only the chat's
+    /// `processing` status does. Seeding a conversation, or a client still
+    /// composing its request, starts no turn.
+    #[tokio::test]
+    async fn storing_a_user_message_alone_starts_no_turn() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        svc.replace_engine(Arc::new(StubEngine::new("must not be used")))
+            .await;
+        svc.start_event_watcher();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let chat_id = create_ai_chat_node(&node_service).await;
+        chat_messages::append_message(
+            &node_service,
+            &chat_id,
+            NewMessage::text(AiChatMessageRole::User, "Hi there"),
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let chat = get_ai_chat(&node_service, &chat_id).await;
+        assert_eq!(chat.turn_status, AiChatTurnStatus::Idle);
+        assert_eq!(chat.messages.len(), 1);
+        svc.shutdown().await;
+    }
+
+    /// A yes deletes only what the user was shown. A node added under the
+    /// target after the question is not something they agreed to remove, so
+    /// the delete does not run.
+    #[tokio::test]
+    async fn a_yes_does_not_delete_a_node_that_gained_children_since_the_question() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        svc.replace_engine(Arc::new(StubEngine::new("model reply")))
+            .await;
+        let (chat_id, target_id) = chat_answering_a_delete_confirmation(
+            &node_service,
+            deletion_confirmation::CONFIRM_OPTION,
+        )
+        .await;
+        let added = node_service
+            .create_node_with_parent(nodespace_core::services::CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Added after the question".to_string(),
+                parent_id: Some(target_id.clone()),
+                position: nodespace_core::services::InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .expect("add a child");
+
+        svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+        assert!(node_exists(&node_service, &target_id).await);
+        assert!(node_exists(&node_service, &added).await);
+        let chat = get_ai_chat(&node_service, &chat_id).await;
+        assert_eq!(chat.turn_status, AiChatTurnStatus::Idle);
+        assert_ne!(chat.messages.last().unwrap().content, "model reply");
+        assert_eq!(held_deletions(&node_service, &chat_id).await, 0);
+    }
+
+    /// The agent can be asked to delete a chat: the held delete is found when
+    /// the user answers, and a yes deletes it.
+    #[tokio::test]
+    async fn a_yes_to_deleting_a_chat_deletes_it() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        svc.replace_engine(Arc::new(StubEngine::new("model reply")))
+            .await;
+        let doomed = create_ai_chat_node(&node_service).await;
+        let pending = deletion_confirmation::preview_deletion(&node_service, &doomed)
+            .await
+            .expect("preview")
+            .expect("target exists");
+        let question = deletion_confirmation::confirmation_question(std::slice::from_ref(&pending));
+
+        let chat_id = create_ai_chat_node(&node_service).await;
+        chat_messages::append_message(
+            &node_service,
+            &chat_id,
+            NewMessage::text(AiChatMessageRole::User, "delete the test chat"),
+        )
+        .await
+        .unwrap();
+        chat_messages::append_message(
+            &node_service,
+            &chat_id,
+            NewMessage {
+                outcome: Some(AiChatTurnOutcome::Acted),
+                options: &[
+                    deletion_confirmation::CONFIRM_OPTION.to_string(),
+                    deletion_confirmation::DECLINE_OPTION.to_string(),
+                ],
+                pending_deletions: std::slice::from_ref(&pending),
+                ..NewMessage::text(
+                    AiChatMessageRole::Assistant,
+                    &deletion_confirmation::confirmation_text(&question),
+                )
+            },
+        )
+        .await
+        .unwrap();
+        send_user_message(
+            &node_service,
+            &chat_id,
+            deletion_confirmation::CONFIRM_OPTION,
+        )
+        .await;
+
+        svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+        assert!(!node_exists(&node_service, &doomed).await);
+        let reply = get_ai_chat(&node_service, &chat_id).await;
+        assert_ne!(
+            reply.messages.last().unwrap().content,
+            "model reply",
+            "the yes is answered without the model"
+        );
+    }
+
     // -- Agent deletes wait for the user's yes -------------------------------
 
-    fn chat_message(role: AiChatMessageRole, content: &str) -> AiChatMessage {
-        AiChatMessage {
+    fn chat_message(role: AiChatMessageRole, content: &str) -> StoredMessage {
+        StoredMessage {
             role,
             content: content.to_string(),
             timestamp: None,
             reasoning: None,
             completed_writes: Vec::new(),
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,
@@ -4613,33 +4792,44 @@ mod tests {
             .expect("preview")
             .expect("target exists");
         let question = deletion_confirmation::confirmation_question(std::slice::from_ref(&pending));
-        let mut asked = chat_message(
-            AiChatMessageRole::Assistant,
-            &deletion_confirmation::confirmation_text(&question),
-        );
-        asked.question = Some(question);
-        asked.options = vec![
-            deletion_confirmation::CONFIRM_OPTION.to_string(),
-            deletion_confirmation::DECLINE_OPTION.to_string(),
-        ];
-        asked.pending_deletions = vec![pending];
 
         let chat_id = create_ai_chat_node(node_service).await;
-        let node = node_service.get_node(&chat_id).await.unwrap().unwrap();
-        let version = node.version;
-        let mut ai_chat = AiChatNativeNode::from_node(node).unwrap();
-        ai_chat.turn_status = AiChatTurnStatus::Processing;
-        ai_chat.messages = vec![
-            chat_message(AiChatMessageRole::User, "delete the old plan"),
-            asked,
-            chat_message(AiChatMessageRole::User, reply),
-        ];
-        let props = ai_chat.conversation_patch();
-        node_service
-            .update_node(&chat_id, version, NodeUpdate::new().with_properties(props))
-            .await
-            .expect("seed chat");
+        chat_messages::append_message(
+            node_service,
+            &chat_id,
+            NewMessage::text(AiChatMessageRole::User, "delete the old plan"),
+        )
+        .await
+        .expect("seed the request");
+        chat_messages::append_message(
+            node_service,
+            &chat_id,
+            NewMessage {
+                outcome: Some(AiChatTurnOutcome::Acted),
+                options: &[
+                    deletion_confirmation::CONFIRM_OPTION.to_string(),
+                    deletion_confirmation::DECLINE_OPTION.to_string(),
+                ],
+                pending_deletions: std::slice::from_ref(&pending),
+                ..NewMessage::text(
+                    AiChatMessageRole::Assistant,
+                    &deletion_confirmation::confirmation_text(&question),
+                )
+            },
+        )
+        .await
+        .expect("seed the confirmation");
+        send_user_message(node_service, &chat_id, reply).await;
         (chat_id, target_id)
+    }
+
+    /// The deletes a chat's confirmation message still holds.
+    async fn held_deletions(node_service: &Arc<NodeService>, chat_id: &str) -> usize {
+        load_chat_messages(node_service, chat_id)
+            .await
+            .iter()
+            .map(|m| m.pending_deletions.len())
+            .sum()
     }
 
     async fn node_exists(node_service: &Arc<NodeService>, id: &str) -> bool {
@@ -4666,12 +4856,11 @@ mod tests {
         assert_eq!(ai_chat.turn_status, AiChatTurnStatus::Idle);
         let reply = ai_chat.messages.last().unwrap();
         assert_eq!(reply.content, "Deleted \"Old plan\" (text).");
-        assert_eq!(reply.completed_writes.len(), 1);
-        assert_eq!(reply.completed_writes[0].tool, "delete_node");
-        assert_eq!(
-            reply.completed_writes[0].node_id.as_deref(),
-            Some(format!("nodespace://{target_id}").as_str())
-        );
+        assert_eq!(reply.outcome, Some(AiChatTurnOutcome::Acted));
+        // The node is gone, and an edge to it with it: the reply's text is
+        // the record of the delete.
+        assert!(reply.completed_writes.is_empty());
+        assert_eq!(held_deletions(&node_service, &chat_id).await, 0);
     }
 
     /// The whole seam: a real turn holds the model's delete and persists the
@@ -4705,29 +4894,33 @@ mod tests {
             .messages
             .pop()
             .expect("confirmation appended");
+        assert!(
+            asked
+                .content
+                .contains("Delete \"Old plan\" (text)? This can't be undone."),
+            "the question is the message's content: {}",
+            asked.content
+        );
         assert_eq!(
-            asked.question.as_deref(),
-            Some("Delete \"Old plan\" (text)? This can't be undone.")
+            asked.options,
+            [
+                deletion_confirmation::CONFIRM_OPTION,
+                deletion_confirmation::DECLINE_OPTION
+            ]
         );
         assert_eq!(asked.pending_deletions.len(), 1);
+        assert_eq!(asked.pending_deletions[0].node_id, target_id);
         assert!(
             asked.completed_writes.is_empty(),
             "a held delete is not a completed write"
         );
 
-        let node = node_service.get_node(&chat_id).await.unwrap().unwrap();
-        let version = node.version;
-        let mut ai_chat = AiChatNativeNode::from_node(node).unwrap();
-        ai_chat.turn_status = AiChatTurnStatus::Processing;
-        ai_chat.messages.push(chat_message(
-            AiChatMessageRole::User,
+        send_user_message(
+            &node_service,
+            &chat_id,
             deletion_confirmation::CONFIRM_OPTION,
-        ));
-        let props = ai_chat.conversation_patch();
-        node_service
-            .update_node(&chat_id, version, NodeUpdate::new().with_properties(props))
-            .await
-            .expect("send yes");
+        )
+        .await;
         svc.maybe_handle_ai_chat_node(&chat_id).await;
 
         assert!(!node_exists(&node_service, &target_id).await);
@@ -4752,6 +4945,11 @@ mod tests {
         let reply = ai_chat.messages.last().unwrap();
         assert_eq!(reply.content, deletion_confirmation::DECLINED_TEXT);
         assert!(reply.completed_writes.is_empty());
+        assert_eq!(
+            held_deletions(&node_service, &chat_id).await,
+            0,
+            "declining removes the held delete's edge"
+        );
     }
 
     /// A reply that is not an unqualified yes or no is an ordinary turn: the
@@ -4769,6 +4967,11 @@ mod tests {
         assert!(node_exists(&node_service, &target_id).await);
         let ai_chat = get_ai_chat(&node_service, &chat_id).await;
         assert_eq!(ai_chat.messages.last().unwrap().content, "model reply");
+        assert_eq!(
+            held_deletions(&node_service, &chat_id).await,
+            0,
+            "a held delete lapses with the message after it: no later yes can reach it"
+        );
     }
 
     /// Only a reply to the confirmation itself can confirm it: a yes sent
@@ -4776,7 +4979,7 @@ mod tests {
     #[test]
     fn only_the_message_right_after_a_confirmation_answers_it() {
         let mut asked = chat_message(AiChatMessageRole::Assistant, "Delete \"A\" (text)?");
-        asked.pending_deletions = vec![AiChatPendingDeletion {
+        asked.pending_deletions = vec![PendingDeletion {
             node_id: "a".to_string(),
             title: "A".to_string(),
             node_type: "text".to_string(),
@@ -4785,10 +4988,11 @@ mod tests {
         }];
 
         let direct = [asked.clone(), chat_message(AiChatMessageRole::User, "yes")];
-        assert!(matches!(
+        assert_eq!(
             pending_deletion_answer(&direct),
-            Some((_, DeletionAnswer::Confirmed))
-        ));
+            Some(DeletionAnswer::Confirmed)
+        );
+        assert!(held_deletion_message(&direct).is_some());
 
         let later = [
             asked,
@@ -4797,19 +5001,29 @@ mod tests {
             chat_message(AiChatMessageRole::User, "yes"),
         ];
         assert!(pending_deletion_answer(&later).is_none());
+        assert!(held_deletion_message(&later).is_none());
     }
 
+    /// A held delete is a `pending_delete` edge from the confirmation message
+    /// to the node, carrying the version and nested-node count the user was
+    /// shown. Its title and type are read from the node when the chat is
+    /// loaded.
     #[tokio::test]
     async fn pending_deletions_persist_on_the_confirmation_message() {
         let (svc, node_service, _tempdir) = test_service().await;
         let node_id = create_processing_node_with_user_message(&node_service, "delete A").await;
-        let pending = AiChatPendingDeletion {
-            node_id: "a".to_string(),
-            title: "A".to_string(),
-            node_type: "text".to_string(),
-            version: 4,
-            descendant_count: 2,
-        };
+        let target_id = node_service
+            .create_node(Node::new(
+                "text".to_string(),
+                "A".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .expect("create target");
+        let pending = deletion_confirmation::preview_deletion(&node_service, &target_id)
+            .await
+            .expect("preview")
+            .expect("target exists");
 
         let clarify = ClarifyPrompt {
             question: "Delete \"A\" (text)?".to_string(),
@@ -4829,6 +5043,17 @@ mod tests {
 
         let messages = load_chat_messages(&node_service, &node_id).await;
         assert_eq!(messages.last().unwrap().pending_deletions, vec![pending]);
+
+        let edges = node_service
+            .get_child_edges(&node_id, &[nodespace_core::models::AI_CHAT_PENDING_DELETE])
+            .await
+            .expect("edges");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].2.id, target_id);
+        assert_eq!(
+            edges[0].3,
+            serde_json::json!({ "version": 1, "descendant_count": 0 })
+        );
     }
 
     // -- ADR-053: per-database routing over a daemon-global engine ----------
@@ -4881,10 +5106,7 @@ mod tests {
     /// of the explicit trigger and the database's own event watcher claims it
     /// first — they dedup on the same claim — so tests wait for the node to
     /// settle rather than assuming which one got there.
-    async fn await_settled_ai_chat(
-        node_service: &Arc<NodeService>,
-        node_id: &str,
-    ) -> AiChatNativeNode {
+    async fn await_settled_ai_chat(node_service: &Arc<NodeService>, node_id: &str) -> TestChat {
         for _ in 0..200 {
             let chat = get_ai_chat(node_service, node_id).await;
             if chat.turn_status != AiChatTurnStatus::Processing {
@@ -5353,10 +5575,9 @@ mod tests {
         assert_eq!(assistant.reasoning.as_deref(), Some("I reasoned about it."));
     }
 
-    /// A `route_clarify` turn's structured question/options must
-    /// persist onto the node alongside the flattened `content` text, not only
-    /// as markdown prose — that structure is what the frontend renders as
-    /// clickable options instead of parsed-out bullets.
+    /// A `route_clarify` turn's options persist on the message beside its
+    /// `content`, which is the question: that structure is what the frontend
+    /// renders as clickable options instead of parsed-out bullets.
     #[tokio::test]
     async fn clarify_question_and_options_persist_onto_the_node() {
         let (svc, node_service, _tempdir) = test_service().await;
@@ -5387,10 +5608,13 @@ mod tests {
             .iter()
             .find(|m| m.role == AiChatMessageRole::Assistant)
             .expect("assistant message present");
-        assert_eq!(
-            assistant.question.as_deref(),
-            Some("Did you want to track debts or search notes?")
+        assert!(
+            assistant
+                .content
+                .contains("Did you want to track debts or search notes?"),
+            "the question is the message's content"
         );
+        assert!(assistant.asks());
         assert_eq!(
             assistant.options,
             vec![
@@ -5455,7 +5679,7 @@ mod tests {
         );
     }
 
-    /// An ordinary reply (no clarify) must not gain `question`/`options` —
+    /// An ordinary reply (no clarify) must not gain `options` —
     /// only a genuine `route_clarify` turn should ever render option chips.
     #[tokio::test]
     async fn ordinary_reply_persists_no_clarify_fields() {
@@ -5471,7 +5695,7 @@ mod tests {
             .iter()
             .find(|m| m.role == AiChatMessageRole::Assistant)
             .expect("assistant message present");
-        assert!(assistant.question.is_none());
+        assert!(!assistant.asks());
         assert!(assistant.options.is_empty());
     }
 
@@ -5487,6 +5711,114 @@ mod tests {
         }
     }
 
+    /// The cross-turn duplicate guard is seeded from the conversation's `wrote`
+    /// edges: each write's tool and canonical arguments come back off the edge
+    /// to the node it landed on. A turn that wrote one node twice (created it,
+    /// then linked it) keeps both writes on that node's one edge, in call
+    /// order, and an evicted edge travels with the write that evicted it.
+    #[tokio::test]
+    async fn the_duplicate_guard_reads_canonical_args_from_wrote_edges() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        let chat_id = create_ai_chat_node(&node_service).await;
+        let mut ids = Vec::new();
+        for (node_type, content) in [("task", "Ship the release"), ("text", "Release notes")] {
+            ids.push(
+                node_service
+                    .create_node(Node::new(
+                        node_type.to_string(),
+                        content.to_string(),
+                        serde_json::json!({}),
+                    ))
+                    .await
+                    .expect("create a written node"),
+            );
+        }
+        let (task, notes) = (
+            format!("nodespace://{}", ids[0]),
+            format!("nodespace://{}", ids[1]),
+        );
+
+        let writes = completed_writes_from(&[
+            exec(
+                "create_node",
+                serde_json::json!({ "node_type": "task", "content": "Ship the release" }),
+                serde_json::json!({ "id": task }),
+            ),
+            exec(
+                "create_node",
+                serde_json::json!({ "node_type": "text", "content": "Release notes" }),
+                serde_json::json!({ "id": notes }),
+            ),
+            exec(
+                "create_relationship",
+                serde_json::json!({ "from_id": task, "relationship_type": "relates_to", "to_id": notes }),
+                serde_json::json!({
+                    "from_id": task, "type": "relates_to", "to_id": notes,
+                    "replaced": [{ "from_id": task, "type": "relates_to", "to_id": "nodespace://old" }]
+                }),
+            ),
+        ]);
+        svc.append_assistant_message(
+            &chat_id,
+            "Created the task and its notes, and linked them.",
+            AssistantRecord {
+                completed_writes: writes.clone(),
+                outcome: Some(AiChatTurnOutcome::Acted),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("append");
+
+        // Stored: one edge per node written, the task's holding both of its
+        // writes.
+        let edges = node_service
+            .get_child_edges(&chat_id, &[nodespace_core::models::AI_CHAT_WROTE])
+            .await
+            .expect("edges");
+        let stored: Vec<(&str, Vec<&str>)> = edges
+            .iter()
+            .map(|(_, _, target, fields)| {
+                (
+                    target.id.as_str(),
+                    fields["writes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|w| w["tool"].as_str().unwrap())
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            stored,
+            [
+                (ids[0].as_str(), vec!["create_node", "create_relationship"]),
+                (ids[1].as_str(), vec!["create_node"]),
+            ]
+        );
+
+        // Read back for the next turn: the same writes, in call order, with
+        // the identities the guard compares.
+        let messages = load_chat_messages(&node_service, &chat_id).await;
+        assert_eq!(messages.last().unwrap().completed_writes, writes);
+        let prior = prior_writes_from_history(&messages);
+        let seeded: Vec<(&str, &str)> = prior
+            .iter()
+            .map(|w| (w.tool.as_str(), w.canonical_args.as_str()))
+            .collect();
+        let expected: Vec<(&str, &str)> = writes
+            .iter()
+            .map(|w| (w.tool.as_str(), w.canonical_args.as_str()))
+            .collect();
+        assert_eq!(seeded, expected);
+        assert_eq!(prior[0].node_id.as_deref(), Some(task.as_str()));
+        assert_eq!(
+            messages.last().unwrap().completed_writes[2].replaced,
+            [format!("{task} -[relates_to]-> nodespace://old")]
+        );
+    }
+
     /// The cross-turn case. The per-turn `seen_calls` guard cannot cover this:
     /// the agent session is destroyed at the end of every turn, so turn N+1 has
     /// no in-memory record of turn N at all.
@@ -5499,10 +5831,21 @@ mod tests {
         let (svc, node_service, _tempdir) = test_service().await;
         let node_id = create_ai_chat_node(&node_service).await;
 
+        // The node the turn's `create_node` call made: the write's record is
+        // an edge to it.
+        let album = node_service
+            .create_node(Node::new(
+                "text".to_string(),
+                "Kind of Blue by Miles Davis".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .expect("create the written node");
+        let album_uri = format!("nodespace://{album}");
         let writes = completed_writes_from(&[exec(
             "create_node",
             serde_json::json!({"content": "Kind of Blue by Miles Davis", "node_type": "album_to_listen"}),
-            serde_json::json!({"id": "nodespace://f1f25564"}),
+            serde_json::json!({ "id": album_uri }),
         )]);
 
         svc.append_assistant_message(
@@ -5528,7 +5871,15 @@ mod tests {
             );
         assert!(evidence.content.contains("create_node"));
         assert!(evidence.content.contains("Kind of Blue by Miles Davis"));
-        assert!(evidence.content.contains("nodespace://f1f25564"));
+        assert!(evidence.content.contains(&album_uri));
+
+        // The record is a `wrote` edge from the reply to the node.
+        let edges = node_service
+            .get_child_edges(&node_id, &[nodespace_core::models::AI_CHAT_WROTE])
+            .await
+            .expect("edges");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].2.id, album);
         // The evidence must follow the assistant turn it describes.
         let assistant_idx = history
             .iter()
@@ -5694,13 +6045,23 @@ mod tests {
         let (svc, node_service, _tempdir) = test_service().await;
         let node_id = create_ai_chat_node(&node_service).await;
 
+        // The node the turn's search surfaced: the record is an edge to it.
+        let task = node_service
+            .create_node(Node::new(
+                "task".to_string(),
+                "Finish the report".to_string(),
+                serde_json::json!({}),
+            ))
+            .await
+            .expect("create the looked-up node");
+        let task_uri = format!("nodespace://{task}");
         let entities = resolved_entities_from(&[exec(
             "search_nodes",
             serde_json::json!({"query": "tasks", "node_type": "task"}),
             serde_json::json!({
                 "count": 1,
                 "nodes": [
-                    {"id": "nodespace://one-task", "title": "Finish the report", "type": "task"}
+                    {"id": task_uri, "title": "Finish the report", "type": "task"}
                 ]
             }),
         )]);
@@ -5731,8 +6092,9 @@ mod tests {
                 "next turn must see durable evidence of the resolved entity; without it the \
                  model cannot resolve a follow-up pronoun (\"that\", \"it\") back to a node id",
             );
-        assert!(evidence.content.contains("nodespace://one-task"));
+        assert!(evidence.content.contains(&task_uri));
         assert!(evidence.content.contains("Finish the report"));
+        assert!(evidence.content.contains("(task)"));
 
         // Never an orphan tool-role message, for the same reason as writes.
         assert!(
@@ -6206,20 +6568,22 @@ model = "model-b"
     /// a digested one, which is precisely the case that used to be dropped.
     #[tokio::test]
     async fn prior_writes_are_rebuilt_from_persisted_messages() {
-        let msgs = vec![AiChatMessage {
+        let msgs = vec![StoredMessage {
             role: AiChatMessageRole::Assistant,
             content: "Added it.".to_string(),
             timestamp: None,
             reasoning: None,
             completed_writes: vec![
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://n1".to_string()),
                     summary: Some("Buy milk".to_string()),
                     replaced: Vec::new(),
                     canonical_args: r#"{"content":"Buy milk"}"#.to_string(),
                 },
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "create_nodes_from_markdown".to_string(),
                     node_id: Some("nodespace://n2".to_string()),
                     summary: Some("big import".to_string()),
@@ -6228,7 +6592,7 @@ model = "model-b"
                 },
             ],
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,
@@ -6437,12 +6801,13 @@ model = "model-b"
     /// (which would silently render `None` for the field values) is caught.
     #[test]
     fn terse_write_fact_reads_field_values_key() {
-        let history = node_history_from_messages(vec![AiChatMessage {
+        let history = node_history_from_messages(vec![StoredMessage {
             role: AiChatMessageRole::Assistant,
             content: "Marked the invoice as paid.".to_string(),
             timestamp: None,
             reasoning: None,
-            completed_writes: vec![AiChatCompletedWrite {
+            completed_writes: vec![CompletedWrite {
+                target: None,
                 tool: "update_node".to_string(),
                 node_id: Some("nodespace://n1".to_string()),
                 summary: None,
@@ -6451,7 +6816,7 @@ model = "model-b"
                     .to_string(),
             }],
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,
@@ -6480,7 +6845,8 @@ model = "model-b"
         let question = "I can take that a couple of ways. \"Northwind Trading\" already exists.";
         let mut turn = assistant_turn(
             question,
-            AiChatCompletedWrite {
+            CompletedWrite {
+                target: None,
                 tool: "create_node".to_string(),
                 node_id: Some("nodespace://t1".to_string()),
                 summary: Some("Tailspin Toys".to_string()),
@@ -6488,7 +6854,7 @@ model = "model-b"
                 canonical_args: r#"{"content":"Tailspin Toys"}"#.to_string(),
             },
         );
-        turn.question = Some("\"Northwind Trading\" already exists.".to_string());
+        turn.outcome = Some(AiChatTurnOutcome::Clarified);
 
         let history = node_history_from_messages(vec![turn]);
 
@@ -6504,30 +6870,30 @@ model = "model-b"
     }
 
     /// Build one persisted assistant turn carrying a single completed write.
-    fn assistant_turn(content: &str, write: AiChatCompletedWrite) -> AiChatMessage {
-        AiChatMessage {
+    fn assistant_turn(content: &str, write: CompletedWrite) -> StoredMessage {
+        StoredMessage {
             role: AiChatMessageRole::Assistant,
             content: content.to_string(),
             timestamp: None,
             reasoning: None,
             completed_writes: vec![write],
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,
         }
     }
 
-    fn user_turn(content: &str) -> AiChatMessage {
-        AiChatMessage {
+    fn user_turn(content: &str) -> StoredMessage {
+        StoredMessage {
             role: AiChatMessageRole::User,
             content: content.to_string(),
             timestamp: None,
             reasoning: None,
             completed_writes: vec![],
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,
@@ -6564,7 +6930,8 @@ model = "model-b"
             user_turn("Log a decision: the reports page uses server-side rendering"),
             assistant_turn(
                 "I logged the decision.",
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://dec1".to_string()),
                     summary: Some("the reports page uses server-side rendering".to_string()),
@@ -6576,7 +6943,8 @@ model = "model-b"
             user_turn("Add a task to rebuild the reports page"),
             assistant_turn(
                 "Added the task.",
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://task1".to_string()),
                     summary: Some("rebuild the reports page".to_string()),
@@ -6588,7 +6956,8 @@ model = "model-b"
             user_turn("Point that rebuild task at the decision it has to respect"),
             assistant_turn(
                 "Linked them.",
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "create_relationship".to_string(),
                     // Relationship writes report no node id — see
                     // `completed_writes_from`. The edge lives in `summary`.
@@ -6660,7 +7029,8 @@ model = "model-b"
             user_turn("Put one down for offline sync, still a draft, we reckon five days"),
             assistant_turn(
                 "Added it.",
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://fw1".to_string()),
                     summary: Some("offline sync".to_string()),
@@ -6718,7 +7088,8 @@ model = "model-b"
             user_turn("Log the checkout rewrite, we think nine days"),
             assistant_turn(
                 "Logged it.",
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://fw10".to_string()),
                     summary: Some("checkout rewrite".to_string()),
@@ -6731,7 +7102,8 @@ model = "model-b"
             user_turn("Also the search indexer, that one's twenty-one days"),
             assistant_turn(
                 "Logged it.",
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://fw11".to_string()),
                     summary: Some("search indexer".to_string()),
@@ -6744,7 +7116,8 @@ model = "model-b"
             user_turn("And the audit log export, call it four days"),
             assistant_turn(
                 "Logged it.",
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://fw12".to_string()),
                     summary: Some("audit log export".to_string()),
@@ -6840,14 +7213,14 @@ model = "model-b"
     fn scenario_13_seeded_referent_is_absent_from_history() {
         let history = node_history_from_messages(vec![
             user_turn("What can you do?"),
-            AiChatMessage {
+            StoredMessage {
                 role: AiChatMessageRole::Assistant,
                 content: "I can help you track work in your graph.".to_string(),
                 timestamp: None,
                 reasoning: None,
                 completed_writes: vec![],
                 resolved_entities: Vec::new(),
-                question: None,
+                id: String::new(),
                 options: Vec::new(),
                 pending_deletions: Vec::new(),
                 outcome: None,
@@ -6954,7 +7327,8 @@ model = "model-b"
             user_turn("The incident Rowan was on call for — mark it resolved"),
             assistant_turn(
                 "Marked it resolved.",
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "update_node".to_string(),
                     node_id: Some("nodespace://inc2".to_string()),
                     summary: Some("search index corruption".to_string()),
@@ -7012,7 +7386,7 @@ model = "model-b"
     }
 
     /// The blended retrieval query is assembled from the same history the turn
-    /// renders, so this drives real `AiChatMessage`s through
+    /// renders, so this drives real `StoredMessage`s through
     /// `node_history_from_messages` rather than hand-building `ChatMessage`s.
     ///
     /// Pins the query builder against the real history shape: the earlier
@@ -7026,24 +7400,25 @@ model = "model-b"
     #[test]
     fn retrieval_query_blends_history_and_excludes_completed_writes() {
         let history = node_history_from_messages(vec![
-            AiChatMessage {
+            StoredMessage {
                 role: AiChatMessageRole::User,
                 content: "Add a conference proposal for Redwood Summit".to_string(),
                 timestamp: None,
                 reasoning: None,
                 completed_writes: vec![],
                 resolved_entities: Vec::new(),
-                question: None,
+                id: String::new(),
                 options: Vec::new(),
                 pending_deletions: Vec::new(),
                 outcome: None,
             },
-            AiChatMessage {
+            StoredMessage {
                 role: AiChatMessageRole::Assistant,
                 content: "Added the Redwood Summit proposal.".to_string(),
                 timestamp: None,
                 reasoning: None,
-                completed_writes: vec![AiChatCompletedWrite {
+                completed_writes: vec![CompletedWrite {
+                    target: None,
                     tool: "create_node".to_string(),
                     node_id: Some("nodespace://p1".to_string()),
                     summary: Some("Redwood Summit".to_string()),
@@ -7051,7 +7426,7 @@ model = "model-b"
                     canonical_args: r#"{"content":"Redwood Summit"}"#.to_string(),
                 }],
                 resolved_entities: Vec::new(),
-                question: None,
+                id: String::new(),
                 options: Vec::new(),
                 pending_deletions: Vec::new(),
                 outcome: None,
@@ -7096,27 +7471,30 @@ model = "model-b"
     /// legitimately re-asserting a value.
     #[tokio::test]
     async fn idempotent_updates_are_not_carried_into_the_guard() {
-        let msgs = vec![AiChatMessage {
+        let msgs = vec![StoredMessage {
             role: AiChatMessageRole::Assistant,
             content: "Done.".to_string(),
             timestamp: None,
             reasoning: None,
             completed_writes: vec![
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "update_task_status".to_string(),
                     node_id: Some("nodespace://t1".to_string()),
                     summary: Some("t1".to_string()),
                     replaced: Vec::new(),
                     canonical_args: r#"{"status":"done"}"#.to_string(),
                 },
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "update_node".to_string(),
                     node_id: Some("nodespace://t2".to_string()),
                     summary: Some("t2".to_string()),
                     replaced: Vec::new(),
                     canonical_args: r#"{"content":"x"}"#.to_string(),
                 },
-                AiChatCompletedWrite {
+                CompletedWrite {
+                    target: None,
                     tool: "update_schema".to_string(),
                     node_id: None,
                     summary: Some("s1".to_string()),
@@ -7125,7 +7503,7 @@ model = "model-b"
                 },
             ],
             resolved_entities: Vec::new(),
-            question: None,
+            id: String::new(),
             options: Vec::new(),
             pending_deletions: Vec::new(),
             outcome: None,
@@ -7488,23 +7866,36 @@ model = "model-b"
         node_service: &Arc<NodeService>,
         messages: usize,
     ) -> String {
-        let history: Vec<serde_json::Value> = (0..messages)
-            .map(|i| {
-                serde_json::json!({
-                    "role": if i % 2 == 0 { "user" } else { "assistant" },
-                    "content": format!("message {i} about deployment pipelines"),
-                })
-            })
-            .collect();
         let node = Node::new(
             "ai-chat-native".to_string(),
             ai_chat_title::UNTITLED_CHAT_TITLE.to_string(),
-            serde_json::json!({ "agent": "nodespace", "messages": history, "turn_status": "idle" }),
+            serde_json::json!({ "agent": "nodespace", "turn_status": "idle" }),
         );
-        node_service
+        let node_id = node_service
             .create_node(node)
             .await
-            .expect("create untitled ai-chat")
+            .expect("create untitled ai-chat");
+        append_history(node_service, &node_id, messages).await;
+        node_id
+    }
+
+    /// Append `messages` already-exchanged messages, alternating user and
+    /// assistant.
+    async fn append_history(node_service: &Arc<NodeService>, chat_id: &str, messages: usize) {
+        for i in 0..messages {
+            let role = if i % 2 == 0 {
+                AiChatMessageRole::User
+            } else {
+                AiChatMessageRole::Assistant
+            };
+            chat_messages::append_message(
+                node_service,
+                chat_id,
+                NewMessage::text(role, &format!("message {i} about deployment pipelines")),
+            )
+            .await
+            .expect("append history");
+        }
     }
 
     /// A live turn holds the idle gate for its whole duration, so background
@@ -7572,17 +7963,19 @@ model = "model-b"
         let node = Node::new(
             "ai-chat-native".to_string(),
             "Deployment runbook".to_string(),
-            serde_json::json!({ "agent": "nodespace", "messages": [
-                {"role": "user", "content": "a"},
-                {"role": "assistant", "content": "b"},
-                {"role": "user", "content": "c"},
-            ] }),
+            serde_json::json!({ "agent": "nodespace" }),
         );
         let node_id = node_service.create_node(node).await.expect("create");
+        append_history(
+            &node_service,
+            &node_id,
+            ai_chat_title::TITLE_MESSAGE_THRESHOLD,
+        )
+        .await;
 
         let chat = get_ai_chat(&node_service, &node_id).await;
         assert!(
-            !ai_chat_title::needs_title(&chat),
+            !ai_chat_title::needs_title(&chat, &chat.messages),
             "a user-titled chat must not be eligible for background titling"
         );
 
@@ -7613,7 +8006,7 @@ model = "model-b"
         .await;
 
         let before = get_ai_chat(&node_service, &node_id).await;
-        assert!(ai_chat_title::needs_title(&before));
+        assert!(ai_chat_title::needs_title(&before, &before.messages));
 
         let wrote = ai_chat_title::write_title_if_still_untitled(
             &node_service,
@@ -7647,7 +8040,7 @@ model = "model-b"
 
         let chat = get_ai_chat(&node_service, &node_id).await;
         assert!(
-            !ai_chat_title::needs_title(&chat),
+            !ai_chat_title::needs_title(&chat, &chat.messages),
             "a chat below the message threshold must not be titled yet"
         );
     }
@@ -7661,7 +8054,7 @@ model = "model-b"
 
         let before = get_ai_chat(&node_service, &node_id).await;
         let engine: Arc<dyn ChatInferenceEngine> = Arc::new(StubEngine::new("Deploy pipeline"));
-        let title = ai_chat_title::generate_title(&engine, &before)
+        let title = ai_chat_title::generate_title(&engine, &before, &before.messages)
             .await
             .expect("stub engine should yield a title");
         assert_eq!(title, "Deploy pipeline");

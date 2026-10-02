@@ -14,6 +14,7 @@
   import { Collapsible } from 'bits-ui';
   import Icon, { type IconName } from '$lib/design/icons/icon.svelte';
   import type { NodeReference } from '$lib/types/node';
+  import { isOwnedByParentViewer } from '$lib/types/core-node-types';
 
   let { backlinks = [] }: { backlinks?: NodeReference[] } = $props();
 
@@ -25,9 +26,20 @@
       task: 'circle',
       text: 'text',
       'ai-chat-native': 'aiSquare',
-      'ai-chat-pty': 'aiSquare'
+      'ai-chat-pty': 'aiSquare',
+      'ai-chat-message': 'aiSquare'
     };
     return iconMap[nodeType] || 'text';
+  }
+
+  /**
+   * What a backlink reads as. A message its parent's viewer owns (a chat
+   * message) has no title of its own and is not a page: it reads as a chat
+   * message, and its link opens the chat scrolled to it.
+   */
+  function getLabel(backlink: NodeReference): string {
+    if (backlink.title) return backlink.title;
+    return isOwnedByParentViewer(backlink.nodeType) ? 'Chat message' : backlink.id;
   }
 </script>
 
@@ -73,7 +85,7 @@
                 >
                   <Icon name={getNodeIcon(backlink.nodeType)} size={16} />
                   <span class="flex-1 truncate">
-                    {backlink.title || backlink.id}
+                    {getLabel(backlink)}
                   </span>
                 </a>
               </li>

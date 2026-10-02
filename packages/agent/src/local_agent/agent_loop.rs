@@ -12081,7 +12081,7 @@ mod tests {
     }
 
     fn held_delete_executor(
-        pending: &nodespace_core::models::AiChatPendingDeletion,
+        pending: &crate::local_agent::deletion_confirmation::PendingDeletion,
     ) -> MockToolExecutor {
         MockToolExecutor::new().with_tool(
             "delete_node",
@@ -12090,8 +12090,10 @@ mod tests {
         )
     }
 
-    fn pending_login_task(descendant_count: u64) -> nodespace_core::models::AiChatPendingDeletion {
-        nodespace_core::models::AiChatPendingDeletion {
+    fn pending_login_task(
+        descendant_count: u64,
+    ) -> crate::local_agent::deletion_confirmation::PendingDeletion {
+        crate::local_agent::deletion_confirmation::PendingDeletion {
             node_id: "n1".to_string(),
             title: "Fix login".to_string(),
             node_type: "task".to_string(),
@@ -14991,7 +14993,7 @@ mod tests {
     }
 
     fn clarify_prompt(
-        pending_deletions: Vec<nodespace_core::models::AiChatPendingDeletion>,
+        pending_deletions: Vec<crate::local_agent::deletion_confirmation::PendingDeletion>,
     ) -> crate::agent_types::ClarifyPrompt {
         crate::agent_types::ClarifyPrompt {
             question: "Which one?".to_string(),
@@ -15031,7 +15033,7 @@ mod tests {
             AiChatTurnOutcome::Replied
         );
         // A delete confirmation resolves its target; it is not a clarification.
-        let pending = nodespace_core::models::AiChatPendingDeletion {
+        let pending = crate::local_agent::deletion_confirmation::PendingDeletion {
             node_id: "n1".to_string(),
             title: "A".to_string(),
             node_type: "text".to_string(),

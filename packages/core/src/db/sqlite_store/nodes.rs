@@ -2125,6 +2125,14 @@ impl SqliteStore {
         (conditions, bind_values)
     }
 
+    /// The participation condition alone, as an ` AND ...` suffix: for a list
+    /// that leaves archived nodes out but shows a type default queries do
+    /// not. Backlinks are the case: a chat message that mentions a node is
+    /// listed, and leads to its chat (ADR-088 §3).
+    pub(super) fn and_participates(alias: &str) -> String {
+        format!(" AND {}", crate::governance::participates_sql(alias))
+    }
+
     /// The governance conditions for a default query over the `node` table
     /// aliased `alias`, as an ` AND ...` suffix for a statement that already
     /// has a WHERE clause. Empty when there is nothing to add.

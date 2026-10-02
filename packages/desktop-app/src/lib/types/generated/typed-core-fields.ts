@@ -64,8 +64,7 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'last_active', wire: 'lastActive' },
     { storage: 'provider', wire: 'provider' },
     { storage: 'turn_status', wire: 'turnStatus' },
-    { storage: 'context_tokens', wire: 'contextTokens', structured: 'number' },
-    { storage: 'messages', wire: 'messages', structured: 'array' }
+    { storage: 'context_tokens', wire: 'contextTokens', structured: 'number' }
   ],
   'ai-chat-pty': [
     { storage: 'agent', wire: 'agent' },
@@ -76,6 +75,13 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'session_id', wire: 'sessionId' },
     { storage: 'transcript', wire: 'transcript' },
     { storage: 'exit_code', wire: 'exitCode', structured: 'number' }
+  ],
+  'ai-chat-message': [
+    { storage: 'role', wire: 'role' },
+    { storage: 'timestamp', wire: 'timestamp' },
+    { storage: 'reasoning', wire: 'reasoning' },
+    { storage: 'outcome', wire: 'outcome' },
+    { storage: 'options', wire: 'options', structured: 'array' }
   ]
 };
 
@@ -90,12 +96,7 @@ export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string
   'database-settings': { requiredExtensions: [] },
   query: { executionCount: 0, filters: [], generatedBy: 'user', targetType: '*' },
   play: { enabled: true, rules: [] },
-  'ai-chat-native': {
-    agent: '',
-    contextTokens: 0,
-    messages: [],
-    provider: 'native',
-    turnStatus: 'idle'
-  },
-  'ai-chat-pty': { agent: '', sessionStatus: 'active' }
+  'ai-chat-native': { agent: '', contextTokens: 0, provider: 'native', turnStatus: 'idle' },
+  'ai-chat-pty': { agent: '', sessionStatus: 'active' },
+  'ai-chat-message': { role: 'user' }
 };

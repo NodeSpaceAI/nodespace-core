@@ -6,17 +6,23 @@
   separate subtype with their own viewer (AiChatPtyNodeViewer). This viewer
   renders the shared header (title + unified model selector) and:
     - no model chosen yet → a prompt to select one via the header selector.
-    - model chosen        → message UI (chat input + streamed messages[]).
+    - model chosen        → message UI (chat input + the chat's message nodes).
 
   The header selector (AiChatModelSelector) replaces the two-step provider → model
   picker flow. It is locked (disabled) after the first user message is sent.
   Picking a terminal harness in it retypes the node to `ai-chat-pty`; the pane
   then swaps this viewer for the terminal one.
 
-  Node-as-message-queue architecture: the node is the single source of truth.
-  - Frontend writes `updateNode` to append the user message and set
-    `turn_status: 'processing'` — that write is the trigger the daemon watches
-    for. WRITES use the canonical snake_case schema key (`turn_status`), not
+  Messages are nodes (ADR-088 §3): each message is an `ai-chat-message` child of
+  the chat, in conversation order. The viewer loads the chat's children into the
+  shared store and derives the conversation from the structure tree, so a reply
+  the daemon creates appears through the normal node-created and relationship
+  events. The chat itself is the single source of truth for the turn:
+  - Frontend creates the user message child, waits for it to be stored, then
+    writes `updateNode` to set `turn_status: 'processing'` — the daemon starts
+    the turn when that write arrives and the chat's last message is the
+    user's, so the message has to be there first. WRITES use the canonical
+    snake_case schema key (`turn_status`), not
     the camelCase `turnStatus` the confirmed node reads back as: the chat family
     has no dedicated typed write command like `task` does, so whatever property
     key this component uses reaches storage verbatim, and a wrong-cased write
@@ -24,8 +30,8 @@
     daemon owns every subsequent turn_status write for the turn.
   - LocalAgentService in the daemon reacts to node changes and drives inference.
   - Streaming tokens arrive via Tauri events (local-agent://chunk) and accumulate
-    in a local `streamingContent` buffer. The buffer is cleared when WatchNodes
-    delivers the completed assistant message.
+    in a local `streamingContent` buffer. The buffer is cleared when the
+    completed assistant message node arrives.
   - Typing indicator driven by the node's top-level `turnStatus === 'processing'`
     — a READ, so this uses the promoted camelCase field the daemon always
     returns, regardless of which case the write used. The backend promotes the
@@ -37,6 +43,8 @@
   import { onMount, onDestroy, tick } from 'svelte';
   import { listen } from '@tauri-apps/api/event';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
+  import { appendUserMessage, discardUnsentMessage } from '$lib/services/ai-chat-messages';
   import ChatMessage from '$lib/components/chat/chat-message.svelte';
   import ChatInput from '$lib/components/chat/chat-input.svelte';
   import AiChatHeader from './ai-chat-header.svelte';
@@ -45,7 +53,8 @@
   import type { DisplayMessage } from '$lib/components/chat/types';
   import type { StreamingChunk } from '$lib/types/agent-types';
   import { AGENT_EVENTS } from '$lib/types/agent-types';
-  import type { AiChatNativeNode } from '$lib/types/ai-chat-node';
+  import type { AiChatMessageNode, AiChatNativeNode } from '$lib/types/ai-chat-node';
+  import { isAiChatMessageNode, nodeToAiChatMessageNode } from '$lib/types/ai-chat-node';
   import {
     localAgentCancelTurn,
     ensureModelReady,
@@ -57,6 +66,7 @@
   import { toError } from '$lib/types/errors';
 
   const log = createLogger('AiChatNativeNodeViewer');
+  const VIEWER_ID = 'ai-chat-viewer';
 
   let {
     nodeId,
@@ -73,6 +83,8 @@
   let eventUnlisteners: Array<() => void> = [];
   /** True while ensureModelReady is running (may include download time for local models). */
   let isEnsuringModel = $state(false);
+  /** True from Send until the turn is requested: the message is being stored. */
+  let isSending = $state(false);
   /**
    * Current phase reported by the daemon while ensureModelReady is running.
    * `null` until the first `model://status` event of a given run arrives, so
@@ -83,8 +95,6 @@
    */
   let ensuringModelPhase = $state<'verifying' | 'loading' | null>(null);
 
-  const SOFT_MESSAGE_CAP = 500;
-
   // --- Reactive node lookup ---
   const node = $derived(sharedNodeStore.getNode(nodeId) as AiChatNativeNode | undefined);
 
@@ -94,10 +104,21 @@
   /** True while the daemon is processing an inference turn for this node. */
   const isProcessing = $derived(node?.turnStatus === 'processing');
 
+  /**
+   * The chat's message children in conversation order. Chats may also hold
+   * non-message children; those are not part of the conversation.
+   */
+  const messageNodes = $derived.by<AiChatMessageNode[]>(() => {
+    const messages: AiChatMessageNode[] = [];
+    for (const childId of structureTree.getChildren(nodeId)) {
+      const child = sharedNodeStore.getNode(childId);
+      if (child && isAiChatMessageNode(child)) messages.push(nodeToAiChatMessageNode(child));
+    }
+    return messages;
+  });
+
   /** True once the first user message has been sent — locks model selector. */
-  const hasMessages = $derived(
-    (node?.messages ?? []).filter((m) => m.role === 'user').length > 0
-  );
+  const hasMessages = $derived(messageNodes.some((m) => m.role === 'user'));
 
   /**
    * Value string for the AiChatModelSelector <select>.
@@ -111,23 +132,20 @@
       : ''
   );
 
-  /** Messages from the persisted node, mapped to DisplayMessage for rendering. */
-  const persistedMessages: DisplayMessage[] = $derived.by(() => {
-    const msgs = node?.messages;
-    if (!Array.isArray(msgs)) return [];
-    return msgs
+  /** The chat's messages, mapped to DisplayMessage for rendering. */
+  const persistedMessages: DisplayMessage[] = $derived(
+    messageNodes
       .filter((m) => m.role === 'user' || m.role === 'assistant')
-      .map((m, idx) => ({
-        id: `persisted-${idx}-${m.timestamp ?? idx}`,
+      .map((m) => ({
+        id: m.id,
         role: m.role as DisplayMessage['role'],
-        content: m.content ?? '',
+        content: m.content,
         toolExecutions: [],
-        timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
+        timestamp: new Date(m.timestamp ?? m.createdAt).getTime(),
         reasoning: m.reasoning,
-        question: m.question,
         options: m.options,
-      }));
-  });
+      }))
+  );
 
   /** All messages to display: persisted + optional streaming overlay. */
   const displayMessages: DisplayMessage[] = $derived.by(() => {
@@ -144,8 +162,6 @@
       },
     ];
   });
-
-  const showMessageCap = $derived(persistedMessages.length >= SOFT_MESSAGE_CAP);
 
   /**
    * Handle a model selection from the AiChatModelSelector dropdown.
@@ -172,7 +188,7 @@
             model: null,
           },
         },
-        { type: 'viewer', viewerId: 'ai-chat-viewer' }
+        { type: 'viewer', viewerId: VIEWER_ID }
       );
       return;
     }
@@ -188,7 +204,7 @@
           model: selection.modelId,
         },
       },
-      { type: 'viewer', viewerId: 'ai-chat-viewer' }
+      { type: 'viewer', viewerId: VIEWER_ID }
     );
   }
 
@@ -205,33 +221,44 @@
   }
 
   /**
-   * Send a user message: append it to the node's ai-chat messages via updateNode.
-   * The daemon reacts to the NodeUpdated event and drives inference.
-   * Model must be loaded first via ensureModelReady.
+   * Load the chat's children into the store (and the structure tree), so the
+   * conversation derives from them. Failures are non-fatal: the events the
+   * daemon broadcasts keep the conversation current once it is reachable.
+   */
+  async function loadMessages(): Promise<void> {
+    try {
+      await sharedNodeStore.loadChildrenForParent(nodeId);
+    } catch (err) {
+      log.warn('Failed to load chat messages', { error: toError(err).message });
+    }
+  }
+
+  /**
+   * Send a user message: create it as a message child of the chat, then set the
+   * chat's `turn_status` to processing once the message is stored. The daemon
+   * reacts to the status write and drives inference. Model must be loaded
+   * first via ensureModelReady.
    */
   async function handleSend(content: string): Promise<void> {
     const trimmed = content.trim();
-    if (!trimmed || isProcessing || !model) return;
+    if (!trimmed || isProcessing || isSending || !model) return;
 
     sendError = null;
 
-    // Append the user message immediately (synchronous, before any await) so the
-    // optimistic store update fires while still in a Svelte reactive context.
-    // The daemon handles model loading internally before starting inference.
-    const current = sharedNodeStore.getNode(nodeId);
-    if (!current) {
+    if (!sharedNodeStore.getNode(nodeId)) {
       sendError = 'Node not found';
       return;
     }
 
-    const existingMessages = Array.isArray((current as unknown as AiChatNativeNode).messages)
-      ? (current as unknown as AiChatNativeNode).messages
-      : [];
-    const newMessage = {
-      role: 'user' as const,
-      content: trimmed,
-      timestamp: new Date().toISOString(),
-    };
+    isSending = true;
+    try {
+      await sendMessage(trimmed);
+    } finally {
+      isSending = false;
+    }
+  }
+
+  async function sendMessage(trimmed: string): Promise<void> {
 
     // Ensure the model is loaded before writing turn_status:processing to the node.
     // For local models this may trigger a download — isEnsuringModel shows an
@@ -251,21 +278,27 @@
       ensuringModelPhase = null;
     }
 
-    // Set turn_status:'processing' (the canonical, schema-declared key — see
+    // The message first. It shows at once; the turn is requested only once it
+    // is stored, because the daemon answers the chat's latest message when the
+    // status write arrives. Asking before the message exists would have it
+    // answer an older one, or find nothing to answer.
+    const messageId = appendUserMessage(nodeId, trimmed, VIEWER_ID);
+    await scrollToBottom();
+    const failed = await sharedNodeStore.flushNodeSaves([messageId]);
+    if (failed.has(messageId)) {
+      discardUnsentMessage(messageId, VIEWER_ID);
+      sendError = 'The message could not be saved, so it was not sent.';
+      return;
+    }
+
+    // Then turn_status:'processing' (the canonical, schema-declared key — see
     // the note in the header comment) so the typing indicator appears and the
-    // daemon picks up the turn via NodeUpdated. Model is guaranteed loaded above.
+    // daemon picks up the turn. Model is guaranteed loaded above.
     sharedNodeStore.updateNode(
       nodeId,
-      {
-        properties: {
-          messages: [...existingMessages, newMessage],
-          turn_status: 'processing',
-        },
-      },
-      { type: 'viewer', viewerId: 'ai-chat-viewer' }
+      { properties: { turn_status: 'processing' } },
+      { type: 'viewer', viewerId: VIEWER_ID }
     );
-
-    await scrollToBottom();
   }
 
   async function handleCancel(): Promise<void> {
@@ -304,6 +337,8 @@
   onMount(async () => {
     log.debug('AiChatNativeNodeViewer mounted', { nodeId });
 
+    const messagesLoaded = loadMessages();
+
     try {
       if (isTauri()) {
         if (destroyed) return;
@@ -321,8 +356,8 @@
               streamingContent += chunk.text ?? '';
               scrollToBottom();
             } else if (chunk.type === 'done') {
-              // Streaming complete. Clear the buffer — WatchNodes will deliver
-              // the persisted assistant message reactively via the broadcast event.
+              // Streaming complete. Clear the buffer — the persisted assistant
+              // message node arrives reactively via the broadcast events.
               streamingContent = '';
             } else if (chunk.type === 'cancelled') {
               streamingContent = '';
@@ -360,6 +395,7 @@
         );
       }
     } finally {
+      await messagesLoaded;
       nodeReady = true;
     }
   });
@@ -398,6 +434,7 @@
         const fetched = await backendAdapter.getNode(nodeId);
         if (fetched && !cancelled && sharedNodeStore.currentEpoch() === epoch) {
           sharedNodeStore.setNode(fetched, { type: 'database', reason: 'poll' }, true);
+          await loadMessages();
           // If SSE is down, nudge it to reconnect.
           if (!browserSyncService.isConnected()) {
             browserSyncService.initialize().catch(() => {/* ignore */});
@@ -473,7 +510,7 @@
           <ChatMessage
             {message}
             isLatest={index === displayMessages.length - 1}
-            onSelectOption={isProcessing ? undefined : handleSend}
+            onSelectOption={isProcessing || isSending ? undefined : handleSend}
           />
         {/each}
       {/if}
@@ -489,14 +526,6 @@
         </div>
       {/if}
 
-      {#if showMessageCap}
-        <div class="message-cap-nudge" role="alert">
-          <p>
-            This conversation has {persistedMessages.length} messages. Consider starting a new chat for
-            better performance.
-          </p>
-        </div>
-      {/if}
     </div>
 
     {#if sendError}
@@ -505,7 +534,7 @@
 
     <ChatInput
       onSend={handleSend}
-      disabled={isProcessing}
+      disabled={isProcessing || isSending}
       placeholder={isProcessing ? 'AI is responding...' : 'Type a message...'}
     />
   {/if}
@@ -628,20 +657,6 @@
   .cancel-turn-btn:hover {
     border-color: hsl(var(--destructive));
     color: hsl(var(--destructive));
-  }
-
-  .message-cap-nudge {
-    margin: 0.5rem 1rem;
-    padding: 0.75rem 1rem;
-    background: hsl(var(--accent) / 0.1);
-    border: 1px solid hsl(var(--accent) / 0.3);
-    border-radius: 0.5rem;
-    font-size: 0.8125rem;
-    color: hsl(var(--muted-foreground));
-  }
-
-  .message-cap-nudge p {
-    margin: 0;
   }
 
   .send-error {

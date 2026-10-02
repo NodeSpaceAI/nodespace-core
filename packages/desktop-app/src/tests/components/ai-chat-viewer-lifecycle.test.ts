@@ -30,7 +30,6 @@ function seedChat(id: string, lifecycleStatus: 'active' | 'archived'): void {
     agent: 'nodespace',
     provider: 'native',
     model: 'test-model',
-    messages: [],
     turnStatus: 'idle'
   } as unknown as Node;
   sharedNodeStore.setNode(node, { type: 'database', reason: 'test' });

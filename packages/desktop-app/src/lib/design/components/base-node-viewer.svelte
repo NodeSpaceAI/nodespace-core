@@ -7,7 +7,7 @@
 -->
 
 <script lang="ts">
-import { canHaveChild, isA } from '$lib/types/core-node-types';
+import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-types';
   import { onMount, onDestroy, getContext, tick } from 'svelte';
   import { htmlToMarkdown } from '$lib/utils/markdown.js';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
@@ -168,6 +168,19 @@ import { canHaveChild, isA } from '$lib/types/core-node-types';
   let isHeaderBeingEdited = $state(false);
 
   /**
+   * The children of an outline row that are themselves outline rows. A child
+   * whose type is owned by its parent's viewer (a chat's `ai-chat-message`s,
+   * shown by the chat viewer) is never listed: a chat row in a page neither
+   * unfolds its messages nor shows an expand control for them.
+   */
+  function outlineChildIds(childIds: string[]): string[] {
+    return childIds.filter((id) => {
+      const child = sharedNodeStore.getNode(id);
+      return !child || !isOwnedByParentViewer(child.nodeType);
+    });
+  }
+
+  /**
    * Visible nodes derived from ReactiveStructureTree + SharedNodeStore
    */
   const visibleNodesFromStores = $derived.by<ViewerRenderNode[]>(() => {
@@ -193,6 +206,7 @@ import { canHaveChild, isA } from '$lib/types/core-node-types';
           childIds = cachedNodes.map((n) => n.id);
         }
       }
+      childIds = outlineChildIds(childIds);
 
       for (const id of childIds) {
         // sharedNodeStore is now single source of truth (consolidated from nodeData)
@@ -208,6 +222,7 @@ import { canHaveChild, isA } from '$lib/types/core-node-types';
             children = cachedChildren.map((c) => c.id);
           }
         }
+        children = outlineChildIds(children);
 
         // Build node with UI state
         // Get UI state from ReactiveNodeService (has expanded: true by default)
@@ -830,7 +845,7 @@ import { canHaveChild, isA } from '$lib/types/core-node-types';
       }
 
       // Protect node types whose data lives outside `.content` (e.g. ai-chat,
-      // whose conversation is in properties.messages) from being merged away by
+      // whose conversation is its message children) from being merged away by
       // a start-of-node Backspace. Guards the current/event node's own type.
       const eventNode = nodeManager.nodes.get(eventNodeId);
       if (eventNode && !pluginRegistry.deletableViaBackspace(eventNode.nodeType)) {
@@ -889,7 +904,7 @@ import { canHaveChild, isA } from '$lib/types/core-node-types';
       }
 
       // Protect node types whose data lives outside `.content` (e.g. ai-chat,
-      // whose conversation is in properties.messages) from being deleted away by
+      // whose conversation is its message children) from being deleted away by
       // a start-of-node Backspace. Guards the current/event node's own type.
       const eventNode = nodeManager.nodes.get(eventNodeId);
       if (eventNode && !pluginRegistry.deletableViaBackspace(eventNode.nodeType)) {

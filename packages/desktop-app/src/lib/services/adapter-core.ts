@@ -171,6 +171,8 @@ export interface BackendAdapter {
   getChildren(parentId: string): Promise<Node[]>;
   getDescendants(rootNodeId: string): Promise<Node[]>;
   getChildrenTree(parentId: string): Promise<NodeWithChildren | null>;
+  /** The node a node is a child of, or null for a root. */
+  getParent(nodeId: string): Promise<NodeReference | null>;
   moveNode(nodeId: string, version: number, newParentId: string | null, insertPosition: InsertPosition | null): Promise<MovedNode>;
   moveChildrenToParent(newParentId: string, children: Array<{ id: string; version: number }>): Promise<MovedChildren>;
 
@@ -581,6 +583,7 @@ export const HTTP_ROUTES = {
   moveChildrenToParent: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/move-children`,
   getChildren: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/children`,
   getChildrenTree: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/children-tree`,
+  getParent: (nodeId: string) => `/api/nodes/${encodeURIComponent(nodeId)}/parent-node`,
   createMention: () => '/api/mentions',
   deleteMention: () => '/api/mentions',
   getOutgoingMentions: (nodeId: string) => `/api/nodes/${encodeURIComponent(nodeId)}/mentions/outgoing`,
@@ -624,6 +627,7 @@ export const HTTP_ROUTE_PATTERNS = {
   moveChildrenToParent: /^\/api\/nodes\/([^/]+)\/move-children$/,
   getChildren: /^\/api\/nodes\/([^/]+)\/children$/,
   getChildrenTree: /^\/api\/nodes\/([^/]+)\/children-tree$/,
+  getParent: /^\/api\/nodes\/([^/]+)\/parent-node$/,
   getOutgoingMentions: /^\/api\/nodes\/([^/]+)\/mentions\/outgoing$/,
   getIncomingMentions: /^\/api\/nodes\/([^/]+)\/mentions\/incoming$/,
   getMentioningContainers: /^\/api\/nodes\/([^/]+)\/mentions\/roots$/,
