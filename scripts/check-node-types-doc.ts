@@ -519,20 +519,34 @@ export function readDoc(docs: DocsLocation, commit?: string): DocRead {
   return { markdown: shown.stdout, source: `${DOC_FILE} at ${commit.slice(0, 7)} in ${docs.dir}` };
 }
 
-/** The value after `flag` on the command line. */
-function flagValue(flag: string): string | undefined {
-  const at = process.argv.indexOf(flag);
-  return at === -1 ? undefined : process.argv[at + 1];
+/** What a run compares with, or why its arguments name nothing. */
+export type CheckTarget = { commit: string } | { published: true } | { workingTree: true } | { error: string };
+
+/**
+ * --at <commit>: the reference at that commit of the docs checkout (the merge
+ * gate resolves it once, before its stages). --published: the docs remote's
+ * main, resolved by this run. Neither: the docs working tree.
+ */
+export function parseTarget(args: string[]): CheckTarget {
+  const at = args.indexOf("--at");
+  if (at !== -1) {
+    const commit = args[at + 1];
+    // Anything else would fall back to a tree the caller didn't ask for.
+    if (commit === undefined || !/^[0-9a-f]{7,40}$/.test(commit)) return { error: "--at needs a commit of the docs checkout." };
+    return { commit };
+  }
+  return args.includes("--published") ? { published: true } : { workingTree: true };
 }
 
 if (import.meta.main) {
-  // --at <commit>: compare with the reference at that commit of the docs
-  // checkout (the merge gate resolves it once, before its stages).
-  // --published: resolve the docs remote's main here, then the same.
-  // Neither: the docs working tree.
+  const target = parseTarget(process.argv.slice(2));
+  if ("error" in target) {
+    console.error(`❌ ${target.error}`);
+    process.exit(1);
+  }
   const docs = await resolveDocsDir();
-  let commit = flagValue("--at");
-  if (commit === undefined && process.argv.includes("--published")) {
+  let commit = "commit" in target ? target.commit : undefined;
+  if ("published" in target) {
     const published = resolvePublished(docs);
     if ("unreadable" in published) {
       console.error(`❌ ${published.unreadable}`);
@@ -549,6 +563,11 @@ if (import.meta.main) {
     process.exit(1);
   }
   if ("skip" in doc) {
+    // Told which commit to compare with, there is a docs checkout to read it from.
+    if ("commit" in target) {
+      console.error(`❌ ${doc.skip}`);
+      process.exit(1);
+    }
     console.warn(`⚠ Skipping the node-types.md check: ${doc.skip}`);
     process.exit(0);
   }

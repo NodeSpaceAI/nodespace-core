@@ -12,6 +12,7 @@ import {
   DOCS_DIR_ENV_VAR,
   parseDocType,
   parseNodeTypesDoc,
+  parseTarget,
   readDoc,
   resolveDocsDir,
   resolvePublished,
@@ -536,6 +537,30 @@ describe("readDoc", () => {
   });
 });
 
+describe("parseTarget", () => {
+  test("names the working tree, the published main, or a commit", () => {
+    expect(parseTarget([])).toEqual({ workingTree: true });
+    expect(parseTarget(["--published"])).toEqual({ published: true });
+    expect(parseTarget(["--at", "abc1234"])).toEqual({ commit: "abc1234" });
+    expect(parseTarget(["--at", "a".repeat(40)])).toEqual({ commit: "a".repeat(40) });
+  });
+
+  test("--at without a commit is an error, never a read of some other tree", () => {
+    const error = { error: "--at needs a commit of the docs checkout." };
+    expect(parseTarget(["--at"])).toEqual(error);
+    expect(parseTarget(["--at", ""])).toEqual(error);
+    expect(parseTarget(["--at", "--published"])).toEqual(error);
+    expect(parseTarget(["--at", "origin/main"])).toEqual(error);
+  });
+
+  test("the script reads its arguments through it, and a commit is never skipped", () => {
+    const source = readFileSync(join(import.meta.dir, "check-node-types-doc.ts"), "utf8");
+    const main = source.slice(source.indexOf("if (import.meta.main)"));
+    expect(main).toContain("parseTarget(process.argv.slice(2))");
+    expect(/"skip" in doc\) \{[\s\S]{0,160}?"commit" in target\) \{[\s\S]{0,80}?process\.exit\(1\)/.test(main)).toBe(true);
+  });
+});
+
 describe("the stage", () => {
   const script = (name: string) => readFileSync(join(import.meta.dir, name), "utf8");
 
@@ -548,9 +573,12 @@ describe("the stage", () => {
   });
 
   test("the merge gate compares with the published commit it resolved, and exits as a machine fault when it can't", () => {
-    expect(nodeTypesCheckAt("abc1234").command).toBe("bun run node-types:check --at abc1234");
+    expect(nodeTypesCheckAt("abc1234", false).command).toBe("bun run node-types:check --at abc1234");
+    // A comparison with a sheet that may be stale says so in the label the gate repeats on failure.
+    expect(nodeTypesCheckAt("abc1234", false).label).not.toContain("fetch failed");
+    expect(nodeTypesCheckAt("abc1234", true).label).toContain("the docs fetch failed");
     const gate = script("test-gate.ts");
-    expect(gate).toContain("run(nodeTypesCheckAt(publishedSheet.commit))");
+    expect(gate).toContain("run(nodeTypesCheckAt(publishedSheet.commit, publishedSheet.fetchFailed))");
     expect(gate).not.toContain("TIERS.nodeTypesCheck");
     expect(/"unreadable" in publishedSheet\) \{[\s\S]{0,200}?process\.exit\(GATE_INFRA_EXIT\)/.test(gate)).toBe(true);
   });

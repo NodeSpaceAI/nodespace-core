@@ -383,9 +383,13 @@ export function gateVerdict(exitCode: number | null, stackChangesGate = false): 
   return "failed";
 }
 
-/** Whether a stack changes the merge gate's own scripts (see gateVerdict). */
+/**
+ * Whether a stack changes the merge gate's own scripts (see gateVerdict): the
+ * gate, its helpers, and the node-types.md checker, whose reading of the docs
+ * checkout decides one of the gate's machine-fault exits.
+ */
 export function changesGate(changedPaths: string[]): boolean {
-  return changedPaths.some((path) => /^scripts\/(test-gate|gate-[\w-]+)\.ts$/.test(path));
+  return changedPaths.some((path) => /^scripts\/(test-gate|gate-[\w-]+|check-node-types-doc)\.ts$/.test(path));
 }
 
 /**

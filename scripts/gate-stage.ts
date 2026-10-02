@@ -99,10 +99,17 @@ export const TIERS = {
 
 export const NODE_TYPES_CHECK_PUBLISHED_LABEL = "node-types:check (published node-types.md vs. the core schemas)";
 
-/** The merge gate's node-types.md check, against the reference at `commit` of the docs checkout. */
-export function nodeTypesCheckAt(commit: string): StageSpec {
+/**
+ * The merge gate's node-types.md check, against the reference at `commit` of
+ * the docs checkout. `fetchFailed` says the commit is the published main only
+ * as last fetched; the label carries it, because the gate repeats a failing
+ * stage's label where the reason for an ejection is read.
+ */
+export function nodeTypesCheckAt(commit: string, fetchFailed: boolean): StageSpec {
   return {
-    label: NODE_TYPES_CHECK_PUBLISHED_LABEL,
+    label: fetchFailed
+      ? `${NODE_TYPES_CHECK_PUBLISHED_LABEL} [the docs fetch failed: compared as last fetched]`
+      : NODE_TYPES_CHECK_PUBLISHED_LABEL,
     command: `bun run node-types:check --at ${commit}`,
     timeoutMs: 20 * MINUTE,
   };

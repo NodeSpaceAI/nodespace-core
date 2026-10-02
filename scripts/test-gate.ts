@@ -322,7 +322,7 @@ await Promise.all([
     await run({ label: "skill:check (SKILL.md drift)", command: "bun run skill:check", timeoutMs: 20 * MINUTE });
     // After the daemon build for the same reason: its example links the
     // nodespace-core that build already compiled.
-    if ("commit" in publishedSheet) await run(nodeTypesCheckAt(publishedSheet.commit));
+    if ("commit" in publishedSheet) await run(nodeTypesCheckAt(publishedSheet.commit, publishedSheet.fetchFailed));
   })(),
   (async () => {
     await run(TIERS.frontend);
