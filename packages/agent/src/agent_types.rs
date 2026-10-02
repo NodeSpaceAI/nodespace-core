@@ -697,6 +697,11 @@ pub struct SkillCandidate {
     pub instructions: String,
     /// Schema metadata scoped to this skill, as returned by retrieval.
     pub schema_metadata: serde_json::Value,
+    /// Whether `schema_metadata` is the skill's linked schemas and their
+    /// subtypes, rather than retrieval's fallback for a skill that links to
+    /// none. Only a linked set can hold a turn to its types — see
+    /// `routing::offered_types`.
+    pub schemas_linked: bool,
 }
 
 /// Outcome of the deterministic retrieval step.

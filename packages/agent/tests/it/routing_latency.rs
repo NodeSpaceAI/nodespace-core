@@ -152,6 +152,7 @@ impl AgentToolExecutor for BenchExecutor {
                         {"name": "due_date", "type": "date"}
                     ]
                 }]),
+                schemas_linked: false,
             },
             SkillCandidate {
                 id: "skill-research".into(),
@@ -165,6 +166,7 @@ impl AgentToolExecutor for BenchExecutor {
                     String::new()
                 },
                 schema_metadata: json!([]),
+                schemas_linked: false,
             },
         ];
         if !self.with_instructions && self.empty_retrieval {

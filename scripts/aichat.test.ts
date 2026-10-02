@@ -76,6 +76,40 @@ describe("formatTurnLogLines", () => {
     expect(toolLines[0]).toContain("[fields=3]");
   });
 
+  test("marks a call dispatch refused for naming a type outside the offered set", () => {
+    const slice = [
+      `2026-10-02T10:00:00Z  INFO nodespace_agent: Tool executed tool=create_node is_error=true duration_ms=0 type_refused=true off_menu_ran=false args_preview={"content":"March","node_type":"album"} args_preview_truncated=false result_preview={"allowed_types":["invoice"],"error":"type_not_offered","message":"Not executed"} result_preview_truncated=false`,
+      `2026-10-02T10:00:01Z  INFO nodespace_agent: Tool executed tool=create_node is_error=true duration_ms=3 type_refused=false off_menu_ran=false args_preview={"node_type":"invoice"} args_preview_truncated=false result_preview={"error":"'content' is required"} result_preview_truncated=false`,
+      // The model's own argument text spelling the field out is not the field.
+      `2026-10-02T10:00:02Z  INFO nodespace_agent: Tool executed tool=create_node is_error=false duration_ms=3 result_field_count=1 type_refused=false off_menu_ran=false args_preview={"content":"note: type_refused=true","node_type":"invoice"} args_preview_truncated=false result_preview={"id":"nodespace://n-1"} result_preview_truncated=false`,
+    ].join("\n");
+
+    const toolLines = formatTurnLogLines(slice).filter((l) =>
+      l.startsWith("[tool]"),
+    );
+    expect(toolLines).toHaveLength(3);
+    expect(toolLines[0]).toStartWith("[tool] create_node [ERROR] [type-refused]");
+    // Any other error is a failed call, not a refused type.
+    expect(toolLines[1]).toStartWith("[tool] create_node [ERROR] ");
+    expect(toolLines[1]).not.toContain("[type-refused]");
+    expect(toolLines[2]).not.toContain("[type-refused]");
+    expect(toolLines.join("\n")).not.toContain("[off-menu-ran]");
+  });
+
+  test("marks an off-menu call the daemon reports as having run", () => {
+    const slice = [
+      `2026-10-02T10:00:00Z  INFO nodespace_agent: Tool executed tool=create_node is_error=false duration_ms=2 result_field_count=1 type_refused=false off_menu_ran=true args_preview={"node_type":"album"} args_preview_truncated=false result_preview={"id":"nodespace://n-1"} result_preview_truncated=false`,
+      // As with `type_refused`, argument text spelling the field out is not it.
+      `2026-10-02T10:00:01Z  INFO nodespace_agent: Tool executed tool=create_node is_error=false duration_ms=2 result_field_count=1 type_refused=false off_menu_ran=false args_preview={"content":"off_menu_ran=true","node_type":"invoice"} args_preview_truncated=false result_preview={"id":"nodespace://n-2"} result_preview_truncated=false`,
+    ].join("\n");
+
+    const toolLines = formatTurnLogLines(slice).filter((l) =>
+      l.startsWith("[tool]"),
+    );
+    expect(toolLines[0]).toStartWith("[tool] create_node [fields=1] [off-menu-ran]");
+    expect(toolLines[1]).not.toContain("[off-menu-ran]");
+  });
+
   test("skips a raw-generation line whose payload is not valid JSON rather than emitting garbage", () => {
     // Simulates an older daemon build that logged the pre-fix verbatim form.
     const slice =
@@ -146,15 +180,15 @@ describe("formatTurnLogLines", () => {
   // Rust tracing layer emitted rather than lines written here by hand.
   test("captures both named decisions with their candidate sets", () => {
     const slice = [
-      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_payload={"candidates":["create_node","search_nodes","get_node"],"off_menu":false,"selected":"create_node"}`,
-      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_payload={"candidates":["invoice","customer"],"off_menu":false,"selected":"invoice"}`,
+      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_payload={"candidates":["create_node","search_nodes","get_node"],"enforced":false,"off_menu":false,"selected":"create_node"}`,
+      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_payload={"candidates":["invoice","customer"],"enforced":false,"off_menu":false,"selected":"invoice"}`,
     ].join("\n");
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      '[decision operation] {"candidates":["create_node","search_nodes","get_node"],"off_menu":false,"selected":"create_node"}',
+      '[decision operation] {"candidates":["create_node","search_nodes","get_node"],"enforced":false,"off_menu":false,"selected":"create_node"}',
     );
     expect(lines).toContain(
-      '[decision schema] {"candidates":["invoice","customer"],"off_menu":false,"selected":"invoice"}',
+      '[decision schema] {"candidates":["invoice","customer"],"enforced":false,"off_menu":false,"selected":"invoice"}',
     );
   });
 
@@ -163,20 +197,20 @@ describe("formatTurnLogLines", () => {
     // non-whitespace run, truncating this to "Schema" — invisible for tool
     // names and type ids (never spaced) and wrong for every skill. The JSON
     // payload removes the class of bug rather than the one instance.
-    const slice = `2026-09-22T13:45:00Z  INFO nodespace_agent: Agent decision: skill selected iteration=0 decision="skill" decision_payload={"candidates":["Schema Creation","Conflict Resolution"],"off_menu":false,"selected":"Schema Creation"}`;
+    const slice = `2026-09-22T13:45:00Z  INFO nodespace_agent: Agent decision: skill selected iteration=0 decision="skill" decision_payload={"candidates":["Schema Creation","Conflict Resolution"],"enforced":false,"off_menu":false,"selected":"Schema Creation"}`;
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      '[decision skill] {"candidates":["Schema Creation","Conflict Resolution"],"off_menu":false,"selected":"Schema Creation"}',
+      '[decision skill] {"candidates":["Schema Creation","Conflict Resolution"],"enforced":false,"off_menu":false,"selected":"Schema Creation"}',
     );
   });
 
   test("a candidate name containing a comma stays one candidate", () => {
     // The bug the JSON payload was introduced for. The delimited form joined
     // candidates with ", " and was split on ",", so this name became two.
-    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_payload={"candidates":["Company, Sold To","invoice"],"off_menu":false,"selected":"Company, Sold To"}`;
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_payload={"candidates":["Company, Sold To","invoice"],"enforced":false,"off_menu":false,"selected":"Company, Sold To"}`;
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      '[decision schema] {"candidates":["Company, Sold To","invoice"],"off_menu":false,"selected":"Company, Sold To"}',
+      '[decision schema] {"candidates":["Company, Sold To","invoice"],"enforced":false,"off_menu":false,"selected":"Company, Sold To"}',
     );
   });
 
@@ -185,10 +219,10 @@ describe("formatTurnLogLines", () => {
     // candidate list had to be last on the line, an invariant documented in
     // three files and enforced in none — so a reordering broke the scrape
     // silently. The payload is read to its matching brace instead.
-    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected decision="operation" decision_payload={"candidates":["get_node"],"off_menu":false,"selected":"get_node"} iteration=0`;
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected decision="operation" decision_payload={"candidates":["get_node"],"enforced":false,"off_menu":false,"selected":"get_node"} iteration=0`;
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      '[decision operation] {"candidates":["get_node"],"off_menu":false,"selected":"get_node"}',
+      '[decision operation] {"candidates":["get_node"],"enforced":false,"off_menu":false,"selected":"get_node"}',
     );
   });
 
@@ -196,10 +230,10 @@ describe("formatTurnLogLines", () => {
     // The payload is read by scanning to the matching brace, so the scan
     // tracks string state: a brace inside a value must not be counted as
     // structure. Names are not a controlled input.
-    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected decision="schema" decision_payload={"candidates":["a } brace","invoice"],"off_menu":false,"selected":"a } brace"}`;
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected decision="schema" decision_payload={"candidates":["a } brace","invoice"],"enforced":false,"off_menu":false,"selected":"a } brace"}`;
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      '[decision schema] {"candidates":["a } brace","invoice"],"off_menu":false,"selected":"a } brace"}',
+      '[decision schema] {"candidates":["a } brace","invoice"],"enforced":false,"off_menu":false,"selected":"a } brace"}',
     );
   });
 
@@ -214,10 +248,10 @@ describe("formatTurnLogLines", () => {
     // ADR-056's Scenario 6 shape: tools were offered and none was called.
     // Dropping the marker would make that failure indistinguishable from a
     // line this scrape could not parse.
-    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_payload={"candidates":["search_nodes","update_node"],"off_menu":false,"selected":null}`;
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_payload={"candidates":["search_nodes","update_node"],"enforced":false,"off_menu":false,"selected":null}`;
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      '[decision operation] {"candidates":["search_nodes","update_node"],"off_menu":false,"selected":null}',
+      '[decision operation] {"candidates":["search_nodes","update_node"],"enforced":false,"off_menu":false,"selected":null}',
     );
   });
 
@@ -226,8 +260,8 @@ describe("formatTurnLogLines", () => {
     // last line, decisions are per-round: a ReAct turn that searched and then
     // wrote made two operation decisions and both are scoreable.
     const slice = [
-      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_payload={"candidates":["search_nodes","update_node"],"off_menu":false,"selected":"search_nodes"}`,
-      `2026-09-22T10:00:02Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_payload={"candidates":["search_nodes","update_node"],"off_menu":false,"selected":"update_node"}`,
+      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_payload={"candidates":["search_nodes","update_node"],"enforced":false,"off_menu":false,"selected":"search_nodes"}`,
+      `2026-09-22T10:00:02Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_payload={"candidates":["search_nodes","update_node"],"enforced":false,"off_menu":false,"selected":"update_node"}`,
     ].join("\n");
     const lines = formatTurnLogLines(slice);
     expect(lines.filter((l) => l.startsWith("[decision operation]"))).toHaveLength(2);

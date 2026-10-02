@@ -71,6 +71,7 @@ fn probe_candidate() -> SkillCandidate {
         tools: vec!["search_nodes".to_string()],
         instructions: String::new(),
         schema_metadata: serde_json::json!([]),
+        schemas_linked: false,
     }
 }
 

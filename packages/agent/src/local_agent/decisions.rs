@@ -63,6 +63,15 @@ pub struct DecisionRecord {
     /// Folding it into "no record" would hide the failure class that motivated
     /// this module.
     pub selected: Option<String>,
+    /// Whether dispatch held the selection to `candidates`, refusing a call
+    /// that named anything else.
+    ///
+    /// True only for the schema decision of a turn with an offered set
+    /// (`routing::offered_types`), where `candidates` is that set, and only
+    /// when the selection came from a call dispatch holds: a type read off
+    /// `update_node` or `create_schema` ran whatever it named. It is what
+    /// separates an off-menu selection that was refused from one that ran.
+    pub enforced: bool,
 }
 
 /// Which of the three selections a [`DecisionRecord`] describes.
@@ -103,10 +112,13 @@ impl DecisionRecord {
     /// This should be impossible for operations — the tool surface is scoped
     /// before the model sees it, and llama.cpp's grammar constrains the call
     /// envelope to a registered tool name. It is *not* impossible for schemas:
-    /// nothing constrains a `node_type` argument to a retrieved candidate, so
-    /// the model can and does name a type that was never on offer. That case is
-    /// the single most diagnostic signal this record carries, because it cannot
-    /// be explained as a hard choice between plausible options.
+    /// the grammar does not constrain a `node_type` argument, so the model can
+    /// and does name a type that was never on offer. That case is the single
+    /// most diagnostic signal this record carries, because it cannot be
+    /// explained as a hard choice between plausible options.
+    ///
+    /// Whether such a call then ran is [`DecisionRecord::enforced`]: on an
+    /// enforced turn dispatch refused it, and on any other turn it executed.
     pub fn selected_off_menu(&self) -> bool {
         self.selected
             .as_ref()
@@ -143,8 +155,8 @@ impl DecisionRecord {
     /// erase the difference between "picked nothing" and "picked something
     /// nameless".
     pub fn payload_field(&self) -> String {
-        // Infallible in practice — the value is built here from a String, a
-        // bool and a Vec<String>, none of which can fail to serialise. A
+        // Infallible in practice — the value is built here from a String, two
+        // bools and a Vec<String>, none of which can fail to serialise. A
         // fallback rather than an unwrap so a logging call can never panic the
         // agent loop.
         //
@@ -157,6 +169,7 @@ impl DecisionRecord {
         serde_json::to_string(&serde_json::json!({
             "selected": self.selected,
             "off_menu": self.selected_off_menu(),
+            "enforced": self.enforced,
             "candidates": self.candidates,
         }))
         .unwrap_or_else(|_| "null".to_string())
@@ -180,6 +193,7 @@ pub fn record_operation(offered: &[String], called: &[String]) -> DecisionRecord
         kind: DecisionKind::Operation,
         candidates: offered.to_vec(),
         selected: called.first().cloned(),
+        enforced: false,
     }
 }
 
@@ -192,11 +206,19 @@ pub fn record_operation(offered: &[String], called: &[String]) -> DecisionRecord
 /// record. That distinguishes "had schemas to choose from and used none" — a
 /// real outcome worth scoring, and the shape of a turn that answered from
 /// conversation instead of the graph — from "was never offered any."
-pub fn record_schema(candidates: &[String], selected: Option<String>) -> DecisionRecord {
+///
+/// `enforced` says the turn has an offered set and `candidates` is it: see
+/// [`DecisionRecord::enforced`].
+pub fn record_schema(
+    candidates: &[String],
+    selected: Option<String>,
+    enforced: bool,
+) -> DecisionRecord {
     DecisionRecord {
         kind: DecisionKind::Schema,
         candidates: candidates.to_vec(),
         selected,
+        enforced,
     }
 }
 
@@ -243,6 +265,7 @@ pub fn record_skill(candidates: &[SkillCandidate]) -> DecisionRecord {
         candidates: candidates.iter().map(|c| c.name.clone()).collect(),
         selected: super::routing::leading_tool_bearing_candidate(candidates)
             .map(|c| c.name.clone()),
+        enforced: false,
     }
 }
 
@@ -258,23 +281,17 @@ pub fn record_skill(candidates: &[SkillCandidate]) -> DecisionRecord {
 /// Deduplicated with order preserved — several candidates can carry the same
 /// type, and a duplicated option is not a wider choice.
 pub fn schema_candidates(candidates: &[SkillCandidate]) -> Vec<String> {
-    let mut seen: Vec<String> = Vec::new();
-    for c in candidates {
-        for d in nodespace_core::ops::entity_types_block::descriptors_from_json(&c.schema_metadata)
-        {
-            if !seen.contains(&d.type_id) {
-                seen.push(d.type_id);
-            }
-        }
-    }
-    seen
+    super::routing::type_ids(candidates.iter())
 }
 
 /// The schema type a tool call acts on, where the call names one.
 ///
-/// Reads `node_type` (the argument every schema-scoped tool uses for this) and
-/// falls back to `type` for `create_schema`, whose argument is the type being
-/// defined rather than one being referenced.
+/// Reads the tool's existing-type parameter where it has one
+/// ([`Tool::existing_type_parameter`]: `node_type`, or `update_schema`'s
+/// `schema_id`), so the recorded selection is the argument dispatch holds to
+/// the offered set. Otherwise reads `node_type` and falls back to `type` for
+/// `create_schema`, whose argument is the type being defined rather than one
+/// being referenced.
 ///
 /// Returns `None` for a tool that is not schema-scoped at all — `get_node` by
 /// id, say — because such a turn made no schema decision. Recording one would
@@ -283,8 +300,11 @@ pub fn selected_schema(tool_name: &str, args: &serde_json::Value) -> Option<Stri
     if !schema_scoped(tool_name) {
         return None;
     }
-    args.get("node_type")
-        .or_else(|| args.get("type"))
+    let named = match super::tools::existing_type_parameter_tool(tool_name) {
+        Some(parameter) => args.get(parameter),
+        None => args.get("node_type").or_else(|| args.get("type")),
+    };
+    named
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .filter(|s| !s.trim().is_empty())
@@ -347,6 +367,7 @@ mod tests {
             tools: vec![],
             instructions: String::new(),
             schema_metadata,
+            schemas_linked: false,
         }
     }
 
@@ -359,6 +380,7 @@ mod tests {
             tools: tools.iter().map(|t| t.to_string()).collect(),
             instructions: String::new(),
             schema_metadata: json!(null),
+            schemas_linked: false,
         }
     }
 
@@ -575,18 +597,52 @@ mod tests {
     /// candidates, this cannot be explained as a close call.
     #[test]
     fn off_menu_selection_is_detected() {
-        let rec = record_schema(&["invoice".to_string()], Some("album".to_string()));
+        let rec = record_schema(&["invoice".to_string()], Some("album".to_string()), false);
         assert!(rec.selected_off_menu());
 
-        let on_menu = record_schema(&["invoice".to_string()], Some("invoice".to_string()));
+        let on_menu = record_schema(&["invoice".to_string()], Some("invoice".to_string()), false);
         assert!(!on_menu.selected_off_menu());
+    }
+
+    /// An off-menu selection ran on an unconstrained turn and was refused on an
+    /// enforced one. The record carries which, in the log payload too.
+    #[test]
+    fn the_record_shows_whether_the_candidate_set_was_enforced() {
+        let menu = ["invoice".to_string()];
+        let unconstrained = record_schema(&menu, Some("album".to_string()), false);
+        let enforced = record_schema(&menu, Some("album".to_string()), true);
+        assert!(unconstrained.selected_off_menu() && enforced.selected_off_menu());
+
+        let payload = |rec: &DecisionRecord| -> serde_json::Value {
+            serde_json::from_str(&rec.payload_field()).unwrap()
+        };
+        assert_eq!(payload(&unconstrained)["enforced"], json!(false));
+        assert_eq!(payload(&enforced)["enforced"], json!(true));
+    }
+
+    /// Only a schema decision can be enforced: the other two kinds say so.
+    #[test]
+    fn skill_and_operation_records_are_never_enforced() {
+        assert!(!record_skill(&[skill("Node Creation", 0.8, &["create_node"])]).enforced);
+        assert!(!record_operation(&["create_node".to_string()], &[]).enforced);
+    }
+
+    /// `update_schema` names its type in `schema_id`. Dispatch holds that
+    /// argument to the offered set, so it is the one the record must show.
+    #[test]
+    fn selected_schema_reads_schema_id_for_update_schema() {
+        let args = json!({"schema_id": "invoice", "add_fields": []});
+        assert_eq!(
+            selected_schema("update_schema", &args),
+            Some("invoice".to_string())
+        );
     }
 
     /// Selecting nothing is not selecting something off-menu — the two are
     /// different failures and an eval must not conflate them.
     #[test]
     fn no_selection_is_not_off_menu() {
-        let rec = record_schema(&["invoice".to_string()], None);
+        let rec = record_schema(&["invoice".to_string()], None, false);
         assert!(!rec.selected_off_menu());
     }
 
@@ -616,6 +672,7 @@ mod tests {
         let rec = record_schema(
             &["Company, Sold To".to_string(), "invoice".to_string()],
             Some("Company, Sold To".to_string()),
+            false,
         );
         let v: serde_json::Value = serde_json::from_str(&rec.payload_field()).unwrap();
         assert_eq!(
@@ -641,6 +698,7 @@ mod tests {
         let rec = record_schema(
             &["a \" quote".to_string(), "a \n newline".to_string()],
             Some("a \" quote".to_string()),
+            false,
         );
         let encoded = rec.payload_field();
         assert!(
@@ -663,7 +721,7 @@ mod tests {
         assert_eq!(v["selected"], json!(null));
         assert!(v["selected"].is_null());
 
-        let empty = record_schema(&["invoice".to_string()], Some(String::new()));
+        let empty = record_schema(&["invoice".to_string()], Some(String::new()), false);
         let v: serde_json::Value = serde_json::from_str(&empty.payload_field()).unwrap();
         assert_eq!(v["selected"], json!(""));
         assert!(

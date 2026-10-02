@@ -1283,6 +1283,100 @@ pub(crate) fn with_live_task_statuses(
     tool
 }
 
+/// Hold a tool's existing-type parameter (see
+/// [`Tool::existing_type_parameter`]) to `offered`, the types this turn's
+/// matched skills link to, as a JSON Schema `enum`.
+///
+/// The tool schema is the channel ADR-064 rule 1 measures best for a stated
+/// constraint. It is a statement rather than a hard stop on the locked model,
+/// whose grammar constrains the call envelope and not the argument body
+/// (ADR-056), so dispatch refuses what the `enum` excludes — see
+/// [`off_menu_type`].
+///
+/// The parameter's description is replaced along with it. The static one
+/// names types the `enum` may exclude (`'text'`, `'task'`) and sends the
+/// model to the `EXISTING SCHEMAS` block, which can list more types than the
+/// set: two statements about one parameter that disagree would weaken the
+/// channel the constraint is stated in.
+///
+/// A no-op for a tool with no such parameter, so callers can map it over the
+/// whole list.
+pub(crate) fn with_offered_types(mut tool: ToolDefinition, offered: &[String]) -> ToolDefinition {
+    let Some(parameter) = existing_type_parameter_tool(&tool.name) else {
+        return tool;
+    };
+    let optional = !existing_type_parameter_is_required(&tool);
+    // `get_mut` rather than `[...]` indexing, for the reason
+    // `with_declared_field_values` gives.
+    if let Some(declared) = tool
+        .parameters_schema
+        .get_mut("properties")
+        .and_then(|properties| properties.get_mut(parameter))
+        .filter(|declared| declared.is_object())
+    {
+        declared["enum"] = json!(offered);
+        // "These type ids" is the `enum` beside this text. "The listed ids"
+        // could be read as the resident `EXISTING SCHEMAS` block, which can
+        // list more.
+        let role = held_parameter_role(&tool.name);
+        let omit = if optional {
+            " Omit to search all types."
+        } else {
+            ""
+        };
+        declared["description"] = json!(format!(
+            "{role}: one of these type ids, copied exactly. No other type applies to this \
+             request.{omit}"
+        ));
+    }
+    tool
+}
+
+/// What a tool's existing-type parameter is for, as the opening of the
+/// description [`with_offered_types`] gives it.
+fn held_parameter_role(tool_name: &str) -> &'static str {
+    match Tool::from_name(tool_name) {
+        Some(Tool::CreateNode) => "The type of the new record",
+        Some(Tool::SearchNodes) => "Filter to one type",
+        Some(Tool::ResolveQuery) => "The type to resolve against",
+        Some(Tool::UpdateSchema) => "The schema to update",
+        // Every tool with an existing-type parameter is named above, which
+        // `a_held_parameters_description_agrees_with_its_enum` asserts.
+        _ => "The type",
+    }
+}
+
+/// Whether `tool` lists its existing-type parameter (see
+/// [`Tool::existing_type_parameter`]) as required. False for a tool with no
+/// such parameter.
+pub(crate) fn existing_type_parameter_is_required(tool: &ToolDefinition) -> bool {
+    let Some(parameter) = existing_type_parameter_tool(&tool.name) else {
+        return false;
+    };
+    tool.parameters_schema
+        .get("required")
+        .and_then(|required| required.as_array())
+        .is_some_and(|required| required.iter().any(|name| name == parameter))
+}
+
+/// The type a call names in its existing-type parameter when that type is
+/// not in `offered`, or `None` when the call may run.
+///
+/// A call that names no type is not off the menu: an optional parameter may
+/// be left out (`search_nodes` across every type), and a required one that is
+/// missing is the tool's own error to report.
+pub(crate) fn off_menu_type<'a>(
+    tool_name: &str,
+    args: &'a Value,
+    offered: &[String],
+) -> Option<&'a str> {
+    let named = args
+        .get(existing_type_parameter_tool(tool_name)?)?
+        .as_str()
+        .filter(|named| !named.trim().is_empty())?;
+    (!offered.iter().any(|id| id == named)).then_some(named)
+}
+
 fn def_create_relationship() -> ToolDefinition {
     ToolDefinition {
         name: "create_relationship".into(),
@@ -2489,6 +2583,49 @@ impl Tool {
             | Tool::GetWorkflowState => false,
         }
     }
+
+    /// The parameter in which a call names a type that already exists, for
+    /// the tools that have one. A routed turn with an offered set holds this
+    /// parameter to it — see `routing::offered_types`.
+    ///
+    /// An exhaustive match, so a new tool forces a decision about whether it
+    /// names an existing type.
+    ///
+    /// `update_node` has none: it takes a node id, and the node's type is
+    /// whatever that node already is. `create_schema` has none either: the
+    /// type it names is the one being defined. `search_semantic`'s
+    /// `node_types` is not one: it narrows a search by meaning across the
+    /// graph, a list of filters rather than the single type a call acts on,
+    /// and a turn held to its skills' types may still read around them.
+    pub fn existing_type_parameter(self) -> Option<&'static str> {
+        match self {
+            Tool::CreateNode | Tool::SearchNodes | Tool::ResolveQuery => Some("node_type"),
+            Tool::UpdateSchema => Some("schema_id"),
+            Tool::UpdateNode
+            | Tool::CreateSchema
+            | Tool::SearchSemantic
+            | Tool::GetNode
+            | Tool::UpdateTaskStatus
+            | Tool::CreateRelationship
+            | Tool::GetRelatedNodes
+            | Tool::SearchSkills
+            | Tool::DeleteNode
+            | Tool::CreateNodesFromMarkdown
+            | Tool::RouteClarify
+            | Tool::ListConflicts
+            | Tool::GetConflict
+            | Tool::DismissConflict
+            | Tool::AdoptExistingConflict
+            | Tool::MergeConflict
+            | Tool::GetWorkflowState => None,
+        }
+    }
+}
+
+/// [`Tool::existing_type_parameter`] by wire name. An unrecognised name has
+/// no such parameter.
+pub fn existing_type_parameter_tool(tool: &str) -> Option<&'static str> {
+    Tool::from_name(tool).and_then(Tool::existing_type_parameter)
 }
 
 /// Whether a tool's required parameters depend on Stage-2 routing guidance,
@@ -4640,6 +4777,10 @@ impl AgentToolExecutor for GraphToolExecutor {
                     .get("schema_metadata")
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!([])),
+                schemas_linked: s
+                    .get("schemas_linked")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             })
             .collect();
 
@@ -5068,6 +5209,223 @@ mod tests {
         assert!(requires_routed_guidance_tool("resolve_query"));
         assert!(!requires_routed_guidance_tool("search_nodes"));
         assert!(!requires_routed_guidance_tool("not_a_real_tool"));
+    }
+
+    // -- Tool::existing_type_parameter --
+
+    #[test]
+    fn four_tools_name_an_existing_type() {
+        let naming: Vec<(&str, &str)> = Tool::ALL
+            .iter()
+            .filter_map(|t| t.existing_type_parameter().map(|p| (t.name(), p)))
+            .collect();
+        assert_eq!(
+            naming,
+            [
+                ("search_nodes", "node_type"),
+                ("resolve_query", "node_type"),
+                ("create_node", "node_type"),
+                ("update_schema", "schema_id"),
+            ]
+        );
+    }
+
+    /// The parameter must be one the tool declares, as a string: an `enum`
+    /// set on a name the schema does not carry would constrain nothing, and
+    /// dispatch would read an argument the model was never asked for.
+    #[test]
+    fn every_existing_type_parameter_is_a_declared_string_parameter() {
+        for t in Tool::ALL {
+            let Some(parameter) = t.existing_type_parameter() else {
+                continue;
+            };
+            assert_eq!(
+                t.definition().parameters_schema["properties"][parameter]["type"],
+                json!("string"),
+                "{} must declare '{parameter}' as a string parameter",
+                t.name()
+            );
+        }
+    }
+
+    #[test]
+    fn existing_type_parameter_tool_resolves_by_wire_name() {
+        assert_eq!(
+            existing_type_parameter_tool("update_schema"),
+            Some("schema_id")
+        );
+        assert_eq!(existing_type_parameter_tool("create_schema"), None);
+        assert_eq!(existing_type_parameter_tool("update_node"), None);
+        assert_eq!(existing_type_parameter_tool("not_a_real_tool"), None);
+    }
+
+    #[test]
+    fn with_offered_types_sets_the_enum_and_keeps_the_parameter_required() {
+        let offered = vec!["invoice".to_string(), "retainer_invoice".to_string()];
+        let held = with_offered_types(def_create_node(), &offered);
+        let node_type = &held.parameters_schema["properties"]["node_type"];
+
+        assert_eq!(node_type["enum"], json!(offered));
+        assert_eq!(node_type["type"], json!("string"));
+        assert_eq!(
+            held.parameters_schema["required"],
+            def_create_node().parameters_schema["required"]
+        );
+    }
+
+    /// The static descriptions name types the set may exclude and point at a
+    /// block that can list more than it. A held parameter says only what the
+    /// `enum` says, and keeps "omit" where omitting is allowed.
+    #[test]
+    fn a_held_parameters_description_agrees_with_its_enum() {
+        let offered = vec!["invoice".to_string()];
+        let description = |tool: Tool| {
+            let held = with_offered_types(tool.definition(), &offered);
+            let parameter = tool.existing_type_parameter().unwrap();
+            held.parameters_schema["properties"][parameter]["description"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        for tool in Tool::ALL
+            .iter()
+            .filter(|t| t.existing_type_parameter().is_some())
+        {
+            let text = description(*tool);
+            for excluded in ["'text'", "'task'", "'ticket'", "'adr'", "EXISTING SCHEMAS"] {
+                assert!(
+                    !text.contains(excluded),
+                    "{}: a held parameter must not name {excluded}: {text}",
+                    tool.name()
+                );
+            }
+            assert!(text.contains("one of these type ids"), "{text}");
+            // Each says what its parameter is for, not the generic fallback.
+            assert!(
+                !text.starts_with("The type:"),
+                "{}: no role for its held parameter: {text}",
+                tool.name()
+            );
+            // Only `search_nodes` may leave its type out.
+            assert_eq!(
+                text.contains("Omit"),
+                matches!(tool, Tool::SearchNodes),
+                "{}: {text}",
+                tool.name()
+            );
+        }
+    }
+
+    #[test]
+    fn only_search_nodes_leaves_its_existing_type_parameter_optional() {
+        for tool in Tool::ALL {
+            let required = existing_type_parameter_is_required(&tool.definition());
+            let expected = matches!(
+                tool,
+                Tool::CreateNode | Tool::ResolveQuery | Tool::UpdateSchema
+            );
+            assert_eq!(required, expected, "{}", tool.name());
+        }
+    }
+
+    #[test]
+    fn with_offered_types_leaves_a_tool_that_names_no_existing_type() {
+        let offered = vec!["invoice".to_string()];
+        for def in [def_create_schema(), def_update_node(), def_get_node()] {
+            let held = with_offered_types(def.clone(), &offered);
+            assert_eq!(
+                held.parameters_schema, def.parameters_schema,
+                "{}",
+                def.name
+            );
+        }
+    }
+
+    #[test]
+    fn off_menu_type_names_the_type_a_call_may_not_use() {
+        let offered = vec!["invoice".to_string(), "retainer_invoice".to_string()];
+        let off =
+            |tool: &str, args: Value| off_menu_type(tool, &args, &offered).map(str::to_string);
+
+        // Each tool's own type parameter is the one read.
+        assert_eq!(
+            off("create_node", json!({"node_type": "album"})),
+            Some("album".to_string())
+        );
+        assert_eq!(
+            off("search_nodes", json!({"query": "", "node_type": "schema"})),
+            Some("schema".to_string())
+        );
+        assert_eq!(
+            off(
+                "resolve_query",
+                json!({"request": "x", "node_type": "album"})
+            ),
+            Some("album".to_string())
+        );
+        assert_eq!(
+            off("update_schema", json!({"schema_id": "album"})),
+            Some("album".to_string())
+        );
+
+        // An id is matched exactly: the model is told to copy it.
+        assert_eq!(
+            off("create_node", json!({"node_type": "Invoice"})),
+            Some("Invoice".to_string())
+        );
+
+        // On the menu.
+        assert_eq!(off("create_node", json!({"node_type": "invoice"})), None);
+        assert_eq!(
+            off("update_schema", json!({"schema_id": "retainer_invoice"})),
+            None
+        );
+    }
+
+    #[test]
+    fn a_call_naming_no_type_is_not_off_menu() {
+        let offered = vec!["invoice".to_string()];
+        // An optional parameter left out, a blank one, and a non-string are
+        // the tool's own to handle.
+        assert_eq!(
+            off_menu_type("search_nodes", &json!({"query": "x"}), &offered),
+            None
+        );
+        assert_eq!(
+            off_menu_type("create_node", &json!({"node_type": "  "}), &offered),
+            None
+        );
+        assert_eq!(
+            off_menu_type("create_node", &json!({"node_type": 7}), &offered),
+            None
+        );
+        // `update_schema` is read by `schema_id`, not by a stray `node_type`.
+        assert_eq!(
+            off_menu_type(
+                "update_schema",
+                &json!({"schema_id": "invoice", "node_type": "album"}),
+                &offered
+            ),
+            None
+        );
+        // Tools that name no existing type are never held to the set.
+        assert_eq!(
+            off_menu_type("create_schema", &json!({"name": "Album"}), &offered),
+            None
+        );
+        assert_eq!(
+            off_menu_type(
+                "update_node",
+                &json!({"id": "n", "node_type": "album"}),
+                &offered
+            ),
+            None
+        );
+        assert_eq!(
+            off_menu_type("get_node", &json!({"node_type": "album"}), &offered),
+            None
+        );
     }
 
     // -- Helper: test truncation --

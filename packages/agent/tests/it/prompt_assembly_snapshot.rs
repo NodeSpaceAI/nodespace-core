@@ -28,7 +28,9 @@
 //!    including each candidate's rendered instruction subtree.
 //! 3. **Stage-2 tool surface** — `routing::stage2_tools`: names,
 //!    descriptions, and full parameter schemas, scoped to the fixture
-//!    candidates' whitelists.
+//!    candidates' whitelists. A second golden holds the parameters that
+//!    change when the turn is held to its offered types
+//!    (`routing::hold_to_offered_types`).
 //! 4. **Stage-1 request** — `stage1_system_prompt` + `stage1_tool_definitions()`.
 //! 5. **`EXISTING SCHEMAS`**, which reaches the prompt from two
 //!    independent sites and both are covered separately:
@@ -96,7 +98,8 @@ use std::sync::Arc;
 use nodespace_agent::agent_types::{SkillCandidate, ToolDefinition};
 use nodespace_agent::local_agent::agent_loop::stage1_system_prompt;
 use nodespace_agent::local_agent::routing::{
-    declare_write_tool_fields, render_candidates_for_prompt, stage1_tool_definitions, stage2_tools,
+    declare_write_tool_fields, hold_to_offered_types, offered_types, render_candidates_for_prompt,
+    stage1_tool_definitions, stage2_tools,
 };
 use nodespace_agent::local_agent::tools::model_facing_tool_definitions;
 use nodespace_agent::prompt_assembler::PromptAssembler;
@@ -481,6 +484,7 @@ fn fixture_candidates() -> Vec<SkillCandidate> {
             tools: skill_whitelist(node_creation),
             instructions: render_seed_instructions(node_creation),
             schema_metadata: metadata.clone(),
+            schemas_linked: false,
         },
         SkillCandidate {
             id: "fixture-skill-schema-creation".to_string(),
@@ -490,6 +494,7 @@ fn fixture_candidates() -> Vec<SkillCandidate> {
             tools: skill_whitelist(schema_creation),
             instructions: render_seed_instructions(schema_creation),
             schema_metadata: metadata,
+            schemas_linked: false,
         },
     ]
 }
@@ -679,6 +684,57 @@ fn stage2_tool_surface_matches_golden() {
     );
     let rendered = render_tool_definitions(&scoped);
     golden::assert_matches("stage2_tool_surface", &rendered);
+}
+
+/// Site 3 on a turn held to its offered types: what the tool surface above
+/// gains when every candidate carries its linked schemas.
+///
+/// The golden holds only the parameters that change, each in full, so it shows
+/// the `enum` and its description as the model receives them without
+/// repeating the whole surface. It is taken over every model-facing tool
+/// rather than the fixture candidates' scoped surface, so each tool that can
+/// be held appears whichever skills whitelist it. The seeded skills link to no
+/// schema; the fixture marks them linked to stand in for skills that do.
+#[test]
+fn stage2_tool_surface_held_to_offered_types_matches_golden() {
+    let candidates: Vec<SkillCandidate> = fixture_candidates()
+        .into_iter()
+        .map(|c| SkillCandidate {
+            schemas_linked: true,
+            ..c
+        })
+        .collect();
+    let open = declare_write_tool_fields(&candidates, model_facing_tool_definitions());
+    let offered = offered_types(&candidates).expect("every fixture candidate is linked");
+    let held = hold_to_offered_types(open.clone(), &offered);
+
+    let mut rendered = String::new();
+    for (open, held) in open.iter().zip(&held) {
+        assert_eq!(open.name, held.name);
+        assert_eq!(
+            open.description, held.description,
+            "the offered types are stated in the parameter schema, not the description"
+        );
+        let empty = serde_json::Map::new();
+        let properties = |tool: &ToolDefinition| {
+            tool.parameters_schema["properties"]
+                .as_object()
+                .unwrap_or(&empty)
+                .clone()
+        };
+        let before = properties(open);
+        for (name, declared) in properties(held) {
+            if before.get(&name) == Some(&declared) {
+                continue;
+            }
+            rendered.push_str(&format!("### {}.{name}\n", held.name));
+            rendered.push_str(
+                &serde_json::to_string_pretty(&declared).expect("a JSON value serialises"),
+            );
+            rendered.push_str("\n\n");
+        }
+    }
+    golden::assert_matches("stage2_tool_surface_offered_types", &rendered);
 }
 
 /// Site 4: the Stage-1 request — `stage1_system_prompt` plus

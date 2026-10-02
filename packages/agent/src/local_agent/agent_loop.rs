@@ -1721,6 +1721,58 @@ fn second_schema_refused_result(incoming_name: &str) -> serde_json::Value {
     })
 }
 
+/// Build the tool result returned in place of a call that named a type
+/// outside the turn's offered set (`routing::offered_types`).
+///
+/// Names the allowed ids, so the model can re-send the call with one of them
+/// or put the choice to the user. ADR-064 assigns an error like this to the
+/// tool-results channel.
+///
+/// The message says what to do when none of the offered types is what the
+/// user meant, and offers only what the turn can do there. Where the tool's
+/// type parameter is optional (`may_omit`, which names it), that is leaving
+/// it out: the call is a read, and without the type it searches every type.
+/// Otherwise it is `route_clarify` when that is on this turn's surface, and a
+/// plain reply when it is not.
+///
+/// Flagged as an error: nothing ran.
+fn off_menu_type_refused_result(
+    tool_name: &str,
+    named: &str,
+    offered: &[String],
+    may_omit: Option<&str>,
+    clarify_offered: bool,
+) -> serde_json::Value {
+    // The re-send is conditional on purpose. The user may have asked for a
+    // kind of record these types do not cover, and "re-send with one of them"
+    // on its own invites writing that record as the wrong type.
+    let if_none = match may_omit {
+        Some(parameter) => format!("leave {parameter} out to search every type"),
+        None if clarify_offered => "do not use one anyway: call route_clarify and ask".to_string(),
+        None => "do not use one anyway: say so in your reply".to_string(),
+    };
+    serde_json::json!({
+        "error": OFF_MENU_TYPE_ERROR,
+        "allowed_types": offered,
+        "message": format!(
+            "Not executed: \"{named}\" is not a type this request covers. {tool_name} accepts \
+             only these type ids here: {}. If one of them is what the user meant, re-send the \
+             call with it, copied exactly. If none of them is, {if_none}.",
+            offered.join(", ")
+        ),
+    })
+}
+
+/// Whether `result` is the refusal of a call that named a type outside the
+/// turn's offered set.
+fn is_off_menu_type_refusal(result: &serde_json::Value) -> bool {
+    result.get("error").and_then(|v| v.as_str()) == Some(OFF_MENU_TYPE_ERROR)
+}
+
+/// `error` code on the result of a call refused for naming a type outside
+/// the turn's offered set.
+const OFF_MENU_TYPE_ERROR: &str = "type_not_offered";
+
 /// Maximum tokens any single inference round may generate.
 ///
 /// Small local models (e.g. Gemma-4-E4B) occasionally open an empty
@@ -2954,6 +3006,22 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             tools = routing::declare_write_tool_fields(&routed.candidates, tools);
         }
 
+        // The types this turn is held to, when every matched skill links to
+        // its schemas: stated as an `enum` on each tool's existing-type
+        // parameter here, and enforced at dispatch below, because the locked
+        // model's grammar does not constrain argument bodies (ADR-056).
+        //
+        // Gated like the step above, for the same reason and one more: the set
+        // is the types the candidate block lists, and a turn whose block is
+        // withheld was never shown it. A fail-open surface has no set either —
+        // no skill's whitelist scoped it, so no skill's links hold it.
+        let offered_types = (scoped_surface && !session.routing_disabled)
+            .then(|| routing::offered_types(&routed.candidates))
+            .flatten();
+        if let Some(offered) = &offered_types {
+            tools = routing::hold_to_offered_types(tools, offered);
+        }
+
         // Replaces `update_task_status`'s seed `enum` with `task.status`'s
         // live vocabulary. Unconditional, unlike the retrieved-schema step
         // above: this is not retrieval output but a core schema's own
@@ -3328,9 +3396,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 );
 
                 // Read from the same retrieved metadata the Stage-2 block
-                // renders, so the recorded candidate set is what the model was
-                // shown rather than a second derivation that could drift.
-                let schema_candidates = decisions::schema_candidates(&routed.candidates);
+                // renders rather than from a second derivation that could
+                // drift. On a turn with an offered set, that set is the menu:
+                // the types the block lists, which the tool schemas state and
+                // dispatch enforces.
+                let schema_candidates = offered_types
+                    .clone()
+                    .unwrap_or_else(|| decisions::schema_candidates(&routed.candidates));
                 // Only the first call's type is scored, matching the operation
                 // record: one round is one decision about where to start.
                 let selected_type = tool_calls
@@ -3345,7 +3417,18 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // decision at all; recording one would put a null in the
                 // denominator of every accuracy figure computed from this.
                 if !schema_candidates.is_empty() || selected_type.is_some() {
-                    let sc = decisions::record_schema(&schema_candidates, selected_type);
+                    // A selection read from a tool dispatch does not hold
+                    // (`update_node`, `create_schema`) ran whatever it named,
+                    // so that record is not an enforced one.
+                    let selection_held = selected_type.is_none()
+                        || tool_calls.first().is_some_and(|tc| {
+                            super::tools::existing_type_parameter_tool(&tc.function_name).is_some()
+                        });
+                    let sc = decisions::record_schema(
+                        &schema_candidates,
+                        selected_type,
+                        offered_types.is_some() && selection_held,
+                    );
                     tracing::info!(
                         iteration,
                         decision = sc.kind.as_str(),
@@ -3891,6 +3974,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     }
                 };
 
+                // Whether this call reached the executor, as opposed to being
+                // answered by one of the guards below.
+                let mut dispatched = false;
                 let (args, tool_result) = match parsed_args {
                     Ok(mut args) => {
                         consecutive_malformed_calls = 0;
@@ -4010,6 +4096,48 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                         is_error: false,
                                     }),
                                 )
+                            } else if let Some((named, offered)) =
+                                offered_types.as_deref().and_then(|offered| {
+                                    super::tools::off_menu_type(&tc.function_name, &args, offered)
+                                        .map(|named| (named.to_string(), offered))
+                                })
+                            {
+                                // The turn's tool schemas state the offered
+                                // types as an `enum`, which the locked model's
+                                // grammar does not enforce on an argument
+                                // body. This is where the set binds.
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    tool = %tc.function_name,
+                                    iteration = iteration,
+                                    named_type = %named,
+                                    "Tool call refused — it names a type outside this turn's offered set"
+                                );
+                                let may_omit = tools
+                                    .iter()
+                                    .find(|t| t.name == tc.function_name)
+                                    .filter(|t| {
+                                        !super::tools::existing_type_parameter_is_required(t)
+                                    })
+                                    .and_then(|t| {
+                                        super::tools::existing_type_parameter_tool(&t.name)
+                                    });
+                                let refused = off_menu_type_refused_result(
+                                    &tc.function_name,
+                                    &named,
+                                    offered,
+                                    may_omit,
+                                    tools.iter().any(|t| t.name == routing::ROUTE_CLARIFY_TOOL),
+                                );
+                                (
+                                    args,
+                                    Ok(crate::agent_types::ToolResult {
+                                        tool_call_id: tc.id.clone(),
+                                        name: tc.function_name.clone(),
+                                        result: refused,
+                                        is_error: true,
+                                    }),
+                                )
                             } else if let Some(entity) = mentioned_entity_duplicated_by(
                                 &session.mentioned_entities,
                                 &composed_clarifications,
@@ -4091,6 +4219,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 // `exec_route_clarify` gives on direct dispatch,
                                 // rather than a second, differently-worded
                                 // validation path here.
+                                dispatched = true;
                                 let result = self
                                     .tool_executor
                                     .execute(&tc.function_name, args.clone())
@@ -4153,11 +4282,26 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 let (args_preview, args_preview_truncated) = char_preview(&args.to_string(), 300);
                 let (result_preview, result_preview_truncated) =
                     char_preview(&result_value.to_string(), 300);
+                // A field of its own rather than something to find in
+                // `result_preview`: the preview is cut at 300 characters, and a
+                // long list of allowed ids would push the error code past it.
+                let type_refused = is_error && is_off_menu_type_refusal(&result_value);
+                // Whether a call naming a type outside the turn's offered set
+                // reached the executor. The refusal above makes this false; it
+                // is worked out here from the arguments and from what dispatch
+                // did, not from which branch ran, so that it reports the
+                // property rather than restating the guard.
+                let off_menu_ran = dispatched
+                    && offered_types.as_deref().is_some_and(|offered| {
+                        super::tools::off_menu_type(&tc.function_name, &args, offered).is_some()
+                    });
                 tracing::info!(
                     tool = %tc.function_name,
                     is_error,
                     duration_ms,
                     result_field_count,
+                    type_refused,
+                    off_menu_ran,
                     args_preview = %args_preview,
                     args_preview_truncated,
                     result_preview = %result_preview,
@@ -13122,6 +13266,9 @@ mod tests {
         /// Queries retrieval was actually asked for, so a test can assert the
         /// system — not the model — issued the retrieval.
         queries: Arc<std::sync::Mutex<Vec<String>>>,
+        /// Names of the calls that reached the executor, so a test can tell a
+        /// call that was refused from one that ran.
+        executed: Arc<std::sync::Mutex<Vec<String>>>,
         /// The types the user has defined.
         user_types: Vec<String>,
     }
@@ -13132,6 +13279,7 @@ mod tests {
                 inner,
                 candidates,
                 queries: Arc::new(std::sync::Mutex::new(Vec::new())),
+                executed: Arc::new(std::sync::Mutex::new(Vec::new())),
                 user_types: Vec::new(),
             }
         }
@@ -13143,6 +13291,10 @@ mod tests {
 
         fn queries_handle(&self) -> Arc<std::sync::Mutex<Vec<String>>> {
             self.queries.clone()
+        }
+
+        fn executed_handle(&self) -> Arc<std::sync::Mutex<Vec<String>>> {
+            self.executed.clone()
         }
     }
 
@@ -13156,6 +13308,7 @@ mod tests {
             name: &str,
             args: serde_json::Value,
         ) -> Result<ToolResult, ToolError> {
+            self.executed.lock().unwrap().push(name.to_string());
             self.inner.execute(name, args).await
         }
         async fn routing_available(&self) -> bool {
@@ -13188,6 +13341,7 @@ mod tests {
             tools: tools.iter().map(|t| t.to_string()).collect(),
             instructions: format!("INSTRUCTIONS FOR {name}"),
             schema_metadata: json!([]),
+            schemas_linked: false,
         }
     }
 
@@ -13468,6 +13622,7 @@ mod tests {
         inner: E,
         system_prompts: Arc<std::sync::Mutex<Vec<String>>>,
         tool_names: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        tools: Arc<std::sync::Mutex<Vec<Vec<ToolDefinition>>>>,
     }
 
     impl<E: ChatInferenceEngine> RecordingEngine<E> {
@@ -13476,7 +13631,14 @@ mod tests {
                 inner,
                 system_prompts: Arc::new(std::sync::Mutex::new(Vec::new())),
                 tool_names: Arc::new(std::sync::Mutex::new(Vec::new())),
+                tools: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
+        }
+
+        /// The tool definitions sent on each `generate` call, in call order —
+        /// for a test that asserts on a parameter schema, not just a name.
+        fn tools_handle(&self) -> Arc<std::sync::Mutex<Vec<Vec<ToolDefinition>>>> {
+            Arc::clone(&self.tools)
         }
 
         fn system_prompts_handle(&self) -> Arc<std::sync::Mutex<Vec<String>>> {
@@ -13513,6 +13675,10 @@ mod tests {
                     .map(|t| t.name.clone())
                     .collect(),
             );
+            self.tools
+                .lock()
+                .unwrap()
+                .push(request.tools.clone().unwrap_or_default());
             self.inner.generate(request, on_chunk).await
         }
 
@@ -14308,6 +14474,614 @@ mod tests {
             "resolve_query must be offered once its candidate's entity-types block \
              actually rendered: {stage2_tools:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Offered types: a turn whose skills all link to their schemas is held
+    // to those types (ADR-038)
+    // -----------------------------------------------------------------------
+
+    /// The type ids the linked candidate in these tests carries.
+    const OFFERED: [&str; 2] = ["invoice", "retainer_invoice"];
+
+    /// The tools that take a type, under their real parameter schemas, so the
+    /// parameters these tests exercise are the ones production declares.
+    fn type_naming_tools() -> MockToolExecutor {
+        use crate::local_agent::tools::Tool;
+        [
+            Tool::CreateNode,
+            Tool::UpdateNode,
+            Tool::UpdateSchema,
+            Tool::SearchNodes,
+            Tool::ResolveQuery,
+            Tool::CreateSchema,
+        ]
+        .into_iter()
+        .fold(
+            MockToolExecutor {
+                tools: Vec::new(),
+                results: HashMap::new(),
+            },
+            |exec, tool| {
+                let def = tool.definition();
+                exec.with_tool(
+                    &def.name,
+                    def.parameters_schema,
+                    json!({"id": "nodespace://n-1", "property_count": 1}),
+                )
+            },
+        )
+    }
+
+    /// A candidate whitelisting every tool in [`type_naming_tools`] and
+    /// carrying [`OFFERED`] as its schemas, linked or not.
+    fn billing_candidate(schemas_linked: bool) -> SkillCandidate {
+        let mut candidate = skill_candidate(
+            "Billing",
+            0.9,
+            &[
+                "create_node",
+                "update_node",
+                "update_schema",
+                "search_nodes",
+                "resolve_query",
+                "create_schema",
+            ],
+        );
+        candidate.schema_metadata = json!(OFFERED
+            .iter()
+            .map(|id| json!({"type_id": id, "fields": []}))
+            .collect::<Vec<_>>());
+        candidate.schemas_linked = schemas_linked;
+        candidate
+    }
+
+    /// A model that calls `route_query` at Stage 1, then makes each round's
+    /// calls in turn, then replies in prose.
+    fn scripted_engine(rounds: &[&[(&str, serde_json::Value)]]) -> MockEngine {
+        let done = |prompt_tokens| StreamingChunk::Done {
+            usage: InferenceUsage {
+                prompt_tokens,
+                completion_tokens: 4,
+            },
+        };
+        let mut script = vec![vec![
+            StreamingChunk::ToolCallStart {
+                id: "r1".into(),
+                name: routing::ROUTE_QUERY_TOOL.into(),
+                provider_extra: None,
+            },
+            StreamingChunk::ToolCallArgs {
+                id: "r1".into(),
+                args_json: json!({ "query": "bill the client" }).to_string(),
+            },
+            done(8),
+        ]];
+        for (round, calls) in rounds.iter().enumerate() {
+            let mut chunks = Vec::new();
+            for (call, (name, args)) in calls.iter().enumerate() {
+                let id = format!("t{round}-{call}");
+                chunks.push(StreamingChunk::ToolCallStart {
+                    id: id.clone(),
+                    name: (*name).into(),
+                    provider_extra: None,
+                });
+                chunks.push(StreamingChunk::ToolCallArgs {
+                    id,
+                    args_json: args.to_string(),
+                });
+            }
+            chunks.push(done(20));
+            script.push(chunks);
+        }
+        script.push(vec![
+            StreamingChunk::Token {
+                text: "That is everything I could do here.".into(),
+            },
+            done(30),
+        ]);
+        MockEngine::new(script)
+    }
+
+    /// [`run_scripted_turn`] for a turn that makes one call.
+    async fn run_typed_turn(
+        candidates: Vec<SkillCandidate>,
+        routing_disabled: bool,
+        tool_name: &str,
+        tool_args: serde_json::Value,
+    ) -> (Vec<ToolDefinition>, Vec<String>, AgentTurnResult) {
+        run_scripted_turn(
+            type_naming_tools(),
+            candidates,
+            routing_disabled,
+            &[&[(tool_name, tool_args)]],
+        )
+        .await
+    }
+
+    /// What a turn that routed to `candidates` and then made `rounds` of
+    /// calls did, over the tools `registry` offers: the Stage-2 tool
+    /// definitions the model was sent, the names of the calls that reached the
+    /// executor, and the turn's result.
+    async fn run_scripted_turn(
+        registry: MockToolExecutor,
+        candidates: Vec<SkillCandidate>,
+        routing_disabled: bool,
+        rounds: &[&[(&str, serde_json::Value)]],
+    ) -> (Vec<ToolDefinition>, Vec<String>, AgentTurnResult) {
+        let engine = RecordingEngine::new(scripted_engine(rounds));
+        let tools = engine.tools_handle();
+        let exec = RoutingToolExecutor::new(registry, candidates);
+        let executed = exec.executed_handle();
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+        session.routing_disabled = routing_disabled;
+
+        let result = loop_
+            .run_turn(
+                &mut session,
+                "bill the client for March",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let stage2_tools = tools.lock().unwrap()[1].clone();
+        let executed = executed.lock().unwrap().clone();
+        (stage2_tools, executed, result)
+    }
+
+    /// The `enum` a Stage-2 tool definition declares on `parameter`, if any.
+    fn declared_enum<'a>(
+        tools: &'a [ToolDefinition],
+        tool_name: &str,
+        parameter: &str,
+    ) -> Option<&'a serde_json::Value> {
+        tools
+            .iter()
+            .find(|t| t.name == tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} should be on the Stage-2 surface"))
+            .parameters_schema["properties"][parameter]
+            .get("enum")
+    }
+
+    #[tokio::test]
+    async fn a_linked_turn_states_its_offered_types_on_each_existing_type_parameter() {
+        let (tools, _, _) = run_typed_turn(
+            vec![billing_candidate(true)],
+            false,
+            "search_nodes",
+            json!({"query": ""}),
+        )
+        .await;
+
+        for (tool_name, parameter) in [
+            ("create_node", "node_type"),
+            ("search_nodes", "node_type"),
+            ("resolve_query", "node_type"),
+            ("update_schema", "schema_id"),
+        ] {
+            assert_eq!(
+                declared_enum(&tools, tool_name, parameter),
+                Some(&json!(OFFERED)),
+                "{tool_name}'s {parameter} should be held to the offered types"
+            );
+        }
+
+        // `create_schema` names a type that does not exist yet and
+        // `update_node` names none, so neither changes.
+        for tool in [
+            crate::local_agent::tools::Tool::CreateSchema,
+            crate::local_agent::tools::Tool::UpdateNode,
+        ] {
+            let def = tool.definition();
+            let sent = tools.iter().find(|t| t.name == def.name).unwrap();
+            assert_eq!(
+                sent.parameters_schema, def.parameters_schema,
+                "{} must keep its own parameter schema",
+                def.name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_off_menu_type_is_refused_and_the_result_names_the_allowed_ids() {
+        for (tool_name, args) in [
+            (
+                "create_node",
+                json!({"node_type": "album", "content": "March"}),
+            ),
+            ("search_nodes", json!({"query": "", "node_type": "album"})),
+            (
+                "resolve_query",
+                json!({"request": "the March one", "node_type": "album"}),
+            ),
+            (
+                "update_schema",
+                json!({"schema_id": "album", "remove_fields": ["year"]}),
+            ),
+        ] {
+            let (_, executed, result) =
+                run_typed_turn(vec![billing_candidate(true)], false, tool_name, args).await;
+
+            assert!(
+                executed.is_empty(),
+                "{tool_name} named a type outside the offered set and must not run: {executed:?}"
+            );
+            let refused = &result.tool_calls_made[0];
+            assert_eq!(refused.name, tool_name);
+            assert!(
+                refused.is_error,
+                "{tool_name}: nothing ran, so it is an error"
+            );
+            assert_eq!(refused.result["error"], json!("type_not_offered"));
+            assert_eq!(refused.result["allowed_types"], json!(OFFERED));
+            let message = refused.result["message"].as_str().unwrap();
+            for id in OFFERED {
+                assert!(
+                    message.contains(id),
+                    "{tool_name}: the refusal must name '{id}': {message}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_linked_turn_runs_a_call_that_stays_on_the_menu() {
+        for (tool_name, args) in [
+            // An offered type.
+            (
+                "create_node",
+                json!({"node_type": "retainer_invoice", "content": "March"}),
+            ),
+            // An optional type parameter left out: every type, as before.
+            ("search_nodes", json!({"query": "March"})),
+            // A new type is not an existing one, and is never held to the set.
+            ("create_schema", json!({"name": "Album", "fields": []})),
+            // A node id names no type.
+            (
+                "update_node",
+                json!({"id": "nodespace://n-1", "content": "April"}),
+            ),
+        ] {
+            let (_, executed, result) =
+                run_typed_turn(vec![billing_candidate(true)], false, tool_name, args).await;
+
+            assert_eq!(executed, [tool_name], "{tool_name} should have run");
+            assert!(!result.tool_calls_made[0].is_error);
+        }
+    }
+
+    /// No offered set: the tool schemas and dispatch are what they were.
+    #[tokio::test]
+    async fn a_turn_without_an_offered_set_is_not_held_to_any_type() {
+        // An unlinked candidate carries a fallback, not what it is about.
+        let unlinked = vec![billing_candidate(false)];
+        // One unlinked tool-bearing candidate leaves the whole turn open.
+        let mixed = vec![
+            billing_candidate(true),
+            skill_candidate("Node Creation", 0.8, &["create_node"]),
+        ];
+        // A turn whose candidate block is withheld was never shown the set.
+        let disabled = vec![billing_candidate(true)];
+
+        for (case, candidates, routing_disabled) in [
+            ("unlinked", unlinked, false),
+            ("mixed", mixed, false),
+            ("routing disabled", disabled, true),
+        ] {
+            let (tools, executed, result) = run_typed_turn(
+                candidates,
+                routing_disabled,
+                "create_node",
+                json!({"node_type": "album", "content": "March"}),
+            )
+            .await;
+
+            assert_eq!(
+                declared_enum(&tools, "create_node", "node_type"),
+                None,
+                "{case}: no offered set, so no enum"
+            );
+            assert_eq!(executed, ["create_node"], "{case}: the call should run");
+            assert!(!result.tool_calls_made[0].is_error, "{case}");
+        }
+    }
+
+    /// The refusal asks for a corrected call. A turn that sends one runs it.
+    #[tokio::test]
+    async fn a_refused_call_can_be_re_sent_with_an_offered_type() {
+        let (_, executed, result) = run_scripted_turn(
+            type_naming_tools(),
+            vec![billing_candidate(true)],
+            false,
+            &[
+                &[(
+                    "create_node",
+                    json!({"node_type": "album", "content": "March"}),
+                )],
+                &[(
+                    "create_node",
+                    json!({"node_type": "invoice", "content": "March"}),
+                )],
+            ],
+        )
+        .await;
+
+        assert_eq!(executed, ["create_node"], "only the corrected call runs");
+        assert!(result.tool_calls_made[0].is_error);
+        assert_eq!(
+            result.tool_calls_made[1].args["node_type"],
+            json!("invoice")
+        );
+        assert!(!result.tool_calls_made[1].is_error);
+    }
+
+    /// The refusal is per call: an on-menu call in the same round still runs.
+    #[tokio::test]
+    async fn one_round_refuses_only_the_call_that_is_off_the_menu() {
+        let (_, executed, result) = run_scripted_turn(
+            type_naming_tools(),
+            vec![billing_candidate(true)],
+            false,
+            &[&[
+                ("search_nodes", json!({"query": "", "node_type": "invoice"})),
+                (
+                    "create_node",
+                    json!({"node_type": "album", "content": "March"}),
+                ),
+            ]],
+        )
+        .await;
+
+        assert_eq!(executed, ["search_nodes"]);
+        assert!(!result.tool_calls_made[0].is_error);
+        assert_eq!(
+            result.tool_calls_made[1].result["error"],
+            json!("type_not_offered")
+        );
+    }
+
+    /// The message of the refusal a held turn gives `tool_name` for an
+    /// off-menu type, over the tools `registry` offers.
+    async fn refusal_message(registry: MockToolExecutor, tool_name: &str) -> String {
+        let (_, _, result) = run_scripted_turn(
+            registry,
+            vec![billing_candidate(true)],
+            false,
+            &[&[(tool_name, json!({"query": "", "node_type": "album"}))]],
+        )
+        .await;
+        result.tool_calls_made[0].result["message"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// The refusal says what to do when none of the offered types is what the
+    /// user meant, and offers only what the turn can do there. The whole
+    /// message is pinned: it is model-facing, and each clause is deliberate.
+    #[tokio::test]
+    async fn the_refusal_offers_only_what_the_turn_can_do() {
+        const OPENING: &str = "Not executed: \"album\" is not a type this request covers. ";
+        const RESEND: &str = "invoice, retainer_invoice. If one of them is what the user meant, \
+                              re-send the call with it, copied exactly. If none of them is, ";
+
+        // A read whose type is optional: leaving it out is the way on, and a
+        // read has no wrong-type write to warn about.
+        let search = refusal_message(type_naming_tools(), "search_nodes").await;
+        assert_eq!(
+            search,
+            format!(
+                "{OPENING}search_nodes accepts only these type ids here: {RESEND}leave \
+                 node_type out to search every type."
+            )
+        );
+
+        // A required type, and no `route_clarify` in this registry.
+        let create = refusal_message(type_naming_tools(), "create_node").await;
+        assert_eq!(
+            create,
+            format!(
+                "{OPENING}create_node accepts only these type ids here: {RESEND}do not use one \
+                 anyway: say so in your reply."
+            )
+        );
+
+        // A required type, with `route_clarify` on the surface.
+        let clarify = crate::local_agent::tools::Tool::RouteClarify.definition();
+        let with_clarify = type_naming_tools().with_tool(
+            &clarify.name,
+            clarify.parameters_schema,
+            json!({"acknowledged": true}),
+        );
+        let create = refusal_message(with_clarify, "create_node").await;
+        assert_eq!(
+            create,
+            format!(
+                "{OPENING}create_node accepts only these type ids here: {RESEND}do not use one \
+                 anyway: call route_clarify and ask."
+            )
+        );
+    }
+
+    /// A type the request names outright reaches the candidate block through a
+    /// schema-typed hit. The turn is still held, and that type is on the menu.
+    #[tokio::test]
+    async fn a_held_turn_offers_the_type_a_schema_hit_put_in_the_block() {
+        let mut schema_hit = skill_candidate("Album", 1.0, &[]);
+        schema_hit.schema_metadata = json!([{"type_id": "album", "fields": []}]);
+
+        let (tools, executed, result) = run_typed_turn(
+            vec![schema_hit, billing_candidate(true)],
+            false,
+            "create_node",
+            json!({"node_type": "album", "content": "March"}),
+        )
+        .await;
+
+        assert_eq!(
+            declared_enum(&tools, "create_node", "node_type"),
+            Some(&json!(["album", "invoice", "retainer_invoice"]))
+        );
+        assert_eq!(executed, ["create_node"]);
+        assert!(!result.tool_calls_made[0].is_error);
+    }
+
+    /// A linked skill whose whitelist names nothing this build registers
+    /// scopes nothing: the turn falls open to the full surface, and a surface
+    /// no skill scoped is not held to any skill's types.
+    #[tokio::test]
+    async fn a_fail_open_surface_is_not_held_to_any_type() {
+        let mut stranded = billing_candidate(true);
+        stranded.tools = vec!["not_a_registered_tool".to_string()];
+
+        let (tools, executed, result) = run_typed_turn(
+            vec![stranded],
+            false,
+            "create_node",
+            json!({"node_type": "album", "content": "March"}),
+        )
+        .await;
+
+        assert_eq!(declared_enum(&tools, "create_node", "node_type"), None);
+        assert_eq!(executed, ["create_node"]);
+        assert!(!result.tool_calls_made[0].is_error);
+    }
+
+    /// Everything a turn that routed to `candidates` and called `tool_name`
+    /// logged.
+    async fn turn_log(
+        candidates: Vec<SkillCandidate>,
+        tool_name: &str,
+        tool_args: serde_json::Value,
+    ) -> String {
+        #[derive(Clone)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let captured = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let writer = captured.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        // `#[tokio::test]` runs on the current thread, so a thread-default
+        // subscriber sees everything the turn logs.
+        let guard = tracing::subscriber::set_default(subscriber);
+        run_typed_turn(candidates, false, tool_name, tool_args).await;
+        drop(guard);
+
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        log
+    }
+
+    /// The schema decision's log line for a turn that routed to `candidates`
+    /// and called `tool_name`.
+    async fn schema_decision(
+        candidates: Vec<SkillCandidate>,
+        tool_name: &str,
+        tool_args: serde_json::Value,
+    ) -> serde_json::Value {
+        let log = turn_log(candidates, tool_name, tool_args).await;
+        let line = log
+            .lines()
+            .find(|l| l.contains("Agent decision: schema selected"))
+            .unwrap_or_else(|| panic!("no schema decision was logged:\n{log}"));
+        let payload = line.split_once("decision_payload=").unwrap().1;
+        serde_json::from_str::<serde_json::Value>(payload).unwrap()
+    }
+
+    /// The `Tool executed` line says what dispatch did with a call's type, in
+    /// fields of its own ahead of the argument preview, which is where the
+    /// scoring scrape reads them.
+    #[tokio::test]
+    async fn the_tool_executed_line_reports_what_dispatch_did_with_the_type() {
+        let off_menu = json!({"node_type": "album", "content": "March"});
+        let on_menu = json!({"node_type": "invoice", "content": "March"});
+        let fields = |log: String| {
+            let line = log
+                .lines()
+                .find(|l| l.contains("Tool executed"))
+                .unwrap_or_else(|| panic!("no tool call was logged:\n{log}"))
+                .to_string();
+            line.split_once(" args_preview=")
+                .unwrap_or_else(|| panic!("no argument preview on: {line}"))
+                .0
+                .to_string()
+        };
+
+        // Held, off the menu: refused, and nothing off-menu ran.
+        let refused = fields(
+            turn_log(
+                vec![billing_candidate(true)],
+                "create_node",
+                off_menu.clone(),
+            )
+            .await,
+        );
+        assert!(refused.contains("type_refused=true"), "{refused}");
+        assert!(refused.contains("off_menu_ran=false"), "{refused}");
+
+        // Held, on the menu: neither.
+        let ran = fields(turn_log(vec![billing_candidate(true)], "create_node", on_menu).await);
+        assert!(ran.contains("type_refused=false"), "{ran}");
+        assert!(ran.contains("off_menu_ran=false"), "{ran}");
+
+        // Not held: there is no menu for the call to be off.
+        let open = fields(turn_log(vec![billing_candidate(false)], "create_node", off_menu).await);
+        assert!(open.contains("type_refused=false"), "{open}");
+        assert!(open.contains("off_menu_ran=false"), "{open}");
+    }
+
+    /// The schema decision's log line on a linked turn: the offered set as its
+    /// candidates, and `enforced`, so a refused off-menu type reads as refused.
+    #[tokio::test]
+    async fn a_linked_turns_schema_decision_is_recorded_as_enforced() {
+        let off_menu = json!({"node_type": "album", "content": "March"});
+
+        let linked = schema_decision(
+            vec![billing_candidate(true)],
+            "create_node",
+            off_menu.clone(),
+        )
+        .await;
+        assert_eq!(linked["candidates"], json!(OFFERED));
+        assert_eq!(linked["selected"], json!("album"));
+        assert_eq!(linked["off_menu"], json!(true));
+        assert_eq!(linked["enforced"], json!(true));
+
+        let unlinked =
+            schema_decision(vec![billing_candidate(false)], "create_node", off_menu).await;
+        assert_eq!(unlinked["off_menu"], json!(true));
+        assert_eq!(unlinked["enforced"], json!(false));
+    }
+
+    /// `update_node` names no type, so dispatch does not hold it. A stray
+    /// `node_type` on it is still recorded as the selection, and that call
+    /// ran: the record must not say it was enforced.
+    #[tokio::test]
+    async fn a_selection_dispatch_does_not_hold_is_not_recorded_as_enforced() {
+        let decision = schema_decision(
+            vec![billing_candidate(true)],
+            "update_node",
+            json!({"id": "nodespace://n-1", "content": "April", "node_type": "album"}),
+        )
+        .await;
+
+        assert_eq!(decision["selected"], json!("album"));
+        assert_eq!(decision["off_menu"], json!(true));
+        assert_eq!(decision["enforced"], json!(false));
     }
 
     #[tokio::test]

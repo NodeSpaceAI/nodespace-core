@@ -60,10 +60,10 @@ function roundTrip() {
 describe("decision marker round trip (Rust emit → scrape → parse)", () => {
   test("recovers every decision the Rust side emitted", () => {
     const { decisions } = roundTrip();
-    // Nine records, matching the golden's nine emitted lines. Asserted as a
+    // Ten records, matching the golden's ten emitted lines. Asserted as a
     // count first so a silently dropped record fails here with a readable
     // number rather than as a confusing mismatch inside the table below.
-    expect(decisions).toHaveLength(9);
+    expect(decisions).toHaveLength(10);
   });
 
   test("a candidate name containing the old delimiter stays one candidate", () => {
@@ -136,6 +136,22 @@ describe("decision marker round trip (Rust emit → scrape → parse)", () => {
     expect(rec?.selected).toBe("album");
     expect(rec?.candidates).toEqual(["invoice", "customer"]);
     expect(rec?.offMenu).toBe(true);
+    // Nothing held this turn to its candidates, so the call ran.
+    expect(rec?.enforced).toBe(false);
+  });
+
+  test("an enforced off-menu selection round-trips as refused", () => {
+    // The same selection as the record above, on a turn dispatch held to its
+    // offered set. The two differ only in `enforced`, which is what tells a
+    // type that was named and refused from one that was named and executed.
+    const { decisions } = roundTrip();
+    const rec = decisions?.[9];
+
+    expect(rec?.kind).toBe("schema");
+    expect(rec?.selected).toBe("album");
+    expect(rec?.candidates).toEqual(["invoice", "customer"]);
+    expect(rec?.offMenu).toBe(true);
+    expect(rec?.enforced).toBe(true);
   });
 
   test("an empty candidate surface round-trips as an empty list", () => {
@@ -156,12 +172,14 @@ describe("decision marker round trip (Rust emit → scrape → parse)", () => {
       candidates: ["Schema Creation", "Node Creation"],
       selected: "Schema Creation",
       offMenu: false,
+      enforced: false,
     });
     expect(decisions?.[1]).toEqual({
       kind: "operation",
       candidates: ["search_nodes", "create_node"],
       selected: "create_node",
       offMenu: false,
+      enforced: false,
     });
   });
 

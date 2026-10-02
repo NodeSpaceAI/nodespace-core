@@ -43,6 +43,25 @@ export interface ToolCallRecord {
    * model actually persisted anything.
    */
   contentOnly?: boolean;
+  /**
+   * Dispatch refused the call because it named a type outside the turn's
+   * offered set, so nothing ran.
+   *
+   * Read from the `type_refused` field of the daemon's `Tool executed` line,
+   * which makes it an observation of what dispatch did. A decision record's
+   * `enforced` flag says dispatch held that round's selection to the offered
+   * set; this says a call was stopped.
+   */
+  typeRefused?: boolean;
+  /**
+   * The call named a type outside the turn's offered set and reached the
+   * executor anyway.
+   *
+   * Read from the same line's `off_menu_ran` field. Dispatch refuses such a
+   * call, so this is never expected; it is recorded because "none ran" should
+   * be something observed rather than assumed from the refusals.
+   */
+  offMenuRan?: boolean;
 }
 
 /** One turn's observable outcome, scraped from an aichat.ts run. */
@@ -199,12 +218,21 @@ export interface DecisionRecord {
    *
    * Impossible for operations (the surface is scoped before the model sees it,
    * and the grammar constrains the call envelope to a registered tool name),
-   * possible for schemas (nothing constrains a `node_type` argument to a
-   * retrieved candidate). The single most diagnostic signal here: unlike a
-   * close call between plausible options, it cannot be explained as a hard
-   * choice.
+   * possible for schemas (the grammar does not constrain a `node_type`
+   * argument). The single most diagnostic signal here: unlike a close call
+   * between plausible options, it cannot be explained as a hard choice.
    */
   offMenu: boolean;
+  /**
+   * Dispatch held the selection to `candidates`: a call naming anything else
+   * was refused rather than run.
+   *
+   * True only for the schema decision of a turn whose matched skills all link
+   * to their schemas, and only when the selection came from a call dispatch
+   * holds. With `offMenu`, it separates a type that was named and refused from
+   * one that was named and executed.
+   */
+  enforced: boolean;
 }
 
 /** The verdict a fixture's scoring function returns for one scenario. */

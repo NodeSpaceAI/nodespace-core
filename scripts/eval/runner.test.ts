@@ -795,8 +795,8 @@ describe("parseTurnOutput", () => {
   // layer emitted rather than strings written here by hand.
   test("parses both decision kinds with their candidate sets", () => {
     const out = [
-      '[decision operation] {"candidates":["create_node","search_nodes"],"off_menu":false,"selected":"create_node"}',
-      '[decision schema] {"candidates":["invoice","customer"],"off_menu":false,"selected":"invoice"}',
+      '[decision operation] {"candidates":["create_node","search_nodes"],"enforced":false,"off_menu":false,"selected":"create_node"}',
+      '[decision schema] {"candidates":["invoice","customer"],"enforced":false,"off_menu":false,"selected":"invoice"}',
       "assistant> done",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -805,12 +805,14 @@ describe("parseTurnOutput", () => {
         kind: "operation",
         selected: "create_node",
         offMenu: false,
+        enforced: false,
         candidates: ["create_node", "search_nodes"],
       },
       {
         kind: "schema",
         selected: "invoice",
         offMenu: false,
+        enforced: false,
         candidates: ["invoice", "customer"],
       },
     ]);
@@ -821,7 +823,7 @@ describe("parseTurnOutput", () => {
     // to make visible. JSON null carries it directly, so unlike the delimited
     // form there is no sentinel spelling a scorer has to know.
     const out = [
-      '[decision operation] {"candidates":["search_nodes","update_node"],"off_menu":false,"selected":null}',
+      '[decision operation] {"candidates":["search_nodes","update_node"],"enforced":false,"off_menu":false,"selected":null}',
       "assistant> I'd be happy to help.",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -837,7 +839,7 @@ describe("parseTurnOutput", () => {
     // model produced that happens to be blank. Folding them together would
     // erase the difference.
     const out = [
-      '[decision schema] {"candidates":["invoice"],"off_menu":true,"selected":""}',
+      '[decision schema] {"candidates":["invoice"],"enforced":false,"off_menu":true,"selected":""}',
       "assistant> done",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -847,7 +849,7 @@ describe("parseTurnOutput", () => {
 
   test("parses a multi-word skill selection intact (regression)", () => {
     const out = [
-      '[decision skill] {"candidates":["Schema Creation","Node Creation"],"off_menu":false,"selected":"Schema Creation"}',
+      '[decision skill] {"candidates":["Schema Creation","Node Creation"],"enforced":false,"off_menu":false,"selected":"Schema Creation"}',
       "assistant> done",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -863,7 +865,7 @@ describe("parseTurnOutput", () => {
     // The bug this format was introduced for: the delimited form split this
     // name in two, producing a corrupted record that reads as a valid one.
     const out = [
-      '[decision schema] {"candidates":["Company, Sold To","invoice"],"off_menu":false,"selected":"Company, Sold To"}',
+      '[decision schema] {"candidates":["Company, Sold To","invoice"],"enforced":false,"off_menu":false,"selected":"Company, Sold To"}',
       "assistant> done",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -876,7 +878,7 @@ describe("parseTurnOutput", () => {
 
   test("carries the off-menu flag without it leaking into the selection", () => {
     const out = [
-      '[decision schema] {"candidates":["invoice","customer"],"off_menu":true,"selected":"album"}',
+      '[decision schema] {"candidates":["invoice","customer"],"enforced":false,"off_menu":true,"selected":"album"}',
       "assistant> created",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -902,7 +904,7 @@ describe("parseTurnOutput", () => {
   // keeps that guarantee honest rather than assumed.
   test("drops a payload whose candidates are not an array", () => {
     const out = [
-      '[decision operation] {"candidates":"search_nodes","off_menu":false,"selected":"search_nodes"}',
+      '[decision operation] {"candidates":"search_nodes","enforced":false,"off_menu":false,"selected":"search_nodes"}',
       "assistant> hi",
     ].join("\n");
     expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
@@ -919,7 +921,7 @@ describe("parseTurnOutput", () => {
     // Filtering the stray entry out would silently shorten the candidate list,
     // which is the precise corruption the JSON encoding replaced.
     const out = [
-      '[decision schema] {"candidates":["invoice",42],"off_menu":false,"selected":"invoice"}',
+      '[decision schema] {"candidates":["invoice",42],"enforced":false,"off_menu":false,"selected":"invoice"}',
       "assistant> hi",
     ].join("\n");
     expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
@@ -927,19 +929,38 @@ describe("parseTurnOutput", () => {
 
   test("drops a payload whose off_menu is missing", () => {
     const out = [
-      '[decision schema] {"candidates":["invoice"],"selected":"invoice"}',
+      '[decision schema] {"candidates":["invoice"],"enforced":false,"selected":"invoice"}',
       "assistant> hi",
     ].join("\n");
     expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
+  });
+
+  test("drops a payload whose enforced is missing", () => {
+    // Defaulting it to false would report a refused selection as one that ran.
+    const out = [
+      '[decision schema] {"candidates":["invoice"],"off_menu":false,"selected":"invoice"}',
+      "assistant> hi",
+    ].join("\n");
+    expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
+  });
+
+  test("carries whether the candidate set was enforced", () => {
+    const out = [
+      '[decision schema] {"candidates":["invoice"],"enforced":true,"off_menu":true,"selected":"album"}',
+      "assistant> hi",
+    ].join("\n");
+    const decision = parseTurnOutput(out, 100).decisions?.[0];
+    expect(decision?.enforced).toBe(true);
+    expect(decision?.offMenu).toBe(true);
   });
 
   test("keeps the valid decisions on a turn where one payload is malformed", () => {
     // A single bad line must not discard the turn's other records, which are
     // independently scoreable.
     const out = [
-      '[decision skill] {"candidates":["Node Creation"],"off_menu":false,"selected":"Node Creation"}',
+      '[decision skill] {"candidates":["Node Creation"],"enforced":false,"off_menu":false,"selected":"Node Creation"}',
       "[decision schema] {}",
-      '[decision operation] {"candidates":["create_node"],"off_menu":false,"selected":"create_node"}',
+      '[decision operation] {"candidates":["create_node"],"enforced":false,"off_menu":false,"selected":"create_node"}',
       "assistant> done",
     ].join("\n");
     const decisions = parseTurnOutput(out, 100).decisions;
@@ -959,14 +980,14 @@ describe("parseTurnOutput", () => {
     // model text, and a model quoting a marker-shaped string must not be
     // mistaken for the harness's own signal.
     const out =
-      'assistant> I logged it as [decision schema] {"candidates":[],"off_menu":false,"selected":"album"}';
+      'assistant> I logged it as [decision schema] {"candidates":[],"enforced":false,"off_menu":false,"selected":"album"}';
     const turn = parseTurnOutput(out, 100);
     expect(turn.decisions).toBeUndefined();
   });
 
   test("keeps an empty candidate set from collapsing into a phantom candidate", () => {
     const out = [
-      '[decision operation] {"candidates":[],"off_menu":false,"selected":null}',
+      '[decision operation] {"candidates":[],"enforced":false,"off_menu":false,"selected":null}',
       "assistant> hi",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -1026,6 +1047,34 @@ describe("agent-matrix minProperties scoring", () => {
       name: "update_node",
       isError: false,
       contentOnly: true,
+    });
+  });
+
+  test("parses the type-refused marker, and only on the call that carries it", () => {
+    const turn = parseTurnOutput(
+      [
+        '[tool] search_nodes {"node_type":"invoice"}',
+        '[tool] create_node [ERROR] [type-refused] {"node_type":"album"}',
+        "assistant> ok",
+      ].join("\n"),
+      100,
+    );
+    expect(turn.toolCalls).toEqual([
+      { name: "search_nodes", isError: false },
+      { name: "create_node", isError: true, typeRefused: true },
+    ]);
+  });
+
+  test("parses the off-menu-ran marker after the other markers", () => {
+    const turn = parseTurnOutput(
+      '[tool] create_node [fields=1] [off-menu-ran] {"node_type":"album"}\nassistant> ok',
+      100,
+    );
+    expect(turn.toolCalls?.[0]).toEqual({
+      name: "create_node",
+      isError: false,
+      fieldCount: 1,
+      offMenuRan: true,
     });
   });
 });

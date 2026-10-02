@@ -16,8 +16,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { TurnRecord } from "../types.ts";
-import fixture, { setupTypePresent } from "./decisions.ts";
+import type { ToolCallRecord, TurnRecord } from "../types.ts";
+import fixture, { listedSchemas, setupTypePresent } from "./decisions.ts";
 
 describe("decision fixture assembly", () => {
   test("every scored scenario gets its own group", () => {
@@ -65,7 +65,40 @@ describe("decision fixture assembly", () => {
     // expressible. Moving this back to `seedGroup` reintroduces a failure that
     // is invisible in the results.
     expect(typeof fixture.seedRun).toBe("function");
-    expect(fixture.seedGroup).toBeUndefined();
+  });
+
+  // An env whose CLI does not exist: any seeding attempt throws.
+  const noDaemon = {
+    nsBin: "/nonexistent/nodespace",
+    socket: "/nonexistent/daemon.sock",
+    log: "",
+    model: "",
+    timeoutMs: 0,
+    aichat: "",
+  };
+  const isLinked = (g: (typeof fixture.groups)[number]) =>
+    g.some((s) => (s as { linkedSkills?: boolean }).linkedSkills === true);
+
+  test("group seeding touches only the linked-skill groups", () => {
+    // Three more skills and one more custom type change what retrieval returns
+    // for every request. Seeded for any other group, they would change what
+    // that group's scenario is scored against.
+    for (const group of fixture.groups.filter((g) => !isLinked(g))) {
+      expect(() => fixture.seedGroup?.(noDaemon, group)).not.toThrow();
+    }
+    const linked = fixture.groups.filter(isLinked);
+    expect(linked.length).toBeGreaterThan(0);
+    for (const group of linked) {
+      expect(() => fixture.seedGroup?.(noDaemon, group)).toThrow();
+    }
+  });
+
+  test("the linked-skill groups run last", () => {
+    // Groups share the rep's database, so whatever a group seeds is there for
+    // every group after it.
+    const firstLinked = fixture.groups.findIndex(isLinked);
+    expect(firstLinked).toBeGreaterThan(0);
+    expect(fixture.groups.slice(firstLinked).every(isLinked)).toBe(true);
   });
 
   test("scenario ids are unique across groups", () => {
@@ -75,6 +108,42 @@ describe("decision fixture assembly", () => {
       .flatMap((g) => g.filter((s) => s.setup !== true))
       .map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("schema list decoding", () => {
+  // The shape `nodespace --json schema list` emits: a `schemas` array of flat
+  // schema nodes. A reader of any other shape finds nothing, so the fixture
+  // sees an empty workspace, tries to create types that exist, and reports a
+  // setup turn's state as missing.
+  const output = {
+    count: 2,
+    schemas: [
+      { id: "task", content: "Task", is_core: true, fields: [{ name: "status", type: "enum" }] },
+      {
+        id: "company_sold_to",
+        content: "Company Sold To",
+        is_core: false,
+        fields: [{ name: "signed_date", type: "date" }],
+      },
+    ],
+  };
+
+  test("reads each schema's id, core flag and fields", () => {
+    expect(listedSchemas(output)).toEqual([
+      { id: "task", isCore: true, fields: [{ name: "status", type: "enum" }] },
+      {
+        id: "company_sold_to",
+        isCore: false,
+        fields: [{ name: "signed_date", type: "date" }],
+      },
+    ]);
+  });
+
+  test("an unrecognised shape decodes to no schemas", () => {
+    expect(listedSchemas(null)).toEqual([]);
+    expect(listedSchemas({ nodes: [{ id: "task" }] })).toEqual([]);
+    expect(listedSchemas({ schemas: [{ content: "no id" }] })).toEqual([]);
   });
 });
 
@@ -174,6 +243,126 @@ describe("duplicate-entity outcome scoring", () => {
     const scorer = read("./decisions.ts").match(pattern);
     expect(agent?.[1]).toBeDefined();
     expect(scorer?.[1]).toBe(agent?.[1]);
+  });
+});
+
+describe("held-turn outcome scoring", () => {
+  const scenario = fixture.groups.flat().find((s) => s.id === "held-off-menu-type");
+  if (!scenario) throw new Error("held-off-menu-type is missing");
+
+  type Call = ToolCallRecord;
+
+  const schema = (enforced: boolean, selected: string) => ({
+    kind: "schema" as const,
+    candidates: ["warranty_claim"],
+    selected,
+    offMenu: selected !== "warranty_claim",
+    enforced,
+  });
+  const turn = (decisions: TurnRecord["decisions"], calls: Call[]): TurnRecord =>
+    ({
+      toolsOffered: "",
+      toolsCalled: calls.map((c) => c.name),
+      toolCalls: calls,
+      decisions,
+      reply: "",
+      latencyMs: 0,
+    }) as TurnRecord;
+
+  // The calls a turn can make, as the scrape records them.
+  const refused: Call = { name: "create_node", isError: true, typeRefused: true };
+  const created: Call = { name: "create_node", isError: false, fieldCount: 2 };
+  const searched: Call = { name: "search_nodes", isError: false };
+
+  const verdict = (t: TurnRecord) => fixture.score(scenario, [t]);
+
+  test("an off-menu call that dispatch refused, and nothing written, passes", () => {
+    expect(verdict(turn([schema(true, "task")], [refused])).passed).toBe(true);
+  });
+
+  test("a read after the refusal still passes", () => {
+    expect(verdict(turn([schema(true, "task")], [refused, searched])).passed).toBe(true);
+  });
+
+  test("an identical re-send that no guard dispatched is not a call that ran", () => {
+    // The model repeats the refused call. The round records a second off-menu
+    // decision, and the duplicate-call guard stops the round before dispatch:
+    // one refusal, two decisions, nothing ran.
+    const t = turn([schema(true, "task"), schema(true, "task")], [refused]);
+    expect(verdict(t).passed).toBe(true);
+  });
+
+  test("an off-menu call the daemon reports as run fails", () => {
+    const t = turn(
+      [schema(true, "task")],
+      [{ name: "create_node", isError: false, fieldCount: 1, offMenuRan: true }],
+    );
+    const v = verdict(t);
+    expect(v.passed).toBe(false);
+    expect(v.failure).toContain("ran on a held turn");
+  });
+
+  test("a record created after the refusal fails: it is the wrong type", () => {
+    // The user asked for a task. Refused, the model re-sent the same record as
+    // a warranty claim, which is on the menu and is not what was asked for.
+    const t = turn([schema(true, "task"), schema(true, "warranty_claim")], [refused, created]);
+    const v = verdict(t);
+    expect(v.passed).toBe(false);
+    expect(v.failure).toContain("after a refusal");
+  });
+
+  test("a record created with no refusal fails the same way", () => {
+    // The model followed the `enum` on its first call and wrote the reminder
+    // as a warranty claim. Nothing was refused, and the record is still wrong.
+    const v = verdict(turn([schema(true, "warranty_claim")], [created]));
+    expect(v.passed).toBe(false);
+    expect(v.failure).toContain("not after a refusal");
+  });
+
+  test("a create that wrote nothing is not a record created", () => {
+    // Skipped for a route_clarify in the same round, or answered by the
+    // duplicate-write guard: not an error, and nothing persisted.
+    const skipped: Call = { name: "create_node", isError: false };
+    expect(verdict(turn([schema(true, "warranty_claim")], [skipped])).passed).toBe(true);
+  });
+
+  test("a turn that was not held fails as unmeasured, not as a model failure", () => {
+    const v = verdict(turn([schema(false, "task")], [created]));
+    expect(v.passed).toBe(false);
+    expect(v.failure).toContain("nothing here was measured");
+  });
+
+  test("the control fails as unmeasured on a turn that was not held", () => {
+    // Naming the linked type on an open turn stays on the menu, and says
+    // nothing about a held one.
+    const control = fixture.groups.flat().find((s) => s.id === "held-on-menu-type");
+    if (!control) throw new Error("held-on-menu-type is missing");
+
+    const open = fixture.score(control, [turn([schema(false, "warranty_claim")], [created])]);
+    expect(open.passed).toBe(false);
+    expect(open.failure).toContain("nothing here was measured");
+
+    // Held, the control creates the record: that is what it is for.
+    const held = fixture.score(control, [turn([schema(true, "warranty_claim")], [created])]);
+    expect(held.passed).toBe(true);
+  });
+
+  test("what followed a refusal is recorded", () => {
+    const after = (rest: Call[], reply = "") => {
+      const t = turn([schema(true, "task")], [refused, ...rest]);
+      t.reply = reply;
+      return fixture.extra?.(scenario, [t]).afterRefusal;
+    };
+
+    expect(after([created])).toBe("created");
+    expect(after([{ name: "route_clarify", isError: false }])).toBe("clarified");
+    expect(after([], "I can take that a couple of ways. Which did you mean?")).toBe("clarified");
+    expect(after([searched], "I could not add a task.")).toBe("replied");
+    // A create that persisted nothing is not a write.
+    expect(after([{ name: "create_node", isError: false }], "Done.")).toBe("replied");
+    // Nothing refused: nothing to report.
+    const clean = turn([schema(true, "warranty_claim")], [created]);
+    expect(fixture.extra?.(scenario, [clean]).afterRefusal).toBeNull();
   });
 });
 

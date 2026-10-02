@@ -391,7 +391,26 @@ export function formatTurnLogLines(slice: string): string[] {
     const contentOnly = /"(?:updated_content_only|content_only)":true/.test(l)
       ? " [content-only]"
       : "";
-    out.push(`[tool] ${tool}${err}${fieldPart}${contentOnly} ${args}`);
+    // A call dispatch refused because it named a type outside the turn's
+    // offered set: the log line's own `type_refused` field, which dispatch
+    // sets from the result the call got back. A count of these is what
+    // dispatch did rather than what a decision record implies. Read from the
+    // fields ahead of `args_preview`, so text the model put in its arguments
+    // cannot be mistaken for it.
+    const head = l.split(" args_preview=")[0];
+    const typeRefused = /\btype_refused=true\b/.test(head)
+      ? " [type-refused]"
+      : "";
+    // The other side of the same check: a call naming a type outside the
+    // offered set that reached the executor. Dispatch works it out from the
+    // call's arguments and from whether the call was dispatched, so it is an
+    // observation of the event, not something inferred from the refusals.
+    const offMenuRan = /\boff_menu_ran=true\b/.test(head)
+      ? " [off-menu-ran]"
+      : "";
+    out.push(
+      `[tool] ${tool}${err}${fieldPart}${contentOnly}${typeRefused}${offMenuRan} ${args}`,
+    );
   }
   // The documented degenerate-empty-generation failure mode: the model opens a
   // turn and emits neither text nor a tool call. local_agent_service.rs then
