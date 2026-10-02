@@ -670,6 +670,31 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // PATCH /api/collections/:id, /api/skills/:id, /api/database-settings/:id.
+  // Each travels as its JSON-encoded typed update, decoded by the daemon, as
+  // for a query.
+  for (const [pattern, rpc] of [
+    [HTTP_ROUTE_PATTERNS.updateCollectionNode, 'updateCollectionNode'],
+    [HTTP_ROUTE_PATTERNS.updateSkillNode, 'updateSkillNode'],
+    [HTTP_ROUTE_PATTERNS.updateDatabaseSettingsNode, 'updateDatabaseSettingsNode']
+  ] as const) {
+    const typedMatch = pathname.match(pattern);
+    if (method !== 'PATCH' || !typedMatch) continue;
+    const nodeId = decodeURIComponent(typedMatch[1]);
+    try {
+      const { version, ...update } = await req.json() as Record<string, unknown>;
+      const request = { nodeId, version: version ?? 0, updateJson: JSON.stringify(update) };
+      const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
+        (nodeClient as unknown as Record<string, Function>)[rpc],
+        request
+      );
+      if (!res.nodeData) return error('NO_DATA', `${rpc} returned no data`);
+      return json(nodeDataToApiNode(res.nodeData));
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
   // POST /api/nodes/:id/parent  (move node)
   const parentMatch = pathname.match(HTTP_ROUTE_PATTERNS.moveNode);
   if (method === 'POST' && parentMatch) {

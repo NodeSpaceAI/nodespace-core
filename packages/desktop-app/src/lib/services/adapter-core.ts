@@ -18,6 +18,10 @@
 // type-only imports before Bun ever needs to resolve the specifier, but a
 // value-level `$lib` import here would break dev-proxy at runtime.
 import type {
+  CollectionNode,
+  CollectionNodeUpdate,
+  DatabaseSettingsNode,
+  DatabaseSettingsNodeUpdate,
   Node,
   NodeReference,
   NodeWithChildren,
@@ -29,6 +33,8 @@ import type {
   ProjectNodeUpdate,
   QueryNode,
   QueryNodeUpdate,
+  SkillNode,
+  SkillNodeUpdate,
   TaskNode,
   TaskNodeUpdate
 } from '$lib/types';
@@ -148,6 +154,17 @@ export interface BackendAdapter {
   updateProjectNode(id: string, version: number, update: ProjectNodeUpdate): Promise<ProjectNode>;
   updateQueryNode(id: string, version: number, update: QueryNodeUpdate): Promise<QueryNode>;
   updatePlayNode(id: string, version: number, update: PlayNodeUpdate): Promise<PlayNode>;
+  updateCollectionNode(
+    id: string,
+    version: number,
+    update: CollectionNodeUpdate
+  ): Promise<CollectionNode>;
+  updateSkillNode(id: string, version: number, update: SkillNodeUpdate): Promise<SkillNode>;
+  updateDatabaseSettingsNode(
+    id: string,
+    version: number,
+    update: DatabaseSettingsNodeUpdate
+  ): Promise<DatabaseSettingsNode>;
   deleteNode(id: string, version: number): Promise<DeleteResult>;
 
   // Hierarchy
@@ -557,6 +574,9 @@ export const HTTP_ROUTES = {
   updateProjectNode: (id: string) => `/api/projects/${encodeURIComponent(id)}`,
   updateQueryNode: (id: string) => `/api/queries/${encodeURIComponent(id)}`,
   updatePlayNode: (id: string) => `/api/plays/${encodeURIComponent(id)}`,
+  updateCollectionNode: (id: string) => `/api/collections/${encodeURIComponent(id)}`,
+  updateSkillNode: (id: string) => `/api/skills/${encodeURIComponent(id)}`,
+  updateDatabaseSettingsNode: (id: string) => `/api/database-settings/${encodeURIComponent(id)}`,
   moveNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}/parent`,
   moveChildrenToParent: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/move-children`,
   getChildren: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/children`,
@@ -597,6 +617,9 @@ export const HTTP_ROUTE_PATTERNS = {
   updateProjectNode: /^\/api\/projects\/([^/]+)$/,
   updateQueryNode: /^\/api\/queries\/([^/]+)$/,
   updatePlayNode: /^\/api\/plays\/([^/]+)$/,
+  updateCollectionNode: /^\/api\/collections\/([^/]+)$/,
+  updateSkillNode: /^\/api\/skills\/([^/]+)$/,
+  updateDatabaseSettingsNode: /^\/api\/database-settings\/([^/]+)$/,
   moveNode: /^\/api\/nodes\/([^/]+)\/parent$/,
   moveChildrenToParent: /^\/api\/nodes\/([^/]+)\/move-children$/,
   getChildren: /^\/api\/nodes\/([^/]+)\/children$/,

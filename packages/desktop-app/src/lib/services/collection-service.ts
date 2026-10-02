@@ -24,22 +24,14 @@ const log = createLogger('CollectionService');
 // ============================================================================
 
 /**
- * Collection with member count and hierarchy info for UI display
+ * A collection node with its member count and hierarchy info, for UI display.
  */
-export interface CollectionInfo {
-  /** The collection node data */
-  id: string;
-  content: string;
-  nodeType: 'collection';
-  createdAt: string;
-  modifiedAt: string;
-  version: number;
-  properties: Record<string, unknown>;
+export type CollectionInfo = CollectionNode & {
   /** Number of direct members in this collection */
   memberCount: number;
   /** IDs of parent collections (collections this collection is nested under) */
   parentCollectionIds: string[];
-}
+};
 
 /**
  * Collection member for sub-panel display

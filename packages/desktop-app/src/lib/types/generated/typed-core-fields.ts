@@ -21,6 +21,17 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'last_name', wire: 'lastName' },
     { storage: 'email', wire: 'email' }
   ],
+  collection: [{ storage: 'description', wire: 'description' }],
+  skill: [
+    { storage: 'description', wire: 'description' },
+    { storage: 'exclusion', wire: 'exclusion' },
+    { storage: 'tool_whitelist', wire: 'toolWhitelist', structured: 'array' },
+    { storage: 'max_iterations', wire: 'maxIterations', structured: 'number' },
+    { storage: 'node_types', wire: 'nodeTypes', structured: 'array' }
+  ],
+  'database-settings': [
+    { storage: 'required_extensions', wire: 'requiredExtensions', structured: 'array' }
+  ],
   query: [
     { storage: 'target_type', wire: 'targetType' },
     { storage: 'filters', wire: 'filters', structured: 'array' },
@@ -71,6 +82,8 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
 export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   task: { status: 'open' },
   project: { status: 'planning' },
+  skill: { description: '', maxIterations: 2, nodeTypes: [], toolWhitelist: [] },
+  'database-settings': { requiredExtensions: [] },
   query: { executionCount: 0, filters: [], generatedBy: 'user', targetType: '*' },
   play: { rules: [] },
   'ai-chat-native': {

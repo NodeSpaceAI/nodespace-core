@@ -26,7 +26,7 @@ use crate::skill_rules::{
     TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
 };
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
-use nodespace_core::models::SkillNode;
+use nodespace_core::models::SkillFields;
 
 /// Builds the Schema Creation skill's markdown_content.
 ///
@@ -396,8 +396,8 @@ SUCCESS: Once the call returns, confirm to the user that the node has been organ
 pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
     vec![
         NodeTemplate::skill(
-            SkillNode::new(
-                "Research & Search",
+            "Research & Search",
+            SkillFields::new(
                 "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.",
                 &["search_semantic", "search_nodes", "get_node"],
                 4,
@@ -444,8 +444,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
 - Date format: always YYYY-MM-DD. Operators: equals, contains, gt, lt, gte, lte, in, exists."#,
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Node Creation",
+            "Node Creation",
+            SkillFields::new(
                 "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
                 // `update_node` is whitelisted here as well as on Graph
                 // Editing — deliberately, to remove a single point of failure
@@ -492,8 +492,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             node_creation_guidance(),
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Schema Creation",
+            "Schema Creation",
+            SkillFields::new(
                 "Set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
                 &["create_schema", "update_schema", "get_node"],
                 3,
@@ -501,8 +501,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             schema_creation_guidance(),
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Graph Editing",
+            "Graph Editing",
+            SkillFields::new(
                 // Names the completion states users actually say ("mark it
                 // resolved", "mark it paid"). The prior wording ("Modify
                 // existing nodes... update content, properties, titles, and
@@ -561,8 +561,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             graph_editing_guidance(),
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Relationship Management",
+            "Relationship Management",
+            SkillFields::new(
                 // The prior wording ("Create connections between nodes,
                 // explore relationships, and traverse the knowledge graph")
                 // never used the verbs a user actually says for linking two
@@ -595,8 +595,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             relationship_management_guidance(),
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Node Deletion",
+            "Node Deletion",
+            SkillFields::new(
                 // Destructive verbs ONLY. Two rules, both learned from
                 // measurement, and both about what an embedding encodes.
                 //
@@ -633,8 +633,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             node_deletion_guidance(),
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Conflict Journal",
+            "Conflict Journal",
+            SkillFields::new(
                 // No form of "resolve" in the title or description. Those two
                 // are what gets embedded (the guidance markdown is not), and
                 // the shared word made this skill the rank-1
@@ -655,8 +655,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             conflict_journal_guidance(),
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Node Merge",
+            "Node Merge",
+            SkillFields::new(
                 // `merge_conflict` is destructive (archives the loser node,
                 // re-points its edges) the same way delete_node is, so this
                 // skill is single-owner by the same ADR-038 reasoning
@@ -670,8 +670,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             node_merge_guidance(),
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Play Workflow State",
+            "Play Workflow State",
+            SkillFields::new(
                 "Check why a Play automation rule hasn't fired for a node, or what conditions are still unmet, by evaluating that node against every active Play rule that could apply to it. Use when the user asks why an automation, rule, or workflow hasn't triggered, or wants to know what's missing before it will.",
                 &["get_workflow_state", "search_semantic", "search_nodes"],
                 3,
@@ -679,8 +679,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             play_workflow_state_guidance(),
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Bulk Import",
+            "Bulk Import",
+            SkillFields::new(
                 "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
                 &["create_nodes_from_markdown"],
                 2,
@@ -688,8 +688,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             bulk_import_guidance(),
         ),
         NodeTemplate::skill(
-            SkillNode::new(
-                "Organization",
+            "Organization",
+            SkillFields::new(
                 "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.",
                 &["create_relationship", "get_node", "search_semantic", "search_nodes"],
                 3,
@@ -740,8 +740,8 @@ mod tests {
 
     use super::*;
 
-    fn tmpl_skill(tmpl: &NodeTemplate) -> SkillNode {
-        SkillNode::from_properties(&tmpl.title, &tmpl.root_properties)
+    fn tmpl_skill(tmpl: &NodeTemplate) -> SkillFields {
+        SkillFields::from_properties(&tmpl.root_properties)
             .unwrap_or_else(|e| panic!("seed '{}' must decode as a skill: {e}", tmpl.title))
     }
 

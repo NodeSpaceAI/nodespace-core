@@ -111,18 +111,30 @@ function materializedQueryNode(id: string): QueryNode & Node {
 }
 
 describe('QueryNodeViewer — materialize race', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     sharedNodeStore.clearAll();
     vi.clearAllMocks();
     mockGetSchema.mockResolvedValue(schema());
     mockQueryNodes.mockResolvedValue([]);
     mockExecuteQuery.mockResolvedValue([]);
+    // The viewer writes a saved query through the store, and the store holds
+    // the adapter it was loaded with by the test setup, not this file's mock.
+    const actual = await vi.importActual<typeof import('$lib/services/backend-adapter')>(
+      '$lib/services/backend-adapter'
+    );
+    vi.spyOn(actual.backendAdapter, 'updateQueryNode').mockImplementation((...args) =>
+      mockUpdateQueryNode(...args)
+    );
+    vi.spyOn(actual.backendAdapter, 'updateNode').mockImplementation((...args) =>
+      mockUpdateNode(...args)
+    );
   });
 
   afterEach(() => {
     cleanup();
     sharedNodeStore.clearAll();
+    vi.restoreAllMocks();
   });
 
   const widgetRow = (id: string) => ({
@@ -400,5 +412,146 @@ describe('QueryNodeViewer — materialize race', () => {
       viewConfig: { lastView: 'kanban' }
     });
     expect(mockUpdateNode).not.toHaveBeenCalled();
+  });
+
+  it('writes a saved query view change through the store, and the next change builds on it', async () => {
+    const savedId = 'saved-query-2';
+    const saved = {
+      ...materializedQueryNode(savedId),
+      content: 'My Board',
+      viewConfig: { lastView: 'table' }
+    };
+    mockGetNode.mockResolvedValue(saved);
+    mockExecuteQuery.mockResolvedValue([widgetRow('w1')]);
+    let version = 1;
+    mockUpdateQueryNode.mockImplementation(
+      async (_id: string, _version: number, update: QueryNodeUpdate) => ({
+        ...saved,
+        version: ++version,
+        ...update
+      })
+    );
+
+    const { getByRole, findByLabelText } = render(QueryNodeViewer, {
+      props: { nodeId: savedId, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+    // A query node loaded from the backend is held by the store from then on.
+    expect(sharedNodeStore.getNode(savedId)?.nodeType).toBe('query');
+
+    await fireEvent.click(getByRole('button', { name: 'Kanban' }));
+    // The store applies the change before the backend confirms it.
+    expect((sharedNodeStore.getNode(savedId) as QueryNode).viewConfig).toEqual({
+      lastView: 'kanban'
+    });
+    await waitFor(() => expect(mockUpdateQueryNode).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(sharedNodeStore.getNode(savedId)?.version).toBe(2));
+
+    // The second change merges onto the view config the store now holds, at
+    // the version the first write returned.
+    await fireEvent.change(await findByLabelText('Group by'), { target: { value: 'status' } });
+    await waitFor(() => expect(mockUpdateQueryNode).toHaveBeenCalledTimes(2));
+    expect(mockUpdateQueryNode).toHaveBeenLastCalledWith(savedId, 2, {
+      viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status' } }
+    });
+  });
+
+  it('renames a saved query through the store, after a view change still in flight', async () => {
+    const savedId = 'saved-query-4';
+    const saved = {
+      ...materializedQueryNode(savedId),
+      content: 'My Board',
+      viewConfig: { lastView: 'table' }
+    };
+    mockGetNode.mockResolvedValue(saved);
+    let releaseViewChange!: () => void;
+    mockUpdateQueryNode.mockImplementation(
+      (_id: string, _version: number, update: QueryNodeUpdate) =>
+        new Promise((resolve) => {
+          releaseViewChange = () => resolve({ ...saved, version: 2, ...update });
+        })
+    );
+    mockUpdateNode.mockImplementation(
+      async (_id: string, version: number, update: { content?: string }) => ({
+        ...saved,
+        viewConfig: { lastView: 'list' },
+        version: version + 1,
+        ...update
+      })
+    );
+
+    const { getByRole, getByLabelText } = render(QueryNodeViewer, {
+      props: { nodeId: savedId, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+
+    await fireEvent.click(getByRole('button', { name: 'List' }));
+    await waitFor(() => expect(mockUpdateQueryNode).toHaveBeenCalledTimes(1));
+
+    const title = getByLabelText('Query name') as HTMLInputElement;
+    await fireEvent.focus(title);
+    await fireEvent.input(title, { target: { value: 'Sprint Board' } });
+    await fireEvent.blur(title);
+    // The header shows the new name at once, from the store.
+    await waitFor(() => expect(title.value).toBe('Sprint Board'));
+    // The rename waits for the view change rather than racing it at v1.
+    expect(mockUpdateNode).not.toHaveBeenCalled();
+
+    releaseViewChange();
+    await waitFor(() => expect(mockUpdateNode).toHaveBeenCalledTimes(1));
+    expect(mockUpdateNode.mock.calls[0].slice(0, 2)).toEqual([savedId, 2]);
+    expect(mockUpdateNode.mock.calls[0][2]).toEqual(
+      expect.objectContaining({ content: 'Sprint Board' })
+    );
+  });
+
+  it('puts the saved name back when a rename fails, so it can be tried again', async () => {
+    const savedId = 'saved-query-5';
+    mockGetNode.mockResolvedValue({
+      ...materializedQueryNode(savedId),
+      content: 'My Board',
+      viewConfig: { lastView: 'table' }
+    });
+    mockUpdateNode.mockRejectedValue(new Error('disk full'));
+
+    const { getByRole, getByLabelText, findByRole } = render(QueryNodeViewer, {
+      props: { nodeId: savedId, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+
+    const title = getByLabelText('Query name') as HTMLInputElement;
+    const rename = async () => {
+      await fireEvent.focus(title);
+      await fireEvent.input(title, { target: { value: 'Sprint Board' } });
+      await fireEvent.blur(title);
+    };
+    await rename();
+
+    expect((await findByRole('alert', {}, { timeout: 3000 })).textContent).toContain(
+      'Failed to rename query: disk full'
+    );
+    expect(sharedNodeStore.getNode(savedId)?.content).toBe('My Board');
+    await waitFor(() => expect(title.value).toBe('My Board'));
+
+    // The same name is a rename again, not "unchanged".
+    await rename();
+    await waitFor(() => expect(mockUpdateNode).toHaveBeenCalledTimes(2), { timeout: 3000 });
+  });
+
+  it('reports a failed saved-query view change', async () => {
+    const savedId = 'saved-query-3';
+    mockGetNode.mockResolvedValue({
+      ...materializedQueryNode(savedId),
+      viewConfig: { lastView: 'table' }
+    });
+    mockUpdateQueryNode.mockRejectedValue(new Error('disk full'));
+
+    const { getByRole, findByRole } = render(QueryNodeViewer, {
+      props: { nodeId: savedId, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+
+    await fireEvent.click(getByRole('button', { name: 'List' }));
+    expect((await findByRole('alert')).textContent).toContain('Failed to save view: disk full');
   });
 });

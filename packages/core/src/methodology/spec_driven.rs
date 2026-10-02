@@ -713,7 +713,7 @@ mod tests {
         let skills = playbook().skills;
         assert_eq!(skills.len(), 4);
         for s in &skills {
-            let skill = crate::models::SkillNode::from_properties(&s.title, &s.root_properties)
+            let skill = crate::models::SkillFields::from_properties(&s.root_properties)
                 .expect("playbook skill must decode");
             assert!(!skill.description.is_empty(), "{}", s.title);
             assert!(matches!(s.tier, SeedTier::Starter), "{}", s.title);

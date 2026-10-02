@@ -45,7 +45,7 @@ use nodespace_agent::skill_rules::{
     UNIQUE_FIELD_FLAGS,
 };
 use nodespace_cli::Cli;
-use nodespace_core::models::SkillNode;
+use nodespace_core::models::SkillFields;
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -507,7 +507,7 @@ fn render_playbook_block(id: &str, skills_dir: &str) -> String {
          here.\n"
     );
     for skill in &playbook.skills {
-        let description = SkillNode::from_properties(&skill.title, &skill.root_properties)
+        let description = SkillFields::from_properties(&skill.root_properties)
             .unwrap_or_else(|e| panic!("Playbook skill '{}' must decode: {e}", skill.title))
             .description;
         let _ = writeln!(out, "**{}** — {}\n", skill.title, description);
@@ -541,10 +541,9 @@ fn render_playbook_block(id: &str, skills_dir: &str) -> String {
         playbook.overview,
         &Default::default(),
     );
-    let overview_description =
-        SkillNode::from_properties(&overview.title, &overview.root_properties)
-            .unwrap_or_else(|e| panic!("Playbook overview '{}' must decode: {e}", overview.title))
-            .description;
+    let overview_description = SkillFields::from_properties(&overview.root_properties)
+        .unwrap_or_else(|e| panic!("Playbook overview '{}' must decode: {e}", overview.title))
+        .description;
     let _ = writeln!(
         out,
         "One more skill, created after everything else because it names what you created. \

@@ -708,7 +708,7 @@ mod tests {
         for s in &skills {
             assert_eq!(s.root_node_type, "skill");
             assert!(matches!(s.tier, SeedTier::Starter), "{}", s.title);
-            let skill = crate::models::SkillNode::from_properties(&s.title, &s.root_properties)
+            let skill = crate::models::SkillFields::from_properties(&s.root_properties)
                 .expect("playbook skill must decode");
             assert!(!skill.description.is_empty(), "{}", s.title);
             assert!(s.markdown_content.contains('#'), "{}", s.title);

@@ -1,6 +1,6 @@
 /**
  * `SharedNodeStore.updateTypedNode()` — the one write path for a core type's
- * typed fields (task, person, project, query, play), and `updateNode()`'s routing into it.
+ * typed fields, and `updateNode()`'s routing into it.
  *
  * The same-field and different-field clobber guards are covered by the
  * `updatetasknode-*-clobber-regression` suites, which drive this method
@@ -207,20 +207,28 @@ describe('updateNode routing for typed core types', () => {
       store.setNode(makeNode('n1', nodeType), dbSource);
       const respond = async (id: string, version: number) =>
         ({ ...makeNode(id, nodeType), version: version + 1 }) as never;
-      const typedSpies = [
-        vi.spyOn(backendAdapter, 'updateTaskNode').mockImplementation(respond),
-        vi.spyOn(backendAdapter, 'updatePersonNode').mockImplementation(respond),
-        vi.spyOn(backendAdapter, 'updateProjectNode').mockImplementation(respond),
-        vi.spyOn(backendAdapter, 'updateQueryNode').mockImplementation(respond),
-        vi.spyOn(backendAdapter, 'updatePlayNode').mockImplementation(respond)
-      ];
+      const typedSpies = {
+        task: vi.spyOn(backendAdapter, 'updateTaskNode').mockImplementation(respond),
+        person: vi.spyOn(backendAdapter, 'updatePersonNode').mockImplementation(respond),
+        project: vi.spyOn(backendAdapter, 'updateProjectNode').mockImplementation(respond),
+        query: vi.spyOn(backendAdapter, 'updateQueryNode').mockImplementation(respond),
+        play: vi.spyOn(backendAdapter, 'updatePlayNode').mockImplementation(respond),
+        collection: vi.spyOn(backendAdapter, 'updateCollectionNode').mockImplementation(respond),
+        skill: vi.spyOn(backendAdapter, 'updateSkillNode').mockImplementation(respond),
+        'database-settings': vi
+          .spyOn(backendAdapter, 'updateDatabaseSettingsNode')
+          .mockImplementation(respond)
+      };
       const genericSpy = vi.spyOn(backendAdapter, 'updateNode');
 
       store.updateNode('n1', { [field.wire]: 'x' } as unknown as Partial<Node>, viewerSource);
 
-      await vi.waitFor(() =>
-        expect(typedSpies.filter((spy) => spy.mock.calls.length > 0)).toHaveLength(1)
-      );
+      // The update for this type is the one called, and no other.
+      const called = () =>
+        Object.entries(typedSpies)
+          .filter(([, spy]) => spy.mock.calls.length > 0)
+          .map(([type]) => type);
+      await vi.waitFor(() => expect(called()).toEqual([nodeType]));
       expect(genericSpy).not.toHaveBeenCalled();
     }
   );
@@ -381,6 +389,37 @@ describe('updateNode routing for typed core types', () => {
       timeout: 3000
     });
     await vi.waitFor(() => expect(onPersistSuccess).toHaveBeenCalledTimes(1));
+  });
+
+  it('a create carries every typed field the node holds, staged or not', async () => {
+    // `priority` is on the node from the start and no typed write sends it, so
+    // the create is its only way to the backend. `status` is staged by a typed
+    // write, which still follows the create and settles its callers; the
+    // create carries the staged value too, since that write only runs if the
+    // create succeeds.
+    store.setNode(
+      makeNode('pr2', 'project', { status: 'planning', priority: 'high' }),
+      viewerSource,
+      true
+    );
+    const createSpy = vi
+      .spyOn(backendAdapter, 'createNode')
+      .mockImplementation(async () => ({ id: 'pr2', placement: null }));
+    vi.spyOn(backendAdapter, 'getNode').mockResolvedValue(null);
+    const typedSpy = vi.spyOn(backendAdapter, 'updateProjectNode').mockImplementation(
+      async (id, version, update) =>
+        ({ ...makeNode(id, 'project', { ...update }), version: version + 1 }) as unknown as ProjectNode
+    );
+
+    store.updateNode('pr2', { status: 'active' } as unknown as Partial<Node>, viewerSource);
+    store.updateNode('pr2', { content: 'Launch' }, viewerSource, { persist: 'immediate' });
+
+    await vi.waitFor(() => expect(typedSpy).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(createSpy.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ id: 'pr2', properties: { status: 'active', priority: 'high' } })
+    );
+    expect(typedSpy.mock.calls[0][2]).toEqual({ status: 'active' });
   });
 
   it('an immediate typed write does not discard a still-debounced content edit', async () => {

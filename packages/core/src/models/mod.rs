@@ -4,7 +4,7 @@
 //!
 //! - `Node` - Universal node model for all content types
 //! - `Embedding` - Vector embeddings for semantic search (root-aggregate model)
-//! - Type-safe wrappers (SkillNode, SchemaNode) for ergonomic access
+//! - Typed readers (SkillFields, SchemaNode) for ergonomic access
 //! - Core schema definitions for built-in node types
 //!
 //! All entities use the Pure JSON schema approach with data stored in the
@@ -37,7 +37,7 @@ pub use time::{SystemTimeProvider, TimeProvider};
 // Export type-safe wrappers
 pub use embedding::{ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding};
 pub use nodespace_types::{SchemaChildrenRule, SchemaParentRule};
-pub use nodespace_types::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
+pub use nodespace_types::{SkillFields, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
 pub use schema_node::SchemaNode;
 
 // The core type registry (ADR-086 §3): the one list of the types NodeSpace
@@ -54,11 +54,13 @@ pub use nodespace_types::{
 };
 
 // Typed update payloads for the core types whose writes route through the
-// generic update pipeline (`NodeService::update_task_node` /
-// `update_person_node` / `update_project_node` / `update_query_node`).
+// generic update pipeline (`NodeService::update_task_node` and its siblings).
 // Defined once in nodespace-types so the Tauri command layer deserializes the
 // same struct the service consumes.
-pub use nodespace_types::{PersonNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate, TaskNodeUpdate};
+pub use nodespace_types::{
+    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, PersonNodeUpdate, ProjectNodeUpdate,
+    QueryNodeUpdate, SkillNodeUpdate, TaskNodeUpdate,
+};
 
 // The vocabularies of the task and project fields: each type's own status,
 // and the priority scale the two share.

@@ -100,6 +100,14 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         ProjectNode,
         ProjectNodeUpdate,
         ProjectStatus,
+        // collection, skill, database-settings
+        CollectionNode,
+        CollectionNodeUpdate,
+        SkillFields,
+        SkillNode,
+        SkillNodeUpdate,
+        DatabaseSettingsNode,
+        DatabaseSettingsNodeUpdate,
         // query
         FilterType,
         FilterOperator,

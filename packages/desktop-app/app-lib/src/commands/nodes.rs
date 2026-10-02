@@ -5,9 +5,10 @@
 
 use crate::types::{
     node_to_typed_value as types_node_to_typed_value,
-    nodes_to_typed_values as types_nodes_to_typed_values, DeleteResult, Node, NodeQuery,
-    NodeReference, NodeUpdate, PersonNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate,
-    QueryNodeUpdate, TaskNodeUpdate,
+    nodes_to_typed_values as types_nodes_to_typed_values, CollectionNodeUpdate,
+    DatabaseSettingsNodeUpdate, DeleteResult, Node, NodeQuery, NodeReference, NodeUpdate,
+    PersonNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate, QueryNodeUpdate,
+    SkillNodeUpdate, TaskNodeUpdate,
 };
 use chrono::{DateTime, Utc};
 use nodespace_proto::nodespace::{
@@ -17,8 +18,10 @@ use nodespace_proto::nodespace::{
     GetNodeRequest, GetSchemaDefinitionRequest, MentionAutocompleteRequest, MentionTargetRequest,
     MoveChildrenToParentRequest, MoveNodeRequest, NodeData, NodeResponse, NodeSortOrder,
     OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest, ReorderNodeRequest,
-    UpdateNodeRequest, UpdatePersonNodeRequest, UpdatePlayNodeRequest, UpdateProjectNodeRequest,
-    UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest, UpdateTaskNodeRequest,
+    UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
+    UpdatePersonNodeRequest, UpdatePlayNodeRequest, UpdateProjectNodeRequest,
+    UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest, UpdateSkillNodeRequest,
+    UpdateTaskNodeRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1138,6 +1141,18 @@ fn timestamp_clear(value: Option<Option<String>>) -> Option<OptionalTimestampCle
     })
 }
 
+/// Encode a typed update for a request that carries it as JSON; the daemon
+/// decodes the same struct.
+fn typed_update_json<T: Serialize>(update: &T, node_type: &str) -> Result<String, CommandError> {
+    serde_json::to_string(update).map_err(|e| CommandError {
+        message: format!("Failed to serialize {node_type} update: {e}"),
+        code: "SERIALIZE_ERROR".to_string(),
+        details: None,
+        conflict_data: None,
+        requires_extension: None,
+    })
+}
+
 /// Update a task node's core fields (status, priority, due/started/completed
 /// dates).
 #[tauri::command]
@@ -1227,17 +1242,10 @@ pub async fn update_query_node(
     update: QueryNodeUpdate,
 ) -> Result<Value, CommandError> {
     let mut c = client.echo_suppressed_client().await;
-    let update_json = serde_json::to_string(&update).map_err(|e| CommandError {
-        message: format!("Failed to serialize query update: {}", e),
-        code: "SERIALIZE_ERROR".to_string(),
-        details: None,
-        conflict_data: None,
-        requires_extension: None,
-    })?;
     let req = UpdateQueryNodeRequest {
         node_id: id,
         version,
-        update_json,
+        update_json: typed_update_json(&update, "query")?,
     };
     let resp = c
         .update_query_node(Request::new(req))
@@ -1257,20 +1265,83 @@ pub async fn update_play_node(
     update: PlayNodeUpdate,
 ) -> Result<Value, CommandError> {
     let mut c = client.echo_suppressed_client().await;
-    let update_json = serde_json::to_string(&update).map_err(|e| CommandError {
-        message: format!("Failed to serialize play update: {}", e),
-        code: "SERIALIZE_ERROR".to_string(),
-        details: None,
-        conflict_data: None,
-        requires_extension: None,
-    })?;
     let req = UpdatePlayNodeRequest {
         node_id: id,
         version,
-        update_json,
+        update_json: typed_update_json(&update, "play")?,
     };
     let resp = c
         .update_play_node(Request::new(req))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let node = proto_node_response_to_node(resp.into_inner())?;
+    node_to_typed_value(node)
+}
+
+/// Update a collection's core field (description).
+#[tauri::command]
+pub async fn update_collection_node(
+    client: State<'_, GrpcClient>,
+    id: String,
+    version: i64,
+    update: CollectionNodeUpdate,
+) -> Result<Value, CommandError> {
+    let mut c = client.echo_suppressed_client().await;
+    let req = UpdateCollectionNodeRequest {
+        node_id: id,
+        version,
+        update_json: typed_update_json(&update, "collection")?,
+    };
+    let resp = c
+        .update_collection_node(Request::new(req))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let node = proto_node_response_to_node(resp.into_inner())?;
+    node_to_typed_value(node)
+}
+
+/// Update a skill's core fields (description, exclusion, tool whitelist, max
+/// iterations, node types).
+#[tauri::command]
+pub async fn update_skill_node(
+    client: State<'_, GrpcClient>,
+    id: String,
+    version: i64,
+    update: SkillNodeUpdate,
+) -> Result<Value, CommandError> {
+    let mut c = client.echo_suppressed_client().await;
+    let req = UpdateSkillNodeRequest {
+        node_id: id,
+        version,
+        update_json: typed_update_json(&update, "skill")?,
+    };
+    let resp = c
+        .update_skill_node(Request::new(req))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let node = proto_node_response_to_node(resp.into_inner())?;
+    node_to_typed_value(node)
+}
+
+/// Update the database-settings node's core field (required extensions).
+#[tauri::command]
+pub async fn update_database_settings_node(
+    client: State<'_, GrpcClient>,
+    id: String,
+    version: i64,
+    update: DatabaseSettingsNodeUpdate,
+) -> Result<Value, CommandError> {
+    let mut c = client.echo_suppressed_client().await;
+    let req = UpdateDatabaseSettingsNodeRequest {
+        node_id: id,
+        version,
+        update_json: typed_update_json(&update, "database-settings")?,
+    };
+    let resp = c
+        .update_database_settings_node(Request::new(req))
         .await
         .map_err(status_to_command_error)?;
 

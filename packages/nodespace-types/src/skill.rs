@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::node::{Node, ValidationError};
+use crate::helpers::{deserialize_clearable, deserialize_set_only};
+use crate::node::{Node, NodeEnvelope, ValidationError};
 
 /// The `node_type` of every skill node.
 pub const SKILL_NODE_TYPE: &str = "skill";
@@ -8,27 +10,27 @@ pub const SKILL_NODE_TYPE: &str = "skill";
 /// `max_iterations` when a skill doesn't set one — the core schema's default.
 pub const DEFAULT_SKILL_MAX_ITERATIONS: u32 = 2;
 
-/// Strongly typed view of a `skill` node: its name plus the retrieval and
-/// dispatch config stored in its properties.
-///
-/// This is the only place a skill field is read from or written to the
-/// properties bag. `skill` has a registered core schema, so the store hoists
-/// its fields under `properties.skill.*`; a node built in memory, a seed
-/// template, or a flat update patch carries them at the top level instead.
-/// [`SkillNode::from_properties`] reads both, preferring the `skill` bucket
-/// per field. Every hand-rolled reader that guessed only one of the two
-/// shapes read that field as empty.
-///
-/// The skill's guidance body is its child subtree, not a property, so it is
-/// not part of this model.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkillNode {
-    /// The skill's name, stored as the node's `content`.
-    pub name: String,
+/// The typed fields of a `skill` node: its retrieval and dispatch config. The
+/// skill's name is the node's `content`, and its guidance is its child
+/// subtree; neither is part of this shape.
+// The one reader and writer of a skill's stored fields. `skill` has a
+// registered core schema, so the store hoists its fields under
+// `properties.skill.*`; a node built in memory, a seed template, or a flat
+// update patch carries them at the top level instead. `from_properties` reads
+// both, preferring the `skill` bucket per field: a reader that guesses one of
+// the two shapes reads the other as empty. Serialized, these are the camelCase
+// fields the wire `SkillNode` promotes; storage keeps the schema's snake_case
+// names (`properties`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
+#[serde(rename_all = "camelCase")]
+pub struct SkillFields {
     /// What the skill is for. Drives the skill's embedding for retrieval.
     pub description: String,
     /// What the skill is *not* for, scored against the query to penalize
     /// verb-only overlaps. `None` when absent or blank.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub exclusion: Option<String>,
     /// Tools a turn that selects this skill may call.
     pub tool_whitelist: Vec<String>,
@@ -38,16 +40,27 @@ pub struct SkillNode {
     pub node_types: Vec<String>,
 }
 
-impl SkillNode {
-    /// A skill with no exclusion and no type scope.
+impl Default for SkillFields {
+    /// What a skill with no stored fields reads as: the schema's defaults.
+    fn default() -> Self {
+        Self {
+            description: String::new(),
+            exclusion: None,
+            tool_whitelist: Vec::new(),
+            max_iterations: DEFAULT_SKILL_MAX_ITERATIONS,
+            node_types: Vec::new(),
+        }
+    }
+}
+
+impl SkillFields {
+    /// A skill's fields with no exclusion and no type scope.
     pub fn new(
-        name: impl Into<String>,
         description: impl Into<String>,
         tool_whitelist: &[&str],
         max_iterations: u32,
     ) -> Self {
         Self {
-            name: name.into(),
             description: description.into(),
             exclusion: None,
             tool_whitelist: tool_whitelist.iter().map(|t| t.to_string()).collect(),
@@ -68,7 +81,7 @@ impl SkillNode {
         self
     }
 
-    /// Decode a skill node.
+    /// Decode a skill node's fields.
     ///
     /// # Errors
     ///
@@ -81,10 +94,10 @@ impl SkillNode {
                 node.node_type
             )));
         }
-        Self::from_properties(&node.content, &node.properties)
+        Self::from_properties(&node.properties)
     }
 
-    /// Decode a skill from its name and properties, in either the hoisted
+    /// Decode a skill's fields from its properties, in either the hoisted
     /// (`properties.skill.*`) or flat shape. For callers that hold a skill's
     /// parts rather than a [`Node`], such as a wire record or a seed template.
     ///
@@ -95,7 +108,7 @@ impl SkillNode {
     ///
     /// `InvalidProperties` if a field is present with the wrong type, or
     /// `max_iterations` is not a positive integer.
-    pub fn from_properties(name: &str, properties: &Value) -> Result<Self, ValidationError> {
+    pub fn from_properties(properties: &Value) -> Result<Self, ValidationError> {
         let field = |key: &str| {
             properties
                 .get(SKILL_NODE_TYPE)
@@ -124,7 +137,6 @@ impl SkillNode {
         };
 
         Ok(Self {
-            name: name.to_string(),
             description: description.unwrap_or_default(),
             exclusion,
             tool_whitelist,
@@ -152,17 +164,113 @@ impl SkillNode {
         Value::Object(props)
     }
 
-    /// A flat patch that sets only `description`, leaving every other field
-    /// as stored. For a write that must not clobber concurrent edits to the
-    /// rest of the config.
-    pub fn description_patch(description: &str) -> Value {
-        json!({ "description": description })
+    /// A new skill [`Node`] named `name` carrying this config, with a fresh
+    /// id.
+    pub fn into_node(self, name: impl Into<String>) -> Node {
+        Node::new(SKILL_NODE_TYPE.to_string(), name.into(), self.properties())
+    }
+}
+
+/// Wire shape for skill nodes sent to the frontend.
+///
+/// Produced by `node_to_typed_value` for a `skill` node: the skill schema's
+/// fields are promoted to the top level (camelCase, see [`SkillFields`]) and
+/// `properties` keeps only extension fields. The skill's name is the
+/// envelope's `content`.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "camelCase")]
+pub struct SkillNode {
+    /// The fields every node carries. `properties` holds extension fields
+    /// only; the type's own fields are the typed ones below.
+    #[serde(flatten)]
+    pub envelope: NodeEnvelope,
+    #[serde(flatten)]
+    pub fields: SkillFields,
+}
+
+/// Partial update for a skill's core fields, received from the frontend.
+///
+/// `description` and `tool_whitelist` have no clear path (the schema requires
+/// them), and `null` for either is refused rather than read as absent; the
+/// other fields are tri-state: absent leaves the field unchanged,
+/// `null` clears it, and a value sets it. A list is replaced whole. The
+/// skill's name is `content`, an envelope field, and its guidance is its
+/// child subtree; both are written through the generic node operations.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts", ts(optional_fields))]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillNodeUpdate {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_set_only"
+    )]
+    pub description: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_clearable"
+    )]
+    pub exclusion: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_set_only"
+    )]
+    pub tool_whitelist: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_clearable"
+    )]
+    pub max_iterations: Option<Option<u32>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_clearable"
+    )]
+    pub node_types: Option<Option<Vec<String>>>,
+}
+
+impl SkillNodeUpdate {
+    /// An update that sets only `description`, leaving every other field as
+    /// stored. For a write that must not clobber concurrent edits to the rest
+    /// of the config.
+    pub fn description(description: impl Into<String>) -> Self {
+        Self {
+            description: Some(description.into()),
+            ..Default::default()
+        }
     }
 
-    /// A new skill [`Node`] carrying this config, with a fresh id.
-    pub fn into_node(self) -> Node {
-        let properties = self.properties();
-        Node::new(SKILL_NODE_TYPE.to_string(), self.name, properties)
+    /// True when the update changes nothing.
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// The flat, bare-key properties patch this update writes
+    /// (`{"max_iterations": 3}`); a cleared field is written as `null`. The
+    /// service layer moves the keys into the `skill` storage bucket.
+    pub fn to_properties_patch(&self) -> Value {
+        let mut patch = Map::new();
+        if let Some(description) = &self.description {
+            patch.insert("description".to_string(), json!(description));
+        }
+        if let Some(exclusion) = &self.exclusion {
+            patch.insert("exclusion".to_string(), json!(exclusion));
+        }
+        if let Some(tool_whitelist) = &self.tool_whitelist {
+            patch.insert("tool_whitelist".to_string(), json!(tool_whitelist));
+        }
+        if let Some(max_iterations) = &self.max_iterations {
+            patch.insert("max_iterations".to_string(), json!(max_iterations));
+        }
+        if let Some(node_types) = &self.node_types {
+            patch.insert("node_types".to_string(), json!(node_types));
+        }
+        Value::Object(patch)
     }
 }
 
@@ -202,52 +310,36 @@ fn string_list(value: Option<&Value>, key: &str) -> Result<Vec<String>, Validati
 mod tests {
     use super::*;
 
-    fn sample() -> SkillNode {
-        SkillNode::new(
-            "Graph Editing",
-            "Update a record",
-            &["update_node", "get_node"],
-            3,
-        )
-        .with_exclusion("Delete records")
-        .with_node_types(&["invoice"])
+    fn sample() -> SkillFields {
+        SkillFields::new("Update a record", &["update_node", "get_node"], 3)
+            .with_exclusion("Delete records")
+            .with_node_types(&["invoice"])
     }
 
     #[test]
     fn round_trips_through_a_node() {
         let skill = sample();
-        let node = skill.clone().into_node();
+        let node = skill.clone().into_node("Graph Editing");
         assert_eq!(node.node_type, "skill");
         assert_eq!(node.content, "Graph Editing");
-        assert_eq!(SkillNode::from_node(&node).unwrap(), skill);
+        assert_eq!(SkillFields::from_node(&node).unwrap(), skill);
     }
 
     #[test]
     fn round_trips_through_the_hoisted_storage_shape() {
         let skill = sample();
-        let mut node = skill.clone().into_node();
+        let mut node = skill.clone().into_node("Graph Editing");
         node.properties = json!({ "skill": skill.properties() });
-        assert_eq!(SkillNode::from_node(&node).unwrap(), skill);
+        assert_eq!(SkillFields::from_node(&node).unwrap(), skill);
     }
 
     #[test]
     fn minimal_skill_round_trips_without_optional_keys() {
-        let skill = SkillNode::new("Research", "Search", &["search_nodes"], 4);
+        let skill = SkillFields::new("Search", &["search_nodes"], 4);
         let props = skill.properties();
         assert!(props.get("exclusion").is_none());
         assert!(props.get("node_types").is_none());
-        assert_eq!(
-            SkillNode::from_properties("Research", &props).unwrap(),
-            skill
-        );
-    }
-
-    #[test]
-    fn description_patch_sets_only_the_description() {
-        assert_eq!(
-            SkillNode::description_patch("new"),
-            json!({ "description": "new" })
-        );
+        assert_eq!(SkillFields::from_properties(&props).unwrap(), skill);
     }
 
     #[test]
@@ -259,7 +351,7 @@ mod tests {
             "tool_whitelist": ["get_node"],
             "skill": { "max_iterations": 4, "description": "d" },
         });
-        let skill = SkillNode::from_properties("s", &props).unwrap();
+        let skill = SkillFields::from_properties(&props).unwrap();
         assert_eq!(skill.max_iterations, 4);
         assert_eq!(skill.description, "d");
         // Absent from the bucket, so read from the flat level.
@@ -269,33 +361,28 @@ mod tests {
     #[test]
     fn null_skill_bucket_falls_back_to_flat() {
         let props = json!({ "skill": null, "description": "d", "tool_whitelist": ["x"] });
-        let skill = SkillNode::from_properties("s", &props).unwrap();
+        let skill = SkillFields::from_properties(&props).unwrap();
         assert_eq!(skill.description, "d");
         assert_eq!(skill.tool_whitelist, vec!["x"]);
     }
 
     #[test]
     fn absent_and_null_fields_take_defaults() {
-        let skill = SkillNode::from_properties(
-            "s",
+        let skill = SkillFields::from_properties(
             &json!({ "skill": { "exclusion": null, "max_iterations": null } }),
         )
         .unwrap();
-        assert_eq!(
-            skill,
-            SkillNode::new("s", "", &[], DEFAULT_SKILL_MAX_ITERATIONS)
-        );
+        assert_eq!(skill, SkillFields::default());
+        assert_eq!(skill.max_iterations, DEFAULT_SKILL_MAX_ITERATIONS);
     }
 
     #[test]
     fn blank_exclusion_is_none() {
         let skill =
-            SkillNode::from_properties("s", &json!({ "skill": { "exclusion": "   " } })).unwrap();
+            SkillFields::from_properties(&json!({ "skill": { "exclusion": "   " } })).unwrap();
         assert_eq!(skill.exclusion, None);
         assert_eq!(
-            SkillNode::new("s", "", &[], 1)
-                .with_exclusion(" ")
-                .exclusion,
+            SkillFields::new("", &[], 1).with_exclusion(" ").exclusion,
             None
         );
     }
@@ -303,7 +390,7 @@ mod tests {
     #[test]
     fn exclusion_is_trimmed() {
         let skill =
-            SkillNode::from_properties("s", &json!({ "exclusion": "  Delete them. " })).unwrap();
+            SkillFields::from_properties(&json!({ "exclusion": "  Delete them. " })).unwrap();
         assert_eq!(skill.exclusion.as_deref(), Some("Delete them."));
     }
 
@@ -334,7 +421,7 @@ mod tests {
                 "max_iterations must be a positive integer",
             ),
         ] {
-            match SkillNode::from_properties("s", &props) {
+            match SkillFields::from_properties(&props) {
                 Err(ValidationError::InvalidProperties(m)) => assert_eq!(m, message, "{props}"),
                 other => panic!("expected InvalidProperties for {props}, got {other:?}"),
             }
@@ -345,8 +432,88 @@ mod tests {
     fn rejects_a_non_skill_node() {
         let node = Node::new("text".to_string(), "x".to_string(), json!({}));
         assert!(matches!(
-            SkillNode::from_node(&node),
+            SkillFields::from_node(&node),
             Err(ValidationError::InvalidNodeType(_))
         ));
+    }
+
+    /// A required field has no clear path: `null` is refused, naming why,
+    /// rather than read as "unchanged" and dropped.
+    #[test]
+    fn update_refuses_to_clear_a_required_field() {
+        for json in [
+            r#"{"description": null}"#,
+            r#"{"toolWhitelist": null}"#,
+            r#"{"maxIterations": 3, "description": null}"#,
+        ] {
+            let error = serde_json::from_str::<SkillNodeUpdate>(json)
+                .expect_err("null must not clear a required field")
+                .to_string();
+            assert!(error.contains("cannot be cleared"), "{json}: {error}");
+        }
+        // Absent is still "unchanged", and a value still sets.
+        let update: SkillNodeUpdate =
+            serde_json::from_str(r#"{"description": "d", "toolWhitelist": []}"#).unwrap();
+        assert_eq!(update.description.as_deref(), Some("d"));
+        assert_eq!(update.tool_whitelist, Some(Vec::new()));
+    }
+
+    /// The update carries the skill schema's fields only, by wire name;
+    /// naming anything else is an error rather than a silently dropped write.
+    #[test]
+    fn update_rejects_an_unknown_key() {
+        for json in [r#"{"content": "Renamed"}"#, r#"{"tool_whitelist": []}"#] {
+            assert!(
+                serde_json::from_str::<SkillNodeUpdate>(json).is_err(),
+                "{json} must not deserialize as a SkillNodeUpdate"
+            );
+        }
+    }
+
+    #[test]
+    fn update_distinguishes_absent_null_and_value() {
+        let update: SkillNodeUpdate = serde_json::from_str(
+            r#"{"exclusion": null, "maxIterations": 5, "nodeTypes": null, "toolWhitelist": ["get_node"]}"#,
+        )
+        .unwrap();
+        assert_eq!(update.description, None);
+        assert_eq!(update.exclusion, Some(None));
+        assert_eq!(update.max_iterations, Some(Some(5)));
+        assert_eq!(update.node_types, Some(None));
+        assert_eq!(
+            update.to_properties_patch(),
+            json!({
+                "exclusion": null,
+                "tool_whitelist": ["get_node"],
+                "max_iterations": 5,
+                "node_types": null
+            })
+        );
+        assert!(!update.is_empty());
+        assert!(serde_json::from_str::<SkillNodeUpdate>("{}")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn description_update_sets_only_the_description() {
+        assert_eq!(
+            SkillNodeUpdate::description("new").to_properties_patch(),
+            json!({ "description": "new" })
+        );
+    }
+
+    /// The wire fields are camelCase and an unset exclusion is omitted.
+    #[test]
+    fn fields_serialize_camel_case() {
+        assert_eq!(
+            serde_json::to_value(SkillFields::new("Search", &["get_node"], 4)).unwrap(),
+            json!({
+                "description": "Search",
+                "toolWhitelist": ["get_node"],
+                "maxIterations": 4,
+                "nodeTypes": []
+            })
+        );
     }
 }

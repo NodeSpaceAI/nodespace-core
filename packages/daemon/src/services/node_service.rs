@@ -17,8 +17,9 @@ use nodespace_agent::local_agent::deletion_confirmation::{self, DeletionStop};
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::ChildPlacement;
 use nodespace_core::models::{
-    AiChatPendingDeletion, Node, NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, PlayNodeUpdate,
-    Priority, ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
+    AiChatPendingDeletion, CollectionNodeUpdate, DatabaseSettingsNodeUpdate, Node, NodeQuery,
+    NodeUpdate, OrderBy, PersonNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate,
+    ProjectStatus, QueryNodeUpdate, SkillNodeUpdate, TaskNodeUpdate, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -68,10 +69,12 @@ use crate::nodespace::{
     RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
     RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
     ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
-    SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
+    SearchRequest, SetLocalPersonIdentityRequest, UpdateCollectionNodeRequest,
+    UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
     UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdatePlayNodeRequest,
     UpdateProjectNodeRequest, UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
-    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, WatchRequest,
+    UpdateRelationshipPropertiesResponse, UpdateSkillNodeRequest, UpdateTaskNodeRequest,
+    WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -1657,6 +1660,68 @@ impl GrpcNodeService for NodeServiceImpl {
         match this
             .node_service
             .update_play_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_collection_node(
+        &self,
+        request: Request<UpdateCollectionNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: CollectionNodeUpdate = serde_json::from_str(&req.update_json)
+            .map_err(|e| Status::invalid_argument(format!("Invalid collection update: {e}")))?;
+
+        match this
+            .node_service
+            .update_collection_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_skill_node(
+        &self,
+        request: Request<UpdateSkillNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: SkillNodeUpdate = serde_json::from_str(&req.update_json)
+            .map_err(|e| Status::invalid_argument(format!("Invalid skill update: {e}")))?;
+
+        match this
+            .node_service
+            .update_skill_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_database_settings_node(
+        &self,
+        request: Request<UpdateDatabaseSettingsNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: DatabaseSettingsNodeUpdate =
+            serde_json::from_str(&req.update_json).map_err(|e| {
+                Status::invalid_argument(format!("Invalid database-settings update: {e}"))
+            })?;
+
+        match this
+            .node_service
+            .update_database_settings_node(&req.node_id, req.version, update)
             .await
         {
             Ok(node) => Ok(Response::new(node_response(node))),
@@ -4909,6 +4974,246 @@ mod tests {
 
             assert_eq!(err.code(), tonic::Code::InvalidArgument, "{update_json}");
         }
+    }
+
+    fn create_typed_request(
+        id: &str,
+        node_type: &str,
+        content: &str,
+        properties: &str,
+    ) -> Request<crate::nodespace::CreateNodeRequest> {
+        Request::new(crate::nodespace::CreateNodeRequest {
+            id: Some(id.to_string()),
+            node_type: node_type.to_string(),
+            content: content.to_string(),
+            parent_id: None,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            properties: properties.to_string(),
+            position: None,
+        })
+    }
+
+    /// The typed node a stale typed update's conflict header embeds.
+    fn conflict_current_node(err: &Status) -> serde_json::Value {
+        assert_eq!(err.code(), tonic::Code::Aborted);
+        let header = err
+            .metadata()
+            .get("x-version-conflict")
+            .expect("x-version-conflict header missing");
+        let json: serde_json::Value = serde_json::from_str(header.to_str().unwrap()).unwrap();
+        json["current_node"].clone()
+    }
+
+    /// UpdateCollectionNode writes the description, and on a stale version
+    /// embeds the typed current node in the conflict header.
+    #[tokio::test]
+    async fn update_collection_node_writes_and_conflicts_with_the_typed_node() {
+        let (svc, _tmp) = make_service().await;
+        let id = "e1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(create_typed_request(id, "collection", "clients", "{}"))
+            .await
+            .unwrap();
+        let request = |version: i64, update_json: &str| {
+            Request::new(crate::nodespace::UpdateCollectionNodeRequest {
+                node_id: id.to_string(),
+                version,
+                update_json: update_json.to_string(),
+            })
+        };
+
+        let resp = svc
+            .update_collection_node(request(1, r#"{"description": "Accounts we bill"}"#))
+            .await
+            .expect("typed collection update succeeds")
+            .into_inner();
+        assert_eq!(resp.node_id, id);
+        let node = svc.node_service.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.version, 2);
+        let typed = nodespace_core::models::node_to_typed_value(node).unwrap();
+        assert_eq!(typed["description"], "Accounts we bill");
+
+        let err = svc
+            .update_collection_node(request(1, r#"{"description": null}"#))
+            .await
+            .expect_err("stale version must conflict");
+        let current = conflict_current_node(&err);
+        assert_eq!(current["description"], "Accounts we bill");
+        assert_eq!(current["content"], "clients");
+
+        let err = svc
+            .update_collection_node(request(2, r#"{"content": "accounts"}"#))
+            .await
+            .expect_err("an unknown key must be rejected");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// UpdateSkillNode writes the typed fields, and on a stale version embeds
+    /// the typed current node in the conflict header.
+    #[tokio::test]
+    async fn update_skill_node_writes_and_conflicts_with_the_typed_node() {
+        let (svc, _tmp) = make_service().await;
+        let id = "f1b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(create_typed_request(
+            id,
+            "skill",
+            "Graph Editing",
+            r#"{"description":"Update a record","tool_whitelist":["update_node"],"exclusion":"Delete records"}"#,
+        ))
+        .await
+        .unwrap();
+        let request = |version: i64, update_json: &str| {
+            Request::new(crate::nodespace::UpdateSkillNodeRequest {
+                node_id: id.to_string(),
+                version,
+                update_json: update_json.to_string(),
+            })
+        };
+
+        svc.update_skill_node(request(
+            1,
+            r#"{"toolWhitelist": ["update_node", "get_node"], "maxIterations": 4, "exclusion": null}"#,
+        ))
+        .await
+        .expect("typed skill update succeeds");
+        let node = svc.node_service.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.version, 2);
+        let typed = nodespace_core::models::node_to_typed_value(node).unwrap();
+        assert_eq!(typed["description"], "Update a record");
+        assert_eq!(
+            typed["toolWhitelist"],
+            serde_json::json!(["update_node", "get_node"])
+        );
+        assert_eq!(typed["maxIterations"], 4);
+        assert!(typed.get("exclusion").is_none(), "cleared exclusion");
+
+        let err = svc
+            .update_skill_node(request(1, r#"{"maxIterations": 6}"#))
+            .await
+            .expect_err("stale version must conflict");
+        let current = conflict_current_node(&err);
+        assert_eq!(current["maxIterations"], 4);
+        assert_eq!(current["content"], "Graph Editing");
+
+        // A storage key is not a field of the update.
+        let err = svc
+            .update_skill_node(request(2, r#"{"max_iterations": 6}"#))
+            .await
+            .expect_err("an unknown key must be rejected");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// UpdateDatabaseSettingsNode writes the list, and on a stale version
+    /// embeds the typed current node in the conflict header.
+    #[tokio::test]
+    async fn update_database_settings_node_writes_and_conflicts_with_the_typed_node() {
+        let (svc, _tmp) = make_service().await;
+        let id = "database-settings-singleton";
+        let version = svc
+            .node_service
+            .get_node(id)
+            .await
+            .unwrap()
+            .expect("the settings singleton is seeded")
+            .version;
+        let request = |version: i64, update_json: &str| {
+            Request::new(crate::nodespace::UpdateDatabaseSettingsNodeRequest {
+                node_id: id.to_string(),
+                version,
+                update_json: update_json.to_string(),
+            })
+        };
+
+        svc.update_database_settings_node(request(
+            version,
+            r#"{"requiredExtensions": ["fixture"]}"#,
+        ))
+        .await
+        .expect("typed database-settings update succeeds");
+        let node = svc.node_service.get_node(id).await.unwrap().unwrap();
+        assert_eq!(node.version, version + 1);
+        let typed = nodespace_core::models::node_to_typed_value(node).unwrap();
+        assert_eq!(typed["requiredExtensions"], serde_json::json!(["fixture"]));
+
+        let err = svc
+            .update_database_settings_node(request(version, r#"{"requiredExtensions": null}"#))
+            .await
+            .expect_err("stale version must conflict");
+        assert_eq!(
+            conflict_current_node(&err)["requiredExtensions"],
+            serde_json::json!(["fixture"])
+        );
+
+        let err = svc
+            .update_database_settings_node(request(
+                version + 1,
+                r#"{"requiredExtensions": "fixture"}"#,
+            ))
+            .await
+            .expect_err("a list that is not a list must be rejected");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// UpdateProjectNode on a stale version embeds the typed current node in
+    /// the conflict header, like UpdateTaskNode.
+    #[tokio::test]
+    async fn update_project_node_version_conflict_embeds_typed_current_node() {
+        let (svc, _tmp) = make_service().await;
+        let id = "a2b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(create_typed_request(
+            id,
+            "project",
+            "Apollo",
+            r#"{"status":"active"}"#,
+        ))
+        .await
+        .unwrap();
+
+        let err = svc
+            .update_project_node(Request::new(crate::nodespace::UpdateProjectNodeRequest {
+                node_id: id.to_string(),
+                version: 7,
+                status: Some("completed".to_string()),
+                priority: None,
+                start_date: None,
+                end_date: None,
+            }))
+            .await
+            .expect_err("stale version must conflict");
+
+        let current = conflict_current_node(&err);
+        assert_eq!(current["status"], "active");
+        assert_eq!(current["content"], "Apollo");
+    }
+
+    /// UpdateQueryNode on a stale version embeds the typed current node in
+    /// the conflict header, like UpdateTaskNode.
+    #[tokio::test]
+    async fn update_query_node_version_conflict_embeds_typed_current_node() {
+        let (svc, _tmp) = make_service().await;
+        let id = "b2b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(create_typed_request(
+            id,
+            "query",
+            "Open tasks",
+            r#"{"target_type":"task","limit":10}"#,
+        ))
+        .await
+        .unwrap();
+
+        let err = svc
+            .update_query_node(Request::new(crate::nodespace::UpdateQueryNodeRequest {
+                node_id: id.to_string(),
+                version: 7,
+                update_json: r#"{"limit": 20}"#.to_string(),
+            }))
+            .await
+            .expect_err("stale version must conflict");
+
+        let current = conflict_current_node(&err);
+        assert_eq!(current["targetType"], "task");
+        assert_eq!(current["limit"], 10);
     }
 
     /// A generic-path (non-task) VersionConflict must embed `current_node` in the

@@ -31,6 +31,7 @@ import { collectionsData } from '$lib/stores/collections.svelte';
 
 function makeCollection(id: string, name: string, memberCount: number): CollectionInfo {
   return {
+    lifecycleStatus: 'active',
     id,
     content: name,
     nodeType: 'collection',

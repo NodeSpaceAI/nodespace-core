@@ -139,7 +139,7 @@ async fn the_four_skills_are_seeded_with_the_tools_they_direct() -> Result<()> {
             .iter()
             .find(|n| n.content == title)
             .unwrap_or_else(|| panic!("no seeded skill '{title}'"));
-        let skill = nodespace_core::models::SkillNode::from_node(node)?;
+        let skill = nodespace_core::models::SkillFields::from_node(node)?;
         assert!(
             skill.tool_whitelist.iter().any(|t| t == tool),
             "'{title}' directs {tool} but its whitelist is {:?}",

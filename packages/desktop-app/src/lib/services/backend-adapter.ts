@@ -25,6 +25,10 @@
  */
 
 import type {
+  CollectionNode,
+  CollectionNodeUpdate,
+  DatabaseSettingsNode,
+  DatabaseSettingsNodeUpdate,
   Node,
   NodeReference,
   NodeWithChildren,
@@ -36,6 +40,8 @@ import type {
   ProjectNodeUpdate,
   QueryNode,
   QueryNodeUpdate,
+  SkillNode,
+  SkillNodeUpdate,
   TaskNode,
   TaskNodeUpdate
 } from '$lib/types';
@@ -160,6 +166,39 @@ class TauriAdapter implements BackendAdapter {
     return withDiagnosticLogging(
       'updatePlayNode',
       () => invoke<PlayNode>('update_play_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updateCollectionNode(
+    id: string,
+    version: number,
+    update: CollectionNodeUpdate
+  ): Promise<CollectionNode> {
+    return withDiagnosticLogging(
+      'updateCollectionNode',
+      () => invoke<CollectionNode>('update_collection_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updateSkillNode(id: string, version: number, update: SkillNodeUpdate): Promise<SkillNode> {
+    return withDiagnosticLogging(
+      'updateSkillNode',
+      () => invoke<SkillNode>('update_skill_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updateDatabaseSettingsNode(
+    id: string,
+    version: number,
+    update: DatabaseSettingsNodeUpdate
+  ): Promise<DatabaseSettingsNode> {
+    return withDiagnosticLogging(
+      'updateDatabaseSettingsNode',
+      () =>
+        invoke<DatabaseSettingsNode>('update_database_settings_node', { id, version, update }),
       [id, version, update]
     );
   }
@@ -521,6 +560,41 @@ export class HttpAdapter implements BackendAdapter {
     return await handleResponse<PlayNode>(response);
   }
 
+  async updateCollectionNode(
+    id: string,
+    version: number,
+    update: CollectionNodeUpdate
+  ): Promise<CollectionNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateCollectionNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await handleResponse<CollectionNode>(response);
+  }
+
+  async updateSkillNode(id: string, version: number, update: SkillNodeUpdate): Promise<SkillNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateSkillNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await handleResponse<SkillNode>(response);
+  }
+
+  async updateDatabaseSettingsNode(
+    id: string,
+    version: number,
+    update: DatabaseSettingsNodeUpdate
+  ): Promise<DatabaseSettingsNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateDatabaseSettingsNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await handleResponse<DatabaseSettingsNode>(response);
+  }
+
   async deleteNode(id: string, version: number): Promise<DeleteResult> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.deleteNode(id)}`, {
       method: 'DELETE',
@@ -849,6 +923,27 @@ class MockAdapter implements BackendAdapter {
   }
   async updatePlayNode(_id: string, _version: number, _update: PlayNodeUpdate): Promise<PlayNode> {
     return {} as PlayNode;
+  }
+  async updateCollectionNode(
+    _id: string,
+    _version: number,
+    _update: CollectionNodeUpdate
+  ): Promise<CollectionNode> {
+    return {} as CollectionNode;
+  }
+  async updateSkillNode(
+    _id: string,
+    _version: number,
+    _update: SkillNodeUpdate
+  ): Promise<SkillNode> {
+    return {} as SkillNode;
+  }
+  async updateDatabaseSettingsNode(
+    _id: string,
+    _version: number,
+    _update: DatabaseSettingsNodeUpdate
+  ): Promise<DatabaseSettingsNode> {
+    return {} as DatabaseSettingsNode;
   }
   async deleteNode(_id: string, _version: number): Promise<DeleteResult> {
     return { existed: true, deleted_count: 0 };

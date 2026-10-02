@@ -335,17 +335,13 @@ impl CoreNodeType {
                     Flat,
                     Name,
                     NOT_EMBEDDED.not_mentionable(),
-                    WireShape::Generic,
+                    TYPED,
                 ))
             },
-            Self::Skill => entry("skill", Flat, Name, EMBEDDED, WireShape::Generic),
-            Self::DatabaseSettings => leaf(entry(
-                "database-settings",
-                Flat,
-                Name,
-                NOT_EMBEDDED,
-                WireShape::Generic,
-            )),
+            Self::Skill => entry("skill", Flat, Name, EMBEDDED, TYPED),
+            Self::DatabaseSettings => {
+                leaf(entry("database-settings", Flat, Name, NOT_EMBEDDED, TYPED))
+            }
             Self::Query => leaf(entry(
                 "query",
                 Structured,

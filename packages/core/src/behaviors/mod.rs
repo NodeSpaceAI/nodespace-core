@@ -12,7 +12,7 @@
 use crate::models::schema::SchemaField;
 use crate::models::CoreNodeType;
 use crate::models::{
-    Node, PlayFields, QueryFields, SchemaNode, SkillNode, ValidationError as NodeValidationError,
+    Node, PlayFields, QueryFields, SchemaNode, SkillFields, ValidationError as NodeValidationError,
 };
 use crate::services::NodeAccessor;
 use serde_json::Value;
@@ -1844,7 +1844,7 @@ impl NodeBehavior for SkillNodeBehavior {
         // max_iterations, node_types) are the model's to check. Decoded from
         // the properties rather than the node, so a type extending `skill`
         // is held to the same field shapes.
-        SkillNode::from_properties(&node.content, &node.properties)?;
+        SkillFields::from_properties(&node.properties)?;
 
         Ok(())
     }
@@ -1857,7 +1857,7 @@ impl NodeBehavior for SkillNodeBehavior {
     fn get_embeddable_content(&self, node: &Node) -> Option<String> {
         // A skill that fails to decode was rejected by `validate` on write,
         // so only an in-memory node can reach here malformed; embed its name.
-        let description = SkillNode::from_properties(&node.content, &node.properties)
+        let description = SkillFields::from_properties(&node.properties)
             .map(|skill| skill.description)
             .unwrap_or_default();
         let desc = description.as_str();

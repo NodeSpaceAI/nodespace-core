@@ -33,7 +33,7 @@ use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate};
 use nodespace_core::methodology::linear;
 use nodespace_core::methodology::skills::playbook_skill;
-use nodespace_core::models::SkillNode;
+use nodespace_core::models::SkillFields;
 use nodespace_core::ops::skill_ops::{find_skills, FindSkillsInput};
 use nodespace_core::services::node_service::CreateNodeParams;
 use nodespace_core::services::{
@@ -672,8 +672,8 @@ async fn graph_editing_exclusion_leaves_completion_state_scores_unchanged() {
     let stripped: Vec<NodeTemplate> = seed_skill_nodes()
         .into_iter()
         .map(|t| {
-            let mut skill = SkillNode::from_properties(&t.title, &t.root_properties)
-                .expect("seed decodes as a skill");
+            let mut skill =
+                SkillFields::from_properties(&t.root_properties).expect("seed decodes as a skill");
             skill.exclusion = None;
             NodeTemplate {
                 root_properties: skill.properties(),

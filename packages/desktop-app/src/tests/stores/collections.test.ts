@@ -30,6 +30,7 @@ import {
 // Convert mock data to CollectionInfo format for testing
 function createTestCollectionInfo(item: CollectionItem, parentId?: string): CollectionInfo {
   return {
+    lifecycleStatus: 'active',
     id: item.id,
     content: item.name,
     memberCount: item.memberCount,

@@ -3,7 +3,7 @@
 //! Shared logic for skill search used by the local agent's `search_skills`
 //! tool and the MCP `find_skills` handler exposed to external agents.
 
-use crate::models::SkillNode;
+use crate::models::SkillFields;
 use crate::services::{render_subtree_markdown, NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -385,7 +385,7 @@ fn rerank_with_exclusions(
     let mut scored: Vec<(crate::models::Node, f64)> = pool
         .into_iter()
         .map(|(node, score)| {
-            let Some(exclusion) = SkillNode::from_node(&node)
+            let Some(exclusion) = SkillFields::from_node(&node)
                 .ok()
                 .and_then(|skill| skill.exclusion)
             else {
@@ -565,12 +565,12 @@ pub async fn find_skills(
     for (node, confidence) in &skill_results {
         // `exclusion` was spent on ranking in `rerank_with_exclusions`; it is
         // retrieval-only and never reaches the model.
-        let SkillNode {
+        let SkillFields {
             description,
             tool_whitelist,
             node_types: scoped_type_ids,
             ..
-        } = match SkillNode::from_node(node) {
+        } = match SkillFields::from_node(node) {
             Ok(skill) => skill,
             Err(e) => {
                 // `SkillNodeBehavior::validate` rejects this shape on write,

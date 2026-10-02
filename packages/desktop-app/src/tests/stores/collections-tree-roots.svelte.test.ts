@@ -19,6 +19,7 @@ import {
 
 function collection(id: string, name: string, parentCollectionIds: string[]): CollectionInfo {
   return {
+    lifecycleStatus: 'active',
     id,
     content: name,
     nodeType: 'collection',

@@ -112,7 +112,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: false,
-    typedUpdate: false,
+    typedUpdate: true,
     structure: { children: { rule: 'any' }, parent: { rule: 'must_be_root' } }
   },
   {
@@ -120,7 +120,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
-    typedUpdate: false,
+    typedUpdate: true,
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
   {
@@ -128,7 +128,7 @@ export const CORE_NODE_TYPES = [
     parent: null,
     abstract: false,
     mentionable: true,
-    typedUpdate: false,
+    typedUpdate: true,
     structure: { children: { rule: 'none' }, parent: { rule: 'any' } }
   },
   {

@@ -5,15 +5,8 @@
  */
 
 // Node types - ONLY source of truth
-export type {
-  Node,
-  NodeEnvelope,
-  NodeUpdate,
-  NodeUIState,
-  CollectionNode,
-  NodeReference
-} from './node';
-export { isNode, createDefaultUIState, isCollectionNode } from './node';
+export type { Node, NodeEnvelope, NodeUpdate, NodeUIState, NodeReference } from './node';
+export { isNode, createDefaultUIState } from './node';
 
 // Type-safe node wrappers - Simple types (extend Node with nodeType narrowing only)
 export type { TextNode } from './text-node';
@@ -70,8 +63,17 @@ export { isProjectNode, nodeToProjectNode } from './project-node';
 export type { QueryNode, QueryNodeUpdate, QueryGeneratedBy } from './query';
 export { nodeToQueryNode } from './query';
 
-// A play's wire shapes are generated from Rust's `nodespace-types`.
-export type { PlayNode, PlayNodeUpdate } from './generated';
+// These types' wire shapes are generated from Rust's `nodespace-types`.
+export type {
+  CollectionNode,
+  CollectionNodeUpdate,
+  DatabaseSettingsNode,
+  DatabaseSettingsNodeUpdate,
+  PlayNode,
+  PlayNodeUpdate,
+  SkillNode,
+  SkillNodeUpdate
+} from './generated';
 
 export type {
   SchemaNode,

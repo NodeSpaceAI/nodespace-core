@@ -76,17 +76,8 @@
       // Try to get collection details from cached store data first (by ID)
       const cachedCollection = collectionsData.getCollectionById(collectionId);
       if (cachedCollection) {
-        // Convert CollectionInfo to CollectionNode format
-        collection = {
-          lifecycleStatus: 'active',
-          id: cachedCollection.id,
-          nodeType: 'collection',
-          content: cachedCollection.content,
-          createdAt: cachedCollection.createdAt,
-          modifiedAt: cachedCollection.modifiedAt,
-          version: cachedCollection.version,
-          properties: cachedCollection.properties as CollectionNode['properties']
-        };
+        // A CollectionInfo is the collection node plus its counts.
+        collection = cachedCollection;
       } else {
         // Fallback: Try to get collection by name (legacy behavior)
         // This handles cases where the viewer is opened before sidebar loaded collections
@@ -256,8 +247,8 @@
       {/if}
     </div>
 
-    {#if collection?.properties?.description}
-      <p class="collection-description">{collection.properties.description}</p>
+    {#if collection?.description}
+      <p class="collection-description">{collection.description}</p>
     {/if}
 
     {#if tabs.length > 0}

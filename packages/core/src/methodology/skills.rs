@@ -23,7 +23,7 @@
 //! and `description`, plus two optional ones. `tools` is a comma-separated tool
 //! whitelist for a skill that needs more than [`DEFAULT_TOOLS`], such as one
 //! that links nodes or changes a task's status. `exclusion` is the skill's
-//! `SkillNode::exclusion` — see *Writing the description* for when a
+//! `SkillFields::exclusion` — see *Writing the description* for when a
 //! Playbook skill needs one. One key per line, each value
 //! double-quoted with no escapes and no embedded `"`. Anything else fails every
 //! test that builds the Playbook, so a malformed file cannot ship.
@@ -104,7 +104,7 @@
 //! prose and have no such reason.
 
 use crate::markdown::{NodeTemplate, SeedTier};
-use crate::models::SkillNode;
+use crate::models::SkillFields;
 
 /// The tool whitelist of a skill whose frontmatter names no `tools`.
 const DEFAULT_TOOLS: &[&str] = &["create_node", "update_node", "search_nodes", "get_node"];
@@ -130,13 +130,13 @@ pub fn playbook_skill(source: &str) -> NodeTemplate {
     let parsed = parse(source).unwrap_or_else(|e| {
         panic!("malformed Playbook skill frontmatter: {e}");
     });
-    let mut skill = SkillNode::new(parsed.title, parsed.description, &parsed.tools, 3);
+    let mut skill = SkillFields::new(parsed.description, &parsed.tools, 3);
     if let Some(exclusion) = parsed.exclusion {
         skill = skill.with_exclusion(exclusion);
     }
     NodeTemplate {
         tier: SeedTier::Starter,
-        ..NodeTemplate::skill(skill, parsed.body)
+        ..NodeTemplate::skill(parsed.title, skill, parsed.body)
     }
 }
 
@@ -318,7 +318,7 @@ mod tests {
     fn an_exclusion_reaches_the_seeded_skill() {
         let src = "---\ntitle: \"T\"\ndescription: \"D\"\nexclusion: \"Add a task.\"\n---\nb";
         let template = playbook_skill(src);
-        let skill = SkillNode::from_properties(&template.title, &template.root_properties)
+        let skill = SkillFields::from_properties(&template.root_properties)
             .expect("seed decodes as a skill");
         assert_eq!(skill.exclusion.as_deref(), Some("Add a task."));
     }

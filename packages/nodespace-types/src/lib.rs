@@ -29,8 +29,10 @@
 //! only with the `ts` feature, which no other crate enables.
 
 mod ai_chat;
+mod collection;
 mod convert;
 mod core_type;
+mod database_settings;
 mod helpers;
 mod incompatible_database;
 mod node;
@@ -49,6 +51,7 @@ pub use ai_chat::{
     AiChatPendingDeletion, AiChatProvider, AiChatPtyNode, AiChatResolvedEntity,
     AiChatSessionStatus, AiChatTurnOutcome, AiChatTurnStatus, NODESPACE_AGENT,
 };
+pub use collection::{CollectionNode, CollectionNodeUpdate};
 pub use convert::{
     core_promoted_fields, flat_properties_view, flatten_namespaced_properties,
     flatten_namespaced_properties_at_scope, node_to_typed_value, nodes_to_typed_values,
@@ -58,6 +61,7 @@ pub use core_type::{
     ChildrenRule, ContentRole, CoreNodeType, CoreTypeInfo, CoreTypeKind, ParentRule,
     ParticipationRules, StructuralRules, TypeCategory, WireShape,
 };
+pub use database_settings::{DatabaseSettingsNode, DatabaseSettingsNodeUpdate};
 pub use helpers::{is_valid_lifecycle_status, LIFECYCLE_STATUSES};
 pub use incompatible_database::IncompatibleDatabase;
 pub use node::{
@@ -84,5 +88,7 @@ pub use schema::{
     SchemaChildrenRule, SchemaField, SchemaFieldType, SchemaNode, SchemaParentRule,
     SchemaProtectionLevel, SchemaRelationship,
 };
-pub use skill::{SkillNode, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
+pub use skill::{
+    SkillFields, SkillNode, SkillNodeUpdate, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE,
+};
 pub use task::{TaskNode, TaskNodeUpdate, TaskStatus};

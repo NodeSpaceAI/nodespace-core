@@ -14,7 +14,7 @@
 use anyhow::Result;
 use nodespace_core::{
     db::SqliteStore,
-    models::{Node, NodeUpdate, SkillNode},
+    models::{Node, NodeUpdate, SkillFields},
     ops::skill_ops::{find_skills, FindSkillsInput},
     schema::handle_create_schema,
     services::{embedding_service::NodeEmbeddingService, NodeAccessor, NodeService},
@@ -112,14 +112,9 @@ async fn create_fixture_schemas(svc: &Arc<NodeService>) -> Result<()> {
 /// deterministically includes exactly the fixture schema regardless of the
 /// unscoped-fallback / query-naming heuristics `find_skills` also has.
 async fn seed_invoice_skill(service: &NodeService) -> Result<Node> {
-    let mut node = SkillNode::new(
-        "Invoice Billing",
-        SKILL_DESCRIPTION,
-        &["create_node", "update_node"],
-        2,
-    )
-    .with_node_types(&["invoice"])
-    .into_node();
+    let mut node = SkillFields::new(SKILL_DESCRIPTION, &["create_node", "update_node"], 2)
+        .with_node_types(&["invoice"])
+        .into_node("Invoice Billing");
     node.title = Some("Invoice Billing".to_string());
     service.create_node(node.clone()).await?;
     Ok(service
@@ -230,13 +225,12 @@ async fn find_skills_skips_a_malformed_skill_and_keeps_the_rest() -> Result<()> 
     create_fixture_schemas(&node_service).await?;
 
     let valid = seed_invoice_skill(&node_service).await?;
-    let mut malformed = SkillNode::new(
-        "Invoice Payments",
+    let mut malformed = SkillFields::new(
         "Record a customer's payment against an invoice they owe.",
         &["update_node"],
         2,
     )
-    .into_node();
+    .into_node("Invoice Payments");
     malformed.title = Some("Invoice Payments".to_string());
     node_service.create_node(malformed.clone()).await?;
     embedding_service.embed_root_node(&valid.id).await?;
@@ -305,14 +299,13 @@ async fn find_skills_schema_metadata_includes_a_subtypes_inherited_declarations(
     .await
     .map_err(|e| anyhow::anyhow!("subtype schema: {e}"))?;
 
-    let mut skill = SkillNode::new(
-        "Retainer Billing",
+    let mut skill = SkillFields::new(
         "Bill a customer on a monthly retainer — create a retainer invoice record.",
         &["create_node"],
         2,
     )
     .with_node_types(&["retainer_invoice"])
-    .into_node();
+    .into_node("Retainer Billing");
     skill.title = Some("Retainer Billing".to_string());
     node_service.create_node(skill.clone()).await?;
     embedding_service.embed_root_node(&skill.id).await?;
