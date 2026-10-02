@@ -504,18 +504,22 @@
       if (!queryNode) return;
       // Through the store, like a view-config change: one queue orders both
       // writes, so neither is sent at a version the other has just bumped.
-      sharedNodeStore.updateNode(
-        queryNode.id,
-        { content: name },
-        { type: 'viewer', viewerId: 'query-node-viewer' },
-        {
-          persist: 'immediate',
-          onPersistError: (e) => {
-            log.error('QueryNodeViewer: failed to rename query', { error: e.message });
-            saveError = `Failed to rename query: ${e.message}`;
+      const { id, content: previousName } = queryNode;
+      const source = { type: 'viewer' as const, viewerId: 'query-node-viewer' };
+      sharedNodeStore.updateNode(id, { content: name }, source, {
+        onPersistError: (e) => {
+          log.error('QueryNodeViewer: failed to rename query', { error: e.message });
+          saveError = `Failed to rename query: ${e.message}`;
+          // The store applied the name before sending it and does not take it
+          // back on a failed write. Restore the saved name, unless the header
+          // has moved on to another one since.
+          if (sharedNodeStore.getNode(id)?.content === name) {
+            sharedNodeStore.updateNode(id, { content: previousName }, source, {
+              skipPersistence: true
+            });
           }
         }
-      );
+      });
       return;
     }
 

@@ -505,6 +505,39 @@ describe('QueryNodeViewer — materialize race', () => {
     );
   });
 
+  it('puts the saved name back when a rename fails, so it can be tried again', async () => {
+    const savedId = 'saved-query-5';
+    mockGetNode.mockResolvedValue({
+      ...materializedQueryNode(savedId),
+      content: 'My Board',
+      viewConfig: { lastView: 'table' }
+    });
+    mockUpdateNode.mockRejectedValue(new Error('disk full'));
+
+    const { getByRole, getByLabelText, findByRole } = render(QueryNodeViewer, {
+      props: { nodeId: savedId, onNodeIdChange: () => {} }
+    });
+    await waitFor(() => expect(getByRole('button', { name: '+ New' })).toBeTruthy());
+
+    const title = getByLabelText('Query name') as HTMLInputElement;
+    const rename = async () => {
+      await fireEvent.focus(title);
+      await fireEvent.input(title, { target: { value: 'Sprint Board' } });
+      await fireEvent.blur(title);
+    };
+    await rename();
+
+    expect((await findByRole('alert', {}, { timeout: 3000 })).textContent).toContain(
+      'Failed to rename query: disk full'
+    );
+    expect(sharedNodeStore.getNode(savedId)?.content).toBe('My Board');
+    await waitFor(() => expect(title.value).toBe('My Board'));
+
+    // The same name is a rename again, not "unchanged".
+    await rename();
+    await waitFor(() => expect(mockUpdateNode).toHaveBeenCalledTimes(2), { timeout: 3000 });
+  });
+
   it('reports a failed saved-query view change', async () => {
     const savedId = 'saved-query-3';
     mockGetNode.mockResolvedValue({

@@ -4246,6 +4246,11 @@ export class SharedNodeStore {
     if (!localOnly && held.isComplete(updated)) {
       this.unsavedPlaceholders.delete(nodeId);
       this.setNode(updated, source);
+      // Start the create now rather than after its debounce. The create sends
+      // the node as it is when it runs, so a required field emptied again in
+      // that window (a character typed, then deleted) would send a node the
+      // backend rejects, and nothing would queue another create.
+      void this.flushNodeSaves([nodeId]);
       return;
     }
 

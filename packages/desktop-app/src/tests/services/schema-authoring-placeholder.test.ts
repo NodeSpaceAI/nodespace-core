@@ -140,11 +140,11 @@ describe('createInstancePlaceholder', () => {
     expect(sharedNodeStore.isUnsavedPlaceholder(node.id)).toBe(false);
   });
 
-  it('creates the skill with the description as typed so far, one keystroke at a time', async () => {
+  it('creates the skill at the first character and saves the rest, one keystroke at a time', async () => {
     // The form writes on every keystroke. The first character completes the
-    // placeholder and queues its create; the ones typed before that create
-    // goes out are staged typed writes. The create must still carry the
-    // description, or the backend rejects the node and nothing is ever saved.
+    // placeholder and starts its create, which must carry the description or
+    // the backend rejects the node; the characters typed while that create is
+    // in flight are staged, and go out as one typed write once it lands.
     const node = createInstancePlaceholder(skillLike);
     const viewer = { type: 'viewer' as const, viewerId: 'test' };
     const order: string[] = [];
@@ -162,7 +162,36 @@ describe('createInstancePlaceholder', () => {
     }
 
     await vi.waitFor(() => expect(order).toHaveLength(2), { timeout: 3000 });
-    expect(order).toEqual(['create:{"description":"Sum"}', 'typed:{"description":"Sum"}']);
+    expect(order).toEqual(['create:{"description":"S"}', 'typed:{"description":"Sum"}']);
+    expect(createNodeSpy).toHaveBeenCalledTimes(1);
+    expect(sharedNodeStore.isNodePersisted(node.id)).toBe(true);
+  });
+
+  it('creates the skill with the description that completed it, even if it is emptied right after', async () => {
+    // A character typed, then deleted: the create has already started with
+    // the description that completed the placeholder, so the node exists and
+    // the description typed next is saved through the typed update.
+    const node = createInstancePlaceholder(skillLike);
+    const viewer = { type: 'viewer' as const, viewerId: 'test' };
+    const typedSpy = vi
+      .spyOn(backendAdapter, 'updateSkillNode')
+      .mockImplementation(async (id, version, update) => {
+        if (update.description === null) throw new Error('description cannot be cleared');
+        return { ...node, ...update, id, version: version + 1 } as never;
+      });
+
+    sharedNodeStore.updateNode(node.id, { description: 'S' } as never, viewer);
+    await vi.waitFor(() => expect(createNodeSpy).toHaveBeenCalledTimes(1), { timeout: 200 });
+    expect(createNodeSpy.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ properties: { description: 'S' } })
+    );
+
+    sharedNodeStore.updateNode(node.id, { description: null } as never, viewer);
+    sharedNodeStore.updateNode(node.id, { description: 'Sum' } as never, viewer);
+
+    await vi.waitFor(() =>
+      expect(typedSpy.mock.calls.map((call) => call[2])).toContainEqual({ description: 'Sum' })
+    );
     expect(createNodeSpy).toHaveBeenCalledTimes(1);
     expect(sharedNodeStore.isNodePersisted(node.id)).toBe(true);
   });
