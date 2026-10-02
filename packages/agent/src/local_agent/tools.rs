@@ -4374,7 +4374,7 @@ impl AgentToolExecutor for GraphToolExecutor {
                 tracing::debug!(
                     node_id,
                     node_type,
-                    "available_tools: skipping unenabled tool"
+                    "available_tools: skipping a node the tool trust gate does not offer"
                 );
                 continue;
             };
@@ -4416,7 +4416,7 @@ impl AgentToolExecutor for GraphToolExecutor {
                     node_id,
                     node_type,
                     name = %name,
-                    "available_tools: skipping tool node that is not the built-in tool it names"
+                    "available_tools: skipping tool node that is not the seed of a built-in tool but is native or takes one's name"
                 );
                 continue;
             }

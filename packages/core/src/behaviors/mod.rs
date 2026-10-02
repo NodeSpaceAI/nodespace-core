@@ -2039,29 +2039,22 @@ impl ToolOrigin {
     /// The trust gate: whether a tool of this origin may be offered to the
     /// model. A native tool always is. Every other tool is offered only when
     /// `enabled`, the base field every tool carries.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nodespace_core::behaviors::ToolOrigin;
+    ///
+    /// assert!(ToolOrigin::Native.is_offered(false));
+    /// assert!(!ToolOrigin::External.is_offered(false));
+    /// assert!(ToolOrigin::External.is_offered(true));
+    /// ```
     pub fn is_offered(self, enabled: bool) -> bool {
         match self {
             Self::Native => true,
             Self::External => enabled,
         }
     }
-}
-
-/// The tool trust gate for a type's `chain`: [`ToolOrigin::is_offered`] for a
-/// tool, and never for a type that is not one.
-///
-/// # Examples
-///
-/// ```rust
-/// use nodespace_core::behaviors::tool_is_offered;
-///
-/// assert!(tool_is_offered(&["tool-native", "tool"], false));
-/// assert!(!tool_is_offered(&["tool-remote", "tool"], false));
-/// assert!(tool_is_offered(&["tool-remote", "tool"], true));
-/// assert!(!tool_is_offered(&["text"], true));
-/// ```
-pub fn tool_is_offered<S: AsRef<str>>(chain: &[S], enabled: bool) -> bool {
-    ToolOrigin::of(chain).is_some_and(|origin| origin.is_offered(enabled))
 }
 
 /// Maximum object-nesting depth allowed in a tool's `parameter_schema`.
@@ -5144,19 +5137,22 @@ mod tests {
     /// always offered, and any other tool subtype only when `enabled`.
     #[test]
     fn the_trust_gate_is_decided_by_the_tool_subtype() {
+        let offered = |chain: &[&str], enabled: bool| {
+            ToolOrigin::of(chain).is_some_and(|origin| origin.is_offered(enabled))
+        };
         for enabled in [true, false] {
-            assert!(tool_is_offered(&NATIVE_TOOL_CHAIN, enabled));
+            assert!(offered(&NATIVE_TOOL_CHAIN, enabled));
             // A subtype of the native tool is native too.
-            assert!(tool_is_offered(
+            assert!(offered(
                 &["tool-native-plus", "tool-native", "tool"],
                 enabled
             ));
-            assert_eq!(tool_is_offered(&["tool-remote", "tool"], enabled), enabled);
+            assert_eq!(offered(&["tool-remote", "tool"], enabled), enabled);
             // The bare base is no more trusted than any other tool that is
             // not native, and a type that is no tool is never offered.
-            assert_eq!(tool_is_offered(&["tool"], enabled), enabled);
-            assert!(!tool_is_offered(&["text"], enabled));
-            assert!(!tool_is_offered(&["invoice"], enabled));
+            assert_eq!(offered(&["tool"], enabled), enabled);
+            assert!(!offered(&["text"], enabled));
+            assert!(!offered(&["invoice"], enabled));
         }
         assert_eq!(ToolOrigin::of(&NATIVE_TOOL_CHAIN), Some(ToolOrigin::Native));
         assert_eq!(

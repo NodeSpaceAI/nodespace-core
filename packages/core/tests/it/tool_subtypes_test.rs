@@ -3,7 +3,7 @@
 //! core subtype NodeSpace's built-in tools are, the base's rules reach every
 //! subtype, and no tool carries a `source`: its type says where it comes from.
 
-use nodespace_core::behaviors::tool_is_offered;
+use nodespace_core::behaviors::ToolOrigin;
 use nodespace_core::db::{SqliteStore, TreeInvariantRule};
 use nodespace_core::models::{node_to_typed_value, CoreNodeType, Node, NodeUpdate};
 use nodespace_core::schema::handle_create_schema;
@@ -351,10 +351,13 @@ async fn the_trust_gate_follows_the_stored_chain() {
     let native = svc.resolve_type_chain(NATIVE).await.unwrap();
     let remote = svc.resolve_type_chain(REMOTE).await.unwrap();
     assert_eq!(remote, vec![REMOTE, "tool"]);
+    assert_eq!(ToolOrigin::of(&native), Some(ToolOrigin::Native));
+    let remote_origin = ToolOrigin::of(&remote).expect("a type extending tool is a tool");
+    assert_eq!(remote_origin, ToolOrigin::External);
 
-    assert!(tool_is_offered(&native, false));
-    assert!(!tool_is_offered(&remote, false));
-    assert!(tool_is_offered(&remote, true));
+    assert!(ToolOrigin::Native.is_offered(false));
+    assert!(!remote_origin.is_offered(false));
+    assert!(remote_origin.is_offered(true));
 
     // A tool that doesn't say is stored as not enabled, so the gate is closed
     // until someone opens it.
@@ -362,8 +365,11 @@ async fn the_trust_gate_follows_the_stored_chain() {
         .await
         .unwrap();
     let stored = get(&svc, &unstated).await;
-    assert_eq!(stored.properties["tool"]["enabled"], false);
-    assert!(!tool_is_offered(&remote, false));
+    let enabled = stored.properties["tool"]["enabled"]
+        .as_bool()
+        .expect("the default is stored");
+    assert!(!enabled);
+    assert!(!remote_origin.is_offered(enabled));
 }
 
 /// The parameter-schema guard is the base's, so it holds for a native tool
