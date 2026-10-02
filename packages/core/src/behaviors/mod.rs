@@ -688,8 +688,8 @@ impl NodeBehavior for ProjectNodeBehavior {
         // schema-typed node type, so NodeService hoists its schema-defined
         // fields there on write, the same as `task` under `properties.task.*`.
         // Falling back to the flat
-        // top level keeps this correct for a node that was constructed
-        // directly. TYPE checks only — the schema system validates enum
+        // top level keeps this correct for a write that does not normalize
+        // flat properties (`bulk_create`). TYPE checks only — the schema system validates enum
         // membership and allowed values.
         let project_props = node
             .properties
@@ -2172,8 +2172,8 @@ impl NodeBehavior for DatabaseSettingsNodeBehavior {
     /// Rejects a `required_extensions` that is not a list of strings (null
     /// clears it). The daemon's open guard refuses a database whose list it
     /// cannot read, so a malformed value must not be stored. Checked in the
-    /// node's own bucket and at the top level, where a create passes its
-    /// properties before they are bucketed.
+    /// node's own bucket and at the top level, where a write that does not
+    /// normalize flat properties (`bulk_create`) leaves the field.
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
         let field = crate::models::core_schemas::REQUIRED_EXTENSIONS_FIELD;
         let values = [

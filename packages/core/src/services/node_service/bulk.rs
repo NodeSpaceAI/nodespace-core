@@ -1,16 +1,7 @@
 //! Bulk operations for NodeService.
 
+use super::crud::FieldOwnershipInfo;
 use super::*;
-
-/// `(fields, field_name -> owning_schema_id, chain)` — the exact shape
-/// [`NodeService::resolve_field_owners`] returns, cached per node type by
-/// [`NodeService::prepare_bulk_hierarchy_nodes`] so a bulk write resolves
-/// each unique type's `extends` chain once, not once per row.
-type FieldOwnershipInfo = (
-    Vec<crate::models::SchemaField>,
-    std::collections::HashMap<String, String>,
-    Vec<String>,
-);
 
 impl NodeService {
     /// Attach each bulk row's title, derived by the same rule as single-node
@@ -130,35 +121,37 @@ impl NodeService {
             return Ok(Vec::new());
         }
 
-        // Validate all nodes first (two-step validation), re-bucketing each
-        // node's properties by declaring owner across its `extends` chain
-        // (ADR-078) before persisting — the same sequence every other write
-        // path owes a node, via `rebucket_and_validate`. Without this, an
-        // inherited field normalized into the node's own bucket stayed
-        // there rather than moving to its declaring ancestor's, so a
-        // base-scoped reader never found it. `apply_defaults: false`
-        // preserves bulk_create's existing contract of validating exactly
-        // what the caller supplied, not filling in what they didn't.
+        // Validate all nodes first, re-bucketing each node's properties by
+        // declaring owner across its `extends` chain (ADR-078) before
+        // persisting — the same sequence every other write path owes a node,
+        // via `rebucket_and_validate`. Without this, an inherited field
+        // normalized into the node's own bucket stayed there rather than
+        // moving to its declaring ancestor's, so a base-scoped reader never
+        // found it and the ancestor's behaviour never checked it.
+        // `apply_defaults: false` preserves bulk_create's existing contract
+        // of validating exactly what the caller supplied, not filling in
+        // what they didn't.
         let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
             std::collections::HashMap::new();
         let mut chain_fields: std::collections::HashMap<
             String,
             (Vec<crate::models::SchemaField>, Vec<String>),
         > = std::collections::HashMap::new();
-        let mut type_chains = std::collections::HashMap::new();
+        let mut instantiable_types = std::collections::HashSet::new();
+        let mut ownership_by_type = std::collections::HashMap::new();
         for node in &mut nodes {
             // Every node of this batch is created a root, so a type that
             // needs a parent is refused (ADR-089). Asked once per distinct
-            // type: `type_chains` gains the type in step 1.
-            if !type_chains.contains_key(&node.node_type) {
+            // type: `instantiable_types` gains the type in step 1.
+            if !instantiable_types.contains(&node.node_type) {
                 self.store
                     .assert_may_be_root(&node.node_type, Some(&node.id))
                     .await
                     .map_err(NodeServiceError::from_store)?;
             }
 
-            // Step 1: Type, id and behavior validation
-            self.ensure_creatable_in_batch(node, &mut type_chains)
+            // Step 1: Type and id validation
+            self.ensure_creatable_in_batch(node, &mut instantiable_types)
                 .await?;
 
             // A create: always held to the templated-type content rule.
@@ -171,10 +164,12 @@ impl NodeService {
                 schemas.get(&node.node_type).and_then(Option::as_ref),
             )?;
 
-            // Step 2: Chain-aware schema validation + re-bucketing
-            if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
-                self.rebucket_and_validate(node, false).await?;
-            }
+            // Step 2: Re-bucketing, then behavior and chain-aware schema
+            // validation
+            let ownership = self
+                .field_ownership_in_batch(&node.node_type, &mut ownership_by_type)
+                .await?;
+            self.rebucket_and_validate_with(node, ownership, false)?;
             // A new play carries no suspension, on this create path as on
             // the single-node one (ADR-087 §5).
             if self
@@ -472,12 +467,37 @@ impl NodeService {
         Ok(result)
     }
 
+    /// A bulk hierarchy row as the node it will be stored as, for
+    /// validation: its flat properties moved under its type's own namespace.
+    fn bulk_row_as_node(
+        id: String,
+        node_type: String,
+        content: String,
+        properties: &serde_json::Value,
+    ) -> Node {
+        let properties = Self::normalize_flat_properties_to_namespace(&node_type, properties);
+        Node {
+            id,
+            node_type,
+            content,
+            version: 1,
+            properties,
+            mentions: vec![],
+            mentioned_in: vec![],
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            title: None, // Bulk nodes don't need titles (validated only)
+            lifecycle_status: "active".to_string(),
+        }
+    }
+
     /// Shared preamble for [`Self::bulk_create_hierarchy`] and
     /// [`Self::bulk_create_hierarchy_in_tx`]: resolves each unique
     /// node type's `extends` chain (ADR-078) once, normalizes flat
-    /// properties to namespaced format, re-buckets each node's properties
-    /// by declaring owner, and validates every node against behaviors and
-    /// (where applicable) its chain-resolved schema fields. Returns
+    /// properties to namespaced format, then runs each node through
+    /// [`Self::rebucket_and_validate_with`]: re-bucketed by declaring owner,
+    /// and validated against behaviors and (where applicable) its
+    /// chain-resolved schema fields. Returns
     /// `Ok(None)` for an empty input (every caller treats that as "nothing
     /// to do"), otherwise the normalized, bucketed, validated node tuples
     /// ready for insertion.
@@ -526,92 +546,64 @@ impl NodeService {
             .map(|(_, node_type, _, _, _, _)| node_type.as_str())
             .collect();
 
-        let mut chain_cache: std::collections::HashMap<String, FieldOwnershipInfo> =
+        let mut ownership_by_type: std::collections::HashMap<String, FieldOwnershipInfo> =
             std::collections::HashMap::new();
         for node_type in unique_types {
-            if crate::models::CoreNodeType::Schema.is_exactly(node_type) {
-                continue;
-            }
-
-            // Fail loudly on a malformed schema rather than silently
-            // treating it as "no schema" for every row of this type: a
-            // present-but-corrupt `fields` array and a genuinely
-            // schema-less type are very different outcomes for
-            // bulk-imported data. This checks the type's own declared
-            // schema; a malformed *ancestor* schema mid-chain still falls
-            // back to `resolve_field_owners`'s existing "contributes
-            // nothing" posture, same as every other ADR-078 write path.
-            if let Some(schema_json) = self.get_schema_for_type(node_type).await? {
-                if let Some(fields_json) = schema_json.get("fields") {
-                    serde_json::from_value::<Vec<crate::models::SchemaField>>(fields_json.clone())
+            if !crate::models::CoreNodeType::Schema.is_exactly(node_type) {
+                // Fail loudly on a malformed schema rather than silently
+                // treating it as "no schema" for every row of this type: a
+                // present-but-corrupt `fields` array and a genuinely
+                // schema-less type are very different outcomes for
+                // bulk-imported data. This checks the type's own declared
+                // schema; a malformed *ancestor* schema mid-chain still falls
+                // back to `resolve_field_owners`'s existing "contributes
+                // nothing" posture, same as every other ADR-078 write path.
+                if let Some(schema_json) = self.get_schema_for_type(node_type).await? {
+                    if let Some(fields_json) = schema_json.get("fields") {
+                        serde_json::from_value::<Vec<crate::models::SchemaField>>(
+                            fields_json.clone(),
+                        )
                         .map_err(|e| {
                             NodeServiceError::bulk_operation_failed(format!(
                                 "Malformed schema fields for type '{}': {}",
                                 node_type, e
                             ))
                         })?;
+                    }
                 }
             }
 
-            chain_cache.insert(
+            ownership_by_type.insert(
                 node_type.to_string(),
-                self.resolve_field_owners(node_type).await?,
+                self.field_ownership_for_write(node_type).await?,
             );
         }
 
         // Normalize flat properties to namespaced format, then re-bucket by
-        // declaring owner across the chain (ADR-078) — an inherited field
-        // must move to its declaring ancestor's bucket, or it sits in the
-        // node's own bucket duplicating (and shadowing) the authoritative
-        // value a base-scoped reader looks for.
+        // declaring owner across the chain (ADR-078) and validate — an
+        // inherited field must move to its declaring ancestor's bucket, or it
+        // sits in the node's own bucket duplicating (and shadowing) the
+        // authoritative value a base-scoped reader looks for, unseen by the
+        // ancestor's behaviour.
         // Parser emits: { "status": "open" }
         // Storage expects: { "task": { "status": "open" } } (or the
         // declaring ancestor's bucket, once re-bucketed)
-        let nodes_normalized: Vec<_> = nodes
-            .into_iter()
-            .map(|(id, node_type, content, parent_id, order, properties)| {
-                let mut normalized_props =
-                    Self::normalize_flat_properties_to_namespace(&node_type, &properties);
-                if let Some((fields, owners, _chain)) = chain_cache.get(&node_type) {
-                    if !fields.is_empty() {
-                        normalized_props =
-                            Self::bucket_properties_by_owner(&node_type, &normalized_props, owners);
-                    }
-                }
-                (id, node_type, content, parent_id, order, normalized_props)
-            })
-            .collect();
-
-        // Validate all nodes before insertion using the resolved chain.
-        let mut type_chains = std::collections::HashMap::new();
-        for (id, node_type, content, _, _, properties) in &nodes_normalized {
-            // Build temporary Node for validation
-            let temp_node = Node {
-                id: id.clone(),
-                node_type: node_type.clone(),
-                content: content.clone(),
-                version: 1,
-                properties: properties.clone(),
-                mentions: vec![],
-                mentioned_in: vec![],
-                created_at: chrono::Utc::now(),
-                modified_at: chrono::Utc::now(),
-                title: None, // Bulk nodes don't need titles (validated only)
-                lifecycle_status: "active".to_string(),
-            };
-
-            // Type, id and behavior validation
-            self.ensure_creatable_in_batch(&temp_node, &mut type_chains)
+        let mut instantiable_types = std::collections::HashSet::new();
+        let mut nodes_normalized = Vec::with_capacity(nodes.len());
+        for (id, node_type, content, parent_id, order, properties) in nodes {
+            let mut node = Self::bulk_row_as_node(id, node_type, content, &properties);
+            self.ensure_creatable_in_batch(&node, &mut instantiable_types)
                 .await?;
-
-            // Validate against the chain-resolved schema (skip for schema
-            // nodes themselves)
-            if let Some((fields, owners, chain)) = chain_cache.get(node_type) {
-                Self::reject_undeclared_core_keys(&temp_node, owners, chain)?;
-                if !fields.is_empty() {
-                    self.validate_node_with_fields(&temp_node, fields, Some(chain))?;
-                }
-            }
+            let ownership = &ownership_by_type[&node.node_type];
+            self.rebucket_and_validate_with(&mut node, ownership, false)?;
+            nodes_normalized.push((
+                node.id,
+                node.node_type,
+                node.content,
+                parent_id,
+                order,
+                node.properties,
+            ));
         }
 
         Ok(Some(nodes_normalized))
@@ -657,9 +649,11 @@ impl NodeService {
     /// Optimized for import paths where the source is trusted (like markdown parser).
     /// This method:
     /// - Normalizes flat properties to namespaced format
-    /// - Skips schema DB queries (no lookup overhead)
+    /// - Skips schema DB queries for a type that extends nothing (no lookup
+    ///   overhead)
     /// - Skips schema validation (parser output is trusted)
-    /// - Still validates via behaviors (type-specific rules)
+    /// - Still validates via behaviors (type-specific rules), on the
+    ///   properties as they will be stored
     ///
     /// # Import Pipeline Optimization
     ///
@@ -705,39 +699,44 @@ impl NodeService {
             return Ok(Vec::new());
         }
 
-        // Normalize flat properties to namespaced format
+        // Normalize flat properties to namespaced format, then validate via
+        // behaviors only (type-specific rules, no schema).
         // Parser emits: { "status": "open" }
         // Storage expects: { "task": { "status": "open" } }
-        // No schema fields needed - import properties are always simple values
-        let nodes_normalized: Vec<_> = nodes
-            .into_iter()
-            .map(|(id, node_type, content, parent_id, order, properties)| {
-                let normalized_props =
-                    Self::normalize_flat_properties_to_namespace(&node_type, &properties);
-                (id, node_type, content, parent_id, order, normalized_props)
-            })
-            .collect();
-
-        // Validate via behaviors only (type-specific rules, no schema)
-        let mut type_chains = std::collections::HashMap::new();
-        for (id, node_type, content, _, _, properties) in &nodes_normalized {
-            let temp_node = Node {
-                id: id.clone(),
-                node_type: node_type.clone(),
-                content: content.clone(),
-                version: 1,
-                properties: properties.clone(),
-                mentions: vec![],
-                mentioned_in: vec![],
-                created_at: chrono::Utc::now(),
-                modified_at: chrono::Utc::now(),
-                title: None,
-                lifecycle_status: "active".to_string(),
-            };
+        //
+        // The parser's own types extend nothing, so each field's bucket is
+        // the node's own and no schema is read. A type that does extend
+        // another has its inherited fields moved to their declaring buckets
+        // first, where the ancestor's behaviour reads them.
+        let mut ownership_by_type: std::collections::HashMap<String, FieldOwnershipInfo> =
+            std::collections::HashMap::new();
+        let mut instantiable_types = std::collections::HashSet::new();
+        let mut nodes_normalized = Vec::with_capacity(nodes.len());
+        for (id, node_type, content, parent_id, order, properties) in nodes {
+            if !ownership_by_type.contains_key(&node_type) {
+                let chain = self.type_chain(&node_type).await?;
+                let ownership = if chain.len() > 1 {
+                    self.field_ownership_for_write(&node_type).await?
+                } else {
+                    (Vec::new(), std::collections::HashMap::new(), chain)
+                };
+                ownership_by_type.insert(node_type.clone(), ownership);
+            }
+            let mut node = Self::bulk_row_as_node(id, node_type, content, &properties);
 
             // Type, id and behavior validation only - skip schema validation
-            self.ensure_creatable_in_batch(&temp_node, &mut type_chains)
+            self.ensure_creatable_in_batch(&node, &mut instantiable_types)
                 .await?;
+            let ownership = &ownership_by_type[&node.node_type];
+            self.rebucket_and_validate_behaviors(&mut node, ownership, false)?;
+            nodes_normalized.push((
+                node.id,
+                node.node_type,
+                node.content,
+                parent_id,
+                order,
+                node.properties,
+            ));
         }
 
         // Collect embeddable root node IDs (nodes with no parent AND embeddable type)
@@ -878,6 +877,7 @@ impl NodeService {
 
         let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
             std::collections::HashMap::new();
+        let mut ownership_by_type = std::collections::HashMap::new();
         for (id, update) in &updates {
             let existing = existing_nodes
                 .get(id)
@@ -938,15 +938,6 @@ impl NodeService {
             Self::ensure_schema_core_status_unchanged(existing, &updated)?;
             Self::ensure_schema_structure_unchanged(existing, &updated)?;
             self.ensure_retype_allowed(None, existing, &updated).await?;
-            let chain = self.type_chain(&updated.node_type).await?;
-            self.behaviors
-                .validate_node(&updated, &chain)
-                .map_err(|e| {
-                    NodeServiceError::bulk_operation_failed(format!(
-                        "Failed to validate node {}: {}",
-                        id, e
-                    ))
-                })?;
             if update.content.is_some() || node_type_changed {
                 if !schemas.contains_key(&updated.node_type) {
                     let schema = self.title_schema(&updated.node_type).await;
@@ -963,16 +954,19 @@ impl NodeService {
                     ))
                 })?;
             }
-            if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
-                self.rebucket_and_validate(&mut updated, node_type_changed)
-                    .await
-                    .map_err(|e| {
-                        NodeServiceError::bulk_operation_failed(format!(
-                            "Failed schema validation for node {}: {}",
-                            id, e
-                        ))
-                    })?;
-            }
+            let ownership = self
+                .field_ownership_in_batch(&updated.node_type, &mut ownership_by_type)
+                .await;
+            ownership
+                .and_then(|ownership| {
+                    self.rebucket_and_validate_with(&mut updated, ownership, node_type_changed)
+                })
+                .map_err(|e| {
+                    NodeServiceError::bulk_operation_failed(format!(
+                        "Failed to validate node {}: {}",
+                        id, e
+                    ))
+                })?;
             // A play's suspension is the engine's, on this path as on every
             // other (ADR-087 §5).
             self.settle_play_update(

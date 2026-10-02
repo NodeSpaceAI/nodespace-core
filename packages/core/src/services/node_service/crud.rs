@@ -2,6 +2,17 @@
 
 use super::*;
 
+/// `(effective_fields, field_name -> owning_schema_id, chain)`, as
+/// [`NodeService::resolve_field_owners`] returns it: what a write needs of a
+/// node type to default, bucket and validate a node of it. A bulk write
+/// resolves it once per distinct type, not once per row
+/// ([`NodeService::field_ownership_in_batch`]).
+pub(crate) type FieldOwnershipInfo = (
+    Vec<crate::models::SchemaField>,
+    std::collections::HashMap<String, String>,
+    Vec<String>,
+);
+
 /// Result of [`NodeService::update_with_version_check_returning_node_in_tx`]:
 /// either the update landed (carrying what the caller's post-commit side
 /// effects need — `content_changed` and the pre-update content, so
@@ -196,30 +207,28 @@ impl NodeService {
     /// The checks every create owes a node before anything is written,
     /// whichever path creates it (single, with a parent, bulk, hierarchy
     /// import, an invariant action): its type can be instantiated, its id has
-    /// a legal form, every behaviour in its type chain accepts it, and it is
-    /// not a hand-made core schema.
+    /// a legal form, and it is not a hand-made core schema. Its behaviours
+    /// validate it later, once its properties are in the buckets they will be
+    /// stored in (see [`Self::rebucket_and_validate`]).
     pub(crate) async fn ensure_creatable(&self, node: &Node) -> Result<(), NodeServiceError> {
-        self.ensure_creatable_in_batch(node, &mut std::collections::HashMap::new())
+        self.ensure_creatable_in_batch(node, &mut std::collections::HashSet::new())
             .await
     }
 
-    /// [`Self::ensure_creatable`] for one node of a batch. What depends only
-    /// on the node's type (whether it can be instantiated, and its chain) is
-    /// resolved once per distinct type and kept in `type_chains`, so a large
-    /// import does not repeat the read per row.
+    /// [`Self::ensure_creatable`] for one node of a batch. Whether a type can
+    /// be instantiated is read once per distinct type and remembered in
+    /// `instantiable_types`, so a large import does not repeat the read per
+    /// row.
     pub(crate) async fn ensure_creatable_in_batch(
         &self,
         node: &Node,
-        type_chains: &mut std::collections::HashMap<String, Vec<String>>,
+        instantiable_types: &mut std::collections::HashSet<String>,
     ) -> Result<(), NodeServiceError> {
-        if !type_chains.contains_key(&node.node_type) {
+        if !instantiable_types.contains(&node.node_type) {
             self.ensure_instantiable(&node.node_type).await?;
-            let chain = self.type_chain(&node.node_type).await?;
-            type_chains.insert(node.node_type.clone(), chain);
+            instantiable_types.insert(node.node_type.clone());
         }
         self.ensure_valid_node_id(node).await?;
-        self.behaviors
-            .validate_node(node, &type_chains[&node.node_type])?;
         Self::ensure_not_creating_core_schema(node)
     }
 
@@ -595,22 +604,9 @@ impl NodeService {
         if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
             node.properties =
                 Self::normalize_flat_properties_to_namespace(&node.node_type, &node.properties);
-            // Resolve the full `extends` chain rather than this type's own
-            // schema (ADR-078): an extending type's inherited fields are
-            // declared by an ancestor, so a single-schema fetch would neither
-            // default nor validate them, and would have no ownership map to
-            // bucket them by.
-            let (fields, owners, chain) = self.resolve_field_owners(&node.node_type).await?;
-            if !fields.is_empty() {
-                self.apply_schema_defaults_with_fields(&mut node, &fields, Some(&chain))?;
-                node.properties =
-                    Self::bucket_properties_by_owner(&node.node_type, &node.properties, &owners);
-            }
-            Self::reject_undeclared_core_keys(&node, &owners, &chain)?;
-            if !fields.is_empty() {
-                self.validate_node_with_fields(&node, &fields, Some(&chain))?;
-            }
         }
+        // A create defaults the fields the caller left out.
+        self.rebucket_and_validate(&mut node, true).await?;
 
         if node.title.is_none() {
             node.title = self.compute_title(&node, Some(is_root)).await?;
@@ -1240,23 +1236,16 @@ impl NodeService {
         Self::ensure_schema_structure_unchanged(&existing, &updated)?;
         self.ensure_retype_allowed(None, &existing, &updated)
             .await?;
-        self.validate_behaviors(&updated).await?;
 
-        // Step 1.5: Apply schema defaults and validate (if node type changed)
-        // Apply default values for missing fields when node type changes
-        // Skip for schema nodes to avoid circular dependency
-        if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
-            // On a type change, default the new type's fields first. Either
-            // way the properties are re-bucketed before validation: an update
-            // naming an inherited field arrives flat, normalizes into the
-            // node's OWN bucket, and would sit there duplicating the
-            // authoritative value in the declaring ancestor's bucket. The
-            // readers then disagree — a scope-chain flattener takes the nearer
-            // bucket, a base-scoped filter never looks in it, and the
-            // validation merge resolves by map ordering.
-            self.rebucket_and_validate(&mut updated, node_type_changed)
-                .await?;
-        }
+        // Step 2: Behavior and schema validation, on the properties as they
+        // will be stored. On a type change, the new type's fields are
+        // defaulted first. Either way the properties are re-bucketed before
+        // anything validates them: an update naming an inherited field
+        // arrives flat, normalizes into the node's OWN bucket, and would sit
+        // there duplicating the authoritative value in the declaring
+        // ancestor's bucket, where that ancestor's behaviour never reads it.
+        self.rebucket_and_validate(&mut updated, node_type_changed)
+            .await?;
 
         self.settle_play_update(&existing, &mut updated, enables_play)
             .await?;
@@ -1373,13 +1362,9 @@ impl NodeService {
         Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
         self.ensure_retype_allowed(Some(tx), &existing, &updated)
             .await?;
-        self.validate_behaviors(&updated).await?;
-
-        if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
-            // Chain-resolved, per ADR-078 — see `rebucket_and_validate`.
-            self.rebucket_and_validate(&mut updated, node_type_changed)
-                .await?;
-        }
+        // Chain-resolved, per ADR-078 — see `rebucket_and_validate`.
+        self.rebucket_and_validate(&mut updated, node_type_changed)
+            .await?;
 
         self.settle_play_update(&existing, &mut updated, enables_play)
             .await?;
@@ -1513,13 +1498,9 @@ impl NodeService {
         Self::ensure_schema_structure_unchanged(&existing, &updated)?;
         self.ensure_retype_allowed(Some(tx), &existing, &updated)
             .await?;
-        self.validate_behaviors(&updated).await?;
-
-        if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
-            // Chain-resolved, per ADR-078 — see `rebucket_and_validate`.
-            self.rebucket_and_validate(&mut updated, node_type_changed)
-                .await?;
-        }
+        // Chain-resolved, per ADR-078 — see `rebucket_and_validate`.
+        self.rebucket_and_validate(&mut updated, node_type_changed)
+            .await?;
 
         self.settle_play_update(&existing, &mut updated, enables_play)
             .await?;
@@ -1802,22 +1783,18 @@ impl NodeService {
         Self::ensure_schema_structure_unchanged(&existing, &updated)?;
         self.ensure_retype_allowed(Some(tx), &existing, &updated)
             .await?;
-        self.validate_behaviors(&updated).await?;
 
-        // Step 2: Schema validation (USER-EXTENSIBLE)
+        // Step 2: Behavior and schema validation (USER-EXTENSIBLE)
         // Every type that declares a schema is validated, user-defined types
-        // included; `validate_node_against_schema` no-ops for types without one.
-        // The lookup behind it is a single primary-key read. Non-tx reads
-        // like this one are safe from inside a write transaction — same
-        // precedent as `insert_node_in_tx_no_invariant_dispatch`'s own
-        // schema/title/play-validation calls.
-        if !crate::models::CoreNodeType::Schema.is_exactly(&updated.node_type) {
-            // Re-bucket before validating, same reasoning as the update paths
-            // above: an inherited field arrives flat and must be moved to its
-            // declaring ancestor's bucket, or it exists in two places. No
-            // defaulting here — this path does not change the node's type.
-            self.rebucket_and_validate(&mut updated, false).await?;
-        }
+        // included. Non-tx reads like the chain lookup behind it are safe
+        // from inside a write transaction — same precedent as
+        // `insert_node_in_tx_no_invariant_dispatch`'s own
+        // schema/title/play-validation calls. Re-bucketed before validating,
+        // same reasoning as the update paths above: an inherited field
+        // arrives flat and must be moved to its declaring ancestor's bucket,
+        // or it exists in two places. No defaulting here — this path does not
+        // change the node's type.
+        self.rebucket_and_validate(&mut updated, false).await?;
 
         let play_rules_changed = self
             .settle_play_update(&existing, &mut updated, enables_play)
@@ -2916,62 +2893,167 @@ impl NodeService {
 
     /// Resolve the node's `extends` chain, re-bucket its properties by
     /// declaring owner, and validate — the sequence every write path owes a
-    /// node before persisting it (ADR-078).
+    /// node before persisting it (ADR-078), creates and updates alike.
     ///
-    /// Extracted because the same ~12 lines appeared at four call sites, and
+    /// Extracted because the same lines appeared at several call sites, and
     /// **one of them was originally missed** — the wrong-bucket bug this
     /// sequence exists to prevent was itself caused by the duplication. A
-    /// fifth write path now gets it right by calling this rather than by
-    /// copying it correctly.
+    /// new write path gets it right by calling this rather than by copying it
+    /// correctly.
     ///
-    /// Three orderings are load-bearing and are the reason this is one
-    /// function rather than three calls at each site:
+    /// Five orderings are load-bearing and are the reason this is one
+    /// function rather than separate calls at each site:
     ///
+    /// 0. **Un-nesting first.** A field the caller named in its declaring
+    ///    bucket arrives nested in the node's own
+    ///    ([`Self::unnest_ancestor_buckets`]). Every later step reads a field
+    ///    from the bucket it is stored in: a default fills only a field with
+    ///    no value there, and a behaviour reads its own type's bucket.
     /// 1. **Defaults before bucketing.** `apply_schema_defaults_with_fields`
     ///    puts defaults in the node's *own* bucket; bucketing then moves any
     ///    inherited one into its declaring ancestor's. Reversing them strands
     ///    an inherited default in the wrong bucket.
-    /// 2. **Bucketing before validation.** Validation merges the buckets in
-    ///    the chain; a field sitting in two of them resolves by map ordering.
-    /// 3. **The empty-fields branch.** With no resolved fields there is
-    ///    nothing to bucket by, and validation falls back to the single-schema
-    ///    path — but only when defaults were not requested, since a type
-    ///    change into a type with no schema has nothing to default either.
+    /// 2. **Bucketing before behaviours.** A behaviour reads its fields from
+    ///    its own type's bucket. A caller names an inherited field flat, which
+    ///    normalizes into the *node's* bucket; until it is moved, the
+    ///    ancestor's behaviour sees the previously stored value, or none, and
+    ///    the new one would be stored unchecked. A subtype would then relax
+    ///    its ancestor's rule (ADR-086), and since behaviours validate the
+    ///    whole node on every write, the node would refuse every later update.
+    /// 3. **Bucketing before schema validation.** Validation merges the
+    ///    buckets in the chain; a field sitting in two of them resolves by map
+    ///    ordering.
+    /// 4. **The empty-fields branch.** With no resolved fields there is
+    ///    nothing to default, bucket by or validate against, but the
+    ///    behaviours and the closed-core-bucket check still run.
     ///
-    /// `apply_defaults` is true only on a node-type change, where the node may
-    /// be missing fields its new type declares. An update that leaves the type
-    /// alone must not re-default: the node already has its values, and
-    /// defaulting again would resurrect a field the caller deliberately
-    /// cleared.
+    /// `apply_defaults` is true on a create and on a node-type change, where
+    /// the node may be missing fields its type declares. An update that
+    /// leaves the type alone must not re-default: the node already has its
+    /// values, and defaulting again would resurrect a field the caller
+    /// deliberately cleared.
     ///
-    /// `pub(crate)` rather than private: `bulk.rs`'s `bulk_create`/`bulk_update`
-    /// call this directly (with `apply_defaults: false`, matching their prior
-    /// no-defaulting behavior) rather than duplicating the sequence.
+    /// A schema node takes this path too. Its definition is flat, not
+    /// bucketed, so only its behaviour runs.
     pub(crate) async fn rebucket_and_validate(
         &self,
         node: &mut Node,
         apply_defaults: bool,
     ) -> Result<(), NodeServiceError> {
-        // Resolve the whole `extends` chain once, not just this type's own
-        // schema: an extending type must default and validate its ancestors'
-        // fields too, and needs the ownership map to re-bucket them.
-        let (fields, owners, chain) = self.resolve_field_owners(&node.node_type).await?;
+        let ownership = self.field_ownership_for_write(&node.node_type).await?;
+        self.rebucket_and_validate_with(node, &ownership, apply_defaults)
+    }
 
-        if fields.is_empty() {
-            // A type that declares no fields has nothing to default or
-            // validate, but a core one is still closed: its bucket takes no
-            // undeclared key.
-            return Self::reject_undeclared_core_keys(node, &owners, &chain);
+    /// What [`Self::rebucket_and_validate`] resolves for a node of
+    /// `node_type`: the whole `extends` chain, not just the type's own
+    /// schema, since an extending type defaults and validates its ancestors'
+    /// fields too and needs the ownership map to re-bucket them. A batch
+    /// resolves it once per distinct type.
+    pub(crate) async fn field_ownership_for_write(
+        &self,
+        node_type: &str,
+    ) -> Result<FieldOwnershipInfo, NodeServiceError> {
+        if crate::models::CoreNodeType::Schema.is_exactly(node_type) {
+            // A schema's definition is not bucketed: no field of it is
+            // defaulted or moved.
+            return Ok((
+                Vec::new(),
+                std::collections::HashMap::new(),
+                self.type_chain(node_type).await?,
+            ));
         }
+        self.resolve_field_owners(node_type).await
+    }
 
-        if apply_defaults {
-            self.apply_schema_defaults_with_fields(node, &fields, Some(&chain))?;
+    /// [`Self::field_ownership_for_write`] for one row of a batch: resolved
+    /// on the first row of each type and kept in `resolved`.
+    pub(crate) async fn field_ownership_in_batch<'a>(
+        &self,
+        node_type: &str,
+        resolved: &'a mut std::collections::HashMap<String, FieldOwnershipInfo>,
+    ) -> Result<&'a FieldOwnershipInfo, NodeServiceError> {
+        if !resolved.contains_key(node_type) {
+            let ownership = self.field_ownership_for_write(node_type).await?;
+            resolved.insert(node_type.to_string(), ownership);
+        }
+        Ok(&resolved[node_type])
+    }
+
+    /// [`Self::rebucket_and_validate`] with the type's ownership already
+    /// resolved.
+    pub(crate) fn rebucket_and_validate_with(
+        &self,
+        node: &mut Node,
+        ownership: &FieldOwnershipInfo,
+        apply_defaults: bool,
+    ) -> Result<(), NodeServiceError> {
+        self.rebucket_and_validate_behaviors(node, ownership, apply_defaults)?;
+        if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
+            return Ok(());
+        }
+        let (fields, owners, chain) = ownership;
+        // A type that declares no fields has nothing to validate against,
+        // but a core one is still closed: its bucket takes no undeclared key.
+        Self::reject_undeclared_core_keys(node, owners, chain)?;
+        if !fields.is_empty() {
+            self.validate_node_with_fields(node, fields, Some(chain))?;
+        }
+        Ok(())
+    }
+
+    /// The first half of [`Self::rebucket_and_validate`]: refuse properties
+    /// that are not bucketed, un-nest, default, re-bucket, then run every
+    /// behaviour in the node's type chain over the result, base first. A
+    /// subtype is validated as the type it extends, plus its own rules.
+    /// Called on its own only by the trusted import, which skips schema
+    /// validation.
+    pub(crate) fn rebucket_and_validate_behaviors(
+        &self,
+        node: &mut Node,
+        ownership: &FieldOwnershipInfo,
+        apply_defaults: bool,
+    ) -> Result<(), NodeServiceError> {
+        let (fields, owners, chain) = ownership;
+        if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
+            Self::ensure_properties_are_buckets(node, chain)?;
         }
         node.properties =
-            Self::bucket_properties_by_owner(&node.node_type, &node.properties, &owners);
-        Self::reject_undeclared_core_keys(node, &owners, &chain)?;
-        self.validate_node_with_fields(node, &fields, Some(&chain))?;
+            Self::unnest_ancestor_buckets(&node.node_type, &node.properties, owners, chain);
+        if !fields.is_empty() {
+            if apply_defaults {
+                self.apply_schema_defaults_with_fields(node, fields, Some(chain))?;
+            }
+            node.properties =
+                Self::bucket_properties_by_owner(&node.node_type, &node.properties, owners);
+        }
+        self.behaviors.validate_node(node, chain)?;
+        Ok(())
+    }
 
+    /// Refuse properties the bucketing steps cannot place: properties that
+    /// are not an object, and a value that is not an object under the name of
+    /// a type in the node's chain, where that type's bucket is stored.
+    ///
+    /// Every step after this one skips what it cannot read as a bucket, so a
+    /// malformed value would otherwise be dropped, or replaced by defaults,
+    /// with no error.
+    fn ensure_properties_are_buckets(
+        node: &Node,
+        chain: &[String],
+    ) -> Result<(), NodeServiceError> {
+        let Some(buckets) = node.properties.as_object() else {
+            return Err(NodeServiceError::invalid_update(
+                "Properties must be a JSON object",
+            ));
+        };
+        for scope in chain {
+            if buckets.get(scope.as_str()).is_some_and(|v| !v.is_object()) {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "'{scope}' in properties holds the fields of the type '{scope}' and must be \
+                     a JSON object"
+                )));
+            }
+        }
         Ok(())
     }
 
@@ -3013,6 +3095,86 @@ impl NodeService {
             }
         }
         Ok(())
+    }
+
+    /// Lift an ancestor's bucket out of the node's own bucket, where flat
+    /// normalization put it.
+    ///
+    /// A caller may name a field in its declaring bucket
+    /// (`{"task": {"status": …}}` on an issue). Flat normalization reads no
+    /// schema, so it files that bucket under the node's own type like any
+    /// other key: `{"issue": {"task": {"status": …}}}`. An own-bucket key is
+    /// such a bucket, not a field, when it is the name of a type the node
+    /// extends, holds an object, and no schema in the chain declares a field
+    /// of that name.
+    ///
+    /// Each entry of it goes to the bucket of the schema that declares it,
+    /// the same rule as [`Self::bucket_properties_by_owner`], or to the
+    /// bucket the caller named when no schema does. An entry addressed this
+    /// way wins over the same inherited field given flat in the same write.
+    ///
+    /// Runs before defaults are applied: a default fills only a field with
+    /// no value, and a value still nested here would read as none.
+    pub(crate) fn unnest_ancestor_buckets(
+        node_type: &str,
+        properties: &serde_json::Value,
+        owners: &std::collections::HashMap<String, String>,
+        chain: &[String],
+    ) -> serde_json::Value {
+        let Some(own_bucket) = properties.get(node_type).and_then(|v| v.as_object()) else {
+            return properties.clone();
+        };
+        let is_ancestor_bucket = |key: &str, value: &serde_json::Value| {
+            key != node_type
+                && value.is_object()
+                && !owners.contains_key(key)
+                && chain.iter().any(|scope| scope == key)
+        };
+        if !own_bucket
+            .iter()
+            .any(|(key, value)| is_ancestor_bucket(key, value))
+        {
+            return properties.clone();
+        }
+
+        let mut out = properties.as_object().cloned().unwrap_or_default();
+        let mut own = serde_json::Map::new();
+        let mut addressed = Vec::new();
+        for (key, value) in own_bucket {
+            match value.as_object() {
+                Some(entries) if is_ancestor_bucket(key, value) => {
+                    addressed.push((key, entries));
+                }
+                _ => {
+                    own.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        for (named, entries) in addressed {
+            for (field, value) in entries {
+                let owner = owners.get(field);
+                let target = owner.map_or(named.as_str(), String::as_str);
+                if target == node_type {
+                    own.insert(field.clone(), value.clone());
+                    continue;
+                }
+                if owner.is_some() {
+                    // The same inherited field given flat: the addressed
+                    // value is the one kept.
+                    own.remove(field);
+                }
+                let bucket = out
+                    .entry(target.to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(bucket) = bucket.as_object_mut() {
+                    bucket.insert(field.clone(), value.clone());
+                }
+            }
+        }
+
+        out.insert(node_type.to_string(), serde_json::Value::Object(own));
+        serde_json::Value::Object(out)
     }
 
     /// Re-bucket already-normalized properties by which schema declares each
