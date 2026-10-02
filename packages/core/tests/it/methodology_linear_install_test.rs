@@ -449,7 +449,7 @@ async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result
     // Every id-bearing step collides the second time: both schemas, all
     // three play nodes, and every seeded view. Vocabulary extensions do not —
     // they target the re-keyed schema, which has no values yet — and skills
-    // reconcile by seed key rather than colliding.
+    // reconcile by their fixed id rather than colliding.
     assert_eq!(
         second.suffixed().len(),
         playbook.schemas.len() + playbook.plays.len() + playbook.views.len(),
@@ -465,6 +465,30 @@ async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result
             step.schema_id
         );
     }
+
+    // A skill is one node across both installs, so it is linked to the
+    // schemas of each: the first install's, and the second's re-keyed ones.
+    let creating = playbook
+        .skills
+        .iter()
+        .find(|s| s.title == "Creating an Issue")
+        .expect("the linear playbook has a Creating an Issue skill");
+    let mut linked: Vec<String> = service
+        .get_related_nodes(creating.id, "applies_to", "out")
+        .await?
+        .into_iter()
+        .map(|schema| schema.id)
+        .collect();
+    linked.sort();
+    let re_keyed_issue = second
+        .suffixed()
+        .into_iter()
+        .find(|(requested, _)| *requested == "issue")
+        .map(|(_, created)| created.to_string())
+        .expect("the second install re-keys `issue`");
+    let mut expected = vec!["issue".to_string(), re_keyed_issue];
+    expected.sort();
+    assert_eq!(linked, expected);
     Ok(())
 }
 

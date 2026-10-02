@@ -2189,7 +2189,8 @@ impl SqliteStore {
     //
     // A declaration is a `relationship` row between two SCHEMA nodes:
     // in_node = declaring schema, out_node = target schema (or the declaring
-    // schema itself when the declaration is untyped, `target_type: None`),
+    // schema itself when there is no target schema: an untyped declaration,
+    // or one that targets schema nodes — see `declaration_out_node`),
     // relationship_type = the declared name, and the full `SchemaRelationship`
     // serialized in the row's `properties`. The `properties` JSON is the
     // authoritative declaration; the endpoints exist for FK integrity and

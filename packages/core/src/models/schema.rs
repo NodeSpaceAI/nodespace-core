@@ -17,7 +17,8 @@
 //! Schemas can define typed relationships to other node types. A declaration is
 //! stored as a `relationship` table row: `in_node` = the declaring schema node,
 //! `out_node` = the target schema node (or the declaring schema itself when
-//! `target_type` is `None` — an untyped relationship accepting any target),
+//! `target_type` is `None` — an untyped relationship accepting any target —
+//! or names `schema`, which has no schema node of its own to point at),
 //! `relationship_type` = the declared name, and the full [`SchemaRelationship`]
 //! serialized into the row's `properties` JSON. Instance-level edges reuse the
 //! same table with the same `relationship_type`; the two are distinguished by

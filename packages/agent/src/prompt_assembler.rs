@@ -292,26 +292,32 @@ impl PromptAssembler {
     /// whose node is missing, or that the user archived to turn it off
     /// (ADR-087), is left out.
     async fn guidance_sections(&self) -> Vec<Node> {
+        let ids: Vec<String> = GUIDANCE_SEEDS.iter().map(|s| s.id.to_string()).collect();
+        let mut by_id = match self.node_service.store().get_nodes_by_ids(&ids).await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to fetch the agent-guidance sections");
+                return Vec::new();
+            }
+        };
+
         let mut sections = Vec::with_capacity(GUIDANCE_SEEDS.len());
         for seed in GUIDANCE_SEEDS {
-            match self.node_service.get_node(seed.id).await {
-                Ok(Some(node)) if nodespace_core::governance::participates(&node) => {
+            match by_id.remove(seed.id) {
+                Some(node) if nodespace_core::governance::participates(&node) => {
                     sections.push(node)
                 }
-                Ok(Some(_)) => {
+                Some(_) => {
                     tracing::debug!(
                         section = seed.title,
                         "Agent-guidance section is archived, leaving it out"
                     );
                 }
-                Ok(None) => {
+                None => {
                     tracing::warn!(
                         section = seed.title,
                         "Agent-guidance section is missing from the graph, leaving it out"
                     );
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, section = seed.title, "Failed to fetch agent-guidance section, leaving it out");
                 }
             }
         }
@@ -585,17 +591,24 @@ mod tests {
     }
 
     /// The prompt follows the table's order, whatever order the nodes were
-    /// created in. Seeding the sections last-first gives every node the
-    /// opposite creation order from the table's, which is the order a
-    /// newest-first read would have assembled them in.
+    /// created in. The sections are created in an order that is neither the
+    /// table's nor its reverse, so a read ordered by creation time, oldest
+    /// first or newest first, assembles them in the wrong order.
     #[tokio::test]
     async fn sections_are_assembled_in_table_order_not_creation_order() {
         use nodespace_core::markdown::prepare_nodes_from_template;
 
+        // Table rows, in the order they are created.
+        const CREATION_ORDER: [usize; 5] = [2, 0, 4, 1, 3];
+        assert_eq!(GUIDANCE_SEEDS.len(), CREATION_ORDER.len());
+
         let (node_service, _tmp) = empty_service().await;
-        for template in PromptAssembler::seed_agent_guidance_nodes().iter().rev() {
+        let templates = PromptAssembler::seed_agent_guidance_nodes();
+        for row in CREATION_ORDER {
             node_service
-                .seed_nodes_from_templates(vec![prepare_nodes_from_template(template).unwrap()])
+                .seed_nodes_from_templates(vec![
+                    prepare_nodes_from_template(&templates[row]).unwrap()
+                ])
                 .await
                 .unwrap();
             // Distinct creation times, so the order under test is not a tie.
@@ -608,9 +621,12 @@ mod tests {
             }
             nodes.iter().map(|n| n.created_at).collect()
         };
+        let ascending = created.windows(2).all(|pair| pair[0] < pair[1]);
+        let descending = created.windows(2).all(|pair| pair[0] > pair[1]);
         assert!(
-            created.windows(2).all(|pair| pair[0] > pair[1]),
-            "the fixture must create the sections in reverse table order: {created:?}"
+            !ascending && !descending,
+            "the fixture must create the sections in neither table order nor its reverse: \
+             {created:?}"
         );
 
         let prompt = PromptAssembler::new(node_service)

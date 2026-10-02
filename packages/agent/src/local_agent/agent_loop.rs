@@ -5083,7 +5083,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
     ///
     /// When set, this bypasses both `PromptAssembler` and the emergency fallback.
     /// Intended for integration tests that want to inject a pre-built prompt
-    /// (constructed via `PromptAssembler::assemble_static`) without a live database.
+    /// without a live database.
     ///
     /// Gated by the `testing` Cargo feature so it does not leak into the
     /// production API surface.
