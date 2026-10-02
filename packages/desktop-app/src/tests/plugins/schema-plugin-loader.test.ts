@@ -36,7 +36,6 @@ function createMockSchemaNode(
   options: {
     isCore?: boolean;
     schemaVersion?: number;
-    description?: string;
     content?: string;
   } = {}
 ): SchemaNode {
@@ -53,7 +52,6 @@ function createMockSchemaNode(
     isCore: options.isCore ?? false,
     schemaVersion: options.schemaVersion ?? 1,
     relationships: [],
-    description: options.description ?? '',
     fields: []
   };
 }
@@ -62,7 +60,6 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
   it('should convert schema node to plugin with correct structure', () => {
     const schemaNode = createMockSchemaNode('invoice', {
       content: 'Sales Invoice',
-      description: 'Schema for invoices',
       schemaVersion: 1
     });
 
@@ -71,7 +68,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     expect(plugin).toMatchObject({
       id: 'invoice',
       name: 'Sales Invoice',
-      description: 'Schema for invoices',
+      description: 'Create Sales Invoice',
       version: '1.0.0',
       config: {
         // Entity types are not slash-creatable — no slash command is generated for
@@ -104,9 +101,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
   });
 
   it('should not generate a slash command for custom entities', () => {
-    const schemaNode = createMockSchemaNode('invoice', {
-      description: 'Invoice'
-    });
+    const schemaNode = createMockSchemaNode('invoice');
 
     const plugin = createPluginFromSchema(schemaNode);
 
@@ -116,8 +111,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
 
   it('should use schema version as plugin version', () => {
     const schemaNode = createMockSchemaNode('invoice', {
-      schemaVersion: 5,
-      description: 'Invoice'
+      schemaVersion: 5
     });
 
     const plugin = createPluginFromSchema(schemaNode);
@@ -126,9 +120,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
   });
 
   it('should not include a node component (custom entities use BaseNode fallback)', () => {
-    const schemaNode = createMockSchemaNode('invoice', {
-      description: 'Invoice'
-    });
+    const schemaNode = createMockSchemaNode('invoice');
 
     const plugin = createPluginFromSchema(schemaNode);
 
@@ -136,7 +128,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
   });
 
   it('should not generate a slash command, and reports hasTitleTemplate: false, when no titleTemplate is set', () => {
-    const schemaNode = createMockSchemaNode('customer', { description: 'Customer' });
+    const schemaNode = createMockSchemaNode('customer');
     const plugin = createPluginFromSchema(schemaNode);
     expect(plugin.config.slashCommands).toHaveLength(0);
     expect(plugin.hasTitleTemplate).toBe(false);
@@ -149,7 +141,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     // it via PluginRegistry.hasTitleTemplate()/getTitleTemplate() instead, off the plugin
     // definition itself.
     const schemaNode: SchemaNode = {
-      ...createMockSchemaNode('customer', { description: 'Customer' }),
+      ...createMockSchemaNode('customer'),
       titleTemplate: '{first_name} {last_name}'
     };
     const plugin = createPluginFromSchema(schemaNode);
@@ -159,9 +151,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
   });
 
   it('should not generate a slash command regardless of schema ID', () => {
-    const schemaNode = createMockSchemaNode('customEntity', {
-      description: 'Custom Entity'
-    });
+    const schemaNode = createMockSchemaNode('customEntity');
 
     const plugin = createPluginFromSchema(schemaNode);
 
@@ -181,8 +171,7 @@ describe('Schema Plugin Loader - registerSchemaPlugin()', () => {
 
   it('should register non-core schema as plugin', async () => {
     const schemaNode = createMockSchemaNode('invoice', {
-      isCore: false,
-      description: 'Invoice'
+      isCore: false
     });
 
     vi.mocked(backendAdapter.getSchema).mockResolvedValue(schemaNode);
@@ -196,8 +185,7 @@ describe('Schema Plugin Loader - registerSchemaPlugin()', () => {
 
   it('should skip core schemas (isCore: true)', async () => {
     const coreSchema = createMockSchemaNode('text', {
-      isCore: true,
-      description: 'Text Node'
+      isCore: true
     });
 
     vi.mocked(backendAdapter.getSchema).mockResolvedValue(coreSchema);
@@ -209,8 +197,7 @@ describe('Schema Plugin Loader - registerSchemaPlugin()', () => {
 
   it('should be idempotent - no duplicate registrations', async () => {
     const schemaNode = createMockSchemaNode('invoice', {
-      isCore: false,
-      description: 'Invoice'
+      isCore: false
     });
 
     vi.mocked(backendAdapter.getSchema).mockResolvedValue(schemaNode);
@@ -254,7 +241,7 @@ describe('Schema Plugin Loader - registerSchemaPlugin()', () => {
   it('refreshes an already-registered plugin instead of leaving it stale', async () => {
     // First registration: no title_template yet.
     vi.mocked(backendAdapter.getSchema).mockResolvedValue(
-      createMockSchemaNode('customer', { description: 'Customer' })
+      createMockSchemaNode('customer')
     );
     await registerSchemaPlugin('customer');
     expect(pluginRegistry.hasTitleTemplate('customer')).toBe(false);
@@ -264,7 +251,7 @@ describe('Schema Plugin Loader - registerSchemaPlugin()', () => {
     // registerSchemaPlugin's `hasPlugin` early-return made this a no-op and
     // hasTitleTemplate stayed stuck at `false`.
     vi.mocked(backendAdapter.getSchema).mockResolvedValue({
-      ...createMockSchemaNode('customer', { description: 'Customer' }),
+      ...createMockSchemaNode('customer'),
       titleTemplate: '{first_name} {last_name}'
     });
     await registerSchemaPlugin('customer');
@@ -286,8 +273,7 @@ describe('Schema Plugin Loader - unregisterSchemaPlugin()', () => {
 
   it('should unregister an existing plugin', async () => {
     const schemaNode = createMockSchemaNode('invoice', {
-      isCore: false,
-      description: 'Invoice'
+      isCore: false
     });
 
     vi.mocked(backendAdapter.getSchema).mockResolvedValue(schemaNode);
@@ -317,10 +303,10 @@ describe('Schema Plugin Loader - initializeSchemaPluginSystem()', () => {
 
   it('should register all custom (non-core) schemas', async () => {
     const schemas = [
-      createMockSchemaNode('text', { isCore: true, description: 'Text' }),
-      createMockSchemaNode('task', { isCore: true, description: 'Task' }),
-      createMockSchemaNode('invoice', { isCore: false, description: 'Invoice' }),
-      createMockSchemaNode('person', { isCore: false, description: 'Person' })
+      createMockSchemaNode('text', { isCore: true }),
+      createMockSchemaNode('task', { isCore: true }),
+      createMockSchemaNode('invoice', { isCore: false }),
+      createMockSchemaNode('person', { isCore: false })
     ];
 
     vi.mocked(backendAdapter.getAllSchemas).mockResolvedValue(schemas);
@@ -388,13 +374,13 @@ describe('Schema Plugin Loader - resyncSchemaPluginsForDatabaseSwitch()', () => 
   it('unregisters a custom type absent from the newly-active database and registers a new one', async () => {
     // Simulate database A: 'invoice' was registered while A was active.
     vi.mocked(backendAdapter.getSchema).mockResolvedValue(
-      createMockSchemaNode('invoice', { description: 'Invoice' })
+      createMockSchemaNode('invoice')
     );
     await registerSchemaPlugin('invoice');
     expect(pluginRegistry.hasPlugin('invoice')).toBe(true);
 
     // Switch to database B, whose custom schemas are just 'customer'.
-    const dbBSchemas = [createMockSchemaNode('customer', { description: 'Customer' })];
+    const dbBSchemas = [createMockSchemaNode('customer')];
     vi.mocked(backendAdapter.getAllSchemas).mockResolvedValue(dbBSchemas);
     vi.mocked(backendAdapter.getSchema).mockImplementation(
       async (id) => dbBSchemas.find((s) => s.id === id)!
@@ -410,7 +396,7 @@ describe('Schema Plugin Loader - resyncSchemaPluginsForDatabaseSwitch()', () => 
 
   it('refreshes a same-id type whose title template differs between databases', async () => {
     vi.mocked(backendAdapter.getSchema).mockResolvedValue({
-      ...createMockSchemaNode('customer', { description: 'Customer' }),
+      ...createMockSchemaNode('customer'),
       titleTemplate: '{name_a}'
     });
     await registerSchemaPlugin('customer');
@@ -418,7 +404,7 @@ describe('Schema Plugin Loader - resyncSchemaPluginsForDatabaseSwitch()', () => 
 
     const dbBSchemas = [
       {
-        ...createMockSchemaNode('customer', { description: 'Customer' }),
+        ...createMockSchemaNode('customer'),
         titleTemplate: '{name_b}'
       }
     ];

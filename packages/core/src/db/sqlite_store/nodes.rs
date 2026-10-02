@@ -3826,10 +3826,10 @@ impl SqliteStore {
         Ok(id)
     }
 
-    /// Fetch a schema with `relationships` hydrated from its declaration edges
-    /// in the `relationship` table. One caller-facing fetch: fields come from
-    /// the node row, relationships from `get_schema_declarations` — no consumer
-    /// needs to know declarations aren't stored in `properties`.
+    /// Fetch a schema: the node row, filled with the `relationships` and the
+    /// `extends` parent its declaration edges hold. This is the one place a
+    /// single `SchemaNode` is built, so no reader needs to know that
+    /// declarations aren't stored in `properties`.
     pub async fn get_schema_node(&self, id: &str) -> Result<Option<crate::models::SchemaNode>> {
         // Drain and drop the cursor before `get_schema_declarations` checks out a
         // second reader connection — see `ReadRows` in `connections.rs`.
@@ -3855,11 +3855,9 @@ impl SqliteStore {
             }
         };
 
-        match crate::models::SchemaNode::from_node(node) {
-            Ok(mut schema) => {
-                schema.relationships = self.get_schema_declarations(id).await?;
-                Ok(Some(schema))
-            }
+        let declarations = self.get_schema_declarations(id).await?;
+        match crate::models::schema_node::from_storage(node, declarations) {
+            Ok(schema) => Ok(Some(schema)),
             Err(e) => {
                 tracing::warn!("Failed to parse schema node '{}': {}", id, e);
                 Ok(None)
@@ -3867,12 +3865,12 @@ impl SqliteStore {
         }
     }
 
-    /// All schemas, each with `relationships` hydrated from declaration edges
-    /// (one batched query — no per-schema round trip).
+    /// All schemas, each filled from its declaration edges (one batched
+    /// query — no per-schema round trip).
     pub async fn get_all_schemas(&self) -> Result<Vec<crate::models::SchemaNode>> {
         // Drain and drop the cursor before `get_all_schema_declarations` checks out
         // a second reader connection — see `ReadRows` in `connections.rs`.
-        let mut schemas = Vec::new();
+        let mut nodes = Vec::new();
         {
             let mut rows = self
                 .read()
@@ -3891,18 +3889,17 @@ impl SqliteStore {
                 .context("Failed to query all schema nodes")?;
 
             while let Some(row) = rows.next().await? {
-                let node = Self::row_to_node(&row)?;
-                match crate::models::SchemaNode::from_node(node) {
-                    Ok(schema) => schemas.push(schema),
-                    Err(e) => tracing::warn!("Skipping invalid schema node: {}", e),
-                }
+                nodes.push(Self::row_to_node(&row)?);
             }
         }
 
         let mut declarations = self.get_all_schema_declarations().await?;
-        for schema in &mut schemas {
-            if let Some(rels) = declarations.remove(&schema.id) {
-                schema.relationships = rels;
+        let mut schemas = Vec::with_capacity(nodes.len());
+        for node in nodes {
+            let own = declarations.remove(&node.id).unwrap_or_default();
+            match crate::models::schema_node::from_storage(node, own) {
+                Ok(schema) => schemas.push(schema),
+                Err(e) => tracing::warn!("Skipping invalid schema node: {}", e),
             }
         }
         Ok(schemas)

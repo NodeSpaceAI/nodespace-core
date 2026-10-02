@@ -42,7 +42,6 @@ const PRODUCT_SCHEMA: SchemaNode = {
   version: 1,
   isCore: false,
   schemaVersion: 1,
-  description: '',
   fields: [
     stringField('sku', 'SKU', { unique: true, uniqueCaseInsensitive: true }),
     stringField('notes', 'Notes')

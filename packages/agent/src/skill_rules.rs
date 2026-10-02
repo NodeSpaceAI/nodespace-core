@@ -381,9 +381,9 @@ pub const SUCCESS_NO_REVERIFY: InteractionRule = InteractionRule {
 /// from the stored schema each turn.
 ///
 /// It cannot point at the `EXISTING SCHEMAS` block: that block excludes core
-/// types by construction (`context_ops::parse_and_filter_non_core_schemas`
+/// types by construction (`context_ops::non_core_schema_hits`
 /// filters on `!is_core`, pinned by
-/// `parse_and_filter_non_core_schemas_excludes_core_types`), because presence
+/// `non_core_schema_hits_excludes_core_types`), because presence
 /// there is what tells the model a type is user-defined and takes bare
 /// property keys. `task` is a core type, so `task.status` never appears in it.
 pub const TASK_STATUS_DEDICATED_VERB: InteractionRule = InteractionRule {

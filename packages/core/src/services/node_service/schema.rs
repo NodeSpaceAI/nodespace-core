@@ -1,7 +1,7 @@
 //! Schema-related operations for NodeService.
 
 use super::*;
-use crate::models::schema::RelationshipDirection;
+use crate::models::schema::{RelationshipDirection, EXTENDS_RELATIONSHIP};
 
 impl NodeService {
     /// Every node of `node_type`, and of each type extending it.
@@ -543,18 +543,12 @@ impl NodeService {
     /// (a relationship carries no `SchemaField`-shaped data, so the two
     /// merges share the dedup shape rather than a field-specific type).
     ///
-    /// Excludes the `extends`/`extended_by` type-system relationship
-    /// (`is_type_system_relationship`). A schema that declares `extends` has
-    /// it stored as an ordinary row in the same declaration table other
-    /// relationships live in (see `TYPE_SYSTEM_RELATIONSHIPS`'s doc — it is
-    /// deliberately not excluded from *storage* reads, since
-    /// `declared_parent`/`declared_extends_parent` need to find it there).
-    /// But it is a statement about the schema graph, not a data relationship
-    /// any real node instance ever carries — surfacing it here would let a
-    /// condition segment literally named `extends`/`extended_by` pass this
-    /// function's "is this a real, traversable relationship" check and be
-    /// classified `NotYetMet` instead of the correct `Unresolvable`, since no
-    /// data node ever has such an edge to eventually satisfy it.
+    /// The `extends` edge is never among them. It is a statement about the
+    /// schema graph, not a data relationship a node instance carries, and a
+    /// schema holds it as [`SchemaNode::extends`](crate::models::SchemaNode),
+    /// not as an entry in `relationships`. So a condition segment literally
+    /// named `extends`/`extended_by` is not a traversable relationship here,
+    /// and is classified `Unresolvable` rather than `NotYetMet`.
     ///
     /// Returns `(relationships, relationship_name -> owning_schema_id)`,
     /// mirroring [`Self::resolve_field_owners`]'s shape: a caller that needs
@@ -589,11 +583,7 @@ impl NodeService {
                 // failing the read — same posture as `resolve_field_owners`.
                 continue;
             };
-            let relationships: Vec<_> = schema
-                .relationships
-                .into_iter()
-                .filter(|rel| !crate::models::schema::is_type_system_relationship(&rel.name))
-                .collect();
+            let relationships = schema.relationships;
             for rel in &relationships {
                 // First writer wins, and the chain is nearest-first, so a
                 // relationship declared by a nearer scope keeps ownership —
@@ -832,22 +822,15 @@ impl NodeService {
                         .await?;
 
                     // Declarations live in the relationship table, not in
-                    // properties — the rebuilt properties carry fields only.
-                    let mut properties = serde_json::json!({
-                        "isCore": schema.is_core,
-                        "schemaVersion": schema.schema_version,
-                        "fields": updated_fields,
-                    });
-                    if let Some(ref t) = schema.title_template {
-                        properties["titleTemplate"] = serde_json::Value::String(t.clone());
-                    }
-                    if let Some(ref t) = schema.properties_header_summary_template {
-                        properties["propertiesHeaderSummaryTemplate"] =
-                            serde_json::Value::String(t.clone());
-                    }
-
+                    // properties, and are untouched by a field rename.
+                    let renamed_schema = crate::models::SchemaNode {
+                        fields: updated_fields,
+                        ..schema
+                    };
                     let update = crate::models::NodeUpdate {
-                        properties: Some(properties),
+                        properties: Some(crate::models::schema_node::to_properties(
+                            &renamed_schema,
+                        )),
                         ..Default::default()
                     };
 
@@ -1089,25 +1072,18 @@ impl NodeService {
                         })
                         .collect();
 
-                    // Same persistence shape as `rename_schema_field`'s Step 2 — fields
-                    // only, declarations live in the relationship table and are untouched.
-                    let mut properties = serde_json::json!({
-                        "isCore": schema.is_core,
-                        "schemaVersion": schema.schema_version,
-                        "fields": updated_fields,
-                    });
-                    if let Some(ref t) = schema.title_template {
-                        properties["titleTemplate"] = serde_json::Value::String(t.clone());
-                    }
-                    if let Some(ref t) = schema.properties_header_summary_template {
-                        properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(t.clone());
-                    }
-
+                    // Same persistence shape as `rename_schema_field`'s Step 2:
+                    // declarations live in the relationship table and are untouched.
+                    let relabelled_schema = crate::models::SchemaNode {
+                        fields: updated_fields,
+                        ..schema
+                    };
                     let update = crate::models::NodeUpdate {
-                        properties: Some(properties),
+                        properties: Some(crate::models::schema_node::to_properties(
+                            &relabelled_schema,
+                        )),
                         ..Default::default()
                     };
-
 
                     service
                         .update_node_unchecked_in_tx(tx, type_id, update)
@@ -1128,8 +1104,10 @@ impl NodeService {
             .await
     }
 
-    /// Replace a schema's relationship declarations — the write path for
-    /// declaration edges. `create_schema`/`update_schema` route through here;
+    /// Replace a schema's declaration edges — the write path for them.
+    /// `relationships` is the full set, the `extends` edge included
+    /// (`schema_node::to_declarations`): a declaration left out is removed.
+    /// `create_schema`/`update_schema` route through here;
     /// core-schema seeding (which runs before a `NodeService` exists) calls
     /// `SqliteStore::set_schema_declarations` directly, which enforces the same
     /// name invariants (reserved builtin names, per-schema uniqueness) at the
@@ -1177,6 +1155,7 @@ impl NodeService {
             .get_schema_declarations(schema_id)
             .await
             .map_err(NodeServiceError::from_store)?;
+        Self::reject_cleared_parent(schema_id, &existing, relationships)?;
         for old in &existing {
             let replacement = relationships.iter().find(|r| r.name == old.name);
             let removed = replacement.is_none();
@@ -1233,6 +1212,36 @@ impl NodeService {
         Ok(())
     }
 
+    /// Refuse a declaration set that drops a schema's `extends` edge.
+    ///
+    /// A parent can be re-targeted, never cleared (ADR-078), and the write is
+    /// a full replace: a list built from [`SchemaNode::relationships`], which
+    /// does not hold the parent, would otherwise delete the edge and silently
+    /// unlink the type from its base. No instance carries an `extends` edge,
+    /// so the live-edge check below would not stop it.
+    ///
+    /// [`SchemaNode::relationships`]: crate::models::SchemaNode
+    fn reject_cleared_parent(
+        schema_id: &str,
+        existing: &[crate::models::schema::SchemaRelationship],
+        relationships: &[crate::models::schema::SchemaRelationship],
+    ) -> Result<(), NodeServiceError> {
+        let is_extends =
+            |rel: &crate::models::schema::SchemaRelationship| rel.name == EXTENDS_RELATIONSHIP;
+        match existing.iter().find(|rel| is_extends(rel)) {
+            Some(parent) if !relationships.iter().any(is_extends) => {
+                Err(NodeServiceError::invalid_update(format!(
+                    "Schema '{}' extends '{}', and this write leaves its `extends` edge out. A \
+                     parent can be re-targeted but not cleared: write the full declaration set, \
+                     the `extends` edge included.",
+                    schema_id,
+                    parent.target_type.as_deref().unwrap_or("?")
+                )))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// `_in_tx` twin of [`Self::set_schema_relationships`] (ADR-069 §1b/S3).
     /// Identical reserved-name and live-instance-edge validation; the
     /// declaration write lands on `tx.store_tx()` via the store's own
@@ -1269,6 +1278,7 @@ impl NodeService {
             .get_schema_declarations(schema_id)
             .await
             .map_err(NodeServiceError::from_store)?;
+        Self::reject_cleared_parent(schema_id, &existing, relationships)?;
         for old in &existing {
             let replacement = relationships.iter().find(|r| r.name == old.name);
             let removed = replacement.is_none();
@@ -1360,7 +1370,7 @@ impl NodeService {
     /// let schemas = service.get_all_schemas().await?;
     /// for schema in schemas {
     ///     println!("Type: {} ({} fields, {} relationships)",
-    ///         schema.id, schema.fields.len(), schema.relationships.len());
+    ///         schema.envelope.id, schema.fields.len(), schema.relationships.len());
     /// }
     /// # Ok(())
     /// # }

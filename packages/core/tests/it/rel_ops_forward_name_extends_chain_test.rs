@@ -214,20 +214,13 @@ async fn undeclared_name_on_subtype_still_errors() -> Result<()> {
     Ok(())
 }
 
-/// The type-system `extends` relationship itself is excluded from the
-/// chain-merged set `resolve_relationships` returns (it is a statement about
-/// the schema graph, not a real per-instance relationship -- see that
-/// function's own doc comment). Resolving the literal name `"extends"` on a
-/// subtype instance must not turn into a hard error just because the fix
-/// stopped the forward check from matching it directly: `extends` is itself
-/// stored as an ordinary declaration row whose `target_type` is the parent
-/// (an ancestor of the subtype's own type chain), so `get_inbound_relationships`
-/// independently picks it up as an inbound-forward name on the subtype it was
-/// declared on -- a path this fix does not touch. `"extends"` therefore keeps
-/// resolving (as `InboundForward`, not `Forward`) and stays a real, empty
-/// (not erroring) traversal, exactly as before the fix.
+/// `extends` is a statement about the schema graph, not a relationship a node
+/// instance carries: a schema holds its parent as `extends`, never as an
+/// entry in `relationships`. So the literal name is undeclared on a subtype
+/// instance in both directions, and traversing it is refused like any other
+/// undeclared name rather than answered with an empty result.
 #[tokio::test]
-async fn extends_literal_name_still_resolves_without_erroring() -> Result<()> {
+async fn extends_literal_name_is_not_a_traversable_relationship() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_base_and_subtype(&svc).await?;
     make_node(
@@ -237,30 +230,27 @@ async fn extends_literal_name_still_resolves_without_erroring() -> Result<()> {
     )
     .await?;
 
-    let resolved = rel_ops::resolve_relationship_name(
-        &svc,
-        "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "rel_ops_ext_sub",
-        "extends",
-    )
-    .await?;
-    assert_eq!(
-        resolved,
-        ResolvedRelName::InboundForward,
-        "the type-system 'extends' name must keep resolving, not error, even \
-         though it is no longer matched by the (now chain-aware) forward check"
-    );
+    for name in ["extends", "extended_by"] {
+        let err = rel_ops::resolve_relationship_name(
+            &svc,
+            "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
+            "rel_ops_ext_sub",
+            name,
+        )
+        .await
+        .expect_err("a type-system name is not a relationship of an instance");
+        assert!(
+            matches!(err, nodespace_core::ops::OpsError::InvalidParams(_)),
+            "{name}: {err}"
+        );
 
-    let out = rel_ops::get_related_nodes(
-        &svc,
-        get("b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c", "extends", "out"),
-    )
-    .await?;
-    assert_eq!(
-        out.count, 0,
-        "no data node ever carries a real 'extends' edge -- this must stay a \
-         declared-shaped empty result, not an error"
-    );
+        rel_ops::get_related_nodes(
+            &svc,
+            get("b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c", name, "out"),
+        )
+        .await
+        .expect_err("traversing a type-system name is refused");
+    }
     Ok(())
 }
 

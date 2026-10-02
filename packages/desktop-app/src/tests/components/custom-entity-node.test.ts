@@ -28,7 +28,7 @@ function createMockSchemaNode(
   options: {
     isCore?: boolean;
     schemaVersion?: number;
-    description?: string;
+    content?: string;
   } = {}
 ): SchemaNode {
   return {
@@ -36,7 +36,8 @@ function createMockSchemaNode(
     properties: {},
     id,
     nodeType: 'schema',
-    content: id,
+    // content is the schema display name (e.g. "Invoice")
+    content: options.content ?? id,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
     version: 1,
@@ -44,25 +45,21 @@ function createMockSchemaNode(
     isCore: options.isCore ?? false,
     schemaVersion: options.schemaVersion ?? 1,
     relationships: [],
-    description: options.description ?? '',
     fields: []
   };
 }
 
 /**
  * Test logic for entity name
- * Uses schema description if available, otherwise falls back to nodeType
+ * Uses the schema's display name if available, otherwise falls back to nodeType
  */
 function getEntityName(schema: SchemaNode | null, nodeType: string): string {
-  if (schema) {
-    // Access typed field directly (no helper needed)
-    if (schema.description) return schema.description;
-  }
+  if (schema?.content) return schema.content;
   return nodeType;
 }
 
 /**
- * Extract emoji icon from description if present (e.g., "💰 Invoice" → "💰")
+ * Extract emoji icon from a display name if present (e.g., "💰 Invoice" → "💰")
  */
 function extractIconFromDescription(description: string): string | null {
   if (!description) return null;
@@ -83,7 +80,7 @@ describe('CustomEntityNode Logic', () => {
   describe('Schema Loading', () => {
     it('should call getSchema with correct nodeType', async () => {
       const mockSchemaNode = createMockSchemaNode('invoice', {
-        description: 'Invoice Entity'
+        content: 'Invoice Entity'
       });
 
       vi.mocked(backendAdapter.getSchema).mockResolvedValue(mockSchemaNode);
@@ -123,7 +120,7 @@ describe('CustomEntityNode Logic', () => {
   describe('Entity Header Display', () => {
     it('should always show entity header when schema exists', () => {
       const schemaNode = createMockSchemaNode('invoice', {
-        description: 'Invoice'
+        content: 'Invoice'
       }) as SchemaNode;
 
       // CustomEntityNode always shows header for custom entities
@@ -137,17 +134,17 @@ describe('CustomEntityNode Logic', () => {
   });
 
   describe('Entity Name Display', () => {
-    it('should use schema description as entity name', () => {
+    it('should use the schema display name as entity name', () => {
       const schemaNode = createMockSchemaNode('invoice', {
-        description: 'Sales Invoice'
+        content: 'Sales Invoice'
       }) as SchemaNode;
 
       expect(getEntityName(schemaNode, 'invoice')).toBe('Sales Invoice');
     });
 
-    it('should fall back to nodeType when schema description is missing', () => {
+    it('should fall back to nodeType when the schema display name is empty', () => {
       const schemaNode = createMockSchemaNode('invoice', {
-        description: ''
+        content: ''
       }) as SchemaNode;
 
       expect(getEntityName(schemaNode, 'invoice')).toBe('invoice');
@@ -273,21 +270,20 @@ describe('CustomEntityNode Logic', () => {
   });
 
   describe('Schema Integration', () => {
-    it('should use description field for entity naming', () => {
+    it('should use the display name for entity naming', () => {
       const schemaNode = createMockSchemaNode('invoice', {
-        description: '💰 Invoice Management'
+        content: '💰 Invoice Management'
       });
 
       expect(getEntityName(schemaNode, 'invoice')).toBe('💰 Invoice Management');
-      // Access typed field directly (description is optional, provide fallback)
-      expect(extractIconFromDescription(schemaNode.description ?? '')).toBe('💰');
+      expect(extractIconFromDescription(schemaNode.content)).toBe('💰');
     });
 
     it('should handle schema with fields array', () => {
       // Create schema with fields
       const schemaNode: SchemaNode = {
         ...createMockSchemaNode('invoice', {
-          description: 'Invoice'
+          content: 'Invoice'
         }),
         fields: [
           {
@@ -309,7 +305,7 @@ describe('CustomEntityNode Logic', () => {
   describe('Schema Loading Behavior', () => {
     it('should request schema for each nodeType', async () => {
       const mockSchemaNode = createMockSchemaNode('invoice', {
-        description: 'Invoice'
+        content: 'Invoice'
       });
 
       vi.mocked(backendAdapter.getSchema).mockResolvedValue(mockSchemaNode);
@@ -326,11 +322,11 @@ describe('CustomEntityNode Logic', () => {
 
     it('should request different schemas for different nodeTypes', async () => {
       const invoiceSchema = createMockSchemaNode('invoice', {
-        description: 'Invoice'
+        content: 'Invoice'
       });
 
       const personSchema = createMockSchemaNode('person', {
-        description: 'Person'
+        content: 'Person'
       });
 
       vi.mocked(backendAdapter.getSchema)

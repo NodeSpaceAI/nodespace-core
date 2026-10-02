@@ -373,9 +373,7 @@ fn parse_relaunch_database_arg(argv: &[String]) -> Option<String> {
 pub fn run(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
     // A release build has no console at all (see the `windows_subsystem`
     // attribute on the app crate's `main.rs`), so `eprintln!`/`println!`
-    // anywhere in this process — notably `SchemaNode::from_node`'s
-    // fields-parse-failure diagnostic, called directly by `commands::schemas`'s
-    // Tauri commands — would otherwise be silently discarded. Redirect this
+    // anywhere in this process would otherwise be silently discarded. Redirect this
     // process's own stdio to log files before the runtime and the app are
     // built, so none of their diagnostics has already been lost. Debug builds
     // keep their attached console (no `windows_subsystem = "windows"` there),

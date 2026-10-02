@@ -3,7 +3,7 @@
 //! `create`/`update` take a single JSON params blob rather than per-field
 //! flags: schema params (fields, relationships, title_template, enum
 //! definitions) are a nested, evolving shape defined once in
-//! `packages/core/src/schema/mod.rs` (`CreateSchemaParams` /
+//! `packages/nodespace-types/src/schema_ops.rs` (`CreateSchemaParams` /
 //! `UpdateSchemaParams`). Mirroring that as a flat CLI flag surface would
 //! duplicate and drift from the Rust structs; JSON keeps the CLI a thin,
 //! schema-agnostic passthrough — the daemon validates and reports errors.
@@ -127,7 +127,7 @@ async fn list(client: &mut NodeClient, _args: SchemaListArgs, json: bool) -> Res
         .context("GetAllSchemas RPC failed")?
         .into_inner();
 
-    output::print_node_list(&response, json)
+    output::print_schema_list(&response.schemas_json, json)
 }
 
 async fn get(client: &mut NodeClient, args: SchemaGetArgs, json: bool) -> Result<()> {
@@ -137,8 +137,7 @@ async fn get(client: &mut NodeClient, args: SchemaGetArgs, json: bool) -> Result
         .context("GetSchemaDefinition RPC failed")?
         .into_inner();
 
-    let node = response.node_data.context("daemon returned no node_data")?;
-    output::print_node(&node, json)
+    output::print_schema(&response.schema_json, json)
 }
 
 /// A schema *is* a node — its ID is the node type identifier — so deletion

@@ -1446,8 +1446,8 @@ pub enum WriteVerificationFault {
     /// bug's shape: success claimed for a schema that is not there.
     ReportMissing,
     /// The schema read reports the row as absent while the raw row is still
-    /// there — the shape of a stored node that `SchemaNode::from_node` cannot
-    /// parse, which the store reports as `Ok(None)`. Distinct from
+    /// there — the shape of a stored node that cannot be read as a schema,
+    /// which the store reports as `Ok(None)`. Distinct from
     /// [`Self::ReportMissing`] because the honest diagnosis differs: the write
     /// did land, so telling the caller it did not would send it into a retry
     /// that collides with the existing row.
@@ -1860,12 +1860,12 @@ impl NodeService {
         let mut missing_schemas = Vec::new();
         for schema in &core_schemas {
             let exists = store
-                .get_node(&schema.id)
+                .get_node(&schema.envelope.id)
                 .await
                 .map_err(|e| {
                     NodeServiceError::QueryFailed(format!(
                         "Failed to check for schema '{}': {}",
-                        schema.id, e
+                        schema.envelope.id, e
                     ))
                 })?
                 .is_some();
@@ -1892,28 +1892,28 @@ impl NodeService {
         // later in the same loop.
         {
             for schema in &missing_schemas {
-                let schema_id = schema.id.clone();
-                let node = schema.clone().into_node();
+                let node = crate::models::schema_node::to_node(schema);
 
                 store.create_node(node, None, None).await.map_err(|e| {
                     NodeServiceError::SerializationError(format!(
                         "Failed to create schema node '{}': {}",
-                        schema_id, e
+                        schema.envelope.id, e
                     ))
                 })?;
             }
 
             for schema in &missing_schemas {
-                if schema.relationships.is_empty() {
+                let declarations = crate::models::schema_node::to_declarations(schema);
+                if declarations.is_empty() {
                     continue;
                 }
                 store
-                    .set_schema_declarations(&schema.id, &schema.relationships)
+                    .set_schema_declarations(&schema.envelope.id, &declarations)
                     .await
                     .map_err(|e| {
                         NodeServiceError::SerializationError(format!(
                             "Failed to seed relationship declarations for schema '{}': {}",
-                            schema.id, e
+                            schema.envelope.id, e
                         ))
                     })?;
             }
@@ -3085,7 +3085,7 @@ mod tests {
         types.extend(
             crate::models::core_schemas::get_core_schemas()
                 .into_iter()
-                .map(|s| s.id),
+                .map(|s| s.envelope.id),
         );
 
         for node_type in &types {
@@ -5666,7 +5666,7 @@ mod tests {
         assert!(!schemas.is_empty());
 
         // Should include core schemas
-        let task_schema = schemas.iter().find(|s| s.id == "task");
+        let task_schema = schemas.iter().find(|s| s.envelope.id == "task");
         assert!(task_schema.is_some());
     }
 
@@ -10933,8 +10933,8 @@ mod tests {
 
     /// Set a `title_template` on the built-in "task" schema, preserving its other
     /// schema properties (isCore / schemaVersion / fields). Mirrors how the schema
-    /// stores the template (`properties.titleTemplate`, read back by
-    /// `SchemaNode::from_node`).
+    /// stores the template (`properties.titleTemplate` on the schema row, read
+    /// back as `SchemaNode::title_template`).
     #[cfg(test)]
     async fn set_task_title_template(service: &NodeService, template: &str) {
         let schema_node = service

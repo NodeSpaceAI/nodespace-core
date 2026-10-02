@@ -168,7 +168,7 @@ async fn all_read_paths_agree_on_the_declaration_set() -> Result<()> {
         .get_all_schemas()
         .await?
         .into_iter()
-        .find(|s| s.id == "assembly")
+        .find(|s| s.envelope.id == "assembly")
         .expect("assembly among all schemas")
         .relationships;
 

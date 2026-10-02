@@ -1251,7 +1251,7 @@ impl SchemaNodeBehavior {
     /// - Enum fields have at least one value
     pub fn validate_schema_node(&self, schema: &SchemaNode) -> Result<(), NodeValidationError> {
         // Validate non-empty content (schema name)
-        if is_empty_or_whitespace(&schema.content) {
+        if is_empty_or_whitespace(&schema.envelope.content) {
             return Err(NodeValidationError::MissingField(
                 "Schema nodes must have content (schema name)".to_string(),
             ));
@@ -1346,9 +1346,11 @@ impl NodeBehavior for SchemaNodeBehavior {
         Self::validate_structural_rule::<crate::models::SchemaChildrenRule>(node, "children")?;
         Self::validate_structural_rule::<crate::models::SchemaParentRule>(node, "parent")?;
 
-        // Convert to strongly-typed SchemaNode and validate
-        // This provides type-safe validation with direct field access
-        match SchemaNode::from_node(node.clone()) {
+        // Validate the row as a typed schema. Only the row is judged here,
+        // so it is read with no declarations and goes no further than this
+        // check: a schema's relationships and parent are declaration edges,
+        // validated where they are written.
+        match crate::models::schema_node::from_storage(node.clone(), Vec::new()) {
             Ok(schema) => self.validate_schema_node(&schema),
             Err(e) => {
                 // If conversion fails, fall back to basic validation
@@ -3637,11 +3639,9 @@ mod tests {
 
     #[test]
     fn test_schema_node_behavior_validate_schema_node() {
-        use crate::models::SchemaNode;
-
         let behavior = SchemaNodeBehavior;
 
-        // Create a valid schema node via from_node
+        // A valid schema row
         let valid_node = Node::new(
             "schema".to_string(),
             "Task".to_string(),
@@ -3652,7 +3652,7 @@ mod tests {
                 "fields": []
             }),
         );
-        let schema = SchemaNode::from_node(valid_node).unwrap();
+        let schema = crate::models::schema_node::from_storage(valid_node, Vec::new()).unwrap();
         assert!(behavior.validate_schema_node(&schema).is_ok());
 
         // Invalid: empty content
@@ -3666,7 +3666,8 @@ mod tests {
                 "fields": []
             }),
         );
-        let empty_schema = SchemaNode::from_node(empty_content_node).unwrap();
+        let empty_schema =
+            crate::models::schema_node::from_storage(empty_content_node, Vec::new()).unwrap();
         assert!(
             behavior.validate_schema_node(&empty_schema).is_err(),
             "Schema with empty content should be rejected"
@@ -3683,7 +3684,8 @@ mod tests {
                 "fields": []
             }),
         );
-        let whitespace_schema = SchemaNode::from_node(whitespace_node).unwrap();
+        let whitespace_schema =
+            crate::models::schema_node::from_storage(whitespace_node, Vec::new()).unwrap();
         assert!(
             behavior.validate_schema_node(&whitespace_schema).is_err(),
             "Schema with whitespace-only content should be rejected"
@@ -4210,7 +4212,6 @@ mod tests {
 
     #[test]
     fn test_title_template_valid() {
-        use crate::models::SchemaNode;
         let behavior = SchemaNodeBehavior;
 
         let node = Node::new(
@@ -4228,7 +4229,7 @@ mod tests {
                 "relationships": []
             }),
         );
-        let schema = SchemaNode::from_node(node).unwrap();
+        let schema = crate::models::schema_node::from_storage(node, Vec::new()).unwrap();
         assert!(
             behavior.validate_schema_node(&schema).is_ok(),
             "Valid title_template should pass validation"
@@ -4237,7 +4238,6 @@ mod tests {
 
     #[test]
     fn test_title_template_unclosed_brace_rejected() {
-        use crate::models::SchemaNode;
         let behavior = SchemaNodeBehavior;
 
         let node = Node::new(
@@ -4252,7 +4252,7 @@ mod tests {
                 "relationships": []
             }),
         );
-        let schema = SchemaNode::from_node(node).unwrap();
+        let schema = crate::models::schema_node::from_storage(node, Vec::new()).unwrap();
         let result = behavior.validate_schema_node(&schema);
         assert!(result.is_err(), "Unclosed brace should fail validation");
         assert!(matches!(
@@ -4264,7 +4264,6 @@ mod tests {
 
     #[test]
     fn test_title_template_empty_placeholder_rejected() {
-        use crate::models::SchemaNode;
         let behavior = SchemaNodeBehavior;
 
         let node = Node::new(
@@ -4279,7 +4278,7 @@ mod tests {
                 "relationships": []
             }),
         );
-        let schema = SchemaNode::from_node(node).unwrap();
+        let schema = crate::models::schema_node::from_storage(node, Vec::new()).unwrap();
         let result = behavior.validate_schema_node(&schema);
         assert!(result.is_err(), "Empty placeholder should fail validation");
         assert!(matches!(
@@ -4291,7 +4290,6 @@ mod tests {
 
     #[test]
     fn test_title_template_none_is_valid() {
-        use crate::models::SchemaNode;
         let behavior = SchemaNodeBehavior;
 
         // No title_template field at all — should pass
@@ -4306,7 +4304,7 @@ mod tests {
                 "relationships": []
             }),
         );
-        let schema = SchemaNode::from_node(node).unwrap();
+        let schema = crate::models::schema_node::from_storage(node, Vec::new()).unwrap();
         assert!(
             behavior.validate_schema_node(&schema).is_ok(),
             "Schema without title_template should pass validation"
@@ -4315,7 +4313,6 @@ mod tests {
 
     #[test]
     fn test_title_template_undefined_field_rejected() {
-        use crate::models::SchemaNode;
         let behavior = SchemaNodeBehavior;
 
         // title_template references a field "nonexistent" that is not in schema.fields
@@ -4338,7 +4335,7 @@ mod tests {
                 "titleTemplate": "{nonexistent}"
             }),
         );
-        let schema = SchemaNode::from_node(node).unwrap();
+        let schema = crate::models::schema_node::from_storage(node, Vec::new()).unwrap();
         let result = behavior.validate_schema_node(&schema);
         assert!(
             result.is_err(),
@@ -4353,7 +4350,6 @@ mod tests {
 
     #[test]
     fn test_title_template_defined_field_accepted() {
-        use crate::models::SchemaNode;
         let behavior = SchemaNodeBehavior;
 
         // title_template references fields that exist in schema.fields
@@ -4382,7 +4378,7 @@ mod tests {
                 "titleTemplate": "{first_name} {last_name}"
             }),
         );
-        let schema = SchemaNode::from_node(node).unwrap();
+        let schema = crate::models::schema_node::from_storage(node, Vec::new()).unwrap();
         assert!(
             behavior.validate_schema_node(&schema).is_ok(),
             "title_template referencing defined fields should pass validation"
@@ -4391,7 +4387,6 @@ mod tests {
 
     #[test]
     fn test_properties_header_summary_template_valid() {
-        use crate::models::SchemaNode;
         let behavior = SchemaNodeBehavior;
 
         // propertiesHeaderSummaryTemplate referencing defined fields should pass
@@ -4410,7 +4405,7 @@ mod tests {
                 "propertiesHeaderSummaryTemplate": "{status} · {company}"
             }),
         );
-        let schema = SchemaNode::from_node(node).unwrap();
+        let schema = crate::models::schema_node::from_storage(node, Vec::new()).unwrap();
         assert!(
             behavior.validate_schema_node(&schema).is_ok(),
             "Valid propertiesHeaderSummaryTemplate should pass validation"
@@ -4419,7 +4414,6 @@ mod tests {
 
     #[test]
     fn test_properties_header_summary_template_undefined_field_rejected() {
-        use crate::models::SchemaNode;
         let behavior = SchemaNodeBehavior;
 
         // propertiesHeaderSummaryTemplate references a field not in schema.fields
@@ -4437,7 +4431,7 @@ mod tests {
                 "propertiesHeaderSummaryTemplate": "{status} · {nonexistent}"
             }),
         );
-        let schema = SchemaNode::from_node(node).unwrap();
+        let schema = crate::models::schema_node::from_storage(node, Vec::new()).unwrap();
         let result = behavior.validate_schema_node(&schema);
         assert!(
             result.is_err(),
@@ -5270,7 +5264,7 @@ mod tests {
     fn person_schema_is_present_in_core_schemas() {
         use crate::models::core_schemas::get_core_schemas;
         let schemas = get_core_schemas();
-        assert!(schemas.iter().any(|s| s.id == "person"));
+        assert!(schemas.iter().any(|s| s.envelope.id == "person"));
     }
 
     #[test]
@@ -5340,7 +5334,7 @@ mod tests {
     fn database_settings_schema_is_present_in_core_schemas() {
         use crate::models::core_schemas::get_core_schemas;
         let schemas = get_core_schemas();
-        assert!(schemas.iter().any(|s| s.id == "database-settings"));
+        assert!(schemas.iter().any(|s| s.envelope.id == "database-settings"));
     }
 
     #[test]

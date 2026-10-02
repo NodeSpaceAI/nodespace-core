@@ -59,8 +59,8 @@ function makeStubServer(socketPath: string): StubHandle {
 
   const handler = (
     _call: unknown,
-    cb: (err: grpc.ServiceError | null, res: { nodes: unknown[]; count: number }) => void
-  ) => cb(null, { nodes: [], count: 0 });
+    cb: (err: grpc.ServiceError | null, res: { schemasJson: string[] }) => void
+  ) => cb(null, { schemasJson: [] });
 
   const server = new grpc.Server();
   server.addService((pkg.nodespace.NodeService as unknown as { service: grpc.ServiceDefinition }).service, {
@@ -111,13 +111,13 @@ describe('dev-proxy gRPC channel: recovers promptly when the daemon appears late
       type UnaryMethod = (req: unknown, cb: (err: unknown, res: unknown) => void) => void;
       const getAllSchemas = (clients.nodeClient as unknown as Record<string, UnaryMethod>)
         .getAllSchemas;
-      const res = await clients.call<Record<string, never>, { nodes: unknown[] }>(getAllSchemas, {});
+      const res = await clients.call<Record<string, never>, { schemasJson: string[] }>(getAllSchemas, {});
       const resolvedAt = Date.now();
 
       await bindPromise;
 
       // The call came back with a real response, not a silent UNAVAILABLE.
-      expect(Array.isArray(res.nodes)).toBe(true);
+      expect(Array.isArray(res.schemasJson)).toBe(true);
 
       // And it resolved promptly after the peer appeared. The capped backoff
       // recovers within ~100ms; stock gRPC-js's grown backoff would land this

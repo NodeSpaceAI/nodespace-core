@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::db::SqliteStore;
+use crate::models::Node;
 use crate::services::NodeService;
 use serde_json::json;
 use std::sync::Arc;
@@ -4342,7 +4343,7 @@ async fn persisted_extends_target(svc: &Arc<NodeService>, schema_id: &str) -> Op
         .await
         .expect("schema lookup failed")
         .expect("schema should exist");
-    extends_chain::declared_parent(&schema)
+    schema.extends
 }
 
 #[tokio::test]
@@ -4660,8 +4661,7 @@ async fn test_update_without_extends_leaves_the_edge_untouched() {
     .await
     .expect("create with extends should succeed");
 
-    // An unrelated update must not drop the edge — `relationships` is a full
-    // replace, so the existing declaration has to survive the round-trip.
+    // An update that touches no declaration must leave the edge alone.
     handle_update_schema(
         &svc,
         json!({
@@ -4813,8 +4813,8 @@ async fn test_unextended_schema_resolves_to_its_own_fields() {
 /// via `resolve_type_chain`) are two independent call paths that both walk
 /// the same `extends` chain and must resolve the exact same effective field
 /// set for it. Before this consolidation they read the chain from two
-/// different underlying sources (`get_all_schemas()`'s hydrated
-/// `declared_parent` vs. `get_extends_parent_map()`'s direct query) with
+/// different underlying sources (`get_all_schemas()`'s `extends` vs.
+/// `get_extends_parent_map()`'s direct query) with
 /// nothing guarding that the two stayed in agreement — a regression here
 /// would mean the two walkers have silently diverged again.
 #[tokio::test]
@@ -5390,6 +5390,66 @@ async fn test_add_relationships_only_call_still_allows_a_genuinely_new_relations
         result.is_ok(),
         "a non-colliding relationship added via an add_relationships-only call should still be \
          accepted: {result:?}"
+    );
+    // The declaration write is a full replace, and the parent is not among
+    // the schema's `relationships`: it has to be written back with them.
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("ticket"),
+        "adding a relationship must not clear the extends edge"
+    );
+
+    handle_update_schema(
+        &svc,
+        json!({ "schema_id": "bug", "remove_relationships": ["gadgets"] }),
+    )
+    .await
+    .expect("removing the relationship should succeed");
+    let bug = svc.get_schema_node("bug").await.unwrap().unwrap();
+    assert!(bug.relationships.is_empty());
+    assert_eq!(
+        bug.extends.as_deref(),
+        Some("ticket"),
+        "removing a relationship must not clear the extends edge"
+    );
+}
+
+/// The declaration write is a full replace, so a list that leaves the parent
+/// out (a schema's `relationships` does) would delete the `extends` edge. The
+/// write refuses it: a parent is re-targeted, never cleared.
+#[tokio::test]
+async fn test_a_declaration_write_that_drops_the_parent_is_refused() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    create_base_schema(&svc, "Incident", &["impact"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+
+    let bug = svc.get_schema_node("bug").await.unwrap().unwrap();
+    let err = svc
+        .set_schema_relationships("bug", &bug.relationships)
+        .await
+        .expect_err("a declaration set without the parent must be refused");
+    assert!(err.to_string().contains("extends"), "{err}");
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("ticket")
+    );
+
+    // The full set, parent included, is accepted, and may re-target it.
+    svc.set_schema_relationships("bug", &crate::models::schema_node::to_declarations(&bug))
+        .await
+        .expect("the full declaration set is accepted");
+    svc.set_schema_relationships("bug", &[extends_chain::extends_declaration("incident")])
+        .await
+        .expect("re-targeting the parent is accepted");
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("incident")
     );
 }
 

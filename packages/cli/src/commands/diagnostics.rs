@@ -261,7 +261,7 @@ pub async fn collect(
     };
 
     let schema_count = match node_client.get_all_schemas(GetAllSchemasRequest {}).await {
-        Ok(response) => Some(response.into_inner().count),
+        Ok(response) => Some(response.into_inner().schemas_json.len() as i32),
         Err(e) => {
             record_failure("GetAllSchemas", e, &mut errors)?;
             None

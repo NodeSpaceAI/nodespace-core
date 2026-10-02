@@ -672,7 +672,8 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
         .get_schema_node("gadget")
         .await?
         .expect("gadget schema should exist");
-    let parent = nodespace_core::schema::extends_chain::declared_parent(&gadget)
+    let parent = gadget
+        .extends
         .expect("gadget should declare an extends target");
 
     assert_eq!(

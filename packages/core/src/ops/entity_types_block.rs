@@ -297,25 +297,16 @@ impl EntityTypeDescriptor {
                 .collect(),
             |f| f.name.as_str(),
         );
-        // A schema read from storage still carries its `extends` bookkeeping
-        // row. It is not traversable from an instance, so listing it would
-        // tell the model to call `get_related_nodes` with a name that always
-        // errors.
         let relationships = crate::schema::extends_chain::flatten_chain_by_name(
             chain
                 .iter()
-                .map(|s| {
-                    s.relationships
-                        .iter()
-                        .filter(|r| !crate::models::schema::is_type_system_relationship(&r.name))
-                        .collect::<Vec<_>>()
-                })
+                .map(|s| s.relationships.iter().collect::<Vec<_>>())
                 .collect(),
             |r| r.name.as_str(),
         );
         Self {
-            type_id: own.id.clone(),
-            name: Some(own.content.clone()),
+            type_id: own.envelope.id.clone(),
+            name: Some(own.envelope.content.clone()),
             fields: fields
                 .into_iter()
                 .map(EntityFieldDescriptor::from_schema_field)
@@ -332,28 +323,22 @@ impl EntityTypeDescriptor {
     ///
     /// For callers that already hold the full schema list
     /// (`get_all_schemas`): the chain is walked in memory over each schema's
-    /// hydrated `extends` row, so describing N types costs no extra reads. An
-    /// ancestor missing from `corpus` ends the walk there, since its own
-    /// `extends` row is what names the next hop.
-    ///
-    /// `schema` itself is also taken from `corpus` when present. A semantic
-    /// search hit is a bare `SchemaNode::from_node` conversion whose
-    /// relationship declarations (the `extends` row included) were never
-    /// hydrated, so describing it as passed would drop its own relationships
-    /// and its whole chain.
+    /// `extends`, so describing N types costs no extra reads. An ancestor
+    /// missing from `corpus` ends the walk there, since its own `extends` is
+    /// what names the next hop.
     pub fn from_corpus(schema: &SchemaNode, corpus: &[SchemaNode]) -> Self {
-        let schema = corpus.iter().find(|s| s.id == schema.id).unwrap_or(schema);
         let lookup = |id: &str| {
             corpus
                 .iter()
-                .find(|s| s.id == id)
-                .and_then(crate::schema::extends_chain::declared_parent)
+                .find(|s| s.envelope.id == id)
+                .and_then(|s| s.extends.clone())
         };
-        let chain = crate::schema::extends_chain::resolve_ancestor_chain(&schema.id, &lookup);
+        let chain =
+            crate::schema::extends_chain::resolve_ancestor_chain(&schema.envelope.id, &lookup);
         let ancestors = chain
             .iter()
             .skip(1)
-            .filter_map(|id| corpus.iter().find(|s| &s.id == id));
+            .filter_map(|id| corpus.iter().find(|s| &s.envelope.id == id));
         Self::from_chain(schema, ancestors)
     }
 
@@ -366,7 +351,7 @@ impl EntityTypeDescriptor {
         node_service: &crate::services::NodeService,
         schema: &SchemaNode,
     ) -> Result<Self, crate::services::NodeServiceError> {
-        let chain = node_service.resolve_type_chain(&schema.id).await?;
+        let chain = node_service.resolve_type_chain(&schema.envelope.id).await?;
         let mut ancestors = Vec::with_capacity(chain.len().saturating_sub(1));
         for id in chain.iter().skip(1) {
             if let Some(ancestor) = node_service.get_schema_node(id).await? {
@@ -701,11 +686,8 @@ mod tests {
         status.user_values = Some(vec![enum_value("sent")]);
 
         SchemaNode {
-            id: "invoice".to_string(),
-            content: "Invoice".to_string(),
-            version: 1,
-            created_at: chrono::Utc::now(),
-            modified_at: chrono::Utc::now(),
+            envelope: SchemaNode::new("invoice".to_string(), "Invoice".to_string()).envelope,
+            extends: None,
             is_core: false,
             is_abstract: false,
             children: Default::default(),
@@ -963,18 +945,13 @@ mod tests {
         );
     }
 
+    /// A parent is not a relationship: it is never listed as one a model
+    /// could traverse.
     #[test]
-    fn type_system_extends_row_is_not_listed_as_a_relationship() {
+    fn the_parent_is_not_listed_as_a_relationship() {
         let mut schema = sample_schema();
-        schema.relationships = vec![SchemaRelationship {
-            name: crate::models::schema::EXTENDS_RELATIONSHIP.to_string(),
-            target_type: Some("task".to_string()),
-            direction: RelationshipDirection::Out,
-            cardinality: RelationshipCardinality::One,
-            reverse_name: crate::models::schema::EXTENDED_BY_RELATIONSHIP.to_string(),
-            reverse_cardinality: RelationshipCardinality::Many,
-            ..schema.relationships[0].clone()
-        }];
+        schema.relationships = vec![];
+        schema.extends = Some("task".to_string());
 
         let d = EntityTypeDescriptor::from_chain(&schema, []);
         assert!(d.relationships.is_empty());
@@ -987,28 +964,28 @@ mod tests {
         let base = sample_schema();
 
         let mut recurring = sample_schema();
-        recurring.id = "recurring_invoice".to_string();
-        recurring.content = "Recurring Invoice".to_string();
+        recurring.envelope.id = "recurring_invoice".to_string();
+        recurring.envelope.content = "Recurring Invoice".to_string();
         // Redeclares `status` without its enum values: the nearer
         // declaration must win, not the ancestor's.
         recurring.fields = vec![field("interval", "text"), field("status", "text")];
-        recurring.relationships =
-            vec![crate::schema::extends_chain::extends_declaration("invoice")];
+        recurring.relationships = vec![];
+        recurring.extends = Some("invoice".to_string());
         recurring.title_template = None;
 
         let mut annual = sample_schema();
-        annual.id = "annual_invoice".to_string();
-        annual.content = "Annual Invoice".to_string();
+        annual.envelope.id = "annual_invoice".to_string();
+        annual.envelope.content = "Annual Invoice".to_string();
         annual.fields = vec![field("fiscal_year", "number")];
-        annual.relationships = vec![crate::schema::extends_chain::extends_declaration(
-            "recurring_invoice",
-        )];
+        annual.relationships = vec![];
+        annual.extends = Some("recurring_invoice".to_string());
         annual.title_template = Some("{fiscal_year}".to_string());
 
         let mut quote = sample_schema();
-        quote.id = "quote".to_string();
+        quote.envelope.id = "quote".to_string();
         quote.fields = vec![field("valid_until", "date")];
-        quote.relationships = vec![crate::schema::extends_chain::extends_declaration("invoice")];
+        quote.relationships = vec![];
+        quote.extends = Some("invoice".to_string());
 
         vec![quote, annual, recurring, base]
     }
@@ -1016,7 +993,10 @@ mod tests {
     #[test]
     fn from_corpus_merges_inherited_fields_and_relationships_nearest_first() {
         let corpus = extends_corpus();
-        let annual = corpus.iter().find(|s| s.id == "annual_invoice").unwrap();
+        let annual = corpus
+            .iter()
+            .find(|s| s.envelope.id == "annual_invoice")
+            .unwrap();
 
         let d = EntityTypeDescriptor::from_corpus(annual, &corpus);
 
@@ -1043,35 +1023,6 @@ mod tests {
         assert!(d.render_line().contains("~> billed_to"));
     }
 
-    #[test]
-    fn from_corpus_describes_an_unhydrated_hit_from_its_hydrated_corpus_copy() {
-        let mut corpus = extends_corpus();
-        let annual = corpus
-            .iter_mut()
-            .find(|s| s.id == "annual_invoice")
-            .unwrap();
-        annual.relationships.push(SchemaRelationship {
-            name: "approved_by".to_string(),
-            target_type: Some("person".to_string()),
-            reverse_name: "approved_invoices".to_string(),
-            ..sample_schema().relationships[0].clone()
-        });
-        let mut hit = annual.clone();
-        // What `SchemaNode::from_node` yields for a search hit.
-        hit.relationships.clear();
-
-        let d = EntityTypeDescriptor::from_corpus(&hit, &corpus);
-
-        assert_eq!(
-            d.relationships
-                .iter()
-                .map(|r| r.name.as_str())
-                .collect::<Vec<_>>(),
-            ["approved_by", "billed_to"],
-            "own relationship from the hydrated copy, then the inherited one"
-        );
-    }
-
     /// Shadowing is per kind: a nearer relationship does not hide an
     /// ancestor's same-named field from the field list, matching how
     /// `NodeService::resolve_field_owners` and `resolve_relationships` merge
@@ -1082,7 +1033,7 @@ mod tests {
     fn from_chain_shadows_names_within_each_kind_not_across_kinds() {
         let base = sample_schema();
         let mut child = sample_schema();
-        child.id = "child_invoice".to_string();
+        child.envelope.id = "child_invoice".to_string();
         child.fields = vec![];
         child.relationships = vec![SchemaRelationship {
             name: "reference".to_string(),
@@ -1104,7 +1055,10 @@ mod tests {
     #[test]
     fn from_corpus_does_not_inherit_an_ancestors_title_template() {
         let corpus = extends_corpus();
-        let recurring = corpus.iter().find(|s| s.id == "recurring_invoice").unwrap();
+        let recurring = corpus
+            .iter()
+            .find(|s| s.envelope.id == "recurring_invoice")
+            .unwrap();
 
         let d = EntityTypeDescriptor::from_corpus(recurring, &corpus);
 
@@ -1116,9 +1070,12 @@ mod tests {
     fn from_corpus_stops_at_an_ancestor_missing_from_the_corpus() {
         let corpus: Vec<SchemaNode> = extends_corpus()
             .into_iter()
-            .filter(|s| s.id != "recurring_invoice")
+            .filter(|s| s.envelope.id != "recurring_invoice")
             .collect();
-        let annual = corpus.iter().find(|s| s.id == "annual_invoice").unwrap();
+        let annual = corpus
+            .iter()
+            .find(|s| s.envelope.id == "annual_invoice")
+            .unwrap();
 
         let d = EntityTypeDescriptor::from_corpus(annual, &corpus);
 

@@ -63,7 +63,6 @@ const schema: SchemaNode = {
   isCore: false,
   schemaVersion: 1,
   relationships: [],
-  description: '',
   fields: []
 };
 

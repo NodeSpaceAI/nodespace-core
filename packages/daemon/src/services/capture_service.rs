@@ -487,7 +487,7 @@ mod tests {
             .collect();
         let declared: Vec<String> = nodespace_core::models::core_schemas::get_core_schemas()
             .into_iter()
-            .filter(|s| chain.contains(&s.id.as_str()))
+            .filter(|s| chain.contains(&s.envelope.id.as_str()))
             .flat_map(|s| s.fields)
             .map(|f| f.name)
             .collect();
@@ -790,7 +790,7 @@ mod tests {
         // The field the id is stored in never leaves the machine.
         let session_id_field = nodespace_core::models::core_schemas::get_core_schemas()
             .into_iter()
-            .find(|schema| schema.id == CoreNodeType::AiChatPty.as_str())
+            .find(|schema| schema.envelope.id == CoreNodeType::AiChatPty.as_str())
             .and_then(|schema| schema.fields.into_iter().find(|f| f.name == "session_id"))
             .expect("ai-chat-pty declares session_id");
         assert!(session_id_field.local_only);

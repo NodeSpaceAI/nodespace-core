@@ -151,6 +151,12 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         SchemaChildrenRule,
         SchemaParentRule,
         SchemaNode,
+        CreateSchemaParams,
+        CreateSchemaOutput,
+        FieldRename,
+        FieldValueAddition,
+        UpdateSchemaParams,
+        SchemaUpdateOutput,
         // ai-chat
         AiChatCompletedWrite,
         AiChatResolvedEntity,

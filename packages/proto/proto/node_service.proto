@@ -102,8 +102,8 @@ service NodeService {
   rpc UpdateNodesBatch(UpdateNodesBatchRequest) returns (UpdateNodesBatchResponse);
 
   // Schemas
-  rpc GetAllSchemas(GetAllSchemasRequest) returns (NodeListResponse);
-  rpc GetSchemaDefinition(GetSchemaDefinitionRequest) returns (NodeResponse);
+  rpc GetAllSchemas(GetAllSchemasRequest) returns (SchemaListResponse);
+  rpc GetSchemaDefinition(GetSchemaDefinitionRequest) returns (SchemaResponse);
   rpc CreateSchema(SchemaParamsRequest) returns (SchemaResultResponse);
   rpc UpdateSchema(SchemaParamsRequest) returns (SchemaResultResponse);
 
@@ -1071,22 +1071,27 @@ message GetSchemaDefinitionRequest {
   string schema_id = 1;
 }
 
-// Schema read RPCs reuse NodeResponse / NodeListResponse: SchemaNode is a
-// strongly-typed view onto a node with node_type="schema". The Tauri proxy
-// reconstructs SchemaNode from the returned NodeData by calling
-// SchemaNode::from_node().
+// The schema RPCs carry the wire types of packages/nodespace-types, JSON
+// encoded: SchemaNode on the reads, CreateSchemaParams / UpdateSchemaParams
+// and their outputs on the writes. Each has one definition, in Rust, which
+// every surface decodes with the same serde; mirroring SchemaField,
+// SchemaRelationship and the rest as proto messages would be a second
+// definition to keep in step.
 
-// CreateSchema / UpdateSchema pass through JSON params/result verbatim.
-// Field/relationship shapes (SchemaField, SchemaRelationship, FieldRename,
-// AdditionalConstraints, title_template, etc.) are defined once in
-// packages/core/src/schema/mod.rs (CreateSchemaParams / UpdateSchemaParams)
-// and deserialized there via serde — mirroring them as proto messages would
-// duplicate that surface and drift. This is the same JSON-passthrough shape
-// the in-process local-agent tool call (handle_create_schema /
-// handle_update_schema) already uses.
+// One schema: a JSON-encoded SchemaNode, with its `relationships` and
+// `extends` filled from the schema's declaration edges.
+message SchemaResponse {
+  string schema_json = 1;
+}
+
+// Every schema, each a JSON-encoded SchemaNode.
+message SchemaListResponse {
+  repeated string schemas_json = 1;
+}
+
 message SchemaParamsRequest {
-  // JSON-encoded CreateSchemaParams or UpdateSchemaParams (see
-  // packages/core/src/schema/mod.rs for the field shape).
+  // JSON-encoded CreateSchemaParams (CreateSchema) or UpdateSchemaParams
+  // (UpdateSchema). Top-level keys are snake_case; an unknown key is refused.
   string params_json = 1;
 }
 
@@ -1126,9 +1131,9 @@ message InstallMethodologyResponse {
 }
 
 message SchemaResultResponse {
-  // JSON-encoded result value (schema_id, fields, relationships, warnings)
-  // on success; error responses use the gRPC Status channel instead of this
-  // field, mirroring every other RPC in this service.
+  // JSON-encoded CreateSchemaOutput (CreateSchema) or SchemaUpdateOutput
+  // (UpdateSchema) on success; error responses use the gRPC Status channel
+  // instead of this field, mirroring every other RPC in this service.
   string result_json = 1;
 }
 

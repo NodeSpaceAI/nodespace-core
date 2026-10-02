@@ -58,7 +58,6 @@ function schemaWith(fields: SchemaField[]): SchemaNode {
     version: 1,
     isCore: false,
     schemaVersion: 1,
-    description: '',
     relationships: [],
     fields
   };

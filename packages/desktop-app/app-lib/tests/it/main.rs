@@ -24,6 +24,7 @@ mod node_crud_tauri_seam_test;
 mod optimistic_echo_race_test;
 mod out_of_band_write_echo_test;
 mod schema_parity_test;
+mod schema_read_tauri_seam_test;
 mod sidecar_staging_sync_test;
 mod startup_readiness_data_plane_test;
 mod window_routing_no_cross_talk_test;

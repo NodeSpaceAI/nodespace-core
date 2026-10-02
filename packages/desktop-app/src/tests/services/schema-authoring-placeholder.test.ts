@@ -28,7 +28,6 @@ function schema(id: string, fields: SchemaField[]): SchemaNode {
     version: 1,
     isCore: false,
     schemaVersion: 1,
-    description: '',
     fields
   } as SchemaNode;
 }

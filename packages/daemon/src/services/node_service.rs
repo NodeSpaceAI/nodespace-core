@@ -68,13 +68,13 @@ use crate::nodespace::{
     PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest, RelationshipDeletedPayload,
     RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
     RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
-    ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
-    SearchRequest, SetLocalPersonIdentityRequest, UpdateCollectionNodeRequest,
-    UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
-    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdatePlayNodeRequest,
-    UpdateProjectNodeRequest, UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
-    UpdateRelationshipPropertiesResponse, UpdateSkillNodeRequest, UpdateTaskNodeRequest,
-    WatchRequest,
+    ResetSeedNodeResponse, ResolveConflictRequest, SchemaListResponse, SchemaParamsRequest,
+    SchemaResponse, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
+    UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
+    UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
+    UpdatePlayNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
+    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
+    UpdateSkillNodeRequest, UpdateTaskNodeRequest, WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -1958,40 +1958,32 @@ impl GrpcNodeService for NodeServiceImpl {
         }))
     }
 
-    // -- Schemas (read-only) -------------------------------------------------
+    // -- Schemas ---------------------------------------------------------------
 
     async fn get_all_schemas(
         &self,
         request: Request<GetAllSchemasRequest>,
-    ) -> Result<Response<NodeListResponse>, Status> {
+    ) -> Result<Response<SchemaListResponse>, Status> {
         let this = self.route(&request).await?;
-        // Hydrated fetch: relationship declarations are relationship-table rows,
-        // not a `properties` key, so the wire node is assembled via
-        // `into_wire_node` (which embeds `relationships` back into the
-        // properties JSON the desktop client parses).
         let schemas = this
             .node_service
             .get_all_schemas()
             .await
             .map_err(service_error_to_status)?;
 
-        let proto_nodes: Vec<NodeData> = schemas
-            .into_iter()
-            .map(|schema| node_to_proto(schema.into_wire_node()))
-            .collect();
-        let count = proto_nodes.len() as i32;
+        let schemas_json = schemas
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(schema_encode_error)?;
 
-        Ok(Response::new(NodeListResponse {
-            nodes: proto_nodes,
-            count,
-            collection_id: String::new(),
-        }))
+        Ok(Response::new(SchemaListResponse { schemas_json }))
     }
 
     async fn get_schema_definition(
         &self,
         request: Request<GetSchemaDefinitionRequest>,
-    ) -> Result<Response<NodeResponse>, Status> {
+    ) -> Result<Response<SchemaResponse>, Status> {
         let this = self.route(&request).await?;
         let req = request.into_inner();
         // Distinguish "not a schema" from "absent" for accurate statuses.
@@ -2015,19 +2007,14 @@ impl GrpcNodeService for NodeServiceImpl {
                     .map_err(service_error_to_status)?
                     .0;
                 // Relationships likewise: an inherited relationship is as
-                // traversable from an instance as an own one. The merged set
-                // excludes the `extends` row, so the schema's own is carried
-                // through: `into_wire_node` lifts it into the top-level
-                // `extends` key, which is how a reader learns the parent.
-                let (inherited, _) = this
+                // traversable from an instance as an own one. The parent
+                // stays where the schema carries it, in `extends`.
+                schema.relationships = this
                     .node_service
                     .resolve_relationships(&req.schema_id)
                     .await
-                    .map_err(service_error_to_status)?;
-                let own_type_system = schema.relationships.into_iter().filter(|r| {
-                    nodespace_core::models::schema::is_type_system_relationship(&r.name)
-                });
-                schema.relationships = inherited.into_iter().chain(own_type_system).collect();
+                    .map_err(service_error_to_status)?
+                    .0;
                 schema
             }
             None => {
@@ -2047,11 +2034,8 @@ impl GrpcNodeService for NodeServiceImpl {
                 )));
             }
         };
-        Ok(Response::new(NodeResponse {
-            placement: None,
-            node_id: req.schema_id,
-            node_type: "schema".to_string(),
-            node_data: Some(node_to_proto(schema.into_wire_node())),
+        Ok(Response::new(SchemaResponse {
+            schema_json: serde_json::to_string(&schema).map_err(schema_encode_error)?,
         }))
     }
 
@@ -2063,13 +2047,15 @@ impl GrpcNodeService for NodeServiceImpl {
         let req = request.into_inner();
         let params: serde_json::Value = serde_json::from_str(&req.params_json)
             .map_err(|e| Status::invalid_argument(format!("invalid params_json: {e}")))?;
+        let params = nodespace_core::schema::parse_create_schema_params(params)
+            .map_err(markdown_error_to_status)?;
 
-        let result = nodespace_core::schema::handle_create_schema(&this.node_service, params)
+        let output = nodespace_core::schema::create_schema(&this.node_service, params)
             .await
             .map_err(markdown_error_to_status)?;
 
         Ok(Response::new(SchemaResultResponse {
-            result_json: result.to_string(),
+            result_json: serde_json::to_string(&output).map_err(schema_encode_error)?,
         }))
     }
 
@@ -2126,13 +2112,15 @@ impl GrpcNodeService for NodeServiceImpl {
         let req = request.into_inner();
         let params: serde_json::Value = serde_json::from_str(&req.params_json)
             .map_err(|e| Status::invalid_argument(format!("invalid params_json: {e}")))?;
+        let params = nodespace_core::schema::parse_update_schema_params(params)
+            .map_err(markdown_error_to_status)?;
 
-        let result = nodespace_core::schema::handle_update_schema(&this.node_service, params)
+        let output = nodespace_core::schema::update_schema(&this.node_service, params)
             .await
             .map_err(markdown_error_to_status)?;
 
         Ok(Response::new(SchemaResultResponse {
-            result_json: result.to_string(),
+            result_json: serde_json::to_string(&output).map_err(schema_encode_error)?,
         }))
     }
 
@@ -2583,6 +2571,14 @@ async fn fetch_node(service: &Arc<CoreNodeService>, node_id: &str) -> Result<Nod
         .ok_or_else(|| Status::not_found(format!("Node not found: {}", node_id)))
 }
 
+/// The status for a schema wire type that failed to encode into a `*_json`
+/// response field. The schema RPCs carry the `nodespace-types` wire types
+/// (`SchemaNode`, `CreateSchemaOutput`, `SchemaUpdateOutput`) JSON-encoded,
+/// with the `relationships` and `extends` the store filled in.
+fn schema_encode_error(e: serde_json::Error) -> Status {
+    Status::internal(format!("failed to encode schema response: {e}"))
+}
+
 /// Convert nodes to proto, collapsing each one's `extends` chain first.
 ///
 /// **This is the only correct way to put a node on the wire** (ADR-078). The
@@ -2600,9 +2596,10 @@ async fn fetch_node(service: &Arc<CoreNodeService>, node_id: &str) -> Result<Nod
 /// which reads as data loss rather than a missing feature.
 ///
 /// The remaining in-module `node_to_proto` callers are nodes that cannot have
-/// an `extends` chain — schema nodes (`into_wire_node()`), collections, and
-/// the fixed-type person/identity responses — where collapsing would be a
-/// no-op round trip through the store.
+/// an `extends` chain — collections and the fixed-type person/identity
+/// responses — where collapsing would be a no-op round trip through the
+/// store. A schema does not travel as a node at all: the schema reads return
+/// the typed `SchemaNode`.
 pub(crate) async fn nodes_to_proto(
     service: &Arc<CoreNodeService>,
     nodes: Vec<Node>,
@@ -5888,8 +5885,8 @@ mod tests {
     }
 
     /// `get_schema_definition` on an extending schema reports inherited
-    /// relationships alongside inherited fields, and names its parent as the
-    /// top-level `extends` key rather than as a relationship.
+    /// relationships alongside inherited fields, and names its parent in
+    /// `extends` rather than as a relationship.
     #[tokio::test]
     async fn get_schema_definition_reports_inherited_relationships() {
         use nodespace_core::schema::handle_create_schema;
@@ -5929,21 +5926,159 @@ mod tests {
             .await
             .expect("get_schema_definition should succeed")
             .into_inner();
-        let data = response.node_data.expect("node_data should be present");
-        let props: serde_json::Value =
-            serde_json::from_str(&data.properties).expect("properties should parse");
+        let schema: nodespace_core::models::SchemaNode =
+            serde_json::from_str(&response.schema_json).expect("a typed SchemaNode");
 
-        let names = |key: &str| -> Vec<String> {
-            props[key]
-                .as_array()
-                .unwrap_or_else(|| panic!("`{key}` should be an array: {props}"))
+        let fields: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+        let relationships: Vec<&str> = schema
+            .relationships
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(fields, ["severity", "status"]);
+        assert_eq!(relationships, ["owned_by"]);
+        assert_eq!(schema.extends.as_deref(), Some("ticket"));
+
+        // Nothing rides in `properties`: the typed fields are the one home.
+        let wire: serde_json::Value = serde_json::from_str(&response.schema_json).unwrap();
+        assert_eq!(wire["properties"], serde_json::json!({}));
+        assert_eq!(wire["nodeType"], "schema");
+        assert_eq!(wire["id"], "bug");
+    }
+
+    /// `get_all_schemas` returns each schema typed, with the relationships
+    /// and the parent it declares itself.
+    #[tokio::test]
+    async fn get_all_schemas_returns_typed_schemas_with_relationships_and_extends() {
+        use nodespace_core::schema::handle_create_schema;
+
+        let (svc, _tmp) = make_service().await;
+        let core = svc.node_service.clone();
+
+        for params in [
+            serde_json::json!({ "name": "Owner", "fields": [] }),
+            serde_json::json!({
+                "name": "Ticket",
+                "fields": [{ "name": "status", "type": "text" }],
+                "title_template": "{status}",
+                "relationships": [{
+                    "name": "owned_by",
+                    "targetType": "owner",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "tickets",
+                    "reverseCardinality": "many"
+                }]
+            }),
+            serde_json::json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [{ "name": "severity", "type": "text" }]
+            }),
+        ] {
+            handle_create_schema(&core, params)
+                .await
+                .expect("schema creation failed");
+        }
+
+        let response = svc
+            .get_all_schemas(Request::new(GetAllSchemasRequest {}))
+            .await
+            .expect("get_all_schemas should succeed")
+            .into_inner();
+        let schemas: Vec<nodespace_core::models::SchemaNode> = response
+            .schemas_json
+            .iter()
+            .map(|json| serde_json::from_str(json).expect("a typed SchemaNode"))
+            .collect();
+        let by_id = |id: &str| {
+            schemas
                 .iter()
-                .filter_map(|r| r["name"].as_str().map(str::to_string))
-                .collect()
+                .find(|s| s.envelope.id == id)
+                .unwrap_or_else(|| panic!("schema '{id}' should be listed"))
         };
-        assert_eq!(names("fields"), ["severity", "status"], "{props}");
-        assert_eq!(names("relationships"), ["owned_by"], "{props}");
-        assert_eq!(props["extends"], "ticket", "{props}");
+
+        let ticket = by_id("ticket");
+        assert_eq!(ticket.relationships.len(), 1);
+        assert_eq!(ticket.relationships[0].name, "owned_by");
+        assert_eq!(ticket.extends, None);
+        assert_eq!(ticket.title_template.as_deref(), Some("{status}"));
+
+        // Own declarations only: the parent is named, not merged in.
+        let bug = by_id("bug");
+        assert_eq!(bug.extends.as_deref(), Some("ticket"));
+        assert!(bug.relationships.is_empty());
+        assert_eq!(bug.fields.len(), 1);
+
+        // A core subtype's parent is filled the same way.
+        assert_eq!(by_id("ai-chat-native").extends.as_deref(), Some("ai-chat"));
+    }
+
+    /// The schema write RPCs decode the typed parameters and answer with the
+    /// typed outputs.
+    #[tokio::test]
+    async fn schema_writes_carry_typed_params_and_outputs() {
+        let (svc, _tmp) = make_service().await;
+
+        let params = nodespace_core::schema::CreateSchemaParams {
+            name: "Ticket".to_string(),
+            fields: Some(vec![]),
+            title_template: None,
+            ..Default::default()
+        };
+        let created = svc
+            .create_schema(Request::new(SchemaParamsRequest {
+                params_json: serde_json::to_string(&params).unwrap(),
+            }))
+            .await
+            .expect("create_schema should succeed")
+            .into_inner();
+        let created: nodespace_core::schema::CreateSchemaOutput =
+            serde_json::from_str(&created.result_json).expect("a typed CreateSchemaOutput");
+        assert_eq!(created.schema_id, "ticket");
+
+        let params = nodespace_core::schema::UpdateSchemaParams {
+            schema_id: "ticket".to_string(),
+            add_fields: Some(vec![serde_json::from_value(
+                serde_json::json!({ "name": "status", "type": "text" }),
+            )
+            .unwrap()]),
+            title_template: Some("{status}".to_string()),
+            ..Default::default()
+        };
+        let updated = svc
+            .update_schema(Request::new(SchemaParamsRequest {
+                params_json: serde_json::to_string(&params).unwrap(),
+            }))
+            .await
+            .expect("update_schema should succeed")
+            .into_inner();
+        let updated: nodespace_core::schema::SchemaUpdateOutput =
+            serde_json::from_str(&updated.result_json).expect("a typed SchemaUpdateOutput");
+        assert_eq!(updated.fields_added, Some(1));
+
+        // `title_template` is written through the params and read back as the
+        // schema's one `title_template` field.
+        let read = svc
+            .get_schema_definition(Request::new(GetSchemaDefinitionRequest {
+                schema_id: "ticket".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let schema: nodespace_core::models::SchemaNode =
+            serde_json::from_str(&read.schema_json).unwrap();
+        assert_eq!(schema.title_template.as_deref(), Some("{status}"));
+
+        // An unknown key is refused rather than dropped.
+        let err = svc
+            .update_schema(Request::new(SchemaParamsRequest {
+                params_json: r#"{"schema_id":"ticket","titleTemplate":"x"}"#.to_string(),
+            }))
+            .await
+            .expect_err("an unknown key must be refused");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(err.message().contains("titleTemplate"), "{}", err.message());
     }
 
     fn seed_template(node_type: &str, title: &str) -> nodespace_core::markdown::NodeTemplate {

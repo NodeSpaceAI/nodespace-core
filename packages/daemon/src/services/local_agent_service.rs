@@ -2620,8 +2620,8 @@ async fn unlinked_pair_note(
     for s in &schemas {
         for r in &s.relationships {
             if let Some(t) = r.target_type.as_deref() {
-                if t != s.id && created_id_set.contains(t) {
-                    linked.insert(s.id.as_str());
+                if t != s.envelope.id && created_id_set.contains(t) {
+                    linked.insert(s.envelope.id.as_str());
                     linked.insert(t);
                 }
             }
@@ -2630,7 +2630,7 @@ async fn unlinked_pair_note(
 
     let orphans: Vec<&str> = schemas
         .iter()
-        .map(|s| s.id.as_str())
+        .map(|s| s.envelope.id.as_str())
         .filter(|id| !linked.contains(id))
         .collect();
     if orphans.is_empty() {
@@ -2639,7 +2639,7 @@ async fn unlinked_pair_note(
 
     let all_list = schemas
         .iter()
-        .map(|s| s.id.as_str())
+        .map(|s| s.envelope.id.as_str())
         .collect::<Vec<_>>()
         .join(", ");
     if orphans.len() == schemas.len() {
@@ -3263,12 +3263,12 @@ async fn build_workspace_context(
             if schema.is_core {
                 continue; // skip built-in types
             }
-            if existing_ids.contains(&schema.id) {
+            if existing_ids.contains(&schema.envelope.id) {
                 continue; // already present from semantic search
             }
-            if schema.created_at >= cutoff {
+            if schema.envelope.created_at >= cutoff {
                 tracing::debug!(
-                    schema_id = %schema.id,
+                    schema_id = %schema.envelope.id,
                     "workspace_context: injecting recently-created schema (debounce bypass)"
                 );
                 context.relevant_schemas.push(
@@ -3335,6 +3335,7 @@ mod tests {
             version: 1,
             description: String::new(),
             fields: Vec::new(),
+            extends: None,
             relationships: Vec::new(),
             warnings: None,
         };

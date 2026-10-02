@@ -836,7 +836,7 @@ fn def_search_nodes() -> ToolDefinition {
 /// SCHEMAS` block. As things stand no seeded skill declares `node_types`,
 /// so every path that fills that block drops `is_core` schemas
 /// (`skill_ops`'s unscoped non-core fallback and
-/// `context_ops::parse_and_filter_non_core_schemas`): for a bare-value update
+/// `context_ops::non_core_schema_hits`): for a bare-value update
 /// against `task`/`text` the block never names the type, and
 /// `routing::tools_with_available_guidance` correctly withholds the tool.
 ///
@@ -2830,7 +2830,7 @@ impl GraphToolExecutor {
         };
         let schema_label = schema
             .as_ref()
-            .map(|s| s.content.clone())
+            .map(|s| s.envelope.content.clone())
             .unwrap_or_else(|| params.node_type.clone());
 
         let today = chrono::Utc::now().format("%Y-%m-%d").to_string();

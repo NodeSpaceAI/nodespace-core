@@ -13,6 +13,7 @@
 import * as grpc from '@grpc/grpc-js';
 import type { PersonNodeUpdate } from '../../desktop-app/src/lib/types/person-node.ts';
 import type { ProjectNodeUpdate } from '../../desktop-app/src/lib/types/project-node.ts';
+import type { SchemaNode } from '../../desktop-app/src/lib/types/schema-node.ts';
 import {
   buildPersonNodeUpdatePatch,
   buildProjectNodeUpdatePatch,
@@ -1043,11 +1044,11 @@ async function handleRequest(req: Request): Promise<Response> {
   // GET /api/schemas
   if (method === 'GET' && pathname === '/api/schemas') {
     try {
-      const res = await call<Record<string, never>, { nodes: ProtoNodeData[] }>(
+      const res = await call<Record<string, never>, { schemasJson?: string[] }>(
         (nodeClient as unknown as Record<string, Function>).getAllSchemas,
         {}
       );
-      return json((res.nodes ?? []).map(nodeDataToSchemaNode));
+      return json((res.schemasJson ?? []).map(parseSchemaNode));
     } catch (err) {
       return grpcError(err as grpc.ServiceError);
     }
@@ -1058,12 +1059,12 @@ async function handleRequest(req: Request): Promise<Response> {
   if (method === 'GET' && schemaMatch) {
     const schemaId = decodeURIComponent(schemaMatch[1]);
     try {
-      const res = await call<{ schemaId: string }, { nodeData?: ProtoNodeData }>(
+      const res = await call<{ schemaId: string }, { schemaJson?: string }>(
         (nodeClient as unknown as Record<string, Function>).getSchemaDefinition,
         { schemaId }
       );
-      if (!res.nodeData) return error('SCHEMA_NOT_FOUND', `Schema '${schemaId}' not found`, 404);
-      return json(nodeDataToSchemaNode(res.nodeData));
+      if (!res.schemaJson) return error('SCHEMA_NOT_FOUND', `Schema '${schemaId}' not found`, 404);
+      return json(parseSchemaNode(res.schemaJson));
     } catch (err) {
       const grpcErr = err as grpc.ServiceError;
       if (grpcErr.code === grpc.status.NOT_FOUND) {
@@ -1310,19 +1311,16 @@ async function handleRequest(req: Request): Promise<Response> {
 }
 
 // ============================================================================
-// Schema node helpers
+// Schema helpers
 // ============================================================================
 
-function nodeDataToSchemaNode(n: ProtoNodeData): Record<string, unknown> {
-  const base = nodeDataToApiNode(n);
-  const props = base.properties as Record<string, unknown>;
-  return {
-    ...base,
-    isCore: props.isCore ?? false,
-    schemaVersion: props.schemaVersion ?? 1,
-    description: props.description ?? '',
-    fields: props.fields ?? []
-  };
+/**
+ * A schema read's payload: the daemon's JSON-encoded `SchemaNode`, passed on
+ * as it is. The daemon fills its `relationships` and `extends`, so there is
+ * nothing to rebuild here.
+ */
+function parseSchemaNode(schemaJson: string): SchemaNode {
+  return JSON.parse(schemaJson) as SchemaNode;
 }
 
 // ============================================================================

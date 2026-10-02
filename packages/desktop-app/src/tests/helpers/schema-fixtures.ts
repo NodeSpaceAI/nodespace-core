@@ -35,7 +35,6 @@ export function schemaWith(id: string, isCore: boolean, fields: SchemaField[]): 
     version: 1,
     isCore,
     schemaVersion: 1,
-    description: '',
     relationships: [],
     fields
   };

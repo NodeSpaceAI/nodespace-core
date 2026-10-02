@@ -1473,13 +1473,12 @@ mod tests {
         }
     }
 
-    /// Regression: `resolve_relationships` must exclude the `extends`
-    /// type-system relationship from its merged output. A schema that
-    /// declares `extends` stores it as an ordinary row in the same
-    /// declaration table real relationships live in, so a subtype's own
-    /// `schema.relationships` genuinely contains an `extends` entry pointing
-    /// at its parent — but no real data node instance ever carries an
-    /// `extends` edge (only schema nodes do, in the schema graph). A
+    /// Regression: `resolve_relationships` must not report the `extends`
+    /// type-system relationship. A schema that declares `extends` stores it
+    /// as a row in the same declaration table real relationships live in,
+    /// but holds it as its `extends`, not among its `relationships`: no data
+    /// node instance ever carries an `extends` edge (only schema nodes do, in
+    /// the schema graph). A
     /// condition segment literally named `extends` must therefore still be
     /// classified `Unresolvable` (a typo), not accepted as a real
     /// relationship hop that will simply never resolve.

@@ -4,11 +4,12 @@
 //! interactive use. JSON mode emits the proto-as-JSON representation so the
 //! output is unambiguous and scriptable.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use nodespace_daemon::nodespace::{
     ConflictRecord as ConflictRecordProto, DeleteNodeResponse, MergeNodesResponse, NodeListResponse,
 };
 use nodespace_daemon::NodeData;
+use nodespace_types::SchemaNode;
 use serde_json::{json, Value};
 
 pub fn print_node(node: &NodeData, json: bool) -> Result<()> {
@@ -199,6 +200,157 @@ fn write_human_node(node: &NodeData) {
     }
 }
 
+/// A schema in the CLI's shape: the typed `SchemaNode` with its top-level keys
+/// in snake_case, like every other CLI payload.
+///
+/// The keys are the ones `schema create` and `schema update` take
+/// (`fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
+/// `title_template`, `properties_header_summary_template`), so what a caller
+/// reads here is what it writes there. Field and relationship entries keep
+/// their camelCase metadata keys on both sides.
+pub fn schema_to_json(schema: &SchemaNode) -> Value {
+    // Destructured in full, so a field added to `SchemaNode` fails to compile
+    // here until the CLI says how it prints.
+    let SchemaNode {
+        envelope,
+        is_core,
+        is_abstract,
+        extends,
+        children,
+        parent,
+        schema_version,
+        fields,
+        relationships,
+        title_template,
+        properties_header_summary_template,
+    } = schema;
+
+    let mut value = json!({
+        "id": envelope.id,
+        "node_type": envelope.node_type,
+        "content": envelope.content,
+        "version": envelope.version,
+        "lifecycle_status": envelope.lifecycle_status,
+        "created_at": envelope.created_at,
+        "modified_at": envelope.modified_at,
+        "is_core": is_core,
+        "schema_version": schema_version,
+        "fields": fields,
+        "relationships": relationships,
+    });
+    // Omitted when they declare nothing, as on the wire.
+    if *is_abstract {
+        value["abstract"] = json!(true);
+    }
+    if let Some(parent_type) = extends {
+        value["extends"] = json!(parent_type);
+    }
+    if !children.is_any() {
+        value["children"] = json!(children);
+    }
+    if !parent.is_any() {
+        value["parent"] = json!(parent);
+    }
+    if let Some(template) = title_template {
+        value["title_template"] = json!(template);
+    }
+    if let Some(template) = properties_header_summary_template {
+        value["properties_header_summary_template"] = json!(template);
+    }
+    value
+}
+
+/// Decode a schema read's JSON-encoded `SchemaNode`.
+fn parse_schema(schema_json: &str) -> Result<SchemaNode> {
+    serde_json::from_str(schema_json).context("daemon returned a malformed schema")
+}
+
+pub fn print_schema(schema_json: &str, json: bool) -> Result<()> {
+    let schema = parse_schema(schema_json)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&schema_to_json(&schema))?
+        );
+    } else {
+        write_human_schema(&schema);
+    }
+    Ok(())
+}
+
+pub fn print_schema_list(schemas_json: &[String], json: bool) -> Result<()> {
+    let schemas = schemas_json
+        .iter()
+        .map(|schema_json| parse_schema(schema_json))
+        .collect::<Result<Vec<_>>>()?;
+
+    if json {
+        let value = json!({
+            "count": schemas.len(),
+            "schemas": schemas.iter().map(schema_to_json).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+
+    if schemas.is_empty() {
+        println!("No schemas returned (count: 0)");
+        return Ok(());
+    }
+
+    println!("{} schema(s):", schemas.len());
+    for (idx, schema) in schemas.iter().enumerate() {
+        if idx > 0 {
+            println!();
+        }
+        write_human_schema(schema);
+    }
+    Ok(())
+}
+
+fn write_human_schema(schema: &SchemaNode) {
+    println!("id:              {}", schema.envelope.id);
+    println!("name:            {}", schema.envelope.content);
+    println!("version:         {}", schema.envelope.version);
+    println!("core:            {}", schema.is_core);
+    if schema.is_abstract {
+        println!("abstract:        true");
+    }
+    if let Some(parent) = &schema.extends {
+        println!("extends:         {}", parent);
+    }
+    if !schema.children.is_any() {
+        println!("children:        {}", json!(schema.children));
+    }
+    if !schema.parent.is_any() {
+        println!("parent:          {}", json!(schema.parent));
+    }
+    if let Some(template) = &schema.title_template {
+        println!("title_template:  {}", template);
+    }
+    if let Some(template) = &schema.properties_header_summary_template {
+        println!("summary_template: {}", template);
+    }
+    println!("fields:");
+    if schema.fields.is_empty() {
+        println!("    (none)");
+    }
+    for field in &schema.fields {
+        println!("    {}: {}", field.name, field.field_type);
+    }
+    if !schema.relationships.is_empty() {
+        println!("relationships:");
+        for rel in &schema.relationships {
+            println!(
+                "    {} -> {} (reverse: {})",
+                rel.name,
+                rel.target_type.as_deref().unwrap_or("*"),
+                rel.reverse_name
+            );
+        }
+    }
+}
+
 /// Parse the wire `properties` string into the flat API shape.
 ///
 /// Storage nests properties under the schema id: `{"task": {"status": "open"}}`.
@@ -241,19 +393,6 @@ pub fn related_node_to_json(node: &serde_json::Value) -> serde_json::Value {
     let Some(obj) = node.as_object() else {
         return node.clone();
     };
-
-    // `schema` nodes reach us reshaped by `SchemaNode::from_node`, which drops
-    // `nodeType`/`title`/`properties` wholesale. Nothing can be recovered from
-    // this end, so pass them through rather than emitting a half-mapped node
-    // that looks like the CLI shape but is missing its fields.
-    //
-    // Identify them by the ABSENCE of `nodeType`, which every node shape
-    // carries and `SchemaNode` does not. Keying off a field it happens to have
-    // (`fields`, `schemaVersion`) would misfire on a user-defined type that
-    // legitimately declares a field by that name — `fields` is not reserved.
-    if !obj.contains_key("nodeType") {
-        return node.clone();
-    }
 
     // Every `Node` field that `rename_all = "camelCase"` spells differently
     // from the CLI's snake_case shape (see `nodespace_types::Node`).
@@ -804,26 +943,29 @@ mod tests {
         assert!(out["properties"].get("mentioned_in").is_none());
     }
 
-    /// A `schema` node reaches us reshaped by `SchemaNode::from_node`, which
-    /// has already dropped `nodeType`/`title`/`properties`. Nothing can be
-    /// recovered here, so pass it through rather than emit a half-mapped node.
+    /// A schema reached through a relationship is a node like any other: it
+    /// is re-keyed to the CLI's node shape, with its stored definition under
+    /// `properties`. The typed schema is read with `schema get`.
     #[test]
-    fn related_node_passes_schema_nodes_through_untouched() {
+    fn related_schema_node_is_rekeyed_like_any_node() {
         let schema = serde_json::json!({
-            "id": "s1",
-            "name": "Ticket",
-            "fields": [{"name": "severity"}],
-            "schemaVersion": 1,
+            "id": "invoice",
+            "nodeType": "schema",
+            "content": "Invoice",
+            "properties": {"isCore": false, "schemaVersion": 1, "fields": []},
+            "createdAt": "2026-05-17T12:00:00Z",
         });
 
         let out = related_node_to_json(&schema);
 
-        assert_eq!(out, schema);
+        assert_eq!(out["node_type"], "schema");
+        assert_eq!(out["created_at"], "2026-05-17T12:00:00Z");
+        assert_eq!(out["properties"]["schemaVersion"], 1);
+        assert!(out.get("nodeType").is_none());
     }
 
-    /// The passthrough keys off the ABSENCE of `nodeType`, not the presence of
-    /// `fields`: `fields` is not a reserved property name, so a user-defined
-    /// type may legitimately declare one and must still be re-keyed.
+    /// `fields` is not a reserved property name: a user-defined type may
+    /// declare one, and it is re-keyed like any other node.
     #[test]
     fn related_node_rekeys_a_user_type_that_has_a_fields_property() {
         let typed = serde_json::json!({
@@ -896,5 +1038,108 @@ mod tests {
             "nodespace --socket '/tmp/my dir/ns.sock' --database work \
              node delete abc123 --version 7 --descendants 4"
         );
+    }
+
+    fn sample_schema_json() -> String {
+        serde_json::json!({
+            "id": "invoice",
+            "nodeType": "schema",
+            "content": "Invoice",
+            "version": 3,
+            "createdAt": "2026-05-17T12:00:00Z",
+            "modifiedAt": "2026-05-18T12:00:00Z",
+            "properties": {},
+            "lifecycleStatus": "active",
+            "isCore": false,
+            "abstract": true,
+            "extends": "document",
+            "children": { "rule": "none" },
+            "schemaVersion": 2,
+            "fields": [{ "name": "amount", "type": "number", "friendlyName": "Amount" }],
+            "relationships": [{
+                "name": "billed_to",
+                "targetType": "customer",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "invoices",
+                "reverseCardinality": "many"
+            }],
+            "titleTemplate": "{amount}",
+            "propertiesHeaderSummaryTemplate": "{amount}"
+        })
+        .to_string()
+    }
+
+    /// `schema get` reads a schema under the keys `schema create` and
+    /// `schema update` write it with: `title_template` is one top-level key
+    /// on both sides, and nothing is nested under `properties`.
+    #[test]
+    fn schema_json_uses_the_keys_the_schema_params_take() {
+        let schema = parse_schema(&sample_schema_json()).unwrap();
+        let out = schema_to_json(&schema);
+
+        assert_eq!(out["id"], "invoice");
+        assert_eq!(out["node_type"], "schema");
+        assert_eq!(out["content"], "Invoice");
+        assert_eq!(out["version"], 3);
+        assert_eq!(out["is_core"], false);
+        assert_eq!(out["schema_version"], 2);
+        assert_eq!(out["abstract"], true);
+        assert_eq!(out["extends"], "document");
+        assert_eq!(out["children"], serde_json::json!({ "rule": "none" }));
+        assert_eq!(out["title_template"], "{amount}");
+        assert_eq!(out["properties_header_summary_template"], "{amount}");
+        assert_eq!(out["fields"][0]["friendlyName"], "Amount");
+        assert_eq!(out["relationships"][0]["reverseName"], "invoices");
+
+        for absent in [
+            "properties",
+            "titleTemplate",
+            "isCore",
+            "nodeType",
+            "parent",
+        ] {
+            assert!(out.get(absent).is_none(), "`{absent}` must not appear");
+        }
+
+        // Every create parameter a schema carries is read back under the
+        // same name.
+        let params: nodespace_types::CreateSchemaParams =
+            serde_json::from_value(serde_json::json!({
+                "name": out["content"],
+                "fields": out["fields"],
+                "relationships": out["relationships"],
+                "extends": out["extends"],
+                "abstract": out["abstract"],
+                "children": out["children"],
+                "title_template": out["title_template"],
+                "properties_header_summary_template": out["properties_header_summary_template"],
+            }))
+            .expect("the read shape feeds the create parameters");
+        assert_eq!(params.title_template.as_deref(), Some("{amount}"));
+    }
+
+    #[test]
+    fn schema_json_omits_what_a_schema_does_not_declare() {
+        let schema = SchemaNode::new("note", "Note");
+        let out = schema_to_json(&schema);
+
+        for absent in [
+            "abstract",
+            "extends",
+            "children",
+            "parent",
+            "title_template",
+            "properties_header_summary_template",
+        ] {
+            assert!(out.get(absent).is_none(), "`{absent}` must not appear");
+        }
+        assert_eq!(out["fields"], serde_json::json!([]));
+        assert_eq!(out["relationships"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_malformed_schema_is_an_error_not_an_empty_one() {
+        assert!(parse_schema("{\"id\": 1}").is_err());
     }
 }

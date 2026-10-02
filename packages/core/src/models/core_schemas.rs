@@ -31,7 +31,9 @@ use crate::models::schema::{
     EnumValue, RelationshipCardinality, RelationshipDirection, SchemaField, SchemaProtectionLevel,
     SchemaRelationship,
 };
-use crate::models::{AiChatProvider, AiChatSessionStatus, AiChatTurnStatus, SchemaNode};
+use crate::models::{
+    AiChatProvider, AiChatSessionStatus, AiChatTurnStatus, CoreNodeType, NodeEnvelope, SchemaNode,
+};
 use chrono::Utc;
 
 /// The `database-settings` field that lists the extensions a reader needs in
@@ -51,19 +53,26 @@ fn enum_values<T: Copy>(
 
 /// Get all core schema definitions as SchemaNode instances
 ///
-/// Returns all core schemas ready to be converted to Node via `schema.into_node()`
-/// for database seeding.
+/// Returns all core schemas, ready for seeding: `schema_node::to_node` gives
+/// each one's node row and `schema_node::to_declarations` its declaration edges.
 pub fn get_core_schemas() -> Vec<SchemaNode> {
     let now = Utc::now();
+    let envelope = |id: &str, name: &str| NodeEnvelope {
+        created_at: now,
+        modified_at: now,
+        ..NodeEnvelope::new_with_id(
+            id.to_string(),
+            CoreNodeType::Schema.as_str().to_string(),
+            name.to_string(),
+            serde_json::json!({}),
+        )
+    };
 
     let mut schemas = vec![
         // Task schema with status, priority, dates, and assignee
         SchemaNode {
-            id: "task".to_string(),
-            content: "Task".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("task", "Task"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -284,11 +293,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // projects reachable are frontend concerns. The rule lives next to the plugin
         // registry, in the desktop app's `core-plugins.ts`.
         SchemaNode {
-            id: "project".to_string(),
-            content: "Project".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("project", "Project"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -425,11 +431,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Text schema - plain text content (no extra fields)
         SchemaNode {
-            id: "text".to_string(),
-            content: "Text".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("text", "Text"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -442,11 +445,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Date schema - daily note containers (no extra fields)
         SchemaNode {
-            id: "date".to_string(),
-            content: "Date".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("date", "Date"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -459,11 +459,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Header schema - markdown headers (no extra fields)
         SchemaNode {
-            id: "header".to_string(),
-            content: "Header".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("header", "Header"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -476,11 +473,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Code block schema - code with syntax highlighting (no extra fields)
         SchemaNode {
-            id: "code-block".to_string(),
-            content: "Code Block".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("code-block", "Code Block"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -493,11 +487,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Quote block schema - blockquotes (no extra fields)
         SchemaNode {
-            id: "quote-block".to_string(),
-            content: "Quote Block".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("quote-block", "Quote Block"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -510,11 +501,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Ordered list schema - numbered list items (no extra fields)
         SchemaNode {
-            id: "ordered-list".to_string(),
-            content: "Ordered List".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("ordered-list", "Ordered List"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -527,11 +515,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Horizontal line schema - thematic break (no extra fields)
         SchemaNode {
-            id: "horizontal-line".to_string(),
-            content: "Horizontal Line".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("horizontal-line", "Horizontal Line"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -544,11 +529,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Table schema - GFM markdown table (no extra fields)
         SchemaNode {
-            id: "table".to_string(),
-            content: "Table".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("table", "Table"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -561,11 +543,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Collection schema - hierarchical labels for organizing nodes
         SchemaNode {
-            id: "collection".to_string(),
-            content: "Collection".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("collection", "Collection"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -596,11 +575,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Checkbox schema - pure content node with state encoded in content string
         SchemaNode {
-            id: "checkbox".to_string(),
-            content: "Checkbox".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("checkbox", "Checkbox"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -614,11 +590,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // AI Chat (ADR-088): the abstract base of the chat family. Never
         // instantiated; every subtype inherits these fields in the `ai-chat` bucket.
         SchemaNode {
-            id: "ai-chat".to_string(),
-            content: "AI Chat".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("ai-chat", "AI Chat"),
+            extends: None,
             is_core: true,
             is_abstract: true,
             children: Default::default(),
@@ -709,11 +682,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // AI Chat (native): a conversation run by NodeSpace's own agent loop, with
         // local inference or a compatible endpoint.
         SchemaNode {
-            id: "ai-chat-native".to_string(),
-            content: "AI Chat (Native)".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("ai-chat-native", "AI Chat (Native)"),
+            extends: Some("ai-chat".to_string()),
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -797,7 +767,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique_case_insensitive: None,
                 },
             ],
-            relationships: vec![crate::schema::extends_chain::extends_declaration("ai-chat")],
+            relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
         },
@@ -806,11 +776,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // session ends. `session_id` (the harness's own id for the conversation)
         // and `transcript` never leave the machine.
         SchemaNode {
-            id: "ai-chat-pty".to_string(),
-            content: "AI Chat (Terminal)".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("ai-chat-pty", "AI Chat (Terminal)"),
+            extends: Some("ai-chat".to_string()),
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -894,17 +861,14 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique_case_insensitive: None,
                 },
             ],
-            relationships: vec![crate::schema::extends_chain::extends_declaration("ai-chat")],
+            relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
         },
         // Query schema - saved query definitions
         SchemaNode {
-            id: "query".to_string(),
-            content: "Query".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("query", "Query"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -1101,11 +1065,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // title_template below, the single place the first/last composition
         // rule lives.
         SchemaNode {
-            id: "person".to_string(),
-            content: "Person".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("person", "Person"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -1227,11 +1188,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // schema (ADR-057), which shipped with this same empty shape but no
         // name that described what it was for.
         SchemaNode {
-            id: "agent-guidance".to_string(),
-            content: "Agent Guidance".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("agent-guidance", "Agent Guidance"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -1244,11 +1202,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // Skill schema for agent skill definitions (ADR-030)
         SchemaNode {
-            id: "skill".to_string(),
-            content: "Skill".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("skill", "Skill"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -1383,11 +1338,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // when the declared vocabulary and the writing code have drifted
         // (`ai-chat.status`, 16 broken tests). Tracked separately.
         SchemaNode {
-            id: "play".to_string(),
-            content: "Play".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("play", "Play"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -1545,11 +1497,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // not support (ADR-083 §2). It lives in this base bucket, so it stays
         // in place when the singleton is retyped to a subtype (ADR-078).
         SchemaNode {
-            id: "database-settings".to_string(),
-            content: "Database Settings".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("database-settings", "Database Settings"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -1588,11 +1537,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // is a JSON Schema document with its own validator
         // (`ToolNodeBehavior`), so it is an open object here.
         SchemaNode {
-            id: "tool".to_string(),
-            content: "Tool".to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
+            envelope: envelope("tool", "Tool"),
+            extends: None,
             is_core: true,
             is_abstract: false,
             children: Default::default(),
@@ -1715,7 +1661,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
     // schema declares the rules its own type declares, so a client reading
     // the schemas sees what the database enforces.
     for schema in &mut schemas {
-        if let Some(core) = crate::models::CoreNodeType::from_id(&schema.id) {
+        if let Some(core) = CoreNodeType::from_id(&schema.envelope.id) {
             let declared = core.declared_structure();
             schema.children = declared.children.into();
             schema.parent = declared.parent.into();
@@ -1734,7 +1680,7 @@ mod tests {
         // Assert the ids, not just the count: a bare length check reports
         // "expected 18, got 19" when a schema is added and says nothing about
         // which one, and passes unchanged if one is swapped for another.
-        let mut ids: Vec<&str> = schemas.iter().map(|s| s.id.as_str()).collect();
+        let mut ids: Vec<&str> = schemas.iter().map(|s| s.envelope.id.as_str()).collect();
         ids.sort_unstable();
         // Sorted, so this literal reads as a set rather than pinning the
         // declaration order in `get_core_schemas`.
@@ -1774,7 +1720,7 @@ mod tests {
     fn core_schema(core: CoreNodeType) -> Option<SchemaNode> {
         get_core_schemas()
             .into_iter()
-            .find(|s| s.id == core.as_str())
+            .find(|s| s.envelope.id == core.as_str())
     }
 
     /// The fields of a core type's whole `extends` chain, nearest first.
@@ -1790,7 +1736,10 @@ mod tests {
     /// the `schema` meta-type, which has no schema of its own.
     #[test]
     fn the_seeded_schemas_are_exactly_the_registry_minus_the_meta_type() {
-        let mut seeded: Vec<String> = get_core_schemas().into_iter().map(|s| s.id).collect();
+        let mut seeded: Vec<String> = get_core_schemas()
+            .into_iter()
+            .map(|s| s.envelope.id)
+            .collect();
         seeded.sort();
         let mut registered: Vec<String> = CoreNodeType::ALL
             .into_iter()
@@ -1815,9 +1764,9 @@ mod tests {
         }
         for schema in get_core_schemas() {
             assert!(
-                registry.get(&schema.id).is_some(),
+                registry.get(&schema.envelope.id).is_some(),
                 "seeded schema '{}' has no behavior",
-                schema.id
+                schema.envelope.id
             );
         }
         for type_name in registry.get_all_types() {
@@ -1876,7 +1825,7 @@ mod tests {
                 "{core}: abstract flag"
             );
             assert_eq!(
-                crate::schema::extends_chain::declared_parent(&schema),
+                schema.extends.clone(),
                 core.parent().map(|p| p.as_str().to_string()),
                 "{core}: parent"
             );
@@ -1908,7 +1857,11 @@ mod tests {
                 SchemaParentRule::from(declared.parent),
                 "{core}: parent rule"
             );
-            let stored = SchemaNode::from_node(schema.clone().into_node()).unwrap();
+            let stored = crate::models::schema_node::from_storage(
+                crate::models::schema_node::to_node(&schema),
+                Vec::new(),
+            )
+            .unwrap();
             assert_eq!(stored.children, schema.children, "{core}: stored children");
             assert_eq!(stored.parent, schema.parent, "{core}: stored parent");
         }
@@ -1929,7 +1882,7 @@ mod tests {
                     bare.chars()
                         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
                     "{}.{} is not snake_case",
-                    schema.id,
+                    schema.envelope.id,
                     field.name
                 );
             }
@@ -2016,7 +1969,7 @@ mod tests {
         let schemas = get_core_schemas();
         for id in ["log", "playbook_log"] {
             assert!(
-                !schemas.iter().any(|s| s.id == id),
+                !schemas.iter().any(|s| s.envelope.id == id),
                 "`{id}` must not be a graph type — engine diagnostics go to the log file"
             );
         }
@@ -2026,14 +1979,18 @@ mod tests {
     fn test_all_schemas_are_core() {
         let schemas = get_core_schemas();
         for schema in &schemas {
-            assert!(schema.is_core, "Schema {} should be core", schema.id);
+            assert!(
+                schema.is_core,
+                "Schema {} should be core",
+                schema.envelope.id
+            );
         }
     }
 
     #[test]
     fn test_task_schema_has_fields() {
         let schemas = get_core_schemas();
-        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
 
         assert_eq!(task.fields.len(), 5);
         assert!(task.get_field("status").is_some());
@@ -2044,7 +2001,7 @@ mod tests {
     #[test]
     fn test_project_status_values() {
         let schemas = get_core_schemas();
-        let project = schemas.iter().find(|s| s.id == "project").unwrap();
+        let project = schemas.iter().find(|s| s.envelope.id == "project").unwrap();
         let status = project.get_field("status").unwrap();
 
         // No `archived`: retiring a project is archiving the node (ADR-087).
@@ -2061,7 +2018,7 @@ mod tests {
     #[test]
     fn test_project_declares_tasks_relationship() {
         let schemas = get_core_schemas();
-        let project = schemas.iter().find(|s| s.id == "project").unwrap();
+        let project = schemas.iter().find(|s| s.envelope.id == "project").unwrap();
 
         // project has-many tasks; the task-side inverse is derived from this one
         // declaration (task carries no relationships entry of its own).
@@ -2073,7 +2030,7 @@ mod tests {
         assert_eq!(rel.reverse_name, "project");
         assert_eq!(rel.reverse_cardinality, RelationshipCardinality::One);
 
-        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
         assert!(
             !task.relationships.iter().any(|r| r.name == "project"),
             "task's project link is the derived inverse, not its own declaration"
@@ -2083,7 +2040,7 @@ mod tests {
     #[test]
     fn test_person_declares_tasks_assignee_relationship() {
         let schemas = get_core_schemas();
-        let person = schemas.iter().find(|s| s.id == "person").unwrap();
+        let person = schemas.iter().find(|s| s.envelope.id == "person").unwrap();
 
         // person has-many tasks (as assignee); the task-side inverse is derived
         // from this one declaration (task carries no `assignee` entry of its
@@ -2102,7 +2059,7 @@ mod tests {
         assert_eq!(rel.reverse_name, "assignee");
         assert_eq!(rel.reverse_cardinality, RelationshipCardinality::One);
 
-        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
         assert!(
             !task.relationships.iter().any(|r| r.name == "assignee"),
             "task's assignee link is the derived inverse, not its own declaration"
@@ -2112,7 +2069,7 @@ mod tests {
     #[test]
     fn test_task_declares_self_referential_link_relationships() {
         let schemas = get_core_schemas();
-        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
 
         // Exactly these three — an accidental fourth declaration on task should
         // trip a test rather than ride along unnoticed.
@@ -2146,7 +2103,7 @@ mod tests {
     #[test]
     fn test_person_declares_reported_tasks_creator_relationship() {
         let schemas = get_core_schemas();
-        let person = schemas.iter().find(|s| s.id == "person").unwrap();
+        let person = schemas.iter().find(|s| s.envelope.id == "person").unwrap();
 
         // Distinct from `tasks`/`assignee`: who filed the task, not who owns it.
         let rel = person
@@ -2161,7 +2118,7 @@ mod tests {
         assert_eq!(rel.reverse_cardinality, RelationshipCardinality::One);
         assert!(rel.required.is_none());
 
-        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
         assert!(
             !task.relationships.iter().any(|r| r.name == "creator"),
             "task's creator link is the derived inverse, not its own declaration"
@@ -2181,7 +2138,7 @@ mod tests {
             "ordered-list",
             "checkbox",
         ] {
-            let schema = schemas.iter().find(|s| s.id == *id).unwrap();
+            let schema = schemas.iter().find(|s| s.envelope.id == *id).unwrap();
             assert!(
                 schema.fields.is_empty(),
                 "Schema {} should have no fields",
@@ -2195,7 +2152,10 @@ mod tests {
         // A collection is grouping only (ADR-083 §5): its one field says what
         // the collection is for, and it carries no access-control fields.
         let schemas = get_core_schemas();
-        let collection = schemas.iter().find(|s| s.id == "collection").unwrap();
+        let collection = schemas
+            .iter()
+            .find(|s| s.envelope.id == "collection")
+            .unwrap();
 
         let names: Vec<&str> = collection.fields.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["description"]);
@@ -2211,7 +2171,7 @@ mod tests {
         // The description is seeded into every new database and shown to users
         // and agents, so it must describe the field alone.
         let schemas = get_core_schemas();
-        let person = schemas.iter().find(|s| s.id == "person").unwrap();
+        let person = schemas.iter().find(|s| s.envelope.id == "person").unwrap();
         let email = person.get_field("email").expect("person has email");
         assert_eq!(email.required, Some(false));
         assert_eq!(
@@ -2223,7 +2183,7 @@ mod tests {
     #[test]
     fn test_query_schema_has_fields() {
         let schemas = get_core_schemas();
-        let query = schemas.iter().find(|s| s.id == "query").unwrap();
+        let query = schemas.iter().find(|s| s.envelope.id == "query").unwrap();
 
         assert_eq!(query.fields.len(), 9);
         assert!(query.get_field("target_type").is_some());
@@ -2246,7 +2206,7 @@ mod tests {
     #[test]
     fn test_the_ai_chat_family_declares_each_field_once() {
         let schemas = get_core_schemas();
-        let find = |id: &str| schemas.iter().find(|s| s.id == id).unwrap();
+        let find = |id: &str| schemas.iter().find(|s| s.envelope.id == id).unwrap();
 
         let base = find("ai-chat");
         assert!(base.is_abstract);
@@ -2273,10 +2233,10 @@ mod tests {
 
         for subtype in [native, pty] {
             assert_eq!(
-                crate::schema::extends_chain::declared_parent(subtype).as_deref(),
+                subtype.extends.as_deref(),
                 Some("ai-chat"),
                 "{} extends ai-chat",
-                subtype.id
+                subtype.envelope.id
             );
         }
     }
@@ -2286,7 +2246,9 @@ mod tests {
     #[test]
     fn test_only_the_session_id_and_transcript_are_local_only() {
         for schema in get_core_schemas() {
-            if !CoreNodeType::from_id(&schema.id).is_some_and(|c| c.is_a(CoreNodeType::AiChat)) {
+            if !CoreNodeType::from_id(&schema.envelope.id)
+                .is_some_and(|c| c.is_a(CoreNodeType::AiChat))
+            {
                 continue;
             }
             for field in &schema.fields {
@@ -2294,7 +2256,7 @@ mod tests {
                 assert_eq!(
                     field.local_only, machine_bound,
                     "{}.{}: local_only",
-                    schema.id, field.name
+                    schema.envelope.id, field.name
                 );
             }
         }
@@ -2309,7 +2271,7 @@ mod tests {
         let values = |schema_id: &str, field: &str| -> Vec<String> {
             schemas
                 .iter()
-                .find(|s| s.id == schema_id)
+                .find(|s| s.envelope.id == schema_id)
                 .unwrap()
                 .get_field(field)
                 .unwrap()
@@ -2333,7 +2295,7 @@ mod tests {
         // A chat with no stored value reads as the enum's default, so the
         // schema's declared default must be that same value.
         let default = |schema_id: &str, field: &str| {
-            let schema = schemas.iter().find(|s| s.id == schema_id).unwrap();
+            let schema = schemas.iter().find(|s| s.envelope.id == schema_id).unwrap();
             schema.get_field(field).unwrap().default.clone()
         };
         assert_eq!(
@@ -2354,7 +2316,7 @@ mod tests {
                     assert_ne!(
                         value.value, "archived",
                         "{}.{} borrows governance's word",
-                        schema.id, field.name
+                        schema.envelope.id, field.name
                     );
                 }
             }
@@ -2366,14 +2328,14 @@ mod tests {
     #[test]
     fn test_no_ai_chat_field_is_prefixed() {
         for schema in get_core_schemas() {
-            if !schema.id.starts_with("ai-chat") {
+            if !schema.envelope.id.starts_with("ai-chat") {
                 continue;
             }
             for field in &schema.fields {
                 assert!(
                     !field.name.contains(':'),
                     "{}.{} is prefixed",
-                    schema.id,
+                    schema.envelope.id,
                     field.name
                 );
             }
@@ -2404,7 +2366,10 @@ mod tests {
     #[test]
     fn test_agent_guidance_schema_has_fields() {
         let schemas = get_core_schemas();
-        let agent_guidance = schemas.iter().find(|s| s.id == "agent-guidance").unwrap();
+        let agent_guidance = schemas
+            .iter()
+            .find(|s| s.envelope.id == "agent-guidance")
+            .unwrap();
 
         assert_eq!(agent_guidance.fields.len(), 0);
     }
@@ -2412,7 +2377,7 @@ mod tests {
     #[test]
     fn test_skill_schema_has_fields() {
         let schemas = get_core_schemas();
-        let skill = schemas.iter().find(|s| s.id == "skill").unwrap();
+        let skill = schemas.iter().find(|s| s.envelope.id == "skill").unwrap();
 
         assert_eq!(skill.fields.len(), 5);
         assert!(skill.get_field("node_types").is_some());
@@ -2438,7 +2403,7 @@ mod tests {
         let schemas = get_core_schemas();
         let settings = schemas
             .iter()
-            .find(|s| s.id == "database-settings")
+            .find(|s| s.envelope.id == "database-settings")
             .expect("database-settings core schema exists");
 
         assert!(settings.is_core);
@@ -2461,7 +2426,7 @@ mod tests {
     fn test_schemas_convert_to_node() {
         let schemas = get_core_schemas();
         for schema in schemas {
-            let node = schema.into_node();
+            let node = crate::models::schema_node::to_node(&schema);
             assert_eq!(node.node_type, "schema");
             assert!(node.properties.get("isCore").unwrap().as_bool().unwrap());
         }
@@ -2481,7 +2446,7 @@ mod tests {
         use crate::models::TaskStatus;
 
         let schemas = get_core_schemas();
-        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
         let status_field = task.get_field("status").expect("task schema has status");
         let core_value_strings: Vec<&str> = status_field
             .core_values
@@ -2535,7 +2500,7 @@ mod tests {
         use crate::models::ProjectStatus;
 
         let schemas = get_core_schemas();
-        let project = schemas.iter().find(|s| s.id == "project").unwrap();
+        let project = schemas.iter().find(|s| s.envelope.id == "project").unwrap();
         let status_field = project
             .get_field("status")
             .expect("project schema has status");
@@ -2598,7 +2563,7 @@ mod tests {
         for node_type in Priority::NODE_TYPES.map(|core| core.as_str()) {
             let schema = schemas
                 .iter()
-                .find(|s| s.id == node_type)
+                .find(|s| s.envelope.id == node_type)
                 .unwrap_or_else(|| panic!("no core schema for '{}'", node_type));
             let priority_field = schema
                 .get_field("priority")
@@ -2633,11 +2598,11 @@ mod tests {
         for schema in get_core_schemas() {
             if schema.get_field("priority").is_some() {
                 assert!(
-                    Priority::applies_to(&schema.id),
+                    Priority::applies_to(&schema.envelope.id),
                     "core schema '{}' declares `priority` but is not in \
                      Priority::NODE_TYPES — add it there (and align its core_values), \
                      or document why its scale differs.",
-                    schema.id
+                    schema.envelope.id
                 );
             }
         }
@@ -2656,7 +2621,7 @@ mod tests {
         for node_type in ["task", "person", "project", "query"] {
             let schema = schemas
                 .iter()
-                .find(|s| s.id == node_type)
+                .find(|s| s.envelope.id == node_type)
                 .unwrap_or_else(|| panic!("core schema '{}' missing", node_type));
             let mut declared: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
             let mut promoted: Vec<&str> = crate::models::promoted_fields(node_type)

@@ -4,25 +4,40 @@
 //! (nodespace-daemon) instead of calling `packages/core` directly.
 //!
 //! This module provides read-only schema commands:
-//! - `get_all_schemas` - List all schema nodes (returns SchemaNode[] with typed fields)
-//! - `get_schema_definition` - Get a specific schema by ID (returns SchemaNode with typed fields)
+//! - `get_all_schemas` - List all schemas
+//! - `get_schema_definition` - Get a specific schema by ID
+//!
+//! Both return the `SchemaNode` wire type exactly as the daemon sent it: the
+//! store fills its `relationships` and `extends`, and nothing here rebuilds a
+//! schema from a node.
 
 use crate::types::SchemaNode;
 use nodespace_proto::nodespace::{GetAllSchemasRequest, GetSchemaDefinitionRequest};
 use tauri::State;
 use tonic::Request;
 
-use super::nodes::{proto_node_data_to_node, refusal_or, CommandError};
+use super::nodes::{refusal_or, CommandError};
 use crate::services::GrpcClient;
 
-/// Get all schema nodes with typed fields
+/// Decode one JSON-encoded `SchemaNode` from a schema read.
+fn decode_schema(schema_json: &str) -> Result<SchemaNode, CommandError> {
+    serde_json::from_str(schema_json).map_err(|e| CommandError {
+        message: format!("Failed to decode schema: {}", e),
+        code: "SCHEMA_SERVICE_ERROR".to_string(),
+        details: None,
+        conflict_data: None,
+        requires_extension: None,
+    })
+}
+
+/// Get all schemas
 ///
-/// Retrieves all schema nodes (both core and custom) for plugin auto-registration.
-/// Returns SchemaNode[] with typed top-level fields (isCore, schemaVersion, description, fields).
+/// Retrieves every schema (both core and custom), each with the fields,
+/// relationships and parent it declares itself.
 ///
 /// # Returns
-/// * `Ok(Vec<SchemaNode>)` - Array of schema nodes with typed fields
-/// * `Err(CommandError)` - Error if retrieval fails
+/// * `Ok(Vec<SchemaNode>)` - Every schema
+/// * `Err(CommandError)` - Error if retrieval or decoding fails
 #[tauri::command]
 pub async fn get_all_schemas(
     client: State<'_, GrpcClient>,
@@ -41,30 +56,23 @@ pub async fn get_all_schemas(
             })
         })?;
 
-    let schema_nodes: Vec<SchemaNode> = resp
-        .into_inner()
-        .nodes
-        .into_iter()
-        .filter_map(|nd| {
-            proto_node_data_to_node(nd)
-                .ok()
-                .and_then(|node| SchemaNode::from_node(node).ok())
-        })
-        .collect();
-
-    Ok(schema_nodes)
+    resp.into_inner()
+        .schemas_json
+        .iter()
+        .map(|schema_json| decode_schema(schema_json))
+        .collect()
 }
 
-/// Get schema by ID with typed fields
+/// Get schema by ID
 ///
-/// Retrieves the complete schema including all fields, protection levels,
-/// and metadata. Returns SchemaNode with typed top-level fields.
+/// Retrieves the schema with its effective fields and relationships (its own
+/// and those it inherits) and the parent it extends.
 ///
 /// # Arguments
 /// * `schema_id` - ID of the schema to retrieve (e.g., "task", "person")
 ///
 /// # Returns
-/// * `Ok(SchemaNode)` - Schema with typed fields (isCore, schemaVersion, description, fields)
+/// * `Ok(SchemaNode)` - The schema
 /// * `Err(CommandError)` - Error if schema not found
 #[tauri::command]
 pub async fn get_schema_definition(
@@ -99,23 +107,7 @@ pub async fn get_schema_definition(
             })
         })?;
 
-    let nd = resp.into_inner().node_data.ok_or_else(|| CommandError {
-        message: "gRPC GetSchemaDefinition response missing node_data".to_string(),
-        code: "GRPC_ERROR".to_string(),
-        details: None,
-        conflict_data: None,
-        requires_extension: None,
-    })?;
-
-    let node = proto_node_data_to_node(nd)?;
-
-    SchemaNode::from_node(node).map_err(|e| CommandError {
-        message: format!("Failed to parse schema node: {}", e),
-        code: "SCHEMA_SERVICE_ERROR".to_string(),
-        details: Some(format!("{:?}", e)),
-        conflict_data: None,
-        requires_extension: None,
-    })
+    decode_schema(&resp.into_inner().schema_json)
 }
 
 #[cfg(test)]
@@ -136,6 +128,52 @@ mod tests {
         assert!(json.contains("Test error"));
         assert!(json.contains("TEST_ERROR"));
         assert!(json.contains("Debug info"));
+    }
+
+    /// The command hands the frontend the daemon's `SchemaNode` unchanged:
+    /// relationships, parent and templates are all there, typed.
+    #[test]
+    fn test_decode_schema_keeps_relationships_and_extends() {
+        let wire = serde_json::json!({
+            "id": "bug",
+            "nodeType": "schema",
+            "content": "Bug",
+            "version": 2,
+            "createdAt": "2026-05-17T12:00:00Z",
+            "modifiedAt": "2026-05-17T12:00:00Z",
+            "properties": {},
+            "lifecycleStatus": "active",
+            "isCore": false,
+            "extends": "ticket",
+            "schemaVersion": 1,
+            "fields": [{ "name": "severity", "type": "text", "friendlyName": "Severity" }],
+            "relationships": [{
+                "name": "owned_by",
+                "targetType": "owner",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "tickets",
+                "reverseCardinality": "many"
+            }],
+            "titleTemplate": "{severity}"
+        });
+
+        let schema = decode_schema(&wire.to_string()).unwrap();
+        assert_eq!(schema.extends.as_deref(), Some("ticket"));
+        assert_eq!(schema.relationships[0].name, "owned_by");
+        assert_eq!(schema.title_template.as_deref(), Some("{severity}"));
+
+        // What the frontend receives is what the daemon sent.
+        let sent = serde_json::to_value(&schema).unwrap();
+        assert_eq!(sent["extends"], "ticket");
+        assert_eq!(sent["relationships"], wire["relationships"]);
+        assert_eq!(sent["properties"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_decode_schema_reports_a_malformed_schema() {
+        let err = decode_schema("{\"id\": 1}").unwrap_err();
+        assert_eq!(err.code, "SCHEMA_SERVICE_ERROR");
     }
 
     #[test]

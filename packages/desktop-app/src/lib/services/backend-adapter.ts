@@ -1028,7 +1028,6 @@ class MockAdapter implements BackendAdapter {
       isCore: false,
       schemaVersion: 1,
       relationships: [],
-      description: '',
       fields: []
     };
   }

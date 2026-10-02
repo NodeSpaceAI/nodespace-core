@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::core_type::{ChildrenRule, CoreNodeType, ParentRule};
-use crate::node::{Node, NodeEnvelope};
+use crate::node::NodeEnvelope;
 
 fn default_schema_version() -> u32 {
     1
@@ -555,32 +555,25 @@ impl From<ParentRule> for SchemaParentRule {
     }
 }
 
-/// Reads one structural rule out of a schema node's stored properties. An
-/// absent key is `any`; an unreadable one is reported and read as `any`, as
-/// [`parse_fields`] does for an unreadable field list.
-fn parse_structural_rule<R: serde::de::DeserializeOwned + Default>(
-    properties: &serde_json::Value,
-    key: &str,
-    node_id: &str,
-) -> R {
-    match properties.get(key) {
-        None => R::default(),
-        Some(v) => serde_json::from_value(v.clone()).unwrap_or_else(|e| {
-            eprintln!(
-                "nodespace-types: SchemaNode::from_node: failed to parse `{key}` for schema node `{node_id}`: {e} — reading back as `any`."
-            );
-            R::default()
-        }),
-    }
-}
-
+/// A schema: the definition of a node type (ADR-086 §1).
+///
+/// The one wire shape of a schema, on every surface. The store fills it: the
+/// fields, the structural rules and the templates come from the schema node's
+/// row, and `relationships` and `extends` from the schema's declaration edges
+/// in the `relationship` table (ADR-070, ADR-078). Every schema read returns
+/// one the store built from both, so a `SchemaNode` a reader receives always
+/// carries its relationships and its parent.
+///
+/// A schema's description is not a field: it is the schema node's child
+/// subtree.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaNode {
     /// The fields every node carries. A schema's stored properties are all
-    /// typed fields below, so `properties` here is empty.
+    /// typed fields below, so `properties` here is empty. `id` is the type id
+    /// (`task`, `invoice`) and `content` the type's display name.
     #[serde(flatten)]
     pub envelope: NodeEnvelope,
     #[serde(default)]
@@ -591,8 +584,8 @@ pub struct SchemaNode {
     #[serde(default, rename = "abstract", skip_serializing_if = "is_false")]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub is_abstract: bool,
-    /// The schema id of the type this one extends (ADR-078), so a client can
-    /// resolve a user-defined subtype to the type whose rules it takes.
+    /// The schema id of the type this one extends (ADR-078). Stored as the
+    /// schema's `extends` edge, never as an entry in `relationships`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
     /// Which children this type's nodes may have: the rule this type itself
@@ -607,175 +600,95 @@ pub struct SchemaNode {
     pub parent: SchemaParentRule,
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
-    #[serde(default)]
-    pub description: String,
+    /// The fields this schema itself declares. A read of one schema's
+    /// definition reports the effective set instead: these, then the ones
+    /// inherited through `extends`.
     #[serde(default)]
     pub fields: Vec<SchemaField>,
+    /// The relationships this schema declares to other types, stored as
+    /// declaration edges between schema nodes (ADR-070). A read of one
+    /// schema's definition adds the inherited ones, like `fields`.
     #[serde(default)]
     pub relationships: Vec<SchemaRelationship>,
+    /// Template for a node's indexed title, with `{field_name}` tokens, e.g.
+    /// `"{first_name} {last_name}"`. When set, the title is interpolated from
+    /// the node's fields rather than taken from its content.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title_template: Option<String>,
+    /// Template for the property summary shown under a node's title, in the
+    /// same `{field_name}` syntax. Evaluated by the client and never stored
+    /// on a node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties_header_summary_template: Option<String>,
 }
 
-/// Parses the `fields` array out of a schema node's stored properties.
-///
-/// A parse failure (malformed/legacy field JSON) is intentionally NOT
-/// surfaced by widening `from_node`'s `Result`. `from_node` has three
-/// production callers: `node_to_typed_value` — reachable from every entry
-/// point (Tauri commands, MCP, HTTP) via `nodes_to_typed_values`, which
-/// `.collect()`s a `Vec<Result<_, _>>` into a single `Result<Vec<_>, _>` —
-/// and two direct call sites in
-/// `desktop-app/app-lib/src/commands/schemas.rs`
-/// (`get_all_schemas`/`get_schema_definition`), which do not go through
-/// `nodes_to_typed_values` at all. Only the `node_to_typed_value` path risks
-/// a blast-radius problem: turning this into an `Err` there would fail an
-/// entire unrelated batch read over one bad schema node. Fixing the
-/// diagnostic here, inside `from_node` itself, covers all three callers
-/// uniformly without touching any of their signatures or `nodes_to_typed_values`'s
-/// batch-collect behavior.
-///
-/// `nodespace-types` deliberately carries no logging dependency (see the
-/// crate-level doc comment), so the diagnostic is plain text for the caller
-/// to print via `eprintln!` — the closest thing to "a log line" available
-/// without pulling in `tracing`/`log`, and one that fires the same way no
-/// matter which binary (Tauri app, daemon, CLI) embeds this crate. On no
-/// platform does this ever reach the application UI — it only ever lands
-/// in a log file (the Windows daemon and release desktop-app builds route
-/// their stdio to `nodespace-app.log`/`nodespace-app-error.log`), which an
-/// ordinary end user never checks.
-fn parse_fields(
-    properties: &serde_json::Value,
-    node_id: &str,
-) -> (Vec<SchemaField>, Option<String>) {
-    match properties.get("fields") {
-        None => (Vec::new(), None),
-        Some(v) => match serde_json::from_value(v.clone()) {
-            Ok(fields) => (fields, None),
-            Err(e) => (
-                Vec::new(),
-                Some(format!(
-                    "nodespace-types: SchemaNode::from_node: failed to parse `fields` for \
-                     schema node `{node_id}`: {e} — reading back as an empty field list. \
-                     Likely a stale/corrupted storage format."
-                )),
-            ),
-        },
-    }
-}
-
-/// Parses the `relationships` array out of a schema node's stored properties.
-///
-/// Mirrors `parse_fields` above — same silent-swallow shape, same fix, same
-/// reasoning for keeping `from_node`'s `Result` untouched (see `parse_fields`'s
-/// doc comment for the full blast-radius analysis of `nodes_to_typed_values`'s
-/// batch-collect semantics, which applies identically here).
-fn parse_relationships(
-    properties: &serde_json::Value,
-    node_id: &str,
-) -> (Vec<SchemaRelationship>, Option<String>) {
-    match properties.get("relationships") {
-        None => (Vec::new(), None),
-        Some(v) => match serde_json::from_value(v.clone()) {
-            Ok(relationships) => (relationships, None),
-            Err(e) => (
-                Vec::new(),
-                Some(format!(
-                    "nodespace-types: SchemaNode::from_node: failed to parse `relationships` for \
-                     schema node `{node_id}`: {e} — reading back as an empty relationship list. \
-                     Likely a stale/corrupted storage format."
-                )),
-            ),
-        },
-    }
-}
-
 impl SchemaNode {
-    pub fn from_node(node: Node) -> Result<Self, String> {
-        if !CoreNodeType::Schema.is_exactly(&node.node_type) {
-            return Err(format!(
-                "Expected '{}', got '{}'",
-                CoreNodeType::Schema,
-                node.node_type
-            ));
+    /// A user-defined schema with nothing declared: the base a caller fills
+    /// in with struct-update syntax.
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            envelope: NodeEnvelope::new_with_id(
+                id.into(),
+                CoreNodeType::Schema.as_str().to_string(),
+                name.into(),
+                serde_json::json!({}),
+            ),
+            is_core: false,
+            is_abstract: false,
+            extends: None,
+            children: SchemaChildrenRule::default(),
+            parent: SchemaParentRule::default(),
+            schema_version: default_schema_version(),
+            fields: Vec::new(),
+            relationships: Vec::new(),
+            title_template: None,
+            properties_header_summary_template: None,
         }
+    }
 
-        let is_core = node
-            .properties
-            .get("isCore")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+    /// The field this schema itself declares under `name`.
+    pub fn get_field(&self, name: &str) -> Option<&SchemaField> {
+        self.fields.iter().find(|f| f.name == name)
+    }
 
-        let is_abstract = node
-            .properties
-            .get("abstract")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let extends = node
-            .properties
-            .get("extends")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-
-        let children = parse_structural_rule(&node.properties, "children", &node.id);
-        let parent = parse_structural_rule(&node.properties, "parent", &node.id);
-
-        let schema_version = node
-            .properties
-            .get("schemaVersion")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .unwrap_or(1);
-
-        let description = node
-            .properties
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        let (fields, fields_diagnostic) = parse_fields(&node.properties, &node.id);
-        if let Some(msg) = &fields_diagnostic {
-            eprintln!("{msg}");
+    /// Every value of an enum field, core values first. `None` when the
+    /// schema declares no such field or it is not an enum.
+    pub fn get_enum_values(&self, field_name: &str) -> Option<Vec<EnumValue>> {
+        let field = self.get_field(field_name)?;
+        if field.field_type != SchemaFieldType::Enum {
+            return None;
         }
+        Some(
+            field
+                .core_values
+                .iter()
+                .chain(&field.user_values)
+                .flatten()
+                .cloned()
+                .collect(),
+        )
+    }
 
-        let (relationships, relationships_diagnostic) =
-            parse_relationships(&node.properties, &node.id);
-        if let Some(msg) = &relationships_diagnostic {
-            eprintln!("{msg}");
-        }
+    /// The value strings of an enum field, without their labels.
+    pub fn get_enum_value_strings(&self, field_name: &str) -> Option<Vec<String>> {
+        self.get_enum_values(field_name)
+            .map(|values| values.into_iter().map(|v| v.value).collect())
+    }
 
-        let title_template = node
-            .properties
-            .get("titleTemplate")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+    /// Whether the field may be removed: only a `User`-protected field may.
+    pub fn can_delete_field(&self, field_name: &str) -> bool {
+        self.is_user_field(field_name)
+    }
 
-        let properties_header_summary_template = node
-            .properties
-            .get("propertiesHeaderSummaryTemplate")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+    /// Whether the field may be renamed or relabelled: only a
+    /// `User`-protected field may. Core and System fields are immutable.
+    pub fn can_modify_field(&self, field_name: &str) -> bool {
+        self.is_user_field(field_name)
+    }
 
-        Ok(Self {
-            envelope: NodeEnvelope {
-                properties: serde_json::json!({}),
-                ..node
-            },
-            is_core,
-            is_abstract,
-            extends,
-            children,
-            parent,
-            schema_version,
-            description,
-            fields,
-            relationships,
-            title_template,
-            properties_header_summary_template,
-        })
+    fn is_user_field(&self, field_name: &str) -> bool {
+        self.get_field(field_name)
+            .is_some_and(|f| f.protection == SchemaProtectionLevel::User)
     }
 }
 
@@ -784,19 +697,15 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The wire schema carries the envelope, and the `abstract` and `extends`
-    /// declarations a client needs to resolve a type.
+    /// The wire schema carries the envelope, and `abstract` and `extends` are
+    /// serialized only when declared.
     #[test]
-    fn test_from_node_carries_the_envelope_abstract_and_extends() {
-        let node = Node::new_with_id(
-            "issue".to_string(),
-            "schema".to_string(),
-            "Issue".to_string(),
-            json!({ "isCore": false, "abstract": true, "extends": "task", "fields": [] }),
-        );
-        let schema = SchemaNode::from_node(node).unwrap();
-        assert!(schema.is_abstract);
-        assert_eq!(schema.extends.as_deref(), Some("task"));
+    fn test_wire_schema_carries_the_envelope_abstract_and_extends() {
+        let schema = SchemaNode {
+            is_abstract: true,
+            extends: Some("task".to_string()),
+            ..SchemaNode::new("issue", "Issue")
+        };
 
         let wire = serde_json::to_value(&schema).unwrap();
         assert_eq!(wire["id"], "issue");
@@ -805,60 +714,94 @@ mod tests {
         assert_eq!(wire["properties"], json!({}));
         assert_eq!(wire["abstract"], true);
         assert_eq!(wire["extends"], "task");
+        assert_eq!(wire["relationships"], json!([]));
+        assert!(wire.get("description").is_none());
 
-        // Neither is serialized for a concrete, unextended type.
-        let plain = SchemaNode::from_node(Node::new_with_id(
-            "invoice".to_string(),
-            "schema".to_string(),
-            "Invoice".to_string(),
-            json!({ "fields": [] }),
-        ))
-        .unwrap();
-        let wire = serde_json::to_value(&plain).unwrap();
+        let wire = serde_json::to_value(SchemaNode::new("invoice", "Invoice")).unwrap();
         assert!(wire.get("abstract").is_none());
         assert!(wire.get("extends").is_none());
     }
 
-    /// The structural rules a schema declares travel on the wire schema, and
-    /// `any` is not serialized.
+    /// A schema read off the wire is the schema that was sent: relationships,
+    /// parent, rules and templates included.
     #[test]
-    fn test_from_node_carries_the_structural_rules() {
-        let node = Node::new_with_id(
-            "message".to_string(),
-            "schema".to_string(),
-            "Message".to_string(),
-            json!({
-                "fields": [],
-                "children": { "rule": "none" },
-                "parent": { "rule": "must_have_parent_of", "types": ["thread"] },
-            }),
-        );
-        let schema = SchemaNode::from_node(node).unwrap();
-        assert_eq!(schema.children, SchemaChildrenRule::None);
-        assert_eq!(
-            schema.parent,
-            SchemaParentRule::MustHaveParentOf {
-                types: vec!["thread".to_string()]
-            }
-        );
+    fn test_wire_schema_round_trips() {
+        let schema = SchemaNode {
+            extends: Some("task".to_string()),
+            children: SchemaChildrenRule::None,
+            parent: SchemaParentRule::MustHaveParentOf {
+                types: vec!["thread".to_string()],
+            },
+            fields: vec![create_test_field()],
+            relationships: vec![SchemaRelationship {
+                name: "billed_to".to_string(),
+                target_type: Some("customer".to_string()),
+                direction: RelationshipDirection::Out,
+                cardinality: RelationshipCardinality::One,
+                required: None,
+                reverse_name: "invoices".to_string(),
+                reverse_cardinality: RelationshipCardinality::Many,
+                edge_fields: None,
+                description: None,
+            }],
+            title_template: Some("{status}".to_string()),
+            properties_header_summary_template: Some("{status}".to_string()),
+            ..SchemaNode::new("issue", "Issue")
+        };
+
         let wire = serde_json::to_value(&schema).unwrap();
         assert_eq!(wire["children"], json!({ "rule": "none" }));
         assert_eq!(
             wire["parent"],
             json!({ "rule": "must_have_parent_of", "types": ["thread"] })
         );
+        assert_eq!(wire["titleTemplate"], "{status}");
+        assert_eq!(wire["relationships"][0]["name"], "billed_to");
 
-        let plain = SchemaNode::from_node(Node::new_with_id(
-            "invoice".to_string(),
-            "schema".to_string(),
-            "Invoice".to_string(),
-            json!({ "fields": [] }),
-        ))
-        .unwrap();
-        assert!(plain.children.is_any() && plain.parent.is_any());
-        let wire = serde_json::to_value(&plain).unwrap();
+        let read: SchemaNode = serde_json::from_value(wire).unwrap();
+        assert_eq!(read.envelope, schema.envelope);
+        assert_eq!(read.extends, schema.extends);
+        assert_eq!(read.children, schema.children);
+        assert_eq!(read.parent, schema.parent);
+        assert_eq!(read.relationships, schema.relationships);
+        assert_eq!(read.fields.len(), 1);
+        assert_eq!(read.title_template, schema.title_template);
+
+        // `any` is not serialized.
+        let wire = serde_json::to_value(SchemaNode::new("invoice", "Invoice")).unwrap();
         assert!(wire.get("children").is_none());
         assert!(wire.get("parent").is_none());
+    }
+
+    #[test]
+    fn test_enum_values_and_field_protection() {
+        let schema = SchemaNode {
+            fields: vec![
+                create_test_field(),
+                SchemaField {
+                    name: "notes".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..SchemaNode::new("ticket", "Ticket")
+        };
+
+        let values: Vec<String> = schema
+            .get_enum_values("status")
+            .unwrap()
+            .into_iter()
+            .map(|v| v.value)
+            .collect();
+        assert_eq!(values, ["open", "done", "blocked"]);
+        assert!(schema.get_enum_values("notes").is_none());
+        assert!(schema.get_enum_values("missing").is_none());
+
+        // Only a User-protected field may be removed or changed.
+        assert!(!schema.can_delete_field("status"));
+        assert!(!schema.can_modify_field("status"));
+        assert!(schema.can_delete_field("notes"));
+        assert!(schema.can_modify_field("notes"));
+        assert!(!schema.can_delete_field("missing"));
     }
 
     #[test]
@@ -1782,178 +1725,5 @@ mod tests {
         assert_eq!(json["name"], "related");
         // targetType absent when None
         assert!(json.get("targetType").is_none());
-    }
-
-    // Regression coverage for the silent-swallow bug: `parse_fields` (the
-    // helper `SchemaNode::from_node` delegates to for its `fields` array) must
-    // surface a diagnostic on a genuine parse failure instead of defaulting to
-    // an empty `Vec` with zero signal. `nodespace-types` has no logging
-    // dependency, so the diagnostic is a plain `String` message the caller
-    // (`from_node`) prints via `eprintln!` — asserting on the message content
-    // here is the stable, testable half of that; `eprintln!`'s actual stderr
-    // write is exercised (not asserted) by
-    // `test_from_node_malformed_fields_still_succeeds_with_empty_fields`
-    // below and is visible under `cargo test -- --nocapture`.
-
-    #[test]
-    fn test_parse_fields_malformed_json_surfaces_diagnostic() {
-        // `type` must be a string (`field_type`); a number is a genuine parse
-        // failure, not merely an absent-and-defaulted key.
-        let malformed = json!({ "fields": [{ "name": "status", "type": 42 }] });
-        let (fields, diagnostic) = parse_fields(&malformed, "test-schema-id");
-
-        assert!(
-            fields.is_empty(),
-            "malformed fields still default to empty — behavior is unchanged"
-        );
-        let msg = diagnostic.expect(
-            "a fields parse failure must surface a diagnostic, not silently default to empty",
-        );
-        assert!(
-            msg.contains("test-schema-id"),
-            "diagnostic must name the affected schema node: {msg}"
-        );
-        assert!(
-            msg.contains("fields"),
-            "diagnostic must name the affected property: {msg}"
-        );
-    }
-
-    #[test]
-    fn test_parse_fields_valid_json_no_diagnostic() {
-        let json = json!({ "fields": [{ "name": "status", "type": "enum" }] });
-        let (fields, diagnostic) = parse_fields(&json, "test-schema-id");
-
-        assert_eq!(fields.len(), 1);
-        assert_eq!(fields[0].name, "status");
-        assert!(
-            diagnostic.is_none(),
-            "a successful parse must not produce a diagnostic"
-        );
-    }
-
-    #[test]
-    fn test_parse_fields_absent_key_no_diagnostic() {
-        // A schema node with no `fields` key at all (e.g. a freshly created
-        // schema) is not a parse failure — must stay silent, same as before.
-        let json = json!({});
-        let (fields, diagnostic) = parse_fields(&json, "test-schema-id");
-
-        assert!(fields.is_empty());
-        assert!(diagnostic.is_none());
-    }
-
-    #[test]
-    fn test_from_node_malformed_fields_still_succeeds_with_empty_fields() {
-        // End-to-end through `from_node`: a malformed `fields` value must not
-        // fail the whole node conversion (that would propagate up through
-        // `node_to_typed_value` into `nodes_to_typed_values`'s batch
-        // `.collect()` and fail an entire unrelated batch read) — it must
-        // still resolve to `Ok` with an empty `fields` Vec, now with a
-        // diagnostic printed to stderr along the way (see
-        // `test_parse_fields_malformed_json_surfaces_diagnostic` for the
-        // assertable half of that diagnostic).
-        let node = Node::new(
-            "schema".to_string(),
-            "Malformed schema".to_string(),
-            json!({
-                "isCore": false,
-                "schemaVersion": 1,
-                "fields": [{ "name": "status", "type": 42 }],
-            }),
-        );
-
-        let schema = SchemaNode::from_node(node).expect("must not fail the whole conversion");
-        assert!(schema.fields.is_empty());
-    }
-
-    // Regression coverage for the silent-swallow bug: `parse_relationships`
-    // (the helper `SchemaNode::from_node` delegates to for its
-    // `relationships` array) must surface a diagnostic on a genuine parse
-    // failure instead of defaulting to an empty `Vec` with zero signal.
-    // Mirrors the `parse_fields` coverage above — see that block's comment
-    // for the full rationale.
-
-    #[test]
-    fn test_parse_relationships_malformed_json_surfaces_diagnostic() {
-        // `direction` must be "out" or "in" (`RelationshipDirection`); a
-        // number is a genuine parse failure, not merely an absent-and-defaulted
-        // key.
-        let malformed = json!({
-            "relationships": [{ "name": "assigned_to", "direction": 42, "cardinality": "one" }]
-        });
-        let (relationships, diagnostic) = parse_relationships(&malformed, "test-schema-id");
-
-        assert!(
-            relationships.is_empty(),
-            "malformed relationships still default to empty — behavior is unchanged"
-        );
-        let msg = diagnostic.expect(
-            "a relationships parse failure must surface a diagnostic, not silently default to empty",
-        );
-        assert!(
-            msg.contains("test-schema-id"),
-            "diagnostic must name the affected schema node: {msg}"
-        );
-        assert!(
-            msg.contains("relationships"),
-            "diagnostic must name the affected property: {msg}"
-        );
-    }
-
-    #[test]
-    fn test_parse_relationships_valid_json_no_diagnostic() {
-        let json = json!({
-            "relationships": [{
-                "name": "assigned_to",
-                "direction": "out",
-                "cardinality": "one",
-                "reverseName": "tasks",
-                "reverseCardinality": "many"
-            }]
-        });
-        let (relationships, diagnostic) = parse_relationships(&json, "test-schema-id");
-
-        assert_eq!(relationships.len(), 1);
-        assert_eq!(relationships[0].name, "assigned_to");
-        assert!(
-            diagnostic.is_none(),
-            "a successful parse must not produce a diagnostic"
-        );
-    }
-
-    #[test]
-    fn test_parse_relationships_absent_key_no_diagnostic() {
-        // A schema node with no `relationships` key at all (e.g. a freshly
-        // created schema) is not a parse failure — must stay silent, same as
-        // before.
-        let json = json!({});
-        let (relationships, diagnostic) = parse_relationships(&json, "test-schema-id");
-
-        assert!(relationships.is_empty());
-        assert!(diagnostic.is_none());
-    }
-
-    #[test]
-    fn test_from_node_malformed_relationships_still_succeeds_with_empty_relationships() {
-        // End-to-end through `from_node`: a malformed `relationships` value
-        // must not fail the whole node conversion (same batch-collect
-        // reasoning as the `fields` case) — it must still resolve to `Ok`
-        // with an empty `relationships` Vec, now with a diagnostic printed to
-        // stderr along the way (see
-        // `test_parse_relationships_malformed_json_surfaces_diagnostic` for
-        // the assertable half of that diagnostic).
-        let node = Node::new(
-            "schema".to_string(),
-            "Malformed schema".to_string(),
-            json!({
-                "isCore": false,
-                "schemaVersion": 1,
-                "relationships": [{ "name": "assigned_to", "direction": 42, "cardinality": "one" }],
-            }),
-        );
-
-        let schema = SchemaNode::from_node(node).expect("must not fail the whole conversion");
-        assert!(schema.relationships.is_empty());
     }
 }

@@ -41,7 +41,6 @@ function schema(fields: SchemaNode['fields']): SchemaNode {
     isCore: false,
     schemaVersion: 1,
     relationships: [],
-    description: '',
     fields
   };
 }

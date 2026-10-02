@@ -213,11 +213,12 @@ fn schema_field_enum(name: &str, values: &[&str], required: bool) -> SchemaField
 fn fixture_schema_ticket() -> nodespace_core::models::SchemaNode {
     let now = fixed_timestamp();
     nodespace_core::models::SchemaNode {
-        id: "ticket".to_string(),
-        content: "Ticket".to_string(),
-        version: 1,
-        created_at: now,
-        modified_at: now,
+        envelope: nodespace_core::models::NodeEnvelope {
+            created_at: now,
+            modified_at: now,
+            ..nodespace_core::models::SchemaNode::new("ticket", "Ticket").envelope
+        },
+        extends: None,
         is_core: false,
         is_abstract: false,
         children: Default::default(),
@@ -250,11 +251,12 @@ fn fixture_schema_ticket() -> nodespace_core::models::SchemaNode {
 fn fixture_schema_adr() -> nodespace_core::models::SchemaNode {
     let now = fixed_timestamp();
     nodespace_core::models::SchemaNode {
-        id: "adr".to_string(),
-        content: "ADR".to_string(),
-        version: 1,
-        created_at: now,
-        modified_at: now,
+        envelope: nodespace_core::models::NodeEnvelope {
+            created_at: now,
+            modified_at: now,
+            ..nodespace_core::models::SchemaNode::new("adr", "ADR").envelope
+        },
+        extends: None,
         is_core: false,
         is_abstract: false,
         children: Default::default(),
@@ -276,11 +278,12 @@ fn fixture_schema_adr() -> nodespace_core::models::SchemaNode {
 fn fixture_schema_release() -> nodespace_core::models::SchemaNode {
     let now = fixed_timestamp();
     nodespace_core::models::SchemaNode {
-        id: "release".to_string(),
-        content: "Release".to_string(),
-        version: 1,
-        created_at: now,
-        modified_at: now,
+        envelope: nodespace_core::models::NodeEnvelope {
+            created_at: now,
+            modified_at: now,
+            ..nodespace_core::models::SchemaNode::new("release", "Release").envelope
+        },
+        extends: None,
         is_core: false,
         is_abstract: false,
         children: Default::default(),
