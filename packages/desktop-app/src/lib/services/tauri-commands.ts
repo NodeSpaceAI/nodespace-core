@@ -198,6 +198,8 @@ export interface PtySessionInfo {
   sessionId: string;
   agentType: string;
   startedAt: number;
+  /** The `ai-chat-pty` node the session was launched for, if any. */
+  nodeId?: string | null;
 }
 
 export interface PtyListSessionsResult {

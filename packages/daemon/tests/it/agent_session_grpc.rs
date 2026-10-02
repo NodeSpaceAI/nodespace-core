@@ -23,6 +23,7 @@ use nodespace_daemon::nodespace::{
     ListSessionsRequest, ResizeRequest, StreamOutputRequest, TerminateSessionRequest,
     WriteInputRequest,
 };
+use nodespace_daemon::services::capture_service::SessionSummarizer;
 use nodespace_daemon::{AgentSessionHandler, AgentSessionServiceClient, AgentSessionServiceServer};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -33,6 +34,16 @@ use tonic::transport::Server;
 use tonic::Code;
 
 type Client = AgentSessionServiceClient<tonic::transport::Channel>;
+
+/// A daemon with no chat model loaded: no session gets a summary.
+struct NoSummarizer;
+
+#[tonic::async_trait]
+impl SessionSummarizer for NoSummarizer {
+    async fn summarize(&self, _plain_text: &str) -> Option<String> {
+        None
+    }
+}
 
 /// Bring up the agent-session gRPC server in-process and return a connected
 /// client plus the shared manager (so tests can seed sessions directly), the
@@ -61,6 +72,7 @@ async fn spawn_test_daemon() -> (Client, Arc<PtySessionManager>, oneshot::Sender
         assembler,
         node_service,
         capture_config_path,
+        Arc::new(NoSummarizer),
     );
 
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -170,8 +182,9 @@ async fn list_sessions_reflects_manager_state() {
     assert_eq!(empty.count, 0);
     assert!(empty.sessions.is_empty());
 
-    let session = PtySession::launch_for_test("sh", vec!["-c".into(), "sleep 30".into()])
+    let mut session = PtySession::launch_for_test("sh", vec!["-c".into(), "sleep 30".into()])
         .expect("launch sleep session");
+    session.node_id = Some("chat-node".to_string());
     let id = manager.insert(session).await;
 
     let listed = client
@@ -183,6 +196,8 @@ async fn list_sessions_reflects_manager_state() {
     assert_eq!(listed.sessions[0].session_id, id.to_string());
     assert_eq!(listed.sessions[0].agent_type, "claude-code");
     assert!(listed.sessions[0].started_at > 0);
+    // A viewer of the node finds its running session by this.
+    assert_eq!(listed.sessions[0].node_id.as_deref(), Some("chat-node"));
 
     // Cleanup so the test does not leak a sleeping child past the shutdown.
     client

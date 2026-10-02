@@ -62,6 +62,27 @@ pub fn title_generation_prompt(conversation: &str) -> String {
     )
 }
 
+/// Build the prompt that turns what a terminal agent session printed into a
+/// short prose summary of it.
+///
+/// `output` is the session's terminal output with its escape sequences
+/// removed (see `render_for_summary` in
+/// `packages/daemon/src/services/terminal_summary.rs`, which caps how much of
+/// it is included). The summary is the part of a terminal chat that may leave
+/// the machine, so the model is asked to describe the work rather than copy
+/// from the output. That is an instruction, not a guarantee: the caller only
+/// ever runs this on a model on this machine.
+pub fn session_summary_prompt(output: &str) -> String {
+    format!(
+        "Below is what a coding agent printed in a terminal session. \
+         In two or three plain sentences, say what the session was about and \
+         what was done. Describe the work; do not copy commands, absolute \
+         paths, keys or tokens from the output. \
+         Reply with the summary alone — no heading, no list, no preamble.\n\n\
+         {output}"
+    )
+}
+
 /// Format a tool result as JSON for the conversation history.
 ///
 /// The content is serialized as JSON so that the nlp-engine can parse it and
@@ -134,6 +155,13 @@ mod tests {
         let result = title_generation_prompt("user: how do I reset my password");
         assert!(result.contains("reset my password"));
         assert!(result.contains("title"));
+    }
+
+    #[test]
+    fn session_summary_prompt_includes_the_output() {
+        let result = session_summary_prompt("Edited parser.rs\nAll 42 tests pass");
+        assert!(result.contains("All 42 tests pass"));
+        assert!(result.contains("summary"));
     }
 
     #[test]

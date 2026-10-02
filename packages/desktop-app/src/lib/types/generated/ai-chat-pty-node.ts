@@ -12,7 +12,9 @@ import type { NodeReference } from './node-reference';
 export type AiChatPtyNode = {
   sessionStatus: AiChatSessionStatus;
   /**
-   * The session's id. Names state on this machine, so it never leaves it.
+   * The id the harness gave its own conversation, which its resume flag
+   * takes. Recorded when the session ends, for the harnesses that keep
+   * one. Names state on this machine, so it never leaves it.
    */
   sessionId?: string;
   /**

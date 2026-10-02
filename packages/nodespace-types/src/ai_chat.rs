@@ -465,7 +465,9 @@ pub struct AiChatPtyNode {
     #[serde(flatten)]
     pub base: AiChatBase,
     pub session_status: AiChatSessionStatus,
-    /// The session's id. Names state on this machine, so it never leaves it.
+    /// The id the harness gave its own conversation, which its resume flag
+    /// takes. Recorded when the session ends, for the harnesses that keep
+    /// one. Names state on this machine, so it never leaves it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// The raw terminal scrollback. Never leaves the machine.

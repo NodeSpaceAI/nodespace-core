@@ -18,7 +18,9 @@ use std::sync::Arc;
 use chrono::Utc;
 use nodespace_agent::agent_catalog::context_assembly::GraphContextAssembler;
 use nodespace_agent::agent_types::AgentType;
-use nodespace_agent::pty::{detect_all_agents, PtySession, PtySessionManager};
+use nodespace_agent::pty::{
+    detect_all_agents, find_harness_session_id, PtySession, PtySessionManager,
+};
 use nodespace_core::services::NodeService as CoreNodeService;
 use tokio::sync::broadcast::error::RecvError;
 use tonic::{Request, Response, Status};
@@ -31,7 +33,7 @@ use crate::nodespace::{
     StreamOutputRequest, TerminateSessionRequest, TerminateSessionResponse, WriteInputRequest,
     WriteInputResponse,
 };
-use crate::services::capture_service::{finalize_capture, CompletedSession};
+use crate::services::capture_service::{finalize_capture, CompletedSession, SessionSummarizer};
 use crate::services::settings_service::{read_capture_settings, CaptureConfig};
 
 /// gRPC adapter that owns shared handles to the PTY engine.
@@ -41,6 +43,8 @@ pub struct AgentSessionHandler {
     assembler: Arc<GraphContextAssembler>,
     node_service: Arc<CoreNodeService>,
     config_path: PathBuf,
+    /// Derives a finished session's summary, when capture saves one.
+    summarizer: Arc<dyn SessionSummarizer>,
 }
 
 impl AgentSessionHandler {
@@ -49,12 +53,14 @@ impl AgentSessionHandler {
         assembler: Arc<GraphContextAssembler>,
         node_service: Arc<CoreNodeService>,
         config_path: PathBuf,
+        summarizer: Arc<dyn SessionSummarizer>,
     ) -> Self {
         Self {
             manager,
             assembler,
             node_service,
             config_path,
+            summarizer,
         }
     }
 
@@ -129,7 +135,7 @@ impl AgentSessionService for AgentSessionHandler {
 
         let id = this
             .manager
-            .launch(agent_type, req.prompt, &this.assembler)
+            .launch(agent_type, req.prompt, req.node_id, &this.assembler)
             .await
             .map_err(|e| Status::internal(format!("launch session failed: {e}")))?;
 
@@ -173,8 +179,8 @@ impl AgentSessionService for AgentSessionHandler {
         // what the session left behind. This runs after the launch response is
         // returned — it does not block session start.
         //
-        // The node already exists (created up front, ADR-088); `node_id`
-        // identifies it, so that node is written rather than a new one minted.
+        // The node already exists (created up front, ADR-088); the session
+        // carries its id, so that node is written rather than a new one minted.
         //
         // Capture config is read once here (at launch time) so finalize_capture
         // doesn't re-hit the filesystem on every session end. Sessions started
@@ -183,7 +189,7 @@ impl AgentSessionService for AgentSessionHandler {
             let session = session.clone();
             let node_service = this.node_service.clone();
             let config_path = this.config_path.clone();
-            let node_id = req.node_id.clone();
+            let summarizer = this.summarizer.clone();
 
             tokio::spawn(async move {
                 let config = match read_capture_settings(&config_path).await {
@@ -207,17 +213,33 @@ impl AgentSessionService for AgentSessionHandler {
                 };
 
                 let capture = session.snapshot_capture().await;
+                // Only a session with a node has anywhere to record the id.
+                let harness_session_id = match session.node_id {
+                    Some(_) => harness_session_id(&session).await,
+                    None => None,
+                };
                 let completed = CompletedSession {
                     id: session.id,
-                    node_id,
+                    node_id: session.node_id.clone(),
                     ended_at: Utc::now(),
                     exit_status,
+                    harness_session_id,
                 };
+                // Deriving the summary can wait a long time for the model;
+                // the finished PTY session is not kept alive for it.
+                drop(session);
 
-                if let Err(e) = finalize_capture(&completed, &capture, &node_service, &config).await
+                if let Err(e) = finalize_capture(
+                    &completed,
+                    &capture,
+                    &node_service,
+                    &config,
+                    summarizer.as_ref(),
+                )
+                .await
                 {
                     tracing::warn!(
-                        session_id = %session.id,
+                        session_id = %completed.id,
                         error = %e,
                         "failed to record the session's end on its node (non-fatal)"
                     );
@@ -371,6 +393,7 @@ impl AgentSessionService for AgentSessionHandler {
                 session_id: m.id.to_string(),
                 agent_type: agent_type_to_string(m.agent_type),
                 started_at: m.started_at.timestamp(),
+                node_id: m.node_id,
             })
             .collect();
 
@@ -446,6 +469,23 @@ fn agent_type_to_string(agent_type: AgentType) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_else(|| format!("{agent_type:?}"))
+}
+
+/// The id the harness that ran in `session` gave its own conversation: the
+/// one its resume flag takes. Read from the harness's session store under the
+/// user's home directory, which is where the harness wrote it (a PTY child is
+/// given `HOME` and none of the variables that would move the store).
+async fn harness_session_id(session: &PtySession) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let agent_type = session.agent_type;
+    let session_dir = session.session_dir.clone();
+    let started_at = session.started_at;
+    tokio::task::spawn_blocking(move || {
+        find_harness_session_id(agent_type, &home, &session_dir, started_at)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// Apply a resize to an already-located [`PtySession`].

@@ -803,7 +803,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         },
         // AI Chat (terminal): an external coding agent in a terminal. It holds no
         // messages; capture records these fields and the base's `summary` when the
-        // session ends. `session_id` and `transcript` never leave the machine.
+        // session ends. `session_id` (the harness's own id for the conversation)
+        // and `transcript` never leave the machine.
         SchemaNode {
             id: "ai-chat-pty".to_string(),
             content: "AI Chat (Terminal)".to_string(),
@@ -847,7 +848,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     required: Some(false),
                     extensible: None,
                     default: None,
-                    description: Some("The session's id: names state on this machine, so it stays here".to_string()),
+                    description: Some("The agent's own id for the conversation, which its resume flag takes: names state on this machine, so it stays here".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,

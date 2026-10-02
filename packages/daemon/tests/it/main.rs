@@ -15,6 +15,7 @@ mod golden_reassignment_restore_real_pipeline;
 mod golden_scenario6_real_pipeline;
 mod grpc_round_trip;
 mod import_round_trip;
+mod live_terminal_summary;
 mod per_db_compute;
 mod per_db_subtree_gate;
 mod required_extensions_e2e;

@@ -21,6 +21,7 @@
     updateCaptureSettings,
     ptyCheckAgentAvailability,
     ptyLaunchSession,
+    ptyListSessions,
     type AgentAvailabilityInfo,
     type CaptureContentLevel,
   } from '$lib/services/tauri-commands';
@@ -56,36 +57,30 @@
   // contract the native viewer documents for turnStatus.
   const node = $derived(sharedNodeStore.getNode(nodeId) as unknown as AiChatPtyNode | undefined);
 
-  // A previously-launched session id persisted on the node. While the session
-  // is live (sessionStatus 'active') this lets the terminal re-attach on
-  // reopen (the daemon owns the PTY and supports multi-client streaming per
-  // ADR-032). Once the session has ended (sessionStatus 'ended') the PTY is
-  // gone — re-attaching would just show a blank, silent terminal — so we render
-  // a read-only summary instead.
-  const persistedSessionId = $derived(node?.sessionId ?? null);
-
-  // Latches when *this* viewer's just-launched session exits, so the UI flips
-  // to the ended state live without waiting for a reload (the daemon's capture
-  // backfill updates the DB out-of-band, not sharedNodeStore).
+  // Latches when this viewer's session exits, so the UI flips to the ended
+  // state live without waiting for a reload (the daemon records the session's
+  // end out-of-band, not through sharedNodeStore).
   let sessionEnded = $state(false);
 
   // Set when the user explicitly chooses "Start new session" from the ended
-  // view, forcing the config step even though the previous session's id is
-  // still persisted (launch() overwrites it once the next session starts).
+  // view, forcing the config step while the node still reads as ended.
   let configuring = $state(false);
 
+  // The node's running PTY session: the one this viewer launched, or the one
+  // found running for the node when the viewer opened. It is the daemon's
+  // handle on a live process, so it is never stored on the node; the node's
+  // own `session_id` is the harness's id for the conversation, recorded when
+  // the session ends.
   let activeSessionId = $state<string | null>(null);
+
+  // True until the daemon has been asked whether a session is running for
+  // this node, so an open session's terminal is not preceded by a flash of
+  // the launch form.
+  let findingSession = $state(true);
 
   // The session has ended if the node is marked ended, or we observed its exit
   // this session.
   const isEnded = $derived(!configuring && (sessionEnded || node?.sessionStatus === 'ended'));
-  // Only host a live terminal when the session is still running. A session this
-  // viewer launched (activeSessionId) always wins; otherwise re-attach to the
-  // persisted id — but never while configuring a replacement, since the
-  // persisted id may point at the previous (dead) session.
-  const sessionId = $derived(
-    isEnded || configuring ? activeSessionId : (activeSessionId ?? persistedSessionId)
-  );
 
   const agentType = $derived(node?.agent || null);
   const summary = $derived(node?.summary ?? null);
@@ -115,15 +110,7 @@
     };
   });
 
-  /**
-   * Return to the config step to launch a fresh session on this node.
-   *
-   * Note: we do NOT clear the persisted `session_id` here. The store's
-   * property merge is additive (it cannot remove a key by omission), so the
-   * stale id is left in place and launch() overwrites it with the new session
-   * id. The `configuring` flag suppresses re-attach to that stale id in the
-   * meantime.
-   */
+  /** Return to the config step to launch a fresh session on this node. */
   function startNewSession(): void {
     sessionEnded = false;
     activeSessionId = null;
@@ -149,6 +136,10 @@
       selectedAgent = node.agent;
     }
 
+    await Promise.all([attachToRunningSession(), loadLaunchSettings()]);
+  });
+
+  async function loadLaunchSettings(): Promise<void> {
     try {
       const [settings, availResult] = await Promise.all([
         getCaptureSettings(),
@@ -166,7 +157,32 @@
     } finally {
       availabilityLoading = false;
     }
-  });
+  }
+
+  /**
+   * Re-attach to the session already running for this node, if there is one:
+   * the daemon owns the PTY and keeps it running while the viewer is closed
+   * (ADR-032). A node whose session has ended has none to find.
+   */
+  async function attachToRunningSession(): Promise<void> {
+    try {
+      if (node?.sessionStatus !== 'ended') {
+        const { sessions } = await ptyListSessions();
+        // The latest, should more than one be running for the node (two
+        // panes on it both launched).
+        const running = sessions
+          .filter((session) => session.nodeId === nodeId)
+          .sort((a, b) => b.startedAt - a.startedAt)[0];
+        if (running && !activeSessionId) {
+          activeSessionId = running.sessionId;
+        }
+      }
+    } catch (e) {
+      log.warn('Failed to look up the running session', e);
+    } finally {
+      findingSession = false;
+    }
+  }
 
   async function saveCaptureSettings() {
     try {
@@ -206,10 +222,10 @@
       activeSessionId = result.sessionId;
       configuring = false;
 
-      // Record the chosen agent + session on the node up front so the node
-      // reflects its mode immediately. The daemon records the session's end
-      // (status, exit code) on the node via the node_id passed above, and the
-      // summary and transcript too when capture is on.
+      // Record the chosen agent on the node up front so the node reflects its
+      // mode immediately. The daemon records the session's end (status, exit
+      // code, the harness's session id) on the node via the node_id passed
+      // above, and the summary and transcript too when capture is on.
       // Canonical snake_case keys, matching the schema's declared field names:
       // the chat family has no typed write command, so whatever key this
       // object uses reaches storage verbatim. A patch, not a rewrite — the
@@ -219,7 +235,6 @@
         {
           properties: {
             agent: selectedAgent,
-            session_id: result.sessionId,
             session_status: 'active',
           },
         },
@@ -270,13 +285,17 @@
       <button class="launch-button" onclick={startNewSession}>Start new session</button>
     </div>
   </div>
-{:else if sessionId}
+{:else if activeSessionId}
   <!-- Active session: the embedded terminal IS the node's viewer. -->
   <div class="pty-terminal-host">
-    {#key sessionId}
-      <PtyTerminal {sessionId} />
+    {#key activeSessionId}
+      <PtyTerminal sessionId={activeSessionId} />
     {/key}
   </div>
+{:else if findingSession}
+  <!-- Asking the daemon for the node's running session: neither the terminal
+       nor the launch form yet. -->
+  <div class="pty-terminal-host" aria-busy="true"></div>
 {:else}
   <!-- Config step: pick an agent and launch. -->
   <div class="pty-config">

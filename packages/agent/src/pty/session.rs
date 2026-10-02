@@ -109,6 +109,9 @@ pub struct PtySession {
     pub agent_type: AgentType,
     /// When [`PtySession::launch`] returned successfully.
     pub started_at: DateTime<Utc>,
+    /// The `ai-chat-pty` node this session is a view onto, when it was
+    /// launched for one. A viewer finds its node's running session by it.
+    pub node_id: Option<String>,
 
     /// Master end of the PTY. Held under a mutex so [`resize`](Self::resize)
     /// can be called from any task without racing the output reader.
@@ -156,6 +159,7 @@ impl PtySession {
     pub async fn launch(
         agent_type: AgentType,
         initial_prompt: Option<String>,
+        node_id: Option<String>,
         assembler: &GraphContextAssembler,
     ) -> anyhow::Result<Self> {
         let session_id = Uuid::new_v4();
@@ -187,7 +191,7 @@ impl PtySession {
             )
         })?;
 
-        Self::spawn_in_pty(
+        let mut session = Self::spawn_in_pty(
             session_id,
             agent_type,
             binary_path,
@@ -196,7 +200,9 @@ impl PtySession {
             DEFAULT_PTY_ROWS,
             DEFAULT_PTY_COLS,
             definition.auth_env_vars,
-        )
+        )?;
+        session.node_id = node_id;
+        Ok(session)
     }
 
     /// Inner helper that opens the PTY, spawns the process, and wires up
@@ -255,6 +261,7 @@ impl PtySession {
             id,
             agent_type,
             started_at,
+            node_id: None,
             master,
             writer,
             child_killer,
@@ -476,6 +483,7 @@ impl PtySession {
             id,
             agent_type: AgentType::ClaudeCode,
             started_at,
+            node_id: None,
             master,
             writer,
             child_killer,

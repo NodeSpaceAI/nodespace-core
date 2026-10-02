@@ -3,7 +3,8 @@
 //! Hardcoded catalog of external agent CLIs that can be spawned in a PTY.
 //! Each entry names the binary, the context file the agent expects to find
 //! in its working directory (`CLAUDE.md` for Claude Code, `AGENTS.md` for
-//! everything else), and the flag used to resume a previous session.
+//! everything else), the flag used to resume a previous session, and where
+//! the agent keeps the sessions that flag resumes.
 
 use crate::agent_types::{AgentType, ContextFile};
 
@@ -20,10 +21,25 @@ pub struct AgentDefinition {
     pub context_file: ContextFile,
     /// CLI flag used to resume a prior session, if the agent supports one.
     pub resume_flag: Option<&'static str>,
+    /// Where the agent records its sessions, for the agents whose resume flag
+    /// takes a session id. `None` when the agent has no id to resume by.
+    pub session_store: Option<SessionStore>,
     /// Auth-related environment variables this agent reads. PTY children get
     /// a cleared environment plus a fixed base allowlist plus these — never
     /// the daemon's full environment (see [`crate::pty::session`]).
     pub auth_env_vars: &'static [&'static str],
+}
+
+/// The on-disk layout an agent records its own sessions in, under the user's
+/// home directory. [`crate::pty::find_harness_session_id`] reads it to learn
+/// the id a finished session can be resumed by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionStore {
+    /// `~/.claude/projects/<working directory, slugged>/<session id>.jsonl`.
+    ClaudeProjects,
+    /// `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<time>-<session id>.jsonl`,
+    /// whose first line records the session's id and working directory.
+    CodexRollouts,
 }
 
 /// Hardcoded catalog of PTY-spawnable external agents.
@@ -34,6 +50,7 @@ pub const AGENT_CATALOG: &[AgentDefinition] = &[
         binary: "claude",
         context_file: ContextFile::ClaudeMd,
         resume_flag: Some("--resume"),
+        session_store: Some(SessionStore::ClaudeProjects),
         auth_env_vars: &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
     },
     AgentDefinition {
@@ -42,6 +59,7 @@ pub const AGENT_CATALOG: &[AgentDefinition] = &[
         binary: "codex",
         context_file: ContextFile::AgentsMd,
         resume_flag: Some("resume"),
+        session_store: Some(SessionStore::CodexRollouts),
         auth_env_vars: &["OPENAI_API_KEY"],
     },
     AgentDefinition {
@@ -52,6 +70,7 @@ pub const AGENT_CATALOG: &[AgentDefinition] = &[
         // `agy -c` / `agy --continue` resumes the most recent conversation
         // scoped to the current working directory.
         resume_flag: Some("-c"),
+        session_store: None,
         auth_env_vars: &["GEMINI_API_KEY"],
     },
     AgentDefinition {
@@ -61,6 +80,7 @@ pub const AGENT_CATALOG: &[AgentDefinition] = &[
         context_file: ContextFile::AgentsMd,
         // Pi is session-aware but does not take an explicit resume flag.
         resume_flag: None,
+        session_store: None,
         // Pi is multi-provider; pass through every provider key it may need.
         auth_env_vars: &[
             "ANTHROPIC_API_KEY",
@@ -76,6 +96,7 @@ pub const AGENT_CATALOG: &[AgentDefinition] = &[
         context_file: ContextFile::AgentsMd,
         // OpenCode is stateless across invocations.
         resume_flag: None,
+        session_store: None,
         auth_env_vars: &[
             "ANTHROPIC_API_KEY",
             "OPENAI_API_KEY",

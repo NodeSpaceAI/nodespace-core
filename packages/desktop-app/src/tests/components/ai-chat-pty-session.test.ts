@@ -51,13 +51,23 @@ function seedPtyChat(id: string, fields: Record<string, unknown>): void {
   sharedNodeStore.setNode(node, { type: 'database', reason: 'test' });
 }
 
+/**
+ * The daemon as the viewer sees it: no agents detected and no session running,
+ * unless a test says otherwise for a command.
+ */
+function mockDaemon(overrides: Record<string, () => Promise<unknown>> = {}): void {
+  mockInvoke.mockImplementation((cmd: string) => {
+    if (overrides[cmd]) return overrides[cmd]();
+    if (cmd === 'check_agent_availability') return Promise.resolve({ agents: [] });
+    if (cmd === 'list_sessions') return Promise.resolve({ sessions: [], count: 0 });
+    return Promise.resolve(undefined);
+  });
+}
+
 describe('AiChatPtySession', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'check_agent_availability') return Promise.resolve({ agents: [] });
-      return Promise.resolve(undefined);
-    });
+    mockDaemon();
   });
 
   afterEach(() => {
@@ -66,24 +76,21 @@ describe('AiChatPtySession', () => {
   });
 
   it('surfaces the real CommandError message when launch_session rejects with a plain object, not "[object Object]"', async () => {
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'check_agent_availability') return Promise.resolve({ agents: [] });
-      if (cmd === 'launch_session') {
-        // Exactly what Tauri hands back for a Rust `Err(CommandError)` — a
-        // plain object, never an Error instance.
-        return Promise.reject({
+    mockDaemon({
+      // Exactly what Tauri hands back for a Rust `Err(CommandError)` — a
+      // plain object, never an Error instance.
+      launch_session: () =>
+        Promise.reject({
           message: 'Agent binary "claude" not found on PATH',
           code: 'AGENT_NOT_FOUND'
-        });
-      }
-      return Promise.resolve(undefined);
+        })
     });
 
-    const { getByText, findByRole } = render(AiChatPtySession, {
+    const { findByText, findByRole } = render(AiChatPtySession, {
       props: { nodeId: 'test-node-1' }
     });
 
-    await fireEvent.click(getByText('Launch'));
+    await fireEvent.click(await findByText('Launch'));
 
     const banner = await findByRole('alert');
     expect(banner.textContent).toContain('Agent binary "claude" not found on PATH');
@@ -91,17 +98,13 @@ describe('AiChatPtySession', () => {
   });
 
   it('still handles a genuine Error instance (non-CommandError rejection) correctly', async () => {
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'check_agent_availability') return Promise.resolve({ agents: [] });
-      if (cmd === 'launch_session') return Promise.reject(new Error('daemon unreachable'));
-      return Promise.resolve(undefined);
-    });
+    mockDaemon({ launch_session: () => Promise.reject(new Error('daemon unreachable')) });
 
-    const { getByText, findByRole } = render(AiChatPtySession, {
+    const { findByText, findByRole } = render(AiChatPtySession, {
       props: { nodeId: 'test-node-2' }
     });
 
-    await fireEvent.click(getByText('Launch'));
+    await fireEvent.click(await findByText('Launch'));
 
     const banner = await findByRole('alert');
     expect(banner.textContent).toContain('daemon unreachable');
@@ -111,7 +114,7 @@ describe('AiChatPtySession', () => {
     it('treats sessionStatus "ended" as ended and reads agent, summary and transcript from the typed fields', async () => {
       seedPtyChat('ended-chat', {
         sessionStatus: 'ended',
-        sessionId: 'dead-session',
+        sessionId: '0c5a8c1e-7d0b-4b5e-9f3a-2f1d6f0f8a01',
         summary: 'Refactored the parser',
         transcript: 'user: hi\nagent: done'
       });
@@ -127,8 +130,68 @@ describe('AiChatPtySession', () => {
       expect(container.querySelector('.pty-ended-transcript pre')?.textContent).toContain(
         'agent: done'
       );
-      // The PTY is gone: no terminal re-attaches to the stale session id.
+      // The PTY is gone: there is no session to look for, and no terminal.
       expect(container.querySelector('.pty-terminal-host')).toBeNull();
+      expect(mockInvoke).not.toHaveBeenCalledWith('list_sessions');
+    });
+
+    it('re-attaches to the session the daemon is running for the node', async () => {
+      seedPtyChat('open-chat', { sessionStatus: 'active' });
+      mockDaemon({
+        list_sessions: () =>
+          Promise.resolve({
+            sessions: [
+              { sessionId: 'other', agentType: 'codex', startedAt: 1, nodeId: 'another-chat' },
+              { sessionId: 'no-node', agentType: 'codex', startedAt: 2, nodeId: null },
+              // Two for the node: the later launch is the one attached to.
+              { sessionId: 'earlier', agentType: 'claude-code', startedAt: 3, nodeId: 'open-chat' },
+              { sessionId: 'running', agentType: 'claude-code', startedAt: 9, nodeId: 'open-chat' },
+              { sessionId: 'earliest', agentType: 'claude-code', startedAt: 1, nodeId: 'open-chat' }
+            ],
+            count: 5
+          })
+      });
+      vi.mocked(listen).mockResolvedValue(() => {});
+
+      const { container, queryByText } = render(AiChatPtySession, {
+        props: { nodeId: 'open-chat' }
+      });
+
+      await vi.waitFor(() =>
+        expect(vi.mocked(listen).mock.calls.map(([event]) => event)).toContain(
+          'pty-closed-running'
+        )
+      );
+      expect(container.querySelector('.pty-terminal-host')).not.toBeNull();
+      expect(queryByText('Launch agent session')).toBeNull();
+      const listened = vi.mocked(listen).mock.calls.map(([event]) => event);
+      expect(listened).not.toContain('pty-closed-earlier');
+      expect(listened).not.toContain('pty-closed-earliest');
+    });
+
+    it('offers a launch when the node reads active but no session is running for it', async () => {
+      // The harness session id a previous session left is not a running
+      // session: nothing re-attaches to it.
+      seedPtyChat('stale-chat', {
+        sessionStatus: 'active',
+        sessionId: '0c5a8c1e-7d0b-4b5e-9f3a-2f1d6f0f8a01'
+      });
+
+      const { findByText, container } = render(AiChatPtySession, {
+        props: { nodeId: 'stale-chat' }
+      });
+
+      expect(await findByText('Launch agent session')).toBeTruthy();
+      expect(container.querySelector('.pty-terminal-host')).toBeNull();
+    });
+
+    it('offers a launch when the daemon cannot be asked for the running session', async () => {
+      seedPtyChat('unreachable-chat', { sessionStatus: 'active' });
+      mockDaemon({ list_sessions: () => Promise.reject(new Error('daemon unreachable')) });
+
+      const { findByText } = render(AiChatPtySession, { props: { nodeId: 'unreachable-chat' } });
+
+      expect(await findByText('Launch agent session')).toBeTruthy();
     });
 
     it('does not treat the old "archived" value as ended', async () => {
@@ -153,27 +216,26 @@ describe('AiChatPtySession', () => {
       });
     });
 
-    it('launches by patching agent, session_id and session_status only', async () => {
+    it('launches by patching agent and session_status only', async () => {
       seedPtyChat('launch-chat', { agent: 'codex', properties: { 'custom:tag': 'keep' } });
-      mockInvoke.mockImplementation((cmd: string) => {
-        if (cmd === 'check_agent_availability') return Promise.resolve({ agents: [] });
-        if (cmd === 'launch_session') {
-          return Promise.resolve({ sessionId: 'new-session', createdAt: 1 });
-        }
-        return Promise.resolve(undefined);
+      mockDaemon({
+        launch_session: () => Promise.resolve({ sessionId: 'new-session', createdAt: 1 })
       });
       // restoreAllMocks in afterEach drops the factory's resolved value.
       vi.mocked(listen).mockResolvedValue(() => {});
       const updateNode = vi.spyOn(sharedNodeStore, 'updateNode');
 
-      const { getByText } = render(AiChatPtySession, { props: { nodeId: 'launch-chat' } });
-      await fireEvent.click(getByText('Launch'));
+      const { findByText } = render(AiChatPtySession, { props: { nodeId: 'launch-chat' } });
+      await fireEvent.click(await findByText('Launch'));
 
       await vi.waitFor(() => expect(updateNode).toHaveBeenCalled());
       const [id, changes] = updateNode.mock.calls[0];
       expect(id).toBe('launch-chat');
+      // The PTY session's id is the daemon's handle on a live process and is
+      // not stored: the node's `session_id` is the harness's, written by the
+      // daemon when the session ends.
       expect(changes).toEqual({
-        properties: { agent: 'codex', session_id: 'new-session', session_status: 'active' }
+        properties: { agent: 'codex', session_status: 'active' }
       });
     });
   });
