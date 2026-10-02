@@ -6,15 +6,20 @@
 //!
 //! A fixture schema is authored with rich descriptions at all three levels
 //! (field, relationship, schema-level markdown subtree), associated with a
-//! skill scoped to it via `node_types`, embedded with the real embedding
-//! model, and retrieved through the real `find_skills` semantic-search path
-//! — end to end, not a unit test of one internal helper — so a regression
-//! that reintroduces the drop anywhere in the pipeline is caught here.
+//! skill linked to it by an `applies_to` edge, embedded with the real
+//! embedding model, and retrieved through the real `find_skills`
+//! semantic-search path — end to end, not a unit test of one internal helper
+//! — so a regression that reintroduces the drop anywhere in the pipeline is
+//! caught here.
+//!
+//! The same path decides *which* schemas a matched skill carries: its
+//! `applies_to` targets and their subtypes, core schemas included, or the
+//! unlinked fallback. The tests at the end cover each case.
 
 use anyhow::Result;
 use nodespace_core::{
     db::SqliteStore,
-    models::{Node, NodeUpdate, SkillFields},
+    models::{Node, NodeUpdate, SkillFields, SKILL_APPLIES_TO},
     ops::skill_ops::{find_skills, FindSkillsInput},
     schema::handle_create_schema,
     services::{embedding_service::NodeEmbeddingService, NodeAccessor, NodeService},
@@ -108,19 +113,50 @@ async fn create_fixture_schemas(svc: &Arc<NodeService>) -> Result<()> {
     Ok(())
 }
 
-/// Create a skill scoped to `invoice` via `node_types`, so `schema_metadata`
-/// deterministically includes exactly the fixture schema regardless of the
-/// unscoped-fallback / query-naming heuristics `find_skills` also has.
-async fn seed_invoice_skill(service: &NodeService) -> Result<Node> {
-    let mut node = SkillFields::new(SKILL_DESCRIPTION, &["create_node", "update_node"], 2)
-        .with_node_types(&["invoice"])
-        .into_node("Invoice Billing");
-    node.title = Some("Invoice Billing".to_string());
+/// Create an unlinked skill named `name`.
+async fn seed_skill(service: &NodeService, name: &str, description: &str) -> Result<Node> {
+    let mut node =
+        SkillFields::new(description, &["create_node", "update_node"], 2).into_node(name);
+    node.title = Some(name.to_string());
     service.create_node(node.clone()).await?;
     Ok(service
         .get_node(&node.id)
         .await?
         .expect("skill node should exist"))
+}
+
+/// Link `skill` to the schema it is about.
+async fn link(service: &NodeService, skill: &Node, schema_id: &str) -> Result<()> {
+    service
+        .create_relationship(&skill.id, SKILL_APPLIES_TO, schema_id, json!({}))
+        .await?;
+    Ok(())
+}
+
+/// Create a skill linked to `invoice`, so `schema_metadata` deterministically
+/// includes exactly the fixture schema regardless of the unlinked-fallback /
+/// query-naming heuristics `find_skills` also has.
+async fn seed_invoice_skill(service: &NodeService) -> Result<Node> {
+    let skill = seed_skill(service, "Invoice Billing", SKILL_DESCRIPTION).await?;
+    link(service, &skill, "invoice").await?;
+    Ok(skill)
+}
+
+/// The type ids in the `schema_metadata` of `skill`'s entry in `output`.
+fn carried_types(
+    output: &nodespace_core::ops::skill_ops::FindSkillsOutput,
+    skill: &Node,
+) -> Vec<String> {
+    output
+        .skills
+        .iter()
+        .find(|s| s["id"] == json!(skill.id))
+        .expect("the skill should be present in results")["schema_metadata"]
+        .as_array()
+        .expect("schema_metadata should be an array")
+        .iter()
+        .filter_map(|entry| entry["type_id"].as_str().map(str::to_string))
+        .collect()
 }
 
 #[tokio::test]
@@ -165,7 +201,7 @@ async fn find_skills_schema_metadata_carries_field_relationship_and_schema_descr
     let invoice_entry = schema_metadata
         .iter()
         .find(|entry| entry["type_id"] == json!("invoice"))
-        .expect("schema_metadata should include the invoice schema (scoped via node_types)");
+        .expect("schema_metadata should include the invoice schema (linked via applies_to)");
 
     // 1. Field description reaches schema_metadata.
     let amount_due = invoice_entry["fields"]
@@ -299,15 +335,13 @@ async fn find_skills_schema_metadata_includes_a_subtypes_inherited_declarations(
     .await
     .map_err(|e| anyhow::anyhow!("subtype schema: {e}"))?;
 
-    let mut skill = SkillFields::new(
+    let skill = seed_skill(
+        &node_service,
+        "Retainer Billing",
         "Bill a customer on a monthly retainer — create a retainer invoice record.",
-        &["create_node"],
-        2,
     )
-    .with_node_types(&["retainer_invoice"])
-    .into_node("Retainer Billing");
-    skill.title = Some("Retainer Billing".to_string());
-    node_service.create_node(skill.clone()).await?;
+    .await?;
+    link(&node_service, &skill, "retainer_invoice").await?;
     embedding_service.embed_root_node(&skill.id).await?;
 
     // Names the subtype outright, so its `kind: "schema"` result arrives via
@@ -364,5 +398,128 @@ async fn find_skills_schema_metadata_includes_a_subtypes_inherited_declarations(
         .expect("the named subtype should come back as a schema result");
     assert_inherited(&schema_result["schema_metadata"][0], "schema result");
 
+    Ok(())
+}
+
+/// A skill linked to a base type carries that type and every type extending
+/// it: a subtype is its base type, so guidance about invoices is guidance
+/// about retainer invoices. Nothing else comes along, however many other
+/// custom types the workspace holds.
+#[tokio::test]
+async fn find_skills_carries_a_linked_type_and_its_subtypes() -> Result<()> {
+    let (node_service, embedding_service, _store, _temp_dir) = create_test_env().await?;
+
+    create_fixture_schemas(&node_service).await?;
+    handle_create_schema(
+        &node_service,
+        json!({
+            "name": "retainer_invoice",
+            "extends": "invoice",
+            "fields": [{ "name": "retainer_months", "type": "number" }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("subtype schema: {e}"))?;
+
+    let skill = seed_invoice_skill(&node_service).await?;
+    embedding_service.embed_root_node(&skill.id).await?;
+
+    let output = find_skills(
+        &Arc::new(embedding_service),
+        &node_service,
+        FindSkillsInput {
+            query: MATCHING_QUERY.to_string(),
+            limit: Some(3),
+        },
+    )
+    .await
+    .expect("find_skills should succeed");
+
+    let mut carried = carried_types(&output, &skill);
+    carried.sort();
+    assert_eq!(
+        carried,
+        ["invoice", "retainer_invoice"],
+        "a linked skill carries its target and the target's subtypes, and no other type"
+    );
+    Ok(())
+}
+
+/// A link to a core schema is honoured: the skill carries `task`, which the
+/// unlinked fallback never offers, along with the custom types extending it.
+#[tokio::test]
+async fn find_skills_carries_a_linked_core_type() -> Result<()> {
+    let (node_service, embedding_service, _store, _temp_dir) = create_test_env().await?;
+
+    create_fixture_schemas(&node_service).await?;
+    handle_create_schema(
+        &node_service,
+        json!({
+            "name": "Chore",
+            "extends": "task",
+            "fields": [{ "name": "room", "type": "text" }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("chore schema: {e}"))?;
+
+    let skill = seed_skill(
+        &node_service,
+        "Closing Out Work",
+        "Close out a piece of work by recording how it was checked, then marking it done.",
+    )
+    .await?;
+    link(&node_service, &skill, "task").await?;
+    embedding_service.embed_root_node(&skill.id).await?;
+
+    let output = find_skills(
+        &Arc::new(embedding_service),
+        &node_service,
+        FindSkillsInput {
+            query: "close out this work and mark it done".to_string(),
+            limit: Some(3),
+        },
+    )
+    .await
+    .expect("find_skills should succeed");
+
+    let mut carried = carried_types(&output, &skill);
+    carried.sort();
+    assert_eq!(carried, ["chore", "task"]);
+    Ok(())
+}
+
+/// A skill with no links keeps the fallback: the one custom type the query
+/// names, otherwise the workspace's custom types. Never a core type.
+#[tokio::test]
+async fn find_skills_falls_back_for_an_unlinked_skill() -> Result<()> {
+    let (node_service, embedding_service, _store, _temp_dir) = create_test_env().await?;
+
+    create_fixture_schemas(&node_service).await?;
+    let skill = seed_skill(&node_service, "Invoice Billing", SKILL_DESCRIPTION).await?;
+    embedding_service.embed_root_node(&skill.id).await?;
+    let embedding_service = Arc::new(embedding_service);
+    let search = |query: &str| {
+        find_skills(
+            &embedding_service,
+            &node_service,
+            FindSkillsInput {
+                query: query.to_string(),
+                limit: Some(3),
+            },
+        )
+    };
+
+    // The query names `invoice` and no other custom type.
+    let named = search("add an invoice for this month's work")
+        .await
+        .unwrap();
+    assert_eq!(carried_types(&named, &skill), ["invoice"]);
+
+    // The query names no type: every custom type, and no core one.
+    let unnamed = search("bill them for this month's work").await.unwrap();
+    let mut carried = carried_types(&unnamed, &skill);
+    carried.sort();
+    assert_eq!(carried, ["customer", "invoice"]);
     Ok(())
 }

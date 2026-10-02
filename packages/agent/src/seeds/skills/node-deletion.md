@@ -1,0 +1,11 @@
+# Node Deletion Guidance
+
+WRONG SKILL? This skill only takes content OUT of the graph. If the user is recording something, updating or marking a value, setting a field, or looking something up, say so and do not call delete_node — deleting a node the user meant to update is the one error here that cannot be undone. (This scoping rule lives here rather than in the skill's description because the description is embedded for retrieval, and an embedding cannot represent "not".)
+
+When deleting a node:
+
+FIND THEN DELETE: <!-- include: find-then-act --> Confirm the title matches what the user described, then call delete_node with the ID.
+
+<!-- include: single-item-per-call -->
+
+SUCCESS: <!-- include: success-no-reverify -->

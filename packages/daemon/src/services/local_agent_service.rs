@@ -6918,7 +6918,7 @@ model = "model-b"
     /// Which inverts the diagnosis. 11d is not starved of the fact; it is
     /// HANDED the answer. A model that reads its history and replies without
     /// traversing is behaving reasonably — the prompt is answerable from what
-    /// it was given — and `TOOL_STRATEGY_RULES`'s first bullet ("CONVERSATIONAL
+    /// it was given — and the Tool Strategy Guide's first bullet ("CONVERSATIONAL
     /// TURNS USE NO TOOLS ... answer directly in text") points the same way.
     /// That makes the across-the-board failure a property of the scenario's
     /// setup rather than a harness defect or a capability gap, and it is why

@@ -18,7 +18,7 @@
 //! stranger's schema.
 
 use crate::markdown::{prepare_nodes_from_template, MarkdownError, NodeTemplate};
-use crate::methodology::skills::{playbook_overview_skill, InstalledIds};
+use crate::methodology::skills::{InstalledIds, PlaybookSkill};
 use crate::methodology::{InstallReport, MethodologyPlaybook, StepOutcome, StepReport, ViewStep};
 use crate::models::Node;
 use crate::playbook::types::{Action, RuleDefinition, Selector, Trigger};
@@ -128,8 +128,8 @@ pub async fn install_playbook(
         steps.push(StepReport { label, outcome });
     }
 
-    for template in &playbook.skills {
-        let label = format!("Seed skill: {}", template.title);
+    for skill in playbook.skills {
+        let label = format!("Seed skill: {}", skill.title);
         if failed {
             steps.push(StepReport::skipped(label));
             continue;
@@ -141,18 +141,14 @@ pub async fn install_playbook(
         // guidance describes. Appended as a note rather than rewritten in
         // place: the markdown is sentences, and blind value substitution
         // would corrupt any that happened to contain the word.
-        let template = match rename_note(&renames) {
-            Some(note) => {
-                let mut annotated = template.clone();
-                annotated.markdown_content.push_str(&note);
-                std::borrow::Cow::Owned(annotated)
-            }
-            None => std::borrow::Cow::Borrowed(template),
-        };
+        let mut template = skill.template();
+        if let Some(note) = rename_note(&renames) {
+            template.markdown_content.push_str(&note);
+        }
 
-        let outcome = seed_skill(node_service, &template).await;
+        let outcome = seed_skill(node_service, skill, &template, &renames).await;
         if landed_id(&outcome).is_some() {
-            installed.skills.push(template.title.clone());
+            installed.skills.push(skill.title.to_string());
         }
         failed |= matches!(outcome, StepOutcome::Failed { .. });
         steps.push(StepReport { label, outcome });
@@ -188,12 +184,12 @@ pub async fn install_playbook(
         steps.push(StepReport { label, outcome });
     }
 
-    let overview = playbook_overview_skill(playbook.overview, &installed);
+    let overview = playbook.overview.overview_template(&installed);
     let label = format!("Seed skill: {}", overview.title);
     if failed {
         steps.push(StepReport::skipped(label));
     } else {
-        let outcome = seed_skill(node_service, &overview).await;
+        let outcome = seed_skill(node_service, &playbook.overview, &overview, &renames).await;
         failed |= matches!(outcome, StepOutcome::Failed { .. });
         steps.push(StepReport { label, outcome });
     }
@@ -214,20 +210,55 @@ fn landed_id(outcome: &StepOutcome) -> Option<&str> {
     }
 }
 
-/// Seed one skill template, reporting it under its title.
-async fn seed_skill(node_service: &Arc<NodeService>, template: &NodeTemplate) -> StepOutcome {
-    match prepare_nodes_from_template(template) {
-        Ok(nodes) => match node_service.seed_nodes_from_templates(vec![nodes]).await {
-            Ok(_) => StepOutcome::Created {
-                id: template.title.clone(),
-            },
-            Err(e) => StepOutcome::Failed {
-                message: e.to_string(),
-            },
-        },
-        Err(e) => StepOutcome::Failed {
-            message: format!("{e}"),
-        },
+/// Seed one skill and link it to the schemas it is about, reporting it under
+/// its title.
+///
+/// `template` is `skill`'s seed with whatever this install appended to its
+/// body. Each `applies_to` edge points at the schema's id in this workspace:
+/// a re-keyed schema is linked under the id it landed on, never the
+/// stranger's schema that holds the Playbook's own name for it.
+async fn seed_skill(
+    node_service: &Arc<NodeService>,
+    skill: &PlaybookSkill,
+    template: &NodeTemplate,
+    renames: &HashMap<String, String>,
+) -> StepOutcome {
+    let nodes = match prepare_nodes_from_template(template) {
+        Ok(nodes) => nodes,
+        Err(e) => {
+            return StepOutcome::Failed {
+                message: format!("{e}"),
+            }
+        }
+    };
+    if let Err(e) = node_service.seed_nodes_from_templates(vec![nodes]).await {
+        return StepOutcome::Failed {
+            message: e.to_string(),
+        };
+    }
+
+    for schema_id in skill.applies_to {
+        let target = resolved_id(schema_id, renames);
+        if let Err(e) = node_service
+            .create_relationship(
+                skill.id,
+                crate::models::SKILL_APPLIES_TO,
+                &target,
+                serde_json::json!({}),
+            )
+            .await
+        {
+            return StepOutcome::Failed {
+                message: format!(
+                    "linking skill `{}` to schema `{target}` failed: {e}",
+                    skill.title
+                ),
+            };
+        }
+    }
+
+    StepOutcome::Created {
+        id: template.title.clone(),
     }
 }
 

@@ -1,32 +1,15 @@
-//! Seeded Playbook skills, authored as markdown files.
+//! Seeded Playbook skills: one table row per skill, its guidance in a
+//! Markdown file.
 //!
 //! # Adding skills to a Playbook
 //!
-//! Each skill is one `.md` file under `skills/<playbook-id>/`, pulled in with
-//! `include_str!` and turned into a seed template by [`playbook_skill`]:
-//!
-//! ```text
-//! ---
-//! title: "Creating an Issue"
-//! description: "Report a bug, defect, crash or something broken, open a ticket, ..."
-//! exclusion: "Add a task or a reminder."
-//! ---
-//! # Creating an Issue
-//! ...
-//! ```
-//!
-//! The frontmatter carries the skill's title and description; everything after
-//! the closing `---` line is seeded verbatim as the guidance body. Files are
-//! compiled into the binary, so nothing is read from disk at runtime.
-//!
-//! The frontmatter is a strict subset of YAML: the two required keys `title`
-//! and `description`, plus two optional ones. `tools` is a comma-separated tool
-//! whitelist for a skill that needs more than [`DEFAULT_TOOLS`], such as one
-//! that links nodes or changes a task's status. `exclusion` is the skill's
-//! `SkillFields::exclusion` — see *Writing the description* for when a
-//! Playbook skill needs one. One key per line, each value
-//! double-quoted with no escapes and no embedded `"`. Anything else fails every
-//! test that builds the Playbook, so a malformed file cannot ship.
+//! A skill is a [`PlaybookSkill`] row in its Playbook's table: a fixed id, the
+//! title and description retrieval ranks it by, its tool whitelist, the
+//! schemas it is about, and its guidance body. The body is one plain `.md`
+//! file under `skills/<playbook-id>/`, pulled in with `include_str!` and
+//! seeded verbatim: what the file says is what the skill holds. The file
+//! carries no metadata; that lives in the row. Files are compiled into the
+//! binary, so nothing is read from disk at runtime.
 //!
 //! # Why files live here and not in `packages/skill/`
 //!
@@ -35,7 +18,7 @@
 //! payload, so keeping Playbook skills beside the code that seeds them avoids
 //! conflating the two.
 //!
-//! # Why the description travels with the body
+//! # Writing the description
 //!
 //! Retrieval (`skill_ops::find_skills`) is pure KNN cosine over skill ROOTS,
 //! limit-capped, with the threshold at 0.0 — the cosine noise floor, not a
@@ -50,12 +33,7 @@
 //!     "Node Creation" on a query like "file a bug" unless its description is
 //!     written in the words a request actually arrives in.
 //!
-//! Keeping the description in the same file as the body makes a skill's
-//! retrieval surface and its content one editable unit.
-//!
-//! # Writing the description
-//!
-//! Write it as a retrieval target, not a summary of the body. A description
+//! So write it as a retrieval target, not a summary of the body. A description
 //! that lists what the guidance covers ("the extended status and priority
 //! vocabularies, and point estimates") reads well and matches nothing a user
 //! says. Follow the built-ins' convention:
@@ -88,6 +66,14 @@
 //! registry with the locked embedding model. The Linear skills' first drafts
 //! summarised their bodies and won 7 of 17 of their own intents there.
 //!
+//! # Linking a skill to its schemas
+//!
+//! `applies_to` names the schemas the skill is about, by the ids the Playbook
+//! asks for. The install creates an `applies_to` edge to each one, under the
+//! id it landed on, and skill search then carries exactly those schemas'
+//! definitions (and their subtypes') with the skill, instead of guessing from
+//! the request.
+//!
 //! # Shape
 //!
 //! Keep skills narrow and task-scoped, mirroring the built-in skills' own shape
@@ -95,48 +81,61 @@
 //! cross-schema narrative no per-schema description can — how types relate,
 //! what the Plays do, why a write was rejected.
 //!
-//! The one bundle-level skill ([`playbook_overview_skill`]) is narrow too, in
-//! its own way: it answers "what workflow is this workspace using?" and points
-//! at the task-scoped skills rather than restating them.
-//!
-//! The built-in skills in `nodespace-agent`'s `skill_pipeline` stay in Rust
-//! because they interpolate shared rule constants; Playbook skills are static
-//! prose and have no such reason.
+//! The one bundle-level skill ([`crate::methodology::MethodologyPlaybook::overview`])
+//! is narrow too, in its own way: it answers "what workflow is this workspace
+//! using?" and points at the task-scoped skills rather than restating them.
 
 use crate::markdown::{NodeTemplate, SeedTier};
 use crate::models::SkillFields;
 
-/// The tool whitelist of a skill whose frontmatter names no `tools`.
-const DEFAULT_TOOLS: &[&str] = &["create_node", "update_node", "search_nodes", "get_node"];
+/// The tool whitelist of a skill that needs no more than reading and writing
+/// nodes. A skill that links nodes or changes a task's status names its own.
+pub const DEFAULT_TOOLS: &[&str] = &["create_node", "update_node", "search_nodes", "get_node"];
 
-/// A parsed skill source.
-#[derive(Debug, PartialEq)]
-struct Parsed<'a> {
-    title: &'a str,
-    description: &'a str,
-    tools: Vec<&'a str>,
-    exclusion: Option<&'a str>,
-    body: &'a str,
+/// One Playbook skill, as its table row.
+#[derive(Debug, Clone, Copy)]
+pub struct PlaybookSkill {
+    /// The skill node's fixed id.
+    pub id: &'static str,
+    /// The skill's name, embedded for retrieval with its description.
+    pub title: &'static str,
+    /// What the skill is for, in the words a request arrives in.
+    pub description: &'static str,
+    /// What the skill is not for; see *Writing the description*.
+    pub exclusion: Option<&'static str>,
+    /// Tools a turn that selects this skill may call.
+    pub tools: &'static [&'static str],
+    /// Schema ids this skill is about, as the Playbook names them.
+    pub applies_to: &'static [&'static str],
+    /// The guidance, as plain Markdown.
+    pub body: &'static str,
 }
 
-/// Build a seed template from a Playbook skill's markdown source
-/// (frontmatter + body, see the module docs).
-///
-/// # Panics
-///
-/// If the frontmatter is malformed. Sources are `include_str!` constants, so
-/// this is a build-content error that the Playbook's own tests surface.
-pub fn playbook_skill(source: &str) -> NodeTemplate {
-    let parsed = parse(source).unwrap_or_else(|e| {
-        panic!("malformed Playbook skill frontmatter: {e}");
-    });
-    let mut skill = SkillFields::new(parsed.description, &parsed.tools, 3);
-    if let Some(exclusion) = parsed.exclusion {
-        skill = skill.with_exclusion(exclusion);
+impl PlaybookSkill {
+    /// The seed this row installs.
+    pub fn template(&self) -> NodeTemplate {
+        let mut skill = SkillFields::new(self.description, self.tools, 3);
+        if let Some(exclusion) = self.exclusion {
+            skill = skill.with_exclusion(exclusion);
+        }
+        NodeTemplate {
+            tier: SeedTier::Starter,
+            ..NodeTemplate::skill(self.id, self.title, skill, self.body)
+        }
     }
-    NodeTemplate {
-        tier: SeedTier::Starter,
-        ..NodeTemplate::skill(parsed.title, skill, parsed.body)
+
+    /// The seed for a Playbook's bundle-level skill, with an "Installed in
+    /// this workspace" section naming what `installed` records.
+    ///
+    /// The section is written for every install, not only a re-keyed one: the
+    /// point is that the answer comes from what happened here, not from what
+    /// the Playbook would have done in an empty graph.
+    pub fn overview_template(&self, installed: &InstalledIds) -> NodeTemplate {
+        let mut template = self.template();
+        template
+            .markdown_content
+            .push_str(&render_installed(installed));
+        template
     }
 }
 
@@ -152,25 +151,6 @@ pub struct InstalledIds {
     pub plays: Vec<(String, String)>,
     pub skills: Vec<String>,
     pub views: Vec<(String, String)>,
-}
-
-/// Build a Playbook's bundle-level skill (see
-/// [`crate::methodology::MethodologyPlaybook::overview`]) with an
-/// "Installed in this workspace" section naming what `installed` records.
-///
-/// The section is written for every install, not only a re-keyed one: the
-/// point is that the answer comes from what happened here, not from what the
-/// Playbook would have done in an empty graph.
-///
-/// # Panics
-///
-/// As [`playbook_skill`], if the source's frontmatter is malformed.
-pub fn playbook_overview_skill(source: &str, installed: &InstalledIds) -> NodeTemplate {
-    let mut template = playbook_skill(source);
-    template
-        .markdown_content
-        .push_str(&render_installed(installed));
-    template
 }
 
 fn render_installed(installed: &InstalledIds) -> String {
@@ -224,103 +204,53 @@ fn push_list(out: &mut String, label: &str, items: impl Iterator<Item = String>)
     }
 }
 
-/// Split `source` into its frontmatter values and body.
-fn parse(source: &str) -> Result<Parsed<'_>, String> {
-    let rest = source
-        .strip_prefix("---\n")
-        .ok_or("source must start with a `---` line")?;
-    let end = rest
-        .find("\n---\n")
-        .ok_or("no closing `---` line after the frontmatter")?;
-    let (front, body) = (&rest[..end], &rest[end + "\n---\n".len()..]);
-
-    let mut title = None;
-    let mut description = None;
-    let mut tools = None;
-    let mut exclusion = None;
-    for line in front.lines() {
-        let (key, raw) = line
-            .split_once(": ")
-            .ok_or_else(|| format!("expected `key: \"value\"`, got {line:?}"))?;
-        let value = raw
-            .strip_prefix('"')
-            .and_then(|v| v.strip_suffix('"'))
-            .filter(|v| !v.contains(['"', '\\']))
-            .ok_or_else(|| {
-                format!("{key}: value must be double-quoted with no escapes or inner quotes")
-            })?;
-        let slot = match key {
-            "title" => &mut title,
-            "description" => &mut description,
-            "tools" => &mut tools,
-            "exclusion" => &mut exclusion,
-            other => return Err(format!("unknown frontmatter key {other:?}")),
-        };
-        if slot.replace(value).is_some() {
-            return Err(format!("duplicate frontmatter key {key:?}"));
-        }
-    }
-
-    let tools = match tools {
-        None => DEFAULT_TOOLS.to_vec(),
-        Some(list) => {
-            let names: Vec<&str> = list.split(',').map(str::trim).collect();
-            if names.iter().any(|n| n.is_empty()) {
-                return Err(format!("tools: empty entry in {list:?}"));
-            }
-            names
-        }
-    };
-
-    match (title, description) {
-        (Some(title), Some(description)) if !title.is_empty() && !description.is_empty() => {
-            Ok(Parsed {
-                title,
-                description,
-                tools,
-                exclusion,
-                body,
-            })
-        }
-        _ => Err("both `title` and `description` are required and non-empty".to_string()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn splits_frontmatter_from_body_verbatim() {
-        let src = "---\ntitle: \"T\"\ndescription: \"a: b\"\n---\n# T\n\n---\nbody\n";
-        assert_eq!(
-            parse(src),
-            Ok(Parsed {
-                title: "T",
-                description: "a: b",
-                tools: DEFAULT_TOOLS.to_vec(),
-                exclusion: None,
-                body: "# T\n\n---\nbody\n",
-            })
-        );
-    }
+    const ROW: PlaybookSkill = PlaybookSkill {
+        id: "4e7a2c90-1b63-4f58-8d0a-9c3e5b7f1a20",
+        title: "T",
+        description: "D",
+        exclusion: Some("Add a task."),
+        tools: &["get_node", "create_relationship"],
+        applies_to: &["issue"],
+        body: "# T\n\nbody\n",
+    };
 
     #[test]
-    fn an_explicit_tools_list_replaces_the_default() {
-        let src = "---\ntitle: \"T\"\ndescription: \"D\"\ntools: \"get_node, create_relationship\"\n---\nb";
-        assert_eq!(
-            parse(src).map(|p| p.tools),
-            Ok(vec!["get_node", "create_relationship"])
-        );
-    }
+    fn a_row_seeds_a_starter_skill_under_its_id_with_its_body_verbatim() {
+        let template = ROW.template();
+        assert_eq!(template.id, ROW.id);
+        assert_eq!(template.title, "T");
+        assert_eq!(template.root_node_type, "skill");
+        assert_eq!(template.markdown_content, ROW.body);
+        assert!(matches!(template.tier, SeedTier::Starter));
+        // ADR-057: guidance children are ordinary markdown nodes.
+        assert!(template.child_node_type.is_none());
 
-    #[test]
-    fn an_exclusion_reaches_the_seeded_skill() {
-        let src = "---\ntitle: \"T\"\ndescription: \"D\"\nexclusion: \"Add a task.\"\n---\nb";
-        let template = playbook_skill(src);
         let skill = SkillFields::from_properties(&template.root_properties)
             .expect("seed decodes as a skill");
+        assert_eq!(skill.description, "D");
         assert_eq!(skill.exclusion.as_deref(), Some("Add a task."));
+        assert_eq!(skill.tool_whitelist, ["get_node", "create_relationship"]);
+    }
+
+    #[test]
+    fn the_overview_appends_what_the_install_landed() {
+        let installed = InstalledIds {
+            schemas: vec![("issue".into(), "issue".into())],
+            ..Default::default()
+        };
+        let template = ROW.overview_template(&installed);
+        assert!(template.markdown_content.starts_with(ROW.body));
+        assert!(
+            template
+                .markdown_content
+                .contains("## Installed in this workspace"),
+            "{}",
+            template.markdown_content
+        );
     }
 
     #[test]
@@ -356,21 +286,5 @@ mod tests {
         assert!(section.contains("Types:"), "{section}");
         assert!(!section.contains("Plays:"), "{section}");
         assert!(!section.contains("Saved views:"), "{section}");
-    }
-
-    #[test]
-    fn rejects_malformed_frontmatter() {
-        for src in [
-            "# no frontmatter\n",
-            "---\ntitle: \"T\"\ndescription: \"D\"\n# unterminated\n",
-            "---\ntitle: T\ndescription: \"D\"\n---\n",
-            "---\ntitle: \"T\"\n---\n",
-            "---\ntitle: \"T\"\ndescription: \"D\"\nextra: \"x\"\n---\n",
-            "---\ntitle: \"T\"\ntitle: \"U\"\ndescription: \"D\"\n---\n",
-            "---\ntitle: \"T\"\ndescription: \"say \\\"hi\\\"\"\n---\n",
-            "---\ntitle: \"T\"\ndescription: \"D\"\ntools: \"get_node,,x\"\n---\n",
-        ] {
-            assert!(parse(src).is_err(), "{src:?} should be rejected");
-        }
     }
 }

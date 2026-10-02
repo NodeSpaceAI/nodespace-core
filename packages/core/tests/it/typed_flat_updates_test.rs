@@ -174,7 +174,6 @@ async fn a_collection_update_conflicts_on_a_stale_version_and_refuses_another_ty
 async fn create_skill(svc: &NodeService) -> Node {
     let node = SkillFields::new("Update a record", &["update_node", "get_node"], 3)
         .with_exclusion("Delete records")
-        .with_node_types(&["task"])
         .into_node("Graph Editing");
     let id = svc
         .create_node(node)
@@ -204,9 +203,7 @@ async fn a_skill_update_writes_and_clears_its_fields() {
     assert_eq!(updated.version, skill.version + 1);
     assert_eq!(
         SkillFields::from_node(&updated).unwrap(),
-        SkillFields::new("Change a record", &["update_node"], 5)
-            .with_exclusion("Delete records")
-            .with_node_types(&["task"]),
+        SkillFields::new("Change a record", &["update_node"], 5).with_exclusion("Delete records"),
         "the fields the update did not name are kept"
     );
     assert_eq!(updated.content, "Graph Editing");
@@ -218,7 +215,6 @@ async fn a_skill_update_writes_and_clears_its_fields() {
             SkillNodeUpdate {
                 exclusion: Some(None),
                 max_iterations: Some(None),
-                node_types: Some(None),
                 ..Default::default()
             },
         )
@@ -236,7 +232,7 @@ async fn a_skill_update_writes_and_clears_its_fields() {
     assert!(wire.get("exclusion").is_none());
     assert_eq!(wire["toolWhitelist"], json!(["update_node"]));
     assert_eq!(wire["maxIterations"], 2);
-    assert_eq!(wire["nodeTypes"], json!([]));
+    assert!(wire.get("nodeTypes").is_none());
     assert_eq!(wire["properties"], json!({}));
 }
 
@@ -286,6 +282,23 @@ async fn a_skill_update_is_validated_by_the_shared_pipeline() {
         .to_string();
     assert!(error.contains("max_iterations"), "{error}");
     assert_eq!(stored(&svc, &skill.id).await.version, skill.version);
+}
+
+/// The schemas a skill is about are its `applies_to` edges. A list of schema
+/// ids on the skill is an undeclared key, which the closed schema refuses.
+#[tokio::test]
+async fn a_skill_refuses_a_list_of_schema_ids_as_an_undeclared_key() {
+    let (svc, _tmp) = test_service().await;
+    let mut node =
+        SkillFields::new("Update a record", &["update_node"], 3).into_node("Graph Editing");
+    node.properties["node_types"] = json!(["task"]);
+
+    let error = svc
+        .create_node(node)
+        .await
+        .expect_err("an undeclared skill key is refused")
+        .to_string();
+    assert!(error.contains("node_types"), "{error}");
 }
 
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 //! Shared logic for skill search used by the local agent's `search_skills`
 //! tool and the MCP `find_skills` handler exposed to external agents.
 
-use crate::models::SkillFields;
+use crate::models::{SchemaNode, SkillFields, SKILL_APPLIES_TO};
 use crate::services::{render_subtree_markdown, NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -22,9 +22,9 @@ use super::OpsError;
 /// partially undo that by silently hiding the long tail.
 const SKILL_SEARCH_THRESHOLD: f32 = 0.0;
 
-/// Maximum schemas to include in `schema_metadata` when no `node_types` scope
-/// is set on the matched skill. Bounds token cost for general-purpose skills.
-/// Skills that declare an explicit `node_types` list are not capped.
+/// Maximum schemas to include in `schema_metadata` when the matched skill
+/// links to no schema. Bounds token cost for general-purpose skills. A skill
+/// with `applies_to` links carries exactly its linked schemas, uncapped.
 const MAX_UNSCOPED_SCHEMA_METADATA: usize = 5;
 
 /// Upper bound on `limit` requested by the caller.
@@ -183,8 +183,8 @@ pub(crate) fn mentions_phrase(haystack: &str, phrase: &str) -> bool {
 /// would otherwise sweep in every other non-core type in the same fallback
 /// window (e.g. `adr`) — the exact imprecision that caused
 /// `declare_write_tool_fields` to union unrelated types' fields onto a write
-/// tool's declaration. Per-skill `node_types` (the other mechanism
-/// `find_skills` already supports) cannot fix this case: the seeded skills
+/// tool's declaration. A skill's `applies_to` links (the other mechanism
+/// `find_skills` supports) cannot fix this case: the seeded skills
 /// whose whitelist includes `create_node`/`update_node` (Node Creation,
 /// Graph Editing) are deliberately generic across every non-core type, so
 /// there is no single static type list to give them without contradicting
@@ -357,6 +357,33 @@ fn append_named_schema_candidates(
     hits
 }
 
+/// The schemas a skill's `applies_to` links put in scope: each linked schema
+/// and every schema that extends one, directly or through a chain. A subtype
+/// is its base type, so guidance about `task` is guidance about `issue` too.
+/// Core schemas count: a link names its target outright, unlike the unlinked
+/// fallback, which offers custom types only.
+///
+/// In `all_schemas` order. A link whose target is not among `all_schemas`
+/// (an edge to something that is not a schema) contributes nothing.
+fn linked_schemas<'a>(targets: &[String], all_schemas: &'a [SchemaNode]) -> Vec<&'a SchemaNode> {
+    let is_linked = |schema: &SchemaNode| {
+        // Bounded by the corpus size, so a corrupt `extends` cycle ends.
+        let mut current = Some(schema);
+        for _ in 0..=all_schemas.len() {
+            let Some(s) = current else { break };
+            if targets.contains(&s.envelope.id) {
+                return true;
+            }
+            current = s
+                .extends
+                .as_deref()
+                .and_then(|parent| all_schemas.iter().find(|p| p.envelope.id == parent));
+        }
+        false
+    };
+    all_schemas.iter().filter(|s| is_linked(s)).collect()
+}
+
 /// A skill's retrieval score after its exclusion is applied.
 ///
 /// A skill may carry an `exclusion`: text describing what it is *not* for.
@@ -460,8 +487,10 @@ fn rerank_with_exclusions(
 /// `description`, `confidence`, `tools`, `schema_metadata`, and `instructions`.
 /// The `instructions` field is the skill's child subtree rendered to markdown
 /// — the actual procedure the model must follow. The `schema_metadata` field
-/// contains type IDs, field names, and enum values for entity types
-/// associated with the skill's `tool_whitelist` scope.
+/// contains type IDs, field names, and enum values for the schemas the skill
+/// is about: its `applies_to` targets and their subtypes, or, for a skill
+/// with no links, the custom type the query names (else up to
+/// [`MAX_UNSCOPED_SCHEMA_METADATA`] custom types).
 ///
 /// Also searches `schema`-typed nodes directly (`kind: "schema"`), so a
 /// schema with no hand-authored skill describing it is still discoverable
@@ -562,6 +591,19 @@ pub async fn find_skills(
     // unscoped-branch candidate below keeps today's fallback unchanged.
     let query_named_schema = schema_named_in_query(&input.query, &all_schemas);
 
+    // Every candidate's `applies_to` links, read together rather than once
+    // per skill. A failed read degrades to the unlinked fallback for this
+    // call instead of failing the search.
+    let skill_ids: Vec<String> = skill_results.iter().map(|(n, _)| n.id.clone()).collect();
+    let applies_to = node_service
+        .store()
+        .get_edge_targets_by_source(&skill_ids, SKILL_APPLIES_TO)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "find_skills: failed to read applies_to links");
+        })
+        .unwrap_or_default();
+
     // Schema-description-subtree fetches are cached per call: the same
     // schema commonly appears in `schema_metadata` for more than one matched
     // skill (e.g. every generic node-creation skill scoped to it), and its
@@ -576,7 +618,6 @@ pub async fn find_skills(
         let SkillFields {
             description,
             tool_whitelist,
-            node_types: scoped_type_ids,
             ..
         } = match SkillFields::from_node(node) {
             Ok(skill) => skill,
@@ -589,14 +630,20 @@ pub async fn find_skills(
             }
         };
 
-        // Entity types relevant to this skill. The skill's `node_types`
-        // property lists the type IDs in scope. When absent: if the query
-        // itself names exactly one non-core type, scope to that type (see
-        // `schema_named_in_query`); otherwise fall back to all custom
-        // (non-core) schemas, capped at MAX_UNSCOPED_SCHEMA_METADATA to bound
-        // token cost for general-purpose skills whose query didn't resolve to
-        // one type.
-        let schema_candidates: Vec<&crate::models::SchemaNode> = if scoped_type_ids.is_empty() {
+        // Entity types relevant to this skill: the schemas its `applies_to`
+        // links name, plus their subtypes. With no link that resolves to a
+        // schema: if the query itself names exactly one non-core type, scope
+        // to that type (see `schema_named_in_query`); otherwise fall back to
+        // all custom (non-core) schemas, capped at
+        // MAX_UNSCOPED_SCHEMA_METADATA to bound token cost for
+        // general-purpose skills whose query didn't resolve to one type.
+        let linked = applies_to
+            .get(&node.id)
+            .map(|targets| linked_schemas(targets, &all_schemas))
+            .unwrap_or_default();
+        let schema_candidates: Vec<&SchemaNode> = if !linked.is_empty() {
+            linked
+        } else {
             match query_named_schema {
                 Some(named) => vec![named],
                 None => all_schemas
@@ -605,12 +652,6 @@ pub async fn find_skills(
                     .take(MAX_UNSCOPED_SCHEMA_METADATA)
                     .collect(),
             }
-        } else {
-            all_schemas
-                .iter()
-                .filter(|s| scoped_type_ids.contains(&s.envelope.id))
-                .take(scoped_type_ids.len())
-                .collect()
         };
 
         // Build `schema_metadata`: each candidate's fields/relationships
@@ -753,6 +794,58 @@ mod tests {
             Vec::new(),
         )
         .expect("schema node")
+    }
+
+    fn extending(id: &str, parent: &str, is_core: bool) -> SchemaNode {
+        let mut schema = make_schema(id, id, is_core);
+        schema.extends = Some(parent.to_string());
+        schema
+    }
+
+    fn linked_ids(targets: &[&str], all_schemas: &[SchemaNode]) -> Vec<String> {
+        let targets: Vec<String> = targets.iter().map(|t| t.to_string()).collect();
+        linked_schemas(&targets, all_schemas)
+            .into_iter()
+            .map(|s| s.envelope.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn linked_schemas_are_the_targets_and_every_schema_extending_one() {
+        let all = vec![
+            make_schema("task", "Task", true),
+            make_schema("invoice", "Invoice", false),
+            extending("issue", "task", false),
+            extending("bug", "issue", false),
+            make_schema("venue", "Venue", false),
+        ];
+
+        // A linked custom type, alone.
+        assert_eq!(linked_ids(&["invoice"], &all), ["invoice"]);
+        // A linked core type is honoured, and brings its subtypes at any depth.
+        assert_eq!(linked_ids(&["task"], &all), ["task", "issue", "bug"]);
+        // A linked subtype brings its own subtypes, not its base.
+        assert_eq!(linked_ids(&["issue"], &all), ["issue", "bug"]);
+        // Several links are a union, in corpus order.
+        assert_eq!(
+            linked_ids(&["venue", "issue"], &all),
+            ["issue", "bug", "venue"]
+        );
+    }
+
+    #[test]
+    fn a_link_to_something_that_is_not_a_schema_puts_nothing_in_scope() {
+        let all = vec![make_schema("invoice", "Invoice", false)];
+        assert!(linked_ids(&["9d0c1b7e-not-a-schema"], &all).is_empty());
+        assert!(linked_ids(&[], &all).is_empty());
+    }
+
+    /// A corrupt `extends` cycle ends instead of spinning.
+    #[test]
+    fn linked_schemas_terminate_on_an_extends_cycle() {
+        let all = vec![extending("a", "b", false), extending("b", "a", false)];
+        assert!(linked_ids(&["task"], &all).is_empty());
+        assert_eq!(linked_ids(&["a"], &all), ["a", "b"]);
     }
 
     #[test]

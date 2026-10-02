@@ -833,18 +833,18 @@ fn def_search_nodes() -> ToolDefinition {
 ///
 /// Not a limitation of the resolver — a consequence of its required
 /// `node_type` parameter, whose description sends the model to the `EXISTING
-/// SCHEMAS` block. As things stand no seeded skill declares `node_types`,
-/// so every path that fills that block drops `is_core` schemas
-/// (`skill_ops`'s unscoped non-core fallback and
+/// SCHEMAS` block. No built-in skill links to a schema, so on a turn routed
+/// to built-ins every path that fills that block drops `is_core` schemas
+/// (`skill_ops`'s unlinked non-core fallback and
 /// `context_ops::non_core_schema_hits`): for a bare-value update
 /// against `task`/`text` the block never names the type, and
 /// `routing::tools_with_available_guidance` correctly withholds the tool.
 ///
-/// The one way to widen this without touching either renderer is a skill that
-/// *does* declare `node_types` naming a core type — `skill_ops`'s scoped
-/// branch filters by id, not by `is_core`, so such a type would render. That
-/// is a latent path, not the current behaviour, and it would surface the tool
-/// for core types without the rest of this reasoning being revisited.
+/// The one path that widens this is a skill linked to a core type through
+/// `applies_to` — `skill_ops`'s linked branch takes the link's targets as
+/// they are, core or not, so such a type renders. A playbook skill about
+/// plain tasks does this; where one also whitelists `resolve_query`, the tool
+/// is offered against that core type.
 ///
 /// This matches the tool's own examples — a bare value, a relative date, a
 /// paraphrased description are all custom-type — and core types have dedicated verbs (`update_task_status`)
@@ -2150,6 +2150,36 @@ impl Tool {
             Tool::AdoptExistingConflict => "adopt_existing_conflict",
             Tool::MergeConflict => "merge_conflict",
             Tool::GetWorkflowState => "get_workflow_state",
+        }
+    }
+
+    /// The fixed id of this tool's seeded node: the tool seed table. A seeded
+    /// node's identity is its id (ADR-086 §10), so each is a literal UUID
+    /// rather than one minted per install. Exhaustive, so a tool added to the
+    /// registry cannot be seeded without one.
+    pub const fn seed_id(self) -> &'static str {
+        match self {
+            Tool::SearchNodes => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9601",
+            Tool::ResolveQuery => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9602",
+            Tool::SearchSemantic => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9603",
+            Tool::GetNode => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9604",
+            Tool::CreateNode => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9605",
+            Tool::UpdateNode => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9606",
+            Tool::CreateSchema => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9607",
+            Tool::UpdateSchema => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9608",
+            Tool::UpdateTaskStatus => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9609",
+            Tool::CreateRelationship => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a960a",
+            Tool::GetRelatedNodes => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a960b",
+            Tool::SearchSkills => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a960c",
+            Tool::DeleteNode => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a960d",
+            Tool::CreateNodesFromMarkdown => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a960e",
+            Tool::RouteClarify => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a960f",
+            Tool::ListConflicts => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9610",
+            Tool::GetConflict => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9611",
+            Tool::DismissConflict => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9612",
+            Tool::AdoptExistingConflict => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9613",
+            Tool::MergeConflict => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9614",
+            Tool::GetWorkflowState => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9615",
         }
     }
 
@@ -7897,8 +7927,8 @@ mod tests {
             enabled: bool,
         ) -> NodeTemplate {
             NodeTemplate {
+                id: uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, handler.as_bytes()).to_string(),
                 title: handler.to_string(),
-                content: None,
                 root_node_type: "tool".to_string(),
                 root_properties: json!({
                     "handler": handler,
@@ -7908,7 +7938,6 @@ mod tests {
                     "enabled": enabled,
                 }),
                 child_node_type: None,
-                child_properties: None,
                 tier: SeedTier::System,
                 markdown_content: String::new(),
             }

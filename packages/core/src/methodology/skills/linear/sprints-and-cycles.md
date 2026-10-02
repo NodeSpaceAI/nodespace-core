@@ -1,8 +1,3 @@
----
-title: "Sprints and Cycles"
-description: "Start, plan or close out a sprint or cycle, put issues in the current sprint, roll unfinished issues into the next sprint, and total a sprint's points. Use when the user says start the sprint, what's in this cycle, or how many points are in the sprint."
-exclusion: "Add a task or a reminder."
----
 # Sprints and Cycles
 
 A `cycle` is a time-boxed iteration — Linear's sprint equivalent.

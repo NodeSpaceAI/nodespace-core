@@ -1466,29 +1466,26 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
-                SchemaField {
-                    name: "node_types".to_string(),
-                    friendly_name: "Node types".to_string(),
-                    field_type: crate::models::SchemaFieldType::Array,
-                    local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: Some(serde_json::json!([])),
-                    description: Some(
-                        "Schema ids this skill is scoped to; empty means unscoped".to_string(),
-                    ),
-                    item_type: Some(crate::models::SchemaFieldType::Text),
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
             ],
-            relationships: vec![],
+            // The schemas a skill is about are edges to those schema nodes,
+            // not a list of ids on the skill. Skill search reads them to
+            // choose which schemas' definitions a matched skill carries.
+            // Many/Many and optional: most skills are general and link to
+            // nothing, and one schema can have several skills.
+            relationships: vec![SchemaRelationship {
+                name: crate::models::SKILL_APPLIES_TO.to_string(),
+                target_type: Some(crate::models::CoreNodeType::Schema.as_str().to_string()),
+                direction: RelationshipDirection::Out,
+                cardinality: RelationshipCardinality::Many,
+                required: None,
+                reverse_name: "skills".to_string(),
+                reverse_cardinality: RelationshipCardinality::Many,
+                edge_fields: None,
+                description: Some(
+                    "Schemas this skill is about; a matched skill carries their definitions"
+                        .to_string(),
+                ),
+            }],
             title_template: None,
             properties_header_summary_template: None,
         },
@@ -2616,8 +2613,12 @@ mod tests {
         let schemas = get_core_schemas();
         let skill = schemas.iter().find(|s| s.envelope.id == "skill").unwrap();
 
-        assert_eq!(skill.fields.len(), 5);
-        assert!(skill.get_field("node_types").is_some());
+        assert_eq!(skill.fields.len(), 4);
+        assert!(skill.get_field("node_types").is_none());
+        let applies_to = &skill.relationships[0];
+        assert_eq!(applies_to.name, "applies_to");
+        assert_eq!(applies_to.target_type.as_deref(), Some("schema"));
+        assert_eq!(applies_to.reverse_name, "skills");
         assert!(skill.get_field("description").is_some());
         assert!(skill.get_field("exclusion").is_some());
         assert!(skill.get_field("tool_whitelist").is_some());

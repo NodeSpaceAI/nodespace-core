@@ -3177,39 +3177,21 @@ Some text here.
 mod template_tests {
     use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
 
+    const SEED_ID: &str = "0b1f6c2e-7a45-4d39-9c18-5e2a8f3d6b70";
+
     fn skill_template(name: &str, guidance: &str) -> NodeTemplate {
         NodeTemplate {
+            id: SEED_ID.to_string(),
             title: name.to_string(),
-            content: None,
             root_node_type: "skill".to_string(),
             root_properties: serde_json::json!({
                 "description": "test skill",
                 "tool_whitelist": ["get_node"],
                 "max_iterations": 3,
             }),
-            child_node_type: Some("prompt".to_string()),
-            child_properties: Some(serde_json::json!({
-                "priority": 1,
-                "source": "built-in",
-            })),
+            child_node_type: Some("text".to_string()),
             tier: SeedTier::System,
             markdown_content: guidance.to_string(),
-        }
-    }
-
-    fn prompt_template(title: &str, body: &str) -> NodeTemplate {
-        NodeTemplate {
-            title: title.to_string(),
-            content: Some(body.to_string()),
-            root_node_type: "prompt".to_string(),
-            root_properties: serde_json::json!({
-                "priority": 10,
-                "source": "built-in",
-            }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: String::new(),
         }
     }
 
@@ -3222,7 +3204,29 @@ mod template_tests {
         assert_eq!(root.node_type, "skill");
         assert_eq!(root.content, "Node Creation");
         assert!(root.parent_id.is_none());
-        assert_eq!(root.id.len(), 36); // UUID
+    }
+
+    /// The root takes the template's fixed id on every expansion; the
+    /// children's ids are minted each time.
+    #[test]
+    fn the_root_keeps_the_templates_id_across_expansions() {
+        let tmpl = skill_template("Research", "# Research Guidance\n\nSearch first.");
+        let first = prepare_nodes_from_template(&tmpl).unwrap();
+        let second = prepare_nodes_from_template(&tmpl).unwrap();
+        assert_eq!(first[0].id, SEED_ID);
+        assert_eq!(second[0].id, SEED_ID);
+        assert_eq!(first[1].parent_id.as_deref(), Some(SEED_ID));
+        assert_ne!(first[1].id, second[1].id);
+    }
+
+    #[test]
+    fn a_template_whose_id_is_not_a_uuid_is_rejected() {
+        let tmpl = NodeTemplate {
+            id: "core-identity".to_string(),
+            ..skill_template("Core Identity", "")
+        };
+        let err = prepare_nodes_from_template(&tmpl).unwrap_err();
+        assert!(err.to_string().contains("not a UUID"), "{err}");
     }
 
     #[test]
@@ -3242,8 +3246,8 @@ mod template_tests {
         // All children should have child_node_type override applied
         for child in &nodes[1..] {
             assert_eq!(
-                child.node_type, "prompt",
-                "Child type should be overridden to 'prompt'"
+                child.node_type, "text",
+                "Child type should be overridden to 'text'"
             );
             // parent_id must be Some (either the root or a heading ancestor)
             assert!(child.parent_id.is_some(), "Child must have a parent");
@@ -3251,91 +3255,24 @@ mod template_tests {
     }
 
     #[test]
-    fn child_properties_merged_into_children() {
-        let tmpl = skill_template("Schema Creation", "# Guidance\n\nDo this.");
-        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
-        assert!(nodes.len() > 1);
-
-        for child in &nodes[1..] {
-            assert_eq!(
-                child.properties.get("source").and_then(|v| v.as_str()),
-                Some("built-in"),
-                "child_properties should be merged into children"
-            );
-            assert_eq!(
-                child.properties.get("priority").and_then(|v| v.as_i64()),
-                Some(1),
-            );
-        }
-    }
-
-    #[test]
-    fn prompt_template_uses_content_override_not_title() {
-        let body = "TOOL STRATEGY: Always search first.";
-        let tmpl = prompt_template("Tool Strategy Guide", body);
-        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
-        assert_eq!(nodes.len(), 1, "Prompt with no children → single node");
-        let root = &nodes[0];
-        assert_eq!(root.node_type, "prompt");
-        assert_eq!(
-            root.content, body,
-            "content field should override title as node content"
-        );
-        assert_ne!(root.content, "Tool Strategy Guide");
-    }
-
-    #[test]
-    fn template_without_content_override_uses_title() {
+    fn children_keep_their_parsed_types_without_an_override() {
         let tmpl = NodeTemplate {
-            title: "My Skill".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({}),
             child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: String::new(),
+            ..skill_template("Research", "# Research Guidance\n\nSearch first.")
         };
         let nodes = prepare_nodes_from_template(&tmpl).unwrap();
-        assert_eq!(nodes[0].content, "My Skill");
-    }
-
-    #[test]
-    fn non_object_child_properties_replace_entirely() {
-        // When child_properties is not a JSON object (edge case), it replaces
-        // the child's parsed properties entirely rather than merging.
-        let tmpl = NodeTemplate {
-            title: "Edge Case Skill".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
-            root_properties: serde_json::json!({}),
-            child_node_type: Some("prompt".to_string()),
-            child_properties: Some(serde_json::json!("plain-string")), // not an object
-            tier: SeedTier::System,
-            markdown_content: "- A guidance item".to_string(),
-        };
-        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
-        assert!(nodes.len() > 1, "Should have child from bullet list");
-        // The non-object child_properties replaces the child's properties
-        for child in &nodes[1..] {
-            assert_eq!(child.properties, serde_json::json!("plain-string"));
-        }
+        assert_eq!(nodes[1].node_type, "header");
+        assert_eq!(nodes[2].node_type, "text");
     }
 
     #[test]
     fn root_properties_injected_onto_root_node() {
         let tmpl = NodeTemplate {
-            title: "Typed Skill".to_string(),
-            content: None,
-            root_node_type: "skill".to_string(),
             root_properties: serde_json::json!({
                 "tool_whitelist": ["search_semantic"],
                 "max_iterations": 5,
             }),
-            child_node_type: None,
-            child_properties: None,
-            tier: SeedTier::System,
-            markdown_content: String::new(),
+            ..skill_template("Typed Skill", "")
         };
         let nodes = prepare_nodes_from_template(&tmpl).unwrap();
         let root = &nodes[0];
@@ -3354,6 +3291,26 @@ mod template_tests {
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
         assert_eq!(wl, vec!["search_semantic"]);
+    }
+
+    /// `_seed` names the template by its title, as the handle a reset takes,
+    /// alongside the two content hashes and the tier.
+    #[test]
+    fn the_seed_block_carries_the_key_the_hashes_and_the_tier() {
+        let tmpl = NodeTemplate {
+            tier: SeedTier::Starter,
+            ..skill_template("Research", "Search first.")
+        };
+        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
+        let seed = &nodes[0].properties["_seed"];
+        assert_eq!(seed["key"], "Research");
+        assert_eq!(seed["tier"], "starter");
+        assert!(seed["config_version"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty()));
+        assert!(seed["guidance_version"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty()));
     }
 }
 

@@ -1,8 +1,3 @@
----
-title: "Writing a Plan from a Spec"
-description: "Draft the technical plan for an approved spec: approach, components, sequencing and risks, linked back to the spec. Use when the user says plan this out, what's the approach, how should we build this, or asks for a plan for an existing spec."
-tools: "create_node, update_node, create_relationship, search_nodes, get_node"
----
 # Writing a Plan from a Spec
 
 A plan written without its spec's content behind it is a guess in a plan's

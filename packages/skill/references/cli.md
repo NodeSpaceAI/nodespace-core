@@ -400,6 +400,25 @@ Because they share the one `relationship_type` column with schema-declared relat
 
 **Output:** confirmation of the created edge, or the list of related nodes with `count`/`direction`/`relationship_name`.
 
+### Authoring a skill
+
+A `skill` node is guidance an agent finds by search: its name and `description` are what a request is matched against, and its markdown children are the procedure to follow. Create the root, then add the guidance beneath it as markdown children:
+
+```bash
+nodespace node create --type skill --content 'Booking a Venue' \
+  --properties '{"description":"Reserve a venue for an event: check its capacity, then record the booking. Use when the user wants to book, reserve or hold a venue.","tool_whitelist":["create_node","update_node","get_node"]}'
+```
+
+**Link the skill to the schemas it is about.** A skill written for one type, or for a few, says so with an `applies_to` edge to each type's schema node. A schema's id is its node id, so the target is the type id itself:
+
+```bash
+nodespace relationship create --from <skill-id> --type applies_to --to venue
+```
+
+Skill search then returns that skill together with exactly those types' fields and relationships, and those of every type that extends them, rather than a guess taken from the wording of the request. A core type can be linked the same way (`--to task`). Leave a general skill, one that applies whatever the type, unlinked. Only a schema can be the target: a link to any other node is rejected.
+
+The same edges read from the schema's end as `skills`: `nodespace relationship get venue --type skills` lists every skill about that type.
+
 ### Schema inspection and management
 
 ```bash
@@ -426,7 +445,7 @@ nodespace schema delete adr
 
 `create`/`update` take a single JSON `--params` blob (or `--params-file <path>` for a file) rather than per-field flags — the params shape mirrors `CreateSchemaParams`/`UpdateSchemaParams` in the daemon.
 
-<!-- BEGIN GENERATED: schema-rules (see packages/agent/src/skill_rules.rs, packages/cli/examples/gen_skill_md.rs) -->
+<!-- BEGIN GENERATED: schema-rules (see packages/agent/src/seeds/rules/skill-md/, packages/agent/src/seeds/skill-md/schema-rules.md) -->
 **Only the types asked for.** Create exactly the types asked for — no more — then stop and report them. Don't proactively create related types the user didn't ask for (e.g. asked for "ADR" — don't also create "Ticket" or "Sprint"), and don't follow up with `schema update` to wire relationships unless explicitly asked. This is a rule about restraint, not about call count: when the user does ask for several types, create all of them — see *Creating two linked types* for the order.
 
 **Creating two linked types.** When the user asks for a pair (e.g. "Customer and Invoice, linked"), that is two `schema create` calls, not one. A relationship's `targetType` must already exist, or be the type the same call is creating — pointing at a type you only intend to create next is rejected. So create the target type first, then the referencing type, declaring the relationship on the *referencing* side: create `Customer`, then create `Invoice` with `{"name":"billed_to","targetType":"customer","direction":"out","cardinality":"one","reverseName":"invoices","reverseCardinality":"many"}`. The required `reverseName` gives the Customer end its `invoices` accessor for free — one stored edge, readable from both ends, no `schema update` follow-up. Declaring `invoices → invoice` on `Customer` first is rejected: the target doesn't exist yet. Don't omit the relationship here — the user asked for the types to be linked, and omitting it silently delivers two unlinked types.

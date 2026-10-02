@@ -1297,41 +1297,15 @@ pub async fn handle_create_nodes_from_markdown(
 // Node Template
 // ============================================================================
 //
-// Allows callers to define a hierarchy using markdown content while overriding
-// the node types and injecting extra properties into the root and children.
-// This is the unified path used by skill/prompt seeding, replacing the old
-// SeedSkill / SeedGuidancePrompt / SeedPrompt structs and their bespoke
-// to_node() conversions.
+// The one input to seeding (ADR-086 §10). Each kind of seeded node is defined
+// by a `const` table in the crate that owns it; a table row becomes a
+// `NodeTemplate`, and `prepare_nodes_from_template` expands that into the
+// nodes `NodeService::seed_nodes_from_templates` reconciles.
 
-/// Template for creating a typed node hierarchy from markdown content.
-///
-/// The markdown body is parsed through the same `prepare_nodes_from_markdown`
-/// pipeline used by the bulk-import path.  After parsing, the caller-
-/// supplied type overrides and property injections are applied so the result
-/// is ready for insertion via `NodeService`.
-///
-/// # Example — building a skill node with guidance children
-///
-/// ```ignore
-/// // Skill node: title used as content, guidance body becomes ordinary
-/// // markdown children (header/text, inferred from the markdown structure —
-/// // no child_node_type override).
-/// let tmpl = NodeTemplate::skill(
-///     "Research & Search",
-///     SkillFields::new(
-///         "Search and explore the knowledge graph…",
-///         &["search_semantic", "search_nodes", "get_node"],
-///         4,
-///     ),
-///     "When answering questions:\n\nSEARCH FIRST: …",
-/// );
-/// let nodes = prepare_nodes_from_template(&tmpl)?;
-/// // nodes[0] is the skill root; nodes[1..] are its markdown-typed children
-/// ```
 /// Seeding tier for a [`NodeTemplate`] — labels the node's intended role
 /// (engineering artifact vs. example/workspace content). Reconciliation
-/// behavior itself no longer depends on this: every seeded node, regardless
-/// of tier, is durability-guarded per aspect (config vs. guidance — see
+/// does not depend on it: every seeded node, regardless of tier, is
+/// durability-guarded per aspect (config vs. guidance — see
 /// `_seed.config_modified` / `_seed.guidance_modified` in
 /// `seed_nodes_from_templates`'s doc comment). An aspect a user has touched
 /// is never auto-replaced by a template-hash change; only an explicit reset
@@ -1358,31 +1332,29 @@ impl SeedTier {
     }
 }
 
+/// One seeded node: its fixed id, its root, and the Markdown body that becomes
+/// its child subtree.
+///
+/// The body is parsed through the same `prepare_nodes_from_markdown` pipeline
+/// the bulk-import path uses.
 #[derive(Debug, Clone)]
 pub struct NodeTemplate {
-    /// Human-readable name / label for the root node (stored as the node's `title`).
+    /// The root node's id: a fixed literal UUID from the seed table. It is the
+    /// seeded node's identity, so re-seeding finds the same node again and two
+    /// devices seeding the same built-in produce the same node.
+    pub id: String,
+    /// The root node's name, stored as its `content`. Also `_seed.key`, the
+    /// human-readable handle `nodespace skill reset <key>` takes.
     pub title: String,
-    /// Optional body text stored as the root node's `content`.
-    ///
-    /// When `Some`, this value becomes the root node's content field.
-    /// When `None` (default), `title` is used as the content.
-    ///
-    /// Use this for node types where the content is a long body (e.g.
-    /// `agent-guidance` nodes whose content is the actual prompt text, while
-    /// `title` is just the short label).
-    pub content: Option<String>,
     /// Markdown body that becomes the children.  May be empty.
     pub markdown_content: String,
-    /// Override for the root node's `node_type` (e.g. `"skill"`, `"agent-guidance"`).
+    /// The root node's `node_type` (e.g. `"skill"`, `"agent-guidance"`).
     pub root_node_type: String,
-    /// Extra properties to merge into the root node (override parsed defaults).
+    /// The root node's properties.
     pub root_properties: serde_json::Value,
     /// Optional type override applied to every child node produced by the parser.
     pub child_node_type: Option<String>,
-    /// Optional properties to merge into every child node (override parsed defaults).
-    pub child_properties: Option<serde_json::Value>,
-    /// Reconciliation tier. Defaults to `System` — every existing seed source
-    /// (skills, prompts, tools) is an engineering artifact, not user content.
+    /// Reconciliation tier. Defaults to `System`.
     pub tier: SeedTier,
 }
 
@@ -1390,18 +1362,18 @@ impl NodeTemplate {
     /// A `System`-tier seed for the skill called `name`, with `guidance` as
     /// its markdown children. The name is the template title and node content.
     pub fn skill(
+        id: impl Into<String>,
         name: impl Into<String>,
         skill: crate::models::SkillFields,
         guidance: impl Into<String>,
     ) -> Self {
         Self {
+            id: id.into(),
             root_properties: skill.properties(),
             title: name.into(),
-            content: None,
             markdown_content: guidance.into(),
             root_node_type: crate::models::SKILL_NODE_TYPE.to_string(),
             child_node_type: None,
-            child_properties: None,
             tier: SeedTier::System,
         }
     }
@@ -1409,26 +1381,30 @@ impl NodeTemplate {
 
 /// Parse a [`NodeTemplate`] into a flat list of [`PreparedNode`]s.
 ///
-/// The first element is always the root node (with `parent_id = None`).
-/// Subsequent elements are children whose `parent_id` points to the root.
+/// The first element is always the root node (with `parent_id = None`), under
+/// the template's fixed id. Subsequent elements are children whose `parent_id`
+/// points to the root; their ids are minted per expansion, since a seed's
+/// children are replaced whole rather than matched one by one.
 ///
-/// Type overrides and property injections are applied **after** parsing so
-/// the markdown hierarchy is preserved.  Property injection merges keys from
-/// the template into the parsed properties, with template values winning on
-/// conflict.
+/// # Errors
+///
+/// `InvalidParams` when the template's id is not a UUID: every seeded node has
+/// one (ADR-086 §10).
 pub fn prepare_nodes_from_template(
     tmpl: &NodeTemplate,
 ) -> Result<Vec<PreparedNode>, MarkdownError> {
-    let root_id = uuid::Uuid::new_v4().to_string();
+    if uuid::Uuid::parse_str(&tmpl.id).is_err() {
+        return Err(MarkdownError::InvalidParams(format!(
+            "seed '{}' has id '{}', which is not a UUID",
+            tmpl.title, tmpl.id
+        )));
+    }
+    let root_id = tmpl.id.clone();
 
-    // Root content: use explicit `content` field when provided, otherwise fall back to `title`.
-    let root_content = tmpl.content.clone().unwrap_or_else(|| tmpl.title.clone());
-
-    // Build root node directly (no markdown parsing needed for the title).
     let root = PreparedNode::new(
         root_id.clone(),
         &tmpl.root_node_type,
-        root_content,
+        tmpl.title.clone(),
         None, // root has no parent
         1.0,
         tmpl.root_properties.clone(),
@@ -1441,23 +1417,9 @@ pub fn prepare_nodes_from_template(
         prepare_nodes_from_markdown(&tmpl.markdown_content, Some(root_id.clone()))?
     };
 
-    // Apply child type / property overrides.
-    for child in &mut children {
-        if let Some(ref ct) = tmpl.child_node_type {
+    if let Some(ref ct) = tmpl.child_node_type {
+        for child in &mut children {
             child.node_type = ct.clone();
-        }
-        if let Some(ref cp) = tmpl.child_properties {
-            // Merge: template properties win over parsed defaults.
-            if let (Some(parsed_obj), Some(override_obj)) =
-                (child.properties.as_object_mut(), cp.as_object())
-            {
-                for (k, v) in override_obj {
-                    parsed_obj.insert(k.clone(), v.clone());
-                }
-            } else {
-                // Replace entirely when either side isn't a plain object.
-                child.properties = cp.clone();
-            }
         }
     }
 
@@ -1467,11 +1429,8 @@ pub fn prepare_nodes_from_template(
 
     // Stamp reconciliation metadata onto the root's properties *after* both
     // hashes are computed, so they reflect only authored content — not the
-    // metadata describing it. `seed_key` is the template's `title`, a stable
-    // slug used to match this group to an existing DB node across runs (the
-    // root's `content`/`properties` are expected to drift; the title is the
-    // one thing seed_nodes_from_templates can rely on to find "the same
-    // template" again).
+    // metadata describing it. `key` is the template's title: the handle a
+    // reset names, not the node's identity, which is its id.
     //
     // Two independent hashes, not one: `config_version` covers only the root
     // node (the retrieval/dispatch knobs — description, exclusion, tool_whitelist,

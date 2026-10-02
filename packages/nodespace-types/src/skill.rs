@@ -7,12 +7,17 @@ use crate::node::{Node, NodeEnvelope, ValidationError};
 /// The `node_type` of every skill node.
 pub const SKILL_NODE_TYPE: &str = "skill";
 
+/// The relationship from a skill to the schema nodes it is about. Skill
+/// search carries those schemas' definitions with a matched skill.
+pub const SKILL_APPLIES_TO: &str = "applies_to";
+
 /// `max_iterations` when a skill doesn't set one — the core schema's default.
 pub const DEFAULT_SKILL_MAX_ITERATIONS: u32 = 2;
 
 /// The typed fields of a `skill` node: its retrieval and dispatch config. The
-/// skill's name is the node's `content`, and its guidance is its child
-/// subtree; neither is part of this shape.
+/// skill's name is the node's `content`, its guidance is its child subtree,
+/// and the schemas it is about are its [`SKILL_APPLIES_TO`] edges; none of
+/// those is part of this shape.
 // The one reader and writer of a skill's stored fields. `skill` has a
 // registered core schema, so the store hoists its fields under
 // `properties.skill.*`; a node built in memory, a seed template, or a flat
@@ -36,8 +41,6 @@ pub struct SkillFields {
     pub tool_whitelist: Vec<String>,
     /// ReAct iteration budget for the skill.
     pub max_iterations: u32,
-    /// Schema ids this skill is scoped to. Empty means unscoped.
-    pub node_types: Vec<String>,
 }
 
 impl Default for SkillFields {
@@ -48,13 +51,12 @@ impl Default for SkillFields {
             exclusion: None,
             tool_whitelist: Vec::new(),
             max_iterations: DEFAULT_SKILL_MAX_ITERATIONS,
-            node_types: Vec::new(),
         }
     }
 }
 
 impl SkillFields {
-    /// A skill's fields with no exclusion and no type scope.
+    /// A skill's fields with no exclusion.
     pub fn new(
         description: impl Into<String>,
         tool_whitelist: &[&str],
@@ -65,19 +67,12 @@ impl SkillFields {
             exclusion: None,
             tool_whitelist: tool_whitelist.iter().map(|t| t.to_string()).collect(),
             max_iterations,
-            node_types: Vec::new(),
         }
     }
 
     /// Set what the skill is not for. A blank exclusion is no exclusion.
     pub fn with_exclusion(mut self, exclusion: impl Into<String>) -> Self {
         self.exclusion = normalize_exclusion(&exclusion.into());
-        self
-    }
-
-    /// Scope the skill to these schema ids.
-    pub fn with_node_types(mut self, node_types: &[&str]) -> Self {
-        self.node_types = node_types.iter().map(|t| t.to_string()).collect();
         self
     }
 
@@ -122,7 +117,6 @@ impl SkillFields {
             .as_deref()
             .and_then(normalize_exclusion);
         let tool_whitelist = string_list(field("tool_whitelist"), "tool_whitelist")?;
-        let node_types = string_list(field("node_types"), "node_types")?;
         let max_iterations = match field("max_iterations") {
             None => DEFAULT_SKILL_MAX_ITERATIONS,
             Some(v) => v
@@ -141,15 +135,13 @@ impl SkillFields {
             exclusion,
             tool_whitelist,
             max_iterations,
-            node_types,
         })
     }
 
     /// The skill's config as flat properties — the shape a create or update
     /// writes, which the store hoists under `properties.skill.*`.
     ///
-    /// `exclusion` and `node_types` are omitted when unset rather than
-    /// written empty.
+    /// `exclusion` is omitted when unset rather than written empty.
     pub fn properties(&self) -> Value {
         let mut props = Map::new();
         props.insert("description".to_string(), json!(self.description));
@@ -158,9 +150,6 @@ impl SkillFields {
         }
         props.insert("tool_whitelist".to_string(), json!(self.tool_whitelist));
         props.insert("max_iterations".to_string(), json!(self.max_iterations));
-        if !self.node_types.is_empty() {
-            props.insert("node_types".to_string(), json!(self.node_types));
-        }
         Value::Object(props)
     }
 
@@ -226,12 +215,6 @@ pub struct SkillNodeUpdate {
         deserialize_with = "deserialize_clearable"
     )]
     pub max_iterations: Option<Option<u32>>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_clearable"
-    )]
-    pub node_types: Option<Option<Vec<String>>>,
 }
 
 impl SkillNodeUpdate {
@@ -266,9 +249,6 @@ impl SkillNodeUpdate {
         }
         if let Some(max_iterations) = &self.max_iterations {
             patch.insert("max_iterations".to_string(), json!(max_iterations));
-        }
-        if let Some(node_types) = &self.node_types {
-            patch.insert("node_types".to_string(), json!(node_types));
         }
         Value::Object(patch)
     }
@@ -313,7 +293,6 @@ mod tests {
     fn sample() -> SkillFields {
         SkillFields::new("Update a record", &["update_node", "get_node"], 3)
             .with_exclusion("Delete records")
-            .with_node_types(&["invoice"])
     }
 
     #[test]
@@ -338,7 +317,6 @@ mod tests {
         let skill = SkillFields::new("Search", &["search_nodes"], 4);
         let props = skill.properties();
         assert!(props.get("exclusion").is_none());
-        assert!(props.get("node_types").is_none());
         assert_eq!(SkillFields::from_properties(&props).unwrap(), skill);
     }
 
@@ -407,7 +385,6 @@ mod tests {
                 json!({ "tool_whitelist": [1] }),
                 "tool_whitelist items must be strings",
             ),
-            (json!({ "node_types": {} }), "node_types must be an array"),
             (
                 json!({ "max_iterations": 0 }),
                 "max_iterations must be a positive integer",
@@ -462,7 +439,11 @@ mod tests {
     /// naming anything else is an error rather than a silently dropped write.
     #[test]
     fn update_rejects_an_unknown_key() {
-        for json in [r#"{"content": "Renamed"}"#, r#"{"tool_whitelist": []}"#] {
+        for json in [
+            r#"{"content": "Renamed"}"#,
+            r#"{"tool_whitelist": []}"#,
+            r#"{"nodeTypes": ["task"]}"#,
+        ] {
             assert!(
                 serde_json::from_str::<SkillNodeUpdate>(json).is_err(),
                 "{json} must not deserialize as a SkillNodeUpdate"
@@ -473,20 +454,18 @@ mod tests {
     #[test]
     fn update_distinguishes_absent_null_and_value() {
         let update: SkillNodeUpdate = serde_json::from_str(
-            r#"{"exclusion": null, "maxIterations": 5, "nodeTypes": null, "toolWhitelist": ["get_node"]}"#,
+            r#"{"exclusion": null, "maxIterations": 5, "toolWhitelist": ["get_node"]}"#,
         )
         .unwrap();
         assert_eq!(update.description, None);
         assert_eq!(update.exclusion, Some(None));
         assert_eq!(update.max_iterations, Some(Some(5)));
-        assert_eq!(update.node_types, Some(None));
         assert_eq!(
             update.to_properties_patch(),
             json!({
                 "exclusion": null,
                 "tool_whitelist": ["get_node"],
-                "max_iterations": 5,
-                "node_types": null
+                "max_iterations": 5
             })
         );
         assert!(!update.is_empty());
@@ -511,8 +490,7 @@ mod tests {
             json!({
                 "description": "Search",
                 "toolWhitelist": ["get_node"],
-                "maxIterations": 4,
-                "nodeTypes": []
+                "maxIterations": 4
             })
         );
     }

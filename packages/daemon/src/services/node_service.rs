@@ -641,24 +641,13 @@ impl GrpcNodeService for NodeServiceImpl {
 
         // Before-state summary — read regardless of dry_run, since the
         // caller needs it either way (a confirmation prompt on dry_run, an
-        // audit line on the real run).
+        // audit line on the real run). The key names the template; the
+        // template's fixed id names the node, archived or not.
         let existing = this
             .node_service
-            .query_nodes(nodespace_core::models::NodeFilter {
-                node_type: Some(req.node_type.clone()),
-                include_archived: true,
-                ..Default::default()
-            })
+            .get_node(&template.id)
             .await
-            .map_err(service_error_to_status)?
-            .into_iter()
-            .find(|n| {
-                n.properties
-                    .get("_seed")
-                    .and_then(|s| s.get("key"))
-                    .and_then(|v| v.as_str())
-                    == Some(req.seed_key.as_str())
-            });
+            .map_err(service_error_to_status)?;
 
         let Some(existing_node) = existing else {
             return Ok(Response::new(ResetSeedNodeResponse {
@@ -707,13 +696,7 @@ impl GrpcNodeService for NodeServiceImpl {
 
         let (config_reset, guidance_reset) = this
             .node_service
-            .reset_seed_node(
-                &req.node_type,
-                &req.seed_key,
-                &prepared,
-                req.reset_config,
-                req.reset_guidance,
-            )
+            .reset_seed_node(&prepared, req.reset_config, req.reset_guidance)
             .await
             .map_err(service_error_to_status)?;
 
@@ -2786,10 +2769,12 @@ fn relationship_to_proto(
 }
 
 /// Find the currently-compiled seed template for `(node_type, seed_key)`
-/// across every seed source the daemon seeds at startup (`seed_agent_nodes`
-/// in `services/assembly.rs`). `seed_key` matches `NodeTemplate.title`
-/// verbatim (see `prepare_nodes_from_template`, which stamps `_seed.key` from
-/// it) — case-sensitive, no normalization.
+/// across every seed table the daemon seeds at startup (`seed_agent_nodes`
+/// in `services/assembly.rs`). `seed_key` is the handle a reset names: it
+/// matches `NodeTemplate.title` verbatim (see `prepare_nodes_from_template`,
+/// which stamps `_seed.key` from it) — case-sensitive, no normalization. The
+/// template it resolves to carries the seeded node's id, which is what
+/// identifies the node.
 fn resolve_seed_template(
     node_type: &str,
     seed_key: &str,
@@ -6080,13 +6065,12 @@ mod tests {
 
     fn seed_template(node_type: &str, title: &str) -> nodespace_core::markdown::NodeTemplate {
         nodespace_core::markdown::NodeTemplate {
+            id: uuid::Uuid::new_v4().to_string(),
             title: title.to_string(),
-            content: None,
             markdown_content: String::new(),
             root_node_type: node_type.to_string(),
             root_properties: serde_json::json!({}),
             child_node_type: None,
-            child_properties: None,
             tier: nodespace_core::markdown::SeedTier::System,
         }
     }

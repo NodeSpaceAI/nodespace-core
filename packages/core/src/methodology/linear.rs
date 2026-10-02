@@ -26,7 +26,7 @@
 //! there is no `todo` value in NodeSpace, so `backlog` and `triage` both map
 //! to `open`.
 
-use crate::methodology::skills::playbook_skill;
+use crate::methodology::skills::{PlaybookSkill, DEFAULT_TOOLS};
 use crate::methodology::{
     FieldValueExtension, MethodologyPlaybook, PlayStep, SchemaStep, ViewStep,
 };
@@ -64,6 +64,62 @@ pub const ISSUES_BY_STATUS_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c04";
 /// The `linear-cycles` saved view.
 pub const CYCLES_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c05";
 
+/// The guidance skills, in install order.
+const SKILLS: &[PlaybookSkill] = &[
+    PlaybookSkill {
+        // Creating an Issue
+        id: "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c06",
+        title: "Creating an Issue",
+        description: "Report a bug, defect, crash or something broken, open a ticket, or raise \
+                      an issue. Use when the user wants to file or log a bug, open a ticket, \
+                      report a problem, or request a feature.",
+        exclusion: Some("Add a task or a reminder."),
+        tools: DEFAULT_TOOLS,
+        applies_to: &["issue"],
+        body: include_str!("skills/linear/creating-an-issue.md"),
+    },
+    PlaybookSkill {
+        // Sprints and Cycles
+        id: "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c07",
+        title: "Sprints and Cycles",
+        description: "Start, plan or close out a sprint or cycle, put issues in the current \
+                      sprint, roll unfinished issues into the next sprint, and total a sprint's \
+                      points. Use when the user says start the sprint, what's in this cycle, or \
+                      how many points are in the sprint.",
+        exclusion: Some("Add a task or a reminder."),
+        tools: DEFAULT_TOOLS,
+        applies_to: &["cycle", "issue"],
+        body: include_str!("skills/linear/sprints-and-cycles.md"),
+    },
+    PlaybookSkill {
+        // Issue Validation Rules
+        id: "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c08",
+        title: "Issue Validation Rules",
+        description: "Why an issue won't close or won't start: its status change was rejected \
+                      because sub-issues are still open or a blocker isn't done. Use when the \
+                      user says it won't let me mark this done, it won't let me move this to in \
+                      progress, why can't I close this, or why is this blocked.",
+        exclusion: Some("Link a task to a decision."),
+        tools: DEFAULT_TOOLS,
+        applies_to: &["issue"],
+        body: include_str!("skills/linear/issue-validation-rules.md"),
+    },
+];
+
+/// The bundle-level skill.
+const OVERVIEW: PlaybookSkill = PlaybookSkill {
+    // Linear-style Workspace
+    id: "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c09",
+    title: "Linear-style Workspace",
+    description: "What workflow this workspace uses: the Linear-style Playbook installed here — \
+                  its issue and cycle types, the Plays that automate and gate them, its saved \
+                  views, and the schema ids they were actually created under.",
+    exclusion: None,
+    tools: DEFAULT_TOOLS,
+    applies_to: &["issue", "cycle"],
+    body: include_str!("skills/linear/linear-style-workspace.md"),
+};
+
 /// The Linear-style playbook.
 pub fn playbook() -> MethodologyPlaybook {
     MethodologyPlaybook {
@@ -80,12 +136,8 @@ pub fn playbook() -> MethodologyPlaybook {
             sub_issue_completion_gate(),
             blocker_gate(),
         ],
-        skills: vec![
-            playbook_skill(include_str!("skills/linear/creating-an-issue.md")),
-            playbook_skill(include_str!("skills/linear/sprints-and-cycles.md")),
-            playbook_skill(include_str!("skills/linear/issue-validation-rules.md")),
-        ],
-        overview: include_str!("skills/linear/linear-style-workspace.md"),
+        skills: SKILLS,
+        overview: OVERVIEW,
         views: vec![issues_by_status_view(), cycles_view()],
     }
 }
@@ -735,7 +787,7 @@ mod tests {
         let skills = playbook().skills;
         assert!(skills.len() >= 3, "expected several narrow skills");
 
-        for s in &skills {
+        for s in skills.iter().map(PlaybookSkill::template) {
             assert_eq!(s.root_node_type, "skill");
             let skill = crate::models::SkillFields::from_properties(&s.root_properties)
                 .expect("playbook skill must decode");
@@ -760,10 +812,9 @@ mod tests {
     #[test]
     fn overview_is_titled_as_skill_md_routes_on() {
         let pb = playbook();
-        let overview = crate::methodology::skills::playbook_overview_skill(
-            pb.overview,
-            &crate::methodology::skills::InstalledIds::default(),
-        );
+        let overview = pb
+            .overview
+            .overview_template(&crate::methodology::skills::InstalledIds::default());
         assert_eq!(overview.title, format!("{} Workspace", pb.name));
         assert!(matches!(overview.tier, SeedTier::Starter));
     }
@@ -773,7 +824,11 @@ mod tests {
     #[test]
     fn playbook_skills_are_starter_tier() {
         for s in playbook().skills {
-            assert!(matches!(s.tier, SeedTier::Starter), "{}", s.title);
+            assert!(
+                matches!(s.template().tier, SeedTier::Starter),
+                "{}",
+                s.title
+            );
         }
     }
 }

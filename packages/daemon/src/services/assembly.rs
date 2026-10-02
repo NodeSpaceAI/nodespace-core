@@ -703,7 +703,9 @@ pub async fn unrouted_services_if_default_refused(
     Ok(Arc::new(build_unrouted_services(shared).await?))
 }
 
-/// Seed prompt, skill, and tool nodes on first launch. Idempotent — existing nodes are skipped.
+/// Seed the agent-guidance, skill, and tool tables. Runs on every open and
+/// reconciles by id: a seed already in the database is left alone unless its
+/// table row changed, and one that was deleted is created again.
 async fn seed_agent_nodes(node_service: &mut CoreNodeService) {
     let prompt_templates = PromptAssembler::seed_agent_guidance_nodes();
     let skill_templates = seed_skill_nodes();

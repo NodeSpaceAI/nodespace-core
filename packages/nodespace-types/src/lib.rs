@@ -98,6 +98,7 @@ pub use schema_ops::{
     UpdateSchemaParams,
 };
 pub use skill::{
-    SkillFields, SkillNode, SkillNodeUpdate, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE,
+    SkillFields, SkillNode, SkillNodeUpdate, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_APPLIES_TO,
+    SKILL_NODE_TYPE,
 };
 pub use task::{TaskNode, TaskNodeUpdate, TaskStatus};

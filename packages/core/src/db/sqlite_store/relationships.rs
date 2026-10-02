@@ -111,6 +111,21 @@ fn builtin_exclusion_sql(column: &str) -> String {
     format!("{} NOT IN ({})", column, quoted.join(", "))
 }
 
+/// The node a declaration's edge points at: the target type's schema node, or
+/// the declaring schema itself when there is none to point at.
+///
+/// A declaration with no target type has no target schema. Neither has one
+/// that targets schema nodes (a skill's `applies_to`): schemas are described
+/// by the type registry, not by a schema node of their own. The declared
+/// target still travels in the edge's properties, which is where a
+/// declaration is read back from.
+fn declaration_out_node<'a>(schema_id: &'a str, rel: &'a SchemaRelationship) -> &'a str {
+    match rel.target_type.as_deref() {
+        Some(target) if !crate::models::CoreNodeType::Schema.is_exactly(target) => target,
+        _ => schema_id,
+    }
+}
+
 /// SQL expression yielding a built-in relationship's reverse name from its
 /// forward name, for use as an INSERT's `reverse_relationship_type` value.
 ///
@@ -2174,7 +2189,8 @@ impl SqliteStore {
     //
     // A declaration is a `relationship` row between two SCHEMA nodes:
     // in_node = declaring schema, out_node = target schema (or the declaring
-    // schema itself when the declaration is untyped, `target_type: None`),
+    // schema itself when there is no target schema: an untyped declaration,
+    // or one that targets schema nodes — see `declaration_out_node`),
     // relationship_type = the declared name, and the full `SchemaRelationship`
     // serialized in the row's `properties`. The `properties` JSON is the
     // authoritative declaration; the endpoints exist for FK integrity and
@@ -2379,6 +2395,42 @@ impl SqliteStore {
         Ok(types)
     }
 
+    /// The targets of every `relationship_type` edge leaving one of
+    /// `source_ids`, keyed by source, in edge order. One query for the whole
+    /// set of sources (chunked under SQLite's variable limit), so a caller
+    /// holding several nodes does not read their edges one node at a time. A
+    /// source with no such edge has no entry.
+    pub async fn get_edge_targets_by_source(
+        &self,
+        source_ids: &[String],
+        relationship_type: &str,
+    ) -> Result<HashMap<String, Vec<String>>> {
+        const ID_CHUNK: usize = 900;
+        let mut targets: HashMap<String, Vec<String>> = HashMap::new();
+        for chunk in source_ids.chunks(ID_CHUNK) {
+            let placeholders: Vec<String> = (2..chunk.len() + 2).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "SELECT in_node, out_node FROM relationship \
+                 WHERE relationship_type = ?1 AND in_node IN ({}) ORDER BY rowid",
+                placeholders.join(", ")
+            );
+            let mut params = vec![libsql::Value::Text(relationship_type.to_string())];
+            params.extend(chunk.iter().map(|id| libsql::Value::Text(id.clone())));
+            let mut rows = self
+                .read()
+                .await?
+                .query(&sql, params)
+                .await
+                .context("Failed to query edge targets by source")?;
+            while let Some(row) = rows.next().await? {
+                let source: String = row.get(0)?;
+                let target: String = row.get(1)?;
+                targets.entry(source).or_default().push(target);
+            }
+        }
+        Ok(targets)
+    }
+
     pub async fn get_schema_declarations(
         &self,
         schema_id: &str,
@@ -2514,7 +2566,7 @@ impl SqliteStore {
 
         // Upsert the new set.
         for rel in relationships {
-            let out_node = rel.target_type.as_deref().unwrap_or(schema_id).to_string();
+            let out_node = declaration_out_node(schema_id, rel).to_string();
             let props_json = serde_json::to_string(rel)
                 .context("Failed to serialize schema relationship declaration")?;
 
@@ -2653,7 +2705,7 @@ impl SqliteStore {
         let mut changes = SchemaDeclarationChanges::default();
 
         for rel in relationships {
-            let out_node = rel.target_type.as_deref().unwrap_or(schema_id).to_string();
+            let out_node = declaration_out_node(schema_id, rel).to_string();
             let props_json = serde_json::to_string(rel)
                 .context("Failed to serialize schema relationship declaration")?;
 

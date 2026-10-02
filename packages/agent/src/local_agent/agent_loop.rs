@@ -5083,7 +5083,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
     ///
     /// When set, this bypasses both `PromptAssembler` and the emergency fallback.
     /// Intended for integration tests that want to inject a pre-built prompt
-    /// (constructed via `PromptAssembler::assemble_static`) without a live database.
+    /// without a live database.
     ///
     /// Gated by the `testing` Cargo feature so it does not leak into the
     /// production API surface.
@@ -7397,7 +7397,7 @@ mod tests {
 
     /// Regression coverage: `update_node` must remain reachable through a
     /// find-then-act chain (`search_nodes` then `update_node`) now that
-    /// `TOOL_STRATEGY_RULES` no longer hardcodes "ALWAYS search_nodes first
+    /// the Tool Strategy Guide no longer hardcodes "ALWAYS search_nodes first
     /// before update_node" in resident prose.
     ///
     /// This scripts the full chain a real model is expected to follow and

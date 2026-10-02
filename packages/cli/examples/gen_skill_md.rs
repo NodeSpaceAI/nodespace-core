@@ -4,8 +4,8 @@
 //!
 //! Two source families are covered:
 //!
-//! 1. **Schema rules** — [`nodespace_agent::skill_rules`], the shared
-//!    constants that also render into `seed_skill_nodes()`.
+//! 1. **Schema rules** — [`nodespace_agent::skill_rules`], the shared rule
+//!    fragments the seeded skills also include.
 //! 2. **The CLI surface** — the clap derive definitions in
 //!    [`nodespace_cli::Cli`]. Every command, subcommand, argument and flag is
 //!    walked from `Cli::command()`, so a command or flag added to the CLI
@@ -36,16 +36,7 @@
 //!   bun run skill:check   # exit 1 if stale
 
 use clap::{ArgAction, Command as ClapCommand, CommandFactory};
-use nodespace_agent::skill_rules::{
-    ADD_ENUM_VALUES, CREATING_TWO_LINKED_TYPES, DELETE_A_SCHEMA, EDIT_DONT_RECREATE,
-    ENUM_EDGE_FIELDS, ENUM_FORMAT, EXTENDS_SCHEMA_COMPOSITION, FIELDS_FROM_REQUEST_ONLY,
-    GROUPING_IS_COLLECTIONS, NAME_PLACEHOLDER_EXCEPTION, NO_NAME_TITLE_FIELD,
-    ONE_SCHEMA_PER_REQUEST, RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS,
-    SCHEMA_VALIDATION_ERROR_RETRY, TARGET_TYPE_MUST_EXIST, TITLE_TEMPLATE_PLACEHOLDERS,
-    UNIQUE_FIELD_FLAGS,
-};
 use nodespace_cli::Cli;
-use nodespace_core::models::SkillFields;
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -80,8 +71,9 @@ fn regions() -> Vec<GeneratedRegion> {
         GeneratedRegion {
             id: "schema-rules",
             file: "references/cli.md",
-            source_note: "packages/agent/src/skill_rules.rs, packages/cli/examples/gen_skill_md.rs",
-            render: render_schema_rules_block,
+            source_note: "packages/agent/src/seeds/rules/skill-md/, \
+                          packages/agent/src/seeds/skill-md/schema-rules.md",
+            render: nodespace_agent::skill_rules::skill_md_schema_rules,
         },
         GeneratedRegion {
             id: "cli-surface",
@@ -135,52 +127,12 @@ fn end_marker(r: &GeneratedRegion) -> String {
 // ---------------------------------------------------------------------------
 // Region: schema-rules
 // ---------------------------------------------------------------------------
-
-/// Renders the schema-rules block content (the text between the markers,
-/// exclusive), joining rules that share a single SKILL.md paragraph.
-fn render_schema_rules_block() -> String {
-    // ONE_SCHEMA_PER_REQUEST, CREATING_TWO_LINKED_TYPES, SCHEMA_ALREADY_EXISTS,
-    // and SCHEMA_VALIDATION_ERROR_RETRY render as four paragraphs (SKILL.md
-    // separates them with a blank line), everything else is one rule per
-    // paragraph. NO_NAME_TITLE_FIELD and NAME_PLACEHOLDER_EXCEPTION share the
-    // "**Schema fields:**" paragraph.
-    format!(
-        "{one_schema_per_request}\n\n{creating_two_linked_types}\n\n\
-         {schema_already_exists}\n\n{schema_validation_error_retry}\n\n\
-         {edit_dont_recreate}\n\n\
-         {add_enum_values}\n\n\
-         {rename_vs_relabel}\n\n\
-         {delete_a_schema}\n\n\
-         {extends_schema_composition}\n\n\
-         **Schema fields:** {no_name_title_field} {name_placeholder_exception}\n\n\
-         {fields_from_request_only}\n\n\
-         {enum_format}\n\n\
-         {relationship_vs_field} {target_type_must_exist}\n\n\
-         {grouping_is_collections}\n\n\
-         {enum_edge_fields}\n\n\
-         {title_template_placeholders}\n\n\
-         {unique_field_flags}",
-        one_schema_per_request = ONE_SCHEMA_PER_REQUEST.prose,
-        creating_two_linked_types = CREATING_TWO_LINKED_TYPES.prose,
-        schema_already_exists = SCHEMA_ALREADY_EXISTS.prose,
-        schema_validation_error_retry = SCHEMA_VALIDATION_ERROR_RETRY.prose,
-        edit_dont_recreate = EDIT_DONT_RECREATE.prose,
-        add_enum_values = ADD_ENUM_VALUES.prose,
-        rename_vs_relabel = RENAME_VS_RELABEL.prose,
-        delete_a_schema = DELETE_A_SCHEMA.prose,
-        extends_schema_composition = EXTENDS_SCHEMA_COMPOSITION.prose,
-        no_name_title_field = NO_NAME_TITLE_FIELD.prose,
-        name_placeholder_exception = NAME_PLACEHOLDER_EXCEPTION.prose,
-        fields_from_request_only = FIELDS_FROM_REQUEST_ONLY.prose,
-        enum_format = ENUM_FORMAT.prose,
-        relationship_vs_field = RELATIONSHIP_VS_FIELD.prose,
-        target_type_must_exist = TARGET_TYPE_MUST_EXIST.prose,
-        grouping_is_collections = GROUPING_IS_COLLECTIONS.prose,
-        enum_edge_fields = ENUM_EDGE_FIELDS.prose,
-        title_template_placeholders = TITLE_TEMPLATE_PLACEHOLDERS.prose,
-        unique_field_flags = UNIQUE_FIELD_FLAGS.prose,
-    )
-}
+//
+// Rendered by `nodespace_agent::skill_rules::skill_md_schema_rules`: the
+// schema rules in their prose form, laid out by
+// `packages/agent/src/seeds/skill-md/schema-rules.md`. The seeded skills
+// include the same rules in their local-agent form, so neither surface
+// restates a rule.
 
 // ---------------------------------------------------------------------------
 // Region: cli-surface
@@ -506,16 +458,21 @@ fn render_playbook_block(id: &str, skills_dir: &str) -> String {
          `packages/core/src/methodology/skills/{skills_dir}/` rather than reproducing them \
          here.\n"
     );
-    for skill in &playbook.skills {
-        let description = SkillFields::from_properties(&skill.root_properties)
-            .unwrap_or_else(|e| panic!("Playbook skill '{}' must decode: {e}", skill.title))
-            .description;
-        let _ = writeln!(out, "**{}** — {}\n", skill.title, description);
+    let _ = writeln!(
+        out,
+        "After creating a skill, link it to the types it is about with an `applies_to` edge \
+         to each type's schema, as shown under it. Skill search then hands an agent the skill \
+         together with exactly those types' definitions. If a type landed under another id \
+         (step 1 reported a re-key), link to that id.\n"
+    );
+    for skill in playbook.skills {
+        let _ = writeln!(out, "**{}** — {}\n", skill.title, skill.description);
         let _ = writeln!(
             out,
-            "```bash\nnodespace node create --type skill --content '{}' \\\n  --properties '{}'\n```\n",
-            shell_single_quote_body(&skill.title),
-            compact_json(&skill.root_properties)
+            "```bash\nnodespace node create --type skill --content '{}' \\\n  --properties '{}'\n{}```\n",
+            shell_single_quote_body(skill.title),
+            compact_json(&skill.template().root_properties),
+            applies_to_commands(skill)
         );
     }
 
@@ -537,23 +494,35 @@ fn render_playbook_block(id: &str, skills_dir: &str) -> String {
     }
 
     let _ = writeln!(out, "### 6. Workspace skill\n");
-    let overview = nodespace_core::methodology::skills::playbook_overview_skill(
-        playbook.overview,
-        &Default::default(),
-    );
-    let overview_description = SkillFields::from_properties(&overview.root_properties)
-        .unwrap_or_else(|e| panic!("Playbook overview '{}' must decode: {e}", overview.title))
-        .description;
+    let overview = &playbook.overview;
     let _ = writeln!(
         out,
         "One more skill, created after everything else because it names what you created. \
          Title it exactly as shown: it is how an agent in this workspace later recognizes \
          the Playbook is installed.\n\n**{}** — {}\n\nCreate it the same way as the \
          guidance skills, and end its body with an \"Installed in this workspace\" section \
-         listing the types, Plays, guidance skills and views above, by id.",
-        overview.title, overview_description
+         listing the types, Plays, guidance skills and views above, by id. Link it to the \
+         Playbook's types:\n\n```bash\n{}```",
+        overview.title,
+        overview.description,
+        applies_to_commands(overview)
     );
     out.trim_end().to_string()
+}
+
+/// One `relationship create` line per schema `skill` is about, each ending in
+/// a newline: the `applies_to` edges an install creates for it.
+fn applies_to_commands(skill: &nodespace_core::methodology::skills::PlaybookSkill) -> String {
+    skill
+        .applies_to
+        .iter()
+        .map(|schema_id| {
+            format!(
+                "nodespace relationship create --from <skill-id> --type {} --to {schema_id}\n",
+                nodespace_core::models::SKILL_APPLIES_TO
+            )
+        })
+        .collect()
 }
 
 /// Serializes `value` for embedding in a single-quoted shell argument.

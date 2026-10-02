@@ -14,6 +14,7 @@
 
 use anyhow::Result;
 use nodespace_core::db::SqliteStore;
+use nodespace_core::methodology::skills::{PlaybookSkill, DEFAULT_TOOLS};
 use nodespace_core::methodology::{
     install_playbook, playbook_by_id, MethodologyPlaybook, StepOutcome,
 };
@@ -33,8 +34,15 @@ async fn test_service() -> Result<(Arc<NodeService>, TempDir)> {
 
 /// A minimal bundle-level skill for the hand-built fixture playbooks below,
 /// which exercise re-keying rather than guidance content.
-const FIXTURE_OVERVIEW: &str =
-    "---\ntitle: \"Fixture Workspace\"\ndescription: \"A test playbook.\"\n---\n# Fixture\n";
+const FIXTURE_OVERVIEW: PlaybookSkill = PlaybookSkill {
+    id: "b3f0e6a1-58d2-4c97-a41e-7d9c2b5f8e30",
+    title: "Fixture Workspace",
+    description: "A test playbook.",
+    exclusion: None,
+    tools: DEFAULT_TOOLS,
+    applies_to: &[],
+    body: "# Fixture\n",
+};
 
 fn linear() -> MethodologyPlaybook {
     playbook_by_id("linear").expect("the linear playbook ships")
@@ -441,7 +449,7 @@ async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result
     // Every id-bearing step collides the second time: both schemas, all
     // three play nodes, and every seeded view. Vocabulary extensions do not —
     // they target the re-keyed schema, which has no values yet — and skills
-    // reconcile by seed key rather than colliding.
+    // reconcile by their fixed id rather than colliding.
     assert_eq!(
         second.suffixed().len(),
         playbook.schemas.len() + playbook.plays.len() + playbook.views.len(),
@@ -457,6 +465,30 @@ async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result
             step.schema_id
         );
     }
+
+    // A skill is one node across both installs, so it is linked to the
+    // schemas of each: the first install's, and the second's re-keyed ones.
+    let creating = playbook
+        .skills
+        .iter()
+        .find(|s| s.title == "Creating an Issue")
+        .expect("the linear playbook has a Creating an Issue skill");
+    let mut linked: Vec<String> = service
+        .get_related_nodes(creating.id, "applies_to", "out")
+        .await?
+        .into_iter()
+        .map(|schema| schema.id)
+        .collect();
+    linked.sort();
+    let re_keyed_issue = second
+        .suffixed()
+        .into_iter()
+        .find(|(requested, _)| *requested == "issue")
+        .map(|(_, created)| created.to_string())
+        .expect("the second install re-keys `issue`");
+    let mut expected = vec!["issue".to_string(), re_keyed_issue];
+    expected.sort();
+    assert_eq!(linked, expected);
     Ok(())
 }
 
@@ -538,8 +570,8 @@ async fn install_seeds_a_bundle_skill_naming_what_it_installed() -> Result<()> {
     for play in &playbook.plays {
         names(format!("{} (`{}`)", play.name, play.play_id));
     }
-    for skill in &playbook.skills {
-        names(skill.title.clone());
+    for skill in playbook.skills {
+        names(skill.title.to_string());
     }
     for view in &playbook.views {
         names(format!("{} (`{}`)", view.name, view.view_id));
@@ -650,7 +682,7 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
         ],
         field_value_extensions: vec![],
         plays: vec![],
-        skills: vec![],
+        skills: &[],
         overview: FIXTURE_OVERVIEW,
         views: vec![],
     };
@@ -746,7 +778,7 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
         ],
         field_value_extensions: vec![],
         plays: vec![],
-        skills: vec![],
+        skills: &[],
         overview: FIXTURE_OVERVIEW,
         views: vec![],
     };
@@ -851,7 +883,7 @@ async fn a_vocabulary_extension_targets_the_field_the_playbook_wrote() -> Result
             }),
         }],
         plays: vec![],
-        skills: vec![],
+        skills: &[],
         overview: FIXTURE_OVERVIEW,
         views: vec![],
     };

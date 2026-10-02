@@ -350,7 +350,6 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::text("exclusion", "exclusion"),
                     F::new("tool_whitelist", "toolWhitelist", Array),
                     F::new("max_iterations", "maxIterations", Number),
-                    F::new("node_types", "nodeTypes", Array),
                 ]
             }
         }
@@ -808,7 +807,6 @@ mod wire_contract {
                     "exclusion": "Delete records",
                     "tool_whitelist": ["update_node", "get_node"],
                     "max_iterations": 3,
-                    "node_types": ["invoice"],
                     "custom:team": "Agents"
                 },
                 "_seed": { "tier": "system" }
@@ -826,7 +824,6 @@ mod wire_contract {
             serde_json::json!(["update_node", "get_node"])
         );
         assert_eq!(out["maxIterations"], 3);
-        assert_eq!(out["nodeTypes"], serde_json::json!(["invoice"]));
         assert_eq!(
             out["properties"],
             serde_json::json!({ "custom:team": "Agents" })
@@ -838,7 +835,6 @@ mod wire_contract {
                 "exclusion": "Delete records",
                 "tool_whitelist": ["update_node", "get_node"],
                 "max_iterations": 3,
-                "node_types": ["invoice"],
                 "custom:team": "Agents"
             })
         );
@@ -857,7 +853,6 @@ mod wire_contract {
         assert!(out.get("exclusion").is_none());
         assert_eq!(out["toolWhitelist"], serde_json::json!([]));
         assert_eq!(out["maxIterations"], 2);
-        assert_eq!(out["nodeTypes"], serde_json::json!([]));
     }
 
     /// One malformed skill must not fail the batch it travels in.

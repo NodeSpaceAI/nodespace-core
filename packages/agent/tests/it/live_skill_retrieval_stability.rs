@@ -32,7 +32,6 @@ use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate};
 use nodespace_core::methodology::linear;
-use nodespace_core::methodology::skills::playbook_skill;
 use nodespace_core::models::SkillFields;
 use nodespace_core::ops::skill_ops::{find_skills, FindSkillsInput};
 use nodespace_core::services::node_service::CreateNodeParams;
@@ -720,8 +719,8 @@ async fn graph_editing_exclusion_leaves_completion_state_scores_unchanged() {
 fn linear_workspace_registry() -> Vec<NodeTemplate> {
     let playbook = linear::playbook();
     let mut registry = seed_skill_nodes();
-    registry.extend(playbook.skills);
-    registry.push(playbook_skill(playbook.overview));
+    registry.extend(playbook.skills.iter().map(|skill| skill.template()));
+    registry.push(playbook.overview.template());
     registry
 }
 

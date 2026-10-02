@@ -532,8 +532,9 @@ fn checked_in_skill_md_is_up_to_date() {
 /// Every rule registered in `SCHEMA_RULES` must actually reach the shipped
 /// skill content.
 ///
-/// `render_schema_rules_block` interpolates each rule by name into a hand-written
-/// format string, so registering a rule in the `SCHEMA_RULES` array is NOT
+/// The region is laid out by a hand-written template that includes each rule
+/// by id (`packages/agent/src/seeds/skill-md/schema-rules.md`), so registering
+/// a rule in the `SCHEMA_RULES` array is NOT
 /// enough to publish it — a rule the template forgets to name is silently
 /// dropped, and `checked_in_skill_md_is_up_to_date` still passes because the
 /// generator and the checked-in copy agree on the same incomplete output. This
@@ -561,8 +562,8 @@ fn every_schema_rule_reaches_the_skill() {
     assert!(
         missing.is_empty(),
         "schema rules registered in SCHEMA_RULES but absent from the shipped skill: {}. \
-         Add each to the format string in `render_schema_rules_block` \
-         (packages/cli/examples/gen_skill_md.rs), then regenerate.",
+         Include each in packages/agent/src/seeds/skill-md/schema-rules.md, \
+         then regenerate.",
         missing.join(", ")
     );
 }

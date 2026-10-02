@@ -470,9 +470,10 @@ message DeleteNodeResponse {
 // ---------------------------------------------------------------------------
 
 message ResetSeedNodeRequest {
-  // The seeded node's node_type ("skill", "prompt", "tool", ...).
+  // The seeded node's node_type ("skill", "agent-guidance", "tool").
   string node_type = 1;
-  // The seeded node's `_seed.key` — the template's stable title.
+  // The seeded node's `_seed.key`: its seed's title, the handle that names
+  // which seed to reset. The node itself is found by the seed's fixed id.
   string seed_key = 2;
   bool reset_config = 3;
   bool reset_guidance = 4;
@@ -481,8 +482,8 @@ message ResetSeedNodeRequest {
 }
 
 message ResetSeedNodeResponse {
-  // False when no node with this node_type + seed_key exists — every other
-  // field is meaningless in that case.
+  // False when no seed has this node_type + seed_key, or its node is not in
+  // this database. Every other field is meaningless in that case.
   bool found = 1;
   // Whether config/guidance were (or, under dry_run, would be) reset.
   // False when that aspect was not requested, OR the node has no content for

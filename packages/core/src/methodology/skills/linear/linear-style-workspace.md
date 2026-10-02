@@ -1,7 +1,3 @@
----
-title: "Linear-style Workspace"
-description: "What workflow this workspace uses: the Linear-style Playbook installed here — its issue and cycle types, the Plays that automate and gate them, its saved views, and the schema ids they were actually created under."
----
 # Linear-style Workspace
 
 This workspace runs the Linear-style Playbook: work is tracked as `issue`

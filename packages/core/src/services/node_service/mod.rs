@@ -1930,20 +1930,23 @@ impl NodeService {
     /// Seed node hierarchies from pre-expanded template node lists.
     ///
     /// Each element of `template_groups` is a flat `Vec<PreparedNode>` produced
-    /// by [`crate::markdown::prepare_nodes_from_template`], which stamps the
-    /// root node's properties with a `_seed` object containing `key` (the
-    /// template's stable title), `config_version` (a hash of the root alone),
+    /// by [`crate::markdown::prepare_nodes_from_template`], which gives the
+    /// root the template's fixed id and stamps its properties with a `_seed`
+    /// object containing `key` (the template's title, the handle a reset
+    /// names), `config_version` (a hash of the root alone),
     /// `guidance_version` (a hash of the children alone), and `tier`
     /// (`"system"` or `"starter"`, labeling only — see [`crate::markdown::SeedTier`]).
     /// Its `_` prefix is what keeps it at the top level:
     /// [`Self::normalize_flat_properties_to_namespace`] leaves `_`-prefixed
     /// keys where they are instead of hoisting them into
     /// `properties[node_type]` on write, so `_seed` sits at a fixed,
-    /// type-independent path that reconciliation can look up by key.
+    /// type-independent path.
     ///
-    /// Reconciliation is per node, keyed by `_seed.key` within each
-    /// `node_type`, and runs **per aspect** — config (the root's own
-    /// properties) and guidance (its markdown children) are reconciled
+    /// Reconciliation is per node, matched by the root's id (ADR-086 §10):
+    /// the node with a template's id is that seed, whatever its title or
+    /// `_seed.key` now says, and a seed whose node was deleted is created
+    /// again under the same id. It runs **per aspect** — config (the root's
+    /// own properties) and guidance (its markdown children) are reconciled
     /// independently, since a user editing one does not touch the other:
     ///
     /// | state                                                        | action                    |
@@ -1976,38 +1979,19 @@ impl NodeService {
             return Ok(());
         }
 
-        // One query per distinct node_type covers every existing seeded node of
-        // that type in a single round trip — bounded by the number of seeded
-        // types (currently 3: prompt, skill, tool), not the number of nodes.
-        let root_types: std::collections::HashSet<String> = template_groups
+        // One read covers every seed that already exists. A read by id sees
+        // an archived node too: archiving is how a user turns a seeded node
+        // off (ADR-087 §6), and it must not be seeded again.
+        let root_ids: Vec<String> = template_groups
             .iter()
             .filter_map(|g| g.first())
-            .map(|n| n.node_type.clone())
+            .map(|n| n.id.clone())
             .collect();
-
-        let mut existing_by_key: HashMap<String, HashMap<String, Node>> = HashMap::new();
-        for node_type in &root_types {
-            // An archived seed still exists: archiving is how a user turns a
-            // seeded node off (ADR-087 §6), and it must not be seeded again.
-            let filter = crate::models::NodeFilter {
-                node_type: Some(node_type.clone()),
-                include_archived: true,
-                ..Default::default()
-            };
-            let mut by_key = HashMap::new();
-            for node in self.query_nodes(filter).await? {
-                if let Some(key) = node
-                    .properties
-                    .get("_seed")
-                    .and_then(|s| s.get("key"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                {
-                    by_key.insert(key, node);
-                }
-            }
-            existing_by_key.insert(node_type.clone(), by_key);
-        }
+        let existing_by_id = self
+            .store
+            .get_nodes_by_ids(&root_ids)
+            .await
+            .map_err(NodeServiceError::from_store)?;
 
         let mut created_roots = 0u32;
         let mut created_children = 0u32;
@@ -2038,12 +2022,8 @@ impl NodeService {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
 
-            let existing = existing_by_key
-                .get(&root.node_type)
-                .and_then(|by_key| by_key.get(seed_key));
-
-            let Some(existing_node) = existing else {
-                // Absent: create root + children together, same as before.
+            let Some(existing_node) = existing_by_id.get(&root.id) else {
+                // Absent: create root + children together.
                 self.create_node_with_parent(CreateNodeParams {
                     id: Some(root.id.clone()),
                     node_type: root.node_type.clone(),
@@ -2057,9 +2037,7 @@ impl NodeService {
                 created_roots += 1;
 
                 if !children.is_empty() {
-                    created_children += self
-                        .bulk_create_seed_children(&root.id, &root.id, children)
-                        .await?;
+                    created_children += self.bulk_create_seed_children(children).await?;
                 }
                 continue;
             };
@@ -2109,7 +2087,7 @@ impl NodeService {
                 skipped_guidance_modified += 1;
             } else {
                 created_children += self
-                    .replace_seed_guidance(&existing_node.id, &root.id, children, guidance_version)
+                    .replace_seed_guidance(&existing_node.id, children, guidance_version)
                     .await?;
                 replaced_guidance += 1;
             }
@@ -2136,21 +2114,11 @@ impl NodeService {
     /// [`Self::bulk_create_hierarchy`]. Shared by the create path and the
     /// guidance-replace path in [`Self::seed_nodes_from_templates`].
     ///
-    /// `template_root_id` is the synthetic root id `prepare_nodes_from_template`
-    /// generated for *this* template expansion — every direct child's
-    /// `parent_id` points at it (never `None`; see
-    /// `prepare_nodes_from_markdown`'s `root_id` handling). On the create path
-    /// that id is the real, freshly-inserted root, so no remapping is needed.
-    /// On the guidance-replace path it is a throwaway id from an
-    /// `prepare_nodes_from_template` call whose root was never inserted — the
-    /// *existing* root (`root_id`) is what's kept — so every direct child's
-    /// `parent_id` must be rewritten from `template_root_id` to `root_id`.
-    /// Grandchildren (nested under a direct child, not the root) already
-    /// point at a sibling's id within this same batch and are left alone.
+    /// The children already point at the root: `prepare_nodes_from_template`
+    /// gives every direct child the template's id as its `parent_id`, and
+    /// that id is the seeded root's own (it is how the root was matched).
     async fn bulk_create_seed_children(
         &self,
-        root_id: &str,
-        template_root_id: &str,
         children: &[crate::markdown::PreparedNode],
     ) -> Result<u32, NodeServiceError> {
         if children.is_empty() {
@@ -2166,15 +2134,11 @@ impl NodeService {
         )> = children
             .iter()
             .map(|n| {
-                let parent_id = match &n.parent_id {
-                    Some(pid) if pid == template_root_id => Some(root_id.to_string()),
-                    other => other.clone(),
-                };
                 (
                     n.id.clone(),
                     n.node_type.clone(),
                     n.content.clone(),
-                    parent_id,
+                    n.parent_id.clone(),
                     n.order,
                     n.properties.clone(),
                 )
@@ -2186,9 +2150,14 @@ impl NodeService {
 
     /// Config-only replace: merge the template's `root_properties` (including
     /// the freshly-stamped `_seed` block) into the existing root's properties
-    /// in place. The root's id and content are untouched — this is
-    /// deliberately not a delete/recreate, so it cannot disturb the root's
-    /// children or anything referencing the root by id.
+    /// in place, and restore the root's name. The root's id is untouched —
+    /// this is deliberately not a delete/recreate, so it cannot disturb the
+    /// root's children or anything referencing the root by id.
+    ///
+    /// The name is part of the config aspect: `config_version` hashes it, and
+    /// a user renaming the root is a config edit (see [`Self::update_node`]).
+    /// So a seed retitled in its table renames its node here, rather than
+    /// leaving the old name under a hash that claims the node is current.
     ///
     /// The template's `_seed` block carries a `guidance_version` computed
     /// from *its own* children — meaningless here, since this call never
@@ -2232,6 +2201,8 @@ impl NodeService {
             }
         }
         let update = crate::models::NodeUpdate {
+            content: (existing_node.content != template_root.content)
+                .then(|| template_root.content.clone()),
             properties: Some(properties),
             ..Default::default()
         };
@@ -2242,21 +2213,17 @@ impl NodeService {
     /// from the template, leaving the root untouched, then stamp the root's
     /// `_seed.guidance_version` to `new_guidance_version` so this replace
     /// isn't redone on the next reconciliation pass. Returns the number of
-    /// children created. `template_root_id` is the template expansion's
-    /// synthetic root id — see [`Self::bulk_create_seed_children`].
+    /// children created.
     async fn replace_seed_guidance(
         &self,
         existing_root_id: &str,
-        template_root_id: &str,
         template_children: &[crate::markdown::PreparedNode],
         new_guidance_version: &str,
     ) -> Result<u32, NodeServiceError> {
         for child in self.get_children(existing_root_id).await? {
             self.delete_node(&child.id, child.version).await?;
         }
-        let created = self
-            .bulk_create_seed_children(existing_root_id, template_root_id, template_children)
-            .await?;
+        let created = self.bulk_create_seed_children(template_children).await?;
 
         // Best-effort, OCC-bypassing write, same posture as
         // `update_node`'s `_seed` flag stamp (see its doc comment): a
@@ -2282,13 +2249,12 @@ impl NodeService {
     /// flags as a hard stop; this ignores them on purpose, since discarding a
     /// user edit here is exactly what the caller asked for by invoking reset.
     ///
-    /// `template_group` is the current compiled template for `seed_key`,
-    /// already expanded by [`crate::markdown::prepare_nodes_from_template`]
-    /// — this method takes prepared data rather than resolving the key
-    /// itself so `nodespace-core` does not need a dependency on
-    /// `nodespace-agent`, where the actual seed sources
-    /// (`seed_skill_nodes`, etc.) live. The daemon layer resolves "key ->
-    /// current template" and calls this.
+    /// `template_group` is the seed's current compiled template, already
+    /// expanded by [`crate::markdown::prepare_nodes_from_template`]; its
+    /// root's id names the node to reset. This method takes prepared data
+    /// rather than resolving a key itself so `nodespace-core` does not need
+    /// a dependency on `nodespace-agent`, where the seed tables live. The
+    /// daemon layer resolves "key -> current template" and calls this.
     ///
     /// Returns `(config_reset, guidance_reset)`: whether each requested
     /// aspect was actually present and reset (`false` if the node itself, or
@@ -2296,8 +2262,6 @@ impl NodeService {
     /// node that has no children yet).
     pub async fn reset_seed_node(
         &self,
-        node_type: &str,
-        seed_key: &str,
         template_group: &[crate::markdown::PreparedNode],
         reset_config: bool,
         reset_guidance: bool,
@@ -2309,18 +2273,11 @@ impl NodeService {
         let children = &template_group[1..];
 
         // An archived seed can be reset like any other; it stays archived.
-        let filter = crate::models::NodeFilter {
-            node_type: Some(node_type.to_string()),
-            include_archived: true,
-            ..Default::default()
-        };
-        let existing = self.query_nodes(filter).await?.into_iter().find(|n| {
-            n.properties
-                .get("_seed")
-                .and_then(|s| s.get("key"))
-                .and_then(|v| v.as_str())
-                == Some(seed_key)
-        });
+        let existing = self
+            .store
+            .get_node(&template_root.id)
+            .await
+            .map_err(NodeServiceError::from_store)?;
         let Some(existing_node) = existing else {
             return Ok((false, false));
         };
@@ -2345,13 +2302,8 @@ impl NodeService {
                 .and_then(|s| s.get("guidance_version"))
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            self.replace_seed_guidance(
-                &existing_node.id,
-                &template_root.id,
-                children,
-                new_guidance_version,
-            )
-            .await?;
+            self.replace_seed_guidance(&existing_node.id, children, new_guidance_version)
+                .await?;
             self.store
                 .set_property_bool(&existing_node.id, "$._seed.guidance_modified", false)
                 .await
@@ -9921,18 +9873,21 @@ mod tests {
         );
     }
 
+    /// The fixed ids of the seeds these tests reconcile.
+    const TEST_SEED_ID: &str = "6d0f3a51-9b27-4c84-a1e6-2f5b8c7d9e10";
+    const OTHER_TEST_SEED_ID: &str = "6d0f3a51-9b27-4c84-a1e6-2f5b8c7d9e11";
+
     fn seed_template(
         title: &str,
         markdown: &str,
         tier: crate::markdown::SeedTier,
     ) -> crate::markdown::NodeTemplate {
         crate::markdown::NodeTemplate {
+            id: TEST_SEED_ID.to_string(),
             title: title.to_string(),
-            content: None,
             root_node_type: "agent-guidance".to_string(),
             root_properties: json!({}),
             child_node_type: Some("text".to_string()),
-            child_properties: None,
             tier,
             markdown_content: markdown.to_string(),
         }
@@ -9957,7 +9912,7 @@ mod tests {
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].content, "Core Identity");
 
-        // Re-seed with changed content under the same seed_key ("Core Identity").
+        // Re-seed with changed content under the same id.
         let v2 = seed_template("Core Identity", "You are v2, rewritten.", SeedTier::System);
         service
             .seed_nodes_from_templates(vec![prepare_nodes_from_template(&v2).unwrap()])
@@ -9973,9 +9928,200 @@ mod tests {
             1,
             "replace must not leave the stale node behind"
         );
+        assert_eq!(nodes[0].id, TEST_SEED_ID, "the seed keeps its fixed id");
         let children = service.get_children(&nodes[0].id).await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].content, "You are v2, rewritten.");
+    }
+
+    /// Seeding an unchanged template over a database that already holds it
+    /// writes nothing: no second root, and the same child nodes as before.
+    #[tokio::test]
+    async fn reseeding_an_unchanged_template_creates_no_nodes() {
+        use crate::markdown::{prepare_nodes_from_template, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+        let template = seed_template("Core Identity", "You are v1.", SeedTier::System);
+        let seed = || async {
+            service
+                .seed_nodes_from_templates(vec![prepare_nodes_from_template(&template).unwrap()])
+                .await
+                .unwrap();
+        };
+
+        seed().await;
+        let child_ids =
+            |children: Vec<Node>| children.into_iter().map(|c| c.id).collect::<Vec<_>>();
+        let before = child_ids(service.get_children(TEST_SEED_ID).await.unwrap());
+
+        seed().await;
+
+        assert_eq!(
+            service
+                .query_nodes_by_type("agent-guidance", true)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "an unchanged template must not create a second root"
+        );
+        assert_eq!(
+            child_ids(service.get_children(TEST_SEED_ID).await.unwrap()),
+            before,
+            "an unchanged body must keep its child nodes"
+        );
+    }
+
+    /// Identity is the id, not the title: a template retitled between two
+    /// releases reconciles onto the node it seeded before, and one whose title
+    /// matches an existing seed but whose id differs is a different node.
+    #[tokio::test]
+    async fn reseed_matches_a_seed_by_id_not_by_title() {
+        use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+        let seed = |template: &NodeTemplate| {
+            let group = prepare_nodes_from_template(template).unwrap();
+            async {
+                service
+                    .seed_nodes_from_templates(vec![group])
+                    .await
+                    .unwrap()
+            }
+        };
+
+        seed(&seed_template(
+            "Core Identity",
+            "You are v1.",
+            SeedTier::System,
+        ))
+        .await;
+
+        // The same title under another id is another seed.
+        let other = NodeTemplate {
+            id: OTHER_TEST_SEED_ID.to_string(),
+            ..seed_template("Core Identity", "A different seed.", SeedTier::System)
+        };
+        seed(&other).await;
+        assert_eq!(
+            service
+                .query_nodes_by_type("agent-guidance", true)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "a seed with its own id is its own node, whatever its title"
+        );
+        let first = service.get_children(TEST_SEED_ID).await.unwrap();
+        assert_eq!(
+            first[0].content, "You are v1.",
+            "the first seed is untouched"
+        );
+
+        // The same id under a changed body replaces that node's body in place.
+        seed(&seed_template(
+            "Core Identity",
+            "You are v2.",
+            SeedTier::System,
+        ))
+        .await;
+        let first = service.get_children(TEST_SEED_ID).await.unwrap();
+        assert_eq!(first[0].content, "You are v2.");
+        let second = service.get_children(OTHER_TEST_SEED_ID).await.unwrap();
+        assert_eq!(second[0].content, "A different seed.");
+    }
+
+    /// The root's name belongs to the config aspect, so a seed retitled in its
+    /// table renames its node in place: same id, same body, and `_seed.key`
+    /// follows as the new reset handle. A name the user changed is theirs.
+    #[tokio::test]
+    async fn reseed_renames_a_retitled_seed_in_place_unless_the_user_renamed_it() {
+        use crate::markdown::{prepare_nodes_from_template, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+        let seed = |title: &'static str| {
+            let template = seed_template(title, "You are v1.", SeedTier::System);
+            let group = prepare_nodes_from_template(&template).unwrap();
+            async {
+                service
+                    .seed_nodes_from_templates(vec![group])
+                    .await
+                    .unwrap()
+            }
+        };
+
+        seed("Core Identity").await;
+        let body_before = service.get_children(TEST_SEED_ID).await.unwrap()[0]
+            .id
+            .clone();
+
+        seed("Agent Identity").await;
+        let renamed = service.get_node(TEST_SEED_ID).await.unwrap().unwrap();
+        assert_eq!(renamed.content, "Agent Identity");
+        assert_eq!(renamed.properties["_seed"]["key"], "Agent Identity");
+        assert_eq!(
+            service.get_children(TEST_SEED_ID).await.unwrap()[0].id,
+            body_before,
+            "a retitle is a config change and must not touch the body"
+        );
+        assert_eq!(
+            service
+                .query_nodes_by_type("agent-guidance", true)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // The user renames it: the name is now theirs, and a later retitle
+        // in the table leaves it alone.
+        service
+            .update_node(
+                TEST_SEED_ID,
+                renamed.version,
+                NodeUpdate::new().with_content("My Identity".to_string()),
+            )
+            .await
+            .unwrap();
+        seed("Assistant Identity").await;
+        let kept = service.get_node(TEST_SEED_ID).await.unwrap().unwrap();
+        assert_eq!(kept.content, "My Identity");
+    }
+
+    /// A deleted seed is absent, so the next seeding pass creates it again
+    /// under the same id (ADR-072's "absent → create" row).
+    #[tokio::test]
+    async fn reseed_recreates_a_deleted_seed_under_its_id() {
+        use crate::markdown::{prepare_nodes_from_template, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+        let template = seed_template("Core Identity", "You are v1.", SeedTier::System);
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&template).unwrap()])
+            .await
+            .unwrap();
+
+        let seeded = service.get_node(TEST_SEED_ID).await.unwrap().unwrap();
+        service
+            .delete_node(TEST_SEED_ID, seeded.version)
+            .await
+            .unwrap();
+        assert!(service.get_node(TEST_SEED_ID).await.unwrap().is_none());
+
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&template).unwrap()])
+            .await
+            .unwrap();
+
+        let recreated = service
+            .get_node(TEST_SEED_ID)
+            .await
+            .unwrap()
+            .expect("a deleted seed is recreated under its fixed id");
+        assert!(crate::governance::participates(&recreated));
+        let children = service.get_children(TEST_SEED_ID).await.unwrap();
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].content, "You are v1.");
     }
 
     /// Archiving is how a user turns a seeded node off (ADR-087 §6). The
@@ -10097,15 +10243,14 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let skill_tmpl = |description: &str, guidance: &str| NodeTemplate {
+            id: TEST_SEED_ID.to_string(),
             title: "Research & Search".to_string(),
-            content: None,
             root_node_type: "skill".to_string(),
             root_properties: json!({
                 "description": description,
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
-            child_properties: None,
             tier: SeedTier::System,
             markdown_content: guidance.to_string(),
         };
@@ -10304,15 +10449,14 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let skill_tmpl = |description: &str| NodeTemplate {
+            id: TEST_SEED_ID.to_string(),
             title: "Research & Search".to_string(),
-            content: None,
             root_node_type: "skill".to_string(),
             root_properties: json!({
                 "description": description,
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
-            child_properties: None,
             tier: SeedTier::System,
             markdown_content: "Guidance v1.".to_string(),
         };
@@ -10371,15 +10515,14 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let skill_tmpl = |description: &str, guidance: &str| NodeTemplate {
+            id: TEST_SEED_ID.to_string(),
             title: "Research & Search".to_string(),
-            content: None,
             root_node_type: "skill".to_string(),
             root_properties: json!({
                 "description": description,
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
-            child_properties: None,
             tier: SeedTier::System,
             markdown_content: guidance.to_string(),
         };
@@ -10453,15 +10596,14 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let skill_tmpl = |description: &str, guidance: &str| NodeTemplate {
+            id: TEST_SEED_ID.to_string(),
             title: "Research & Search".to_string(),
-            content: None,
             root_node_type: "skill".to_string(),
             root_properties: json!({
                 "description": description,
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
-            child_properties: None,
             tier: SeedTier::System,
             markdown_content: guidance.to_string(),
         };
@@ -10536,12 +10678,11 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let skill_tmpl = NodeTemplate {
+            id: TEST_SEED_ID.to_string(),
             title: "Research & Search".to_string(),
-            content: None,
             root_node_type: "skill".to_string(),
             root_properties: json!({"description": "Search v1"}),
             child_node_type: Some("text".to_string()),
-            child_properties: None,
             tier: SeedTier::System,
             markdown_content: "Guidance v1.".to_string(),
         };
@@ -10566,7 +10707,7 @@ mod tests {
             .unwrap();
 
         let (config_reset, guidance_reset) = service
-            .reset_seed_node("skill", "Research & Search", &prepared, false, true)
+            .reset_seed_node(&prepared, false, true)
             .await
             .unwrap();
         assert!(!config_reset, "config reset was not requested");
@@ -10600,12 +10741,11 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let skill_tmpl = NodeTemplate {
+            id: TEST_SEED_ID.to_string(),
             title: "Research & Search".to_string(),
-            content: None,
             root_node_type: "skill".to_string(),
             root_properties: json!({"description": "Search v1"}),
             child_node_type: Some("text".to_string()),
-            child_properties: None,
             tier: SeedTier::System,
             markdown_content: "Guidance v1.".to_string(),
         };
@@ -10638,7 +10778,7 @@ mod tests {
             .unwrap();
 
         let (config_reset, guidance_reset) = service
-            .reset_seed_node("skill", "Research & Search", &prepared, true, true)
+            .reset_seed_node(&prepared, true, true)
             .await
             .unwrap();
         assert!(config_reset);
@@ -10670,8 +10810,8 @@ mod tests {
         let (service, _temp) = create_test_service().await;
 
         let tool_tmpl = |description: &str| NodeTemplate {
+            id: TEST_SEED_ID.to_string(),
             title: "search_nodes".to_string(),
-            content: None,
             root_node_type: "tool".to_string(),
             root_properties: json!({
                 "handler": "search_nodes",
@@ -10681,7 +10821,6 @@ mod tests {
                 "enabled": true,
             }),
             child_node_type: None,
-            child_properties: None,
             tier: SeedTier::System,
             markdown_content: String::new(),
         };
@@ -10727,11 +10866,10 @@ mod tests {
     }
 
     /// A single `seed_nodes_from_templates` call, as the daemon issues it, mixes
-    /// `agent-guidance` + `skill` + `tool` template groups together. Reconciliation
-    /// looks up existing nodes per-`node_type`, keyed by `_seed.key` — this
-    /// proves that grouping doesn't cross-contaminate: changing one type's
-    /// content doesn't touch, skip, or duplicate a sibling type's unrelated node
-    /// sharing the same batch.
+    /// `agent-guidance` + `skill` + `tool` template groups together. Each is
+    /// matched by its own id, so changing one type's content doesn't touch,
+    /// skip, or duplicate a sibling type's unrelated node sharing the same
+    /// batch.
     #[tokio::test]
     async fn reseed_handles_mixed_node_types_in_one_batch_independently() {
         use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
@@ -10740,15 +10878,14 @@ mod tests {
 
         let prompt_tmpl = seed_template("Core Identity", "Prompt v1.", SeedTier::System);
         let skill_tmpl = NodeTemplate {
+            id: OTHER_TEST_SEED_ID.to_string(),
             title: "Research & Search".to_string(),
-            content: None,
             root_node_type: "skill".to_string(),
             root_properties: json!({
                 "description": "Skill v1",
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
-            child_properties: None,
             tier: SeedTier::System,
             markdown_content: "Guidance v1.".to_string(),
         };

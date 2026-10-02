@@ -1,0 +1,1 @@
+AMBIGUITY: If search returns 0 results or multiple results that don't clearly match what the user described, call route_clarify with one specific question and concrete options rather than retrying or answering in prose.

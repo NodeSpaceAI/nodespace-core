@@ -1,7 +1,3 @@
----
-title: "Spec-driven Workspace"
-description: "What workflow this workspace uses: the Spec-driven Playbook installed here — its spec and plan types, how tasks trace back to them, the approval gates that refuse some changes, its saved views, and the schema ids they were actually created under."
----
 # Spec-driven Workspace
 
 This workspace runs the Spec-driven Playbook: a `spec` captures what is being

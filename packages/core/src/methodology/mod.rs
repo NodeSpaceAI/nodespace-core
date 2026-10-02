@@ -31,7 +31,7 @@ pub mod spec_driven;
 
 pub use install::install_playbook;
 
-use crate::markdown::NodeTemplate;
+use crate::methodology::skills::PlaybookSkill;
 use crate::models::{QueryGeneratedBy, QueryNodeUpdate};
 use crate::services::QueryDefinition;
 use serde::{Deserialize, Serialize};
@@ -55,22 +55,20 @@ pub struct MethodologyPlaybook {
     pub field_value_extensions: Vec<FieldValueExtension>,
     /// Plays to install, as seeded (resettable) play nodes.
     pub plays: Vec<PlayStep>,
-    /// Skill nodes seeded as usage guidance, authored as markdown files under
-    /// `skills/<id>/` and loaded with [`skills::playbook_skill`] — see
-    /// [`skills`] for the file format.
-    pub skills: Vec<NodeTemplate>,
+    /// Skill nodes seeded as usage guidance: the Playbook's skill table, each
+    /// row's body a Markdown file under `skills/<id>/` — see [`skills`].
+    pub skills: &'static [PlaybookSkill],
     /// The bundle-level skill: what this Playbook is, the constraints that
     /// come with it, and — appended at install time by
-    /// [`skills::playbook_overview_skill`] — the ids everything actually
+    /// [`PlaybookSkill::overview_template`] — the ids everything actually
     /// landed under. The graph-resident answer to "what workflow is this
     /// workspace using?", so an agent in an installed workspace never has to
     /// reach for the install doc to find out.
     ///
-    /// Markdown source in the same format as [`Self::skills`], titled
-    /// `<name> Workspace` — the title SKILL.md tells an agent to look for.
-    /// Kept apart from `skills` because its body depends on the install:
+    /// Titled `<name> Workspace` — the title SKILL.md tells an agent to look
+    /// for. Kept apart from `skills` because its body depends on the install:
     /// it is seeded last, once every id is known.
-    pub overview: &'static str,
+    pub overview: PlaybookSkill,
     /// Saved views — pre-configured boards and lists — seeded as `query`
     /// nodes, so the install lands with something to look at rather than a
     /// type the user has to build a view over by hand. Installed last:

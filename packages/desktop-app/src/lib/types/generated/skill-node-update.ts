@@ -15,5 +15,4 @@ export type SkillNodeUpdate = {
   exclusion?: string | null;
   toolWhitelist?: Array<string>;
   maxIterations?: number | null;
-  nodeTypes?: Array<string> | null;
 };

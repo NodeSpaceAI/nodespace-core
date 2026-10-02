@@ -1,8 +1,3 @@
----
-title: "Issue Validation Rules"
-description: "Why an issue won't close or won't start: its status change was rejected because sub-issues are still open or a blocker isn't done. Use when the user says it won't let me mark this done, it won't let me move this to in progress, why can't I close this, or why is this blocked."
-exclusion: "Link a task to a decision."
----
 # Issue Validation Rules
 
 Two rules can reject a status change outright. A rejection is the system

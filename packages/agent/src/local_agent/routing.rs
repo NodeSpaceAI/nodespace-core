@@ -580,7 +580,7 @@ pub fn render_candidates_for_prompt(candidates: &[SkillCandidate]) -> Option<Str
 ///
 /// Consulting only the first was a reachability bug rather than a
 /// conservative approximation: `resolve_query` is whitelisted by a skill
-/// (Graph Editing) that declares no `node_types`, so `skill_ops` falls back
+/// (Graph Editing) that links to no schema, so `skill_ops` falls back
 /// to "all non-core schemas" for its `schema_metadata`. In a workspace with
 /// no custom schema that fallback is empty, and the tool was withheld from
 /// every turn — including turns whose workspace context *did* carry the
@@ -1917,7 +1917,7 @@ mod tests {
     #[test]
     fn a_workspace_entity_types_block_supplies_guidance_a_candidate_lacks() {
         // The reachability bug this gate had: Graph Editing whitelists
-        // resolve_query but declares no `node_types`, so `skill_ops` falls
+        // resolve_query but links to no schema, so `skill_ops` falls
         // back to "all non-core schemas" — empty in a workspace whose custom
         // schemas didn't match, leaving `schema_metadata` empty even though
         // the resident workspace context did carry the block. The tool's
@@ -2094,10 +2094,9 @@ mod tests {
     /// Measured 2026-07-31 for the duplication question in #1848: **4 copies
     /// per prompt** (3 routing + 1 workspace context), costing ~141 redundant
     /// tokens on a 2-schema workspace and scaling with schema count. The copies
-    /// are identical rather than differently scoped, because no seeded skill
-    /// declares `node_types` — see `skill_pipeline`'s
-    /// `no_seeded_skill_scopes_its_schema_metadata`, which fails if that
-    /// premise stops holding.
+    /// are identical rather than differently scoped, because no built-in
+    /// skill links to a schema: a row of `skill_pipeline::SKILL_SEEDS` has no
+    /// `applies_to`, so every built-in candidate takes the same fallback.
     ///
     /// The assertion here is the invariant behind that measurement — one copy
     /// per eligible candidate — not the token figure, which is a dated finding

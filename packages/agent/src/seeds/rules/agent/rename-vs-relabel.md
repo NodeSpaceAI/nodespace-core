@@ -1,0 +1,1 @@
+RENAME VS RELABEL: rename_fields can rename a field's storage key OR relabel its display name (see the tool schema for the 'from'/'to'/'friendlyName' shape of each). A user asking to call a field something else on screen almost always means the display label, not a storage rename — do not conflate the two.

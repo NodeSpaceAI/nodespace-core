@@ -1,88 +1,54 @@
-//! Single source of truth for the local in-app agent's guidance rules.
+//! Guards over the local in-app agent's guidance.
 //!
-//! These constants define the rules injected into the local agent's seeded
-//! prompt nodes ([`crate::prompt_assembler`]). Changing a rule here propagates
-//! to every code path that composes local-agent guidance — including the
-//! local agent, next time prompt nodes are reseeded.
+//! The guidance itself is seed content: the resident prompt's sections are
+//! the Markdown bodies of [`crate::prompt_assembler::GUIDANCE_SEEDS`], and the
+//! skills' are those of [`crate::skill_pipeline::SKILL_SEEDS`]. This module
+//! holds what must stay true of that text: what the resident sections may and
+//! may not say, and the eval-contamination check across every model-facing
+//! guidance string.
 //!
 //! External PTY-spawned agent sessions ([`crate::agent_catalog::context_assembly`]) do
-//! not use these constants — they get all tool/capability guidance from
-//! `packages/skill/SKILL.md`, the CLI-vocabulary companion doc, not from this
-//! module's tool-call-vocabulary prose.
+//! not read this guidance — they get all tool/capability guidance from
+//! `packages/skill/SKILL.md`, the CLI-vocabulary companion doc.
 //!
 //! `N_CTX_MINIMUM` in `nlp-engine`'s `chat/mod.rs` (16,384) is sized against
-//! the full tool-registered system prompt (~6,600 tokens), of which this
-//! module's resident prose was always a minority share — the rest is JSON
-//! tool schemas, untouched by any reduction here. A prose-only cut of this
-//! size (roughly 600 tokens) does not on its own justify lowering that floor;
-//! doing so needs a live measurement of the full assembled prompt including
-//! tool schemas, not just this module's character count.
-
-/// Schema creation guidance.
-///
-/// Reduced to the one ontological distinction that governs `create_schema`
-/// vs. `create_node` — kind vs. instance — per ADR-064 rule 5 and the
-/// resident-prompt-ablation measurement (10,493 chars scored 50% vs. 73% for
-/// a 445-char identity-only prompt on cases built to trip these exact rules).
-/// Everything else this constant used to carry is owned by another channel:
-/// argument mechanics (`title_template` token coupling, field `name`/`type`
-/// requirements) live on `create_schema`'s tool-schema description, where
-/// `required: ["name", "type"]` also enforces the field rule structurally;
-/// per-operation routing and the create_node/create_schema tool-call sequence
-/// live in `skill_pipeline.rs`'s retrieved skill instructions; the
-/// no-confirmation-for-known-types rule is the same invariant
-/// `TOOL_STRATEGY_RULES`'s BLAST-RADIUS GATE already states once, not twice.
-pub const SCHEMA_CREATION_RULES: &str = "NODE MODEL: Everything is a node. Built-in types: task, text, date. A request to start tracking a KIND of thing (a database, a tracker, a list) calls create_schema. A request that supplies the particulars of ONE record calls create_node against a type that already exists. Never call create_schema for a type already listed in EXISTING SCHEMAS.";
-
-/// Tool strategy guidance.
-///
-/// Safety-invariant policy only, per ADR-064 rule 5 (resident prose owns
-/// identity and policy, nothing else). Argument shape (node_type provenance)
-/// now lives on the relevant tool schemas' parameter descriptions; per-operation
-/// tool-call routing now lives in each operation's skill instructions
-/// (`skill_pipeline.rs`), delivered by the two-stage routing pipeline
-/// (`local_agent/routing.rs`); tool-usage reference facts (how search_nodes
-/// filters work, when to prefer search_semantic, etc.) now live on the tools'
-/// own descriptions in `local_agent/tools.rs`. Rules that duplicated a code
-/// guard in `agent_loop.rs` are deleted outright rather than kept as inert
-/// prose: `seen_calls` already breaks identical-call loops, and
-/// `contains_action_claim` already suppresses a fabricated success claim —
-/// both structurally, regardless of what the prompt says. The former
-/// AMBIGUITY bullet is also deleted from here, not dropped: it duplicates
-/// `skill_rules::AMBIGUITY_CLARIFY`, already delivered via the retrieved
-/// skill-instruction templates in `skill_pipeline.rs`.
-pub const TOOL_STRATEGY_RULES: &str = "TOOL STRATEGY:\n\
-    - CONVERSATIONAL TURNS USE NO TOOLS. Greetings, thanks, small talk, questions about your own capabilities or limits, and other meta questions about yourself — answer directly in text. Do NOT call any tool: nothing in the user's graph needs to be read to answer them.\n\
-    - META QUESTIONS (\"how did you check?\", \"what tool did you use?\", \"did you look up X?\"): answer ONLY from what is visible in this conversation's tool call history. Do NOT fabricate tool names, arguments, or results. If you cannot see a tool call in the history that matches the claim, say so honestly — \"I did not make that search\" or \"I don't see a record of that in this conversation.\"\n\
-    - SCHEMA CLAIMS WITHOUT VERIFICATION: Never state that a node type has or lacks a specific property (e.g. \"task has no due_date field\") without first calling a tool to verify. If you have not called get_node or search_nodes on the schema in this turn, you do not know its fields — say so.\n\
-    - CLARIFICATION CONTRACT: at most one clarification per intent. If the user clarifies and the request is still ambiguous, fall through to semantic_search and answer with what's available. Never clarify twice.\n\
-    - BLAST-RADIUS GATE: deletion is irreversible — only call delete_node or delete_schema when the user explicitly and unambiguously asks to delete. Never clarify before create_schema, create_node, or update operations. \"Could you confirm?\" and \"I want to make sure\" are FORBIDDEN before any non-delete operation.";
-
-/// Node reference formatting rule.
-///
-/// Single-line directive that every node named in agent output is a markdown
-/// link to its `nodespace://` URI. The chat renderer shows that link with the
-/// node's live title, so the label is only what shows while the node loads or
-/// when it cannot be found. Designed to be inlined into a
-/// larger response-formatting rules section.
-pub const NODE_REFERENCE_FORMAT: &str =
-    "Link every node you name, as a markdown link: [Title](nodespace://abc-123) (no bare URI, no backticks)";
+//! the full tool-registered system prompt (~6,600 tokens), of which the
+//! resident prose was always a minority share — the rest is JSON tool
+//! schemas, untouched by any reduction here. A prose-only cut of roughly 600
+//! tokens does not on its own justify lowering that floor; doing so needs a
+//! live measurement of the full assembled prompt including tool schemas, not
+//! just the guidance's character count.
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::prompt_assembler::GUIDANCE_SEEDS;
+
+    /// The body of the resident section titled `title`.
+    fn section(title: &str) -> &'static str {
+        GUIDANCE_SEEDS
+            .iter()
+            .find(|s| s.title == title)
+            .unwrap_or_else(|| panic!("no agent-guidance section titled {title:?}"))
+            .body
+    }
+
+    /// The Tool Strategy Guide: the NODE MODEL line and the TOOL STRATEGY
+    /// bullets.
+    fn tool_strategy() -> &'static str {
+        section("Tool Strategy Guide")
+    }
 
     #[test]
-    fn schema_creation_rules_non_empty() {
-        assert!(SCHEMA_CREATION_RULES.contains("NODE MODEL:"));
-        assert!(SCHEMA_CREATION_RULES.contains("create_schema"));
-        assert!(SCHEMA_CREATION_RULES.contains("create_node"));
+    fn the_node_model_distinguishes_a_kind_from_an_instance() {
+        assert!(tool_strategy().starts_with("NODE MODEL:"));
+        assert!(tool_strategy().contains("create_schema"));
+        assert!(tool_strategy().contains("create_node"));
     }
 
     #[test]
     fn tool_strategy_rules_non_empty() {
-        assert!(TOOL_STRATEGY_RULES.contains("TOOL STRATEGY:"));
-        assert!(TOOL_STRATEGY_RULES.contains("BLAST-RADIUS GATE"));
+        assert!(tool_strategy().contains("TOOL STRATEGY:"));
+        assert!(tool_strategy().contains("BLAST-RADIUS GATE"));
     }
 
     /// Per-operation routing (which tool to call in what order for a given
@@ -101,8 +67,8 @@ mod tests {
             "schema_metadata",
         ] {
             assert!(
-                !TOOL_STRATEGY_RULES.contains(forbidden),
-                "TOOL_STRATEGY_RULES must not contain per-operation routing text {forbidden:?} — it belongs in a skill's instructions or a tool's description"
+                !tool_strategy().contains(forbidden),
+                "the Tool Strategy Guide must not contain per-operation routing text {forbidden:?} — it belongs in a skill's instructions or a tool's description"
             );
         }
     }
@@ -118,8 +84,8 @@ mod tests {
             "NEVER CLAIM ACTION WITHOUT TOOL RESULT",
         ] {
             assert!(
-                !TOOL_STRATEGY_RULES.contains(forbidden),
-                "TOOL_STRATEGY_RULES must not restate {forbidden:?} — agent_loop.rs's \
+                !tool_strategy().contains(forbidden),
+                "the Tool Strategy Guide must not restate {forbidden:?} — agent_loop.rs's \
                  seen_calls/contains_action_claim guards already enforce this in code"
             );
         }
@@ -129,51 +95,39 @@ mod tests {
     fn tool_strategy_rules_cover_meta_question_and_schema_guidance() {
         // Meta-question accuracy (confabulation fix)
         assert!(
-            TOOL_STRATEGY_RULES.contains("META QUESTIONS"),
+            tool_strategy().contains("META QUESTIONS"),
             "must instruct agent to answer meta-questions from conversation history only"
         );
         assert!(
-            TOOL_STRATEGY_RULES.contains("tool call history"),
+            tool_strategy().contains("tool call history"),
             "must refer to tool call history as the source of truth"
         );
         // Schema verification (hallucination fix)
         assert!(
-            TOOL_STRATEGY_RULES.contains("SCHEMA CLAIMS WITHOUT VERIFICATION"),
+            tool_strategy().contains("SCHEMA CLAIMS WITHOUT VERIFICATION"),
             "must prohibit unverified schema claims"
         );
     }
 
     #[test]
     fn node_reference_format_specifies_markdown_link() {
-        assert!(NODE_REFERENCE_FORMAT.contains("[Title](nodespace://abc-123)"));
-        assert!(NODE_REFERENCE_FORMAT.contains("Link every node you name"));
-        assert!(NODE_REFERENCE_FORMAT.contains("no bare URI"));
-        assert!(NODE_REFERENCE_FORMAT.contains("no backticks"));
+        let rules = section("Response Formatting Rules");
+        assert!(rules.contains("[Title](nodespace://abc-123)"));
+        assert!(rules.contains("Link every node you name"));
+        assert!(rules.contains("no bare URI"));
+        assert!(rules.contains("no backticks"));
     }
 
     // ------------------------------------------------------------------
     // Eval-contamination guard
     // ------------------------------------------------------------------
 
-    /// Every guidance string that reaches the model, paired with its constant
-    /// name for error reporting. Add new guidance constants here.
+    /// Every guidance string that reaches the model, paired with its source
+    /// for error reporting. Add new guidance sources here.
     fn guidance_corpus() -> Vec<(String, String)> {
-        let mut corpus: Vec<(String, String)> = vec![
-            (
-                "SCHEMA_CREATION_RULES".to_string(),
-                SCHEMA_CREATION_RULES.to_string(),
-            ),
-            (
-                "TOOL_STRATEGY_RULES".to_string(),
-                TOOL_STRATEGY_RULES.to_string(),
-            ),
-            (
-                "NODE_REFERENCE_FORMAT".to_string(),
-                NODE_REFERENCE_FORMAT.to_string(),
-            ),
-        ];
-        // skill_rules.rs `imperative` text is seeded into the DB as prompt
-        // content by seed_skill_nodes(), so it is guidance too.
+        let mut corpus: Vec<(String, String)> = Vec::new();
+        // A rule's `imperative` fragment is seeded into the DB as prompt
+        // content wherever a skill body includes it, so it is guidance too.
         for r in crate::skill_rules::SCHEMA_RULES {
             corpus.push((
                 "skill_rules::SCHEMA_RULES".to_string(),
@@ -200,9 +154,7 @@ mod tests {
                 ));
             }
         }
-        // The seeded prompt nodes ARE the base system prompt. Some interpolate
-        // the constants above, but others carry their own literal text that
-        // nothing else covers.
+        // The seeded prompt nodes ARE the base system prompt.
         for t in crate::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes() {
             if !t.markdown_content.is_empty() {
                 corpus.push((
@@ -543,7 +495,7 @@ mod tests {
 
     /// The guard above is only meaningful if it actually fires — this pins the
     /// detector against the real contamination that motivated it (the former
-    /// `agent_guidance.rs:53` worked example built on scenario 6's prompt).
+    /// worked example in the resident guidance, built on scenario 6's prompt).
     #[test]
     fn contamination_guard_detects_a_planted_example() {
         let planted = normalize(

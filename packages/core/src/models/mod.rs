@@ -40,7 +40,9 @@ pub use time::{SystemTimeProvider, TimeProvider};
 pub use embedding::{ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding};
 pub use nodespace_types::SchemaNode;
 pub use nodespace_types::{SchemaChildrenRule, SchemaParentRule};
-pub use nodespace_types::{SkillFields, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
+pub use nodespace_types::{
+    SkillFields, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_APPLIES_TO, SKILL_NODE_TYPE,
+};
 
 // The core type registry (ADR-086 §3): the one list of the types NodeSpace
 // ships, and what each records.

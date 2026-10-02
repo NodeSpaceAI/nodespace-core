@@ -1364,11 +1364,16 @@ impl NodeService {
 
             // A relationship declared with no target type reaches any node, a
             // schema included: a chat message's `wrote` edge points at the
-            // schema its turn created. That is an instance edge, told apart
-            // from a declaration by its source, which is not a schema. A
-            // relationship that names a target type never reaches one.
+            // schema its turn created. So does one declared to target schema
+            // nodes themselves: a skill's `applies_to`. Either is an instance
+            // edge, told apart from a declaration by its source, which is not
+            // a schema. A relationship that names any other target type never
+            // reaches a schema node.
             if crate::models::CoreNodeType::Schema.is_exactly(&target.node_type)
-                && relationship.target_type.is_some()
+                && relationship
+                    .target_type
+                    .as_deref()
+                    .is_some_and(|t| !crate::models::CoreNodeType::Schema.is_exactly(t))
             {
                 return Err(NodeServiceError::invalid_update(format!(
                     "'{}' is a schema node; typed relationships between schemas are declarations \

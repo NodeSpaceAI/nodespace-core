@@ -264,7 +264,7 @@ impl NodeService {
     }
 
     /// Update a skill's core fields (`description`, `exclusion`,
-    /// `tool_whitelist`, `max_iterations`, `node_types`) with optimistic
+    /// `tool_whitelist`, `max_iterations`) with optimistic
     /// concurrency control. See [`Self::update_person_node`] for why this
     /// delegates to the generic pipeline; the resulting field shapes are
     /// checked there by `SkillNodeBehavior::validate`.
