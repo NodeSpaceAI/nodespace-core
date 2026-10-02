@@ -299,7 +299,16 @@ async fn run_arm(model: &str, arm: Arm) -> ArmResult {
         // ones without breaking the build.
         let stage1 = InferenceRequest {
             messages: vec![
-                ChatMessage::text(Role::System, stage1_system_prompt(&seeded_skill_names())),
+                ChatMessage::text(
+                    Role::System,
+                    stage1_system_prompt(
+                        &seeded_skill_names(),
+                        &nodespace_agent::local_agent::agent_loop::stage1_type_names(
+                            [],
+                            USER_MESSAGE,
+                        ),
+                    ),
+                ),
                 ChatMessage::text(Role::User, USER_MESSAGE),
             ],
             tools: Some(routing::stage1_tool_definitions()),

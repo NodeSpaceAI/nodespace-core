@@ -4674,6 +4674,31 @@ impl AgentToolExecutor for GraphToolExecutor {
             }
         }
     }
+
+    /// The display name of every schema the user defined that takes part: an
+    /// archived type is in no context the agent is given.
+    ///
+    /// Read from the store, so a type whose embedding has not landed yet is
+    /// named too. A failed read yields no names: Stage 1 is left with the
+    /// built-in types, and the turn still routes.
+    async fn user_type_names(&self) -> Vec<String> {
+        let Some(ns) = self.node_service.as_ref() else {
+            return Vec::new();
+        };
+        match ns.get_all_schemas().await {
+            Ok(schemas) => schemas
+                .into_iter()
+                .filter(|schema| {
+                    !schema.is_core && nodespace_core::governance::participates(&schema.envelope)
+                })
+                .map(|schema| schema.envelope.content)
+                .collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not read the user's type names for Stage 1; routing without them");
+                Vec::new()
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7538,6 +7563,54 @@ mod tests {
     #[tokio::test]
     async fn skill_names_is_empty_without_a_node_service() {
         assert!(test_executor().skill_names().await.is_empty());
+    }
+
+    /// Stage 1 is offered the user's types by display name. Not the core
+    /// ones, which it knows from the registry, and not an archived one.
+    #[tokio::test]
+    async fn user_type_names_lists_the_users_active_schemas_and_no_core_ones() {
+        use nodespace_core::db::SqliteStore;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store: Arc<SqliteStore> =
+            Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+        for name in ["Vendor", "Incident Report", "Retired Type"] {
+            handle_create_schema(&ns, json!({ "name": name, "fields": [] }))
+                .await
+                .expect("schema must be created");
+        }
+        let retired = ns
+            .get_all_schemas()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|schema| schema.envelope.content == "Retired Type")
+            .expect("the schema was created")
+            .envelope;
+        ns.update_node(
+            &retired.id,
+            retired.version,
+            nodespace_core::models::NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+        )
+        .await
+        .expect("archiving the schema");
+        let executor = GraphToolExecutor {
+            node_service: Some(ns),
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        };
+
+        let mut names = executor.user_type_names().await;
+        names.sort();
+        assert_eq!(names, ["Incident Report", "Vendor"]);
+    }
+
+    #[tokio::test]
+    async fn user_type_names_is_empty_without_a_node_service() {
+        assert!(test_executor().user_type_names().await.is_empty());
     }
 
     #[tokio::test]

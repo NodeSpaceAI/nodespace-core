@@ -760,6 +760,17 @@ pub trait AgentToolExecutor: Send + Sync {
         Vec::new()
     }
 
+    /// Names of the types the user has defined, for Stage 1 to recognise one
+    /// a request names.
+    ///
+    /// Every one, not a retrieved few: Stage 1 lists only the types the
+    /// message names, so which of them it may list has to be the same
+    /// question asked of all of them. The default is empty, which leaves
+    /// Stage 1 with the built-in types alone.
+    async fn user_type_names(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     /// `task.status`'s currently-declared values (`core_values` +
     /// `user_values`), used to keep `update_task_status`'s parameter `enum`
     /// in step with a vocabulary ADR-076 lets a methodology bundle extend at
