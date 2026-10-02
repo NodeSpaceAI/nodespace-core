@@ -185,13 +185,14 @@ async fn a_native_tool_stores_each_field_in_its_declaring_bucket() {
 
     let node = get(&svc, &id).await;
     // Base fields live in the base's bucket, with the schema default filled
-    // in; the handler lives in the subtype's own.
+    // in; the handler lives in the subtype's own. A tool is not enabled until
+    // something says so.
     assert_eq!(
         node.properties["tool"],
         json!({
             "description": "Search nodes by keyword",
             "parameter_schema": { "type": "object", "properties": {} },
-            "enabled": true,
+            "enabled": false,
         })
     );
     assert_eq!(
@@ -223,7 +224,7 @@ async fn a_native_tool_travels_with_its_chains_fields_in_properties() {
             "handler": "search_nodes",
             "description": "Search nodes by keyword",
             "parameter_schema": { "type": "object", "properties": {} },
-            "enabled": true,
+            "enabled": false,
         })
     );
 }
@@ -354,6 +355,15 @@ async fn the_trust_gate_follows_the_stored_chain() {
     assert!(tool_is_offered(&native, false));
     assert!(!tool_is_offered(&remote, false));
     assert!(tool_is_offered(&remote, true));
+
+    // A tool that doesn't say is stored as not enabled, so the gate is closed
+    // until someone opens it.
+    let unstated = create(&svc, REMOTE, "remote_lookup", json!({}))
+        .await
+        .unwrap();
+    let stored = get(&svc, &unstated).await;
+    assert_eq!(stored.properties["tool"]["enabled"], false);
+    assert!(!tool_is_offered(&remote, false));
 }
 
 /// The parameter-schema guard is the base's, so it holds for a native tool

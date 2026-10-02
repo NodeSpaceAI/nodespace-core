@@ -16,7 +16,7 @@
 //! Skill discovery is LLM-orchestrated through the `search_skills` tool
 //! exposed by [`crate::local_agent::tools`]; nothing here routes a turn.
 //!
-//! Tool nodes (`node_type='tool'`) bridge graph storage to deterministic Rust
+//! Tool nodes (`tool-native`) bridge graph storage to deterministic Rust
 //! handlers. Tools stay defined in Rust, each bound to a handler with a typed
 //! parameter schema; [`seed_tool_nodes`] seeds one node per
 //! [`crate::local_agent::tools::Tool`], under that tool's fixed id.

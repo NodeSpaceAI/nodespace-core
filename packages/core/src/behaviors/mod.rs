@@ -2002,13 +2002,53 @@ impl NodeBehavior for ToolNativeNodeBehavior {
     }
 }
 
-/// The tool trust gate (ADR-086 §12): whether a tool whose type has `chain`
-/// (nearest scope first) may be offered to the model.
-///
-/// The rule is the subtype's. A native tool is NodeSpace's own code and is
-/// always offered. Every other tool subtype comes from outside, and is
-/// offered only when `enabled`, the base field every tool carries. A type
-/// that is not a tool is never offered.
+/// Where a tool comes from, which its subtype says (ADR-086 §12). Every
+/// per-subtype rule of the tool family is decided from this one answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOrigin {
+    /// `tool-native`, or a type extending it: NodeSpace's own code.
+    Native,
+    /// Any other type extending `tool`: it comes from outside.
+    External,
+}
+
+impl ToolOrigin {
+    /// The origin of a tool whose type has `chain` (nearest scope first), or
+    /// `None` when the type is not a tool.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nodespace_core::behaviors::ToolOrigin;
+    ///
+    /// assert_eq!(ToolOrigin::of(&["tool-native", "tool"]), Some(ToolOrigin::Native));
+    /// assert_eq!(ToolOrigin::of(&["tool-remote", "tool"]), Some(ToolOrigin::External));
+    /// assert_eq!(ToolOrigin::of(&["text"]), None);
+    /// ```
+    pub fn of<S: AsRef<str>>(chain: &[S]) -> Option<Self> {
+        let core = CoreNodeType::nearest(chain)?;
+        if core.is_a(CoreNodeType::ToolNative) {
+            Some(Self::Native)
+        } else if core.is_a(CoreNodeType::Tool) {
+            Some(Self::External)
+        } else {
+            None
+        }
+    }
+
+    /// The trust gate: whether a tool of this origin may be offered to the
+    /// model. A native tool always is. Every other tool is offered only when
+    /// `enabled`, the base field every tool carries.
+    pub fn is_offered(self, enabled: bool) -> bool {
+        match self {
+            Self::Native => true,
+            Self::External => enabled,
+        }
+    }
+}
+
+/// The tool trust gate for a type's `chain`: [`ToolOrigin::is_offered`] for a
+/// tool, and never for a type that is not one.
 ///
 /// # Examples
 ///
@@ -2021,11 +2061,7 @@ impl NodeBehavior for ToolNativeNodeBehavior {
 /// assert!(!tool_is_offered(&["text"], true));
 /// ```
 pub fn tool_is_offered<S: AsRef<str>>(chain: &[S], enabled: bool) -> bool {
-    match CoreNodeType::nearest(chain) {
-        Some(core) if core.is_a(CoreNodeType::ToolNative) => true,
-        Some(core) if core.is_a(CoreNodeType::Tool) => enabled,
-        _ => false,
-    }
+    ToolOrigin::of(chain).is_some_and(|origin| origin.is_offered(enabled))
 }
 
 /// Maximum object-nesting depth allowed in a tool's `parameter_schema`.
@@ -5116,11 +5152,18 @@ mod tests {
                 enabled
             ));
             assert_eq!(tool_is_offered(&["tool-remote", "tool"], enabled), enabled);
-            // The bare base and a type that is no tool are never trusted.
+            // The bare base is no more trusted than any other tool that is
+            // not native, and a type that is no tool is never offered.
             assert_eq!(tool_is_offered(&["tool"], enabled), enabled);
             assert!(!tool_is_offered(&["text"], enabled));
             assert!(!tool_is_offered(&["invoice"], enabled));
         }
+        assert_eq!(ToolOrigin::of(&NATIVE_TOOL_CHAIN), Some(ToolOrigin::Native));
+        assert_eq!(
+            ToolOrigin::of(&["tool-remote", "tool"]),
+            Some(ToolOrigin::External)
+        );
+        assert_eq!(ToolOrigin::of(&["invoice"]), None);
     }
 
     /// The registry resolves a native tool's embedding and markdown rules

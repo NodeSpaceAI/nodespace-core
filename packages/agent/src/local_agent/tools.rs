@@ -11,7 +11,7 @@ use crate::agent_types::{
 };
 use async_trait::async_trait;
 use nodespace_core::agent_params::{SearchNodesParams, SearchSemanticParams};
-use nodespace_core::behaviors::tool_is_offered;
+use nodespace_core::behaviors::ToolOrigin;
 use nodespace_core::models::conflict::{ConflictKind, ConflictStatus, Resolution};
 use nodespace_core::models::CoreNodeType;
 use nodespace_core::ops::{node_ops, query_ops, rel_ops, search_ops, OpsError};
@@ -4299,7 +4299,8 @@ impl AgentToolExecutor for GraphToolExecutor {
     ///
     /// Reads every node whose type is a `tool` subtype and builds a
     /// `ToolDefinition` from each one its subtype's trust gate lets through
-    /// (`tool_is_offered`), registry tools first in canonical registry order.
+    /// (`ToolOrigin::is_offered`), registry tools first in canonical registry
+    /// order. A built-in tool's definition comes only from its own seeded node.
     /// `query_nodes` returns the wire shape, so the fields of the node's whole
     /// chain (`tool` and its subtype) are read from the top level of
     /// `properties`.
@@ -4359,30 +4360,32 @@ impl AgentToolExecutor for GraphToolExecutor {
             }
             let chain = &chains[node_type];
 
+            let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
             // The trust gate is the subtype's rule (ADR-086 §12): a native
             // tool is always offered, and any other subtype only when
-            // `enabled`. A node that doesn't say is not enabled.
+            // `enabled`. A node that doesn't say is not enabled, and a type
+            // that is no tool has no origin.
             let enabled = props
                 .get("enabled")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if !tool_is_offered(chain, enabled) {
+            let Some(origin) = ToolOrigin::of(chain).filter(|o| o.is_offered(enabled)) else {
                 tracing::debug!(
-                    node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    node_id,
                     node_type,
                     "available_tools: skipping unenabled tool"
                 );
                 continue;
-            }
+            };
 
             // A native tool is called by its handler key, which is what the
-            // executor dispatches on. Any other subtype is called by its name.
-            let is_native = CoreNodeType::nearest(chain)
-                .is_some_and(|core| core.is_a(CoreNodeType::ToolNative));
-            let name = if is_native {
-                props.get("handler")
-            } else {
-                node.get("content")
+            // executor dispatches on. Any other subtype is called by its
+            // name; nothing dispatches one yet, since no remote subtype with
+            // a binding exists.
+            let name = match origin {
+                ToolOrigin::Native => props.get("handler"),
+                ToolOrigin::External => node.get("content"),
             }
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -4392,20 +4395,28 @@ impl AgentToolExecutor for GraphToolExecutor {
                 // handler, so a node without one means this reader no longer
                 // matches the stored shape.
                 tracing::warn!(
-                    node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    node_id,
                     node_type,
                     "available_tools: skipping tool node with no name to call it by"
                 );
                 continue;
             }
-            // A built-in tool's name is a native tool's alone: another subtype
-            // can't put its own description and schema under it.
-            if !is_native && Tool::from_name(&name).is_some() {
+            // A built-in tool is defined by its own seeded node and no other.
+            // A native node is trusted for being NodeSpace's code, so one
+            // that is not the seed of the handler it names is refused, and so
+            // is any other subtype that takes a built-in tool's name: neither
+            // can put its own description and schema in that tool's place.
+            let is_the_seed = Tool::from_name(&name).map(|tool| tool.seed_id() == node_id);
+            let admitted = match origin {
+                ToolOrigin::Native => is_the_seed == Some(true),
+                ToolOrigin::External => is_the_seed.is_none(),
+            };
+            if !admitted {
                 tracing::warn!(
-                    node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    node_id,
                     node_type,
                     name = %name,
-                    "available_tools: skipping tool that takes a built-in tool's name"
+                    "available_tools: skipping tool node that is not the built-in tool it names"
                 );
                 continue;
             }
@@ -4444,8 +4455,8 @@ impl AgentToolExecutor for GraphToolExecutor {
 
         // Emit ToolDefinitions in canonical registry order so the model always
         // sees tools in the same sequence (discovery tools first).
-        // Unknown handler keys in the DB (tools not in the registry) are
-        // appended after the registered tools.
+        // Tools that are not built in are appended after the registered
+        // tools.
         let mut result: Vec<ToolDefinition> = Vec::with_capacity(node_defs.len());
         for &tool in Tool::ALL {
             // Tools the system reserves for itself are dropped even when a
@@ -4460,7 +4471,7 @@ impl AgentToolExecutor for GraphToolExecutor {
                 result.push(def);
             }
         }
-        // Append the other tools (handler keys not in Tool::ALL) sorted by name
+        // Append the other tools (names not in Tool::ALL) sorted by name
         let mut extras: Vec<ToolDefinition> = node_defs.into_values().collect();
         extras.sort_by(|a, b| a.name.cmp(&b.name));
         result.extend(extras);
@@ -7984,19 +7995,37 @@ mod tests {
             }
         }
 
+        /// The seeded node of a built-in tool: its fixed id, under its own
+        /// handler key.
         fn native_tool_template(
             handler: &str,
             description: &str,
             parameter_schema: Value,
             enabled: bool,
         ) -> NodeTemplate {
+            NodeTemplate {
+                id: Tool::from_name(handler).unwrap().seed_id().to_string(),
+                ..tool_template(
+                    "tool-native",
+                    handler,
+                    json!({ "handler": handler }),
+                    description,
+                    parameter_schema,
+                    enabled,
+                )
+            }
+        }
+
+        /// A native node that is not a built-in tool's seed but names its
+        /// handler.
+        fn native_impostor_template(name: &str, handler: &str) -> NodeTemplate {
             tool_template(
                 "tool-native",
-                handler,
+                name,
                 json!({ "handler": handler }),
-                description,
-                parameter_schema,
-                enabled,
+                "Impostor",
+                json!({"type": "object", "properties": {"impostor": {"type": "string"}}}),
+                true,
             )
         }
 
@@ -8146,10 +8175,65 @@ mod tests {
 
             let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
             assert_eq!(names, vec!["get_node", "remote_enabled"]);
+            assert_eq!(tools[0].description, "Get a node");
             // A tool with no handler is called by its name, and its inherited
             // fields are read like a native tool's.
             assert_eq!(tools[1].description, "Enabled");
             assert_eq!(tools[1].parameters_schema, schema);
+        }
+
+        /// A tool that is not native and never said whether it is enabled is
+        /// stored as not enabled, and is not offered.
+        #[tokio::test]
+        async fn a_tool_that_does_not_say_it_is_enabled_is_not_offered() {
+            let schema = json!({"type": "object", "properties": {}});
+            let mut unstated = remote_tool_template("remote_unstated", "Unstated", schema, true);
+            unstated
+                .root_properties
+                .as_object_mut()
+                .unwrap()
+                .remove("enabled");
+            let (executor, _tmp) = executor_seeded_with(vec![
+                native_tool_template("get_node", "Get a node", json!({"type": "object"}), true),
+                unstated,
+            ])
+            .await;
+
+            let names: Vec<String> = executor
+                .available_tools()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
+
+            assert_eq!(names, vec!["get_node"]);
+        }
+
+        /// A built-in tool's definition comes from its seeded node alone. A
+        /// native node is always trusted, so one that names a built-in
+        /// handler without being that tool's seed must not replace the seed's
+        /// description and schema, whichever the query returns last; nor may
+        /// it bring a built-in tool onto a surface its seed is missing from,
+        /// or offer a handler no built-in tool has.
+        #[tokio::test]
+        async fn only_a_built_in_tools_seed_defines_it() {
+            let schema = json!({"type": "object", "properties": {}});
+            let (executor, _tmp) = executor_seeded_with(vec![
+                native_impostor_template("get_node_before", "get_node"),
+                native_tool_template("get_node", "Get a node", schema.clone(), true),
+                native_impostor_template("get_node_after", "get_node"),
+                native_impostor_template("delete_node_copy", "delete_node"),
+                native_impostor_template("no_such_handler", "no_such_handler"),
+            ])
+            .await;
+
+            let tools = executor.available_tools().await.unwrap();
+
+            assert_eq!(tools.len(), 1, "{tools:?}");
+            assert_eq!(tools[0].name, "get_node");
+            assert_eq!(tools[0].description, "Get a node");
+            assert_eq!(tools[0].parameters_schema, schema);
         }
 
         /// The seeded tools are `tool-native` nodes, and the tool surface is

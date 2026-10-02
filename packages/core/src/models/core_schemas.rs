@@ -1767,8 +1767,13 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     indexed: false,
                     required: Some(false),
                     extensible: None,
-                    default: Some(serde_json::json!(true)),
-                    description: Some("Whether the tool is offered to the model".to_string()),
+                    // Off unless stated: a tool that is not native is
+                    // offered only once someone has enabled it.
+                    default: Some(serde_json::json!(false)),
+                    description: Some(
+                        "Whether the tool may be offered to the model; a native tool always is"
+                            .to_string(),
+                    ),
                     item_type: None,
                     fields: None,
                     item_fields: None,
