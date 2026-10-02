@@ -20,13 +20,18 @@
 //!   heavy with digits).
 //!
 //! A copy is discarded, and the chat has no summary. A long plain name (a
-//! file, a function, a branch) is not a copy: naming what was worked on is
-//! what a summary is for.
+//! file, a function, a `Type::method`, a branch) is not a copy: naming what
+//! was worked on is what a summary is for.
 //!
-//! That is a check for copying, not for secrets. A short secret, a key made
-//! only of letters, or a bare host name that the model restates is not
-//! caught, and nothing here detects one: scrubbing content is a separate, best-effort problem
-//! (ADR-061 §7), and this module does not claim to solve it.
+//! The check errs in both directions, and says so:
+//!
+//! - It discards some honest summaries: one that quotes a relative path, a
+//!   `file:line` reference, or a name carrying eight digits (a dated file).
+//! - It is a check for copying, not for secrets. A short secret, a key made
+//!   only of letters, or a bare host name that the model restates is not
+//!   caught, and nothing here detects one: scrubbing content is a separate,
+//!   best-effort problem (ADR-061 §7), and this module does not claim to
+//!   solve it.
 //!
 //! # Only a model on this machine
 //!
@@ -77,7 +82,7 @@ const COPIED_WORDS: usize = 8;
 
 /// The length of an unbroken run of characters, with no space in it, that the
 /// reply may not share with the output when the run is shaped like a path, a
-/// URL, an assignment or a key (see [`is_machine_text`]). Ordinary words are
+/// URL, an assignment or a key (see [`machine_separators`] and [`KEY_LIKE_DIGITS`]). Ordinary words are
 /// shorter.
 const COPIED_RUN_CHARS: usize = 20;
 
@@ -174,40 +179,68 @@ pub enum CopiedOutput {
 
 /// How `summary` copies the session's output, if it does.
 ///
-/// Words are compared with whitespace collapsed, as [`sanitize_summary`]
-/// leaves it, so a copy that runs across a line break of the output is still
-/// one. A shared run need not be a whole word of either side: the value
-/// copied out of `KEY=value` counts.
+/// Words are compared as [`bare_words`] gives them: whitespace collapsed and
+/// the punctuation around each word dropped. So a copy that runs across a
+/// line break of the output is still one, and a full stop, a dash or a list
+/// marker the reply adds does not make it something else. A shared run of
+/// machine text need not be a whole word of either side: the value copied out
+/// of `KEY=value` counts.
 pub fn copied_from_output(summary: &str, plain_text: &str) -> Option<CopiedOutput> {
-    let output = plain_text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let words: Vec<&str> = summary.split_whitespace().collect();
+    let output_words = bare_words(plain_text).join(" ");
+    let words = bare_words(summary);
 
-    if !words.is_empty() && output.contains(&words.join(" ")) {
+    if !words.is_empty() && output_words.contains(&words.join(" ")) {
         return Some(CopiedOutput::Passage);
     }
-    // The punctuation a sentence puts around a quoted run is not part of it.
     if words
         .windows(COPIED_WORDS)
-        .any(|run| output.contains(run.join(" ").trim_matches(|c: char| !c.is_alphanumeric())))
+        .any(|run| output_words.contains(&run.join(" ")))
     {
         return Some(CopiedOutput::Words);
     }
-    let shares_machine_text = words.iter().any(|word| {
+
+    // Machine text is compared as written: its punctuation is what it is.
+    let output = plain_text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let shares_machine_text = summary.split_whitespace().any(|word| {
         let chars: Vec<char> = word.chars().collect();
-        chars
-            .windows(COPIED_RUN_CHARS)
-            .any(|run| is_machine_text(run) && output.contains(&run.iter().collect::<String>()))
+        let separators = machine_separators(&chars);
+        (0..chars.len().saturating_sub(COPIED_RUN_CHARS - 1)).any(|start| {
+            let run = start..start + COPIED_RUN_CHARS;
+            let digits = chars[run.clone()]
+                .iter()
+                .filter(|c| c.is_ascii_digit())
+                .count();
+            (separators[run.clone()].contains(&true) || digits >= KEY_LIKE_DIGITS)
+                && output.contains(&chars[run].iter().collect::<String>())
+        })
     });
     shares_machine_text.then_some(CopiedOutput::MachineText)
 }
 
-/// Whether an unbroken run of characters is shaped like a path, a URL, an
-/// assignment or a key, as opposed to a long name such as
-/// `build_session_end_properties`.
-fn is_machine_text(run: &[char]) -> bool {
-    run.iter()
-        .any(|c| matches!(c, '/' | '\\' | ':' | '=' | '@'))
-        || run.iter().filter(|c| c.is_ascii_digit()).count() >= KEY_LIKE_DIGITS
+/// The words of `text`, each without the punctuation around it. A token that
+/// is only punctuation (a dash, a bullet, an ellipsis) is not a word.
+fn bare_words(text: &str) -> Vec<&str> {
+    text.split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+/// Which characters of a word mark it as a path, a URL or an assignment
+/// rather than a long name such as `build_session_end_properties` or
+/// `SessionCapture::plain_text`.
+///
+/// `::` joins the parts of a name and marks nothing; a lone `:` belongs to a
+/// URL, a drive or a `file:line` reference. The word is judged whole, so a
+/// run that ends between the two colons of a `::` does not see a lone one.
+fn machine_separators(word: &[char]) -> Vec<bool> {
+    (0..word.len())
+        .map(|i| match word[i] {
+            '/' | '\\' | '=' | '@' => true,
+            ':' => word.get(i + 1) != Some(&':') && (i == 0 || word[i - 1] != ':'),
+            _ => false,
+        })
+        .collect()
 }
 
 /// Summarize a session's plain-text output with a one-shot request to
@@ -462,8 +495,19 @@ mod tests {
         // A short session echoed back whole: too short for a run of words or
         // a long token, and still nothing but the output.
         let short = "Edit parser.rs\nAll 42 tests pass\nexport TOKEN=abc123def456";
-        let scripted = ScriptedEngine::replying("Edit parser.rs All 42 tests pass");
-        assert_eq!(generate_summary(&engine(&scripted), short).await, None);
+        for echo in [
+            "Edit parser.rs All 42 tests pass",
+            // With the full stop a model ends on, and as a list.
+            "Edit parser.rs\nAll 42 tests pass.",
+            "- Edit parser.rs\n- All 42 tests pass",
+        ] {
+            let scripted = ScriptedEngine::replying(echo);
+            assert_eq!(
+                generate_summary(&engine(&scripted), short).await,
+                None,
+                "{echo}"
+            );
+        }
 
         // Prose about the output, short phrases of it included, is kept.
         let scripted =
@@ -513,6 +557,25 @@ mod tests {
             None
         );
         assert_eq!(copied_from_output("Anything at all.", ""), None);
+
+        // Punctuation standing on its own is not a word: it neither makes a
+        // run of eight, nor shortens one to fewer shared words.
+        assert_eq!(copied_from_output("- - - - - - - -", ""), None);
+        assert_eq!(
+            copied_from_output(
+                "Step one ... ... ... ... ... ... ... ... finished it.",
+                output
+            ),
+            None
+        );
+        assert_eq!(
+            copied_from_output(
+                "It printed — so that it can handle nested — and more",
+                output
+            ),
+            None,
+            "six shared words between two dashes"
+        );
     }
 
     /// Naming what was worked on is what a summary is for: a long file,
@@ -522,7 +585,8 @@ mod tests {
     fn a_long_name_is_not_machine_text_and_a_path_or_a_key_is() {
         let output = "Update(packages/daemon/src/services/local_agent_service.rs)\n\
                       warning: unused variable in build_session_end_properties\n\
-                      On branch issue-3454-pty-capture-summary\n\
+                      On branch terminal-capture-summary-rework\n\
+                      error[E0382]: use of moved value in AgentSessionHandler::finalize_capture\n\
                       Published https://staging-worker.sam-dev-account.workers.dev\n\
                       export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCY\n\
                       commit 9f8e7d6c5b4a39281706f5e4d3c2b1a098765432";
@@ -530,7 +594,8 @@ mod tests {
         for kept in [
             "Edited local_agent_service.rs and ran the tests.",
             "Fixed a warning in build_session_end_properties.",
-            "Worked on branch issue-3454-pty-capture-summary.",
+            "Worked on branch terminal-capture-summary-rework.",
+            "Fixed a moved-value error in AgentSessionHandler::finalize_capture.",
         ] {
             assert_eq!(copied_from_output(kept, output), None, "{kept}");
         }

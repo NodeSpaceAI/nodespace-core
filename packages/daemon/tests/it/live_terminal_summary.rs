@@ -68,7 +68,7 @@ const SESSIONS: [(&str, &str); 3] = [
     (
         "a refactor that names long files and functions",
         "\x1b]0;claude\x07\x1b[1m> the session end write should clear stale fields\x1b[0m\r\n\
-         On branch issue-3454-pty-capture-summary\r\n\
+         On branch terminal-capture-summary-rework\r\n\
          \x1b[32m\u{25cf}\x1b[0m Read(packages/daemon/src/services/capture_service.rs)\r\n\
          build_session_end_properties only clears the summary when capture saves one.\r\n\
          \x1b[32m\u{25cf}\x1b[0m Update(packages/daemon/src/services/capture_service.rs)\r\n\
