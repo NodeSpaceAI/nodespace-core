@@ -111,11 +111,10 @@ pub const DISPATCH_TIMEOUT: Duration = Duration::from_secs(120);
 ///
 /// ADR-038's Trust Boundary requires "Provenance is marked. Tool/skill nodes
 /// carry a `source` marker (e.g. internal-generated vs external) visible to
-/// the retrieval filter, the Stage-2 judge, and the UI." That marker lives on
-/// registry *nodes* consumed by the local agent's routing pipeline
-/// (`packages/agent`) -- and no such node-backed registry for external tools
-/// exists in the codebase yet (ADR-038's Implementation Notes item 5, "tools
-/// as nodes… trust boundary," is still open; this issue does not build it).
+/// the retrieval filter, the Stage-2 judge, and the UI." On registry *nodes*,
+/// consumed by the local agent's routing pipeline (`packages/agent`), the
+/// provenance is the tool's subtype (ADR-086 §12) rather than a `source`
+/// field -- and no subtype for external tools exists in the codebase yet.
 ///
 /// This constant is the scoped analog for what does exist today: the actual
 /// wire-level tool definition this server hands to a client. Stamping it here

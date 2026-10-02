@@ -631,7 +631,7 @@ async fn the_leaf_types_refuse_children_on_every_path() {
     let note = create(&svc, "text", "a note").await;
     let tool = svc
         .create_node(Node::new(
-            "tool".to_string(),
+            "tool-native".to_string(),
             "lookup".to_string(),
             json!({ "description": "Looks a thing up",
                 "handler": "lookup", "parameter_schema": { "type": "object" } }),
@@ -639,7 +639,9 @@ async fn the_leaf_types_refuse_children_on_every_path() {
         .await
         .expect("a tool node");
     let settings = create(&svc, "database-settings", "Settings").await;
-    let mut leaves: Vec<(&str, String)> = vec![("tool", tool), ("database-settings", settings)];
+    // A native tool is a leaf through the rule it inherits from `tool`.
+    let mut leaves: Vec<(&str, String)> =
+        vec![("tool-native", tool), ("database-settings", settings)];
     for (leaf_type, content) in [
         ("code-block", "```rust\nfn main() {}\n```"),
         ("ordered-list", "1. first"),

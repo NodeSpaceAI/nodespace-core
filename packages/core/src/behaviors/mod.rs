@@ -1898,27 +1898,24 @@ impl NodeBehavior for SkillNodeBehavior {
     }
 }
 
-/// Behavior for tool nodes (`node_type='tool'`).
+/// Behavior for the abstract `tool` base (ADR-086 §12).
 ///
-/// Tool nodes bridge the graph/LLM layer to deterministic Rust handlers.
-/// They store the tool's stable handler key, typed parameter schema,
-/// description (embeddable for discovery), and a `source` provenance marker
-/// (`"internal"` for built-in tools, `"external"` for user-registered tools).
+/// No node has `tool` as its type, but every tool is validated by this
+/// behaviour first: a subtype's behaviour adds to it and never replaces it.
+/// A tool node is a registry entry, metadata only; where it comes from, and
+/// what runs when it is called, is its subtype's.
 ///
-/// The handler key points at a deterministic function in the tool registry;
-/// the node never contains logic — only metadata.
-///
-/// Properties:
-/// - `handler`: stable key resolving to the deterministic handler (e.g. `"search_nodes"`)
-/// - `description`: human-readable description embedded for semantic discovery
-/// - `parameter_schema`: JSON Schema for the tool's parameters (typed, bounded)
-/// - `source`: provenance — `"internal"` (generated) or `"external"` (user-registered)
-/// - `enabled`: bool — external tools require explicit user enablement before use
+/// - **Content** is the tool's name as the model sees it, and must be
+///   supplied.
+/// - `parameter_schema` is a JSON Schema bounded in depth, with no open
+///   `additionalProperties`, whichever subtype stores it.
+/// - **Embedded** as its name and `description`, so a tool is found by
+///   intent.
 pub struct ToolNodeBehavior;
 
 impl NodeBehavior for ToolNodeBehavior {
     fn type_name(&self) -> &'static str {
-        "tool"
+        CoreNodeType::Tool.as_str()
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
@@ -1928,32 +1925,17 @@ impl NodeBehavior for ToolNodeBehavior {
             ));
         }
 
-        let handler = get_namespaced_prop_str(&node.properties, "tool", "handler");
-        if handler.map(|s| s.trim().is_empty()).unwrap_or(true) {
-            return Err(NodeValidationError::MissingField(
-                "tool handler key is required".to_string(),
-            ));
-        }
-
-        let source = get_namespaced_prop_str(&node.properties, "tool", "source");
-        if let Some(source) = source {
-            if source != "internal" && source != "external" {
-                return Err(NodeValidationError::InvalidProperties(
-                    "tool source must be 'internal' or 'external'".to_string(),
-                ));
-            }
-        }
-
-        if let Some(schema) = get_namespaced_prop(&node.properties, "tool", "parameter_schema") {
+        if let Some(schema) =
+            get_namespaced_prop(&node.properties, self.type_name(), "parameter_schema")
+        {
             if !schema.is_object() && !schema.is_null() {
                 return Err(NodeValidationError::InvalidProperties(
                     "parameter_schema must be a JSON object".to_string(),
                 ));
             }
             // Trust-boundary guard: bound nesting depth and reject unbounded
-            // `additionalProperties`. Per ADR-036 this is ONE trust model applied
-            // to all origins (internal-generated AND external-registered) — the
-            // boundary is single-sourced, never forked per `source`.
+            // `additionalProperties`. One rule for every subtype (ADR-036):
+            // the boundary is on the base, so no subtype can leave it out.
             if let Some(obj) = schema.as_object() {
                 validate_parameter_schema_depth(obj, 0)?;
             }
@@ -1967,7 +1949,8 @@ impl NodeBehavior for ToolNodeBehavior {
     }
 
     fn get_embeddable_content(&self, node: &Node) -> Option<String> {
-        let desc = get_namespaced_prop_str(&node.properties, "tool", "description").unwrap_or("");
+        let desc = get_namespaced_prop_str(&node.properties, self.type_name(), "description")
+            .unwrap_or("");
         let name = &node.content;
         if desc.is_empty() && name.trim().is_empty() {
             None
@@ -1983,26 +1966,115 @@ impl NodeBehavior for ToolNodeBehavior {
     }
 }
 
-/// Maximum allowed nesting depth for tool parameter schemas.
+/// Behavior for `tool-native` nodes: one of NodeSpace's built-in tools.
 ///
-/// Bounded nesting prevents external tools from registering schemas that could
-/// trigger pathological processing or obscure type confusion via deeply nested
-/// `additionalProperties`. Internal tools are not constrained by this limit
-/// (they are validated at compile time via typed `ToolDefinition`s), but the
-/// guard runs unconditionally so the same code path covers both cases.
+/// Adds the `handler` key to [`ToolNodeBehavior`]'s rules: the stable key of
+/// the Rust function the call dispatches to. The node never holds logic.
+pub struct ToolNativeNodeBehavior;
+
+impl NodeBehavior for ToolNativeNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        CoreNodeType::ToolNative.as_str()
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        let handler = get_namespaced_prop_str(&node.properties, self.type_name(), "handler");
+        if handler.is_none_or(|key| key.trim().is_empty()) {
+            return Err(NodeValidationError::MissingField(
+                "tool handler key is required".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    // `NodeBehaviorRegistry::resolve` answers these from the nearest
+    // behaviour in a node's chain, which for a native tool is this one.
+    fn supports_markdown(&self) -> bool {
+        ToolNodeBehavior.supports_markdown()
+    }
+
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        ToolNodeBehavior.get_embeddable_content(node)
+    }
+
+    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+        ToolNodeBehavior.get_parent_contribution(node)
+    }
+}
+
+/// Where a tool comes from, which its subtype says (ADR-086 §12). Every
+/// per-subtype rule of the tool family is decided from this one answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOrigin {
+    /// `tool-native`, or a type extending it: NodeSpace's own code.
+    Native,
+    /// Any other type extending `tool`: it comes from outside.
+    External,
+}
+
+impl ToolOrigin {
+    /// The origin of a tool whose type has `chain` (nearest scope first), or
+    /// `None` when the type is not a tool.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nodespace_core::behaviors::ToolOrigin;
+    ///
+    /// assert_eq!(ToolOrigin::of(&["tool-native", "tool"]), Some(ToolOrigin::Native));
+    /// assert_eq!(ToolOrigin::of(&["tool-remote", "tool"]), Some(ToolOrigin::External));
+    /// assert_eq!(ToolOrigin::of(&["text"]), None);
+    /// ```
+    pub fn of<S: AsRef<str>>(chain: &[S]) -> Option<Self> {
+        let core = CoreNodeType::nearest(chain)?;
+        if core.is_a(CoreNodeType::ToolNative) {
+            Some(Self::Native)
+        } else if core.is_a(CoreNodeType::Tool) {
+            Some(Self::External)
+        } else {
+            None
+        }
+    }
+
+    /// The trust gate: whether a tool of this origin may be offered to the
+    /// model. A native tool always is. Every other tool is offered only when
+    /// `enabled`, the base field every tool carries.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use nodespace_core::behaviors::ToolOrigin;
+    ///
+    /// assert!(ToolOrigin::Native.is_offered(false));
+    /// assert!(!ToolOrigin::External.is_offered(false));
+    /// assert!(ToolOrigin::External.is_offered(true));
+    /// ```
+    pub fn is_offered(self, enabled: bool) -> bool {
+        match self {
+            Self::Native => true,
+            Self::External => enabled,
+        }
+    }
+}
+
 /// Maximum object-nesting depth allowed in a tool's `parameter_schema`.
+///
+/// Bounded nesting stops a tool registered from outside from storing a schema
+/// that floods the model's context or hides type confusion under deeply
+/// nested `additionalProperties`. The guard runs for every tool subtype, the
+/// built-in ones included.
 ///
 /// `validate_parameter_schema_depth` increments depth on every object-valued
 /// key (structural keys like `properties`/`items` included), so a legitimately
 /// shaped tool schema nests deeper than its conceptual field nesting suggests.
-/// The deepest valid internal tool is `create_schema`, whose edge-field path
+/// The deepest valid built-in tool is `create_schema`, whose edge-field path
 /// `properties → relationships → items → properties → edgeFields → items →
 /// properties → coreValues` reaches depth 8 (`coreValues` there is a leaf
 /// description, not a further-nested items/properties pair — unlike a node
 /// field's own `coreValues`, an edge field's is documented in prose rather
 /// than a nested `{value, label}` item schema, precisely because that nesting
 /// would exceed this limit). The limit is 9 to admit that and leave a small
-/// margin, while still rejecting pathological/unbounded external schemas.
+/// margin, while still rejecting pathological or unbounded schemas.
 const MAX_SCHEMA_DEPTH: usize = 9;
 
 /// Validate that a parameter schema object does not exceed the depth limit
@@ -2317,6 +2389,7 @@ impl NodeBehaviorRegistry {
         registry.register_core(Arc::new(AgentGuidanceNodeBehavior));
         registry.register_core(Arc::new(SkillNodeBehavior));
         registry.register_core(Arc::new(ToolNodeBehavior));
+        registry.register_core(Arc::new(ToolNativeNodeBehavior));
         registry.register_core(Arc::new(PlayNodeBehavior));
         registry.register_core(Arc::new(PersonNodeBehavior));
         registry.register_core(Arc::new(DatabaseSettingsNodeBehavior));
@@ -3352,6 +3425,7 @@ mod tests {
         assert!(types.contains(&"agent-guidance".to_string()));
         assert!(types.contains(&"skill".to_string()));
         assert!(types.contains(&"tool".to_string()));
+        assert!(types.contains(&"tool-native".to_string()));
         assert!(types.contains(&"person".to_string()));
         assert!(types.contains(&"database-settings".to_string()));
         assert!(types.contains(&"project".to_string()));
@@ -4992,39 +5066,41 @@ mod tests {
 
     // ToolNodeBehavior tests ------------------------------------
 
+    /// A native tool as it is stored: the base's fields in the `tool` bucket,
+    /// the handler in its own.
     fn tool_node_with_props(props: serde_json::Value) -> Node {
-        Node::new("tool".to_string(), "search_nodes".to_string(), props)
+        Node::new("tool-native".to_string(), "search_nodes".to_string(), props)
+    }
+
+    const NATIVE_TOOL_CHAIN: [&str; 2] = ["tool-native", "tool"];
+
+    fn validate_native_tool(node: &Node) -> Result<(), NodeValidationError> {
+        NodeBehaviorRegistry::new().validate_node(node, &NATIVE_TOOL_CHAIN)
     }
 
     #[test]
     fn tool_node_valid_accepts_well_formed_node() {
-        let behavior = ToolNodeBehavior;
         let node = tool_node_with_props(json!({
             "tool": {
-                "handler": "search_nodes",
                 "description": "Search nodes by keyword",
                 "parameter_schema": {
                     "type": "object",
                     "properties": { "query": { "type": "string" } }
                 },
-                "source": "internal",
                 "enabled": true,
-            }
+            },
+            "tool-native": { "handler": "search_nodes" },
         }));
-        assert!(behavior.validate(&node).is_ok());
+        assert!(validate_native_tool(&node).is_ok());
     }
 
     #[test]
     fn tool_node_rejects_empty_handler() {
-        let behavior = ToolNodeBehavior;
         let node = tool_node_with_props(json!({
-            "tool": {
-                "handler": "",
-                "description": "A tool",
-                "source": "internal",
-            }
+            "tool": { "description": "A tool" },
+            "tool-native": { "handler": "" },
         }));
-        let err = behavior.validate(&node).unwrap_err();
+        let err = validate_native_tool(&node).unwrap_err();
         assert!(
             format!("{}", err).contains("handler"),
             "Error should mention handler: {}",
@@ -5034,50 +5110,85 @@ mod tests {
 
     #[test]
     fn tool_node_rejects_missing_handler() {
-        let behavior = ToolNodeBehavior;
         let node = tool_node_with_props(json!({ "tool": { "description": "A tool" } }));
-        assert!(behavior.validate(&node).is_err());
+        assert!(validate_native_tool(&node).is_err());
+        // The handler is the native subtype's rule: the base asks for none.
+        assert!(ToolNodeBehavior.validate(&node).is_ok());
+    }
+
+    /// A handler left in the base's bucket is not the native tool's handler.
+    #[test]
+    fn tool_node_reads_the_handler_from_its_own_bucket() {
+        let node = tool_node_with_props(json!({ "tool": { "handler": "search_nodes" } }));
+        assert!(validate_native_tool(&node).is_err());
     }
 
     #[test]
     fn tool_node_rejects_empty_content() {
-        let behavior = ToolNodeBehavior;
         let mut node = tool_node_with_props(json!({
-            "tool": { "handler": "search_nodes" }
+            "tool-native": { "handler": "search_nodes" }
         }));
         node.content = "".to_string();
-        assert!(behavior.validate(&node).is_err());
+        assert!(ToolNodeBehavior.validate(&node).is_err());
+        assert!(validate_native_tool(&node).is_err());
     }
 
+    /// The trust gate is the subtype's rule (ADR-086 §12): a native tool is
+    /// always offered, and any other tool subtype only when `enabled`.
     #[test]
-    fn tool_node_rejects_invalid_source() {
-        let behavior = ToolNodeBehavior;
-        let node = tool_node_with_props(json!({
-            "tool": {
-                "handler": "search_nodes",
-                "source": "marketplace",
-            }
-        }));
-        let err = behavior.validate(&node).unwrap_err();
-        assert!(
-            format!("{}", err).contains("source"),
-            "Error should mention source: {}",
-            err
+    fn the_trust_gate_is_decided_by_the_tool_subtype() {
+        let offered = |chain: &[&str], enabled: bool| {
+            ToolOrigin::of(chain).is_some_and(|origin| origin.is_offered(enabled))
+        };
+        for enabled in [true, false] {
+            assert!(offered(&NATIVE_TOOL_CHAIN, enabled));
+            // A subtype of the native tool is native too.
+            assert!(offered(
+                &["tool-native-plus", "tool-native", "tool"],
+                enabled
+            ));
+            assert_eq!(offered(&["tool-remote", "tool"], enabled), enabled);
+            // The bare base is no more trusted than any other tool that is
+            // not native, and a type that is no tool is never offered.
+            assert_eq!(offered(&["tool"], enabled), enabled);
+            assert!(!offered(&["text"], enabled));
+            assert!(!offered(&["invoice"], enabled));
+        }
+        assert_eq!(ToolOrigin::of(&NATIVE_TOOL_CHAIN), Some(ToolOrigin::Native));
+        assert_eq!(
+            ToolOrigin::of(&["tool-remote", "tool"]),
+            Some(ToolOrigin::External)
         );
+        assert_eq!(ToolOrigin::of(&["invoice"]), None);
     }
 
+    /// The registry resolves a native tool's embedding and markdown rules
+    /// from the nearest behaviour in its chain, and they are the base's.
     #[test]
-    fn tool_node_accepts_external_source() {
-        let behavior = ToolNodeBehavior;
+    fn a_native_tool_takes_the_bases_embedding_rules() {
+        let registry = NodeBehaviorRegistry::new();
         let node = tool_node_with_props(json!({
-            "tool": {
-                "handler": "my_external_tool",
-                "description": "An external tool",
-                "source": "external",
-                "enabled": false,
-            }
+            "tool": { "description": "Search nodes by keyword" },
+            "tool-native": { "handler": "search_nodes" },
         }));
-        assert!(behavior.validate(&node).is_ok());
+        let resolved = registry.resolve(&NATIVE_TOOL_CHAIN);
+        assert_eq!(resolved.type_name(), "tool-native");
+        assert_eq!(
+            resolved.get_embeddable_content(&node),
+            ToolNodeBehavior.get_embeddable_content(&node)
+        );
+        assert!(resolved
+            .get_embeddable_content(&node)
+            .unwrap()
+            .contains("Search nodes by keyword"));
+        assert!(!resolved.supports_markdown());
+        assert!(resolved.get_parent_contribution(&node).is_none());
+        let chain: Vec<&str> = registry
+            .for_chain(&NATIVE_TOOL_CHAIN)
+            .iter()
+            .map(|b| b.type_name())
+            .collect();
+        assert_eq!(chain, ["tool", "tool-native"]);
     }
 
     #[test]
@@ -5110,39 +5221,40 @@ mod tests {
                 }
             }
         });
-        // No `source` set — exercises the default: the guard applies regardless
-        // of origin (ADR-036 "one trust model, both origins"). A tool with no
-        // declared source must still be guarded (the safe default).
         let node = tool_node_with_props(json!({
-            "tool": {
-                "handler": "deep_tool",
-                "parameter_schema": deep,
-            }
+            "tool": { "parameter_schema": deep },
+            "tool-native": { "handler": "deep_tool" },
         }));
         assert!(
             behavior.validate(&node).is_err(),
-            "Schema exceeding depth limit should be rejected (no source = guarded default)"
+            "Schema exceeding depth limit should be rejected"
         );
     }
 
     #[test]
     fn tool_node_rejects_unbounded_additional_properties() {
         let behavior = ToolNodeBehavior;
-        // `source: external` — the guard applies to external origins too.
-        let node = tool_node_with_props(json!({
-            "tool": {
-                "handler": "bad_tool",
-                "parameter_schema": {
-                    "type": "object",
-                    "additionalProperties": true,
-                },
-                "source": "external",
-            }
-        }));
+        // The guard is the base's, so a subtype that is not native is held to
+        // it too.
+        let node = Node::new(
+            "tool-remote".to_string(),
+            "bad_tool".to_string(),
+            json!({
+                "tool": {
+                    "parameter_schema": {
+                        "type": "object",
+                        "additionalProperties": true,
+                    },
+                }
+            }),
+        );
         assert!(
             behavior.validate(&node).is_err(),
             "Schema with additionalProperties:true should be rejected"
         );
+        assert!(NodeBehaviorRegistry::new()
+            .validate_node(&node, &["tool-remote", "tool"])
+            .is_err());
     }
 
     /// The depth limit must admit the deepest LEGITIMATE tool schema. The real
@@ -5150,9 +5262,9 @@ mod tests {
     /// `properties → fields → items → properties → coreValues → items →
     /// properties → label` reaches object-nesting depth 8 (the recursion counts
     /// every object-valued key). `MAX_SCHEMA_DEPTH` was 5, which rejected it and
-    /// aborted seeding of create_schema + all tools after it. The guard is NOT
-    /// origin-exempt (ADR-036: one trust model, both origins) — the fix is a
-    /// limit that fits real tools. Regression for the seed missing-tools bug.
+    /// aborted seeding of create_schema + all tools after it. No subtype is
+    /// exempt from the guard (ADR-036: one trust model) — the fix is a limit
+    /// that fits real tools. Regression for the seed missing-tools bug.
     #[test]
     fn tool_node_accepts_create_schema_real_depth() {
         let behavior = ToolNodeBehavior;
@@ -5182,11 +5294,8 @@ mod tests {
             }
         });
         let node = tool_node_with_props(json!({
-            "tool": {
-                "handler": "create_schema",
-                "parameter_schema": create_schema_shaped,
-                "source": "internal",
-            }
+            "tool": { "parameter_schema": create_schema_shaped },
+            "tool-native": { "handler": "create_schema" },
         }));
         assert!(
             behavior.validate(&node).is_ok(),
@@ -5194,25 +5303,23 @@ mod tests {
         );
     }
 
-    /// `additionalProperties: true` is rejected regardless of origin, including
-    /// for `source: internal` — the trust boundary is single-sourced (ADR-036),
-    /// not bypassable by claiming internal origin.
+    /// `additionalProperties: true` is rejected for a native tool too: being
+    /// trusted to be offered is not an exemption from the schema guard
+    /// (ADR-036).
     #[test]
-    fn tool_node_rejects_unbounded_additional_properties_even_when_internal() {
-        let behavior = ToolNodeBehavior;
+    fn tool_node_rejects_unbounded_additional_properties_even_when_native() {
         let node = tool_node_with_props(json!({
             "tool": {
-                "handler": "sneaky_tool",
                 "parameter_schema": {
                     "type": "object",
                     "additionalProperties": true,
                 },
-                "source": "internal",
-            }
+            },
+            "tool-native": { "handler": "sneaky_tool" },
         }));
         assert!(
-            behavior.validate(&node).is_err(),
-            "additionalProperties:true must be rejected even for source:internal (no origin bypass)"
+            validate_native_tool(&node).is_err(),
+            "additionalProperties:true must be rejected for a native tool as well"
         );
     }
 
@@ -5220,10 +5327,8 @@ mod tests {
     fn tool_node_embeddable_content_uses_name_and_description() {
         let behavior = ToolNodeBehavior;
         let node = tool_node_with_props(json!({
-            "tool": {
-                "handler": "search_nodes",
-                "description": "Search nodes by keyword",
-            }
+            "tool": { "description": "Search nodes by keyword" },
+            "tool-native": { "handler": "search_nodes" },
         }));
         let content = behavior.get_embeddable_content(&node).unwrap();
         assert!(content.contains("search_nodes"));
@@ -5241,7 +5346,7 @@ mod tests {
     #[test]
     fn tool_node_parent_contribution_is_none() {
         let behavior = ToolNodeBehavior;
-        let node = tool_node_with_props(json!({ "tool": { "handler": "search_nodes" } }));
+        let node = tool_node_with_props(json!({ "tool-native": { "handler": "search_nodes" } }));
         assert!(behavior.get_parent_contribution(&node).is_none());
     }
 
