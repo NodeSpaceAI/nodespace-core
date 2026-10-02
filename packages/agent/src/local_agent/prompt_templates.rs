@@ -67,7 +67,7 @@ pub fn title_generation_prompt(conversation: &str) -> String {
 ///
 /// `output` is the session's terminal output with its escape sequences
 /// removed (see `render_for_summary` in
-/// `packages/daemon/src/services/session_summary.rs`, which caps how much of
+/// `packages/daemon/src/services/terminal_summary.rs`, which caps how much of
 /// it is included). The summary is the part of a terminal chat that may leave
 /// the machine, so the model is asked to describe the work rather than copy
 /// from the output. That is an instruction, not a guarantee: the caller only

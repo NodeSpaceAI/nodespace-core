@@ -168,7 +168,11 @@
     try {
       if (node?.sessionStatus !== 'ended') {
         const { sessions } = await ptyListSessions();
-        const running = sessions.find((session) => session.nodeId === nodeId);
+        // The latest, should more than one be running for the node (two
+        // panes on it both launched).
+        const running = sessions
+          .filter((session) => session.nodeId === nodeId)
+          .sort((a, b) => b.startedAt - a.startedAt)[0];
         if (running && !activeSessionId) {
           activeSessionId = running.sessionId;
         }

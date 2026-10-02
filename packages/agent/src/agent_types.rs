@@ -634,6 +634,15 @@ pub trait ChatInferenceEngine: Send + Sync {
 
     /// Estimate the token count for the given text.
     async fn token_count(&self, text: &str) -> Result<u32, InferenceError>;
+
+    /// Whether a request to this engine is served on this machine.
+    ///
+    /// `false` unless the engine says otherwise, so an engine that sends its
+    /// requests elsewhere, or that nobody has classified, is never handed
+    /// input that must not leave the machine.
+    fn runs_on_this_machine(&self) -> bool {
+        false
+    }
 }
 
 /// Manager for the local model catalog: download, verify, load, and unload.

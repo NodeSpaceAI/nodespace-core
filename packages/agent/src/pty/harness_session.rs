@@ -34,8 +34,11 @@ const CODEX_ROLLOUT_DEPTH: usize = 3;
 /// directory (the user cleared or switched conversations mid-session), the
 /// one written to last is returned: it is the one the session ended on.
 ///
-/// `started_at` is when the PTY session launched; a record last written
-/// before then cannot be this session's and is not read.
+/// `started_at` is when the PTY session launched. Codex files every
+/// conversation on the machine in one tree, so a rollout last written before
+/// then cannot be this session's and is not opened. Claude Code's directory
+/// for the working directory holds this session's conversations only, and
+/// needs no such filter.
 ///
 /// Reads the filesystem synchronously: call it off the async executor.
 pub fn find_harness_session_id(

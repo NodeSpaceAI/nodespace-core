@@ -101,7 +101,9 @@ pub struct CompletedSession {
 /// The summary is a second write. Deriving it takes a model seconds, and
 /// waits for that model to be idle, and the session must not read as running
 /// for that long. So the session's end is recorded first, and the summary
-/// follows when `summarizer` produces one.
+/// follows when `summarizer` produces one. By then the node may have hosted
+/// another session, so the summary is written only while the node still
+/// describes this one.
 pub async fn finalize_capture(
     session: &CompletedSession,
     capture: &SessionCapture,
@@ -118,8 +120,8 @@ pub async fn finalize_capture(
     };
 
     let properties = build_session_end_properties(session, capture, config);
-    write_at_current_version(node_service, node_id, properties, || {
-        current_version(node_service, node_id)
+    write_at_current_version(node_service, node_id, properties, || async {
+        Ok(Some(terminal_chat(node_service, node_id).await?.version))
     })
     .await?;
 
@@ -132,13 +134,42 @@ pub async fn finalize_capture(
 
     if saves_summary(config) {
         if let Some(summary) = summarizer.summarize(&capture.plain_text()).await {
-            write_at_current_version(node_service, node_id, json!({ "summary": summary }), || {
-                current_version(node_service, node_id)
-            })
+            let written = write_at_current_version(
+                node_service,
+                node_id,
+                json!({ "summary": summary }),
+                || async {
+                    let node = terminal_chat(node_service, node_id).await?;
+                    Ok(still_describes(&node, session).then_some(node.version))
+                },
+            )
             .await?;
+            if !written {
+                tracing::debug!(
+                    session_id = %session.id,
+                    node_id = %node_id,
+                    "session end: the node has moved on to another session, summary dropped"
+                );
+            }
         }
     }
     Ok(Some(node_id.to_string()))
+}
+
+/// Whether `node` still shows the end of `session`: it is `ended`, at the
+/// moment this session ended. A session launched on the node since has
+/// marked it `active`, and one that also ended has moved `last_active`.
+fn still_describes(node: &nodespace_core::models::Node, session: &CompletedSession) -> bool {
+    let field = |declaring: CoreNodeType, name: &str| {
+        node.properties
+            .get(declaring.as_str())
+            .and_then(|bucket| bucket.get(name))
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    };
+    field(CoreNodeType::AiChatPty, "session_status").as_deref()
+        == Some(AiChatSessionStatus::Ended.as_str())
+        && field(CoreNodeType::AiChat, "last_active") == Some(session.ended_at.to_rfc3339())
 }
 
 /// Whether capture saves a summary of the session.
@@ -150,12 +181,13 @@ fn saves_summary(config: &CaptureConfig) -> bool {
         )
 }
 
-/// The terminal chat's version, as the validated update expects it. A node
-/// that is not a terminal chat (or of a type extending one) is refused.
-async fn current_version(
+/// The terminal chat as stored now, whose version the validated update
+/// expects. A node that is not a terminal chat (or of a type extending one)
+/// is refused.
+async fn terminal_chat(
     node_service: &Arc<CoreNodeService>,
     node_id: &str,
-) -> anyhow::Result<i64> {
+) -> anyhow::Result<nodespace_core::models::Node> {
     let node = node_service
         .get_node(node_id)
         .await
@@ -171,7 +203,7 @@ async fn current_version(
             node.node_type
         ));
     }
-    Ok(node.version)
+    Ok(node)
 }
 
 /// Write `properties` through the validated update at the version
@@ -179,23 +211,29 @@ async fn current_version(
 /// there first. Any other refusal fails the same way every attempt, so it is
 /// returned at once.
 ///
-/// `read_version` is a parameter so a test can hand back a version that has
-/// already been overtaken, which is the race this loop exists for.
+/// `read_version` is asked before every attempt, and decides whether the
+/// write is still wanted: `None` means the node no longer calls for it, and
+/// nothing is written. Returns whether the write happened.
+///
+/// It is a parameter so a test can hand back a version that has already been
+/// overtaken, which is the race this loop exists for.
 async fn write_at_current_version<F, Fut>(
     node_service: &Arc<CoreNodeService>,
     node_id: &str,
     properties: serde_json::Value,
     mut read_version: F,
-) -> anyhow::Result<()>
+) -> anyhow::Result<bool>
 where
     F: FnMut() -> Fut,
-    Fut: Future<Output = anyhow::Result<i64>>,
+    Fut: Future<Output = anyhow::Result<Option<i64>>>,
 {
     for attempt in 0..MAX_WRITE_ATTEMPTS {
-        let version = read_version().await?;
+        let Some(version) = read_version().await? else {
+            return Ok(false);
+        };
         let update = NodeUpdate::new().with_properties(properties.clone());
         match node_service.update_node(node_id, version, update).await {
-            Ok(_) => return Ok(()),
+            Ok(_) => return Ok(true),
             Err(NodeServiceError::VersionConflict { .. }) if attempt + 1 < MAX_WRITE_ATTEMPTS => {
                 tracing::debug!(
                     node_id,
@@ -222,16 +260,18 @@ where
 /// `ai-chat-pty`'s, and `summary` and `last_active` the `ai-chat` base's. The
 /// update pipeline places each in its declaring schema's bucket.
 ///
-/// The session's own state is always written: it is marked `ended`, with its
-/// exit code and the harness's id for the conversation. A node can host one
-/// session after another, so a harness that left no id clears the one the
-/// session before it left.
+/// A node can host one session after another, and every field here describes
+/// the session that just ended. So each is written every time, as this
+/// session's value or as a null that clears the previous session's: the node
+/// never shows one session's id, summary or transcript against another's
+/// exit code.
 ///
-/// The summary and the transcript are the session's content, and are written
-/// only when capture is enabled, at its content level. The transcript is the
-/// raw scrollback. The summary is derived afterwards (see
-/// [`finalize_capture`]); here it is cleared, so the node never shows the
-/// previous session's summary against this session.
+/// - The session's own state is always recorded: `ended`, its exit code, and
+///   the harness's id for the conversation, when the harness left one.
+/// - The transcript, the raw scrollback, is kept only when capture is enabled
+///   at the `full` level.
+/// - The summary is always cleared here. When capture saves one, it is
+///   derived afterwards (see [`finalize_capture`]).
 ///
 /// When the session started and ended are the node's own `created_at` and
 /// `last_active`, and who ran it is the node's `agent`, set when the session
@@ -243,22 +283,15 @@ fn build_session_end_properties(
     capture: &SessionCapture,
     config: &CaptureConfig,
 ) -> serde_json::Value {
-    let mut properties = json!({
+    let saves_transcript = config.enabled && config.content == CaptureContentSetting::Full;
+    json!({
         "session_status": AiChatSessionStatus::Ended,
         "last_active": session.ended_at.to_rfc3339(),
         "exit_code": session.exit_status.code,
         "session_id": session.harness_session_id,
-    });
-
-    if saves_summary(config) {
-        properties["summary"] = serde_json::Value::Null;
-    }
-
-    if config.enabled && config.content == CaptureContentSetting::Full {
-        properties["transcript"] = json!(capture.transcript());
-    }
-
-    properties
+        "summary": serde_json::Value::Null,
+        "transcript": saves_transcript.then(|| capture.transcript()),
+    })
 }
 
 #[cfg(test)]
@@ -322,13 +355,6 @@ mod tests {
             self.asked.lock().unwrap().push(plain_text.to_string());
             self.summary.map(str::to_string)
         }
-    }
-
-    fn assert_no_control_sequences(text: &str) {
-        assert!(
-            !text.chars().any(|c| c.is_control() && c != '\n'),
-            "{text:?}"
-        );
     }
 
     fn make_capture_with(text: &str) -> SessionCapture {
@@ -399,48 +425,35 @@ mod tests {
         let build =
             |config: &CaptureConfig| build_session_end_properties(&session, &capture, config);
 
-        // Capture off withholds only the content. At the metadata level it
-        // is on, and still saves none.
         let off = build(&not_capturing());
-        assert_eq!(
-            keys(&off),
-            ["exit_code", "last_active", "session_id", "session_status"]
-        );
-
         let metadata = build(&capturing(CaptureContentSetting::MetadataOnly));
-        assert_eq!(
-            keys(&metadata),
-            ["exit_code", "last_active", "session_id", "session_status"]
-        );
-
         let summary = build(&capturing(CaptureContentSetting::Summary));
-        assert_eq!(
-            keys(&summary),
-            [
-                "exit_code",
-                "last_active",
-                "session_id",
-                "session_status",
-                "summary"
-            ]
-        );
-
         let full = build(&capturing(CaptureContentSetting::Full));
-        assert_eq!(
-            keys(&full),
-            [
-                "exit_code",
-                "last_active",
-                "session_id",
-                "session_status",
-                "summary",
-                "transcript"
-            ]
-        );
+
+        for properties in [&off, &metadata, &summary, &full] {
+            // Every field that describes a session is written every time.
+            assert_eq!(
+                keys(properties),
+                [
+                    "exit_code",
+                    "last_active",
+                    "session_id",
+                    "session_status",
+                    "summary",
+                    "transcript"
+                ]
+            );
+            // The summary is derived after this write, never taken from the
+            // output: here it is only cleared.
+            assert_eq!(properties["summary"], serde_json::Value::Null);
+        }
+
+        // Only the full level keeps the transcript. Capture off withholds the
+        // content, and so do the metadata and summary levels.
         assert_eq!(full["transcript"], "hello world");
-        // The summary is derived after this write, never copied from output.
-        assert_eq!(summary["summary"], serde_json::Value::Null);
-        assert_eq!(full["summary"], serde_json::Value::Null);
+        for properties in [&off, &metadata, &summary] {
+            assert_eq!(properties["transcript"], serde_json::Value::Null);
+        }
         assert_eq!(full["exit_code"], 0);
         // The harness's id for the conversation, not the PTY session's.
         assert_eq!(full["session_id"], HARNESS_SESSION_ID);
@@ -574,7 +587,6 @@ mod tests {
                 .unwrap();
         let summary = chat.base.summary.expect("a summary");
         assert_eq!(summary, "Fixed the parser; its tests pass.");
-        assert_no_control_sequences(&summary);
         assert_eq!(chat.transcript.as_deref(), Some(raw));
     }
 
@@ -858,6 +870,7 @@ mod tests {
             json!({
                 "session_status": "ended",
                 "session_id": HARNESS_SESSION_ID,
+                "transcript": null,
                 "exit_code": 130
             })
         );
@@ -865,6 +878,147 @@ mod tests {
         assert_eq!(chat.session_status, AiChatSessionStatus::Ended);
         assert_eq!(chat.transcript, None);
         assert_eq!(chat.base.summary, None);
+    }
+
+    /// A node hosts one session after another. A session that saves no
+    /// content leaves none on the node: not its own, and not what the session
+    /// before it saved, which would read as this session's.
+    #[tokio::test]
+    async fn a_session_that_saves_no_content_clears_the_previous_sessions() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node_service = test_node_service(&tmp).await;
+
+        for config in [
+            not_capturing(),
+            capturing(CaptureContentSetting::MetadataOnly),
+            capturing(CaptureContentSetting::Summary),
+        ] {
+            let node_id = create_chat(&node_service, "ai-chat-pty", "claude-code").await;
+            let mut session = make_session();
+            session.node_id = Some(node_id.clone());
+
+            finalize_capture(
+                &session,
+                &make_capture_with("first session"),
+                &node_service,
+                &capturing(CaptureContentSetting::Full),
+                &RecordingSummarizer::answering("The first session."),
+            )
+            .await
+            .unwrap();
+            let first =
+                AiChatPtyNode::from_node(node_service.get_node(&node_id).await.unwrap().unwrap())
+                    .unwrap();
+            assert_eq!(first.transcript.as_deref(), Some("first session"));
+            assert_eq!(first.base.summary.as_deref(), Some("The first session."));
+
+            finalize_capture(
+                &session,
+                &make_capture_with("second session"),
+                &node_service,
+                &config,
+                &RecordingSummarizer::unavailable(),
+            )
+            .await
+            .unwrap();
+            let second =
+                AiChatPtyNode::from_node(node_service.get_node(&node_id).await.unwrap().unwrap())
+                    .unwrap();
+            assert_eq!(second.transcript, None, "{config:?}");
+            assert_eq!(second.base.summary, None, "{config:?}");
+        }
+    }
+
+    /// Deriving a summary takes a while, and the node can host another
+    /// session in the meantime. The first session's summary is then dropped:
+    /// written late, it would sit beside the second session's id, exit code
+    /// and transcript.
+    #[tokio::test]
+    async fn a_summary_that_arrives_after_the_next_session_is_dropped() {
+        /// A summarizer that, while it works, sees another session start (or
+        /// start and end) on the same node.
+        struct Overtaken {
+            node_service: Arc<CoreNodeService>,
+            node_id: String,
+            next_session_ends: bool,
+        }
+
+        #[async_trait]
+        impl SessionSummarizer for Overtaken {
+            async fn summarize(&self, _plain_text: &str) -> Option<String> {
+                // What the viewer writes when it launches a session.
+                let version = self
+                    .node_service
+                    .get_node(&self.node_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .version;
+                self.node_service
+                    .update_node(
+                        &self.node_id,
+                        version,
+                        NodeUpdate::new().with_properties(json!({ "session_status": "active" })),
+                    )
+                    .await
+                    .unwrap();
+
+                if self.next_session_ends {
+                    let mut next = make_session();
+                    next.node_id = Some(self.node_id.clone());
+                    next.ended_at += chrono::Duration::minutes(10);
+                    next.exit_status = ExitStatus {
+                        code: 2,
+                        success: false,
+                    };
+                    finalize_capture(
+                        &next,
+                        &make_capture_with("second session"),
+                        &self.node_service,
+                        &capturing(CaptureContentSetting::Full),
+                        &RecordingSummarizer::unavailable(),
+                    )
+                    .await
+                    .unwrap();
+                }
+                Some("The first session.".to_string())
+            }
+        }
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let node_service = test_node_service(&tmp).await;
+
+        for next_session_ends in [false, true] {
+            let node_id = create_chat(&node_service, "ai-chat-pty", "claude-code").await;
+            let mut first = make_session();
+            first.node_id = Some(node_id.clone());
+
+            finalize_capture(
+                &first,
+                &make_capture_with("first session"),
+                &node_service,
+                &capturing(CaptureContentSetting::Summary),
+                &Overtaken {
+                    node_service: node_service.clone(),
+                    node_id: node_id.clone(),
+                    next_session_ends,
+                },
+            )
+            .await
+            .expect("dropping the summary is not a failure");
+
+            let chat =
+                AiChatPtyNode::from_node(node_service.get_node(&node_id).await.unwrap().unwrap())
+                    .unwrap();
+            assert_eq!(chat.base.summary, None, "ends: {next_session_ends}");
+            if next_session_ends {
+                assert_eq!(chat.session_status, AiChatSessionStatus::Ended);
+                assert_eq!(chat.exit_code, Some(2));
+                assert_eq!(chat.transcript.as_deref(), Some("second session"));
+            } else {
+                assert_eq!(chat.session_status, AiChatSessionStatus::Active);
+            }
+        }
     }
 
     /// Only a terminal chat is written. A native chat is refused, and so is a
@@ -985,9 +1139,9 @@ mod tests {
             let node_id = node_id.clone();
             async move {
                 if first {
-                    Ok(stale)
+                    Ok(Some(stale))
                 } else {
-                    current_version(&node_service, &node_id).await
+                    Ok(Some(terminal_chat(&node_service, &node_id).await?.version))
                 }
             }
         })

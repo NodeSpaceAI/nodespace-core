@@ -23,7 +23,7 @@ use nodespace_core::{NodeService as CoreNodeService, PlaybookEngine, SqliteStore
 use nodespace_nlp_engine::EmbeddingService;
 use tokio::sync::{watch, RwLock};
 
-use super::session_summary::LocalModelSummarizer;
+use super::terminal_summary::LocalModelSummarizer;
 use super::{
     AgentSessionHandler, EmbeddingReady, EmbeddingsServiceImpl, ImportServiceImpl,
     LocalAgentServiceImpl, NodeServiceImpl, SettingsServiceImpl, SharedLocalAgent,

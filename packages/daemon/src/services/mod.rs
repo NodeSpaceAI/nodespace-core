@@ -16,8 +16,8 @@ pub mod local_agent_service;
 pub mod node_service;
 #[cfg(test)]
 mod required_extensions_tests;
-pub mod session_summary;
 pub mod settings_service;
+pub mod terminal_summary;
 
 pub use agent_session_service::AgentSessionHandler;
 pub use assembly::{

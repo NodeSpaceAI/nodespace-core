@@ -305,12 +305,13 @@ impl SharedLocalAgent {
     /// OpenAI-compatible endpoint: a request to one leaves the machine. This
     /// is the engine for background work whose input must stay here (a
     /// terminal session's output, ADR-061 §7).
+    ///
+    /// The engine answers for itself. Deciding from `active_model_id` would
+    /// read two locks that a model swap writes one after the other, and could
+    /// pair the old model's id with the new model's engine.
     pub(crate) async fn local_engine(&self) -> Option<Arc<dyn ChatInferenceEngine>> {
-        let active = self.active_model_id.lock().await.clone()?;
-        if nodespace_agent::local_agent::openai_compat_inference::is_openai_compat(&active) {
-            return None;
-        }
-        Some(self.engine().await)
+        let engine = self.engine().await;
+        engine.runs_on_this_machine().then_some(engine)
     }
 
     /// The GGUF model manager, or `None` when `GgufModelManager::new()` failed
@@ -3803,8 +3804,39 @@ mod tests {
         }
     }
 
+    /// [`StubEngine`] as a model loaded on this machine. A plain `StubEngine`
+    /// does not say where it runs, and so counts as elsewhere.
+    struct OnThisMachine(StubEngine);
+
+    #[async_trait]
+    impl ChatInferenceEngine for OnThisMachine {
+        async fn generate(
+            &self,
+            request: nodespace_agent::agent_types::InferenceRequest,
+            on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+        ) -> Result<InferenceUsage, InferenceError> {
+            self.0.generate(request, on_chunk).await
+        }
+
+        async fn model_info(
+            &self,
+        ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+            self.0.model_info().await
+        }
+
+        async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
+            self.0.token_count(text).await
+        }
+
+        fn runs_on_this_machine(&self) -> bool {
+            true
+        }
+    }
+
     /// The engine handed to work that must stay on this machine is the
-    /// loaded model only when that model runs here.
+    /// loaded model only when that model runs here. The engine itself is
+    /// asked: a model id that reads as local does not make a remote engine
+    /// local, which is the state a model swap passes through.
     #[tokio::test]
     async fn local_engine_is_the_loaded_model_only_when_it_runs_on_this_machine() {
         let tempdir = tempfile::TempDir::new().unwrap();
@@ -3816,7 +3848,10 @@ mod tests {
         assert!(shared.local_engine().await.is_none(), "no model loaded");
 
         shared
-            .set_engine_if_changed("gemma-4-e4b", Arc::new(StubEngine::new("local")))
+            .set_engine_if_changed(
+                "gemma-4-e4b",
+                Arc::new(OnThisMachine(StubEngine::new("local"))),
+            )
             .await;
         assert!(
             shared.local_engine().await.is_some(),
@@ -3828,6 +3863,15 @@ mod tests {
             .await;
         assert!(shared.local_engine().await.is_none(), "a remote endpoint");
 
+        // Mid-swap: the remote engine is in the slot while the id still names
+        // the local model.
+        shared.set_engine(Arc::new(StubEngine::new("remote"))).await;
+        *shared.active_model_id.lock().await = Some("gemma-4-e4b".to_string());
+        assert!(
+            shared.local_engine().await.is_none(),
+            "a remote engine under a local model's id"
+        );
+
         shared.reset_to_noop_engine().await;
         assert!(shared.local_engine().await.is_none(), "unloaded");
     }
@@ -3838,7 +3882,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_terminal_session_is_summarized_only_by_a_model_on_this_machine() {
         use crate::services::capture_service::SessionSummarizer;
-        use crate::services::session_summary::LocalModelSummarizer;
+        use crate::services::terminal_summary::LocalModelSummarizer;
 
         let tempdir = tempfile::TempDir::new().unwrap();
         let shared = SharedLocalAgent::from_model_manager(
@@ -3851,7 +3895,9 @@ mod tests {
 
         assert_eq!(summarizer.summarize(output).await, None, "no model loaded");
 
-        let local = Arc::new(StubEngine::new("Fixed the parser and its tests."));
+        let local = Arc::new(OnThisMachine(StubEngine::new(
+            "Fixed the parser and its tests.",
+        )));
         shared
             .set_engine_if_changed("gemma-4-e4b", local.clone())
             .await;
@@ -3861,6 +3907,7 @@ mod tests {
         );
         assert_eq!(
             local
+                .0
                 .generate_count
                 .load(std::sync::atomic::Ordering::SeqCst),
             1

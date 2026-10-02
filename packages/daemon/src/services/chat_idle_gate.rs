@@ -1,8 +1,8 @@
 //! Process-global idle gate for the chat/completion model.
 //!
-//! Background work that wants the chat model (today: ai-chat title
-//! generation) must not compete with a live conversation turn. This gate is
-//! how it waits its turn.
+//! Background work that wants the chat model (ai-chat title generation, and
+//! the summary of a finished terminal session) must not compete with a live
+//! conversation turn. This gate is how it waits its turn.
 //!
 //! # Why a gate above the engine rather than the engine's own lock
 //!

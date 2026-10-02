@@ -143,9 +143,12 @@ describe('AiChatPtySession', () => {
             sessions: [
               { sessionId: 'other', agentType: 'codex', startedAt: 1, nodeId: 'another-chat' },
               { sessionId: 'no-node', agentType: 'codex', startedAt: 2, nodeId: null },
-              { sessionId: 'running', agentType: 'claude-code', startedAt: 3, nodeId: 'open-chat' }
+              // Two for the node: the later launch is the one attached to.
+              { sessionId: 'earlier', agentType: 'claude-code', startedAt: 3, nodeId: 'open-chat' },
+              { sessionId: 'running', agentType: 'claude-code', startedAt: 9, nodeId: 'open-chat' },
+              { sessionId: 'earliest', agentType: 'claude-code', startedAt: 1, nodeId: 'open-chat' }
             ],
-            count: 3
+            count: 5
           })
       });
       vi.mocked(listen).mockResolvedValue(() => {});
@@ -161,6 +164,9 @@ describe('AiChatPtySession', () => {
       );
       expect(container.querySelector('.pty-terminal-host')).not.toBeNull();
       expect(queryByText('Launch agent session')).toBeNull();
+      const listened = vi.mocked(listen).mock.calls.map(([event]) => event);
+      expect(listened).not.toContain('pty-closed-earlier');
+      expect(listened).not.toContain('pty-closed-earliest');
     });
 
     it('offers a launch when the node reads active but no session is running for it', async () => {

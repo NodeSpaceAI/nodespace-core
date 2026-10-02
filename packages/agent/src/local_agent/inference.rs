@@ -66,6 +66,11 @@ impl LlamaChatInferenceEngine {
 
 #[async_trait]
 impl ChatInferenceEngine for LlamaChatInferenceEngine {
+    /// The model is loaded in this process.
+    fn runs_on_this_machine(&self) -> bool {
+        true
+    }
+
     async fn generate(
         &self,
         request: InferenceRequest,
