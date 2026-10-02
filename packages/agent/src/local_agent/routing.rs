@@ -938,6 +938,83 @@ pub fn declare_write_tool_fields(
         .collect()
 }
 
+/// The type ids `candidates` carry in their `schema_metadata`, deduplicated
+/// in presentation order — several candidates can carry the same type, and a
+/// duplicated option is not a wider choice.
+///
+/// Decoded through `entity_types_block`'s shared descriptor, the one
+/// [`render_candidates_for_prompt`] renders from, so a list built here names
+/// a type exactly when the block would.
+pub fn type_ids<'a>(candidates: impl Iterator<Item = &'a SkillCandidate>) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for c in candidates {
+        for d in nodespace_core::ops::entity_types_block::descriptors_from_json(&c.schema_metadata)
+        {
+            if !seen.contains(&d.type_id) {
+                seen.push(d.type_id);
+            }
+        }
+    }
+    seen
+}
+
+/// The types a routed turn is held to, when its matched skills all link to
+/// their schemas. `None` when the turn has no such set, which leaves its tool
+/// schemas and its dispatch as they are.
+///
+/// **Whether there is a set** is decided by the candidates that can act: the
+/// ones that clear their score bar and whitelist a tool. Every one of them
+/// must carry its linked schemas ([`SkillCandidate::schemas_linked`]). A
+/// skill that links to none carries retrieval's fallback instead — the type
+/// the query names, or the first few custom types — which is a guess at
+/// relevance: holding a turn to a guess would refuse a correct call on a type
+/// the guess left out. One unlinked candidate is enough to leave the whole
+/// turn open, because its tools may act on any type. A candidate that
+/// whitelists no tool cannot act, so it cannot leave the turn open.
+///
+/// **What is in the set** is every type [`render_candidates_for_prompt`]
+/// lists: the `schema_metadata` of every candidate that clears its score bar,
+/// tool-bearing or not. The enforced set is therefore exactly the set the
+/// candidate block shows. A schema-typed retrieval hit is how a custom type
+/// the request names outright reaches that block; leaving it out of the set
+/// would refuse a call on the one type the user asked for by name. A core
+/// type is never a schema hit, so naming `task` does not add it: a held turn
+/// offers a core type only when a skill links to it.
+///
+/// A tool-less candidate that is a skill rather than a schema hit carries the
+/// unlinked fallback, and those types join the block and the set alike. That
+/// widens the set and refuses nothing the block shows.
+///
+/// The caller gates this like [`declare_write_tool_fields`]: a turn whose
+/// candidate block is withheld was never shown the set.
+pub fn offered_types(candidates: &[SkillCandidate]) -> Option<Vec<String>> {
+    let mut contenders = candidates
+        .iter()
+        .filter(|c| is_tool_bearing_contender(c))
+        .peekable();
+    contenders.peek()?;
+    if contenders.any(|c| !c.schemas_linked) {
+        return None;
+    }
+
+    let offered = type_ids(candidates.iter().filter(|c| clears_score_gate(c)));
+    // Linked metadata that decodes to no type would be an `enum` nothing
+    // satisfies: every call refused, with no id to name in the refusal.
+    (!offered.is_empty()).then_some(offered)
+}
+
+/// Put `offered` (see [`offered_types`]) on the existing-type parameter of
+/// every tool in `tools` that has one, as an `enum`.
+pub fn hold_to_offered_types(
+    tools: Vec<ToolDefinition>,
+    offered: &[String],
+) -> Vec<ToolDefinition> {
+    tools
+        .into_iter()
+        .map(|tool| super::tools::with_offered_types(tool, offered))
+        .collect()
+}
+
 /// The full tool surface, minus tools whose required parameters depend on the
 /// `EXISTING SCHEMAS` block. What [`stage2_tools`] falls back to wherever
 /// [`stage2_scoped_tools`] cannot scope, so no fail-open case can drift.
@@ -972,6 +1049,7 @@ mod tests {
             tools: tools.iter().map(|t| t.to_string()).collect(),
             instructions: format!("{name} instructions"),
             schema_metadata: json!([]),
+            schemas_linked: false,
         }
     }
 
@@ -2171,5 +2249,152 @@ mod tests {
             ),
             "named type must render as `- id \"Name\" -> fields`, got: {rendered}"
         );
+    }
+
+    /// A candidate carrying `types` as its linked schemas.
+    fn linked(name: &str, score: f32, tools: &[&str], types: &[&str]) -> SkillCandidate {
+        let mut c = candidate(name, score, tools);
+        c.schema_metadata = json!(types
+            .iter()
+            .map(|id| json!({"type_id": id, "fields": []}))
+            .collect::<Vec<_>>());
+        c.schemas_linked = true;
+        c
+    }
+
+    #[test]
+    fn offered_types_are_the_union_of_every_linked_candidates_schemas() {
+        // `issue` is linked by both skills and offered once; a subtype arrives
+        // in the metadata like any other linked type.
+        let candidates = [
+            linked("Triage", 0.9, &["update_node"], &["issue", "bug"]),
+            linked("Planning", 0.8, &["create_node"], &["task", "issue"]),
+        ];
+        assert_eq!(
+            offered_types(&candidates),
+            Some(vec![
+                "issue".to_string(),
+                "bug".to_string(),
+                "task".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn one_unlinked_tool_bearing_candidate_leaves_the_turn_without_a_set() {
+        // Node Creation carries the fallback for a skill that links to nothing:
+        // the type the query named. Its tools may act on any type.
+        let mut unlinked = candidate("Node Creation", 0.8, &["create_node"]);
+        unlinked.schema_metadata = json!([{"type_id": "invoice", "fields": []}]);
+        let candidates = [
+            linked("Triage", 0.9, &["update_node"], &["issue"]),
+            unlinked,
+        ];
+        assert_eq!(offered_types(&candidates), None);
+    }
+
+    #[test]
+    fn an_unrouted_turn_has_no_offered_set() {
+        assert_eq!(offered_types(&[]), None);
+    }
+
+    /// A candidate below its score bar is not on the turn: an unlinked one
+    /// does not leave the turn open, and a linked one adds no type.
+    #[test]
+    fn a_candidate_below_its_bar_has_no_say_in_the_offered_set() {
+        let below_bar_unlinked = candidate("Node Creation", 0.05, &["create_node"]);
+        let below_bar_linked = linked("Planning", 0.05, &["create_node"], &["task"]);
+        let candidates = [
+            linked("Triage", 0.9, &["update_node"], &["issue"]),
+            below_bar_unlinked,
+            below_bar_linked,
+        ];
+        assert_eq!(offered_types(&candidates), Some(vec!["issue".to_string()]));
+    }
+
+    /// A schema-typed retrieval hit whitelists no tool, so it cannot act: being
+    /// unlinked, it does not leave the turn open, and alone it makes no set.
+    /// Its type is listed in the candidate block, though — it is how a type
+    /// the request names outright gets there — so a held turn offers it.
+    #[test]
+    fn a_tool_less_candidate_adds_its_type_but_cannot_open_or_make_the_set() {
+        let mut schema_hit = candidate("Invoice", 1.0, &[]);
+        schema_hit.schema_metadata = json!([{"type_id": "invoice", "fields": []}]);
+
+        let with_a_linked_skill = [
+            schema_hit.clone(),
+            linked("Triage", 0.9, &["update_node"], &["issue"]),
+        ];
+        assert_eq!(
+            offered_types(&with_a_linked_skill),
+            Some(vec!["invoice".to_string(), "issue".to_string()])
+        );
+        assert_eq!(offered_types(&[schema_hit]), None);
+    }
+
+    /// The enforced set and the candidate block are read from the same
+    /// candidates: a held turn offers a type exactly when the block lists it.
+    #[test]
+    fn the_offered_set_is_exactly_the_types_the_candidate_block_lists() {
+        let mut schema_hit = candidate("Invoice", 1.0, &[]);
+        schema_hit.schema_metadata = json!([{"type_id": "invoice", "fields": []}]);
+        let candidates = [
+            schema_hit,
+            linked("Triage", 0.9, &["update_node"], &["issue", "bug"]),
+            linked("Planning", 0.8, &["create_node"], &["task", "issue"]),
+            // Below its bar: neither rendered nor offered.
+            linked("Archiving", 0.05, &["delete_node"], &["archive"]),
+        ];
+
+        let block = render_candidates_for_prompt(&candidates).unwrap();
+        let listed: Vec<&str> = block
+            .lines()
+            .filter_map(|l| l.strip_prefix("- "))
+            .map(|l| l.split_whitespace().next().unwrap())
+            .collect();
+        let mut listed_once: Vec<&str> = Vec::new();
+        for id in listed {
+            if !listed_once.contains(&id) {
+                listed_once.push(id);
+            }
+        }
+
+        assert_eq!(offered_types(&candidates).unwrap(), listed_once);
+        assert_eq!(listed_once, ["invoice", "issue", "bug", "task"]);
+    }
+
+    /// Linked metadata that names no type would make an `enum` nothing
+    /// satisfies, so it yields no set rather than an empty one.
+    #[test]
+    fn linked_metadata_naming_no_type_yields_no_set() {
+        assert_eq!(
+            offered_types(&[linked("Triage", 0.9, &["update_node"], &[])]),
+            None
+        );
+    }
+
+    #[test]
+    fn hold_to_offered_types_puts_the_set_on_tools_that_name_an_existing_type() {
+        let offered = vec!["issue".to_string(), "bug".to_string()];
+        let held =
+            hold_to_offered_types(Tool::ALL.iter().map(|t| t.definition()).collect(), &offered);
+
+        for (tool, def) in Tool::ALL.iter().zip(&held) {
+            let unheld = tool.definition();
+            match tool.existing_type_parameter() {
+                Some(parameter) => assert_eq!(
+                    def.parameters_schema["properties"][parameter]["enum"],
+                    json!(offered),
+                    "{} should hold {parameter} to the offered types",
+                    def.name
+                ),
+                None => assert_eq!(
+                    def.parameters_schema, unheld.parameters_schema,
+                    "{} names no existing type and must be unchanged",
+                    def.name
+                ),
+            }
+            assert_eq!(def.description, unheld.description);
+        }
     }
 }

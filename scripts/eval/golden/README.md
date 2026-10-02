@@ -47,18 +47,19 @@ not hypothetical — it happened twice:
 Change the Rust emission now and the TypeScript test fails, because its input
 is the Rust output.
 
-## The nine lines
+## The ten lines
 
 | # | Pins |
 |---|---|
 | 1–2 | Ordinary skill and operation decisions |
-| 3 | Off-menu — the model named `album`, which retrieval never offered |
+| 3 | Off-menu — the model named `album`, which retrieval never offered, and the call ran |
 | **4** | A candidate named `Company, Sold To` — **the comma that used to split one candidate into two** |
 | **5** | A candidate containing `"` |
 | **6** | A candidate containing a newline, encoded so the record stays on one line |
 | 7 | `selected: null` — tools were offered and none was called |
 | 8 | `selected: ""` — a blank name, which must not collapse into `null` |
 | 9 | Nothing on offer at all |
+| 10 | Line 3's selection on a turn held to its offered set: `enforced: true`, so dispatch refused the call |
 
 Lines 4–6 are the shapes the previous delimited format could not represent.
 Line 4 used to parse as three candidates rather than two, which also made the
@@ -72,7 +73,7 @@ deliberately.
 
 Every line carries the same fixed timestamp (`2026-09-22T10:00:00.000000Z`) and
 the `nodespace_agent` target. Both are normalised by the writer so the file is
-byte-stable across runs — a real log would show nine different timestamps.
+byte-stable across runs — a real log would show ten different timestamps.
 Neither is parsed by the scrape, which keys on the `"Agent decision:"`
 substring and the `decision=` / `decision_payload=` fields. Everything the
 contract depends on — field names, field order, quoting, escaping — is genuine

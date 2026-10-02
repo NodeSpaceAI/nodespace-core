@@ -184,7 +184,7 @@ function parseDecisions(out: string): DecisionRecord[] | undefined {
  * non-strings out of the array would silently shorten the candidate list, which
  * is the precise failure the JSON encoding was introduced to remove.
  *
- * Unreachable from the current emitter, which always writes all three keys with
+ * Unreachable from the current emitter, which always writes all four keys with
  * these types. It is the boundary check that keeps that guarantee honest rather
  * than assumed — the assumption this format's own history argues against.
  */
@@ -193,18 +193,24 @@ function decisionFromPayload(
   payload: unknown,
 ): DecisionRecord | null {
   if (typeof payload !== "object" || payload === null) return null;
-  const { selected, off_menu: offMenu, candidates } = payload as Record<string, unknown>;
+  const {
+    selected,
+    off_menu: offMenu,
+    enforced,
+    candidates,
+  } = payload as Record<string, unknown>;
 
   // `null` is "picked nothing" and `""` is a name that happens to be blank —
   // different outcomes, so neither is folded into the other. Anything else is a
   // shape this parser does not know how to read.
   if (selected !== null && typeof selected !== "string") return null;
   if (typeof offMenu !== "boolean") return null;
+  if (typeof enforced !== "boolean") return null;
   if (!Array.isArray(candidates) || !candidates.every((c) => typeof c === "string")) {
     return null;
   }
 
-  return { kind, selected, offMenu, candidates: candidates as string[] };
+  return { kind, selected, offMenu, enforced, candidates: candidates as string[] };
 }
 
 /**
@@ -217,7 +223,7 @@ function decisionFromPayload(
 export function parseTurnOutput(out: string, latencyMs: number): TurnRecord {
   // One pass over the [tool] lines feeds both shapes, so they cannot disagree
   // about how many calls a turn made. aichat.ts emits:
-  //   [tool] <name>[ERROR][ [fields=N]] <args>
+  //   [tool] <name>[ [ERROR]][ [fields=N]][ [content-only]][ [type-refused]][ [off-menu-ran]] <args>
   // The args are free-form and truncated, so every structured marker precedes
   // them and nothing here parses them.
   //
@@ -229,13 +235,15 @@ export function parseTurnOutput(out: string, latencyMs: number): TurnRecord {
   // arbitrary model text into this same stdout stream via the [raw] marker.
   const toolCalls: ToolCallRecord[] = [
     ...out.matchAll(
-      /^\[tool\] ([a-z_]+)( \[ERROR\])?( \[fields=(\d+)\])?( \[content-only\])?/gm,
+      /^\[tool\] ([a-z_]+)( \[ERROR\])?( \[fields=(\d+)\])?( \[content-only\])?( \[type-refused\])?( \[off-menu-ran\])?/gm,
     ),
   ].map((m) => ({
     name: m[1],
     isError: m[2] !== undefined,
     ...(m[4] === undefined ? {} : { fieldCount: Number(m[4]) }),
     ...(m[5] === undefined ? {} : { contentOnly: true }),
+    ...(m[6] === undefined ? {} : { typeRefused: true }),
+    ...(m[7] === undefined ? {} : { offMenuRan: true }),
   }));
 
   // Raw generations, one per ReAct iteration: `[raw] iteration=N <json-string>`.

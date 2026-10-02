@@ -159,6 +159,17 @@ fn carried_types(
         .collect()
 }
 
+/// Whether `output` marks `skill`'s `schema_metadata` as its linked set.
+fn schemas_linked(output: &nodespace_core::ops::skill_ops::FindSkillsOutput, skill: &Node) -> bool {
+    output
+        .skills
+        .iter()
+        .find(|s| s["id"] == json!(skill.id))
+        .expect("the skill should be present in results")["schemas_linked"]
+        .as_bool()
+        .expect("schemas_linked should be a boolean")
+}
+
 #[tokio::test]
 async fn find_skills_schema_metadata_carries_field_relationship_and_schema_descriptions(
 ) -> Result<()> {
@@ -442,6 +453,10 @@ async fn find_skills_carries_a_linked_type_and_its_subtypes() -> Result<()> {
         ["invoice", "retainer_invoice"],
         "a linked skill carries its target and the target's subtypes, and no other type"
     );
+    assert!(
+        schemas_linked(&output, &skill),
+        "a skill carrying its linked schemas says so"
+    );
     Ok(())
 }
 
@@ -515,11 +530,15 @@ async fn find_skills_falls_back_for_an_unlinked_skill() -> Result<()> {
         .await
         .unwrap();
     assert_eq!(carried_types(&named, &skill), ["invoice"]);
+    // The same single type a link to `invoice` would carry: the types alone
+    // cannot tell a fallback from a link.
+    assert!(!schemas_linked(&named, &skill));
 
     // The query names no type: every custom type, and no core one.
     let unnamed = search("bill them for this month's work").await.unwrap();
     let mut carried = carried_types(&unnamed, &skill);
     carried.sort();
     assert_eq!(carried, ["customer", "invoice"]);
+    assert!(!schemas_linked(&unnamed, &skill));
     Ok(())
 }

@@ -1,0 +1,40 @@
+### search_nodes.node_type
+{
+  "description": "Filter to one type: one of these type ids, copied exactly. No other type applies to this request. Omit to search all types.",
+  "enum": [
+    "ticket",
+    "adr"
+  ],
+  "type": "string"
+}
+
+### resolve_query.node_type
+{
+  "description": "The type to resolve against: one of these type ids, copied exactly. No other type applies to this request.",
+  "enum": [
+    "ticket",
+    "adr"
+  ],
+  "type": "string"
+}
+
+### create_node.node_type
+{
+  "description": "The type of the new record: one of these type ids, copied exactly. No other type applies to this request.",
+  "enum": [
+    "ticket",
+    "adr"
+  ],
+  "type": "string"
+}
+
+### update_schema.schema_id
+{
+  "description": "The schema to update: one of these type ids, copied exactly. No other type applies to this request.",
+  "enum": [
+    "ticket",
+    "adr"
+  ],
+  "type": "string"
+}
+

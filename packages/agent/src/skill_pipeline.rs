@@ -1019,6 +1019,7 @@ mod tests {
                 tools: tools.clone(),
                 instructions: String::new(),
                 schema_metadata: serde_json::json!([]),
+                schemas_linked: false,
             };
             let mutates = crate::local_agent::routing::skill_is_mutating(&candidate);
             assert_eq!(

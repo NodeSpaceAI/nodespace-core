@@ -26,7 +26,14 @@
  */
 
 import type { EvalEnv } from "../env.ts";
-import type { EvalFixture, Scenario, TurnRecord, Verdict } from "../types.ts";
+import { awaitSkillIndex } from "../preflight.ts";
+import type {
+  EvalFixture,
+  Scenario,
+  ToolCallRecord,
+  TurnRecord,
+  Verdict,
+} from "../types.ts";
 
 // ---------------------------------------------------------------------------
 // Expectation model
@@ -97,7 +104,20 @@ type Expected =
    * stops. Requiring the successful search keeps a reply that happens to name
    * the right types from passing without having looked.
    */
-  | { decision: "outcome"; listsTypes: RegExp[] };
+  | { decision: "outcome"; listsTypes: RegExp[] }
+  /**
+   * For a request whose record is of a type outside the linked set: the turn
+   * must be held to its skills' linked types, no call naming a type outside
+   * them may run, and the record must not then be written as an offered type.
+   *
+   * An outcome assertion because the property is the system's, not the
+   * model's: the model may still name a type that was never offered, and what
+   * is worth pinning is that dispatch stopped it and that the refusal did not
+   * turn a wrong type into a wrong record. Fails when the turn was not held at
+   * all, which is a retrieval result (an unlinked skill cleared its bar
+   * alongside the linked ones) rather than a model one, and says so.
+   */
+  | { decision: "outcome"; heldToOfferedTypes: true };
 
 interface DecisionScenario extends Scenario {
   expected: Expected;
@@ -152,6 +172,14 @@ interface DecisionScenario extends Scenario {
    * the summary distinguishes "reads intent" from "writes on any declarative".
    */
   declarative?: boolean;
+  /**
+   * Runs against skills linked to a schema through `applies_to`, seeded for
+   * this scenario's group (see `seedLinkedSkills`).
+   *
+   * No built-in skill links to a schema, so without these a turn never has an
+   * offered set and nothing here measures one.
+   */
+  linkedSkills?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +302,40 @@ function runNs(env: EvalEnv, args: string[]): unknown {
   return out ? JSON.parse(out) : null;
 }
 
+/** One schema as `schema list` reports it, reduced to what this fixture reads. */
+export interface ListedSchema {
+  id: string;
+  isCore: boolean;
+  fields: Array<{ name?: string; type?: string }>;
+}
+
+/**
+ * Decode `schema list --json` output. Pure, so the shape this fixture depends
+ * on is pinned by a test rather than discovered on a warm database: a reader
+ * of a shape the CLI no longer emits finds no schema at all, which looks like
+ * an empty workspace and re-creates every type.
+ */
+export function listedSchemas(output: unknown): ListedSchema[] {
+  const schemas = (output as { schemas?: unknown } | null)?.schemas;
+  if (!Array.isArray(schemas)) return [];
+  return schemas.flatMap((s) => {
+    const { id, is_core: isCore, fields } = (s ?? {}) as Record<string, unknown>;
+    if (typeof id !== "string" || id === "") return [];
+    return [
+      {
+        id,
+        isCore: isCore === true,
+        fields: Array.isArray(fields) ? (fields as ListedSchema["fields"]) : [],
+      },
+    ];
+  });
+}
+
+/** Every schema in the workspace. */
+function listSchemas(env: EvalEnv): ListedSchema[] {
+  return listedSchemas(runNs(env, ["schema", "list"]));
+}
+
 /**
  * Create the Northwind instance the entity scenarios resolve against.
  *
@@ -304,19 +366,10 @@ function runNs(env: EvalEnv, args: string[]): unknown {
  * This is establishing state, not asserting on it.
  */
 function seedNorthwind(env: EvalEnv): void {
-  const schemas = runNs(env, ["schema", "list"]) as {
-    nodes?: Array<{
-      id?: string;
-      properties?: { isCore?: boolean; fields?: Array<{ name?: string; type?: string }> };
-    }>;
-  } | null;
-
   // Non-core only: a core type matching a hint word (`person`, `project`)
   // would shadow the company type.
-  const candidates = (schemas?.nodes ?? []).filter(
-    (s) => s?.id && s.properties?.isCore !== true,
-  );
-  let company = candidates.find((s) => isSetupType("company", s.id ?? ""));
+  const candidates = listSchemas(env).filter((s) => !s.isCore);
+  let company = candidates.find((s) => isSetupType("company", s.id));
 
   // Cold rep: no company type exists yet, so create the one this fixture's
   // instances hang off. Reusing a model-created type when present keeps a
@@ -337,7 +390,8 @@ function seedNorthwind(env: EvalEnv): void {
     ]);
     company = {
       id: SEEDED_COMPANY_TYPE,
-      properties: { fields: [{ name: "signed_date", type: "date" }] },
+      isCore: false,
+      fields: [{ name: "signed_date", type: "date" }],
     };
   }
 
@@ -376,9 +430,7 @@ function seedNorthwind(env: EvalEnv): void {
   // (`schema-shared-name-signed`) is scored on which TYPE the model selects,
   // not on the value it returns, so a missing date weakens one assertion
   // rather than invalidating the seed.
-  const dateField = company.properties?.fields?.find(
-    (f) => f?.type === "date" && f?.name,
-  )?.name;
+  const dateField = company.fields.find((f) => f?.type === "date" && f?.name)?.name;
   if (dateField) {
     runNs(env, [
       "node",
@@ -388,6 +440,119 @@ function seedNorthwind(env: EvalEnv): void {
       `${dateField}=${SEEDED_COMPANY_SIGNED}`,
     ]);
   }
+}
+
+/// The type the linked-skill scenarios act on, and the only one their turns
+/// are held to.
+const LINKED_TYPE = "warranty_claim";
+
+/// Skills linked to `LINKED_TYPE` through `applies_to`.
+///
+/// Three, because a turn has an offered set only when every tool-bearing
+/// candidate that clears its bar is linked, and Stage 2 judges the top three:
+/// fewer would leave room for an unlinked built-in, and the turn would not be
+/// held. Their descriptions share the scenarios' vocabulary so that they, and
+/// not the built-ins, lead retrieval for a warranty request.
+const LINKED_SKILLS: Array<{ name: string; description: string; tools: string[] }> = [
+  {
+    name: "Warranty Claim Intake",
+    description:
+      "File a warranty claim: record a new warranty claim for a product with its status and the date it was filed.",
+    tools: ["search_nodes", "create_node"],
+  },
+  {
+    name: "Warranty Claim Follow-up",
+    description:
+      "Follow up on a warranty claim: find the warranty claim and change its status or add what happened next.",
+    tools: ["search_nodes", "update_node", "create_node"],
+  },
+  {
+    name: "Warranty Claim Lookup",
+    description:
+      "Look up warranty claims: list warranty claims by product, status or the date they were filed.",
+    tools: ["search_nodes"],
+  },
+];
+
+/**
+ * Create `LINKED_TYPE` and the skills linked to it, then wait until the skills
+ * are retrievable.
+ *
+ * Idempotent, for the reason `seedNorthwind` is: a rep whose database was not
+ * wiped must not end up with two of each skill.
+ *
+ * Runs as `seedGroup` for the linked-skill scenarios only, which sit last in
+ * the fixture. Three more skills and one more custom type change what
+ * retrieval returns for every request, so seeding them per run would change
+ * what every other scenario is scored against.
+ *
+ * That holds within a rep. Across reps it needs `--between-runs` to wipe the
+ * database: without it, rep 2 starts with what rep 1's last groups seeded.
+ *
+ * A skill whose `applies_to` call failed is found by name on the next seed and
+ * left unlinked. Its scenario then fails as not held, which names the cause.
+ */
+function seedLinkedSkills(env: EvalEnv): void {
+  if (!listSchemas(env).some((s) => s.id === LINKED_TYPE)) {
+    runNs(env, [
+      "schema",
+      "create",
+      "--params",
+      JSON.stringify({
+        name: "Warranty Claim",
+        description: "A warranty claim filed against a product we sold",
+        fields: [
+          { name: "product", type: "text" },
+          {
+            name: "status",
+            type: "enum",
+            coreValues: [
+              { value: "open", label: "Open" },
+              { value: "approved", label: "Approved" },
+              { value: "rejected", label: "Rejected" },
+            ],
+          },
+          { name: "filed_date", type: "date" },
+        ],
+      }),
+    ]);
+  }
+
+  const existing = runNs(env, ["node", "query", "--type", "skill", "--limit", "100"]) as {
+    nodes?: Array<{ content?: string }>;
+  } | null;
+  const present = new Set((existing?.nodes ?? []).map((n) => n?.content ?? ""));
+  for (const skill of LINKED_SKILLS) {
+    if (present.has(skill.name)) continue;
+    const created = runNs(env, [
+      "node",
+      "create",
+      "--type",
+      "skill",
+      "--content",
+      skill.name,
+      "--property",
+      `description=${skill.description}`,
+      "--property",
+      `tool_whitelist=${JSON.stringify(skill.tools)}`,
+    ]) as { id?: string } | null;
+    const id = created?.id?.replace(/^nodespace:\/\//, "");
+    if (!id) throw new Error(`seeding skill '${skill.name}' returned no id`);
+    runNs(env, [
+      "relationship",
+      "create",
+      "--from",
+      id,
+      "--type",
+      "applies_to",
+      "--to",
+      LINKED_TYPE,
+    ]);
+  }
+
+  // A skill is retrievable only once its embedding lands, on a ~30s debounce.
+  // A turn sent before that would route to the built-ins and not be held.
+  awaitSkillIndex(env);
 }
 
 const FIXTURES: DecisionScenario[] = [
@@ -630,6 +795,39 @@ const FIXTURES: DecisionScenario[] = [
     declarative: true,
     entityResolution: true,
   },
+
+  // ── Turns held to their skills' linked types ───────────────────────────
+  //
+  // Last in the fixture, and they must stay last: their group seeds three
+  // linked skills and a custom type (`seedLinkedSkills`), which every later
+  // group in the rep would then be scored against.
+  //
+  // A turn is held only when every tool-bearing candidate that clears its bar
+  // is linked. That is a retrieval outcome, so both scenarios can fail on it
+  // before the model decides anything, and the failure text says which.
+  {
+    id: "held-on-menu-type",
+    scenario: "Held turn: a request for the linked type acts on it",
+    // The control. Holding a turn to its skills' types must not stop it doing
+    // what those skills are for.
+    prompt: "File a warranty claim for the Aurora blender, its motor failed, filed today.",
+    expected: { decision: "schema", onMenu: true },
+    linkedSkills: true,
+  },
+  {
+    id: "held-off-menu-type",
+    scenario: "Held turn: a type outside the linked set does not run",
+    // Asks for a kind of record the linked skills are not about, in their
+    // vocabulary, so retrieval still leads with them. Unheld, the model names
+    // `task` and the call runs. Held, a call naming `task` is refused, and the
+    // turn should end with the user asked or told. Creating the reminder as a
+    // warranty claim instead fails, whether the model does it after a refusal
+    // or by following the `enum` on its first call.
+    prompt:
+      "For the Aurora blender warranty claim, add a task to ring the buyer back on Friday.",
+    expected: { decision: "outcome", heldToOfferedTypes: true },
+    linkedSkills: true,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -724,16 +922,136 @@ function assertListsTypes(types: RegExp[], turns: TurnRecord[]): Verdict {
   return { passed: true };
 }
 
+/**
+ * Whether dispatch held this turn's type arguments to an offered set.
+ *
+ * Read from the schema decisions: one is `enforced` when the turn has an
+ * offered set and the round's selection, if any, came from a call dispatch
+ * holds. A held turn records one for every round, so any is enough.
+ */
+function turnHeld(turn: TurnRecord): boolean {
+  return turn.decisions?.some((d) => d.kind === "schema" && d.enforced) ?? false;
+}
+
+/**
+ * Whether a call naming an off-menu type reached the executor on this turn.
+ *
+ * Observed, not inferred: the daemon reports it per call. Counting off-menu
+ * decisions against refused calls looked equivalent and was not, because a
+ * round's decision is recorded before dispatch and several guards stop a call
+ * without refusing its type (an identical re-send, a `route_clarify` in the
+ * same round, a duplicate write). Each of those read as a call that ran.
+ */
+function offMenuCallRan(turn: TurnRecord): boolean {
+  return (turn.toolCalls ?? []).some((c) => c.offMenuRan);
+}
+
+/**
+ * Whether a call persisted something.
+ *
+ * `isError` alone does not say so: a call skipped for a `route_clarify` in the
+ * same round, or answered by the duplicate-write guard, is not an error and
+ * wrote nothing. A write that landed reports a field count or says it was
+ * content-only.
+ */
+function persisted(call: ToolCallRecord): boolean {
+  return !call.isError && (call.fieldCount !== undefined || call.contentOnly === true);
+}
+
+/** Whether a `create_node` landed anywhere on these turns. */
+function createdRecord(turns: TurnRecord[]): boolean {
+  return turns
+    .flatMap((t) => t.toolCalls ?? [])
+    .some((c) => c.name === "create_node" && persisted(c));
+}
+
+/**
+ * What a turn did after dispatch first refused a call for its type.
+ *
+ *   created    a `create_node` landed afterwards: the record the user asked
+ *              for was created as one of the offered types
+ *   clarified  the turn put the choice to the user
+ *   replied    neither: the turn ended in a prose reply
+ *
+ * `undefined` when nothing was refused. This is one cost of holding a turn: a
+ * refusal that is followed by a create has turned a wrong type into a wrong
+ * record. The other cost needs no refusal (see `createdRecord`, which counts
+ * the same event wherever in the turn it happens).
+ *
+ * Only a create is counted. An `update_node` after a refusal changes a record
+ * that exists; it does not write the requested one as another type.
+ */
+function afterRefusal(turns: TurnRecord[]): "created" | "clarified" | "replied" | undefined {
+  const calls = turns.flatMap((t) => t.toolCalls ?? []);
+  const first = calls.findIndex((c) => c.typeRefused);
+  if (first === -1) return undefined;
+  const later = calls.slice(first + 1);
+  if (later.some((c) => c.name === "create_node" && persisted(c))) return "created";
+  const reply = turns.at(-1)?.reply ?? "";
+  if (later.some((c) => c.name === "route_clarify") || reply.startsWith(CLARIFICATION_OPENER)) {
+    return "clarified";
+  }
+  return "replied";
+}
+
+/** The verdict for a linked-skill scenario whose turn was not held. */
+function notHeld(turns: TurnRecord[]): Verdict {
+  const skill = firstDecision(turns, "skill");
+  return {
+    passed: false,
+    failure:
+      `No schema decision on this turn was enforced, so nothing here was measured. ` +
+      `A turn is held only when every tool-bearing skill that clears its bar is linked. ` +
+      `Retrieved: ${skill?.candidates.join(", ") || "(nothing)"}`,
+  };
+}
+
+/**
+ * Score a turn whose request is for a record of a type outside the linked set.
+ * The turn must be held, no call on an off-menu type may run, and no record
+ * may be created at all: on a held turn any record created is of an offered
+ * type, which is not the type the user asked for. That holds whether the model
+ * was refused first or followed the `enum` on its first call.
+ */
+function assertHeldToOfferedTypes(turns: TurnRecord[]): Verdict {
+  if (!turns.some(turnHeld)) return notHeld(turns);
+  const tools = turns.flatMap((t) => t.toolsCalled).join(", ");
+  if (turns.some(offMenuCallRan)) {
+    const schema = firstDecision(turns, "schema");
+    return {
+      passed: false,
+      failure:
+        `A call naming a type outside the offered set ran on a held turn ` +
+        `(offered: ${schema?.candidates.join(", ")}). Tools: ${tools}`,
+    };
+  }
+  if (createdRecord(turns)) {
+    return {
+      passed: false,
+      failure:
+        `A record was created on a turn held to types the request was not for, so it ` +
+        `was written as a type the user did not ask for ` +
+        `(${afterRefusal(turns) === "created" ? "after a refusal" : "not after a refusal"}). ` +
+        `Tools: ${tools}`,
+    };
+  }
+  return { passed: true };
+}
+
 function assertFixture(
   fixture: DecisionScenario,
   turns: TurnRecord[],
 ): Verdict {
   const { expected } = fixture;
   if (expected.decision === "outcome") {
+    if ("heldToOfferedTypes" in expected) return assertHeldToOfferedTypes(turns);
     return "listsTypes" in expected
       ? assertListsTypes(expected.listsTypes, turns)
       : assertNoDuplicate(expected.noDuplicateOf, turns);
   }
+  // A linked-skill scenario scores a held turn. On an open one its assertion
+  // can still pass, having measured nothing about holding.
+  if (fixture.linkedSkills && !turns.some(turnHeld)) return notHeld(turns);
   const decision = firstDecision(turns, expected.decision);
 
   // A build predating the decision markers records none at all. Scoring that as
@@ -894,6 +1212,13 @@ const fixture: EvalFixture = {
   seedRun(env: EvalEnv) {
     seedNorthwind(env);
   },
+  // Per group, and only for the linked-skill scenarios: see `seedLinkedSkills`
+  // for why these are kept out of every other scenario's workspace.
+  seedGroup(env: EvalEnv, group) {
+    if (group.some((s) => (s as DecisionScenario).linkedSkills)) {
+      seedLinkedSkills(env);
+    }
+  },
   // Groups share the rep's database, so every group after the first runs its
   // setup turns against types that already exist. The model sometimes sees
   // that and creates nothing, which is correct and fails the turn's
@@ -902,11 +1227,9 @@ const fixture: EvalFixture = {
   setupStatePresent(env: EvalEnv, scenario) {
     const kind = (scenario as DecisionScenario).establishes;
     if (kind === undefined) return undefined;
-    let schemas: {
-      nodes?: Array<{ id?: string; properties?: { isCore?: boolean } }>;
-    } | null;
+    let schemas: ListedSchema[];
     try {
-      schemas = runNs(env, ["schema", "list"]) as typeof schemas;
+      schemas = listSchemas(env);
     } catch (err) {
       // The check could not be made, which is not the same as the state being
       // there: unknown blocks the group. Logged so a daemon failure can be
@@ -916,9 +1239,7 @@ const fixture: EvalFixture = {
       );
       return undefined;
     }
-    const customTypeIds = (schemas?.nodes ?? [])
-      .filter((s) => s?.id && s.properties?.isCore !== true)
-      .map((s) => s.id as string);
+    const customTypeIds = schemas.filter((s) => !s.isCore).map((s) => s.id);
     return setupTypePresent(kind, customTypeIds);
   },
   score(scenario, turns) {
@@ -934,6 +1255,7 @@ const fixture: EvalFixture = {
       loadBearing: s.loadBearing ?? false,
       entityResolution: s.entityResolution ?? false,
       declarative: s.declarative ?? false,
+      linkedSkills: s.linkedSkills ?? false,
       skillDecision: firstDecision(turns, "skill") ?? null,
       operationDecision: firstDecision(turns, "operation") ?? null,
       schemaDecision: firstDecision(turns, "schema") ?? null,
@@ -941,6 +1263,19 @@ const fixture: EvalFixture = {
       // was never offered is the single most diagnostic signal here, and it
       // needs to be visible in the results file without a re-run.
       offMenu: turns.some((t) => t.decisions?.some((d) => d.offMenu)),
+      // Whether dispatch held the turn to an offered set, how many calls it
+      // refused for naming a type outside it, and whether an off-menu call
+      // reached the executor anyway. The last two are the daemon's own
+      // per-call report, not something worked out from the decisions.
+      held: turns.some(turnHeld),
+      typeRefusals: turns
+        .flatMap((t) => t.toolCalls ?? [])
+        .filter((c) => c.typeRefused).length,
+      offMenuRan: turns.some(offMenuCallRan),
+      // A record created on a linked-skill turn, refusal or not. For the
+      // off-menu scenario that is the record written as the wrong type.
+      createdRecord: createdRecord(turns),
+      afterRefusal: afterRefusal(turns) ?? null,
       toolsCalled: turns.flatMap((t) => t.toolsCalled),
       latencyMs: turns.reduce((sum, t) => sum + t.latencyMs, 0),
       // The decision's own cost, separate from the turn's. One generative pass
@@ -955,6 +1290,26 @@ const fixture: EvalFixture = {
       return `${rows.filter((r) => r.passed).length}/${rows.length}`;
     };
     const offMenu = results.filter((r) => r.extra?.offMenu === true).length;
+    const held = results.filter((r) => r.extra?.held === true).length;
+    const typeRefusals = results.reduce(
+      (sum, r) => sum + Number(r.extra?.typeRefusals ?? 0),
+      0,
+    );
+    const offMenuRan = results.filter(
+      (r) => r.extra?.offMenuRan === true,
+    ).length;
+    const after = (what: string) =>
+      results.filter((r) => r.extra?.afterRefusal === what).length;
+    // Held turns whose request was for a type outside the set, and how many of
+    // them created a record anyway: of an offered type, so the wrong one.
+    const offMenuRequests = results.filter(
+      (r) =>
+        r.extra?.held === true &&
+        (r.extra.expected as { heldToOfferedTypes?: boolean })?.heldToOfferedTypes === true,
+    );
+    const wrongTypeRecords = offMenuRequests.filter(
+      (r) => r.extra?.createdRecord === true,
+    ).length;
     const routing = results
       .map((r) => Number(r.extra?.routingMs ?? 0))
       .filter((n) => n > 0);
@@ -974,6 +1329,12 @@ const fixture: EvalFixture = {
       `Entity resolution: ${count((e) => e.entityResolution === true)}`,
       `ADR-056 known failures: ${count((e) => e.adr056 === true)}`,
       `Off-menu type named: ${offMenu}`,
+      `Held to an offered set: ${held} (${count((e) => e.linkedSkills === true)} of the linked-skill scenarios passed); ` +
+        `${typeRefusals} off-menu call(s) refused at dispatch, ${offMenuRan} ran`,
+      `After a refusal: ${after("clarified")} asked the user, ${after("replied")} replied in prose, ` +
+        `${after("created")} created the record as an offered type`,
+      `Requests for a type outside a held turn's set: ${offMenuRequests.length}; ` +
+        `${wrongTypeRecords} created a record as an offered type instead`,
       `Stage-1 decision cost: ${meanRouting}ms mean (one generative pass for a 3-way structural choice)`,
     ];
   },

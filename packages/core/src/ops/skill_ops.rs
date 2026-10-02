@@ -641,7 +641,11 @@ pub async fn find_skills(
             .get(&node.id)
             .map(|targets| linked_schemas(targets, &all_schemas))
             .unwrap_or_default();
-        let schema_candidates: Vec<&SchemaNode> = if !linked.is_empty() {
+        // Whether `schema_metadata` below is the linked set rather than a
+        // fallback. A linked set is what the skill is about, so a consumer may
+        // hold a turn to it; a fallback is a guess at relevance.
+        let schemas_linked = !linked.is_empty();
+        let schema_candidates: Vec<&SchemaNode> = if schemas_linked {
             linked
         } else {
             match query_named_schema {
@@ -694,6 +698,7 @@ pub async fn find_skills(
             "confidence": confidence,
             "tools": tool_whitelist,
             "schema_metadata": schema_metadata,
+            "schemas_linked": schemas_linked,
             "instructions": instructions,
         }));
     }
@@ -738,6 +743,7 @@ pub async fn find_skills(
             "confidence": confidence,
             "tools": Value::Array(vec![]),
             "schema_metadata": schema_metadata,
+            "schemas_linked": false,
             "instructions": "",
         }));
     }

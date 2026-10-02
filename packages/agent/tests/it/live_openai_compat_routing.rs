@@ -198,6 +198,7 @@ fn research_candidate() -> SkillCandidate {
              found; do not invent nodes that were not returned."
             .to_string(),
         schema_metadata: serde_json::json!([]),
+        schemas_linked: false,
     }
 }
 
@@ -210,6 +211,7 @@ fn names_only_candidate() -> SkillCandidate {
         description: String::new(),
         instructions: String::new(),
         schema_metadata: serde_json::json!([]),
+        schemas_linked: false,
         ..research_candidate()
     }
 }
@@ -646,6 +648,7 @@ mod tests {
             tools: vec!["search_nodes".to_string()],
             instructions: String::new(),
             schema_metadata: serde_json::json!([]),
+            schemas_linked: false,
         }])
         .unwrap();
 

@@ -167,6 +167,7 @@ fn rec(kind: DecisionKind, candidates: &[&str], selected: Option<&str>) -> Decis
         kind,
         candidates: candidates.iter().map(|c| c.to_string()).collect(),
         selected: selected.map(str::to_string),
+        enforced: false,
     }
 }
 
@@ -251,6 +252,19 @@ fn emitted_decision_lines_match_golden() {
         (2, rec(DecisionKind::Schema, &["invoice"], Some(""))),
         // Nothing on offer at all.
         (2, rec(DecisionKind::Operation, &[], None)),
+        // Off-menu on a turn held to its offered set: the same selection as
+        // the third line, but dispatch refused it rather than running it.
+        (
+            3,
+            DecisionRecord {
+                enforced: true,
+                ..rec(
+                    DecisionKind::Schema,
+                    &["invoice", "customer"],
+                    Some("album"),
+                )
+            },
+        ),
     ]);
 
     // One line per record, asserted before the golden comparison rather than
@@ -260,7 +274,7 @@ fn emitted_decision_lines_match_golden() {
     // break and silently drop the rest of the line.
     assert_eq!(
         lines.trim_end().lines().count(),
-        9,
+        10,
         "each decision must emit exactly one line, including the record whose \
          candidate name contains a newline:\n{lines}"
     );
