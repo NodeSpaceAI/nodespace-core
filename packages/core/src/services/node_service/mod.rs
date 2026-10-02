@@ -47,6 +47,9 @@ pub(crate) mod query;
 pub(crate) mod relationship;
 pub(crate) mod schema;
 
+#[cfg(test)]
+mod inherited_behavior_rule_tests;
+
 pub use conflicts::deterministic_conflict_id;
 pub use hierarchy::render_subtree_markdown;
 pub use relationship::{CreatedRelationship, NewRelationship, StoredEdge};
@@ -2418,14 +2421,6 @@ impl NodeService {
             .type_is_a(node_type, base)
             .await
             .map_err(NodeServiceError::from_store)
-    }
-
-    /// Run every behaviour in the node's type chain over it, base first: a
-    /// subtype is validated as the type it extends, plus its own rules.
-    pub(crate) async fn validate_behaviors(&self, node: &Node) -> Result<(), NodeServiceError> {
-        let chain = self.type_chain(&node.node_type).await?;
-        self.behaviors.validate_node(node, &chain)?;
-        Ok(())
     }
 
     /// Check if a node type is embeddable according to its behavior
