@@ -10,10 +10,10 @@
  *   changes main, and the merge gate tests it. Test the tiers a change
  *   reaches while developing, with `bun run test:changed`.
  * - `merge` (`--mode=merge`, run by `bun run merge <PR#>`): lint, then the
- *   full pyramid — every unit tier, the daemon build, the SKILL.md and
- *   generated-TypeScript drift checks, e2e and the Tauri-seam tests —
- *   unscoped, on the PR rebased onto
- *   current main. The only automated test run a change gets.
+ *   full pyramid — every unit tier, the daemon build, the SKILL.md,
+ *   generated-TypeScript and node-types.md drift checks, e2e and the
+ *   Tauri-seam tests — unscoped, on the PR rebased onto current main. The
+ *   only automated test run a change gets.
  *
  * The merge gate holds the machine slot (gate-lock.ts) from its first compile
  * until it exits. Tests starve into timeouts on correct code when another
@@ -295,6 +295,9 @@ await Promise.all([
     // the daemon build so its `cargo run --example` reuses that dev-profile
     // dependency tree.
     await run({ label: "skill:check (SKILL.md drift)", command: "bun run skill:check", timeoutMs: 20 * MINUTE });
+    // After the daemon build for the same reason: its example links the
+    // nodespace-core that build already compiled.
+    await run(TIERS.nodeTypesCheck);
   })(),
   (async () => {
     await run(TIERS.frontend);

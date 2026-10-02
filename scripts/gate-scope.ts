@@ -22,8 +22,8 @@ export interface GateScope {
   /** Happy-DOM unit tests and the Chromium browser tier. */
   frontend: boolean;
   /**
-   * The Rust workspace's tests (nextest), nodespace-app-lib's unit tests and
-   * the generated-TypeScript drift check.
+   * The Rust workspace's tests (nextest), nodespace-app-lib's unit tests, the
+   * generated-TypeScript drift check and the node-types.md check.
    */
   rust: boolean;
   /** The skill package's tests. */
@@ -70,6 +70,14 @@ const GENERATED_TYPES_INPUTS = [
 ];
 
 /**
+ * The script behind the node-types.md check. The check runs in the Rust tier
+ * (it runs a nodespace-core example), so a change to how it reads the
+ * reference reaches that tier. Its other input is the docs repository, which
+ * no diff here can show.
+ */
+const NODE_TYPES_CHECK_INPUTS = ["scripts/check-node-types-doc.ts"];
+
+/**
  * The gate's own machinery. A change here can alter what any stage does, so
  * it is never allowed to scope itself down.
  */
@@ -107,6 +115,7 @@ export function classify(files: string[]): GateScope {
     }
     if (isInert(file)) continue;
     if (GENERATED_TYPES_INPUTS.some((g) => (g.endsWith("/") ? file.startsWith(g) : file === g))) scope.rust = true;
+    if (NODE_TYPES_CHECK_INPUTS.includes(file)) scope.rust = true;
     if (RUST_ROOT_FILES.includes(file) || file.startsWith(".cargo/") || RUST_DIRS.some((d) => file.startsWith(d))) {
       scope.rust = true;
       continue;

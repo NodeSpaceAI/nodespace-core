@@ -54,6 +54,11 @@ describe("classify", () => {
     expect(classify(["scripts/eval/golden/case-1.json"]).rust).toBe(true);
   });
 
+  test("the node-types.md check's script also runs Rust, the tier that runs the check", () => {
+    expect(classify(["scripts/check-node-types-doc.ts"])).toEqual({ fullReason: null, ...NONE, scripts: true, rust: true });
+    expect(classify(["packages/core/examples/dump_core_schemas.rs"]).rust).toBe(true);
+  });
+
   test("a tooling script change runs only the scripts tests", () => {
     expect(classify(["scripts/gh-utils.ts"])).toEqual({ fullReason: null, ...NONE, scripts: true });
   });

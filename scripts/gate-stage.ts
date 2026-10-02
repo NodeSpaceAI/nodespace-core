@@ -74,6 +74,15 @@ export const TIERS = {
     command: "bun run types:check",
     timeoutMs: 15 * MINUTE,
   },
+  // Compares the per-type reference in the docs repository with the registry
+  // and the seeded core schemas (ADR-086). Part of the Rust tier: it runs a
+  // nodespace-core example. Skips, with a warning, on a machine that has no
+  // docs checkout.
+  nodeTypesCheck: {
+    label: "node-types:check (node-types.md vs. the core schemas)",
+    command: "bun run node-types:check",
+    timeoutMs: 20 * MINUTE,
+  },
   // The browser tier: real focus/blur, drag-and-drop and layout that Happy-DOM
   // can't model. About five seconds. The install is a no-op once Chromium is
   // present and fetches it once on a fresh machine.
