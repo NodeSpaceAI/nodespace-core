@@ -1144,12 +1144,16 @@ async fn a_second_extends_declaration_is_structurally_impossible() {
 
     // And re-targeting replaces rather than appends, so a schema never
     // accumulates two edges.
-    handle_create_schema(
+    let created = handle_create_schema(
         &svc,
         json!({ "name": "Child", "extends": "alpha", "fields": [] }),
     )
     .await
     .expect("child extends alpha should succeed");
+    // The result names the parent it persisted, and lists no `extends`
+    // relationship.
+    assert_eq!(created["extends"], "alpha");
+    assert!(created.get("relationships").is_none());
     handle_update_schema(&svc, json!({ "schema_id": "child", "extends": "beta" }))
         .await
         .expect("re-target should succeed");
@@ -1159,15 +1163,27 @@ async fn a_second_extends_declaration_is_structurally_impossible() {
         .await
         .expect("schema lookup failed")
         .expect("child should exist");
-    let extends_edges = schema
-        .relationships
-        .iter()
+    assert_eq!(schema.extends.as_deref(), Some("beta"));
+    assert!(
+        schema.relationships.iter().all(|r| r.name != "extends"),
+        "the parent is `extends`, never an entry in `relationships`"
+    );
+
+    // One stored edge, pointing at the new parent.
+    let extends_edges: Vec<_> = svc
+        .store()
+        .get_schema_declarations("child")
+        .await
+        .expect("declaration lookup failed")
+        .into_iter()
         .filter(|r| r.name == "extends")
-        .count();
+        .collect();
     assert_eq!(
-        extends_edges, 1,
+        extends_edges.len(),
+        1,
         "re-targeting must replace the edge, never accumulate a second"
     );
+    assert_eq!(extends_edges[0].target_type.as_deref(), Some("beta"));
 }
 
 /// Two unrelated base schemas, for the single-parent test.

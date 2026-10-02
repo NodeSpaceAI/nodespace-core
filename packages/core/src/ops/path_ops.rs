@@ -10,8 +10,8 @@
 //! are resolved the same way when they are saved and when they run.
 
 use crate::models::schema::{
-    builtin_forward_name, is_type_system_relationship, RelationshipCardinality,
-    RelationshipDirection, BUILTIN_RELATIONSHIP_NAMES,
+    builtin_forward_name, RelationshipCardinality, RelationshipDirection,
+    BUILTIN_RELATIONSHIP_NAMES,
 };
 use crate::ops::OpsError;
 use crate::services::{NodeService, NodeServiceError};
@@ -111,10 +111,7 @@ pub async fn resolve_hop(
                            narrowed: bool| ResolvedHop {
         source_type: narrowed.then(|| source_type.to_string()),
         far_type: Some(source_type.to_string()),
-        // `extends` is the type system's own edge between schema nodes; no
-        // data node carries one, so it is never a declared collection.
-        declared_many: !is_type_system_relationship(&rel.name)
-            && rel.reverse_cardinality == RelationshipCardinality::Many,
+        declared_many: rel.reverse_cardinality == RelationshipCardinality::Many,
         untyped: rel.target_type.is_none(),
         ..resolved(&rel.name, HopDirection::Inbound)
     };
@@ -284,9 +281,7 @@ async fn undeclared_message(
             [rel.reverse_name.clone(), rel.name.clone()]
         }))
         .filter(|candidate| {
-            !BUILTIN_RELATIONSHIP_NAMES.contains(&candidate.as_str())
-                && !is_type_system_relationship(candidate)
-                && !candidate.is_empty()
+            !BUILTIN_RELATIONSHIP_NAMES.contains(&candidate.as_str()) && !candidate.is_empty()
         })
         .collect();
     available.sort();

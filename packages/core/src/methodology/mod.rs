@@ -327,7 +327,7 @@ mod tests {
                 let known = playbook.schemas.iter().any(|s| s.schema_id == target)
                     || crate::models::core_schemas::get_core_schemas()
                         .iter()
-                        .any(|s| s.id == target);
+                        .any(|s| s.envelope.id == target);
                 assert!(
                     known,
                     "{}: targets `{target}`, which is neither a core type nor one this \

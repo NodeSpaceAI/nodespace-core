@@ -43,6 +43,7 @@ mod project;
 mod query;
 mod relationship_path;
 mod schema;
+mod schema_ops;
 mod skill;
 mod task;
 
@@ -90,6 +91,10 @@ pub use schema::{
     derive_friendly_name, EdgeField, EnumValue, RelationshipCardinality, RelationshipDirection,
     SchemaChildrenRule, SchemaField, SchemaFieldType, SchemaNode, SchemaParentRule,
     SchemaProtectionLevel, SchemaRelationship,
+};
+pub use schema_ops::{
+    CreateSchemaOutput, CreateSchemaParams, FieldRename, FieldValueAddition, SchemaUpdateOutput,
+    UpdateSchemaParams,
 };
 pub use skill::{
     SkillFields, SkillNode, SkillNodeUpdate, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE,

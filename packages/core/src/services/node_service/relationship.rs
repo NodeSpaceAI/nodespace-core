@@ -2441,7 +2441,7 @@ impl NodeService {
                     .map(|t| scope_chain.iter().any(|scope| scope == t))
                     .unwrap_or(true); // None = untyped, applies to all types
                 if matches {
-                    inbound.push((schema.id.clone(), relationship));
+                    inbound.push((schema.envelope.id.clone(), relationship));
                 }
             }
         }
@@ -2456,10 +2456,9 @@ impl NodeService {
     /// (ADR-078): each schema's *effective* relationship set is listed, so
     /// an extending type's inherited relationships appear under it too.
     ///
-    /// Excludes the `extends`/`extended_by` type-system bookkeeping edge —
-    /// `resolve_relationships` filters it as not a real, instance-carried
-    /// relationship (see its doc). A schema's `extends` declaration is
-    /// therefore never surfaced as a `(child, "extends", parent)` tuple here.
+    /// The `extends` edge is not among them: a schema holds its parent as
+    /// `extends`, not as a relationship (see `resolve_relationships`), so it
+    /// is never surfaced as a `(child, "extends", parent)` tuple here.
     ///
     /// # Returns
     ///
@@ -2496,10 +2495,10 @@ impl NodeService {
         // actually creatable via `create_relationship`.
         let mut edges = Vec::new();
         for schema in schemas {
-            let (relationships, _) = self.resolve_relationships(&schema.id).await?;
+            let (relationships, _) = self.resolve_relationships(&schema.envelope.id).await?;
             for relationship in relationships {
                 edges.push((
-                    schema.id.clone(),
+                    schema.envelope.id.clone(),
                     relationship.name.clone(),
                     relationship.target_type.clone(),
                 ));

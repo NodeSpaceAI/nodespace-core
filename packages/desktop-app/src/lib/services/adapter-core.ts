@@ -244,7 +244,7 @@ export interface BackendAdapter {
   createContainerNode(input: CreateContainerInput): Promise<string>;
 
   // Schema operations (read-only - mutation commands removed)
-  // Returns SchemaNode with typed top-level fields (isCore, schemaVersion, description, fields)
+  // Returns the typed SchemaNode: fields, relationships, extends and the rest at the top level
   getAllSchemas(): Promise<SchemaNode[]>;
   getSchema(schemaId: string): Promise<SchemaNode>;
 

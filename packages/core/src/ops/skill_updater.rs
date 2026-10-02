@@ -130,7 +130,7 @@ impl SkillUpdater {
         let custom_types: Vec<String> = schemas
             .iter()
             .filter(|s| !s.is_core)
-            .map(|s| s.content.clone())
+            .map(|s| s.envelope.content.clone())
             .collect();
 
         // 2. Build the updated description.

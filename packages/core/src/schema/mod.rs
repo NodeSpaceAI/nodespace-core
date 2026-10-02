@@ -8,10 +8,13 @@ pub mod extends_chain;
 use crate::behaviors::SchemaNodeBehavior;
 use crate::markdown::MarkdownError;
 use crate::models::schema::SchemaField;
-use crate::models::{Node, NodeUpdate, SchemaNode};
+use crate::models::{schema_node, NodeUpdate, SchemaNode};
 use crate::services::error::NodeServiceError;
 use crate::services::{CreateNodeParams, NodeService};
-use serde::{Deserialize, Serialize};
+pub use nodespace_types::{
+    CreateSchemaOutput, CreateSchemaParams, FieldRename, FieldValueAddition, SchemaUpdateOutput,
+    UpdateSchemaParams,
+};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -641,7 +644,7 @@ async fn validate_in_declarations_paired(
         .get_all_schemas()
         .await
         .map_err(|e| MarkdownError::internal_error(format!("Failed to list schemas: {}", e)))?;
-    for schema in schemas.iter().filter(|s| s.id != pending.id) {
+    for schema in schemas.iter().filter(|s| s.envelope.id != pending.id) {
         for rel in schema
             .relationships
             .iter()
@@ -657,61 +660,27 @@ async fn validate_in_declarations_paired(
             {
                 continue;
             }
-            let owner_chain = type_chain(node_service, &schema.id, pending).await?;
+            let owner_chain = type_chain(node_service, &schema.envelope.id, pending).await?;
             // Only a pairing rejection is re-framed as this change's fault; a
             // storage failure passes through with its own kind.
-            validate_in_declaration(node_service, &schema.id, &owner_chain, rel, pending)
-                .await
-                .map_err(|e| match e {
-                    MarkdownError::InvalidParams(message) => {
-                        MarkdownError::invalid_params(format!(
-                            "This change to '{}' would break '{}.{}', which mirrors it: {}",
-                            pending.id, schema.id, rel.name, message
-                        ))
-                    }
-                    other => other,
-                })?;
+            validate_in_declaration(
+                node_service,
+                &schema.envelope.id,
+                &owner_chain,
+                rel,
+                pending,
+            )
+            .await
+            .map_err(|e| match e {
+                MarkdownError::InvalidParams(message) => MarkdownError::invalid_params(format!(
+                    "This change to '{}' would break '{}.{}', which mirrors it: {}",
+                    pending.id, schema.envelope.id, rel.name, message
+                )),
+                other => other,
+            })?;
         }
     }
     Ok(())
-}
-
-/// Reject relationship declarations named after a built-in structural
-/// relationship (`has_child`, `mentions`, `member_of`, `has_role`) — in either
-/// direction.
-///
-/// **Forward `name`.** Declarations and the built-in primitives share the one
-/// `relationship` table's `relationship_type` column, so a name collision would
-/// make every type-keyed relationship query ambiguous — a correctness hazard,
-/// not just a display glitch. Checked here so the error surfaces before any
-/// write, and re-checked in `NodeService::set_schema_relationships` (the write
-/// path) via the same shared predicate.
-///
-/// **`reverse_name`.** A different failure, so worth stating separately: a
-/// reverse name is never written to `relationship_type` — it is a resolution
-/// alias, matched by [`resolve_relationship_name`] to reach the inbound side of
-/// an edge stored under the forward name. It therefore cannot make stored data
-/// ambiguous. What it can do is nothing at all: that resolver short-circuits on
-/// the built-in table before it ever consults a declaration, so
-/// `reverseName: "has_child"` is unreachable — the built-in always wins, and
-/// the reverse spelling the author chose silently resolves to something else.
-/// Rejecting it keeps a declaration from being accepted as inert.
-///
-/// Both halves are checked because a relationship must name its edge from both
-/// ends, so both names land in a namespace a caller can traverse by.
-///
-/// **Both built-in spellings are reserved**, not just the forward ones. A
-/// built-in's inverse (`child_of`, `has_member`, …) is resolved from the
-/// built-in table ahead of any declaration, so a schema claiming one as its
-/// `name` or `reverseName` would be shadowed exactly the way `has_child` is.
-/// The `extends` target in a relationship list, if one is declared.
-fn declared_extends_parent(
-    relationships: &[crate::models::schema::SchemaRelationship],
-) -> Option<String> {
-    relationships
-        .iter()
-        .find(|rel| rel.name == crate::models::schema::EXTENDS_RELATIONSHIP)
-        .and_then(|rel| rel.target_type.clone())
 }
 
 /// Append values to a field this schema inherited via `extends` (ADR-078).
@@ -886,6 +855,34 @@ fn classify_reserved_relationship_name(name: &str) -> Option<ReservedRelationshi
     }
 }
 
+/// Reject relationship declarations named after a built-in structural
+/// relationship (`has_child`, `mentions`, `member_of`, `has_role`) — in either
+/// direction.
+///
+/// **Forward `name`.** Declarations and the built-in primitives share the one
+/// `relationship` table's `relationship_type` column, so a name collision would
+/// make every type-keyed relationship query ambiguous — a correctness hazard,
+/// not just a display glitch. Checked here so the error surfaces before any
+/// write, and re-checked in `NodeService::set_schema_relationships` (the write
+/// path) via the same shared predicate.
+///
+/// **`reverse_name`.** A different failure, so worth stating separately: a
+/// reverse name is never written to `relationship_type` — it is a resolution
+/// alias, matched by [`resolve_relationship_name`] to reach the inbound side of
+/// an edge stored under the forward name. It therefore cannot make stored data
+/// ambiguous. What it can do is nothing at all: that resolver short-circuits on
+/// the built-in table before it ever consults a declaration, so
+/// `reverseName: "has_child"` is unreachable — the built-in always wins, and
+/// the reverse spelling the author chose silently resolves to something else.
+/// Rejecting it keeps a declaration from being accepted as inert.
+///
+/// Both halves are checked because a relationship must name its edge from both
+/// ends, so both names land in a namespace a caller can traverse by.
+///
+/// **Both built-in spellings are reserved**, not just the forward ones. A
+/// built-in's inverse (`child_of`, `has_member`, …) is resolved from the
+/// built-in table ahead of any declaration, so a schema claiming one as its
+/// `name` or `reverseName` would be shadowed exactly the way `has_child` is.
 fn reject_reserved_relationship_names(
     relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
@@ -1032,9 +1029,8 @@ async fn reject_undeclared_relationship_removals(
 /// Sourced from [`crate::db::SqliteStore::get_extends_parent_map`] — the same
 /// single query every other extends-chain resolver in the codebase reads
 /// from ([`NodeService::resolve_type_chain`], the playbook engine's own chain
-/// resolution) — rather than re-deriving the map by loading and hydrating
-/// every schema node and reading each one's declaration back off
-/// [`extends_chain::declared_parent`]. Both describe the same edges, but
+/// resolution) — rather than re-deriving the map by loading every schema
+/// and reading each one's `extends`. Both describe the same edges, but
 /// `get_extends_parent_map` reads `in_node`/`out_node` directly off the
 /// indexed `relationship` columns rather than parsing each declaration row's
 /// `properties` JSON into a `SchemaRelationship` first, so this can no longer
@@ -1048,21 +1044,6 @@ async fn load_parent_map(
         .get_extends_parent_map()
         .await
         .map_err(|e| MarkdownError::internal_error(format!("Failed to load extends edges: {e}")))
-}
-
-/// Write a schema's structural rules into its stored properties. `any`
-/// declares nothing, so it is not stored.
-fn store_structural_rules(
-    properties: &mut serde_json::Value,
-    children: &crate::models::SchemaChildrenRule,
-    parent: &crate::models::SchemaParentRule,
-) {
-    if !children.is_any() {
-        properties["children"] = serde_json::json!(children);
-    }
-    if !parent.is_any() {
-        properties["parent"] = serde_json::json!(parent);
-    }
 }
 
 /// Validate the structural rules a schema is about to declare (ADR-089):
@@ -1207,12 +1188,12 @@ async fn validate_type_system_changes(
         return Err(MarkdownError::invalid_params(format!(
             "'{}' is a core type; what it extends, whether it is abstract and its structural \
              rules cannot be changed.",
-            schema.id
+            schema.envelope.id
         )));
     }
 
     if changes_structure {
-        let declared_base = crate::schema::extends_chain::declared_parent(schema);
+        let declared_base = schema.extends.clone();
         let base = params
             .extends
             .as_deref()
@@ -1221,7 +1202,8 @@ async fn validate_type_system_changes(
         let children = params.children.as_ref().unwrap_or(&schema.children);
         let parent = params.parent.as_ref().unwrap_or(&schema.parent);
         let (children_in_force, parent_in_force) =
-            validate_structural_rules(node_service, &schema.id, base, children, parent).await?;
+            validate_structural_rules(node_service, &schema.envelope.id, base, children, parent)
+                .await?;
 
         let store = node_service.store();
         let internal = |what: String, e: anyhow::Error| {
@@ -1236,7 +1218,7 @@ async fn validate_type_system_changes(
                 .type_chain(subtype)
                 .await
                 .map_err(|e| internal(format!("resolve the type chain of '{subtype}'"), e))?;
-            if subtype == &schema.id || !chain.contains(&schema.id) {
+            if subtype == &schema.envelope.id || !chain.contains(&schema.envelope.id) {
                 continue;
             }
             let Some(sub_schema) = node_service.get_schema_node(subtype).await.map_err(|e| {
@@ -1265,20 +1247,20 @@ async fn validate_type_system_changes(
                 return Err(MarkdownError::invalid_params(format!(
                     "'{}' cannot take those structural rules: '{}', which extends it, declares \
                      a rule they would make a relaxation. Change '{}' first.",
-                    schema.id, subtype, subtype
+                    schema.envelope.id, subtype, subtype
                 )));
             }
         }
 
         let breaking = store
-            .node_breaking_rules(&schema.id, &children_in_force, &parent_in_force)
+            .node_breaking_rules(&schema.envelope.id, &children_in_force, &parent_in_force)
             .await
-            .map_err(|e| internal(format!("check the nodes of '{}'", schema.id), e))?;
+            .map_err(|e| internal(format!("check the nodes of '{}'", schema.envelope.id), e))?;
         if let Some((node_id, what)) = breaking {
             return Err(MarkdownError::invalid_params(format!(
                 "'{}' cannot take those structural rules: node '{}' {}. Move or retype the \
                  nodes that break them first.",
-                schema.id, node_id, what
+                schema.envelope.id, node_id, what
             )));
         }
     }
@@ -1286,19 +1268,19 @@ async fn validate_type_system_changes(
     if params.is_abstract == Some(true) && !schema.is_abstract {
         let has_instances = node_service
             .store()
-            .has_nodes_of_exact_type(&schema.id)
+            .has_nodes_of_exact_type(&schema.envelope.id)
             .await
             .map_err(|e| {
                 MarkdownError::internal_error(format!(
                     "Failed to check for nodes of type '{}': {}",
-                    schema.id, e
+                    schema.envelope.id, e
                 ))
             })?;
         if has_instances {
             return Err(MarkdownError::invalid_params(format!(
                 "'{}' cannot become abstract: nodes of that type exist. Retype them to a \
                  subtype first.",
-                schema.id
+                schema.envelope.id
             )));
         }
     }
@@ -1364,18 +1346,6 @@ async fn validate_extends_target(
     }
 
     Ok(())
-}
-
-/// Whether `rel` is a real, user-authored relationship declaration rather
-/// than NodeSpace's own `extends`/`extended_by` bookkeeping row (see
-/// [`crate::models::schema::is_type_system_relationship`]). Every
-/// field-vs-relationship cross-domain name comparison against a schema's own
-/// `relationships` — same-schema or ancestor-chain — must exclude these: a
-/// schema's own not-yet-replaced `extends` row is a real entry in that list
-/// right up until an `extends` re-target replaces it, and an ordinary field
-/// legally named "extends" must never be rejected for colliding with it.
-fn is_declared_relationship(rel: &crate::models::schema::SchemaRelationship) -> bool {
-    !crate::models::schema::is_type_system_relationship(&rel.name)
 }
 
 /// [`NodeService::resolve_relationships`], mapping a storage-layer failure
@@ -1572,23 +1542,6 @@ async fn validate_no_relationship_redeclaration(
     parent_id: &str,
     own_relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
-    // Exclude the schema's own `extends`/`extended_by` bookkeeping row. At
-    // the `extends` re-target call site, `own_relationships` is this
-    // schema's FULL current relationship list, which still carries the OLD
-    // extends declaration at the point this validation runs — it isn't
-    // replaced with the new one until after this call returns. That name is
-    // type-system bookkeeping, not a real declaration a caller could
-    // collide with, and the same-domain check above is safe from it only
-    // because `resolve_relationships` already excludes it from `inherited`.
-    // The cross-domain field-owner map below has no equivalent exclusion
-    // (fields carry no type-system concept), so without filtering it here
-    // an ordinary field literally named "extends" on the new parent would
-    // falsely reject an otherwise-legal re-target.
-    let own_relationships: Vec<&crate::models::schema::SchemaRelationship> = own_relationships
-        .iter()
-        .filter(|r| is_declared_relationship(r))
-        .collect();
-
     // Concurrent, not sequential — see `validate_no_field_redeclaration`'s
     // identical `tokio::try_join!` for why.
     let ((inherited, owners), (_, field_owners, _)) = tokio::try_join!(
@@ -1596,7 +1549,7 @@ async fn validate_no_relationship_redeclaration(
         resolve_field_owners_or_error(node_service, parent_id)
     )?;
 
-    for rel in &own_relationships {
+    for rel in own_relationships {
         if let Some(existing) = inherited.iter().find(|r| r.name == rel.name) {
             // Name the schema that actually DECLARES the relationship, not
             // `parent_id` unconditionally — `parent_id` is only the nearest
@@ -1621,7 +1574,7 @@ async fn validate_no_relationship_redeclaration(
         }
     }
 
-    for rel in &own_relationships {
+    for rel in own_relationships {
         if let Some(owner) = field_owners.get(&rel.name) {
             return Err(MarkdownError::invalid_params(format!(
                 "Relationship '{}' is already declared as a field by '{}' (inherited via \
@@ -1646,25 +1599,15 @@ async fn validate_no_relationship_redeclaration(
 /// descendant doing so against an ancestor, just with no chain resolution
 /// needed to see it.
 ///
-/// `relationships` is filtered to exclude type-system bookkeeping names
-/// (`extends`/`extended_by`, see [`crate::models::schema::is_type_system_relationship`])
-/// before comparing — those are NodeSpace's own synthesized rows, not real
-/// declarations a caller authored, and an ordinary field legally named
-/// "extends" must never be rejected for colliding with them.
+/// `relationships` holds only declarations a caller authored: a schema's
+/// parent is its `extends`, not an entry here, so an ordinary field legally
+/// named "extends" collides with nothing.
 fn validate_no_same_schema_field_relationship_collision(
     fields: &[SchemaField],
     relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
-    // Filtered once, ahead of the loop — the same list is checked against
-    // every field, so re-filtering per iteration would cost an extra pass
-    // and allocation per field for no benefit.
-    let declared_relationships: Vec<&crate::models::schema::SchemaRelationship> = relationships
-        .iter()
-        .filter(|r| is_declared_relationship(r))
-        .collect();
-
     for field in fields {
-        if let Some(rel) = declared_relationships.iter().find(|r| r.name == field.name) {
+        if let Some(rel) = relationships.iter().find(|r| r.name == field.name) {
             return Err(MarkdownError::invalid_params(format!(
                 "'{}' cannot be declared as both a field and a relationship on the same \
                  schema — a name must resolve unambiguously as one or the other, the same \
@@ -1968,112 +1911,24 @@ pub(crate) fn json_type_name(v: &Value) -> &'static str {
     }
 }
 
-/// Input parameters for create_schema
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateSchemaParams {
-    /// Schema name (e.g., "Invoice", "Customer")
-    pub name: String,
-    /// Brief prose summary of what this entity type represents. Stored as a
-    /// child subtree for semantic discovery; not parsed into fields.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Explicit field definitions
-    #[serde(default)]
-    pub fields: Option<Vec<SchemaField>>,
-    /// Schema id of a parent type this schema specializes (ADR-078).
-    ///
-    /// Structural vocabulary, on the same footing as `fields` — not a
-    /// relationship the caller authors. Declaring it composes this schema's
-    /// effective field set as its own fields plus the parent's (additive
-    /// only, single parent, no override), and instances created under this
-    /// schema carry *this* schema's id as their real `node_type`.
-    ///
-    /// Persisted as an `extends` edge on the relationship table, synthesized
-    /// here rather than accepted in `relationships` — where `extends` and
-    /// `extended_by` are rejected outright.
-    #[serde(default)]
-    pub extends: Option<String>,
-    /// Declare the type abstract (ADR-086 §6): it can be extended and
-    /// queried, but no node is created with it as its `node_type` or retyped
-    /// into it. Only its subtypes are instantiated.
-    #[serde(default, rename = "abstract")]
-    pub is_abstract: bool,
-    /// Which children this type's nodes may have (ADR-089): `{"rule": "any"}`
-    /// (the default), `{"rule": "none"}`, or
-    /// `{"rule": "any_except", "types": [...]}`. A named type covers its
-    /// subtypes. A subtype inherits its base's rule and may only tighten it.
-    #[serde(default)]
-    pub children: crate::models::SchemaChildrenRule,
-    /// Where this type's nodes may sit in the tree (ADR-089):
-    /// `{"rule": "any"}` (the default), `{"rule": "must_be_root"}`, or
-    /// `{"rule": "must_have_parent_of", "types": [...]}`.
-    #[serde(default)]
-    pub parent: crate::models::SchemaParentRule,
-    /// Optional relationship definitions
-    #[serde(default)]
-    pub relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
-    /// Optional template for computing display title from field values.
-    /// Use `{field_name}` tokens that reference fields defined in `fields`.
-    /// Example: `"{first_name} {last_name}"` for a customer schema.
-    #[serde(default)]
-    pub title_template: Option<String>,
-    /// Optional template for rendering a compact property summary inline below the node title.
-    /// Uses the same `{field_name}` syntax. Evaluated client-side only.
-    /// Example: `"{status} · {company}"` → `"Active · Acme Corp"`.
-    #[serde(default)]
-    pub properties_header_summary_template: Option<String>,
-}
-
-/// Output from schema creation
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateSchemaOutput {
-    /// ID for the generated schema (snake_case of name)
-    pub schema_id: String,
-    /// Whether this is a core schema
-    pub is_core: bool,
-    /// Schema version
-    pub version: u32,
-    /// Schema description
-    pub description: String,
-    /// List of created fields
-    pub fields: Vec<SchemaField>,
-    /// List of created relationships
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub relationships: Vec<crate::models::schema::SchemaRelationship>,
-    /// Optional warnings, e.g. a field name shadowing a reserved core property
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub warnings: Option<Vec<String>>,
-}
-
-/// Create a custom schema with fields and relationships
+/// `create_schema` as a tool call: JSON parameters in, JSON result out.
 ///
-/// # Tool: create_schema
-///
-/// Creates a new schema definition from explicit field and relationship
-/// definitions. Field names are stored as given (bare, not namespace-prefixed).
-/// A name colliding with a reserved core property is reported in `warnings`.
-///
-/// # Parameters
-/// - `name`: Schema name (e.g., "Invoice", "Customer")
-/// - `description`: Optional prose summary, stored for semantic discovery only
-/// - `fields`: Explicit field definitions
-/// - `relationships`: Optional relationship definitions to other schemas
-///
-/// # Returns
-/// - `schema_id`: Generated schema ID (snake_case)
-/// - `fields`: List of created fields
-/// - `relationships`: List of created relationships
-/// - `warnings`: e.g. a field name shadowing a reserved core property
-///
-/// # Errors
-/// - `INVALID_PARAMS`: If name is empty or `fields` is missing
-/// - `INTERNAL_ERROR`: If schema creation fails
+/// Decodes with [`parse_create_schema_params`] and runs [`create_schema`].
 pub async fn handle_create_schema(
     node_service: &Arc<NodeService>,
     params: Value,
 ) -> Result<Value, MarkdownError> {
+    let output = create_schema(node_service, parse_create_schema_params(params)?).await?;
+    serde_json::to_value(&output)
+        .map_err(|e| MarkdownError::internal_error(format!("Failed to serialize output: {}", e)))
+}
+
+/// Decode `create_schema` parameters from the JSON a caller authored.
+///
+/// The one decoder for every surface that receives the parameters as JSON
+/// (the agent's tool call, the RPC). It reports a malformed entry by position
+/// and by what it is missing, which the bare serde error can't.
+pub fn parse_create_schema_params(params: Value) -> Result<CreateSchemaParams, MarkdownError> {
     // Locate malformed field entries before serde sees them. Deserializing the
     // whole payload at once reports only the missing key ("missing field
     // `type`") with no indication of WHICH array element is at fault, which
@@ -2100,9 +1955,36 @@ pub async fn handle_create_schema(
     let mut params = params;
     drop_empty_field_entries(&mut params, "fields");
 
-    let params: CreateSchemaParams = serde_json::from_value(params)
-        .map_err(|e| MarkdownError::invalid_params(format!("{e}")))?;
+    serde_json::from_value(params).map_err(|e| MarkdownError::invalid_params(format!("{e}")))
+}
 
+/// Create a custom schema with fields and relationships
+///
+/// # Tool: create_schema
+///
+/// Creates a new schema definition from explicit field and relationship
+/// definitions. Field names are stored as given (bare, not namespace-prefixed).
+/// A name colliding with a reserved core property is reported in `warnings`.
+///
+/// # Parameters
+/// - `name`: Schema name (e.g., "Invoice", "Customer")
+/// - `description`: Optional prose summary, stored for semantic discovery only
+/// - `fields`: Explicit field definitions
+/// - `relationships`: Optional relationship definitions to other schemas
+///
+/// # Returns
+/// - `schema_id`: Generated schema ID (snake_case)
+/// - `fields`: List of created fields
+/// - `relationships`: List of created relationships
+/// - `warnings`: e.g. a field name shadowing a reserved core property
+///
+/// # Errors
+/// - `INVALID_PARAMS`: If name is empty or `fields` is missing
+/// - `INTERNAL_ERROR`: If schema creation fails
+pub async fn create_schema(
+    node_service: &Arc<NodeService>,
+    params: CreateSchemaParams,
+) -> Result<CreateSchemaOutput, MarkdownError> {
     if params.name.trim().is_empty() {
         return Err(MarkdownError::invalid_params(
             "name cannot be empty".to_string(),
@@ -2275,21 +2157,18 @@ pub async fn handle_create_schema(
         .description
         .clone()
         .unwrap_or_else(|| format!("Schema for {}", params.name));
-    let mut properties = serde_json::json!({
-        "isCore": false,
-        "schemaVersion": 1,
-        "fields": &stored_fields,
-    });
-    if params.is_abstract {
-        properties["abstract"] = serde_json::Value::Bool(true);
-    }
-    store_structural_rules(&mut properties, &params.children, &params.parent);
-    if let Some(ref template) = params.title_template {
-        properties["titleTemplate"] = serde_json::Value::String(template.clone());
-    }
-    if let Some(ref template) = params.properties_header_summary_template {
-        properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(template.clone());
-    }
+    let new_schema = SchemaNode {
+        is_abstract: params.is_abstract,
+        extends: extends_parent.map(str::to_string),
+        children: params.children.clone(),
+        parent: params.parent.clone(),
+        fields: stored_fields,
+        relationships,
+        title_template: params.title_template.clone(),
+        properties_header_summary_template: params.properties_header_summary_template.clone(),
+        ..SchemaNode::new(schema_id.clone(), params.name.clone())
+    };
+    let properties = schema_node::to_properties(&new_schema);
 
     // Create schema node params — no explicit ID; create_node_with_parent derives it from content
     let schema_node_params = CreateNodeParams {
@@ -2309,16 +2188,11 @@ pub async fn handle_create_schema(
     // no description subtree, semantically undiscoverable via embedding
     // search until someone re-ran update_schema with a description. Both are
     // now impossible: any failure here rolls back the whole create.
-    // Synthesize the `extends` edge and persist it alongside the caller's own
-    // declarations. It has to ride in the same list rather than take a second
-    // write: `set_schema_relationships` is a full replace keyed by name, so a
+    // The `extends` edge rides in the same list as the caller's own
+    // declarations rather than taking a second write:
+    // `set_schema_relationships` is a full replace keyed by name, so a
     // separate call would clobber whichever set went first.
-    let mut relationships = relationships;
-    if let Some(parent_id) = extends_parent {
-        relationships.push(extends_chain::extends_declaration(parent_id));
-    }
-
-    let relationships_for_tx = relationships.clone();
+    let relationships_for_tx = schema_node::to_declarations(&new_schema);
     let description_text_for_tx = description_text.clone();
     let node_service_for_tx = Arc::clone(node_service);
     // The same id as `schema_id` above (schema nodes derive their id from
@@ -2399,7 +2273,7 @@ pub async fn handle_create_schema(
         })?;
 
     // `get_schema_node` returns `Ok(None)` for two different facts: the row is
-    // absent, or it is present but `SchemaNode::from_node` could not parse it
+    // absent, or it is present but could not be read as a schema
     // (see the store's warn-and-return-None arm). Asserting the first without
     // checking would repeat this PR's own bug in miniature — claiming more than
     // the read established — and in the damaging direction: told a schema it
@@ -2448,8 +2322,8 @@ pub async fn handle_create_schema(
         }
     };
 
-    let output = CreateSchemaOutput {
-        schema_id: persisted.id,
+    Ok(CreateSchemaOutput {
+        schema_id: persisted.envelope.id,
         is_core: persisted.is_core,
         version: persisted.schema_version,
         // The one field still taken from the request, deliberately. A
@@ -2462,151 +2336,53 @@ pub async fn handle_create_schema(
         // echoing the field list a defect.
         description: description_text,
         fields: persisted.fields,
+        extends: persisted.extends,
         relationships: persisted.relationships,
         warnings: if warnings.is_empty() {
             None
         } else {
             Some(warnings)
         },
-    };
+    })
+}
 
+/// `update_schema` as a tool call: JSON parameters in, JSON result out.
+///
+/// Decodes with [`parse_update_schema_params`] and runs [`update_schema`].
+pub async fn handle_update_schema(
+    node_service: &Arc<NodeService>,
+    params: Value,
+) -> Result<Value, MarkdownError> {
+    let output = update_schema(node_service, parse_update_schema_params(params)?).await?;
     serde_json::to_value(&output)
         .map_err(|e| MarkdownError::internal_error(format!("Failed to serialize output: {}", e)))
 }
 
-/// A single field rename operation within update_schema
-///
-/// Two conceptually different renames share this shape:
-/// - **identity rename** (`from` != `to`): rekeys `name`, migrates every
-///   existing node's property data, and is breaking for `titleTemplate`/CEL/
-///   query-filter references — unchanged from before `friendly_name` existed.
-/// - **display rename** (`from` == `to`, `friendly_name` set): updates only
-///   the display label, migrates nothing. Also legal combined with an
-///   identity rename in one entry (both `to` and `friendly_name` set) —
-///   applied atomically as one schema update rather than two round trips.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FieldRename {
-    /// Current field name
-    pub from: String,
-    /// New field name (pass the same value as `from` for a display-only
-    /// rename that changes `friendly_name` without migrating data)
-    pub to: String,
-    /// New display label for this field. Optional — omit to leave
-    /// `friendly_name` exactly as stored (including when it was auto-derived
-    /// from the old `name` and is now stale; see
-    /// `NodeService::rename_schema_field`'s doc comment for why that is not
-    /// re-derived automatically).
-    #[serde(default)]
-    pub friendly_name: Option<String>,
-}
+/// Decode `update_schema` parameters from the JSON a caller authored. The
+/// counterpart of [`parse_create_schema_params`].
+pub fn parse_update_schema_params(params: Value) -> Result<UpdateSchemaParams, MarkdownError> {
+    // See `describe_malformed_fields` — locate a bad entry before serde reports
+    // only the absent key with no position.
+    describe_malformed_fields(&params, "add_fields")?;
 
-/// One field's worth of `add_field_values` input: the target field and the
-/// `EnumValue` entries to append to its `user_values`.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FieldValueAddition {
-    /// Name of the existing field to extend (must be `type: "enum"` and
-    /// `extensible: true`).
-    pub field: String,
-    /// Values to append to the field's `user_values`. Each `value` must not
-    /// already exist in the field's combined `core_values` + `user_values`.
-    pub values: Vec<crate::models::schema::EnumValue>,
-}
+    // Same reverse-half check `parse_create_schema_params` runs, on the key
+    // that carries new declarations here. A relationship added by an update is
+    // a new stored edge and must be named from both ends exactly as one
+    // declared at create time.
+    if let Some(relationships) = params.get("add_relationships") {
+        describe_missing_reverse_fields(relationships)?;
+    }
 
-/// Parameters for update_schema (batch operations)
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UpdateSchemaParams {
-    /// Schema ID to update
-    pub schema_id: String,
-    /// Fields to add
-    #[serde(default)]
-    pub add_fields: Option<Vec<SchemaField>>,
-    /// Field names to remove
-    #[serde(default)]
-    pub remove_fields: Option<Vec<String>>,
-    /// Append values to an existing field's `user_values`. Gated on that
-    /// field's `extensible == Some(true)` — see ADR-076. Append-only: never
-    /// touches `core_values`, never removes/renames existing `user_values`.
-    #[serde(default)]
-    pub add_field_values: Option<Vec<FieldValueAddition>>,
-    /// Field renames — rekeys property data on all existing nodes of this type
-    /// and updates the schema definition atomically.
-    #[serde(default)]
-    pub rename_fields: Option<Vec<FieldRename>>,
-    /// Set or change this schema's parent type (ADR-078). Absent leaves the
-    /// current `extends` edge untouched; there is no way to clear one, the
-    /// same posture `title_template` already takes.
-    ///
-    /// Re-targeting is validated exactly as creation is — the new parent must
-    /// exist, must not introduce a cycle, and must not collide with a field
-    /// this schema (or a remaining ancestor) already declares.
-    #[serde(default)]
-    pub extends: Option<String>,
-    /// Relationships to add
-    #[serde(default)]
-    pub add_relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
-    /// Relationship names to remove (soft-delete: edge table preserved).
-    /// `extends`/`extended_by` are rejected here — see the `extends` field
-    /// above; the parent edge can only be re-targeted, never cleared, and
-    /// this generic by-name path is not a back door around that.
-    #[serde(default)]
-    pub remove_relationships: Option<Vec<String>>,
-    /// New description (optional)
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Make the type abstract (`true`) or concrete (`false`); absent leaves it
-    /// unchanged. A type that already has nodes of its own cannot become
-    /// abstract: no node may have an abstract type (ADR-086 §6).
-    #[serde(default, rename = "abstract")]
-    pub is_abstract: Option<bool>,
-    /// Replace the type's `children` rule (ADR-089); absent leaves it
-    /// unchanged. Refused when it relaxes the base type's rule, or when a
-    /// node of the type already breaks the new one.
-    #[serde(default)]
-    pub children: Option<crate::models::SchemaChildrenRule>,
-    /// Replace the type's `parent` rule (ADR-089); absent leaves it
-    /// unchanged. Refused like `children`.
-    #[serde(default)]
-    pub parent: Option<crate::models::SchemaParentRule>,
-    /// Set or update the title template. Pass `null` (absent) to leave unchanged.
-    /// Use `{field_name}` tokens referencing fields defined in the schema.
-    /// Example: `"{first_name} {last_name}"`
-    #[serde(default)]
-    pub title_template: Option<String>,
-    /// Set or update the properties header summary template. Pass `null` (absent) to leave unchanged.
-    /// Uses the same `{field_name}` syntax. Evaluated client-side only.
-    /// Example: `"{status} · {company}"`
-    #[serde(default)]
-    pub properties_header_summary_template: Option<String>,
-    /// If true, proceed with the schema update even if active plays would be
-    /// affected. If false (default), return an error listing the affected plays.
-    #[serde(default)]
-    pub force: bool,
-}
+    // `add_fields` is `fields` under another name and takes the same treatment:
+    // the model appends an informationless `{"description":null,"name":null}`
+    // here too, and failing an otherwise-correct batch over it drives the same
+    // degrading-retry loop. `describe_malformed_fields` above already skips
+    // these entries, so without this they would reach serde and fail with the
+    // bare error that check exists to replace.
+    let mut params = params;
+    drop_empty_field_entries(&mut params, "add_fields");
 
-/// Output for schema update operations
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SchemaUpdateOutput {
-    pub schema_id: String,
-    pub success: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fields_added: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fields_removed: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fields_renamed: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub field_values_added: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub relationships_added: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub relationships_removed: Option<usize>,
-    /// Plays affected by this schema change (present when force=true and plays were affected)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub affected_plays: Option<Vec<String>>,
+    serde_json::from_value(params).map_err(|e| MarkdownError::invalid_params(format!("{e}")))
 }
 
 /// Update a schema with multiple changes
@@ -2625,34 +2401,10 @@ pub struct SchemaUpdateOutput {
 /// - `add_relationships`: Relationships to add
 /// - `remove_relationships`: Relationship names to remove (soft-delete)
 /// - `description`: New description (optional)
-pub async fn handle_update_schema(
+pub async fn update_schema(
     node_service: &Arc<NodeService>,
-    params: Value,
-) -> Result<Value, MarkdownError> {
-    // See `describe_malformed_fields` — locate a bad entry before serde reports
-    // only the absent key with no position.
-    describe_malformed_fields(&params, "add_fields")?;
-
-    // Same reverse-half check `handle_create_schema` runs, on the key that
-    // carries new declarations here. A relationship added by an update is a new
-    // stored edge and must be named from both ends exactly as one declared at
-    // create time.
-    if let Some(relationships) = params.get("add_relationships") {
-        describe_missing_reverse_fields(relationships)?;
-    }
-
-    // `add_fields` is `fields` under another name and takes the same treatment:
-    // the model appends an informationless `{"description":null,"name":null}`
-    // here too, and failing an otherwise-correct batch over it drives the same
-    // degrading-retry loop. `describe_malformed_fields` above already skips
-    // these entries, so without this they would reach serde and fail with the
-    // bare error that check exists to replace.
-    let mut params = params;
-    drop_empty_field_entries(&mut params, "add_fields");
-
-    let mut params: UpdateSchemaParams = serde_json::from_value(params)
-        .map_err(|e| MarkdownError::invalid_params(format!("{e}")))?;
-
+    mut params: UpdateSchemaParams,
+) -> Result<SchemaUpdateOutput, MarkdownError> {
     // `extends`/`extended_by` must not be removable through the generic
     // by-name path — see `reject_reserved_relationship_removal_names`. The
     // dedicated `extends` parameter above is the only way to change that
@@ -2818,7 +2570,7 @@ pub async fn handle_update_schema(
             validate_extends_target(node_service, &params.schema_id, new_parent).await?;
             Some(new_parent.to_string())
         } else {
-            declared_extends_parent(&relationships_before_rename)
+            schema_before.extends.clone()
         };
 
         for rename in renames {
@@ -3122,7 +2874,7 @@ pub async fn handle_update_schema(
     // this schema — `remove_relationships` (just applied above) cannot have
     // changed it, since dropping `extends` through that path is rejected.
     let current_ancestor_for_additive_check: Option<String> = if params.extends.is_none() {
-        declared_extends_parent(&relationships)
+        schema.extends.clone()
     } else {
         None
     };
@@ -3188,11 +2940,10 @@ pub async fn handle_update_schema(
         //
         // Resolved once, ahead of the loop, and only when the schema actually
         // extends something.
-        let inherited_fields: Vec<SchemaField> =
-            match declared_extends_parent(&schema.relationships) {
-                Some(parent) => resolve_effective_fields(node_service, &parent).await?,
-                None => Vec::new(),
-            };
+        let inherited_fields: Vec<SchemaField> = match &schema.extends {
+            Some(parent) => resolve_effective_fields(node_service, parent).await?,
+            None => Vec::new(),
+        };
 
         for addition in additions {
             // Extending an INHERITED field's vocabulary (ADR-078). The field
@@ -3324,6 +3075,7 @@ pub async fn handle_update_schema(
     // dangling parent, and a cycle. Re-targeting is in fact the *only* way to
     // close a cycle, since at creation time nothing can yet extend the schema
     // being created.
+    let mut extends = schema.extends.clone();
     if let Some(ref new_parent) = params.extends {
         let new_parent = new_parent.trim();
         validate_extends_target(node_service, &params.schema_id, new_parent).await?;
@@ -3338,20 +3090,11 @@ pub async fn handle_update_schema(
         // above) — mirrors the field check immediately above.
         validate_no_relationship_redeclaration(node_service, new_parent, &relationships).await?;
 
-        let replacing = relationships
-            .iter_mut()
-            .find(|r| r.name == crate::models::schema::EXTENDS_RELATIONSHIP);
-        match replacing {
-            Some(existing) => {
-                if existing.target_type.as_deref() != Some(new_parent) {
-                    *existing = extends_chain::extends_declaration(new_parent);
-                    relationships_added += 1;
-                }
-            }
-            None => {
-                relationships.push(extends_chain::extends_declaration(new_parent));
-                relationships_added += 1;
-            }
+        // The `extends` edge is itself a declaration, so a new parent counts
+        // as one added.
+        if extends.as_deref() != Some(new_parent) {
+            extends = Some(new_parent.to_string());
+            relationships_added += 1;
         }
     }
 
@@ -3409,52 +3152,36 @@ pub async fn handle_update_schema(
         .await?;
     }
 
-    // Resolve title_template: use new value if provided, otherwise keep existing
-    let title_template = params.title_template.or(schema.title_template);
-
-    // Resolve properties_header_summary_template: use new value if provided, otherwise keep existing
-    let properties_header_summary_template = params
-        .properties_header_summary_template
-        .or(schema.properties_header_summary_template);
-
+    // The schema as this call leaves it. A template, the `abstract` flag and
+    // the structural rules keep their current value unless the call sets one.
     // Whether the flag may change was settled in Phase 0
     // (`validate_type_system_changes`).
-    let is_abstract = params.is_abstract.unwrap_or(schema.is_abstract);
-    let children = params.children.unwrap_or(schema.children);
-    let parent = params.parent.unwrap_or(schema.parent);
+    let previous_extends = schema.extends.clone();
+    let expected_version = schema.envelope.version;
+    let updated_schema = SchemaNode {
+        is_abstract: params.is_abstract.unwrap_or(schema.is_abstract),
+        extends,
+        children: params.children.clone().unwrap_or(schema.children),
+        parent: params.parent.clone().unwrap_or(schema.parent),
+        fields,
+        relationships,
+        title_template: params.title_template.clone().or(schema.title_template),
+        properties_header_summary_template: params
+            .properties_header_summary_template
+            .clone()
+            .or(schema.properties_header_summary_template),
+        envelope: schema.envelope,
+        is_core: schema.is_core,
+        schema_version: schema.schema_version,
+    };
 
-    // Build updated properties (description is stored as a child subtree and
-    // relationship declarations as relationship-table rows — neither lives in
-    // properties)
-    let mut properties = serde_json::json!({
-        "isCore": schema.is_core,
-        "schemaVersion": schema.schema_version,
-        "fields": fields,
-    });
-    if is_abstract {
-        properties["abstract"] = serde_json::Value::Bool(true);
-    }
-    store_structural_rules(&mut properties, &children, &parent);
-    if let Some(ref template) = title_template {
-        properties["titleTemplate"] = serde_json::Value::String(template.clone());
-    }
-    if let Some(ref template) = properties_header_summary_template {
-        properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(template.clone());
-    }
+    // The row's properties (the description is a child subtree and the
+    // declarations are relationship-table rows — neither lives in properties).
+    let properties = schema_node::to_properties(&updated_schema);
+    let relationships = schema_node::to_declarations(&updated_schema);
 
     // Validate the updated schema before saving (update_node_unchecked bypasses the behavior
     // pipeline, so we run SchemaNodeBehavior validation explicitly here)
-    let temp_node = Node::new(
-        "schema".to_string(),
-        schema.content.clone(),
-        properties.clone(),
-    );
-    let mut updated_schema = SchemaNode::from_node(temp_node).map_err(|e| {
-        MarkdownError::invalid_params(format!("Failed to build schema for validation: {}", e))
-    })?;
-    // from_node never populates relationships (they aren't in properties);
-    // hand the validator the final declaration set explicitly.
-    updated_schema.relationships = relationships.clone();
     SchemaNodeBehavior
         .validate_schema_node(&updated_schema)
         .map_err(|e| MarkdownError::invalid_params(format!("Schema validation failed: {}", e)))?;
@@ -3463,8 +3190,8 @@ pub async fn handle_update_schema(
     // declarations, the fields/templates update, and the description
     // subtree replace land in ONE transaction. Previously up to three
     // independent atomic writes — a failure updating fields after
-    // declarations had already changed left `get_schema_with_relationships`
-    // returning an internally inconsistent `SchemaNode` (new relationships,
+    // declarations had already changed left a schema read returning an
+    // internally inconsistent `SchemaNode` (new relationships,
     // old fields). Any failure in this group now rolls back all of it.
     //
     // Declarations still go first within the group: this is where the
@@ -3491,7 +3218,6 @@ pub async fn handle_update_schema(
     // write guard, is confirm the schema node is still at the version Phase
     // 2 read; every writer of a schema definition bumps it. A mismatch
     // rejects the whole group before anything is written.
-    let expected_version = schema.version;
     let schema_id_for_tx = params.schema_id.clone();
     let relationships_for_tx = relationships.clone();
     let description_for_tx = params.description.clone();
@@ -3509,7 +3235,7 @@ pub async fn handle_update_schema(
     let mut inherited_by_owner: Vec<(String, Vec<SchemaField>)> = Vec::new();
     let mut parent_chain_versions: Vec<(String, i64)> = Vec::new();
     if let Some(new_parent) = params.extends.as_deref().map(str::trim) {
-        if declared_extends_parent(&schema.relationships).as_deref() != Some(new_parent) {
+        if previous_extends.as_deref() != Some(new_parent) {
             let (parent_fields, owners, parent_chain) = node_service
                 .resolve_field_owners(new_parent)
                 .await
@@ -3701,7 +3427,7 @@ pub async fn handle_update_schema(
             other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),
         })?;
 
-    let output = SchemaUpdateOutput {
+    Ok(SchemaUpdateOutput {
         schema_id: params.schema_id,
         success: true,
         fields_added: if fields_added > 0 {
@@ -3735,10 +3461,7 @@ pub async fn handle_update_schema(
             None
         },
         affected_plays: affected_names,
-    };
-
-    serde_json::to_value(&output)
-        .map_err(|e| MarkdownError::internal_error(format!("Failed to serialize output: {}", e)))
+    })
 }
 
 // ============================================================================

@@ -25,8 +25,10 @@
 //! connect instance nodes).
 //!
 //! Reads are consolidated in `SqliteStore::get_schema_declarations` /
-//! `get_all_schema_declarations`, which hydrate `SchemaNode.relationships`;
-//! writes go through `SqliteStore::set_schema_declarations`.
+//! `get_all_schema_declarations`, from which the store fills
+//! `SchemaNode::relationships` and `SchemaNode::extends`
+//! (`crate::models::schema_node`); writes go through
+//! `SqliteStore::set_schema_declarations`.
 //!
 //! - **Bidirectional querying**: both directions query the same edge rows
 //! - **Edge fields**: custom properties on the relationship itself

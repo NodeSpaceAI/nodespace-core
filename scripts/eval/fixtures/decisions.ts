@@ -480,7 +480,7 @@ const FIXTURES: DecisionScenario[] = [
   //
   // Every type asserted on here is USER-DEFINED, created by the setup turns
   // above. Core seeded types (`project`, `task`, `person`, ...) cannot be used:
-  // `parse_and_filter_non_core_schemas` strips them from schema candidates, so
+  // `non_core_schema_hits` strips them from schema candidates, so
   // a turn acting on one gets an EMPTY candidate set and the model emits the
   // type name from general context with nothing to select among. Measured
   // directly — "How many projects do we have?" produced

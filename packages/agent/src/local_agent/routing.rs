@@ -597,7 +597,7 @@ pub fn render_candidates_for_prompt(candidates: &[SkillCandidate]) -> Option<Str
 /// **Core types are out of scope by construction.** Every path that fills the
 /// block today drops `is_core` schemas (`skill_ops`'s *unscoped* non-core
 /// fallback — the branch that applies to `resolve_query`'s unscoped
-/// whitelisting skill — and `context_ops::parse_and_filter_non_core_schemas`),
+/// whitelisting skill — and `context_ops::non_core_schema_hits`),
 /// so a bare-value update against `task`/`text` renders no block from either
 /// source and the tool stays withheld. That matches `resolve_query`'s own
 /// description, whose examples are all custom-type (an amount, an invoice, a

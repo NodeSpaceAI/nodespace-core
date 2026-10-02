@@ -503,8 +503,8 @@ pub async fn get_related_nodes(
     // must not cross the API boundary, and diverging from `node get`/`query`.
     //
     // Note this does more than de-nest: it also promotes type-specific fields
-    // to the top level for `task`/`ai-chat`, reshapes `schema` nodes via
-    // `SchemaNode::from_node`, and injects a `nodespace://` URI. That is the
+    // to the top level for `task`/`ai-chat` and injects a `nodespace://` URI
+    // (a `schema` node keeps the generic shape). That is the
     // frontend's wire contract, so do not "simplify" this back to a plain
     // `to_value` — the shapes are not equivalent. The CLI re-keys this into
     // its own snake_case node shape (`output::related_node_to_json`).

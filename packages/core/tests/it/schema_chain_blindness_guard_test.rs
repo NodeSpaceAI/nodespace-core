@@ -117,7 +117,7 @@
 //! surface at the cost of this one false-negative class. The concrete,
 //! checked cost — two real call sites, found by re-running this scanner
 //! against the real codebase after the change and checking every entry
-//! `ALLOWLIST` no longer needed: `schema/mod.rs::handle_create_schema`
+//! `ALLOWLIST` no longer needed: `schema/mod.rs::create_schema`
 //! reads `persisted.fields`/`.relationships` (a write-confirmation echo,
 //! own-declarations-only and correct — not a bug) via `let persisted =
 //! ...; let persisted = match persisted { ... };`; and
@@ -236,7 +236,7 @@ const ALLOWLIST: &[Allowed] = &[
     },
     Allowed {
         file: "schema/mod.rs",
-        function: "handle_update_schema",
+        function: "update_schema",
         field_kind: "relationships",
         why: "Two own-only reads while mutating params.schema_id's OWN \
               declaration list, neither about inheritance. (1) \
@@ -255,7 +255,7 @@ const ALLOWLIST: &[Allowed] = &[
     },
     Allowed {
         file: "schema/mod.rs",
-        function: "handle_update_schema",
+        function: "update_schema",
         field_kind: "fields",
         why: "Phase 2 clones `schema.fields` as the starting point for \
               applying this call's add/remove_fields mutations before \
@@ -626,7 +626,7 @@ fn find_hits_in_function(body: &str, file: &str, function: &str) -> Vec<Hit> {
         // An earlier version of this check tried to except a
         // *self-referential* re-`let` (`let x = match x { ... }`, the
         // common idiom for narrowing a `Result<Option<T>>` down to `T` in
-        // two steps — exactly what `handle_create_schema` used to do)
+        // two steps — exactly what `create_schema` used to do)
         // from truncation, so that shape's own later field access would
         // still be found. That classification went through three rounds
         // of increasingly complex, still-incomplete fixes: missing the
@@ -640,7 +640,7 @@ fn find_hits_in_function(body: &str, file: &str, function: &str) -> Vec<Hit> {
         // positives, a deliberately non-exhaustive text scan, not a real
         // parser — the right trade is to stop trying to classify
         // self-reference at all: truncate on ANY reshadow, full stop. This
-        // makes `handle_create_schema`'s own `persisted.fields`/
+        // makes `create_schema`'s own `persisted.fields`/
         // `.relationships` reads invisible to this scanner — see the
         // module doc's third known false-negative class, and its two
         // ALLOWLIST entries were removed as a direct, documented
@@ -1072,13 +1072,13 @@ fn scanner_detects_a_deliberately_bad_fixture() {
 
     // Even a SELF-referential re-`let` (`let x = match x { ... }`, the
     // idiom for narrowing a `Result<Option<T>>` down to `T` in two steps —
-    // `schema/mod.rs::handle_create_schema` uses exactly this shape in real
+    // `schema/mod.rs::create_schema` uses exactly this shape in real
     // code) is now truncated too, unconditionally. This is a deliberate,
     // documented trade-off (see the module doc's third known false-negative
     // class), not an oversight: distinguishing "the new value is derived
     // from the old one" from "the new value is unrelated" turned out to be
     // a real-parser question this text scanner kept getting wrong in new
-    // ways, so it no longer tries. `handle_create_schema` itself has no
+    // ways, so it no longer tries. `create_schema` itself has no
     // ALLOWLIST entry as a direct, accepted consequence.
     let self_referential_reshadow_is_now_excluded_fixture = r#"
         async fn self_ref_reshadow(&self, node_type: &str) -> usize {

@@ -10,7 +10,6 @@ use crate::play::{PlayFields, PlayNode};
 use crate::priority::priority_prop;
 use crate::project::{ProjectNode, ProjectStatus};
 use crate::query::{QueryFields, QueryNode};
-use crate::schema::SchemaNode;
 use crate::skill::{SkillFields, SkillNode};
 use crate::task::{TaskNode, TaskStatus};
 
@@ -34,8 +33,9 @@ fn normalize_date_field(s: &str) -> String {
 /// node travels in the generic shape: a primitive, a core type whose fields
 /// stay in `properties`, and any user-defined or extension type. A subtype is
 /// never converted to its base's struct (ADR-086 §5), so the match is on the
-/// node's exact type. Adds a `nodespace://` URI field for rich client
-/// rendering.
+/// node's exact type. A `schema` node also keeps the generic shape here: its
+/// typed struct, `SchemaNode`, is filled by the store and returned by the
+/// schema reads. Adds a `nodespace://` URI field for rich client rendering.
 ///
 /// This is the single canonical implementation used by all entry points
 /// (Tauri commands, MCP, HTTP) and the SOLE authority for property flattening
@@ -64,9 +64,6 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         Some(CoreNodeType::DatabaseSettings) => database_settings_node_to_value(node),
         Some(CoreNodeType::Query) => query_node_to_value(node),
         Some(CoreNodeType::Play) => play_node_to_value(node),
-        Some(CoreNodeType::Schema) => SchemaNode::from_node(node).and_then(|s| {
-            serde_json::to_value(s).map_err(|e| format!("Failed to serialize schema: {}", e))
-        }),
         Some(
             CoreNodeType::Text
             | CoreNodeType::Header
@@ -78,6 +75,10 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
             | CoreNodeType::Table
             | CoreNodeType::Date
             | CoreNodeType::AgentGuidance
+            // A `SchemaNode` is filled by the store, from the schema's row
+            // and its declaration edges, and read through the schema reads.
+            // A schema node read as a plain node keeps the generic shape.
+            | CoreNodeType::Schema
             // Abstract: no node has it as its type, and a subtype read at its
             // scope keeps the generic shape rather than borrowing a struct.
             | CoreNodeType::AiChat
@@ -119,7 +120,9 @@ pub fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<serde_json::Value>,
 /// Note the asymmetry between the branches: inside the type's own namespace an
 /// object is a real schema-defined field value and is preserved, whereas in the
 /// already-flat fallback a nested object can only be another type's namespace
-/// and is dropped.
+/// and is dropped. A `schema` node is the one exception: its definition is
+/// flat and never bucketed, so an object among its properties is a structural
+/// rule and is kept.
 ///
 /// This governs human-readable CLI output as well as JSON: `write_human_node`
 /// and `node_to_json` share one call into it, so the two cannot disagree.
@@ -146,7 +149,7 @@ pub fn flatten_namespaced_properties(
 ///
 /// Stays pure and free of any schema lookup: the caller resolves the chain,
 /// because every caller is in code that can reach the store and this crate
-/// cannot. Passing a single scope preserves the pre-`extends` behavior exactly.
+/// cannot. Passing a single scope reads that type's bucket alone.
 pub fn flatten_namespaced_properties_at_scope(
     properties: &serde_json::Value,
     scope_chain: &[&str],
@@ -154,6 +157,22 @@ pub fn flatten_namespaced_properties_at_scope(
     let Some(props_obj) = properties.as_object() else {
         return properties.clone();
     };
+
+    // A schema's definition is not bucketed: its properties are flat, and an
+    // object among them is a structural rule (`children`, `parent`), not
+    // another type's namespace. It is read as stored.
+    if scope_chain
+        .first()
+        .is_some_and(|scope| CoreNodeType::Schema.is_exactly(scope))
+    {
+        return serde_json::Value::Object(
+            props_obj
+                .iter()
+                .filter(|(k, _)| !k.starts_with('_'))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        );
+    }
 
     // Any bucket in the chain present? If so, the node is in storage shape and
     // the chain decides what is visible.
@@ -1299,107 +1318,42 @@ mod wire_contract {
         }
     }
 
+    /// A schema node read as a plain node keeps the generic shape: the typed
+    /// `SchemaNode` comes only from the store, which fills its relationships
+    /// and parent from the declaration edges.
     #[test]
-    fn schema_promotes_fields_top_level_and_injects_uri() {
+    fn schema_read_as_a_plain_node_keeps_the_generic_shape() {
         let node = Node::new(
             "schema".to_string(),
-            "Task schema".to_string(),
+            "Task".to_string(),
             serde_json::json!({
                 "isCore": true,
                 "schemaVersion": 2,
-                "description": "Task type",
-                "fields": []
+                "fields": [],
+                "children": { "rule": "none" },
+                "parent": { "rule": "must_have_parent_of", "types": ["thread"] },
+                "_seed": { "tier": "system" },
             }),
         );
         let out = node_to_typed_value(node).unwrap();
 
-        // Schema fields are promoted to the top level by SchemaNode.
-        assert_eq!(out["isCore"], true);
-        assert_eq!(out["schemaVersion"], 2);
-        assert_eq!(out["description"], "Task type");
+        assert_eq!(out["nodeType"], "schema");
+        assert_eq!(out["properties"]["isCore"], true);
+        assert_eq!(out["properties"]["schemaVersion"], 2);
+        // The stored definition comes back whole: a structural rule is an
+        // object, and is not mistaken for another type's bucket.
+        assert_eq!(
+            out["properties"]["children"],
+            serde_json::json!({ "rule": "none" })
+        );
+        assert_eq!(
+            out["properties"]["parent"],
+            serde_json::json!({ "rule": "must_have_parent_of", "types": ["thread"] })
+        );
+        assert!(out["properties"].get("_seed").is_none());
+        assert!(out.get("isCore").is_none());
+        assert!(out.get("relationships").is_none());
         assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
-    }
-
-    /// A schema node with malformed `fields` JSON must not zero out the rest
-    /// of an unrelated batch read: `nodes_to_typed_values` `.collect()`s a
-    /// `Vec<Result<_, _>>` into a single `Result<Vec<_>, _>`, so if
-    /// `SchemaNode::from_node`'s fields-parse failure were ever propagated as
-    /// this function's own `Err` (rather than defaulting to an empty `Vec`
-    /// with a diagnostic printed on the side), one bad schema node would fail
-    /// every other node in the same batch. This pins the batch-safety
-    /// property the fix for the silent-swallow bug deliberately preserved.
-    #[test]
-    fn schema_with_malformed_fields_does_not_fail_an_unrelated_batch_read() {
-        let good_task = Node::new(
-            "task".to_string(),
-            "Buy milk".to_string(),
-            serde_json::json!({ "task": { "status": "open" } }),
-        );
-        let bad_schema = Node::new(
-            "schema".to_string(),
-            "Broken schema".to_string(),
-            serde_json::json!({
-                "isCore": false,
-                "schemaVersion": 1,
-                // `type` must be a string — this is a genuine parse failure,
-                // not merely an absent/defaulted field.
-                "fields": [{ "name": "status", "type": 42 }],
-            }),
-        );
-        let other_good_task = Node::new(
-            "task".to_string(),
-            "Walk dog".to_string(),
-            serde_json::json!({ "task": { "status": "done" } }),
-        );
-
-        let out = nodes_to_typed_values(vec![good_task, bad_schema, other_good_task])
-            .expect("one malformed schema node must not fail the whole batch");
-
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0]["status"], "open");
-        // The malformed schema node still degrades to an empty `fields` Vec
-        // (unchanged behavior) rather than dropping out of the batch.
-        assert_eq!(out[1]["fields"], serde_json::json!([]));
-        assert_eq!(out[2]["status"], "done");
-    }
-
-    /// Mirrors `schema_with_malformed_fields_does_not_fail_an_unrelated_batch_read`
-    /// above for the sibling `relationships` field, which has the identical
-    /// silent-swallow-shaped fix (`SchemaNode::from_node` delegates to
-    /// `parse_relationships`, analogous to `parse_fields`).
-    #[test]
-    fn schema_with_malformed_relationships_does_not_fail_an_unrelated_batch_read() {
-        let good_task = Node::new(
-            "task".to_string(),
-            "Buy milk".to_string(),
-            serde_json::json!({ "task": { "status": "open" } }),
-        );
-        let bad_schema = Node::new(
-            "schema".to_string(),
-            "Broken schema".to_string(),
-            serde_json::json!({
-                "isCore": false,
-                "schemaVersion": 1,
-                // `direction` must be "out"/"in" — this is a genuine parse
-                // failure, not merely an absent/defaulted field.
-                "relationships": [{ "name": "assigned_to", "direction": 42, "cardinality": "one" }],
-            }),
-        );
-        let other_good_task = Node::new(
-            "task".to_string(),
-            "Walk dog".to_string(),
-            serde_json::json!({ "task": { "status": "done" } }),
-        );
-
-        let out = nodes_to_typed_values(vec![good_task, bad_schema, other_good_task])
-            .expect("one malformed schema node must not fail the whole batch");
-
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0]["status"], "open");
-        // The malformed schema node still degrades to an empty `relationships`
-        // Vec (unchanged behavior) rather than dropping out of the batch.
-        assert_eq!(out[1]["relationships"], serde_json::json!([]));
-        assert_eq!(out[2]["status"], "done");
     }
 }
 
@@ -1567,33 +1521,6 @@ mod promotion_proptests {
             prop_assert_eq!(&out["transcript"], &serde_json::json!(transcript));
             prop_assert_eq!(&out["exitCode"], &serde_json::json!(exit_code));
             prop_assert_eq!(&out["properties"], &serde_json::json!({}));
-        }
-
-        /// Every schema field stored in the schema node's flat properties is
-        /// promoted to a top-level key, and the `nodespace://` uri is injected.
-        #[test]
-        fn schema_promotes_all_stored_fields(
-            is_core in any::<bool>(),
-            schema_version in 1u32..100,
-            description in "[ -~]{0,40}",
-        ) {
-            let node = Node::new(
-                "schema".to_string(),
-                "A schema".to_string(),
-                serde_json::json!({
-                    "isCore": is_core,
-                    "schemaVersion": schema_version,
-                    "description": description,
-                    "fields": [],
-                }),
-            );
-
-            let out = node_to_typed_value(node).unwrap();
-
-            prop_assert_eq!(&out["isCore"], &serde_json::json!(is_core));
-            prop_assert_eq!(&out["schemaVersion"], &serde_json::json!(schema_version));
-            prop_assert_eq!(&out["description"], &serde_json::json!(description));
-            prop_assert!(out["uri"].as_str().unwrap().starts_with("nodespace://"));
         }
     }
 }

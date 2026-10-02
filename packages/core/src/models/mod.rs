@@ -4,7 +4,8 @@
 //!
 //! - `Node` - Universal node model for all content types
 //! - `Embedding` - Vector embeddings for semantic search (root-aggregate model)
-//! - Typed readers (SkillFields, SchemaNode) for ergonomic access
+//! - Typed readers (SkillFields) for ergonomic access, and the storage
+//!   mapping of the `SchemaNode` wire type (`schema_node`)
 //! - Core schema definitions for built-in node types
 //!
 //! All entities use the Pure JSON schema approach with data stored in the
@@ -18,7 +19,7 @@ pub mod schema;
 pub mod time;
 
 // Type-safe node wrappers
-mod schema_node;
+pub(crate) mod schema_node;
 
 // The AI-chat family (ADR-088) is defined once, in nodespace-types.
 pub use conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};
@@ -36,9 +37,9 @@ pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers
 pub use embedding::{ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding};
+pub use nodespace_types::SchemaNode;
 pub use nodespace_types::{SchemaChildrenRule, SchemaParentRule};
 pub use nodespace_types::{SkillFields, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_NODE_TYPE};
-pub use schema_node::SchemaNode;
 
 // The core type registry (ADR-086 §3): the one list of the types NodeSpace
 // ships, and what each records.

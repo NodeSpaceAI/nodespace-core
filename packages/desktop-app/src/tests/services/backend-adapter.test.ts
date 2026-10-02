@@ -916,7 +916,6 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
           isCore: true,
           schemaVersion: 1,
           relationships: [],
-          description: 'Test schema',
           fields: []
         }
       ];
@@ -951,8 +950,18 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
         modifiedAt: '2025-01-01T00:00:00Z',
         isCore: false,
         schemaVersion: 1,
-        relationships: [],
-        description: 'Test schema',
+        relationships: [
+          {
+            name: 'owned_by',
+            targetType: 'owner',
+            direction: 'out',
+            cardinality: 'one',
+            reverseName: 'tickets',
+            reverseCardinality: 'many'
+          }
+        ],
+        extends: 'ticket',
+        titleTemplate: '{severity}',
         fields: []
       };
 
@@ -966,6 +975,10 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       const result = await adapter.getSchema('schema-1');
 
       expect(result).toEqual(mockSchema);
+      // The typed schema arrives whole: its relationships and the type it extends.
+      expect(result.relationships.map((r) => r.name)).toEqual(['owned_by']);
+      expect(result.extends).toBe('ticket');
+      expect(result.titleTemplate).toBe('{severity}');
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3001/api/schemas/schema-1'
       );
@@ -1734,7 +1747,6 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
           isCore: true,
           schemaVersion: 1,
           relationships: [],
-          description: 'Test schema',
           fields: []
         }
       ];
@@ -1762,8 +1774,18 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
         modifiedAt: '2025-01-01T00:00:00Z',
         isCore: false,
         schemaVersion: 1,
-        relationships: [],
-        description: 'Test schema',
+        relationships: [
+          {
+            name: 'owned_by',
+            targetType: 'owner',
+            direction: 'out',
+            cardinality: 'one',
+            reverseName: 'tickets',
+            reverseCardinality: 'many'
+          }
+        ],
+        extends: 'ticket',
+        titleTemplate: '{severity}',
         fields: []
       };
 
@@ -1772,6 +1794,10 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
       const result = await adapter.getSchema('schema-1');
 
       expect(result).toEqual(mockSchema);
+      // The typed schema arrives whole: its relationships and the type it extends.
+      expect(result.relationships.map((r) => r.name)).toEqual(['owned_by']);
+      expect(result.extends).toBe('ticket');
+      expect(result.titleTemplate).toBe('{severity}');
       expect(mockInvoke).toHaveBeenCalledWith('get_schema_definition', { schemaId: 'schema-1' });
     });
   });

@@ -308,7 +308,6 @@ describe('TauriSyncListener', () => {
         isCore: false,
         schemaVersion: 2,
         relationships: [],
-        description: '',
         fields: [],
         titleTemplate
       };
@@ -1219,7 +1218,6 @@ describe('TauriSyncListener', () => {
         isCore: false,
         schemaVersion: 1,
         relationships: [],
-        description: '',
         fields: []
       };
       vi.spyOn(backendAdapterModule.backendAdapter, 'getAllSchemas').mockResolvedValue([spec]);

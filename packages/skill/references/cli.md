@@ -17,11 +17,17 @@ Every key shown below is present on every node, so parse against these names
 and nothing else. `relationship get` may additionally include `title`,
 `mentions` and `mentioned_in`.
 
-The one real exception is a **schema** node reached through `relationship get`.
-It comes back in the schema's own shape rather than the node shape: camelCase
-keys (`isCore`, `schemaVersion`, `description`, `fields`, `relationships`) plus
-a `uri`, and no `node_type` or `properties` at all. Read schemas with
-`schema get` instead of traversing to them.
+**Schema JSON shape.** `schema get` and `schema list` return schemas rather
+than nodes; `schema list` wraps them as `{"count": N, "schemas": [...]}`. A
+schema is read under the keys `schema create` and `schema update` write it
+with: `fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
+`title_template` and `properties_header_summary_template`, next to `id`,
+`content` (the type's name), `is_core` and `schema_version`. There is no
+`properties` key. `extends`, `abstract`, `children`, `parent` and the two
+templates are omitted when the type doesn't declare them. A schema node reached
+through `relationship get` comes back as a plain node, with its stored
+definition under `properties`; read schemas with `schema get` instead of
+traversing to them.
 
 ```json
 {

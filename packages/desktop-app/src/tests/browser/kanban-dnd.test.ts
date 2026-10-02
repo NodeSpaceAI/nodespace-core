@@ -45,7 +45,6 @@ function schema(): SchemaNode {
     version: 1,
     isCore: false,
     schemaVersion: 1,
-    description: '',
     relationships: [],
     fields: [
       {
@@ -98,7 +97,6 @@ function invoiceSchema(): SchemaNode {
     version: 1,
     isCore: false,
     schemaVersion: 1,
-    description: '',
     relationships: [],
     fields: [
       {

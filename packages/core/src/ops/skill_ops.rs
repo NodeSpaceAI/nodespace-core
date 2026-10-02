@@ -251,8 +251,8 @@ fn schema_named_in_query<'a>(
     let query_lower = query.to_lowercase();
     let mut named = all_schemas.iter().filter(|s| {
         !s.is_core
-            && (mentions_phrase(&query_lower, &s.id.to_lowercase())
-                || mentions_phrase(&query_lower, &s.content.to_lowercase()))
+            && (mentions_phrase(&query_lower, &s.envelope.id.to_lowercase())
+                || mentions_phrase(&query_lower, &s.envelope.content.to_lowercase()))
     });
 
     let first = named.next()?;
@@ -290,10 +290,12 @@ fn format_all_scores(skill_results: &[(nodespace_types::Node, f64)]) -> String {
         .join(", ")
 }
 
-/// Parse `schema`-typed semantic-search hits into non-core `SchemaNode`s,
-/// keeping each hit's retrieval confidence.
+/// Resolve `schema`-typed semantic-search hits to the non-core schemas they
+/// name in `corpus`, keeping each hit's retrieval confidence. A hit is a raw
+/// node row, which holds none of a schema's declaration edges; the corpus
+/// schema does.
 ///
-/// Mirrors `context_ops::parse_and_filter_non_core_schemas`'s filter and the
+/// Mirrors `context_ops::non_core_schema_hits`'s filter and the
 /// reason for it: a core type (`text`/`task`/`date`, ...) is a stored schema
 /// node with embeddable content, so an unfiltered pass-through would surface
 /// it here as if it were a user-defined discovery result. Kept as this
@@ -301,16 +303,18 @@ fn format_all_scores(skill_results: &[(nodespace_types::Node, f64)]) -> String {
 /// differently-shaped results — this one keeps each hit's score, which the
 /// `context_ops.rs` caller (building a resident prompt block, not a scored
 /// candidate list) has no use for.
-fn parse_schema_search_hits(
+fn non_core_schema_hits_with_scores(
     results: Vec<(nodespace_types::Node, f64)>,
+    corpus: &[crate::models::SchemaNode],
 ) -> Vec<(crate::models::SchemaNode, f64)> {
     results
         .into_iter()
         .filter_map(|(node, score)| {
-            crate::models::SchemaNode::from_node(node)
-                .ok()
+            corpus
+                .iter()
+                .find(|s| s.envelope.id == node.id)
                 .filter(|s| !s.is_core)
-                .map(|s| (s, score))
+                .map(|s| (s.clone(), score))
         })
         .collect()
 }
@@ -340,9 +344,13 @@ fn append_named_schema_candidates(
 ) -> Vec<(crate::models::SchemaNode, f64)> {
     let query_lower = query.to_lowercase();
     for schema in all_schemas.iter().filter(|s| !s.is_core) {
-        let named = mentions_phrase(&query_lower, &schema.id.to_lowercase())
-            || mentions_phrase(&query_lower, &schema.content.to_lowercase());
-        if named && !hits.iter().any(|(s, _)| s.id == schema.id) {
+        let named = mentions_phrase(&query_lower, &schema.envelope.id.to_lowercase())
+            || mentions_phrase(&query_lower, &schema.envelope.content.to_lowercase());
+        if named
+            && !hits
+                .iter()
+                .any(|(s, _)| s.envelope.id == schema.envelope.id)
+        {
             hits.push((schema.clone(), LEXICAL_SCHEMA_MATCH_CONFIDENCE));
         }
     }
@@ -540,7 +548,7 @@ pub async fn find_skills(
         .unwrap_or_default();
 
     let schema_candidates = append_named_schema_candidates(
-        parse_schema_search_hits(schema_search_results),
+        non_core_schema_hits_with_scores(schema_search_results, &all_schemas),
         &all_schemas,
         &input.query,
     );
@@ -600,7 +608,7 @@ pub async fn find_skills(
         } else {
             all_schemas
                 .iter()
-                .filter(|s| scoped_type_ids.contains(&s.id))
+                .filter(|s| scoped_type_ids.contains(&s.envelope.id))
                 .take(scoped_type_ids.len())
                 .collect()
         };
@@ -620,12 +628,12 @@ pub async fn find_skills(
                 super::entity_types_block::EntityTypeDescriptor::from_corpus(schema, &all_schemas)
                     .to_json();
 
-            let schema_description = match schema_description_cache.get(&schema.id) {
+            let schema_description = match schema_description_cache.get(&schema.envelope.id) {
                 Some(cached) => cached.clone(),
                 None => {
                     let rendered =
-                        render_schema_description(node_service.as_ref(), &schema.id).await;
-                    schema_description_cache.insert(schema.id.clone(), rendered.clone());
+                        render_schema_description(node_service.as_ref(), &schema.envelope.id).await;
+                    schema_description_cache.insert(schema.envelope.id.clone(), rendered.clone());
                     rendered
                 }
             };
@@ -667,11 +675,12 @@ pub async fn find_skills(
             super::entity_types_block::EntityTypeDescriptor::from_corpus(schema, &all_schemas)
                 .to_json();
 
-        let schema_description = match schema_description_cache.get(&schema.id) {
+        let schema_description = match schema_description_cache.get(&schema.envelope.id) {
             Some(cached) => cached.clone(),
             None => {
-                let rendered = render_schema_description(node_service.as_ref(), &schema.id).await;
-                schema_description_cache.insert(schema.id.clone(), rendered.clone());
+                let rendered =
+                    render_schema_description(node_service.as_ref(), &schema.envelope.id).await;
+                schema_description_cache.insert(schema.envelope.id.clone(), rendered.clone());
                 rendered
             }
         };
@@ -681,8 +690,8 @@ pub async fn find_skills(
         let schema_metadata: Vec<Value> = vec![entry];
 
         skills.push(json!({
-            "id": schema.id,
-            "name": schema.content,
+            "id": schema.envelope.id,
+            "name": schema.envelope.content,
             "kind": "schema",
             "description": "",
             "confidence": confidence,
@@ -734,12 +743,15 @@ mod tests {
     use std::collections::HashMap;
 
     fn make_schema(id: &str, content: &str, is_core: bool) -> SchemaNode {
-        SchemaNode::from_node(Node::new_with_id(
-            id.to_string(),
-            "schema".to_string(),
-            content.to_string(),
-            json!({ "isCore": is_core, "fields": [] }),
-        ))
+        crate::models::schema_node::from_storage(
+            Node::new_with_id(
+                id.to_string(),
+                "schema".to_string(),
+                content.to_string(),
+                json!({ "isCore": is_core, "fields": [] }),
+            ),
+            Vec::new(),
+        )
         .expect("schema node")
     }
 
@@ -790,7 +802,7 @@ mod tests {
             make_schema("adr", "ADR", false),
         ];
         let found = schema_named_in_query("create a ticket for the login bug", &schemas);
-        assert_eq!(found.map(|s| s.id.as_str()), Some("ticket"));
+        assert_eq!(found.map(|s| s.envelope.id.as_str()), Some("ticket"));
     }
 
     #[test]
@@ -803,7 +815,7 @@ mod tests {
             make_schema("adr", "ADR", false),
         ];
         let found = schema_named_in_query("create a release plan for q3", &schemas);
-        assert_eq!(found.map(|s| s.id.as_str()), Some("release_plan"));
+        assert_eq!(found.map(|s| s.envelope.id.as_str()), Some("release_plan"));
     }
 
     #[test]
@@ -816,7 +828,7 @@ mod tests {
             "draft an architecture decision record for the new store",
             &schemas,
         );
-        assert_eq!(found.map(|s| s.id.as_str()), Some("adr"));
+        assert_eq!(found.map(|s| s.envelope.id.as_str()), Some("adr"));
     }
 
     #[test]
@@ -849,7 +861,7 @@ mod tests {
             make_schema("ticket", "Ticket", false),
         ];
         let found = schema_named_in_query("create a ticket, not a task", &schemas);
-        assert_eq!(found.map(|s| s.id.as_str()), Some("ticket"));
+        assert_eq!(found.map(|s| s.envelope.id.as_str()), Some("ticket"));
     }
 
     // -------------------------------------------------------------------
@@ -973,7 +985,7 @@ mod tests {
                      which is not about that type — precedent-name corpus was \
                      measured to have zero false positives; this query is a \
                      new one",
-                    matched.id, query
+                    matched.envelope.id, query
                 );
             }
         }
@@ -994,7 +1006,7 @@ mod tests {
              it's ready for dev, and it's blocked by the token refresh work",
             &schemas,
         );
-        assert_eq!(found.map(|s| s.id.as_str()), Some("ticket"));
+        assert_eq!(found.map(|s| s.envelope.id.as_str()), Some("ticket"));
     }
 
     /// 29 plausible-but-unprecedented schema names — common English words
@@ -1087,7 +1099,7 @@ mod tests {
         ];
         let found = schema_named_in_query("please note that the meeting moved to 3pm", &schemas);
         assert_eq!(
-            found.map(|s| s.id.as_str()),
+            found.map(|s| s.envelope.id.as_str()),
             Some("note"),
             "a schema literally named `Note` lexically matches an unrelated \
              use of the word \"note\" — confirmed, accepted risk, not a bug \
@@ -1096,7 +1108,7 @@ mod tests {
 
         let schemas = vec![make_schema("meeting", "Meeting", false)];
         let found = schema_named_in_query("what time does the meeting start", &schemas);
-        assert_eq!(found.map(|s| s.id.as_str()), Some("meeting"));
+        assert_eq!(found.map(|s| s.envelope.id.as_str()), Some("meeting"));
 
         // Every one of the 29 risky words is ALSO the exact word a genuine
         // true-positive query for that same type would use — there is no
@@ -1106,8 +1118,8 @@ mod tests {
         let schemas = vec![make_schema("log", "Log", false)];
         let false_positive = schema_named_in_query("log me out of this session", &schemas);
         let true_positive = schema_named_in_query("add a log for today's workout", &schemas);
-        assert_eq!(false_positive.map(|s| s.id.as_str()), Some("log"));
-        assert_eq!(true_positive.map(|s| s.id.as_str()), Some("log"));
+        assert_eq!(false_positive.map(|s| s.envelope.id.as_str()), Some("log"));
+        assert_eq!(true_positive.map(|s| s.envelope.id.as_str()), Some("log"));
     }
 
     fn make_node(id: &str, content: &str) -> Node {
@@ -1277,11 +1289,11 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Schema discovery: `parse_schema_search_hits` / `append_named_schema_candidates`
+    // Schema discovery: `non_core_schema_hits_with_scores` / `append_named_schema_candidates`
     // -------------------------------------------------------------------
     //
     // Mirrors `context_ops.rs`'s own test suite for
-    // `parse_and_filter_non_core_schemas` / `append_schemas_named_in_query`
+    // `non_core_schema_hits` / `append_schemas_named_in_query`
     // (same functions in spirit, kept separate for this module's own
     // scored-candidate shape — see the doc comments on the two functions
     // under test).
@@ -1297,29 +1309,38 @@ mod tests {
     }
 
     #[test]
-    fn parse_schema_search_hits_excludes_core_types_and_keeps_score() {
+    fn non_core_schema_hits_with_scores_excludes_core_types_and_keeps_score() {
         let results = vec![
             schema_search_result("text", true, 0.9),
             schema_search_result("sprint", false, 0.42),
             schema_search_result("task", true, 0.8),
         ];
 
-        let hits = parse_schema_search_hits(results);
+        let corpus = vec![
+            named_schema("text", "Text", true),
+            named_schema("sprint", "Sprint", false),
+            named_schema("task", "Task", true),
+        ];
+
+        let hits = non_core_schema_hits_with_scores(results, &corpus);
         let ids_and_scores: Vec<(&str, f64)> = hits
             .iter()
-            .map(|(s, score)| (s.id.as_str(), *score))
+            .map(|(s, score)| (s.envelope.id.as_str(), *score))
             .collect();
 
         assert_eq!(ids_and_scores, vec![("sprint", 0.42)]);
     }
 
     fn named_schema(id: &str, display: &str, is_core: bool) -> SchemaNode {
-        SchemaNode::from_node(Node::new_with_id(
-            id.to_string(),
-            "schema".to_string(),
-            display.to_string(),
-            json!({ "isCore": is_core, "fields": [] }),
-        ))
+        crate::models::schema_node::from_storage(
+            Node::new_with_id(
+                id.to_string(),
+                "schema".to_string(),
+                display.to_string(),
+                json!({ "isCore": is_core, "fields": [] }),
+            ),
+            Vec::new(),
+        )
         .expect("valid schema node")
     }
 
@@ -1334,7 +1355,7 @@ mod tests {
         let hits =
             append_named_schema_candidates(vec![], &all, "Put one down for feature write-up");
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0.id, "feature_write_up");
+        assert_eq!(hits[0].0.envelope.id, "feature_write_up");
         assert_eq!(hits[0].1, LEXICAL_SCHEMA_MATCH_CONFIDENCE);
     }
 
@@ -1343,7 +1364,7 @@ mod tests {
         let all = vec![named_schema("release_plan", "Release Plan", false)];
         let hits = append_named_schema_candidates(vec![], &all, "add a release_plan for Q3");
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0.id, "release_plan");
+        assert_eq!(hits[0].0.envelope.id, "release_plan");
     }
 
     #[test]
@@ -1386,7 +1407,7 @@ mod tests {
             &all,
             "book the venue for the invoice run",
         );
-        let ids: Vec<&str> = hits.iter().map(|(s, _)| s.id.as_str()).collect();
+        let ids: Vec<&str> = hits.iter().map(|(s, _)| s.envelope.id.as_str()).collect();
         assert_eq!(ids, vec!["invoice", "venue"]);
     }
 }

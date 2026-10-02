@@ -64,14 +64,8 @@ pub struct WorkspaceContext {
     /// unbounded signal writing into the same vector can silently zero out the
     /// injector's remaining slots. See `local_agent_service.rs::build_workspace_context`.
     ///
-    /// An upper bound on the true final semantic-sourced count, not always
-    /// exact: it is captured from the raw retrieval hits, before the
-    /// hydration step re-resolves each hit against the full schema corpus and
-    /// can drop one that no longer exists there (e.g. deleted between
-    /// retrieval and hydration). That direction of error is harmless for the
-    /// budget above — it can only make a caller slightly more conservative
-    /// (fewer slots believed available than truly are), never reproduce the
-    /// starvation this field exists to prevent.
+    /// Counts the retrieval hits that resolved to a non-core schema in the
+    /// corpus, taken before the lexical backstop appends to the same list.
     pub semantic_schema_count: usize,
     /// Entities named in the query and resolved to nodes.
     ///
@@ -464,7 +458,7 @@ fn related_one_hop_schemas(
     all_schemas: &[SchemaNode],
 ) -> Vec<SchemaNode> {
     let retrieved_ids: std::collections::HashSet<&str> =
-        retrieved.iter().map(|s| s.id.as_str()).collect();
+        retrieved.iter().map(|s| s.envelope.id.as_str()).collect();
 
     let mut related_ids: Vec<&str> = Vec::new();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -483,7 +477,7 @@ fn related_one_hop_schemas(
     // Incoming: some other schema in the corpus declares a relationship
     // targeting this schema.
     for candidate in all_schemas {
-        if retrieved_ids.contains(candidate.id.as_str()) {
+        if retrieved_ids.contains(candidate.envelope.id.as_str()) {
             continue;
         }
         let points_at_retrieved = candidate.relationships.iter().any(|rel| {
@@ -491,8 +485,8 @@ fn related_one_hop_schemas(
                 .as_deref()
                 .is_some_and(|t| retrieved_ids.contains(t))
         });
-        if points_at_retrieved && seen.insert(candidate.id.as_str()) {
-            related_ids.push(candidate.id.as_str());
+        if points_at_retrieved && seen.insert(candidate.envelope.id.as_str()) {
+            related_ids.push(candidate.envelope.id.as_str());
         }
     }
 
@@ -506,22 +500,21 @@ fn related_one_hop_schemas(
     // ordinarily declare a relationship to a core type (task, text, date),
     // which would otherwise place that core type in `related_schemas`. It
     // renders under the RELATED heading rather than EXISTING SCHEMAS, so
-    // this isn't the same ADR-063 hazard `parse_and_filter_non_core_schemas`
+    // this isn't the same ADR-063 hazard `non_core_schema_hits`
     // guards against — but there's no reason for a core type to appear in
     // either block, so the two stay consistent.
     related_ids
         .into_iter()
-        .filter_map(|id| all_schemas.iter().find(|s| s.id == id).cloned())
+        .filter_map(|id| all_schemas.iter().find(|s| s.envelope.id == id).cloned())
         .filter(|s| !s.is_core)
         .collect()
 }
 
 /// Parse semantic search results into [`SchemaNode`]s, excluding core types.
 ///
-/// The results are raw storage nodes, so the parsed schemas carry NO
-/// relationships (declarations are relationship-table rows, not a properties
-/// key) — callers that need them re-resolve each hit from the hydrated corpus
-/// returned by `get_all_schemas` (see `build_workspace_context`).
+/// A search hit is a raw node row, which holds none of a schema's declaration
+/// edges, so each hit is resolved to its schema in `corpus` (relevance order
+/// kept). A hit the corpus lacks is dropped.
 ///
 /// Retrieval is scoped only by `node_type == "schema"`, and `text`/`task`/
 /// `date` are stored schema nodes with embeddable content, so an unfiltered
@@ -534,11 +527,12 @@ fn related_one_hop_schemas(
 /// (`custom:`-prefixed) — a core type reaching this block would make the
 /// model write a bare key onto a core type, the exact ADR-063 violation that
 /// guidance exists to prevent.
-fn parse_and_filter_non_core_schemas(results: Vec<(Node, f64)>) -> Vec<SchemaNode> {
+fn non_core_schema_hits(results: Vec<(Node, f64)>, corpus: &[SchemaNode]) -> Vec<SchemaNode> {
     results
         .into_iter()
-        .filter_map(|(node, _score)| SchemaNode::from_node(node).ok())
+        .filter_map(|(node, _score)| corpus.iter().find(|s| s.envelope.id == node.id))
         .filter(|s| !s.is_core)
+        .cloned()
         .collect()
 }
 
@@ -559,11 +553,11 @@ fn append_schemas_named_in_query(
 ) -> Vec<SchemaNode> {
     let q_lower = query.to_lowercase();
     for s in all_schemas.iter().filter(|s| !s.is_core) {
-        let named = crate::ops::skill_ops::mentions_phrase(&q_lower, &s.id.to_lowercase())
-            || crate::ops::skill_ops::mentions_phrase(&q_lower, &s.content.to_lowercase());
-        if named && !hits.iter().any(|h| h.id == s.id) {
+        let named = crate::ops::skill_ops::mentions_phrase(&q_lower, &s.envelope.id.to_lowercase())
+            || crate::ops::skill_ops::mentions_phrase(&q_lower, &s.envelope.content.to_lowercase());
+        if named && !hits.iter().any(|h| h.envelope.id == s.envelope.id) {
             tracing::debug!(
-                schema_id = %s.id,
+                schema_id = %s.envelope.id,
                 query = query,
                 "workspace_context: schema recovered by name (not yet embedded, or below \
                  the similarity threshold)"
@@ -766,10 +760,31 @@ pub async fn build_workspace_context(
     // lookup, so it still runs when embeddings are unavailable.
     let resolved_entities = resolve_entities(node_service, entity_query).await;
 
+    // The schema corpus, fetched once per turn and shared by everything
+    // below: semantic hits are resolved against it (a hit is a raw node row,
+    // without the schema's declaration edges), the lexical backstop matches
+    // names in it, and incoming reachability depends on schemas outside the
+    // retrieved set.
+    //
+    // Only on a turn with a query. A resident context build with no message
+    // to retrieve against has no consumer for it, and reads nothing.
+    let lexical_query = query.filter(|q| !q.trim().is_empty());
+    let all_schemas = match lexical_query {
+        None => None,
+        Some(_) => match node_service.get_all_schemas().await {
+            Ok(schemas) => Some(schemas),
+            Err(e) => {
+                tracing::warn!(error = %e, "workspace_context: fetching the schema corpus failed; schema retrieval is skipped this turn");
+                None
+            }
+        },
+    };
+
     // Semantic schema retrieval: find schemas relevant to the query.
-    // Only runs when both an embedding service and a non-empty query are present.
-    let retrieved_hits = match (embedding_service, query.filter(|q| !q.trim().is_empty())) {
-        (Some(emb), Some(q)) => {
+    // Only runs when an embedding service, a non-empty query and the corpus
+    // are all present.
+    let retrieved_hits = match (embedding_service, lexical_query, &all_schemas) {
+        (Some(emb), Some(q), Some(corpus)) => {
             match emb
                 .semantic_search_nodes_of_type(
                     q,
@@ -780,7 +795,7 @@ pub async fn build_workspace_context(
                 .await
             {
                 Ok(results) => {
-                    let schemas = parse_and_filter_non_core_schemas(results);
+                    let schemas = non_core_schema_hits(results, corpus);
                     tracing::debug!(
                         count = schemas.len(),
                         query = q,
@@ -828,68 +843,25 @@ pub async fn build_workspace_context(
     // Purely mechanical and already precedented — `skill_ops::schema_named_in_query`
     // matches non-core schemas against the query the same way, with the same
     // token-boundary matcher, for the same reason. Core schemas stay excluded
-    // (as they are from the semantic path via `parse_and_filter_non_core_schemas`),
+    // (as they are from the semantic path via `non_core_schema_hits`),
     // and dedup keeps a hit found by both signals from being injected twice.
-    // The schema corpus, fetched ONCE and shared by both consumers below: the
-    // lexical backstop needs it to match names, and the hydration step needs it
-    // in full anyway (incoming reachability depends on schemas outside the
-    // retrieved set). Two separate `get_all_schemas()` awaits here meant two
-    // full-table reads per turn where one serves.
-    //
-    // Still conditional, though. Neither consumer exists on a turn with no
-    // query and no hits — a resident context build with no message to retrieve
-    // against — and the read before this change was gated on `retrieved_hits`
-    // being non-empty. Fetching unconditionally would add a full-table read to
-    // exactly the turns that previously did none.
-    let lexical_query = query.filter(|q| !q.trim().is_empty());
-    let all_schemas = if lexical_query.is_none() && retrieved_hits.is_empty() {
-        None
-    } else {
-        match node_service.get_all_schemas().await {
-            Ok(schemas) => Some(schemas),
-            Err(e) => {
-                tracing::warn!(error = %e, "workspace_context: fetching the schema corpus failed; the lexical backstop and relationship hydration are both skipped this turn");
-                None
-            }
-        }
-    };
-
     let retrieved_hits = match (lexical_query, &all_schemas) {
         (Some(q), Some(schemas)) => append_schemas_named_in_query(retrieved_hits, schemas, q),
         _ => retrieved_hits,
     };
 
-    // Search results are raw storage nodes, and relationship declarations are
-    // relationship-table rows rather than a `properties` key — so the parsed
-    // hits carry no relationships. Re-resolve each hit (preserving relevance
-    // order) from the hydrated schema corpus.
-    let (relevant_schemas, related_schemas) = match (&all_schemas, retrieved_hits.is_empty()) {
-        (_, true) => (vec![], vec![]),
-        (Some(schemas), false) => {
-            let relevant: Vec<SchemaNode> = retrieved_hits
-                .iter()
-                .filter_map(|hit| schemas.iter().find(|s| s.id == hit.id).cloned())
-                .collect();
-            let related = related_one_hop_schemas(&relevant, schemas);
-            let described = relevant
+    // Every hit came out of the corpus, so it carries its relationships and
+    // its parent.
+    let (relevant_schemas, related_schemas) = match &all_schemas {
+        Some(schemas) if !retrieved_hits.is_empty() => {
+            let related = related_one_hop_schemas(&retrieved_hits, schemas);
+            let described = retrieved_hits
                 .iter()
                 .map(|s| EntityTypeDescriptor::from_corpus(s, schemas))
                 .collect();
             (described, related)
         }
-        // Corpus unavailable: fall back to the unhydrated retrieval hits rather
-        // than dropping them, and omit related schemas. Same behaviour as
-        // before, now expressed once instead of in a second error arm. Their
-        // `extends` rows were never hydrated and there is no corpus to walk,
-        // so each is described from its own declarations only — the one
-        // degraded path, taken only when the schema read just failed.
-        (None, false) => (
-            retrieved_hits
-                .iter()
-                .map(|s| EntityTypeDescriptor::from_chain(s, []))
-                .collect(),
-            vec![],
-        ),
+        _ => (vec![], vec![]),
     };
 
     Ok(WorkspaceContext {
@@ -1037,7 +1009,7 @@ impl WorkspaceContext {
             if out.len() + header.len() <= max_chars {
                 out.push_str(header);
                 for schema in &self.related_schemas {
-                    let line = format!("- {}: {}\n", schema.id, schema.content);
+                    let line = format!("- {}: {}\n", schema.envelope.id, schema.envelope.content);
                     if out.len() + line.len() > max_chars {
                         break;
                     }
@@ -1214,28 +1186,67 @@ mod tests {
     /// hit would make the model write a bare property key onto a core type —
     /// the ADR-063 violation that guidance exists to prevent.
     #[test]
-    fn parse_and_filter_non_core_schemas_excludes_core_types() {
+    fn non_core_schema_hits_excludes_core_types() {
         let results = vec![
             schema_search_result("text", true),
             schema_search_result("customer", false),
             schema_search_result("task", true),
         ];
 
-        let schemas = parse_and_filter_non_core_schemas(results);
-        let ids: Vec<&str> = schemas.iter().map(|s| s.id.as_str()).collect();
+        let corpus = vec![
+            named_schema("task", "Task", true),
+            named_schema("customer", "Customer", false),
+            named_schema("text", "Text", true),
+        ];
+
+        let schemas = non_core_schema_hits(results, &corpus);
+        let ids: Vec<&str> = schemas.iter().map(|s| s.envelope.id.as_str()).collect();
 
         assert_eq!(ids, vec!["customer"]);
+    }
+
+    /// A search hit is a raw row with none of the schema's declaration
+    /// edges, so the schema returned for it is the corpus's, with its
+    /// relationships and parent. A hit the corpus lacks is dropped.
+    #[test]
+    fn non_core_schema_hits_are_the_corpus_schemas() {
+        let mut customer = named_schema("customer", "Customer", false);
+        customer.extends = Some("party".to_string());
+        customer.relationships = vec![serde_json::from_value(serde_json::json!({
+            "name": "orders",
+            "targetType": "order",
+            "direction": "out",
+            "cardinality": "many",
+            "reverseName": "customer",
+            "reverseCardinality": "one"
+        }))
+        .unwrap()];
+
+        let hits = non_core_schema_hits(
+            vec![
+                schema_search_result("customer", false),
+                schema_search_result("deleted", false),
+            ],
+            &[customer],
+        );
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].extends.as_deref(), Some("party"));
+        assert_eq!(hits[0].relationships[0].name, "orders");
     }
 
     // -- lexical backstop for schema retrieval -------------------------------
 
     fn named_schema(id: &str, display: &str, is_core: bool) -> SchemaNode {
-        SchemaNode::from_node(Node::new_with_id(
-            id.to_string(),
-            "schema".to_string(),
-            display.to_string(),
-            serde_json::json!({ "isCore": is_core, "fields": [] }),
-        ))
+        crate::models::schema_node::from_storage(
+            Node::new_with_id(
+                id.to_string(),
+                "schema".to_string(),
+                display.to_string(),
+                serde_json::json!({ "isCore": is_core, "fields": [] }),
+            ),
+            Vec::new(),
+        )
         .expect("valid schema node")
     }
 
@@ -1248,7 +1259,7 @@ mod tests {
     fn schema_named_in_query_is_recovered_when_semantic_retrieval_is_empty() {
         let all = vec![named_schema("feature_write_up", "feature write-up", false)];
         let hits = append_schemas_named_in_query(vec![], &all, "Put one down for feature write-up");
-        let ids: Vec<&str> = hits.iter().map(|s| s.id.as_str()).collect();
+        let ids: Vec<&str> = hits.iter().map(|s| s.envelope.id.as_str()).collect();
         assert_eq!(ids, vec!["feature_write_up"]);
     }
 
@@ -1273,7 +1284,7 @@ mod tests {
     /// Core types stay excluded, exactly as they are from the semantic path.
     /// Their presence in EXISTING SCHEMAS is what `create_node` guidance reads
     /// as proof a type is user-defined, so admitting one here would reintroduce
-    /// the ADR-063 violation `parse_and_filter_non_core_schemas` prevents.
+    /// the ADR-063 violation `non_core_schema_hits` prevents.
     #[test]
     fn a_named_core_schema_is_not_recovered() {
         let all = vec![named_schema("task", "Task", true)];
@@ -1302,7 +1313,7 @@ mod tests {
             &all,
             "book the venue for the invoice run",
         );
-        let ids: Vec<&str> = hits.iter().map(|s| s.id.as_str()).collect();
+        let ids: Vec<&str> = hits.iter().map(|s| s.envelope.id.as_str()).collect();
         assert_eq!(ids, vec!["invoice", "venue"]);
     }
 
@@ -1348,11 +1359,8 @@ mod tests {
     ) -> crate::models::SchemaNode {
         use crate::models::schema::SchemaField;
         crate::models::SchemaNode {
-            id: id.to_string(),
-            content: display_name.to_string(),
-            version: 1,
-            created_at: chrono::Utc::now(),
-            modified_at: chrono::Utc::now(),
+            envelope: SchemaNode::new(id.to_string(), display_name.to_string()).envelope,
+            extends: None,
             is_core: false,
             is_abstract: false,
             children: Default::default(),
@@ -1702,7 +1710,7 @@ mod tests {
             related_one_hop_schemas(std::slice::from_ref(&invoice), &[invoice.clone(), customer]);
 
         assert_eq!(related.len(), 1);
-        assert_eq!(related[0].id, "customer");
+        assert_eq!(related[0].envelope.id, "customer");
     }
 
     /// A user-defined schema relating to a core type (e.g. a project schema
@@ -1754,7 +1762,7 @@ mod tests {
         let related = related_one_hop_schemas(&[customer], &all);
 
         let related_ids: std::collections::HashSet<&str> =
-            related.iter().map(|s| s.id.as_str()).collect();
+            related.iter().map(|s| s.envelope.id.as_str()).collect();
         assert_eq!(related_ids, ["invoice", "freelance_gig"].into());
     }
 
@@ -1809,7 +1817,7 @@ mod tests {
             &[invoice.clone(), customer, region],
         );
 
-        let related_ids: Vec<&str> = related.iter().map(|s| s.id.as_str()).collect();
+        let related_ids: Vec<&str> = related.iter().map(|s| s.envelope.id.as_str()).collect();
         assert_eq!(related_ids, vec!["customer"]);
     }
 
@@ -1842,7 +1850,7 @@ mod tests {
         let related = related_one_hop_schemas(&retrieved, &all);
 
         let related_ids: std::collections::HashSet<&str> =
-            related.iter().map(|s| s.id.as_str()).collect();
+            related.iter().map(|s| s.envelope.id.as_str()).collect();
         assert_eq!(related_ids, ["customer", "event"].into());
     }
 
@@ -1874,7 +1882,7 @@ mod tests {
         // only schema that should surface, exactly once, despite invoice's
         // outgoing edge and freelance_gig's incoming edge both terminating
         // on customer.
-        let related_ids: Vec<&str> = related.iter().map(|s| s.id.as_str()).collect();
+        let related_ids: Vec<&str> = related.iter().map(|s| s.envelope.id.as_str()).collect();
         assert_eq!(related_ids, vec!["freelance_gig"]);
     }
 

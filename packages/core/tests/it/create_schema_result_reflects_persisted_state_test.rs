@@ -91,7 +91,7 @@ async fn a_write_that_cannot_be_verified_is_an_error_not_a_populated_success() {
 /// "not created".
 ///
 /// The store folds two different facts into one `Ok(None)`: the row is absent,
-/// or it is present and `SchemaNode::from_node` failed on it. Claiming the
+/// or it is present and could not be read as a schema. Claiming the
 /// first without checking would be this PR's own bug in miniature — asserting
 /// more than the read establishes — and it misleads in the costly direction.
 /// An agent told a schema it *did* commit was never created retries, the

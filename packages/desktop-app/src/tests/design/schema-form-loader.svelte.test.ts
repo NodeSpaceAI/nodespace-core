@@ -33,7 +33,6 @@ function schemaFor(id: string): SchemaNode {
     isCore: true,
     schemaVersion: 1,
     relationships: [],
-    description: '',
     fields: []
   };
 }

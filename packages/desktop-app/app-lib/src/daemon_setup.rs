@@ -842,8 +842,7 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     // StandardOutPath/StandardErrorPath on macOS and systemd's StandardOutput=/
     // StandardError=append: on Linux) rather than Stdio::null() — otherwise any
     // diagnostic the daemon writes to stdout/stderr (tracing's default writer,
-    // or an eprintln!-based diagnostic like SchemaNode::from_node's fields-parse
-    // failure message) is silently discarded.
+    // or an eprintln!-based diagnostic) is silently discarded.
     #[cfg(windows)]
     {
         spawn_daemon_windows(&daemon_bin, &log_dir).context("Failed to spawn daemon on Windows")?;
@@ -2155,8 +2154,7 @@ fn daemon_log_stdio(path: &Path) -> std::process::Stdio {
 /// `StandardOutput=`/`StandardError=append:` (Linux), both defined earlier in
 /// this file. Without this, any diagnostic the daemon writes to stdout/stderr
 /// — including `tracing_subscriber::fmt()`'s default stdout writer and
-/// `eprintln!`-based diagnostics such as `SchemaNode::from_node`'s
-/// fields-parse-failure message — is discarded outright, since a Windows
+/// `eprintln!`-based diagnostics — is discarded outright, since a Windows
 /// child spawned with `Stdio::null()` has no destination at all for that
 /// output (unlike `/dev/null`, there's no dropped-but-consistent sink; the
 /// handle is simply absent).
@@ -2337,10 +2335,7 @@ extern "system" {
 
 /// Redirect this process's OWN `STD_OUTPUT_HANDLE`/`STD_ERROR_HANDLE` to log
 /// files under `~/.nodespace/logs/`, so `eprintln!`/`println!` output
-/// produced directly inside the GUI process — notably
-/// `nodespace_types::SchemaNode::from_node`'s fields-parse-failure
-/// diagnostic, called directly (not via the daemon child) by
-/// `commands::schemas::get_all_schemas`/`get_schema_definition` — isn't
+/// produced directly inside the GUI process (not via the daemon child) isn't
 /// silently discarded.
 ///
 /// This is a distinct problem from [`spawn_daemon_windows`]'s log-file
@@ -2357,31 +2352,13 @@ extern "system" {
 /// available here — there is no `Command`/`Stdio` in play for a process
 /// redirecting its own stdio.
 ///
-/// Two designs were considered for the underlying diagnostic
-/// (`SchemaNode::from_node`'s `eprintln!`): restructuring it to return the
-/// diagnostic through its `Result` instead of printing internally, so each
-/// caller routes it through whatever logging fits that call site. That was
-/// already weighed once, deliberately, when the diagnostic was added: it has
-/// three call sites — this module's two direct callers plus
-/// `node_to_typed_value`, reachable from every entry point (Tauri, MCP,
-/// HTTP) via `nodes_to_typed_values`'s batch `Result` collection — and
-/// changing its signature to thread the diagnostic through all three
-/// uniformly was rejected specifically to avoid that blast radius across
-/// `nodespace-types`' shared, cross-process API. Nothing about having real
-/// Windows access now changes that trade-off: the two Tauri call sites this
-/// GUI process actually needs fixed are a two-caller problem, and this
-/// redirect fixes them (and every other diagnostic in the GUI process,
-/// present or future) with a single, self-contained, GUI-process-local
-/// change that touches neither `nodespace-types` nor its non-GUI callers.
-///
 /// Confirmed on a real Windows box (issue-2137 investigation) with a
 /// standalone `windows_subsystem = "windows"` harness launched with no
 /// inherited stdio (`cmd /c start /WAIT`, matching how the app is actually
 /// launched — a direct SSH invocation inherits sshd's own piped stdio and
 /// does not reproduce the bug): before this redirect, `eprintln!`/
-/// `println!` output is confirmed lost; after it, both streams — including
-/// the real `SchemaNode::from_node` diagnostic on a genuinely malformed
-/// schema — land correctly in the log file. This confirms `io::stdout()`/
+/// `println!` output is confirmed lost; after it, both streams land
+/// correctly in the log file. This confirms `io::stdout()`/
 /// `io::stderr()` re-resolve the OS standard handle at write time rather
 /// than caching a "no console" state from before the `SetStdHandle` call, on
 /// this Rust/Windows version.

@@ -125,14 +125,12 @@ export function createPluginFromSchema(schema: SchemaNode): PluginDefinition {
   const version = schema.schemaVersion;
 
   // Display name comes from schema content (the schema's name, e.g. "Customer").
-  // description is for human-readable purpose/context, not the display name.
   const displayName = schema.content || humanizeSchemaId(schemaId);
-  const description = schema.description ?? '';
 
   return {
     id: schemaId,
     name: displayName,
-    description: description || `Create ${displayName}`,
+    description: `Create ${displayName}`,
     version: `${version}.0.0`, // Use schema version as plugin version
     config: {
       // No slash command — entity types (core and user-defined alike) are not

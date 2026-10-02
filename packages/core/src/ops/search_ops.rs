@@ -748,7 +748,7 @@ pub async fn search_semantic(
                 .map_err(|e| OpsError::Internal(format!("Failed to load schemas: {}", e)))?
                 .into_iter()
                 .filter(|s| !s.is_core)
-                .map(|s| s.id)
+                .map(|s| s.envelope.id)
                 .collect()
         } else {
             HashSet::new()

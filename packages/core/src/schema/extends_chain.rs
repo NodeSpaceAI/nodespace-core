@@ -27,7 +27,7 @@
 //! than reconstructed per call site.
 
 use crate::models::schema::EXTENDS_RELATIONSHIP;
-use crate::models::{SchemaField, SchemaNode};
+use crate::models::SchemaField;
 
 /// Maximum `extends` chain depth.
 ///
@@ -270,20 +270,6 @@ fn field_has_value(fields: &[SchemaField], field_name: &str, value: &str) -> boo
                 .any(|ev| ev.value == value)
         })
         .unwrap_or(false)
-}
-
-/// The `extends` target declared by a schema, if any.
-///
-/// Reads the hydrated `relationships` list rather than properties: on the core
-/// path a schema's declarations live in the relationship table and are
-/// hydrated on read, so a `SchemaNode` built by a bare `from_node` has an
-/// empty list and will report `None` here regardless of what is stored.
-pub fn declared_parent(schema: &SchemaNode) -> Option<String> {
-    schema
-        .relationships
-        .iter()
-        .find(|rel| rel.name == EXTENDS_RELATIONSHIP)
-        .and_then(|rel| rel.target_type.clone())
 }
 
 /// Build the `SchemaRelationship` an `extends` key persists as.
