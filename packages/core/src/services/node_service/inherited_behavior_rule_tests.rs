@@ -225,10 +225,14 @@ async fn a_valid_node_accepts_a_later_update_that_leaves_the_field_alone() {
         update_via(&service, path, &id, json!({ "channel": "social" }))
             .await
             .unwrap_or_else(|e| panic!("{path:?}: an own-field update was refused: {e}"));
-        service
-            .update_node_unchecked(&id, NodeUpdate::new().with_content("Relaunch".to_string()))
-            .await
-            .unwrap_or_else(|e| panic!("{path:?}: a content update was refused: {e}"));
+        apply_via(
+            &service,
+            path,
+            &id,
+            NodeUpdate::new().with_content("Relaunch".to_string()),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{path:?}: a content update was refused: {e}"));
 
         let node = service.get_node(&id).await.unwrap().unwrap();
         assert_eq!(
@@ -378,4 +382,141 @@ async fn a_retype_into_a_subtype_defaults_inherited_fields_before_validating() {
             node.properties
         );
     }
+}
+
+/// A value named in its declaring bucket is the value stored: a create or a
+/// retype does not default over it, and it wins over the same field given
+/// flat in the same write.
+#[tokio::test]
+async fn a_value_named_in_its_declaring_bucket_is_not_defaulted_over() {
+    let (service, _temp) = service_with_campaign_type().await;
+    let addressed = json!({
+        "status": "completed",
+        "project": { "status": "active", "end_date": "2026-12-31" },
+    });
+    let expected = json!({
+        "project": { "status": "active", "end_date": "2026-12-31" },
+        "campaign": {},
+    });
+
+    let id = service
+        .create_node(campaign(addressed.clone()))
+        .await
+        .unwrap();
+    let created = service.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(created.properties, expected, "create");
+
+    for path in UPDATE_PATHS {
+        // The version-checked update never defaults: it is not a retype path.
+        if matches!(path, UpdatePath::VersionCheckedInTx) {
+            continue;
+        }
+        let id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "Launch".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        apply_via(
+            &service,
+            path,
+            &id,
+            NodeUpdate::new()
+                .with_node_type("campaign".to_string())
+                .with_properties(addressed.clone()),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{path:?}: the retype was refused: {e}"));
+
+        let node = service.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(
+            node.properties["project"], expected["project"],
+            "{path:?}: retype"
+        );
+    }
+}
+
+/// An entry of a named bucket goes to the schema that declares the field,
+/// whichever ancestor the caller named, so the behaviour that owns the rule
+/// reads it.
+#[tokio::test]
+async fn an_entry_of_a_named_bucket_is_stored_where_its_field_is_declared() {
+    let (service, _temp) = service_with_campaign_type().await;
+    crate::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "Promo",
+            "extends": "campaign",
+            "fields": [
+                { "name": "code", "type": "text", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("promo schema creation failed");
+    let promo = |properties: serde_json::Value| {
+        Node::new("promo".to_string(), "Sale".to_string(), properties)
+    };
+
+    // `project`'s dates, named in the `campaign` bucket.
+    let result = service
+        .create_node(promo(json!({
+            "campaign": { "start_date": "2026-12-31", "end_date": "2026-01-01" }
+        })))
+        .await;
+    assert_refused_by_rule(result, "a nearer ancestor's bucket");
+
+    let id = service
+        .create_node(promo(json!({
+            "campaign": { "end_date": "2026-12-31", "channel": "email", "code": "SALE" }
+        })))
+        .await
+        .unwrap();
+    let node = service.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(
+        node.properties,
+        json!({
+            "project": { "status": "planning", "end_date": "2026-12-31" },
+            "campaign": { "channel": "email" },
+            "promo": { "code": "SALE" },
+        })
+    );
+}
+
+/// A user-defined type refuses properties that are not an object, with or
+/// without declared fields to default.
+#[tokio::test]
+async fn properties_that_are_not_an_object_are_refused_for_a_user_defined_type() {
+    let (service, _temp) = service_with_campaign_type().await;
+    crate::schema::handle_create_schema(
+        &service,
+        json!({
+            "name": "Memo",
+            "fields": [
+                {
+                    "name": "tone",
+                    "type": "text",
+                    "protection": "user",
+                    "indexed": false,
+                    "default": "plain"
+                }
+            ]
+        }),
+    )
+    .await
+    .expect("memo schema creation failed");
+
+    let result = service
+        .create_node(Node::new(
+            "memo".to_string(),
+            "Note".to_string(),
+            json!("not an object"),
+        ))
+        .await;
+    assert!(
+        result.is_err(),
+        "the properties were discarded instead of refused: {result:?}"
+    );
 }

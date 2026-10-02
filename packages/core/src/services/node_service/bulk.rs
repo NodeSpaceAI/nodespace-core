@@ -138,6 +138,7 @@ impl NodeService {
             (Vec<crate::models::SchemaField>, Vec<String>),
         > = std::collections::HashMap::new();
         let mut instantiable_types = std::collections::HashSet::new();
+        let mut ownership_by_type = std::collections::HashMap::new();
         for node in &mut nodes {
             // Every node of this batch is created a root, so a type that
             // needs a parent is refused (ADR-089). Asked once per distinct
@@ -165,7 +166,10 @@ impl NodeService {
 
             // Step 2: Re-bucketing, then behavior and chain-aware schema
             // validation
-            self.rebucket_and_validate(node, false).await?;
+            let ownership = self
+                .field_ownership_in_batch(&node.node_type, &mut ownership_by_type)
+                .await?;
+            self.rebucket_and_validate_with(node, ownership, false)?;
             // A new play carries no suspension, on this create path as on
             // the single-node one (ADR-087 §5).
             if self
@@ -873,6 +877,7 @@ impl NodeService {
 
         let mut schemas: std::collections::HashMap<String, Option<crate::models::SchemaNode>> =
             std::collections::HashMap::new();
+        let mut ownership_by_type = std::collections::HashMap::new();
         for (id, update) in &updates {
             let existing = existing_nodes
                 .get(id)
@@ -949,8 +954,10 @@ impl NodeService {
                     ))
                 })?;
             }
-            self.rebucket_and_validate(&mut updated, node_type_changed)
-                .await
+            let ownership = self
+                .field_ownership_in_batch(&updated.node_type, &mut ownership_by_type)
+                .await?;
+            self.rebucket_and_validate_with(&mut updated, ownership, node_type_changed)
                 .map_err(|e| {
                     NodeServiceError::bulk_operation_failed(format!(
                         "Failed to validate node {}: {}",

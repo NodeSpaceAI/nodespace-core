@@ -5,7 +5,8 @@ use super::*;
 /// `(effective_fields, field_name -> owning_schema_id, chain)`, as
 /// [`NodeService::resolve_field_owners`] returns it: what a write needs of a
 /// node type to default, bucket and validate a node of it. A bulk write
-/// resolves it once per distinct type, not once per row.
+/// resolves it once per distinct type, not once per row
+/// ([`NodeService::field_ownership_in_batch`]).
 pub(crate) type FieldOwnershipInfo = (
     Vec<crate::models::SchemaField>,
     std::collections::HashMap<String, String>,
@@ -2900,9 +2901,14 @@ impl NodeService {
     /// new write path gets it right by calling this rather than by copying it
     /// correctly.
     ///
-    /// Four orderings are load-bearing and are the reason this is one
+    /// Five orderings are load-bearing and are the reason this is one
     /// function rather than separate calls at each site:
     ///
+    /// 0. **Un-nesting first.** A field the caller named in its declaring
+    ///    bucket arrives nested in the node's own
+    ///    ([`Self::unnest_ancestor_buckets`]). Every later step reads a field
+    ///    from the bucket it is stored in: a default fills only a field with
+    ///    no value there, and a behaviour reads its own type's bucket.
     /// 1. **Defaults before bucketing.** `apply_schema_defaults_with_fields`
     ///    puts defaults in the node's *own* bucket; bucketing then moves any
     ///    inherited one into its declaring ancestor's. Reversing them strands
@@ -2959,6 +2965,20 @@ impl NodeService {
         self.resolve_field_owners(node_type).await
     }
 
+    /// [`Self::field_ownership_for_write`] for one row of a batch: resolved
+    /// on the first row of each type and kept in `resolved`.
+    pub(crate) async fn field_ownership_in_batch<'a>(
+        &self,
+        node_type: &str,
+        resolved: &'a mut std::collections::HashMap<String, FieldOwnershipInfo>,
+    ) -> Result<&'a FieldOwnershipInfo, NodeServiceError> {
+        if !resolved.contains_key(node_type) {
+            let ownership = self.field_ownership_for_write(node_type).await?;
+            resolved.insert(node_type.to_string(), ownership);
+        }
+        Ok(&resolved[node_type])
+    }
+
     /// [`Self::rebucket_and_validate`] with the type's ownership already
     /// resolved.
     pub(crate) fn rebucket_and_validate_with(
@@ -2993,12 +3013,21 @@ impl NodeService {
         apply_defaults: bool,
     ) -> Result<(), NodeServiceError> {
         let (fields, owners, chain) = ownership;
+        if !node.properties.is_object() {
+            // Nothing to bucket. Whether the type takes properties that are
+            // not an object is its behaviours' call (a user-defined type
+            // does not), made before defaulting replaces them with an empty
+            // object.
+            self.behaviors.validate_node(node, chain)?;
+        }
+        node.properties =
+            Self::unnest_ancestor_buckets(&node.node_type, &node.properties, owners, chain);
         if !fields.is_empty() {
             if apply_defaults {
                 self.apply_schema_defaults_with_fields(node, fields, Some(chain))?;
             }
             node.properties =
-                Self::bucket_properties_by_owner(&node.node_type, &node.properties, owners, chain);
+                Self::bucket_properties_by_owner(&node.node_type, &node.properties, owners);
         }
         self.behaviors.validate_node(node, chain)?;
         Ok(())
@@ -3044,6 +3073,86 @@ impl NodeService {
         Ok(())
     }
 
+    /// Lift an ancestor's bucket out of the node's own bucket, where flat
+    /// normalization put it.
+    ///
+    /// A caller may name a field in its declaring bucket
+    /// (`{"task": {"status": …}}` on an issue). Flat normalization reads no
+    /// schema, so it files that bucket under the node's own type like any
+    /// other key: `{"issue": {"task": {"status": …}}}`. An own-bucket key is
+    /// such a bucket, not a field, when it is the name of a type the node
+    /// extends, holds an object, and no schema in the chain declares a field
+    /// of that name.
+    ///
+    /// Each entry of it goes to the bucket of the schema that declares it,
+    /// the same rule as [`Self::bucket_properties_by_owner`], or to the
+    /// bucket the caller named when no schema does. An entry addressed this
+    /// way wins over the same inherited field given flat in the same write.
+    ///
+    /// Runs before defaults are applied: a default fills only a field with
+    /// no value, and a value still nested here would read as none.
+    pub(crate) fn unnest_ancestor_buckets(
+        node_type: &str,
+        properties: &serde_json::Value,
+        owners: &std::collections::HashMap<String, String>,
+        chain: &[String],
+    ) -> serde_json::Value {
+        let Some(own_bucket) = properties.get(node_type).and_then(|v| v.as_object()) else {
+            return properties.clone();
+        };
+        let is_ancestor_bucket = |key: &str, value: &serde_json::Value| {
+            key != node_type
+                && value.is_object()
+                && !owners.contains_key(key)
+                && chain.iter().any(|scope| scope == key)
+        };
+        if !own_bucket
+            .iter()
+            .any(|(key, value)| is_ancestor_bucket(key, value))
+        {
+            return properties.clone();
+        }
+
+        let mut out = properties.as_object().cloned().unwrap_or_default();
+        let mut own = serde_json::Map::new();
+        let mut addressed = Vec::new();
+        for (key, value) in own_bucket {
+            match value.as_object() {
+                Some(entries) if is_ancestor_bucket(key, value) => {
+                    addressed.push((key, entries));
+                }
+                _ => {
+                    own.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        for (named, entries) in addressed {
+            for (field, value) in entries {
+                let owner = owners.get(field);
+                let target = owner.map_or(named.as_str(), String::as_str);
+                if target == node_type {
+                    own.insert(field.clone(), value.clone());
+                    continue;
+                }
+                if owner.is_some() {
+                    // The same inherited field given flat: the addressed
+                    // value is the one kept.
+                    own.remove(field);
+                }
+                let bucket = out
+                    .entry(target.to_string())
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(bucket) = bucket.as_object_mut() {
+                    bucket.insert(field.clone(), value.clone());
+                }
+            }
+        }
+
+        out.insert(node_type.to_string(), serde_json::Value::Object(own));
+        serde_json::Value::Object(out)
+    }
+
     /// Re-bucket already-normalized properties by which schema declares each
     /// field, for a node whose type participates in an `extends` chain
     /// (ADR-078).
@@ -3061,28 +3170,21 @@ impl NodeService {
     /// `owners` maps field name → declaring schema id. A field with no entry
     /// stays in the node's own bucket: it is either undeclared (ad-hoc, no
     /// ancestor can claim it) or declared by the node's own type.
-    ///
-    /// One undeclared key is not a field: an ancestor's type name holding an
-    /// object. A caller that names a field in its declaring bucket
-    /// (`{"task": {"status": …}}` on an issue) has that bucket normalized
-    /// into the node's own like any other key, since flat normalization
-    /// reads no schema. `chain` is the node's `extends` chain; the entries of
-    /// such a nested bucket go to the ancestor's bucket they were addressed
-    /// to, where its behaviour and the schema validate them.
     pub(crate) fn bucket_properties_by_owner(
         node_type: &str,
         properties: &serde_json::Value,
         owners: &std::collections::HashMap<String, String>,
-        chain: &[String],
     ) -> serde_json::Value {
         let Some(props_obj) = properties.as_object() else {
             return properties.clone();
         };
 
-        // Nothing to move for a type that extends nothing. The common case
-        // by far — every node type is unextended until something declares
-        // `extends` — so this keeps the unextended write path at one clone.
-        if chain.len() < 2 {
+        // Nothing to move when no field is owned by an ancestor. The common
+        // case by far — every node type is unextended until something
+        // declares `extends` — so this keeps the unextended write path at one
+        // map scan and no allocation.
+        let has_inherited = owners.values().any(|owner| owner != node_type);
+        if !has_inherited {
             return properties.clone();
         }
 
@@ -3107,21 +3209,6 @@ impl NodeService {
                             .or_insert_with(|| serde_json::json!({}));
                         if let Some(bucket_obj) = bucket.as_object_mut() {
                             bucket_obj.insert(field.clone(), value.clone());
-                        }
-                    }
-                    None if field != node_type
-                        && value.is_object()
-                        && chain.iter().any(|scope| scope == field) =>
-                    {
-                        let bucket = out
-                            .entry(field.clone())
-                            .or_insert_with(|| serde_json::json!({}));
-                        if let (Some(bucket_obj), Some(named)) =
-                            (bucket.as_object_mut(), value.as_object())
-                        {
-                            for (key, value) in named {
-                                bucket_obj.insert(key.clone(), value.clone());
-                            }
                         }
                     }
                     _ => {
