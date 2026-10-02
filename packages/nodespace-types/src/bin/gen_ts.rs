@@ -147,6 +147,7 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         AiChatResolvedEntity,
         AiChatPendingDeletion,
         AiChatTurnOutcome,
+        AiChatMessageRole,
         AiChatMessage,
         AiChatProvider,
         AiChatTurnStatus,

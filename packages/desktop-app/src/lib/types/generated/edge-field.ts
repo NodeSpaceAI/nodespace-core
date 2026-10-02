@@ -1,12 +1,13 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { EnumValue } from './enum-value';
+import type { SchemaFieldType } from './schema-field-type';
 
 export type EdgeField = {
   name: string;
-  type: string;
+  type: SchemaFieldType;
   /**
    * The closed set of values an `enum` edge field admits, each with a display
-   * label. Required for `field_type == "enum"` and rejected on any other type.
+   * label. Required on an `enum` field and rejected on any other type.
    *
    * Deliberately narrower than [`SchemaField`], which also carries
    * `user_values` and `extensible`: an edge enum is a fixed vocabulary. The

@@ -102,6 +102,28 @@ impl AiChatSessionStatus {
     }
 }
 
+/// Who sent a message in a native chat (ADR-088).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "lowercase")]
+pub enum AiChatMessageRole {
+    User,
+    Assistant,
+    System,
+}
+
+impl AiChatMessageRole {
+    pub const ALL: [AiChatMessageRole; 3] = [Self::User, Self::Assistant, Self::System];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+            Self::System => "system",
+        }
+    }
+}
+
 /// A graph write completed during an assistant turn.
 ///
 /// Only successful, state-changing tool calls are recorded. This is the durable
@@ -225,8 +247,8 @@ pub struct AiChatPendingDeletion {
 #[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct AiChatMessage {
-    /// Sender role: `"user"`, `"assistant"`, or `"system"`.
-    pub role: String,
+    /// Who sent the message.
+    pub role: AiChatMessageRole,
 
     /// Message text.
     pub content: String,
@@ -589,6 +611,43 @@ mod tests {
         assert_eq!(unreadable.len(), 1);
     }
 
+    /// A role is one of the three the type names. A message stored with any
+    /// other is unreadable like any malformed message: left out and reported,
+    /// and the chat still reads.
+    #[test]
+    fn a_message_with_a_role_outside_the_vocabulary_is_left_out_and_reported() {
+        let node = native(json!({ "ai-chat-native": { "messages": [
+            { "role": "user", "content": "kept" },
+            { "role": "tool_call", "content": "search" },
+            { "role": "system", "content": "also kept" }
+        ] } }));
+        let (chat, unreadable) = AiChatNativeNode::from_node_reporting(node).unwrap();
+        let roles: Vec<AiChatMessageRole> = chat.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [AiChatMessageRole::User, AiChatMessageRole::System]);
+        assert_eq!(unreadable.len(), 1);
+    }
+
+    /// No validated write stores a value outside a closed enum. One that got
+    /// there some other way reads as the field's default, and the chat still
+    /// reads.
+    #[test]
+    fn a_stored_value_outside_a_closed_enum_reads_as_the_default() {
+        let chat = AiChatNativeNode::from_node(native(json!({
+            "ai-chat-native": { "provider": "pty", "turn_status": "archived" }
+        })))
+        .unwrap();
+        assert_eq!(chat.provider, AiChatProvider::default());
+        assert_eq!(chat.turn_status, AiChatTurnStatus::default());
+
+        let pty = Node::new(
+            "ai-chat-pty".to_string(),
+            "Session".to_string(),
+            json!({ "ai-chat-pty": { "session_status": "archived" } }),
+        );
+        let chat = AiChatPtyNode::from_node(pty).unwrap();
+        assert_eq!(chat.session_status, AiChatSessionStatus::default());
+    }
+
     #[test]
     fn the_conversation_patch_names_only_the_turn_state_and_the_messages() {
         let mut chat = AiChatNativeNode::from_node(native(json!({
@@ -598,7 +657,7 @@ mod tests {
         .unwrap();
         chat.turn_status = AiChatTurnStatus::Processing;
         chat.messages.push(AiChatMessage {
-            role: "user".to_string(),
+            role: AiChatMessageRole::User,
             content: "hi".to_string(),
             timestamp: None,
             reasoning: None,
@@ -672,6 +731,9 @@ mod tests {
                 serde_json::to_value(status).unwrap(),
                 json!(status.as_str())
             );
+        }
+        for role in AiChatMessageRole::ALL {
+            assert_eq!(serde_json::to_value(role).unwrap(), json!(role.as_str()));
         }
     }
 }

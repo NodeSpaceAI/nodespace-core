@@ -2551,7 +2551,7 @@ fn validate_edge_data_against_fields(
     };
 
     for field in edge_fields {
-        if field.field_type != "enum" {
+        if field.field_type != crate::models::SchemaFieldType::Enum {
             continue;
         }
         let Some(value) = obj.get(&field.name) else {

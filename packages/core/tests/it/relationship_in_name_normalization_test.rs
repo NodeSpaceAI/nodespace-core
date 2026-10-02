@@ -747,7 +747,7 @@ async fn unpaired_or_mismatched_in_declaration_is_rejected_at_save() -> Result<(
         (
             json!({
                 "name": "approved_by",
-                "edgeFields": [{ "name": "note", "type": "string" }]
+                "edgeFields": [{ "name": "note", "type": "text" }]
             }),
             "edgeFields",
         ),

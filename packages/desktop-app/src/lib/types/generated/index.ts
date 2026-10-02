@@ -5,6 +5,7 @@ export type { AddRelationshipParams } from './add-relationship-params';
 export type { AiChatBase } from './ai-chat-base';
 export type { AiChatCompletedWrite } from './ai-chat-completed-write';
 export type { AiChatMessage } from './ai-chat-message';
+export type { AiChatMessageRole } from './ai-chat-message-role';
 export type { AiChatNativeNode } from './ai-chat-native-node';
 export type { AiChatPendingDeletion } from './ai-chat-pending-deletion';
 export type { AiChatProvider } from './ai-chat-provider';

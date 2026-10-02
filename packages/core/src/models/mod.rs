@@ -27,9 +27,9 @@ pub use node::{
     NodeRelationship, NodeUpdate, OrderBy, PropertyFilter, TraversalDirection, ValidationError,
 };
 pub use nodespace_types::{
-    AiChatBase, AiChatCompletedWrite, AiChatMessage, AiChatNativeNode, AiChatPendingDeletion,
-    AiChatProvider, AiChatPtyNode, AiChatResolvedEntity, AiChatSessionStatus, AiChatTurnOutcome,
-    AiChatTurnStatus, NODESPACE_AGENT,
+    AiChatBase, AiChatCompletedWrite, AiChatMessage, AiChatMessageRole, AiChatNativeNode,
+    AiChatPendingDeletion, AiChatProvider, AiChatPtyNode, AiChatResolvedEntity,
+    AiChatSessionStatus, AiChatTurnOutcome, AiChatTurnStatus, NODESPACE_AGENT,
 };
 pub use schema::{RelationshipDirection, SchemaField, SchemaFieldType, SchemaProtectionLevel};
 pub use time::{SystemTimeProvider, TimeProvider};

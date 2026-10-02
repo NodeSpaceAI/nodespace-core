@@ -1776,7 +1776,7 @@ fn validate_edge_field_declarations(
             continue;
         };
         for field in edge_fields {
-            let is_enum = field.field_type == "enum";
+            let is_enum = field.field_type == crate::models::SchemaFieldType::Enum;
 
             if !is_enum {
                 if field.core_values.is_some() {
@@ -3945,7 +3945,7 @@ mod tests {
     fn edge_field(name: &str, field_type: &str) -> EdgeField {
         EdgeField {
             name: name.to_string(),
-            field_type: field_type.to_string(),
+            field_type: field_type.parse().unwrap(),
             core_values: None,
             indexed: None,
             required: None,
@@ -3998,7 +3998,7 @@ mod tests {
     fn core_values_on_a_non_enum_edge_field_is_rejected() {
         // A value set on a field nothing validates against is a declaration
         // whose author believed it would be enforced.
-        let mut role = edge_field("role", "string");
+        let mut role = edge_field("role", "text");
         role.core_values = Some(rbac_values());
         let rels = vec![rel_with_edge_fields(vec![role])];
         let err = validate_edge_field_declarations(&rels).unwrap_err();
@@ -4053,7 +4053,7 @@ mod tests {
         let plain = vec![
             rel_with_edge_fields(vec![
                 edge_field("billing_date", "date"),
-                edge_field("payment_terms", "string"),
+                edge_field("payment_terms", "text"),
             ]),
             SchemaRelationship {
                 edge_fields: None,

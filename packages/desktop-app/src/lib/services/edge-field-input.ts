@@ -19,11 +19,8 @@ export type EdgeInputKind = 'number' | 'boolean' | 'date' | 'datetime' | 'enum' 
 export function edgeInputKind(field: RawEdgeField): EdgeInputKind {
   switch (field.type) {
     case 'number':
-    case 'integer':
-    case 'float':
       return 'number';
     case 'boolean':
-    case 'bool':
       return 'boolean';
     case 'date':
       return 'date';
@@ -36,7 +33,9 @@ export function edgeInputKind(field: RawEdgeField): EdgeInputKind {
       // than presenting an empty dropdown with no way out; the backend
       // requires coreValues on an enum declaration, so this is defensive.
       return (field.coreValues?.length ?? 0) > 0 ? 'enum' : 'text';
-    default:
+    case 'text':
+    case 'array':
+    case 'object':
       return 'text';
   }
 }

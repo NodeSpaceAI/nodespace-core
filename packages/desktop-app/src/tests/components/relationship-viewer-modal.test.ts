@@ -127,7 +127,7 @@ describe('RelationshipViewerModal: inbound many-to-many', () => {
           targetType: 'person',
           sourceType: 'person',
           reverseName: 'members',
-          edgeFields: [{ name: 'access', type: 'string' }],
+          edgeFields: [{ name: 'access', type: 'text' }],
           related: [{ ...related('person-sam', 'Sam Lee'), nodeType: 'person' }],
           count: 1
         })

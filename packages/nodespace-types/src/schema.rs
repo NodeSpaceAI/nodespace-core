@@ -320,9 +320,9 @@ fn is_false(b: &bool) -> bool {
 pub struct EdgeField {
     pub name: String,
     #[serde(rename = "type")]
-    pub field_type: String,
+    pub field_type: SchemaFieldType,
     /// The closed set of values an `enum` edge field admits, each with a display
-    /// label. Required for `field_type == "enum"` and rejected on any other type.
+    /// label. Required on an `enum` field and rejected on any other type.
     ///
     /// Deliberately narrower than [`SchemaField`], which also carries
     /// `user_values` and `extensible`: an edge enum is a fixed vocabulary. The
@@ -1328,7 +1328,7 @@ mod tests {
     fn test_edge_field_serialization() {
         let field = EdgeField {
             name: "role".to_string(),
-            field_type: "string".to_string(),
+            field_type: SchemaFieldType::Text,
             core_values: None,
             indexed: Some(true),
             required: Some(false),
@@ -1339,7 +1339,7 @@ mod tests {
 
         let json = serde_json::to_value(&field).unwrap();
         assert_eq!(json["name"], "role");
-        assert_eq!(json["type"], "string");
+        assert_eq!(json["type"], "text");
         assert_eq!(json["indexed"], true);
         assert_eq!(json["required"], false);
         assert_eq!(json["default"], "member");
@@ -1359,7 +1359,7 @@ mod tests {
 
         let field: EdgeField = serde_json::from_value(json).unwrap();
         assert_eq!(field.name, "billing_date");
-        assert_eq!(field.field_type, "date");
+        assert_eq!(field.field_type, SchemaFieldType::Date);
         assert_eq!(field.required, Some(true));
         assert_eq!(field.indexed, Some(true));
         assert!(field.default.is_none());
@@ -1367,22 +1367,28 @@ mod tests {
         assert!(field.description.is_none());
     }
 
+    /// An edge field's type is the node field-type vocabulary: a type outside
+    /// it is refused when the declaration is read, and `string` is told to use
+    /// `text`.
     #[test]
-    fn test_edge_field_with_record_type() {
-        let field = EdgeField {
-            name: "approved_by".to_string(),
-            field_type: "record".to_string(),
-            core_values: None,
-            indexed: Some(true),
-            required: None,
-            default: None,
-            target_type: Some("person".to_string()),
-            description: Some("Who approved this".to_string()),
-        };
+    fn test_edge_field_type_outside_the_vocabulary_is_refused() {
+        for field_type in SchemaFieldType::ALL {
+            let field: EdgeField =
+                serde_json::from_value(json!({ "name": "f", "type": field_type.as_str() }))
+                    .unwrap();
+            assert_eq!(field.field_type, field_type);
+        }
 
-        let json = serde_json::to_value(&field).unwrap();
-        assert_eq!(json["type"], "record");
-        assert_eq!(json["targetType"], "person");
+        let unknown =
+            serde_json::from_value::<EdgeField>(json!({ "name": "approved_by", "type": "record" }))
+                .unwrap_err()
+                .to_string();
+        assert!(unknown.contains("unknown field type 'record'"), "{unknown}");
+
+        let string = serde_json::from_value::<EdgeField>(json!({ "name": "f", "type": "string" }))
+            .unwrap_err()
+            .to_string();
+        assert!(string.contains("use 'text'"), "{string}");
     }
 
     #[test]
@@ -1390,12 +1396,12 @@ mod tests {
         // Test minimal edge field (only required fields)
         let json = json!({
             "name": "simple",
-            "type": "string"
+            "type": "text"
         });
 
         let field: EdgeField = serde_json::from_value(json).unwrap();
         assert_eq!(field.name, "simple");
-        assert_eq!(field.field_type, "string");
+        assert_eq!(field.field_type, SchemaFieldType::Text);
         assert!(field.indexed.is_none());
         assert!(field.required.is_none());
         assert!(field.default.is_none());
@@ -1411,7 +1417,7 @@ mod tests {
         // conversion boundary.
         let field = EdgeField {
             name: "role".to_string(),
-            field_type: "enum".to_string(),
+            field_type: SchemaFieldType::Enum,
             core_values: Some(vec![
                 EnumValue::new("owner".to_string(), "Owner".to_string()),
                 EnumValue::new("editor".to_string(), "Editor".to_string()),
@@ -1442,7 +1448,7 @@ mod tests {
         // A non-enum edge field must not gain an empty `coreValues` key.
         let field = EdgeField {
             name: "billing_date".to_string(),
-            field_type: "date".to_string(),
+            field_type: SchemaFieldType::Date,
             core_values: None,
             indexed: None,
             required: None,
@@ -1510,7 +1516,7 @@ mod tests {
             edge_fields: Some(vec![
                 EdgeField {
                     name: "billing_date".to_string(),
-                    field_type: "date".to_string(),
+                    field_type: SchemaFieldType::Date,
                     core_values: None,
                     indexed: Some(true),
                     required: Some(true),
@@ -1520,7 +1526,7 @@ mod tests {
                 },
                 EdgeField {
                     name: "payment_terms".to_string(),
-                    field_type: "string".to_string(),
+                    field_type: SchemaFieldType::Text,
                     core_values: None,
                     indexed: None,
                     required: None,
@@ -1558,7 +1564,7 @@ mod tests {
             "edgeFields": [
                 {
                     "name": "role",
-                    "type": "string",
+                    "type": "text",
                     "indexed": true
                 },
                 {

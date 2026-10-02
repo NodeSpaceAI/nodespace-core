@@ -97,7 +97,7 @@ describe('relationship-grouping: groupEdgeColumns surfaces undeclared keys', () 
 
   it('puts declared fields first, then undeclared keys', () => {
     const group = makeGroup({
-      edgeFields: [{ name: 'role', type: 'string' }],
+      edgeFields: [{ name: 'role', type: 'text' }],
       related: [
         {
           id: 'p1',
@@ -124,7 +124,7 @@ describe('relationship-grouping: groupEdgeColumns', () => {
   it('lists declared edge fields first, then undeclared edge keys', () => {
     const group = makeGroup({
       edgeFields: [
-        { name: 'role', type: 'string' },
+        { name: 'role', type: 'text' },
         { name: 'assigned_at', type: 'date' }
       ],
       related: [
@@ -156,7 +156,7 @@ describe('relationship-grouping: buildRelationshipsView', () => {
           relationshipName: 'assigned_to',
           direction: 'out',
           targetType: 'person',
-          edgeFields: [{ name: 'role', type: 'string' }],
+          edgeFields: [{ name: 'role', type: 'text' }],
           count: 1,
           related: [
             {
@@ -190,7 +190,7 @@ describe('relationship-grouping: buildRelationshipsView', () => {
     // Mutation-driving fields carried onto the view model.
     expect(assigned?.relationshipName).toBe('assigned_to');
     expect(assigned?.required).toBe(false);
-    expect(assigned?.edgeFields).toEqual([{ name: 'role', type: 'string' }]);
+    expect(assigned?.edgeFields).toEqual([{ name: 'role', type: 'text' }]);
     expect(assigned?.rows[0]).toEqual({
       id: 'p1',
       nodeType: 'person',
@@ -225,7 +225,7 @@ describe('relationship-grouping: buildRelationshipsView', () => {
           relationshipName: 'assigned_to',
           direction: 'out',
           targetType: 'person',
-          edgeFields: [{ name: 'role', type: 'string' }],
+          edgeFields: [{ name: 'role', type: 'text' }],
           count: 0,
           related: []
         }),
@@ -260,7 +260,7 @@ describe('relationship-grouping: buildRelationshipsView', () => {
           targetType: 'person',
           required: true,
           edgeFields: [
-            { name: 'role', type: 'string' },
+            { name: 'role', type: 'text' },
             { name: 'weight', type: 'number' }
           ],
           count: 1,
@@ -275,7 +275,7 @@ describe('relationship-grouping: buildRelationshipsView', () => {
     expect(group.relationshipName).toBe('assigned_to');
     expect(group.required).toBe(true);
     expect(group.edgeFields).toEqual([
-      { name: 'role', type: 'string' },
+      { name: 'role', type: 'text' },
       { name: 'weight', type: 'number' }
     ]);
   });
@@ -413,7 +413,7 @@ describe('relationship-grouping: partitionGroups', () => {
         relationshipName: 'has_access_to',
         direction: 'in',
         reverseName: 'members',
-        edgeFields: [{ name: 'access', type: 'string' }]
+        edgeFields: [{ name: 'access', type: 'text' }]
       })
     ]);
     const { populated, addable } = partitionGroups(groups);
@@ -524,7 +524,7 @@ describe('relationship-grouping: single-valued groups are promoted to the form',
           relationshipName: 'employed_by',
           cardinality: 'one',
           farCardinality: 'many',
-          edgeFields: [{ name: 'role', type: 'string' }]
+          edgeFields: [{ name: 'role', type: 'text' }]
         })
       ]
     }).groups;
@@ -569,7 +569,7 @@ describe('relationship-grouping: groupAcceptsEdgesHere', () => {
   it('is true for an outbound group, with or without edge fields', () => {
     expect(groupAcceptsEdgesHere(groupView({}))).toBe(true);
     expect(
-      groupAcceptsEdgesHere(groupView({ edgeFields: [{ name: 'access', type: 'string' }] }))
+      groupAcceptsEdgesHere(groupView({ edgeFields: [{ name: 'access', type: 'text' }] }))
     ).toBe(true);
   });
 
@@ -583,7 +583,7 @@ describe('relationship-grouping: groupAcceptsEdgesHere', () => {
     const group = groupView({
       direction: 'in',
       reverseName: 'members',
-      edgeFields: [{ name: 'access', type: 'string' }]
+      edgeFields: [{ name: 'access', type: 'text' }]
     });
     expect(groupAcceptsEdgesHere(group)).toBe(false);
   });
@@ -600,7 +600,7 @@ describe('relationship-grouping: groupSupportsEdgeEditing', () => {
 
   it('is true for an outbound group whose schema declares edge fields', () => {
     const group = groupView({
-      edgeFields: [{ name: 'access', type: 'string' }]
+      edgeFields: [{ name: 'access', type: 'text' }]
     });
     expect(groupSupportsEdgeEditing(group)).toBe(true);
   });
@@ -615,7 +615,7 @@ describe('relationship-grouping: groupSupportsEdgeEditing', () => {
     const group = groupView({
       direction: 'in',
       reverseName: 'members',
-      edgeFields: [{ name: 'access', type: 'string' }]
+      edgeFields: [{ name: 'access', type: 'text' }]
     });
     expect(groupSupportsEdgeEditing(group)).toBe(false);
   });
@@ -657,7 +657,7 @@ describe('relationship-grouping: findGroupByKey / findRowByKey', () => {
     viewOf([
       makeGroup({
         relationshipName: 'supersedes',
-        edgeFields: [{ name: 'reason', type: 'string' }],
+        edgeFields: [{ name: 'reason', type: 'text' }],
         count: 2,
         related: [related('adr-2', { reason: 'first' }), related('adr-3', { reason: 'second' })]
       })
@@ -685,7 +685,7 @@ describe('relationship-grouping: findGroupByKey / findRowByKey', () => {
     const after = viewOf([
       makeGroup({
         relationshipName: 'supersedes',
-        edgeFields: [{ name: 'reason', type: 'string' }],
+        edgeFields: [{ name: 'reason', type: 'text' }],
         count: 2,
         related: [related('adr-2', { reason: 'edited' }), related('adr-3', { reason: 'second' })]
       })
@@ -705,7 +705,7 @@ describe('relationship-grouping: findGroupByKey / findRowByKey', () => {
     const afterRemoval = viewOf([
       makeGroup({
         relationshipName: 'supersedes',
-        edgeFields: [{ name: 'reason', type: 'string' }],
+        edgeFields: [{ name: 'reason', type: 'text' }],
         count: 1,
         related: [related('adr-3', { reason: 'second' })]
       })
@@ -768,7 +768,7 @@ describe('relationship-grouping: row keys are reproducible, so stale keys must b
     viewOf([
       makeGroup({
         relationshipName: 'supersedes',
-        edgeFields: [{ name: 'reason', type: 'string' }],
+        edgeFields: [{ name: 'reason', type: 'text' }],
         count: targets.length,
         related: targets.map((id) => related(id))
       })

@@ -47,7 +47,7 @@ use nodespace_agent::agent_types::{
     ChatInferenceEngine, ChatMessage, InferenceRequest, Role, StreamingChunk,
 };
 use nodespace_agent::local_agent::prompt_templates::title_generation_prompt;
-use nodespace_core::models::{AiChatNativeNode, NodeUpdate};
+use nodespace_core::models::{AiChatMessageRole, AiChatNativeNode, NodeUpdate};
 use nodespace_core::services::{NodeService, NodeServiceError};
 
 /// The title a new ai-chat node carries until it is titled.
@@ -124,7 +124,7 @@ pub fn needs_title(chat: &AiChatNativeNode) -> bool {
 pub fn render_for_title(chat: &AiChatNativeNode) -> String {
     chat.messages
         .iter()
-        .filter(|m| m.role == "user" || m.role == "assistant")
+        .filter(|m| m.role == AiChatMessageRole::User || m.role == AiChatMessageRole::Assistant)
         .take(TITLE_CONTEXT_MESSAGES)
         .map(|m| {
             let body: String = m
@@ -132,7 +132,7 @@ pub fn render_for_title(chat: &AiChatNativeNode) -> String {
                 .chars()
                 .take(TITLE_CONTEXT_CHARS_PER_MESSAGE)
                 .collect();
-            format!("{}: {}", m.role, body.trim())
+            format!("{}: {}", m.role.as_str(), body.trim())
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -300,9 +300,9 @@ mod tests {
     use nodespace_core::models::AiChatMessage;
     use nodespace_core::models::Node;
 
-    fn message(role: &str, content: &str) -> AiChatMessage {
+    fn message(role: AiChatMessageRole, content: &str) -> AiChatMessage {
         AiChatMessage {
-            role: role.to_string(),
+            role,
             content: content.to_string(),
             timestamp: None,
             reasoning: None,
@@ -357,9 +357,9 @@ mod tests {
     #[test]
     fn needs_title_requires_both_the_threshold_and_an_untitled_chat() {
         let msgs = vec![
-            message("user", "a"),
-            message("assistant", "b"),
-            message("user", "c"),
+            message(AiChatMessageRole::User, "a"),
+            message(AiChatMessageRole::Assistant, "b"),
+            message(AiChatMessageRole::User, "c"),
         ];
         assert!(needs_title(&chat(UNTITLED_CHAT_TITLE, msgs.clone())));
 
@@ -369,7 +369,7 @@ mod tests {
         // Untitled, but too early.
         assert!(!needs_title(&chat(
             UNTITLED_CHAT_TITLE,
-            vec![message("user", "a")]
+            vec![message(AiChatMessageRole::User, "a")]
         )));
     }
 
@@ -378,9 +378,9 @@ mod tests {
         let rendered = render_for_title(&chat(
             UNTITLED_CHAT_TITLE,
             vec![
-                message("system", "workspace scaffolding"),
-                message("user", "how do I reset my password"),
-                message("assistant", "Open settings."),
+                message(AiChatMessageRole::System, "workspace scaffolding"),
+                message(AiChatMessageRole::User, "how do I reset my password"),
+                message(AiChatMessageRole::Assistant, "Open settings."),
             ],
         ));
         assert!(!rendered.contains("scaffolding"));
@@ -388,7 +388,10 @@ mod tests {
         assert!(rendered.starts_with("user:"));
 
         let long = "x".repeat(TITLE_CONTEXT_CHARS_PER_MESSAGE * 3);
-        let rendered = render_for_title(&chat(UNTITLED_CHAT_TITLE, vec![message("user", &long)]));
+        let rendered = render_for_title(&chat(
+            UNTITLED_CHAT_TITLE,
+            vec![message(AiChatMessageRole::User, &long)],
+        ));
         assert!(rendered.chars().count() <= TITLE_CONTEXT_CHARS_PER_MESSAGE + "user: ".len());
     }
 
