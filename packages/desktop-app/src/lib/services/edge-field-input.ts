@@ -33,7 +33,9 @@ export function edgeInputKind(field: RawEdgeField): EdgeInputKind {
       // than presenting an empty dropdown with no way out; the backend
       // requires coreValues on an enum declaration, so this is defensive.
       return (field.coreValues?.length ?? 0) > 0 ? 'enum' : 'text';
-    default:
+    case 'text':
+    case 'array':
+    case 'object':
       return 'text';
   }
 }

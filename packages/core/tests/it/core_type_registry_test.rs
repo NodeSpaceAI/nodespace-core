@@ -669,6 +669,43 @@ async fn string_is_not_a_field_type() {
     .await;
 }
 
+/// An edge field's type is the same vocabulary, refused the same way.
+#[tokio::test]
+async fn string_is_not_an_edge_field_type() {
+    let (svc, _tmp) = test_service().await;
+    create_schema(&svc, json!({ "name": "Team", "fields": [] })).await;
+
+    let declare = |edge_type: &str| {
+        json!({
+            "name": "Engineer",
+            "fields": [],
+            "relationships": [{
+                "name": "works_on",
+                "targetType": "team",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "engineers",
+                "reverseCardinality": "many",
+                "edgeFields": [{ "name": "note", "type": edge_type }]
+            }]
+        })
+    };
+
+    let error = handle_create_schema(&svc, declare("string"))
+        .await
+        .expect_err("'string' is not an edge field type")
+        .to_string();
+    assert!(error.contains("use 'text'"), "{error}");
+
+    let error = handle_create_schema(&svc, declare("record"))
+        .await
+        .expect_err("an unknown edge field type must be refused")
+        .to_string();
+    assert!(error.contains("field type"), "{error}");
+
+    create_schema(&svc, declare("text")).await;
+}
+
 // ---------------------------------------------------------------------------
 // Ids
 // ---------------------------------------------------------------------------

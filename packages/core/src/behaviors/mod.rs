@@ -1659,7 +1659,9 @@ macro_rules! inherit_ai_chat_rules {
 /// agent loop. Adds to [`AiChatNodeBehavior`].
 ///
 /// The closed `provider` and `turn_status` vocabularies are the schema's to
-/// enforce; this checks the one shape the schema's field type cannot.
+/// enforce. This checks what the schema's `array` of `object` cannot: that
+/// every message is one the chat can read back, with a role from the closed
+/// vocabulary. A message the reader would leave out is refused when written.
 pub struct AiChatNativeNodeBehavior;
 
 impl NodeBehavior for AiChatNativeNodeBehavior {
@@ -1670,10 +1672,22 @@ impl NodeBehavior for AiChatNativeNodeBehavior {
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
         if let Some(messages) = get_namespaced_prop(&node.properties, self.type_name(), "messages")
         {
-            if !messages.is_array() && !messages.is_null() {
+            if messages.is_null() {
+                return Ok(());
+            }
+            let Some(messages) = messages.as_array() else {
                 return Err(NodeValidationError::InvalidProperties(
                     "messages must be an array".to_string(),
                 ));
+            };
+            for (index, message) in messages.iter().enumerate() {
+                if let Err(error) =
+                    <crate::models::AiChatMessage as serde::Deserialize>::deserialize(message)
+                {
+                    return Err(NodeValidationError::InvalidProperties(format!(
+                        "messages[{index}] is not a valid message: {error}"
+                    )));
+                }
             }
         }
         Ok(())
@@ -4622,6 +4636,53 @@ mod tests {
                 .validate_node(&opted_in, &chat_chain(node_type))
                 .is_ok());
         }
+    }
+
+    /// A message is validated when it is written: a role outside the closed
+    /// vocabulary, or a message missing a required field, is refused with the
+    /// message's index, in either property shape.
+    #[test]
+    fn test_ai_chat_native_node_refuses_a_message_it_could_not_read_back() {
+        let registry = NodeBehaviorRegistry::new();
+        let cases = [
+            (
+                json!({ "role": "tool_call", "content": "search" }),
+                "tool_call",
+            ),
+            (json!({ "role": "User", "content": "hi" }), "User"),
+            (json!({ "content": "no role" }), "role"),
+            (json!({ "role": "user" }), "content"),
+        ];
+        for (message, expected) in cases {
+            let messages = json!([{ "role": "user", "content": "ok" }, message]);
+            for properties in [
+                json!({ "messages": messages }),
+                json!({ "ai-chat-native": { "messages": messages } }),
+            ] {
+                let node = Node::new("ai-chat-native".to_string(), "Chat".to_string(), properties);
+                let err = registry
+                    .validate_node(&node, &chat_chain("ai-chat-native"))
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    err.contains("messages[1]") && err.contains(expected),
+                    "{message} must be refused by index, got: {err}"
+                );
+            }
+        }
+
+        let readable = Node::new(
+            "ai-chat-native".to_string(),
+            "Chat".to_string(),
+            json!({ "messages": [
+                { "role": "user", "content": "hi" },
+                { "role": "assistant", "content": "hello", "outcome": "replied" },
+                { "role": "system", "content": "context" }
+            ] }),
+        );
+        assert!(registry
+            .validate_node(&readable, &chat_chain("ai-chat-native"))
+            .is_ok());
     }
 
     #[test]
