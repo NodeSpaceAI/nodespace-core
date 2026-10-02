@@ -286,7 +286,13 @@ enum Stage1Outcome {
 async fn run_stage1(engine: &Arc<dyn ChatInferenceEngine>, user_message: &str) -> Stage1Outcome {
     let request = InferenceRequest {
         messages: vec![
-            ChatMessage::text(Role::System, stage1_system_prompt(&seeded_skill_names())),
+            ChatMessage::text(
+                Role::System,
+                stage1_system_prompt(
+                    &seeded_skill_names(),
+                    &nodespace_agent::local_agent::agent_loop::stage1_type_names([], user_message),
+                ),
+            ),
             ChatMessage::text(Role::User, user_message.to_string()),
         ],
         tools: Some(routing::stage1_tool_definitions()),

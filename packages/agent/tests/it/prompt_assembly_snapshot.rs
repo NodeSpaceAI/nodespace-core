@@ -687,7 +687,13 @@ fn stage2_tool_surface_matches_golden() {
 fn stage1_request_matches_golden() {
     let mut rendered = String::new();
     rendered.push_str("SYSTEM PROMPT:\n");
-    rendered.push_str(&stage1_system_prompt(&seeded_skill_names()));
+    rendered.push_str(&stage1_system_prompt(
+        &seeded_skill_names(),
+        &nodespace_agent::local_agent::agent_loop::stage1_type_names(
+            ["Invoice".to_string()],
+            "how many tasks and invoices are open?",
+        ),
+    ));
     rendered.push_str("\n\nTOOLS:\n");
     rendered.push_str(&render_tool_definitions(&stage1_tool_definitions()));
     golden::assert_matches("stage1_request", &rendered);

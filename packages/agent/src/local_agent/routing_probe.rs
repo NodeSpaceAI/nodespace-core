@@ -28,7 +28,7 @@
 //! sends — see [`probe_routing_ok`]'s doc comment.
 
 use crate::agent_types::{ChatInferenceEngine, InferenceRequest, SkillCandidate, StreamingChunk};
-use crate::local_agent::agent_loop::{stage1_system_prompt, STAGE1_MAX_TOKENS};
+use crate::local_agent::agent_loop::{stage1_system_prompt, stage1_type_names, STAGE1_MAX_TOKENS};
 use crate::local_agent::routing;
 use nodespace_nlp_engine::chat::types::{ChatMessage, Role};
 use std::sync::{Arc, Mutex};
@@ -106,7 +106,10 @@ pub async fn probe_routing_ok(
             // shape as production's: a registry is never empty there.
             ChatMessage::text(
                 Role::System,
-                stage1_system_prompt(&[probe_candidate().name]),
+                stage1_system_prompt(
+                    &[probe_candidate().name],
+                    &stage1_type_names([], PROBE_USER_MESSAGE),
+                ),
             ),
             ChatMessage::text(Role::User, PROBE_USER_MESSAGE.to_string()),
         ],

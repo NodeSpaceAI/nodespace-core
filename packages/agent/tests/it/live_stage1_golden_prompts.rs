@@ -26,7 +26,9 @@
 use std::sync::Arc;
 
 use nodespace_agent::agent_types::{ChatInferenceEngine, ChatMessage, InferenceRequest, Role};
-use nodespace_agent::local_agent::agent_loop::{stage1_system_prompt, STAGE1_MAX_TOKENS};
+use nodespace_agent::local_agent::agent_loop::{
+    stage1_system_prompt, stage1_type_names, STAGE1_MAX_TOKENS,
+};
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::routing::{
     parse_route_decision, stage1_tool_definitions, RouteDecision,
@@ -83,11 +85,31 @@ async fn run_stage1_with_history(
     prior_turns: &[&str],
     message: &str,
 ) -> Option<RouteDecision> {
+    // The prompt production sends on a turn whose schema retrieval matched
+    // nothing: the skills, and the built-in types the message names.
+    let system_prompt =
+        stage1_system_prompt(&seeded_skill_names(), &stage1_type_names([], message));
     let routing_query =
         nodespace_agent::local_agent::agent_loop::stage1_query_from_turns(prior_turns, message);
+    run_stage1_request(engine, system_prompt, routing_query)
+        .await
+        .0
+}
+
+/// Send one Stage-1 request and return the decision with what it cost: the
+/// token counts and the generation's wall-clock time.
+async fn run_stage1_request(
+    engine: &LlamaChatInferenceEngine,
+    system_prompt: String,
+    routing_query: String,
+) -> (
+    Option<RouteDecision>,
+    nodespace_agent::agent_types::InferenceUsage,
+    std::time::Duration,
+) {
     let request = InferenceRequest {
         messages: vec![
-            ChatMessage::text(Role::System, stage1_system_prompt(&seeded_skill_names())),
+            ChatMessage::text(Role::System, system_prompt),
             ChatMessage::text(Role::User, routing_query),
         ],
         tools: Some(stage1_tool_definitions()),
@@ -97,7 +119,8 @@ async fn run_stage1_with_history(
 
     let chunks: Arc<std::sync::Mutex<Vec<_>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink = chunks.clone();
-    engine
+    let started = std::time::Instant::now();
+    let usage = engine
         .generate(
             request,
             Box::new(move |c| {
@@ -108,6 +131,7 @@ async fn run_stage1_with_history(
         )
         .await
         .expect("Stage-1 generation must complete");
+    let elapsed = started.elapsed();
 
     let collected = chunks.lock().expect("chunk mutex").clone();
     let name = collected.iter().find_map(|c| match c {
@@ -115,7 +139,7 @@ async fn run_stage1_with_history(
             Some(name.clone())
         }
         _ => None,
-    })?;
+    });
     let args_json: String = collected
         .iter()
         .filter_map(|c| match c {
@@ -125,7 +149,8 @@ async fn run_stage1_with_history(
             _ => None,
         })
         .collect();
-    parse_route_decision(&name, &args_json)
+    let decision = name.and_then(|name| parse_route_decision(&name, &args_json));
+    (decision, usage, elapsed)
 }
 
 /// Golden case for the 8a-cascade root cause (#1917 checkpoints 2-6): Stage 1
@@ -277,5 +302,383 @@ async fn stage1_reformulation_for_scenario_6_update() {
             );
         }
         None => panic!("GOLDEN[6] Stage 1 called no tool or emitted unparseable arguments"),
+    }
+}
+
+/// A Stage-1 decision, by which routing tool was called.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Decision {
+    Query,
+    Multi,
+    Clarify,
+}
+
+/// Why a case is in the type-line measurement. Every case names a type, so
+/// its prompt carries the line.
+#[derive(Clone, Copy, PartialEq)]
+enum Group {
+    /// Asks about records of a type. Should route.
+    KnownType,
+    /// A request whose routing never was in doubt, or one that uses a type's
+    /// name as an ordinary word. The line must change neither what Stage 1
+    /// decides for it nor which types its query mentions.
+    Unrelated,
+}
+
+/// One message that names a type, and the decision expected of it where
+/// there is one.
+struct TypeLineCase {
+    group: Group,
+    message: &'static str,
+    expect: Option<Decision>,
+}
+
+const fn case(group: Group, message: &'static str, expect: Option<Decision>) -> TypeLineCase {
+    TypeLineCase {
+        group,
+        message,
+        expect,
+    }
+}
+
+/// The types the user has defined in the measured workspace.
+const USER_TYPES: &[&str] = &[
+    "Invoice",
+    "Customer",
+    "Vendor",
+    "Incident Report",
+    "Feature Writeup",
+];
+
+/// The words Stage 1 can be told name a built-in type.
+const BUILT_IN_TYPE_WORDS: &[&str] = &[
+    "text",
+    "date",
+    "task",
+    "project",
+    "person",
+    "people",
+    "collection",
+    "query",
+];
+
+const HOW_MANY_TASKS: &str = "Could you tell me how many tasks we have here?";
+
+/// The requests the type line moved from clarify to route when measured.
+const MOVED_TO_ROUTE: &[&str] = &[
+    "how many people do we have?",
+    "what projects are there?",
+    "tell me about the vendors",
+];
+
+const TYPE_LINE_CASES: &[TypeLineCase] = &[
+    case(Group::KnownType, HOW_MANY_TASKS, Some(Decision::Query)),
+    case(
+        Group::KnownType,
+        "how many people do we have?",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::KnownType,
+        "what projects are there?",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::KnownType,
+        "how many invoices are still open?",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::KnownType,
+        "tell me about the vendors",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::KnownType,
+        "show me my collections",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::KnownType,
+        "which tasks are overdue?",
+        Some(Decision::Query),
+    ),
+    // The prompts of the routing eval (`scripts/eval/fixtures/routing.ts`)
+    // that name a type, with the Stage-1 decision each expectation implies.
+    case(
+        Group::Unrelated,
+        "Create a new task called 'Review the sync protocol spec'",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::Unrelated,
+        "Add a task to rotate the staging API keys, and also pull up my notes on the auth redesign",
+        Some(Decision::Multi),
+    ),
+    case(
+        Group::Unrelated,
+        "Create a task to move the notifications service onto the new queue tomorrow morning, make it high priority, and note on it that the old queue shuts down at noon on Friday",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::Unrelated,
+        "add a task to call the bank tomorrow",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::Unrelated,
+        "raise an invoice for Acme and log an incident report about the outage",
+        Some(Decision::Multi),
+    ),
+    // A type's name used as an ordinary word. These get the line too.
+    case(
+        Group::Unrelated,
+        "find the text about onboarding in my notes",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::Unrelated,
+        "set the due date of the budget review to Friday",
+        Some(Decision::Query),
+    ),
+    case(
+        Group::Unrelated,
+        "what's the date today?",
+        None,
+    ),
+    case(
+        Group::Unrelated,
+        "search for notes about the Apollo project kickoff",
+        Some(Decision::Query),
+    ),
+];
+
+/// Lowercase words of `text`, split at anything that is not a letter or digit.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// The type words in `queries` that `message` does not use: a type the
+/// prompt listed, or could have, that Stage 1 worked into what retrieval
+/// will embed. A plural in "s" counts as its singular.
+fn type_words_added(message: &str, queries: &[String]) -> Vec<String> {
+    let singular = |w: &String| w.strip_suffix('s').unwrap_or(w).to_string();
+    let said: Vec<String> = words(message).iter().map(singular).collect();
+    let type_words: Vec<String> = BUILT_IN_TYPE_WORDS
+        .iter()
+        .map(|w| w.to_string())
+        .chain(USER_TYPES.iter().flat_map(|name| words(name)))
+        .collect();
+    let mut added: Vec<String> = queries
+        .iter()
+        .flat_map(|q| words(q))
+        .map(|w| singular(&w))
+        .filter(|w| type_words.contains(w) && !said.contains(w))
+        .collect();
+    added.sort();
+    added.dedup();
+    added
+}
+
+/// Measures what naming a request's types to Stage 1 changes, against the
+/// prompt without them, on the same loaded model.
+///
+/// The two arms differ only in the type line, and take turns going first.
+/// Stage 1 is told of a type only when the message names it, so every case
+/// here names one. A message that names none sends the prompt it always did;
+/// `a_message_naming_no_type_gets_no_type_line` pins that without a model.
+///
+/// Asserted, in the arm with the line:
+/// - [`HOW_MANY_TASKS`] and the [`MOVED_TO_ROUTE`] cases route on every rep;
+/// - every [`Group::Unrelated`] case with an expectation meets it on every
+///   rep;
+/// - no [`Group::Unrelated`] query mentions a type the message did not
+///   ([`type_words_added`]), which is how a type line harms a request it was
+///   not meant for.
+///
+/// Every decision is printed, with each arm's prompt size. Latency is
+/// compared only over runs where both arms made the same decision, and never
+/// over a case's first rep: a clarify call is a question with options,
+/// several times the output of a route call, so a mean over all runs measures
+/// which arm clarified more.
+///
+/// As measured on the locked model, four reps per case, every rep of a case
+/// deciding alike. Of the seven requests about records of a known type, four
+/// routed without the line and all seven with it: "how many people do we
+/// have?", "what projects are there?" and "tell me about the vendors" moved
+/// from clarify to route. The eight unrelated requests with an expectation
+/// met it in both arms, with the same queries. "what's the date today?",
+/// which has none, clarified without the line and called no routing tool
+/// with it, which the loop treats as a query on the raw message. Mean prompt
+/// 792 → 803 tokens; mean generation 2313 ms → 2397 ms over 36 runs, 23
+/// tokens generated in each arm.
+#[tokio::test]
+#[ignore = "requires the locked native GGUF on disk"]
+async fn stage1_type_line_routes_requests_that_name_a_known_type() {
+    // Even, so each arm goes first as often as the other.
+    const REPS: usize = 4;
+    const ARMS: [&str; 2] = ["without", "with"];
+
+    let engine = load_engine();
+    let skills = seeded_skill_names();
+
+    // Per case, per arm: the reps that met the case's expectation.
+    let mut met = vec![[0usize; 2]; TYPE_LINE_CASES.len()];
+    // Per case, per arm: the reps that routed (query or multi).
+    let mut routed = vec![[0usize; 2]; TYPE_LINE_CASES.len()];
+    // Per case: the type words the with-line arm's queries added.
+    let mut added: Vec<Vec<String>> = vec![Vec::new(); TYPE_LINE_CASES.len()];
+    let mut prompt_tokens = [0u64; 2];
+    let mut same_decision_elapsed = [std::time::Duration::ZERO; 2];
+    let mut same_decision_completion_tokens = [0u64; 2];
+    let mut same_decision_runs = 0u32;
+    let mut runs = 0u64;
+
+    for (index, case) in TYPE_LINE_CASES.iter().enumerate() {
+        let types = stage1_type_names(USER_TYPES.iter().map(|t| t.to_string()), case.message);
+        let prompts = [
+            stage1_system_prompt(&skills, &[]),
+            stage1_system_prompt(&skills, &types),
+        ];
+        assert_ne!(
+            prompts[0], prompts[1],
+            "{:?} must name a type, or the arms send the same prompt",
+            case.message
+        );
+
+        for rep in 0..REPS {
+            let mut decisions = [None; 2];
+            let mut took = [std::time::Duration::ZERO; 2];
+            let mut generated = [0u64; 2];
+            let order = if rep % 2 == 0 { [0, 1] } else { [1, 0] };
+            for arm in order {
+                let (decision, usage, elapsed) =
+                    run_stage1_request(&engine, prompts[arm].clone(), case.message.to_string())
+                        .await;
+                prompt_tokens[arm] += u64::from(usage.prompt_tokens);
+                took[arm] = elapsed;
+                generated[arm] = u64::from(usage.completion_tokens);
+
+                let (kind, queries) = match decision {
+                    Some(RouteDecision::Query(q)) => (Some(Decision::Query), vec![q]),
+                    Some(RouteDecision::Multi(qs)) => (Some(Decision::Multi), qs),
+                    Some(RouteDecision::Clarify { question, .. }) => {
+                        println!(
+                            "TYPES[{}] rep{rep} {:?} types={types:?} -> clarify({question:?})",
+                            ARMS[arm], case.message,
+                        );
+                        (Some(Decision::Clarify), Vec::new())
+                    }
+                    None => {
+                        println!(
+                            "TYPES[{}] rep{rep} {:?} types={types:?} -> no valid tool call",
+                            ARMS[arm], case.message,
+                        );
+                        (None, Vec::new())
+                    }
+                };
+                if !queries.is_empty() {
+                    println!(
+                        "TYPES[{}] rep{rep} {:?} types={types:?} -> {kind:?}({queries:?}) in {} ms",
+                        ARMS[arm],
+                        case.message,
+                        elapsed.as_millis(),
+                    );
+                    routed[index][arm] += 1;
+                    if arm == 1 {
+                        added[index].extend(type_words_added(case.message, &queries));
+                    }
+                }
+                decisions[arm] = kind;
+                if case.expect.is_some() && kind == case.expect {
+                    met[index][arm] += 1;
+                }
+            }
+            runs += 1;
+            // A case's first run without the line follows the previous case's
+            // run without it: the same system prompt, already evaluated. That
+            // run takes a quarter of the time of any other, in one arm only.
+            if rep > 0 && decisions[0].is_some() && decisions[0] == decisions[1] {
+                same_decision_runs += 1;
+                for arm in [0, 1] {
+                    same_decision_elapsed[arm] += took[arm];
+                    same_decision_completion_tokens[arm] += generated[arm];
+                }
+            }
+        }
+    }
+
+    for (group, label) in [
+        (Group::KnownType, "known type, routed"),
+        (Group::Unrelated, "unrelated, decided as expected"),
+    ] {
+        let in_group = || {
+            TYPE_LINE_CASES
+                .iter()
+                .enumerate()
+                .filter(move |(_, c)| c.group == group && c.expect.is_some())
+        };
+        let meeting = |arm: usize| in_group().filter(|(i, _)| met[*i][arm] == REPS).count();
+        println!(
+            "TYPES SUMMARY {label}: without {}/{n}, with {}/{n} (cases meeting it on every rep)",
+            meeting(0),
+            meeting(1),
+            n = in_group().count(),
+        );
+    }
+    for (case, added) in TYPE_LINE_CASES.iter().zip(&added) {
+        if !added.is_empty() {
+            println!(
+                "TYPES SUMMARY type words added to the query of {:?}: {added:?}",
+                case.message
+            );
+        }
+    }
+    println!(
+        "TYPES SUMMARY mean prompt: without {} tokens, with {} tokens",
+        prompt_tokens[0] / runs.max(1),
+        prompt_tokens[1] / runs.max(1),
+    );
+    println!(
+        "TYPES SUMMARY mean generation over the {same_decision_runs} runs where both arms \
+         decided alike: without {} ms ({} tokens generated), with {} ms ({} tokens generated)",
+        same_decision_elapsed[0].as_millis() / u128::from(same_decision_runs.max(1)),
+        same_decision_completion_tokens[0] / u64::from(same_decision_runs.max(1)),
+        same_decision_elapsed[1].as_millis() / u128::from(same_decision_runs.max(1)),
+        same_decision_completion_tokens[1] / u64::from(same_decision_runs.max(1)),
+    );
+
+    for (index, case) in TYPE_LINE_CASES.iter().enumerate() {
+        match case.group {
+            Group::KnownType => {
+                if case.message == HOW_MANY_TASKS || MOVED_TO_ROUTE.contains(&case.message) {
+                    assert_eq!(
+                        routed[index][1], REPS,
+                        "{:?} names a known type and must route with the type named",
+                        case.message
+                    );
+                }
+            }
+            Group::Unrelated => {
+                if case.expect.is_some() {
+                    assert_eq!(
+                        met[index][1], REPS,
+                        "{:?} was never in doubt and must decide as expected with its type \
+                         named (without the line: {} of {REPS})",
+                        case.message, met[index][0]
+                    );
+                }
+                assert!(
+                    added[index].is_empty(),
+                    "naming a type to Stage 1 put {:?} into the query for {:?}, which does \
+                     not mention it",
+                    added[index],
+                    case.message
+                );
+            }
+        }
     }
 }
