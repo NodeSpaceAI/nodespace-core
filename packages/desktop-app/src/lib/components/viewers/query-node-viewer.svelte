@@ -86,8 +86,13 @@
 
   /** Which shape we're serving; set once the backing node is loaded. */
   let mode = $state<ViewerMode>('default');
-  /** The saved query node (SAVED branch only); null on the default type view. */
-  let queryNode = $state<QueryNode | null>(null);
+  /** The saved query node (SAVED branch only), read from the store; null on
+   *  the default type view. */
+  const queryNode = $derived.by((): QueryNode | null => {
+    if (mode !== 'saved') return null;
+    const node = sharedNodeStore.getNode(nodeId);
+    return node ? nodeToQueryNode(node) : null;
+  });
   /** The schema whose fields drive columns / Kanban grouping. */
   let schemaNode = $state<SchemaNode | null>(null);
   /** The node type the query targets — schema id (default) or the query's
@@ -227,7 +232,6 @@
     error = null;
     saveError = null;
     schemaNode = null;
-    queryNode = null;
     loadedNodeIds = [];
     fetchCapped = false;
 
@@ -245,14 +249,20 @@
       // create would resolve this fresh mount to the DEFAULT branch —
       // resetting activeView/kanbanGroupBy to their defaults — even though a
       // real query node now exists with the view the user just chose.
-      const raw = sharedNodeStore.getNode(id) ?? (await backendAdapter.getNode(id));
+      const stored = sharedNodeStore.getNode(id);
+      const raw = stored ?? (await backendAdapter.getNode(id));
       if (loadId !== currentLoadId) return;
+      if (sharedNodeStore.currentEpoch() !== epoch) return;
       mode = resolveViewerMode(raw);
 
       if (mode === 'saved' && raw) {
         // SAVED branch: read the typed definition + view config off the node.
+        // The store holds the query node from here on: the header reads it
+        // there, and edits are written through the store.
+        if (!stored) {
+          sharedNodeStore.setNode(raw, { type: 'database', reason: 'query-node-viewer load' });
+        }
         const saved = nodeToQueryNode(raw);
-        queryNode = saved;
         const definition = parseQueryDefinition(saved);
         targetType = definition.targetType;
         const viewConfig = parseViewConfig(saved);
@@ -428,25 +438,23 @@
     }
   }
 
-  /** Persist a view-config change onto the saved query node. */
-  async function persistViewConfig(partial: Partial<QueryViewConfigState>): Promise<void> {
+  /** Persist a view-config change onto the saved query node, through the
+   *  store's typed query update. */
+  function persistViewConfig(partial: Partial<QueryViewConfigState>): void {
     if (!queryNode) return;
     saveError = null;
     const merged = mergeViewConfig(parseViewConfig(queryNode), partial);
-    try {
-      const updated = await backendAdapter.updateQueryNode(queryNode.id, queryNode.version, {
-        viewConfig: { ...merged }
-      });
-      queryNode = nodeToQueryNode(updated);
-      sharedNodeStore.setNode(updated, {
-        type: 'database',
-        reason: 'query-node-viewer view config'
-      });
-    } catch (e) {
-      const message = toError(e).message;
-      log.error('QueryNodeViewer: failed to persist view config', { error: message });
-      saveError = `Failed to save view: ${message}`;
-    }
+    sharedNodeStore.updateQueryNode(
+      queryNode.id,
+      { viewConfig: { ...merged } },
+      { type: 'viewer', viewerId: 'query-node-viewer' },
+      {
+        onPersistError: (e) => {
+          log.error('QueryNodeViewer: failed to persist view config', { error: e.message });
+          saveError = `Failed to save view: ${e.message}`;
+        }
+      }
+    );
   }
 
   function handleViewChange(view: QueryViewKind): void {
@@ -498,7 +506,6 @@
         const updated = await backendAdapter.updateNode(queryNode.id, queryNode.version, {
           content: name
         });
-        queryNode = nodeToQueryNode(updated);
         sharedNodeStore.setNode(updated, { type: 'database', reason: 'query-node-viewer rename' });
         log.debug('QueryNodeViewer: query renamed', { nodeId: updated.id });
       } catch (e) {

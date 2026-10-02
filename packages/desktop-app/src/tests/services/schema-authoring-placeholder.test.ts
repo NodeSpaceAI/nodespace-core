@@ -53,9 +53,12 @@ describe('placeholder eligibility', () => {
     expect(needsUnsavedPlaceholder(null)).toBe(false);
   });
 
-  it('keeps the immediate create for typed core types', () => {
-    const task = schema('task', [field({ name: 'status', required: true })]);
+  it('decides a typed core type by its schema, like any other', () => {
+    // `task.status` is required but defaults to `open`, so a task is created
+    // right away; `skill.description` has no default, so a skill waits.
+    const task = schema('task', [field({ name: 'status', required: true, default: 'open' })]);
     expect(needsUnsavedPlaceholder(task)).toBe(false);
+    expect(needsUnsavedPlaceholder(skillLike)).toBe(true);
   });
 
   it('ignores required system-managed fields', () => {
@@ -69,12 +72,21 @@ describe('placeholder eligibility', () => {
     expect(missingRequiredFields({ ...(base as object), properties: {} } as never, required)).toEqual([
       'description'
     ]);
+    // A skill's description is a typed field, read from the top level.
     expect(
-      missingRequiredFields({ nodeType: 'skill', properties: { description: '  ' } } as never, required)
+      missingRequiredFields({ nodeType: 'skill', properties: {}, description: '  ' } as never, required)
     ).toEqual(['description']);
     expect(
-      missingRequiredFields({ nodeType: 'skill', properties: { description: 'x' } } as never, required)
+      missingRequiredFields({ nodeType: 'skill', properties: {}, description: 'x' } as never, required)
     ).toEqual([]);
+    // A user-defined type's field is read from `properties`.
+    const noteRequired = [field({ name: 'body', required: true })];
+    expect(
+      missingRequiredFields({ nodeType: 'note', properties: { body: 'x' } } as never, noteRequired)
+    ).toEqual([]);
+    expect(
+      missingRequiredFields({ nodeType: 'note', properties: {} } as never, noteRequired)
+    ).toEqual(['body']);
   });
 });
 
@@ -106,10 +118,13 @@ describe('createInstancePlaceholder', () => {
 
   it('is created once the required description is filled', async () => {
     const node = createInstancePlaceholder(skillLike);
+    const typedSpy = vi.spyOn(backendAdapter, 'updateSkillNode');
 
+    // The form writes a typed field at the top level; the create carries it
+    // under its storage name, since a node without it would be rejected.
     sharedNodeStore.updateNode(
       node.id,
-      { properties: { description: 'Summarises a thread' } },
+      { description: 'Summarises a thread', maxIterations: 3 } as never,
       { type: 'viewer', viewerId: 'test' }
     );
 
@@ -118,8 +133,26 @@ describe('createInstancePlaceholder', () => {
       expect.objectContaining({
         id: node.id,
         nodeType: 'skill',
-        properties: { description: 'Summarises a thread' }
+        properties: { description: 'Summarises a thread', max_iterations: 3 }
       })
+    );
+    expect(typedSpy).not.toHaveBeenCalled();
+    expect(sharedNodeStore.isUnsavedPlaceholder(node.id)).toBe(false);
+  });
+
+  it('creates a user-defined type with its required property', async () => {
+    const note = schema('note', [field({ name: 'body', required: true })]);
+    const node = createInstancePlaceholder(note);
+
+    sharedNodeStore.updateNode(
+      node.id,
+      { properties: { body: 'A thought' } },
+      { type: 'viewer', viewerId: 'test' }
+    );
+
+    await vi.waitFor(() => expect(createNodeSpy).toHaveBeenCalledTimes(1));
+    expect(createNodeSpy.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ id: node.id, nodeType: 'note', properties: { body: 'A thought' } })
     );
   });
 });

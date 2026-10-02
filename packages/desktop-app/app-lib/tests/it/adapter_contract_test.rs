@@ -17,11 +17,13 @@
 //! as exactly one of the two suites failing.
 
 use nodespace_app_lib::commands::nodes::{
-    create_node, get_children, get_node, move_node, update_person_node, update_play_node,
-    update_query_node, update_task_node, CreateNodeInput, InsertPositionInput,
+    create_node, get_children, get_node, move_node, update_collection_node,
+    update_database_settings_node, update_person_node, update_play_node, update_query_node,
+    update_skill_node, update_task_node, CreateNodeInput, InsertPositionInput,
 };
 use nodespace_app_lib::types::{
-    PersonNodeUpdate, PlayNodeUpdate, Priority, QueryNodeUpdate, TaskNodeUpdate, TaskStatus,
+    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, PersonNodeUpdate, PlayNodeUpdate, Priority,
+    QueryNodeUpdate, SkillNodeUpdate, TaskNodeUpdate, TaskStatus,
 };
 use nodespace_app_test_support::{SpawnedDaemon, TauriTestApp, DAEMON_CONNECT_TIMEOUT};
 use serde_json::json;
@@ -301,6 +303,179 @@ async fn play_typed_update_matches_the_http_adapter_contract() {
         .expect("get_node failed")
         .expect("play must exist");
     assert_eq!(reread["rules"][0]["name"], json!("greet"));
+}
+
+/// Mirrors `adapter-contract.e2e.ts`'s "create → typed collection update →
+/// read back carries the typed description".
+#[tokio::test]
+async fn collection_typed_update_matches_the_http_adapter_contract() {
+    let daemon = SpawnedDaemon::spawn();
+    let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
+    let state = harness.client_state();
+
+    let id = uuid::Uuid::new_v4().to_string();
+    create_node(
+        state.clone(),
+        CreateNodeInput {
+            id: id.clone(),
+            node_type: "collection".to_string(),
+            content: "contract-clients".to_string(),
+            parent_id: None,
+            insert_position: None,
+            properties: json!({}),
+        },
+    )
+    .await
+    .expect("create collection failed");
+
+    let updated = update_collection_node(
+        state.clone(),
+        id.clone(),
+        1,
+        CollectionNodeUpdate {
+            description: Some(Some("Accounts we bill".to_string())),
+        },
+    )
+    .await
+    .expect("update_collection_node (set) failed");
+    assert_eq!(updated["description"], json!("Accounts we bill"));
+    assert_eq!(updated["content"], json!("contract-clients"));
+    assert_eq!(updated["properties"], json!({}));
+    let version = updated["version"]
+        .as_i64()
+        .expect("version must be a number");
+
+    let cleared = update_collection_node(
+        state.clone(),
+        id.clone(),
+        version,
+        CollectionNodeUpdate {
+            description: Some(None),
+        },
+    )
+    .await
+    .expect("update_collection_node (clear) failed");
+    assert!(
+        cleared.get("description").is_none(),
+        "cleared description must be absent"
+    );
+}
+
+/// Mirrors `adapter-contract.e2e.ts`'s "create → typed skill update → read
+/// back carries typed fields".
+#[tokio::test]
+async fn skill_typed_update_matches_the_http_adapter_contract() {
+    let daemon = SpawnedDaemon::spawn();
+    let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
+    let state = harness.client_state();
+
+    let id = uuid::Uuid::new_v4().to_string();
+    create_node(
+        state.clone(),
+        CreateNodeInput {
+            id: id.clone(),
+            node_type: "skill".to_string(),
+            content: "Contract Skill".to_string(),
+            parent_id: None,
+            insert_position: None,
+            properties: json!({
+                "description": "Update a record",
+                "tool_whitelist": ["update_node"],
+                "exclusion": "Delete records",
+            }),
+        },
+    )
+    .await
+    .expect("create skill failed");
+
+    let updated = update_skill_node(
+        state.clone(),
+        id.clone(),
+        1,
+        SkillNodeUpdate {
+            tool_whitelist: Some(vec!["update_node".to_string(), "get_node".to_string()]),
+            max_iterations: Some(Some(4)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("update_skill_node (set) failed");
+    assert_eq!(updated["description"], json!("Update a record"));
+    assert_eq!(updated["exclusion"], json!("Delete records"));
+    assert_eq!(updated["toolWhitelist"], json!(["update_node", "get_node"]));
+    assert_eq!(updated["maxIterations"], json!(4));
+    assert_eq!(updated["properties"], json!({}));
+    let version = updated["version"]
+        .as_i64()
+        .expect("version must be a number");
+
+    let cleared = update_skill_node(
+        state.clone(),
+        id.clone(),
+        version,
+        SkillNodeUpdate {
+            exclusion: Some(None),
+            max_iterations: Some(None),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("update_skill_node (clear) failed");
+    assert!(
+        cleared.get("exclusion").is_none(),
+        "cleared exclusion must be absent"
+    );
+    // A cleared number reads as the schema's default.
+    assert_eq!(cleared["maxIterations"], json!(2));
+    assert_eq!(cleared["toolWhitelist"], json!(["update_node", "get_node"]));
+}
+
+/// Mirrors `adapter-contract.e2e.ts`'s "typed database-settings update → read
+/// back carries the typed list". The list is cleared again before the daemon
+/// goes away, so nothing later opens a database that requires an extension.
+#[tokio::test]
+async fn database_settings_typed_update_matches_the_http_adapter_contract() {
+    let daemon = SpawnedDaemon::spawn();
+    let harness = TauriTestApp::connect(&daemon, DAEMON_CONNECT_TIMEOUT).await;
+    let state = harness.client_state();
+
+    let id = "database-settings-singleton".to_string();
+    let settings = get_node(state.clone(), id.clone())
+        .await
+        .expect("get_node failed")
+        .expect("the settings singleton must exist");
+    assert_eq!(settings["requiredExtensions"], json!([]));
+    let version = settings["version"]
+        .as_i64()
+        .expect("version must be a number");
+
+    let updated = update_database_settings_node(
+        state.clone(),
+        id.clone(),
+        version,
+        DatabaseSettingsNodeUpdate {
+            required_extensions: Some(Some(vec!["contract-fixture".to_string()])),
+        },
+    )
+    .await
+    .expect("update_database_settings_node (set) failed");
+    assert_eq!(updated["requiredExtensions"], json!(["contract-fixture"]));
+    assert_eq!(updated["properties"], json!({}));
+    let version = updated["version"]
+        .as_i64()
+        .expect("version must be a number");
+
+    let cleared = update_database_settings_node(
+        state.clone(),
+        id.clone(),
+        version,
+        DatabaseSettingsNodeUpdate {
+            required_extensions: Some(None),
+        },
+    )
+    .await
+    .expect("update_database_settings_node (clear) failed");
+    assert_eq!(cleared["requiredExtensions"], json!([]));
 }
 
 /// Mirrors `adapter-contract.e2e.ts`'s "createNode honors an explicit

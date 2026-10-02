@@ -5,10 +5,10 @@
  * promoted fields (`./generated`, `core_promoted_fields` in
  * `packages/nodespace-types/src/convert.rs`).
  *
- * For `task`, `person`, `project`, `query` and the chat subtypes, the backend
- * moves each schema-declared core field out of `properties` to a top-level
- * typed field: `due_date` is stored in the `task` bucket and travels as
- * `dueDate`. The frontend reads those fields by their typed key, and
+ * For every core type with a typed wire shape (`task`, `skill`, the chat
+ * subtypes, …), the backend moves each schema-declared core field out of
+ * `properties` to a top-level typed field: `due_date` is stored in the `task`
+ * bucket and travels as `dueDate`. The frontend reads those fields by their typed key, and
  * `properties` holds extension fields alone. A type with a typed update
  * command is written by typed key too; the chat family has none, so its
  * writes are `properties` patches keyed by the storage name (see

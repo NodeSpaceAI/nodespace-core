@@ -17,7 +17,6 @@ import { UNTITLED_CHAT_TITLE } from '$lib/utils/ai-chat-title';
 import type { Node } from '$lib/types';
 import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
-import { hasTypedUpdate } from '$lib/types/typed-core-fields';
 import { resolveFieldValue } from '$lib/components/schema/schema-field-resolution';
 import { isUserVisibleField } from '$lib/utils/schema-field-visibility';
 
@@ -79,12 +78,9 @@ export function missingRequiredFields(node: Node, required: SchemaField[]): stri
 /**
  * Whether "+ New" on this type must open an unsaved placeholder instead of
  * creating the node right away: the schema has required fields without a
- * default, so an empty instance would be rejected. Core types whose fields are
- * typed top-level values keep the immediate create — their writes go through
- * the type's typed update, which needs a persisted node.
+ * default, so an empty instance would be rejected.
  */
 export function needsUnsavedPlaceholder(schema: SchemaNode | null): boolean {
-  if (!schema || hasTypedUpdate(schema.id)) return false;
   return requiredFieldsWithoutDefault(schema).length > 0;
 }
 

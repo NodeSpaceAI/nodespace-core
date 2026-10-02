@@ -30,13 +30,17 @@ import { focusManager } from './focus-manager.svelte';
 import type { Node } from '$lib/types';
 import type { NodeReference } from '$lib/types/node';
 import type {
+  CollectionNodeUpdate,
+  DatabaseSettingsNodeUpdate,
   PersonNodeUpdate,
   PlayNodeUpdate,
   ProjectNodeUpdate,
   QueryNodeUpdate,
+  SkillNodeUpdate,
   TaskNodeUpdate
 } from '$lib/types';
 import {
+  TYPED_CORE_FIELDS,
   hasTypedUpdate,
   typedCoreKeys,
   writableTypedCoreKeys
@@ -806,7 +810,15 @@ interface Subscription {
 }
 
 /** Core node types with typed fields and a typed backend update. */
-export type TypedNodeType = 'task' | 'person' | 'project' | 'query' | 'play';
+export type TypedNodeType =
+  | 'task'
+  | 'person'
+  | 'project'
+  | 'collection'
+  | 'skill'
+  | 'database-settings'
+  | 'query'
+  | 'play';
 
 /**
  * Typed fields staged for a node but not yet sent (see `updateTypedNode()`),
@@ -841,6 +853,16 @@ const TYPED_UPDATERS: Record<
     backendAdapter.updatePersonNode(nodeId, version, payload as PersonNodeUpdate),
   project: (nodeId, version, payload) =>
     backendAdapter.updateProjectNode(nodeId, version, payload as ProjectNodeUpdate),
+  collection: (nodeId, version, payload) =>
+    backendAdapter.updateCollectionNode(nodeId, version, payload as CollectionNodeUpdate),
+  skill: (nodeId, version, payload) =>
+    backendAdapter.updateSkillNode(nodeId, version, payload as SkillNodeUpdate),
+  'database-settings': (nodeId, version, payload) =>
+    backendAdapter.updateDatabaseSettingsNode(
+      nodeId,
+      version,
+      payload as DatabaseSettingsNodeUpdate
+    ),
   query: (nodeId, version, payload) =>
     backendAdapter.updateQueryNode(nodeId, version, payload as QueryNodeUpdate),
   play: (nodeId, version, payload) =>
@@ -1652,10 +1674,34 @@ export class SharedNodeStore {
   private async persistCreate(
     input: import('$lib/services/backend-adapter').CreateNodeInput
   ): Promise<void> {
-    const { id, placement } = await backendAdapter.createNode(input);
+    const { id, placement } = await backendAdapter.createNode(this.withTypedFields(input));
     if (placement && structureTree) {
       applyChildPlacement(structureTree, id, placement);
     }
+  }
+
+  /**
+   * A create's input with the typed fields its node already holds folded into
+   * `properties` under their storage names, the form a create takes them in.
+   * A typed field has no home in `properties` locally, so without this a
+   * create would drop it, and the backend rejects a node whose required field
+   * has no value. Fields a typed write has staged are left out: that write
+   * sends them once the create lands (see `sendPendingTypedFields()`).
+   */
+  private withTypedFields(
+    input: import('$lib/services/backend-adapter').CreateNodeInput
+  ): import('$lib/services/backend-adapter').CreateNodeInput {
+    const node = this.nodes.get(input.id) as (Node & Record<string, unknown>) | undefined;
+    if (!node || !hasTypedUpdate(node.nodeType)) return input;
+    const staged = this.pendingTypedFields.get(input.id)?.fields ?? {};
+    const typed: Record<string, unknown> = {};
+    for (const field of TYPED_CORE_FIELDS[node.nodeType] ?? []) {
+      const value = node[field.wire];
+      if (field.readOnly || field.wire in staged || value === undefined || value === null) continue;
+      typed[field.storage] = value;
+    }
+    if (Object.keys(typed).length === 0) return input;
+    return { ...input, properties: { ...input.properties, ...typed } };
   }
 
   /**
@@ -3613,9 +3659,59 @@ export class SharedNodeStore {
   }
 
   /**
+   * Update a collection's typed field (description). See `updateTypedNode()`
+   * for the write path.
+   */
+  updateCollectionNode(
+    nodeId: string,
+    update: import('$lib/types').CollectionNodeUpdate,
+    source: UpdateSource
+  ): void {
+    this.updateTypedNode(nodeId, 'collection', { ...update }, source);
+  }
+
+  /**
+   * Update a skill's typed fields (description, exclusion, toolWhitelist,
+   * maxIterations, nodeTypes). See `updateTypedNode()` for the write path.
+   */
+  updateSkillNode(
+    nodeId: string,
+    update: import('$lib/types').SkillNodeUpdate,
+    source: UpdateSource
+  ): void {
+    this.updateTypedNode(nodeId, 'skill', { ...update }, source);
+  }
+
+  /**
+   * Update the database-settings node's typed field (requiredExtensions).
+   * See `updateTypedNode()` for the write path.
+   */
+  updateDatabaseSettingsNode(
+    nodeId: string,
+    update: import('$lib/types').DatabaseSettingsNodeUpdate,
+    source: UpdateSource
+  ): void {
+    this.updateTypedNode(nodeId, 'database-settings', { ...update }, source);
+  }
+
+  /**
+   * Update a saved query's typed fields (targetType, filters, sorting, limit,
+   * generatedBy, generatorContext, viewConfig). See `updateTypedNode()` for
+   * the write path.
+   */
+  updateQueryNode(
+    nodeId: string,
+    update: import('$lib/types').QueryNodeUpdate,
+    source: UpdateSource,
+    options: Pick<UpdateOptions, 'onPersistSuccess' | 'onPersistError'> = {}
+  ): void {
+    this.updateTypedNode(nodeId, 'query', { ...update }, source, options);
+  }
+
+  /**
    * Write a core type's typed fields (`TYPED_CORE_FIELDS`) through its typed
-   * backend update (`updateTaskNode`/`updatePersonNode`/`updateProjectNode`/
-   * `updateQueryNode`/`updatePlayNode`).
+   * backend update (`updateTaskNode` and its siblings on the backend
+   * adapter).
    *
    * Core fields have exactly one home on a typed node — the top level — so
    * this is the only write path for them; `properties` carries extension

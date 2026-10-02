@@ -215,7 +215,9 @@ class CollectionsDataStore {
       createdAt: now,
       modifiedAt: now,
       version: 1,
-      properties: description ? { description } : {},
+      lifecycleStatus: 'active',
+      properties: {},
+      ...(description ? { description } : {}),
       memberCount: 0,
       parentCollectionIds: [],
     };

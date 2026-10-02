@@ -260,6 +260,89 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     expect(reread.rules).toHaveLength(1);
   });
 
+  it('create → typed collection update → read back carries the typed description', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({ id, nodeType: 'collection', content: 'contract-clients' });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { description?: string }).description).toBeUndefined();
+
+    const updated = await h.adapter.updateCollectionNode(id, created!.version, {
+      description: 'Accounts we bill',
+    });
+    expect(updated.description).toBe('Accounts we bill');
+    expect(updated.content).toBe('contract-clients');
+    expect(updated.properties).toEqual({});
+
+    // null clears.
+    const cleared = await h.adapter.updateCollectionNode(id, updated.version, {
+      description: null,
+    });
+    expect(cleared.description).toBeUndefined();
+  });
+
+  it('create → typed skill update → read back carries typed fields', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({
+      id,
+      nodeType: 'skill',
+      content: 'Contract Skill',
+      properties: {
+        description: 'Update a record',
+        tool_whitelist: ['update_node'],
+        exclusion: 'Delete records',
+      },
+    });
+    const created = (await h.adapter.getNode(id)) as unknown as {
+      version: number;
+      description: string;
+      toolWhitelist: string[];
+      maxIterations: number;
+    };
+    expect(created.description).toBe('Update a record');
+    expect(created.toolWhitelist).toEqual(['update_node']);
+    expect(created.maxIterations).toBe(2);
+
+    const updated = await h.adapter.updateSkillNode(id, created.version, {
+      toolWhitelist: ['update_node', 'get_node'],
+      maxIterations: 4,
+    });
+    expect(updated.toolWhitelist).toEqual(['update_node', 'get_node']);
+    expect(updated.maxIterations).toBe(4);
+    expect(updated.exclusion).toBe('Delete records');
+    expect(updated.properties).toEqual({});
+
+    // null clears; a cleared number reads as the schema's default.
+    const cleared = await h.adapter.updateSkillNode(id, updated.version, {
+      exclusion: null,
+      maxIterations: null,
+    });
+    expect(cleared.exclusion).toBeUndefined();
+    expect(cleared.maxIterations).toBe(2);
+    expect(cleared.description).toBe('Update a record');
+  });
+
+  it('typed database-settings update → read back carries the typed list', async () => {
+    const id = 'database-settings-singleton';
+    const settings = (await h.adapter.getNode(id)) as unknown as {
+      version: number;
+      requiredExtensions: string[];
+    };
+    expect(settings.requiredExtensions).toEqual([]);
+
+    const updated = await h.adapter.updateDatabaseSettingsNode(id, settings.version, {
+      requiredExtensions: ['contract-fixture'],
+    });
+    expect(updated.requiredExtensions).toEqual(['contract-fixture']);
+    expect(updated.properties).toEqual({});
+
+    // null clears; the list reads as empty again, so the database stays
+    // openable by anything that reads it after this test.
+    const cleared = await h.adapter.updateDatabaseSettingsNode(id, updated.version, {
+      requiredExtensions: null,
+    });
+    expect(cleared.requiredExtensions).toEqual([]);
+  });
+
   it('createNode honors an explicit InsertPosition the same way move/reorder do', async () => {
     const parentId = crypto.randomUUID();
     const firstId = crypto.randomUUID();
