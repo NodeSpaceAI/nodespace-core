@@ -11,11 +11,13 @@ fn backtick_uri_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"`(nodespace://[^`]+)`").unwrap())
 }
 
-/// Matches a `nodespace://` URI that holds a backslash, up to the whitespace
-/// or bracket that ends it.
-fn escaped_uri_re() -> &'static Regex {
+/// Matches a `nodespace://` URI and the Markdown escapes inside its id: the
+/// characters an id can hold, and a backslash before `_` or `-`. The match
+/// ends where the id does, so an escape in the text after it is not part of
+/// it.
+fn escapable_uri_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"nodespace://[^\s)\]]*\\[^\s)\]]*").unwrap())
+    RE.get_or_init(|| Regex::new(r"nodespace://(?:[A-Za-z0-9_:-]|\\[_-])+").unwrap())
 }
 
 /// Matches Gemma's textual tool-call / tool-response syntax leaking into prose.
@@ -154,7 +156,7 @@ pub fn normalize_response_traced(text: &str) -> (String, Vec<&'static str>) {
 /// replaced whole. An id is alphanumeric plus `-` and `_`, so a backslash
 /// before either is never part of one. Any other backslash stays as written.
 fn unescape_uri_ids(text: &str) -> String {
-    escaped_uri_re()
+    escapable_uri_re()
         .replace_all(text, |caps: &regex::Captures| {
             caps[0].replace("\\_", "_").replace("\\-", "-")
         })
@@ -507,6 +509,27 @@ mod tests {
         // stays as written, for the fabricated-id check to judge.
         let input = r"See nodespace://abc\*def for details.";
         assert_eq!(normalize_response(input), input);
+    }
+
+    #[test]
+    fn leaves_an_escape_after_the_end_of_a_uri_unchanged() {
+        // The id ends at the first character an id cannot hold, so the escape
+        // in the cell beside it is prose.
+        let input = r"| nodespace://task|due\_date |";
+        assert_eq!(normalize_response(input), input);
+    }
+
+    #[test]
+    fn unescapes_a_uri_id_before_the_steps_that_read_it() {
+        // Both later steps compare or unwrap the URI, so they must see the id.
+        assert_eq!(
+            normalize_response(r"See [nodespace://a\_b](nodespace://a\_b)."),
+            "See nodespace://a_b."
+        );
+        assert_eq!(
+            normalize_response(r"Open `nodespace://a\_b` to view."),
+            "Open nodespace://a_b to view."
+        );
     }
 
     // Status normalization

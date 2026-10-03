@@ -1190,6 +1190,43 @@ async fn start_tracking_requests_route_schema_creation() {
     );
 }
 
+/// The cost side of Schema Creation opening with the tracking verbs: a request
+/// to track one record that already exists is an update or a create, and the
+/// skill that owns `create_schema` holds neither tool. Node Creation or Graph
+/// Editing must still reach Stage 2 on it.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn tracking_one_existing_record_still_reaches_a_record_skill() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for query in [
+        "start tracking the login timeout bug",
+        "track this task's progress",
+        "start tracking the offline sync spec's sign-off",
+        "keep track of the Q4 cycle's status",
+    ] {
+        eprintln!(
+            "{query:?}: {:?}",
+            scored_ranking(&embedding_service, &node_service, query, 6).await
+        );
+        let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+        let holds = |ranked: &Vec<String>| {
+            ranked
+                .iter()
+                .any(|n| n == "Node Creation" || n == "Graph Editing")
+        };
+        if !rankings.iter().all(holds) {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "neither Node Creation nor Graph Editing reached the top-{RETRIEVAL_TOP_K} for {misses:?}"
+    );
+}
+
 /// One named record added to a type that already exists is a create. It must
 /// not lead with Bulk Import, and Node Creation must reach Stage 2. Such a
 /// request says neither "create" nor "record", and no description named it:
@@ -1203,6 +1240,15 @@ async fn start_tracking_requests_route_schema_creation() {
 /// Creation, which lists specs, by 0.010) and "…cache invalidation decision…"
 /// (Node Deletion, on "invalidation"). It places second and third there, so
 /// `create_node` stays on the surface, which is what is asserted.
+///
+/// The second of those is a standing defect this test records and does not
+/// accept: the winner's destructive tool is offered, so `delete_node` is on
+/// the surface of a request to add something. Node Deletion scores 0.840 on
+/// it whatever Node Creation's description says, so it led before the clause
+/// was added. An `exclusion` on Node Deletion
+/// naming the adding verbs was measured and rejected: it left that score at
+/// 0.840 and took 0.02 off real deletions, costing "remove all the resolved
+/// incidents" its lead.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn single_record_adds_do_not_lead_with_bulk_import() {
@@ -1218,16 +1264,17 @@ async fn single_record_adds_do_not_lead_with_bulk_import() {
         "put the login timeout bug on the release blockers list",
         "add the Q4 cycle to our planning cycles",
     ] {
-        let ranked = scored_ranking(&embedding_service, &node_service, query, 6).await;
-        eprintln!("{query:?}: {ranked:?}");
-        let leads_with_import = ranked
-            .first()
-            .is_some_and(|r| r.starts_with("Bulk Import="));
-        let creation_reaches_stage_2 = ranked
-            .iter()
-            .take(RETRIEVAL_TOP_K)
-            .any(|r| r.starts_with("Node Creation="));
-        if leads_with_import || !creation_reaches_stage_2 {
+        eprintln!(
+            "{query:?}: {:?}",
+            scored_ranking(&embedding_service, &node_service, query, 6).await
+        );
+        // Every rep, as `routing_misses` checks: the margins here are small.
+        let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+        let holds = |ranked: &Vec<String>| {
+            ranked.first().is_some_and(|n| n != "Bulk Import")
+                && ranked.iter().any(|n| n == "Node Creation")
+        };
+        if !rankings.iter().all(holds) {
             misses.push(query);
         }
     }

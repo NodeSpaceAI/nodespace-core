@@ -10775,7 +10775,7 @@ mod tests {
         assert_eq!(reply, EVERY_TYPE_LISTED);
     }
 
-    /// The measured reply on a workspace whose custom types have underscores
+    /// The shape of the measured reply on a workspace whose custom types have underscores
     /// in their ids: the model escapes them inside the links, as it would in
     /// prose. An escaped id is not the one the search returned, and the reply
     /// was replaced with a request to confirm although every type it named
@@ -10806,6 +10806,20 @@ mod tests {
                 escaped.replace(r"\_", "_")
             )
         );
+    }
+
+    /// A link to a type name no tool returned is reduced to its label, and
+    /// that holds when the model escaped the name's underscore: the target is
+    /// read as the type name it is, not as an invented id that replaces the
+    /// reply.
+    #[tokio::test]
+    async fn an_escaped_link_to_an_unknown_type_name_keeps_its_label() {
+        let (reply, _) = run_type_listing_turn(
+            r#"{"node_type":"schema","query":"release"}"#,
+            r"There is no [Release Train](nodespace://release\_train) type yet.",
+        )
+        .await;
+        assert_eq!(reply, "There is no Release Train type yet.");
     }
 
     /// The same stand-ins are left alone when the search was not a listing of
