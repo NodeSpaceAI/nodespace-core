@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use nodespace_core::models::AiChatTurnOutcome;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use thiserror::Error;
 
 // Re-export the canonical chat message types from nlp-engine (single source of truth).
@@ -498,6 +499,17 @@ pub struct AgentSession {
     /// history seeds it from the outcomes persisted with those messages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prior_turns: Vec<PriorTurn>,
+
+    /// `nodespace://` ids that tool results and system records in this
+    /// session produced before history summarization replaced those messages.
+    ///
+    /// The summary is the model's text, so a node id in it proves nothing.
+    /// These are the ids the replaced messages did prove real, kept so a reply
+    /// that links one is not taken for an invention. Held here and not in a
+    /// message: the model needs no list of bare ids, and the prompt pays
+    /// nothing for it.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub summarized_node_uris: HashSet<String>,
 }
 
 /// An earlier turn as the clarification contract sees it.

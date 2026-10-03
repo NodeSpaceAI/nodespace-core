@@ -2506,7 +2506,7 @@ fn grounded_node_uris(executions: &[ToolExecutionRecord]) -> HashSet<String> {
 const CONVERSATION_SUMMARY_PREFIX: &str = "[Conversation summary]";
 
 /// Every `nodespace://` id grounded by a PRIOR turn's tool activity, read back
-/// from `session.messages`.
+/// from `session.messages` and from the ids kept when messages were summarized.
 ///
 /// `all_tool_executions` covers only the current turn — it is rebuilt fresh
 /// per `run_turn` — but a real id created several turns ago is legitimately
@@ -2531,13 +2531,21 @@ const CONVERSATION_SUMMARY_PREFIX: &str = "[Conversation summary]";
 /// One system message is not the system's own text: the conversation summary
 /// ([`CONVERSATION_SUMMARY_PREFIX`]) is a generation over the turns it
 /// replaces, what the user typed and the model said included, so an id in it
-/// grounds nothing. That has a cost. The tool results and records the summary
-/// replaced did ground their ids, and once they are summarized away a reply
-/// that links one of those nodes is taken for an invention. It errs the way
-/// the check is meant to: a real link refused, not a dead one let through.
+/// grounds nothing. The ids that the summarized tool results and records did
+/// ground are not lost with them: summarization moves them into
+/// `session.summarized_node_uris`, which is read here with the messages.
 fn grounded_node_uris_from_history(session: &AgentSession) -> HashSet<String> {
+    let mut out = system_written_node_uris(&session.messages);
+    out.extend(session.summarized_node_uris.iter().cloned());
+    out
+}
+
+/// Every `nodespace://` id in the messages whose text the system wrote: tool
+/// results, and system messages other than the conversation summary. What the
+/// user typed and the model said contribute nothing.
+fn system_written_node_uris(messages: &[ChatMessage]) -> HashSet<String> {
     let mut out = HashSet::new();
-    for msg in &session.messages {
+    for msg in messages {
         let system_written = match msg.role {
             Role::Tool => true,
             Role::System => !msg.content.starts_with(CONVERSATION_SUMMARY_PREFIX),
@@ -5476,6 +5484,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
         let older_messages: Vec<ChatMessage> = session.messages.drain(..split_point).collect();
 
+        // The summary that replaces these messages is the model's text and
+        // grounds no id. Keep the ids their tool results and records grounded.
+        // Done before the summary is generated: a failed generation returns
+        // from here with the messages already gone.
+        session
+            .summarized_node_uris
+            .extend(system_written_node_uris(&older_messages));
+
         // Build summarization text from older messages. A tool-call assistant
         // turn carries its signal in `tool_calls`, not `content` (content is
         // empty by construction), so render a synthetic line for it — otherwise
@@ -5630,6 +5646,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
             routing_disabled: false,
             mentioned_entities: Vec::new(),
             prior_turns: Vec::new(),
+            summarized_node_uris: HashSet::new(),
         };
 
         let cancel = CancellationToken::new();
@@ -6161,6 +6178,7 @@ mod tests {
             routing_disabled: false,
             mentioned_entities: Vec::new(),
             prior_turns: Vec::new(),
+            summarized_node_uris: HashSet::new(),
         }
     }
 
@@ -9248,6 +9266,145 @@ mod tests {
             ungrounded_node_uris(text, &session_grounded_node_uris(&[], &session)),
             vec!["nodespace://from-a-summary".to_string()]
         );
+    }
+
+    /// One summarization response that mentions an id of its own.
+    fn summary_response() -> Vec<StreamingChunk> {
+        vec![
+            StreamingChunk::Token {
+                text: "They discussed nodespace://only-in-summary.".to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                },
+            },
+        ]
+    }
+
+    /// Enough user and assistant text to put a session over a 4096-token window.
+    fn push_filler(session: &mut AgentSession) {
+        for i in 0..8 {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            session
+                .messages
+                .push(ChatMessage::text(role, "x".repeat(4000)));
+        }
+    }
+
+    /// Summarizing a long chat drains the tool results and records that
+    /// grounded its ids. Those ids stay grounded, through a second
+    /// summarization too; ids that only the user, the model or the summary
+    /// wrote do not become grounded.
+    #[tokio::test]
+    async fn summarization_keeps_the_ids_its_drained_turns_grounded() {
+        let engine = Arc::new(MockEngine::with_context_window(
+            vec![summary_response(), summary_response()],
+            4096,
+        ));
+        let agent_loop = LocalAgentLoop::new(engine, Arc::new(MockToolExecutor::new()));
+
+        let mut session = new_session();
+        session.messages.push(ChatMessage::text(
+            Role::User,
+            "open nodespace://typed-by-the-user",
+        ));
+        session
+            .messages
+            .push(ChatMessage::assistant_with_tool_calls(
+                String::new(),
+                vec![ToolCallRaw {
+                    id: "tc_1".into(),
+                    function_name: "create_node".into(),
+                    arguments_json: "{}".into(),
+                    provider_extra: None,
+                }],
+            ));
+        session.messages.push(ChatMessage::tool_result(
+            serde_json::to_string(&json!({"id": "nodespace://from-a-tool"})).unwrap(),
+            "tc_1",
+            "create_node",
+        ));
+        session.messages.push(ChatMessage::text(
+            Role::Assistant,
+            "See nodespace://said-by-the-model.",
+        ));
+        session.messages.push(ChatMessage::text(
+            Role::System,
+            "Record of graph entities looked up in the previous turn.\n\
+             - nodespace://from-a-record \"Northwind Trading\" (company)",
+        ));
+        push_filler(&mut session);
+
+        let text = "nodespace://from-a-tool nodespace://from-a-record \
+                    nodespace://typed-by-the-user nodespace://said-by-the-model \
+                    nodespace://only-in-summary";
+        let never_grounded = vec![
+            "nodespace://typed-by-the-user".to_string(),
+            "nodespace://said-by-the-model".to_string(),
+            "nodespace://only-in-summary".to_string(),
+        ];
+
+        for round in 1..=2 {
+            let messages_before = session.messages.len();
+            agent_loop
+                .maybe_summarize_history(&mut session, "system")
+                .await
+                .unwrap();
+
+            assert!(
+                session.messages.len() < messages_before
+                    && session.messages[0]
+                        .content
+                        .starts_with(CONVERSATION_SUMMARY_PREFIX),
+                "round {round} must have summarized"
+            );
+            assert!(
+                !session
+                    .messages
+                    .iter()
+                    .any(|m| m.content.contains("nodespace://from-a")),
+                "round {round}: the grounding messages must be gone for this test to mean anything"
+            );
+            assert_eq!(
+                ungrounded_node_uris(text, &session_grounded_node_uris(&[], &session)),
+                never_grounded,
+                "round {round}"
+            );
+
+            // A lookup after the first summarization, drained by the second.
+            if round == 1 {
+                session
+                    .messages
+                    .push(ChatMessage::assistant_with_tool_calls(
+                        String::new(),
+                        vec![ToolCallRaw {
+                            id: "tc_2".into(),
+                            function_name: "get_node".into(),
+                            arguments_json: "{}".into(),
+                            provider_extra: None,
+                        }],
+                    ));
+                session.messages.push(ChatMessage::tool_result(
+                    serde_json::to_string(&json!({"id": "nodespace://from-a-later-tool"})).unwrap(),
+                    "tc_2",
+                    "get_node",
+                ));
+            }
+            push_filler(&mut session);
+        }
+
+        // Ids from both summarizations are held together.
+        assert!(ungrounded_node_uris(
+            "nodespace://from-a-tool nodespace://from-a-later-tool",
+            &session_grounded_node_uris(&[], &session)
+        )
+        .is_empty());
     }
 
     /// A chat rebuilt from storage carries an earlier turn's lookups as a
