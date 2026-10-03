@@ -1503,6 +1503,39 @@ pub(crate) fn off_menu_type<'a>(
     (!offered.iter().any(|id| id == named)).then_some(named)
 }
 
+/// A second name the executor accepts for a node id parameter called `id`
+/// (the `alias` on [`AgentUpdateNodeParams`]).
+const NODE_ID_ALIAS: &str = "node_id";
+
+/// The id of the node a call changes, for a tool held by that node's type
+/// (see [`Tool::held_node_id_parameter`]), or `None` when the tool is not one
+/// or the call carries no usable id.
+///
+/// Read the way the executor reads it, so the node checked is the node
+/// changed: under the parameter's alias as well as its name, and without the
+/// `nodespace://` prefix.
+pub(crate) fn held_node_id<'a>(tool_name: &str, args: &'a Value) -> Option<&'a str> {
+    let parameter = held_node_id_parameter_tool(tool_name)?;
+    args.get(parameter)
+        .or_else(|| args.get(NODE_ID_ALIAS))
+        .and_then(|id| id.as_str())
+        .map(strip_node_uri)
+        .filter(|id| !id.trim().is_empty())
+}
+
+/// `node_type` when it is not in `offered`, or `None` when a call on a node
+/// of that type may run.
+///
+/// The set already holds the linked types' subtypes, so this is membership.
+/// A node whose type is unknown is not off the menu: it could not be found,
+/// and that is the tool's own error to report.
+pub(crate) fn off_menu_node_type<'a>(
+    node_type: Option<&'a str>,
+    offered: &[String],
+) -> Option<&'a str> {
+    node_type.filter(|node_type| !offered.iter().any(|id| id == node_type))
+}
+
 fn def_create_relationship() -> ToolDefinition {
     ToolDefinition {
         name: "create_relationship".into(),
@@ -2717,9 +2750,10 @@ impl Tool {
     /// An exhaustive match, so a new tool forces a decision about whether it
     /// names an existing type.
     ///
-    /// `update_node` has none: it takes a node id, and the node's type is
-    /// whatever that node already is. `create_schema` has none either: the
-    /// type it names is the one being defined. `search_semantic`'s
+    /// `update_node` has none: it takes a node id, and is held by that node's
+    /// type instead (see [`Tool::held_node_id_parameter`]). `create_schema`
+    /// has none either: the type it names is the one being defined.
+    /// `search_semantic`'s
     /// `node_types` is not one: it narrows a search by meaning across the
     /// graph, a list of filters rather than the single type a call acts on,
     /// and a turn held to its skills' types may still read around them.
@@ -2746,12 +2780,54 @@ impl Tool {
             | Tool::GetWorkflowState => None,
         }
     }
+
+    /// The parameter in which a call names the node it changes, for the tools
+    /// a routed turn holds by that node's type. Such a tool has no type
+    /// argument to hold, so on a turn with an offered set
+    /// (`routing::offered_types`) dispatch looks the node's type up and
+    /// refuses the call when the type is outside the set.
+    ///
+    /// An exhaustive match, so a new tool forces a decision about whether it
+    /// is held this way.
+    pub fn held_node_id_parameter(self) -> Option<&'static str> {
+        match self {
+            Tool::UpdateNode => Some("id"),
+            // Held by their type argument (see `existing_type_parameter`).
+            Tool::CreateNode | Tool::SearchNodes | Tool::ResolveQuery | Tool::UpdateSchema => None,
+            // Take no id of an existing node to change.
+            Tool::CreateSchema
+            | Tool::SearchSemantic
+            | Tool::SearchSkills
+            | Tool::CreateNodesFromMarkdown
+            | Tool::RouteClarify
+            | Tool::ListConflicts
+            | Tool::GetWorkflowState => None,
+            // Reads by id. A held turn may follow a relationship from one of
+            // its records to a related record of another type.
+            Tool::GetNode | Tool::GetRelatedNodes | Tool::GetConflict => None,
+            // Has its own score bar and confirmation.
+            Tool::DeleteNode => None,
+            // Writes by id that the hold does not cover: widening it to them
+            // is a separate decision.
+            Tool::UpdateTaskStatus
+            | Tool::CreateRelationship
+            | Tool::DismissConflict
+            | Tool::AdoptExistingConflict
+            | Tool::MergeConflict => None,
+        }
+    }
 }
 
 /// [`Tool::existing_type_parameter`] by wire name. An unrecognised name has
 /// no such parameter.
 pub fn existing_type_parameter_tool(tool: &str) -> Option<&'static str> {
     Tool::from_name(tool).and_then(Tool::existing_type_parameter)
+}
+
+/// [`Tool::held_node_id_parameter`] by wire name. An unrecognised name has no
+/// such parameter.
+pub fn held_node_id_parameter_tool(tool: &str) -> Option<&'static str> {
+    Tool::from_name(tool).and_then(Tool::held_node_id_parameter)
 }
 
 /// Whether a tool's required parameters depend on Stage-2 routing guidance,
@@ -4885,6 +4961,21 @@ impl AgentToolExecutor for GraphToolExecutor {
         }
     }
 
+    /// The stored type of the node `id` names, read through the node service.
+    ///
+    /// A node that is missing or cannot be read has no type here. The caller
+    /// then lets the call through, and the tool reports the failure itself.
+    async fn node_type(&self, id: &str) -> Option<String> {
+        let ns = self.node_service.as_ref()?;
+        match ns.get_node(strip_node_uri(id)).await {
+            Ok(node) => node.map(|node| node.node_type),
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not read a node's type");
+                None
+            }
+        }
+    }
+
     /// Run skill retrieval as a deterministic system step (ADR-038).
     ///
     /// Shares `skill_ops::find_skills` with the `search_skills` handler — the
@@ -5428,6 +5519,130 @@ mod tests {
                 t.name()
             );
         }
+    }
+
+    // -- Tool::held_node_id_parameter --
+
+    #[test]
+    fn only_update_node_is_held_by_its_nodes_type() {
+        let held: Vec<(&str, &str)> = Tool::ALL
+            .iter()
+            .filter_map(|t| t.held_node_id_parameter().map(|p| (t.name(), p)))
+            .collect();
+        assert_eq!(held, [("update_node", "id")]);
+        assert_eq!(held_node_id_parameter_tool("update_node"), Some("id"));
+        assert_eq!(held_node_id_parameter_tool("delete_node"), None);
+        assert_eq!(held_node_id_parameter_tool("not_a_real_tool"), None);
+    }
+
+    /// The parameter must be one the tool declares, as a string: dispatch
+    /// would otherwise look up an argument the model was never asked for.
+    #[test]
+    fn every_held_node_id_parameter_is_a_declared_string_parameter() {
+        for t in Tool::ALL {
+            let Some(parameter) = t.held_node_id_parameter() else {
+                continue;
+            };
+            assert_eq!(
+                t.definition().parameters_schema["properties"][parameter]["type"],
+                json!("string"),
+                "{} must declare '{parameter}' as a string parameter",
+                t.name()
+            );
+        }
+    }
+
+    /// Every form the executor accepts for the id resolves to the node the
+    /// executor will change. A check that read only `id` would be bypassed by
+    /// `node_id`.
+    #[test]
+    fn held_node_id_reads_the_id_as_the_executor_does() {
+        for args in [
+            json!({"id": "n-1", "content": "x"}),
+            json!({"node_id": "n-1", "content": "x"}),
+            json!({"id": "nodespace://n-1", "content": "x"}),
+            json!({"node_id": "nodespace://n-1", "content": "x"}),
+        ] {
+            let executor_reads: AgentUpdateNodeParams =
+                serde_json::from_value(args.clone()).expect("the executor accepts this form");
+            assert_eq!(
+                held_node_id("update_node", &args),
+                Some(strip_node_uri(&executor_reads.id)),
+                "{args}"
+            );
+            assert_eq!(held_node_id("update_node", &args), Some("n-1"), "{args}");
+        }
+    }
+
+    #[test]
+    fn held_node_id_is_none_without_a_usable_id_or_for_another_tool() {
+        assert_eq!(held_node_id("update_node", &json!({"content": "x"})), None);
+        assert_eq!(held_node_id("update_node", &json!({"id": 7})), None);
+        assert_eq!(held_node_id("update_node", &json!({"id": "  "})), None);
+        assert_eq!(
+            held_node_id("update_node", &json!({"id": "nodespace://"})),
+            None
+        );
+        // Tools the hold does not cover, though they take an id.
+        assert_eq!(held_node_id("delete_node", &json!({"id": "n-1"})), None);
+        assert_eq!(held_node_id("get_node", &json!({"id": "n-1"})), None);
+        assert_eq!(held_node_id("not_a_real_tool", &json!({"id": "n-1"})), None);
+    }
+
+    #[test]
+    fn off_menu_node_type_is_membership_in_the_offered_set() {
+        let offered = vec!["invoice".to_string(), "retainer_invoice".to_string()];
+        assert_eq!(
+            off_menu_node_type(Some("company"), &offered),
+            Some("company")
+        );
+        assert_eq!(off_menu_node_type(Some("invoice"), &offered), None);
+        // A subtype of a linked type is in the set already.
+        assert_eq!(off_menu_node_type(Some("retainer_invoice"), &offered), None);
+        // A node that could not be found is not refused for its type.
+        assert_eq!(off_menu_node_type(None, &offered), None);
+    }
+
+    #[tokio::test]
+    async fn node_type_is_the_stored_type_of_an_existing_node_and_none_for_a_missing_one() {
+        use nodespace_core::db::SqliteStore;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store: Arc<SqliteStore> =
+            Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let executor = GraphToolExecutor {
+            node_service: Some(ns),
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        };
+        let created = executor
+            .execute(
+                "create_node",
+                json!({"node_type": "task", "content": "File the report"}),
+            )
+            .await
+            .expect("the task is created");
+        let uri = created.result["id"].as_str().expect("id").to_string();
+
+        assert_eq!(executor.node_type(&uri).await.as_deref(), Some("task"));
+        assert_eq!(
+            executor.node_type(strip_node_uri(&uri)).await.as_deref(),
+            Some("task")
+        );
+        assert_eq!(
+            executor
+                .node_type("00000000-0000-4000-8000-000000000000")
+                .await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn node_type_is_none_without_a_node_service() {
+        assert_eq!(test_executor().node_type("n-1").await, None);
     }
 
     #[test]

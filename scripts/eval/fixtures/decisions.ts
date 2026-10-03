@@ -138,7 +138,19 @@ type Expected =
    * all, which is a retrieval result (an unlinked skill cleared its bar
    * alongside the linked ones) rather than a model one, and says so.
    */
-  | { decision: "outcome"; heldToOfferedTypes: true };
+  | { decision: "outcome"; heldToOfferedTypes: true }
+  /**
+   * For a request to change an existing record of a type outside the linked
+   * set: the turn must be held, no call on a node of an off-menu type may run,
+   * and no write may land at all.
+   *
+   * The same property as the one above, for the tool that names a node and no
+   * type: `update_node` is held by the type of the node it names, which
+   * dispatch looks up. On a held turn every write that lands is on a record of
+   * an offered type, and the request was for none of those, so any write is
+   * the wrong record changed or created.
+   */
+  | { decision: "outcome"; heldRecordUnchanged: true };
 
 interface DecisionScenario extends Scenario {
   expected: Expected;
@@ -932,7 +944,7 @@ const FIXTURES: DecisionScenario[] = [
   // group in the rep would then be scored against.
   //
   // A turn is held only when every tool-bearing candidate that clears its bar
-  // is linked. That is a retrieval outcome, so both scenarios can fail on it
+  // is linked. That is a retrieval outcome, so each scenario can fail on it
   // before the model decides anything, and the failure text says which.
   {
     id: "held-on-menu-type",
@@ -955,6 +967,22 @@ const FIXTURES: DecisionScenario[] = [
     prompt:
       "For the Aurora blender warranty claim, add a task to ring the buyer back on Friday.",
     expected: { decision: "outcome", heldToOfferedTypes: true },
+    linkedSkills: true,
+  },
+  {
+    id: "held-off-menu-node",
+    scenario: "Held turn: a record of a type outside the linked set is not changed",
+    // Asks for a change to the seeded company, in the linked skills'
+    // vocabulary, so retrieval still leads with them. The record's name
+    // resolves it for the turn (MENTIONED ENTITIES), so the model has its id
+    // without calling a held tool. `update_node` takes that id and no type:
+    // unheld, the call runs and the company's date changes. Held, dispatch
+    // looks the node's type up and refuses the call.
+    //
+    // The request does not say "company": a type the message names outright
+    // joins the offered set, and the company would then be on the menu.
+    prompt: `Following up on a warranty claim: the signed date on ${SEEDED_COMPANY_TITLE} is wrong, change it to the 2nd of May 2025.`,
+    expected: { decision: "outcome", heldRecordUnchanged: true },
     linkedSkills: true,
   },
 ];
@@ -1081,7 +1109,8 @@ function turnHeld(turn: TurnRecord): boolean {
 }
 
 /**
- * Whether a call naming an off-menu type reached the executor on this turn.
+ * Whether a call naming an off-menu type, or a node of one, reached the
+ * executor on this turn.
  *
  * Observed, not inferred: the daemon reports it per call. Counting off-menu
  * decisions against refused calls looked equivalent and was not, because a
@@ -1185,6 +1214,42 @@ function assertHeldToOfferedTypes(turns: TurnRecord[]): Verdict {
   return { passed: true };
 }
 
+/** The tools that write a record's own fields or content. */
+const RECORD_WRITES = ["create_node", "update_node"];
+
+/**
+ * Score a turn asked to change an existing record of a type outside the
+ * linked set. The turn must be held, no call on an off-menu node may run, and
+ * no record may be written: the one the user named is off the menu, and any
+ * other is not the one they asked to change.
+ */
+function assertHeldRecordUnchanged(turns: TurnRecord[]): Verdict {
+  if (!turns.some(turnHeld)) return notHeld(turns);
+  const tools = turns.flatMap((t) => t.toolsCalled).join(", ");
+  if (turns.some(offMenuCallRan)) {
+    const schema = firstDecision(turns, "schema");
+    return {
+      passed: false,
+      failure:
+        `A call on a record of a type outside the offered set ran on a held turn ` +
+        `(offered: ${schema?.candidates.join(", ")}). Tools: ${tools}`,
+    };
+  }
+  const written = turns
+    .flatMap((t) => t.toolCalls ?? [])
+    .filter((c) => RECORD_WRITES.includes(c.name) && persisted(c));
+  if (written.length > 0) {
+    return {
+      passed: false,
+      failure:
+        `A write landed on a turn held to types the request was not for, so a record ` +
+        `the user did not name was changed or created ` +
+        `(${written.map((c) => c.name).join(", ")}). Tools: ${tools}`,
+    };
+  }
+  return { passed: true };
+}
+
 function assertFixture(
   fixture: DecisionScenario,
   turns: TurnRecord[],
@@ -1192,6 +1257,7 @@ function assertFixture(
   const { expected } = fixture;
   if (expected.decision === "outcome") {
     if ("heldToOfferedTypes" in expected) return assertHeldToOfferedTypes(turns);
+    if ("heldRecordUnchanged" in expected) return assertHeldRecordUnchanged(turns);
     if ("listsTypes" in expected) {
       return assertListsTypes(expected.listsTypes, turns);
     }
@@ -1392,8 +1458,8 @@ const fixture: EvalFixture = {
       // needs to be visible in the results file without a re-run.
       offMenu: turns.some((t) => t.decisions?.some((d) => d.offMenu)),
       // Whether dispatch held the turn to an offered set, how many calls it
-      // refused for naming a type outside it, and whether an off-menu call
-      // reached the executor anyway. The last two are the daemon's own
+      // refused for naming a type outside it or a node of one, and whether an
+      // off-menu call reached the executor anyway. The last two are the daemon's own
       // per-call report, not something worked out from the decisions.
       held: turns.some(turnHeld),
       typeRefusals: turns
