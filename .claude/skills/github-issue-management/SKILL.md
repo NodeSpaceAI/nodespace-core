@@ -80,6 +80,10 @@ Read any ADR or architecture doc that matches — not just the filename, the ful
 
 **If no relevant ADR or architecture doc exists:** note that in the issue (e.g., "No prior ADR found for this area") so the reviewer knows the search happened rather than was skipped.
 
+**Every issue lists the docs it implements, in a `## Documentation` section — whether or not it changes a decision.** The implementer reads these before starting, and the reviewer checks the code against them, so the issue body points at the design instead of restating it (restated design drifts from the docs). List each relevant ADR and architecture/component doc as a markdown link to its file on `main` (`https://github.com/NodeSpaceAI/nodespace-docs/blob/main/<path>`), with the section anchor when one section is what matters, and say in a few words what each one governs for this issue. Name the docs the change must update too (for example `components/node-types.md` for any node-type change).
+
+**When the issue comes out of a design decision, write the docs first.** Commit and push the ADR and doc updates to nodespace-docs `main`, then file the issue linking them. An issue whose design exists only in its own body (or in a conversation) is the drift this rule prevents. If the docs can't be written yet, the decision isn't settled: ask the user rather than filing.
+
 ### Step 3: Validate Content Against Rules
 
 **CRITICAL VALIDATION CHECKS (BLOCKING):**
@@ -96,6 +100,7 @@ Read any ADR or architecture doc that matches — not just the filename, the ful
 - Acceptance Criteria (checkboxes with testable requirements)
 - Technical Specifications (file paths, patterns, references)
 - Self-contained details (implementer can work without asking questions)
+- **Documentation** (always): the ADRs and architecture/component docs the issue implements, linked, each with what it governs here, plus any doc the change must update. "No prior docs for this area" when Step 2 found none
 - **Architecture Impact** (only when Step 2 found a relevant ADR/doc): names the specific ADR(s) affected, whether this issue reverses/supersedes/extends them, and whether a companion `nodespace-docs` change is required
 
 #### ✅ REFERENCE FORMATTING:
@@ -128,6 +133,11 @@ bun run gh:create --title "Natural Descriptive Title" \
 
 ## Proposed Solution
 [High-level approach]
+
+## Documentation
+- [ADR-NNN](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/decisions/NNN-title.md) §N - what it decides for this issue
+- [Doc](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/architecture/doc.md#section) - what it specifies here
+- Updates: [doc this change must keep current]
 
 ## Architecture Impact
 [Only include this section if Step 2's nodespace-docs search found a relevant ADR/doc.
@@ -335,6 +345,11 @@ Brief summary of the bug and its impact.
 - Backend logs showing error
 - Screenshot/video demonstrating issue
 
+## Documentation
+- [ADR-NNN](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/decisions/NNN-title.md) §N - what it decides for this issue
+- [Doc](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/architecture/doc.md#section) - what it specifies here
+- Updates: [doc this change must keep current]
+
 ## Root Cause
 
 **Location**: `path/to/file.ts` (line X)
@@ -387,6 +402,11 @@ What user problem does this solve?
 
 ## Proposed Solution
 High-level approach to solving the problem.
+
+## Documentation
+- [ADR-NNN](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/decisions/NNN-title.md) §N - what it decides for this issue
+- [Doc](https://github.com/NodeSpaceAI/nodespace-docs/blob/main/architecture/doc.md#section) - what it specifies here
+- Updates: [doc this change must keep current]
 
 ## Architecture Impact
 [Only include this section if Step 2's nodespace-docs search found a relevant ADR/doc.
@@ -514,6 +534,7 @@ bun run gh:list --status open
 - ✅ Zero forbidden content (estimates, bad formatting)
 - ✅ nodespace-docs was searched for relevant ADRs/architecture before drafting
 - ✅ Any reversed/superseded ADR is named explicitly with an Architecture Impact section
+- ✅ A Documentation section links every ADR and doc the issue implements (written and pushed first when the issue comes from a new decision)
 - ✅ All quality gates passed
 - ✅ Self-contained and implementable
 - ✅ Created/updated via proper bun commands
