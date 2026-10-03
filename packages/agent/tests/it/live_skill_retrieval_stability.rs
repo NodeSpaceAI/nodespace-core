@@ -1152,3 +1152,167 @@ async fn linear_playbook_skills_do_not_displace_built_ins() {
     }
     assert!(misses.is_empty(), "displaced a built-in: {misses:#?}");
 }
+
+/// A request to start tracking something asks for a new type, and the model
+/// can only make one when the skill owning `create_schema` reaches Stage 2.
+/// Schema Creation's description used to say "keep track of" and not "start
+/// tracking", and "start tracking planning cycles" (what Stage 1 makes of
+/// "start tracking our planning cycles") ranked Graph Editing, Relationship
+/// Management, Node Creation, then Schema Creation at 0.778: `create_schema`
+/// was off the surface and the turn tried `create_node` until it gave up.
+///
+/// Rank 1, since the leading candidate is the one a turn is recorded as routed
+/// to. Covers the raw message as well as Stage 1's wording of it.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn start_tracking_requests_route_schema_creation() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "start tracking planning cycles",
+            "start tracking our planning cycles",
+            "start tracking release trains",
+            "begin tracking design decisions",
+            "we should start tracking production incidents",
+            "track planning cycles",
+        ],
+        "Schema Creation",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Schema Creation lost rank 1 for {misses:?}"
+    );
+}
+
+/// The cost side of Schema Creation opening with the tracking verbs: a request
+/// to track one record that already exists is an update or a create, and the
+/// skill that owns `create_schema` holds neither tool. Node Creation or Graph
+/// Editing must still reach Stage 2 on it.
+///
+/// Graph Editing leads three of these four. Schema Creation leads "start
+/// tracking the offline sync spec's sign-off" (0.852, Graph Editing 0.811,
+/// Node Creation 0.792): that turn is recorded as routed to the type skill,
+/// with `create_schema` offered beside the record tools. Who leads is not
+/// asserted here.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn tracking_one_existing_record_still_reaches_a_record_skill() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for query in [
+        "start tracking the login timeout bug",
+        "track this task's progress",
+        "start tracking the offline sync spec's sign-off",
+        "keep track of the Q4 cycle's status",
+    ] {
+        eprintln!(
+            "{query:?}: {:?}",
+            scored_ranking(&embedding_service, &node_service, query, 6).await
+        );
+        let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+        let holds = |ranked: &Vec<String>| {
+            ranked
+                .iter()
+                .any(|n| n == "Node Creation" || n == "Graph Editing")
+        };
+        if !rankings.iter().all(holds) {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "neither Node Creation nor Graph Editing reached the top-{RETRIEVAL_TOP_K} for {misses:?}"
+    );
+}
+
+/// One named record added to a type that already exists is a create. It must
+/// not lead with Bulk Import, and Node Creation must reach Stage 2. Such a
+/// request says neither "create" nor "record", and no description named it:
+/// "add Contoso Ltd to companies we sell to" ranked Bulk Import 0.742,
+/// Organization 0.741, Node Creation 0.737, three skills inside 0.005, so the
+/// leader was chance. The turn still wrote the record, recorded as routed to
+/// the import skill. Node Creation's description names the request now.
+///
+/// Node Creation leads four of these six. It does not lead the two whose
+/// nouns belong to another skill: "…spec to the specs for this cycle" (Schema
+/// Creation, which lists specs, by 0.010) and "…cache invalidation decision…"
+/// (Node Deletion, on "invalidation"). It places second and third there, so
+/// `create_node` stays on the surface, which is what is asserted.
+///
+/// The second of those is a standing defect this test records and does not
+/// accept: the winner's destructive tool is offered, so `delete_node` is on
+/// the surface of a request to add something. Node Deletion scores 0.840 on
+/// it whatever Node Creation's description says, so it led before the clause
+/// was added. An `exclusion` on Node Deletion
+/// naming the adding verbs was measured and rejected: it left that score at
+/// 0.840 and took 0.02 off real deletions, costing "remove all the resolved
+/// incidents" its lead.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn single_record_adds_do_not_lead_with_bulk_import() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for query in [
+        "add Contoso Ltd to companies we sell to",
+        "Add Contoso Ltd to the companies we sell to.",
+        "add the offline sync spec to the specs for this cycle",
+        "add the cache invalidation decision to our architecture decisions",
+        "put the login timeout bug on the release blockers list",
+        "add the Q4 cycle to our planning cycles",
+    ] {
+        eprintln!(
+            "{query:?}: {:?}",
+            scored_ranking(&embedding_service, &node_service, query, 6).await
+        );
+        // Every rep, as `routing_misses` checks: the margins here are small.
+        let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+        let holds = |ranked: &Vec<String>| {
+            ranked.first().is_some_and(|n| n != "Bulk Import")
+                && ranked.iter().any(|n| n == "Node Creation")
+        };
+        if !rankings.iter().all(holds) {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "a single-record add led with Bulk Import, or Node Creation missed the \
+         top-{RETRIEVAL_TOP_K}, for {misses:?}"
+    );
+}
+
+/// The cost side of Node Creation naming single-record adds: a request that is
+/// an import must still put Bulk Import first, since
+/// `create_nodes_from_markdown` is reachable from no other skill.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn import_requests_still_route_bulk_import() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "import this markdown document",
+            "bulk create nodes from this markdown outline",
+            "import my meeting notes file",
+            "turn this pasted markdown into nodes",
+            "load this outline as a hierarchy of nodes",
+        ],
+        "Bulk Import",
+        true,
+    )
+    .await;
+    assert!(misses.is_empty(), "Bulk Import lost rank 1 for {misses:?}");
+}

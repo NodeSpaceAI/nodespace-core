@@ -11,6 +11,15 @@ fn backtick_uri_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"`(nodespace://[^`]+)`").unwrap())
 }
 
+/// Matches a `nodespace://` URI and the Markdown escapes inside its id: the
+/// characters an id can hold, the `:` of a `schema:` prefix on a type-name
+/// target, and a backslash before `_` or `-`. The match ends where the id
+/// does, so an escape in the text after it is not part of it.
+fn escapable_uri_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"nodespace://(?:[A-Za-z0-9_:-]|\\[_-])+").unwrap())
+}
+
 /// Matches Gemma's textual tool-call / tool-response syntax leaking into prose.
 ///
 /// When the tool-less final inference still tries to "speak" tool activity, the
@@ -103,6 +112,7 @@ pub fn normalize_response_traced(text: &str) -> (String, Vec<&'static str>) {
         result,
         &mut fired,
     );
+    let result = apply("unescape_uri_ids", unescape_uri_ids, result, &mut fired);
     let result = apply(
         "collapse_uri_labelled_links",
         collapse_uri_labelled_links,
@@ -134,6 +144,23 @@ pub fn normalize_response_traced(text: &str) -> (String, Vec<&'static str>) {
         &mut fired,
     );
     (result.trim().to_string(), fired)
+}
+
+/// Remove Markdown escapes from the id of a `nodespace://` URI.
+///
+/// `nodespace://design\_decision` -> `nodespace://design_decision`
+///
+/// Writing a list, the model escapes the underscores of an id as it would in
+/// prose. The escaped form is not the id any tool returned: the link does not
+/// open, and the reply reads as naming a node that does not exist, so it is
+/// replaced whole. An id is alphanumeric plus `-` and `_`, so a backslash
+/// before either is never part of one. Any other backslash stays as written.
+fn unescape_uri_ids(text: &str) -> String {
+    escapable_uri_re()
+        .replace_all(text, |caps: &regex::Captures| {
+            caps[0].replace("\\_", "_").replace("\\-", "-")
+        })
+        .into_owned()
 }
 
 /// Collapse a node link whose label is its own URI to the bare URI.
@@ -451,6 +478,59 @@ mod tests {
         assert_eq!(
             result,
             "See nodespace://a and nodespace://b and [Title](nodespace://c)."
+        );
+    }
+
+    #[test]
+    fn unescapes_underscores_and_hyphens_in_a_uri_id() {
+        let input =
+            r"See [Design Decision](nodespace://design\_decision) and nodespace://a1b2\-c3d4.";
+        let (result, fired) = normalize_response_traced(input);
+        assert_eq!(
+            result,
+            "See [Design Decision](nodespace://design_decision) and nodespace://a1b2-c3d4."
+        );
+        assert_eq!(fired, vec!["unescape_uri_ids"]);
+    }
+
+    #[test]
+    fn leaves_escapes_outside_a_uri_unchanged() {
+        // An escaped underscore in prose is the model's own formatting, and a
+        // link's label is prose.
+        let input = r"The field due\_date on [my\_type](nodespace://my_type) is set.";
+        let (result, fired) = normalize_response_traced(input);
+        assert_eq!(result, input);
+        assert!(fired.is_empty(), "no strippers should fire: {:?}", fired);
+    }
+
+    #[test]
+    fn leaves_other_backslashes_in_a_uri_unchanged() {
+        // Only the two characters an id can hold are unescaped. Anything else
+        // stays as written, for the fabricated-id check to judge.
+        let input = r"See nodespace://abc\*def for details.";
+        assert_eq!(normalize_response(input), input);
+    }
+
+    #[test]
+    fn leaves_an_escape_after_the_end_of_a_uri_unchanged() {
+        // The id ends at the first character an id cannot hold, so the escape
+        // in the cell beside it is prose.
+        let input = r"| nodespace://task|due\_date |";
+        assert_eq!(normalize_response(input), input);
+    }
+
+    #[test]
+    fn unescapes_a_uri_id_before_the_steps_that_read_it() {
+        // A label is compared with its target, and only the target is
+        // escaped here: the two are equal, and the link collapses, only when
+        // the unescape has already run.
+        assert_eq!(
+            normalize_response(r"See [nodespace://a_b](nodespace://a\_b)."),
+            "See nodespace://a_b."
+        );
+        assert_eq!(
+            normalize_response(r"Open `nodespace://a\_b` to view."),
+            "Open nodespace://a_b to view."
         );
     }
 
