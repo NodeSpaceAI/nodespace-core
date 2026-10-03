@@ -46,6 +46,7 @@
   import { draggable, droppable, type DragDropState } from '@thisux/sveltednd';
   import { createLogger } from '$lib/utils/logger';
   import { computeTabTitle } from '$lib/utils/tab-title';
+  import { readTabDrop } from '$lib/utils/tab-drop';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
   // Logger instance for TabSystem component
@@ -184,29 +185,20 @@
   function handleDrop(state: DragDropState<{ tab: Tab; paneId: string }>): void {
     try {
       const { draggedItem, targetContainer, sourceContainer } = state;
+      const drop = readTabDrop(state);
 
-      // Early validation: check for required state
-      if (!draggedItem || !targetContainer || !sourceContainer) {
-        log.warn('Invalid drop operation: missing required state', {
-          hasDraggedItem: !!draggedItem,
-          hasTargetContainer: !!targetContainer,
-          hasSourceContainer: !!sourceContainer
-        });
+      // A click on a tab reaches here as a drop with no target (see readTabDrop).
+      if (drop.kind === 'click') {
         dragOverIndex = null;
         return;
       }
 
-      // Parse and validate indices
-      const sourceIndex = parseInt(sourceContainer.replace('tab-', ''));
-      const targetIndex = parseInt(targetContainer.replace('tab-', ''));
-
-      if (isNaN(sourceIndex) || isNaN(targetIndex)) {
-        log.error('Invalid drop operation: could not parse container indices', {
+      if (drop.kind === 'invalid' || !draggedItem) {
+        log.warn('Invalid drop operation', {
+          reason: drop.kind === 'invalid' ? drop.reason : 'missing-state',
+          hasDraggedItem: !!draggedItem,
           sourceContainer,
           targetContainer,
-          sourceIndex,
-          targetIndex,
-          draggedTab: draggedItem.tab.title,
           currentPaneId,
           totalTabs: displayTabs.length
         });
@@ -214,6 +206,7 @@
         return;
       }
 
+      const { sourceIndex, targetIndex } = drop;
       const sourcePaneId = draggedItem.paneId;
       const tabId = draggedItem.tab.id;
 
