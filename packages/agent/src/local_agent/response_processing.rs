@@ -11,6 +11,13 @@ fn backtick_uri_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"`(nodespace://[^`]+)`").unwrap())
 }
 
+/// Matches a `nodespace://` URI that holds a backslash, up to the whitespace
+/// or bracket that ends it.
+fn escaped_uri_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"nodespace://[^\s)\]]*\\[^\s)\]]*").unwrap())
+}
+
 /// Matches Gemma's textual tool-call / tool-response syntax leaking into prose.
 ///
 /// When the tool-less final inference still tries to "speak" tool activity, the
@@ -103,6 +110,7 @@ pub fn normalize_response_traced(text: &str) -> (String, Vec<&'static str>) {
         result,
         &mut fired,
     );
+    let result = apply("unescape_uri_ids", unescape_uri_ids, result, &mut fired);
     let result = apply(
         "collapse_uri_labelled_links",
         collapse_uri_labelled_links,
@@ -134,6 +142,23 @@ pub fn normalize_response_traced(text: &str) -> (String, Vec<&'static str>) {
         &mut fired,
     );
     (result.trim().to_string(), fired)
+}
+
+/// Remove Markdown escapes from the id of a `nodespace://` URI.
+///
+/// `nodespace://company\_sold\_to` -> `nodespace://company_sold_to`
+///
+/// Writing a list, the model escapes the underscores of an id as it would in
+/// prose. The escaped form is not the id any tool returned: the link does not
+/// open, and the reply reads as naming a node that does not exist, so it is
+/// replaced whole. An id is alphanumeric plus `-` and `_`, so a backslash
+/// before either is never part of one. Any other backslash stays as written.
+fn unescape_uri_ids(text: &str) -> String {
+    escaped_uri_re()
+        .replace_all(text, |caps: &regex::Captures| {
+            caps[0].replace("\\_", "_").replace("\\-", "-")
+        })
+        .into_owned()
 }
 
 /// Collapse a node link whose label is its own URI to the bare URI.
@@ -452,6 +477,36 @@ mod tests {
             result,
             "See nodespace://a and nodespace://b and [Title](nodespace://c)."
         );
+    }
+
+    #[test]
+    fn unescapes_underscores_and_hyphens_in_a_uri_id() {
+        let input =
+            r"See [Company Sold To](nodespace://company\_sold\_to) and nodespace://a1b2\-c3d4.";
+        let (result, fired) = normalize_response_traced(input);
+        assert_eq!(
+            result,
+            "See [Company Sold To](nodespace://company_sold_to) and nodespace://a1b2-c3d4."
+        );
+        assert_eq!(fired, vec!["unescape_uri_ids"]);
+    }
+
+    #[test]
+    fn leaves_escapes_outside_a_uri_unchanged() {
+        // An escaped underscore in prose is the model's own formatting, and a
+        // link's label is prose.
+        let input = r"The field due\_date on [my\_type](nodespace://my_type) is set.";
+        let (result, fired) = normalize_response_traced(input);
+        assert_eq!(result, input);
+        assert!(fired.is_empty(), "no strippers should fire: {:?}", fired);
+    }
+
+    #[test]
+    fn leaves_other_backslashes_in_a_uri_unchanged() {
+        // Only the two characters an id can hold are unescaped. Anything else
+        // stays as written, for the fabricated-id check to judge.
+        let input = r"See nodespace://abc\*def for details.";
+        assert_eq!(normalize_response(input), input);
     }
 
     // Status normalization

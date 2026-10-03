@@ -10667,8 +10667,8 @@ mod tests {
         })
     }
 
-    /// An executor whose `search_nodes` answers with [`type_listing_result`].
-    struct TypeListingExecutor;
+    /// An executor whose `search_nodes` answers with the given listing.
+    struct TypeListingExecutor(serde_json::Value);
 
     #[async_trait]
     impl AgentToolExecutor for TypeListingExecutor {
@@ -10687,7 +10687,7 @@ mod tests {
             Ok(ToolResult {
                 tool_call_id: "tc".into(),
                 name: name.into(),
-                result: type_listing_result(),
+                result: self.0.clone(),
                 is_error: false,
             })
         }
@@ -10696,8 +10696,17 @@ mod tests {
     /// Run one turn in which the model lists types with `args` and answers
     /// `reply`. Returns the final reply and the session.
     async fn run_type_listing_turn(args: &str, reply: &str) -> (String, AgentSession) {
+        run_type_listing_turn_over(type_listing_result(), args, reply).await
+    }
+
+    /// [`run_type_listing_turn`] over a workspace whose listing is `listing`.
+    async fn run_type_listing_turn_over(
+        listing: serde_json::Value,
+        args: &str,
+        reply: &str,
+    ) -> (String, AgentSession) {
         let engine = Arc::new(MockEngine::tool_then_text("search_nodes", args, reply));
-        let agent_loop = LocalAgentLoop::new(engine, Arc::new(TypeListingExecutor));
+        let agent_loop = LocalAgentLoop::new(engine, Arc::new(TypeListingExecutor(listing)));
         let mut session = new_session();
         let result = agent_loop
             .run_turn(
@@ -10764,6 +10773,38 @@ mod tests {
                        and [Project](nodespace://proj ect).";
         let (reply, _) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, slipped).await;
         assert_eq!(reply, EVERY_TYPE_LISTED);
+    }
+
+    /// The measured reply on a workspace whose custom types have underscores
+    /// in their ids: the model escapes them inside the links, as it would in
+    /// prose. An escaped id is not the one the search returned, and the reply
+    /// was replaced with a request to confirm although every type it named
+    /// exists. The links are read as the ids they are, the reply stands, and
+    /// the types it left out are appended.
+    #[tokio::test]
+    async fn a_type_listing_with_escaped_ids_is_kept_and_completed() {
+        let listing = json!({
+            "count": 4,
+            "nodes": [
+                {"id": "nodespace://event_venue", "title": "Event Venue", "type": "schema"},
+                {"id": "nodespace://company_sold_to", "title": "Company Sold To", "type": "schema"},
+                {"id": "nodespace://task", "title": "Task", "type": "schema"},
+                {"id": "nodespace://project", "title": "Project", "type": "schema"},
+            ]
+        });
+        let escaped = r"The schemas include built-in types like [Task](nodespace://task), as well as:
+
+*   [Event Venue](nodespace://event_venue): tracks bookings.
+*   [Company Sold To](nodespace://company\_sold\_to): records sales agreements.";
+        let (reply, _) = run_type_listing_turn_over(listing, UNFILTERED_TYPE_LISTING, escaped).await;
+
+        assert_eq!(
+            reply,
+            format!(
+                "{}\n\nThe other types in this workspace: [Project](nodespace://project).",
+                escaped.replace(r"\_", "_")
+            )
+        );
     }
 
     /// The same stand-ins are left alone when the search was not a listing of

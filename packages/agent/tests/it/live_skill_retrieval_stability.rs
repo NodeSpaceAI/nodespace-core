@@ -1152,3 +1152,105 @@ async fn linear_playbook_skills_do_not_displace_built_ins() {
     }
     assert!(misses.is_empty(), "displaced a built-in: {misses:#?}");
 }
+
+/// A request to start tracking something asks for a new type, and the model
+/// can only make one when the skill owning `create_schema` reaches Stage 2.
+/// Schema Creation's description used to say "keep track of" and not "start
+/// tracking", and "start tracking planning cycles" (what Stage 1 makes of
+/// "start tracking our planning cycles") ranked Graph Editing, Relationship
+/// Management, Node Creation, then Schema Creation at 0.778: `create_schema`
+/// was off the surface and the turn tried `create_node` until it gave up.
+///
+/// Rank 1, since the leading candidate is the one a turn is recorded as routed
+/// to. Covers the raw message as well as Stage 1's wording of it.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn start_tracking_requests_route_schema_creation() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "start tracking planning cycles",
+            "start tracking our planning cycles",
+            "start tracking customer renewals",
+            "begin tracking vendor contracts",
+            "we should start tracking production incidents",
+            "track planning cycles",
+        ],
+        "Schema Creation",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Schema Creation lost rank 1 for {misses:?}"
+    );
+}
+
+/// One named record added to a type that already exists is a create, and must
+/// not lead with Bulk Import. Such a request says neither "create" nor
+/// "record", and no description named it: "add Contoso Ltd to companies we
+/// sell to" ranked Bulk Import 0.742, Organization 0.741, Node Creation 0.737,
+/// three skills inside 0.005, so the leader was chance. The turn still wrote
+/// the record, recorded as routed to the import skill. Node Creation's
+/// description names the request now and leads each of these.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn single_record_adds_do_not_lead_with_bulk_import() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for query in [
+        "add Contoso Ltd to companies we sell to",
+        "Add Contoso Ltd to the companies we sell to.",
+        "add Fabrikam to our vendors",
+        "add Dana Reyes to the people we interviewed",
+        "put Northwind Trading on the customer list",
+        "add the Lisbon offsite to our events",
+    ] {
+        let ranked = scored_ranking(&embedding_service, &node_service, query, 6).await;
+        eprintln!("{query:?}: {ranked:?}");
+        let leads_with_a_create = ranked.first().is_some_and(|r| {
+            ["Node Creation=", "Organization=", "Graph Editing="]
+                .iter()
+                .any(|skill| r.starts_with(skill))
+        });
+        if !leads_with_a_create {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "a single-record add did not lead with a create skill for {misses:?}"
+    );
+}
+
+/// The cost side of Node Creation naming single-record adds: a request that is
+/// an import must still put Bulk Import first, since
+/// `create_nodes_from_markdown` is reachable from no other skill.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn import_requests_still_route_bulk_import() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "import this markdown document",
+            "bulk create nodes from this markdown outline",
+            "import my meeting notes file",
+            "turn this pasted markdown into nodes",
+            "load this outline as a hierarchy of nodes",
+        ],
+        "Bulk Import",
+        true,
+    )
+    .await;
+    assert!(misses.is_empty(), "Bulk Import lost rank 1 for {misses:?}");
+}

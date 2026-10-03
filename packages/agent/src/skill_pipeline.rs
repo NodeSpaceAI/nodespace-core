@@ -128,9 +128,25 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // The body includes the shared named-record rule, so the external
         // skill's copy of it (`packages/skill/SKILL.md`) cannot drift from
         // this one on substance.
+        //
+        // The description ends by naming the request it kept losing: one
+        // named thing added to a list the user already has. "add Contoso
+        // Ltd to companies we sell to" says neither "create" nor "record",
+        // and without the clause it scored every skill within 0.01 of the
+        // next (Bulk Import 0.742, Organization 0.741, this skill 0.737),
+        // so which one led was chance. With it this skill leads that
+        // request and five like it by 0.02 to 0.05.
+        //
+        // "already listed", not "already kept": "kept" put this skill
+        // 0.003 above Conflict Journal on "keep the existing node for that
+        // conflict". Guarded in
+        // `tests/it/live_skill_retrieval_stability.rs` by
+        // `single_record_adds_do_not_lead_with_bulk_import`,
+        // `import_requests_still_route_bulk_import` and
+        // `control_conflict_requests_still_route_conflict_journal`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c02",
         title: "Node Creation",
-        description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
+        description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type: one more named company, person, or thing added to the ones already listed.",
         // `update_node` is whitelisted here as well as on Graph
         // Editing — deliberately, to remove a single point of failure
         // rather than because this skill is about editing.
@@ -201,9 +217,20 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // explicit, reviewed record of every `SCHEMA_RULES` entry the body
         // deliberately does not include — see its own doc comment for why a
         // hand-maintained list, rather than nothing, is the guard.
+        //
+        // The description opens with the tracking verbs themselves. It
+        // said "keep track of" and never "start tracking", and "start
+        // tracking planning cycles" placed this skill fourth at 0.778,
+        // behind Graph Editing, Relationship Management and Node
+        // Creation: `create_schema` left the surface and the turn retried
+        // `create_node` until it gave up. With the opening clause it leads
+        // at 0.866. "or begin tracking" is what holds "start tracking
+        // customer renewals", which Graph Editing otherwise led by 0.009.
+        // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
+        // `start_tracking_requests_route_schema_creation`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c03",
         title: "Schema Creation",
-        description: "Set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
+        description: "Start tracking or begin tracking a new kind of thing: set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
         tools: &["create_schema", "update_schema", "get_node"],
         max_iterations: 3,
         exclusion: None,
