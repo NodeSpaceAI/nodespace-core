@@ -3914,6 +3914,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // `any_real_tool_calls` narrowing already applied to the neighboring
                 // anti-fabrication guard above: scope to what actually grounds the
                 // final answer, not everything that happened anywhere in the turn.
+                //
+                // A failed lookup is recovered by any later lookup that succeeded,
+                // not only by the same tool: a `search_nodes` whose filter was
+                // refused, followed by a `search_semantic` that found the record,
+                // grounds the answer in the second read. Replacing that answer with
+                // the first read's error told the user the question could not be
+                // answered when it had been.
                 let failed_tools: Vec<&ToolExecutionRecord> = all_tool_executions
                     .iter()
                     .enumerate()
@@ -3923,9 +3930,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         // told about it.
                         r.is_error
                             && !is_duplicate_entity_refusal(r)
-                            && !all_tool_executions[i + 1..]
-                                .iter()
-                                .any(|later| later.name == r.name && !later.is_error)
+                            && !all_tool_executions[i + 1..].iter().any(|later| {
+                                !later.is_error
+                                    && (later.name == r.name
+                                        || (super::tools::is_graph_lookup_tool(&r.name)
+                                            && super::tools::is_graph_lookup_tool(&later.name)))
+                            })
                     })
                     .map(|(_, r)| r)
                     .collect();
@@ -9922,6 +9932,92 @@ mod tests {
             "the correct, self-corrected answer must pass through unchanged, not be \
              replaced with the generic tool-error message"
         );
+    }
+
+    /// One lookup recovers another. Measured on the locked model: asked when a
+    /// company was signed, it filtered `search_nodes` on a property the store
+    /// refused, found the record with `search_semantic`, and answered with the
+    /// date — and the user was shown the first call's error instead.
+    #[tokio::test]
+    async fn a_failed_lookup_recovered_by_another_lookup_keeps_the_answer() {
+        struct FieldFilterRefusedExecutor;
+
+        #[async_trait]
+        impl AgentToolExecutor for FieldFilterRefusedExecutor {
+            async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+                Ok(["search_nodes", "search_semantic", "update_node"]
+                    .into_iter()
+                    .map(|name| ToolDefinition {
+                        name: name.into(),
+                        description: name.into(),
+                        parameters_schema: json!({"type": "object"}),
+                    })
+                    .collect())
+            }
+
+            async fn execute(
+                &self,
+                name: &str,
+                _args: serde_json::Value,
+            ) -> Result<ToolResult, ToolError> {
+                let (result, is_error) = match name {
+                    "search_semantic" => (
+                        json!({"nodes": [{"id": "nw-1", "title": "Northwind Trading"}]}),
+                        false,
+                    ),
+                    _ => (
+                        json!({"error": "filter property contains invalid characters"}),
+                        true,
+                    ),
+                };
+                Ok(ToolResult {
+                    tool_call_id: "tc".into(),
+                    name: name.into(),
+                    result,
+                    is_error,
+                })
+            }
+        }
+
+        let run = |rounds: Vec<Vec<StreamingChunk>>| async move {
+            let agent_loop = LocalAgentLoop::new(
+                Arc::new(MockEngine::new(rounds)),
+                Arc::new(FieldFilterRefusedExecutor),
+            );
+            let mut session = new_session();
+            agent_loop
+                .run_turn(
+                    &mut session,
+                    "When did we sign Northwind Trading?",
+                    |_| {},
+                    |_| {},
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+        };
+        let answer = "We signed Northwind Trading on 2025-03-14.";
+
+        let recovered = run(vec![
+            tool_round("tc_0", "search_nodes", r#"{"node_type":"company_sold_to"}"#),
+            tool_round(
+                "tc_1",
+                "search_semantic",
+                r#"{"query":"Northwind Trading"}"#,
+            ),
+            text_round(answer),
+        ])
+        .await;
+        assert_eq!(recovered.response, answer);
+
+        // A write is not a lookup: it cannot stand in for one that failed.
+        let unrecovered = run(vec![
+            tool_round("tc_0", "search_nodes", r#"{"node_type":"company_sold_to"}"#),
+            tool_round("tc_1", "update_node", r#"{"id":"nw-1"}"#),
+            text_round(answer),
+        ])
+        .await;
+        assert_ne!(unrecovered.response, answer);
     }
 
     /// A tool failure with NO successful retry — the model's final response
