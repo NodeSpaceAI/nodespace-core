@@ -2835,23 +2835,6 @@ pub fn is_write_tool(tool: &str) -> bool {
     Tool::from_name(tool).is_some_and(Tool::is_write)
 }
 
-/// Whether a tool reads the user's graph to answer a question, by wire name:
-/// one lookup can stand in for another that failed. Asking the user, listing
-/// skills or reading conflict and workflow state answer something else, and
-/// an unknown name is not a lookup.
-pub fn is_graph_lookup_tool(tool: &str) -> bool {
-    matches!(
-        Tool::from_name(tool),
-        Some(
-            Tool::SearchNodes
-                | Tool::SearchSemantic
-                | Tool::ResolveQuery
-                | Tool::GetNode
-                | Tool::GetRelatedNodes
-        )
-    )
-}
-
 /// Whether a tool's successful result can surface a concrete graph node, by
 /// wire name. Computed from the registry.
 ///

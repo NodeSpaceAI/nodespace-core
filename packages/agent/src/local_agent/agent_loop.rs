@@ -3920,7 +3920,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // refused, followed by a `search_semantic` that found the record,
                 // grounds the answer in the second read. Replacing that answer with
                 // the first read's error told the user the question could not be
-                // answered when it had been.
+                // answered when it had been. A lookup is a tool whose result is
+                // graph nodes (`resolves_entities`). Recovery is by kind of tool,
+                // not by target: a failed read of one record is dropped once any
+                // later read succeeds, as a same-tool retry on another target
+                // already was.
                 let failed_tools: Vec<&ToolExecutionRecord> = all_tool_executions
                     .iter()
                     .enumerate()
@@ -3933,8 +3937,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                             && !all_tool_executions[i + 1..].iter().any(|later| {
                                 !later.is_error
                                     && (later.name == r.name
-                                        || (super::tools::is_graph_lookup_tool(&r.name)
-                                            && super::tools::is_graph_lookup_tool(&later.name)))
+                                        || (super::tools::resolves_entities_tool(&r.name)
+                                            && super::tools::resolves_entities_tool(&later.name)))
                             })
                     })
                     .map(|(_, r)| r)
@@ -9963,6 +9967,12 @@ mod tests {
                 let (result, is_error) = match name {
                     "search_semantic" => (
                         json!({"nodes": [{"id": "nw-1", "title": "Northwind Trading"}]}),
+                        false,
+                    ),
+                    // Succeeds, so the case below shows a write that worked
+                    // still does not recover a failed lookup.
+                    "update_node" => (
+                        json!({"id": "nodespace://nw-1", "property_count": 1}),
                         false,
                     ),
                     _ => (
