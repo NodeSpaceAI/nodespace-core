@@ -248,7 +248,8 @@ interface DecisionScenario extends Scenario {
 /// is the shape the agent gives a type asked for "with a name, a booking date
 /// and a capacity". The company type keeps the `name` field it has always been
 /// seeded with, so its scenarios are scored against the type they were
-/// measured on.
+/// measured on, and Northwind's `name` is set to its title (see
+/// `seedWorkspace`).
 const COMPANY_TYPE = "company_sold_to";
 const VENUE_TYPE = "event_venue";
 const SIGNED_DATE_FIELD = "signed_date";
@@ -390,6 +391,11 @@ function seedWorkspace(env: EvalEnv): void {
     id.replace(/^nodespace:\/\//, ""),
     "--property",
     `${SIGNED_DATE_FIELD}=${SEEDED_COMPANY_SIGNED}`,
+    // The type declares a `name` field, and a record whose `name` is empty
+    // cannot be found by it: asked when Northwind was signed, the model
+    // filtered on `name`, matched nothing, and reported no such record.
+    "--property",
+    `name=${SEEDED_COMPANY_TITLE}`,
   ]);
 }
 
