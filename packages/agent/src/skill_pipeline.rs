@@ -135,7 +135,13 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // and without the clause it scored every skill within 0.01 of the
         // next (Bulk Import 0.742, Organization 0.741, this skill 0.737),
         // so which one led was chance. With it this skill leads that
-        // request and five like it by 0.02 to 0.05.
+        // request by 0.010, and leads or places in the top 3 on the
+        // developer-domain adds measured beside it.
+        //
+        // The nouns are the product's own (spec, decision, bug). With
+        // none, the clause leads that request by 0.014 and loses "put the
+        // login timeout bug on the release blockers list" to Play
+        // Workflow State.
         //
         // "already listed", not "already kept": "kept" put this skill
         // 0.003 above Conflict Journal on "keep the existing node for that
@@ -146,7 +152,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `control_conflict_requests_still_route_conflict_journal`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c02",
         title: "Node Creation",
-        description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type: one more named company, person, or thing added to the ones already listed.",
+        description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type: one more named spec, decision, bug, or other item added to the ones already listed.",
         // `update_node` is whitelisted here as well as on Graph
         // Editing — deliberately, to remove a single point of failure
         // rather than because this skill is about editing.
@@ -224,8 +230,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // behind Graph Editing, Relationship Management and Node
         // Creation: `create_schema` left the surface and the turn retried
         // `create_node` until it gave up. With the opening clause it leads
-        // at 0.866. "or begin tracking" is what holds "start tracking
-        // customer renewals", which Graph Editing otherwise led by 0.009.
+        // at 0.866, and leads the other tracking requests measured
+        // beside it by 0.01 to 0.05.
         // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
         // `start_tracking_requests_route_schema_creation`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c03",
