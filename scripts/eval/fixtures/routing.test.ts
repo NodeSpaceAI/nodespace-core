@@ -100,6 +100,68 @@ describe("route_multi scoring", () => {
   });
 });
 
+describe("clarify scoring", () => {
+  const ambiguous = byId("ambiguous-client-contacts");
+
+  test("Stage 1 clarifying passes, whatever the question says", () => {
+    const t = turn({ routingDecision: "clarify", reply: "I can take that a couple of ways." });
+    expect(assertFixture(ambiguous, [t]).passed).toBe(true);
+  });
+
+  test("a search, then a question asking for more, passes", () => {
+    // The reported reply, which a phrase list knowing only "could you
+    // clarify" read as no question at all.
+    const t = turn({
+      routingDecision: "query",
+      toolsCalled: ["search_semantic"],
+      reply:
+        "Could you provide more context, like a collection name or the topic of the documents?",
+    });
+    expect(assertFixture(ambiguous, [t]).passed).toBe(true);
+  });
+
+  test("an abbreviation inside the question does not cut it short", () => {
+    // A measured reply.
+    const t = turn({
+      routingDecision: "query",
+      toolsCalled: ["search_semantic"],
+      reply:
+        'I couldn\'t find any specific "design docs" in your workspace to organize. Could you provide more context, or perhaps tell me what kind of documents they are (e.g., Feature Specs, ADRs)?',
+    });
+    expect(assertFixture(ambiguous, [t]).passed).toBe(true);
+  });
+
+  test("an offer to look further is a question to the user", () => {
+    const t = turn({
+      routingDecision: "query",
+      toolsCalled: ["search_semantic"],
+      reply: "Nothing matched. Want me to try another search?",
+    });
+    expect(assertFixture(ambiguous, [t]).passed).toBe(true);
+  });
+
+  test("a question after a write fails", () => {
+    const t = turn({
+      routingDecision: "query",
+      toolsCalled: ["create_node"],
+      reply: "I made a collection. Would you like me to move the docs into it?",
+    });
+    expect(assertFixture(ambiguous, [t]).passed).toBe(false);
+  });
+
+  test("a reply that asks the user nothing fails", () => {
+    for (const reply of [
+      "I couldn't find any design docs.",
+      "Done. Anything else?",
+      "Let me know if you need more. Anything else?",
+      'I found "What kind of DB?" in your notes.',
+    ]) {
+      const t = turn({ routingDecision: "query", toolsCalled: ["search_semantic"], reply });
+      expect(assertFixture(ambiguous, [t]).passed).toBe(false);
+    }
+  });
+});
+
 describe("decline scoring", () => {
   const weather = byId("out-of-scope-weather");
 

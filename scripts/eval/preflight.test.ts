@@ -8,6 +8,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   awaitSkillIndex,
   embeddedSkillCount,
@@ -260,5 +263,24 @@ describe("embeddedSkillCount", () => {
     });
     expect(n).toBe(0);
     expect(ran).toBe(false);
+  });
+
+  test("the default query counts only skills whose vector exists", () => {
+    // A node's embedding row is written, stale, when the node is created; the
+    // vector lands on the worker's ~30s debounce. Counting the stale row let
+    // the wait return before skills seeded mid-run could be retrieved.
+    const dir = mkdtempSync(join(tmpdir(), "preflight-"));
+    const db = join(dir, "test.db");
+    try {
+      const sql =
+        "CREATE TABLE node (id TEXT, node_type TEXT);" +
+        "CREATE TABLE embedding (node_id TEXT, stale INTEGER);" +
+        "INSERT INTO node VALUES ('s1','skill'),('s2','skill'),('t1','text');" +
+        "INSERT INTO embedding VALUES ('s1',0),('s2',1),('t1',0);";
+      expect(Bun.spawnSync(["sqlite3", db, sql]).exitCode).toBe(0);
+      expect(embeddedSkillCount(db)).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -23,13 +23,13 @@ import {
   buildTraceLines,
   checkGuidanceDrift,
   checkUniformity,
+  describeExclusions,
   formatReliabilityTable,
   markerFor,
   parseTurnOutput,
   partitionExcluded,
   readBaselineReliability,
   selectScenarios,
-  setupLeftStateMissing,
   UnknownScenarioError,
 } from "./runner.ts";
 import { assertExpectation } from "./fixtures/agent-matrix.ts";
@@ -128,47 +128,6 @@ describe("partitionExcluded", () => {
     expect(scored.map((r) => r.id)).toEqual(["11c"]);
     expect(excludedCount).toBe(1);
     expect(setupCount).toBe(0);
-  });
-});
-
-describe("setupLeftStateMissing", () => {
-  // A setup turn that failed its assertion by doing nothing at all.
-  const didNothing = { toolsCalled: [], routingDecision: "query" };
-
-  test("a turn that did nothing, with its state present, does not block its group", () => {
-    // The second group of a rep: the type exists, the model created nothing.
-    expect(setupLeftStateMissing(didNothing, () => true)).toBe(false);
-  });
-
-  test("a turn that did nothing, with its state absent, blocks its group", () => {
-    expect(setupLeftStateMissing(didNothing, () => false)).toBe(true);
-  });
-
-  test("a turn the fixture cannot check blocks its group", () => {
-    // Unknown is treated as missing: scoring a scenario against state nobody
-    // confirmed is the failure the exclusion exists to prevent.
-    expect(setupLeftStateMissing(didNothing, () => undefined)).toBe(true);
-  });
-
-  test("a turn that did something else blocks its group whatever the state", () => {
-    // The state check sees the workspace, not the conversation. A clarifying
-    // question leaves the next prompt to be read as its answer; another tool
-    // changed the workspace the scenarios assume; a failed send did neither
-    // and proves nothing. None is the correct no-op, so the check is not asked.
-    let asked = false;
-    const present = () => {
-      asked = true;
-      return true;
-    };
-    for (const turn of [
-      { toolsCalled: [], routingDecision: "clarify" },
-      { toolsCalled: ["route_clarify"], routingDecision: "query" },
-      { toolsCalled: ["create_node"], routingDecision: "query" },
-      { toolsCalled: [], routingDecision: "query", sendFailed: true },
-    ]) {
-      expect(setupLeftStateMissing(turn, present)).toBe(true);
-    }
-    expect(asked).toBe(false);
   });
 });
 
@@ -456,6 +415,7 @@ describe("aggregateReps", () => {
       scoredReps: 2,
       passedReps: 2,
       excludedReps: 1,
+      excludedBy: { emptyGeneration: 1, toolNotOffered: 0, setupFailed: 0 },
       passedAll: true,
     });
   });
@@ -477,6 +437,7 @@ describe("aggregateReps", () => {
       scoredReps: 2,
       passedReps: 2,
       excludedReps: 2,
+      excludedBy: { emptyGeneration: 0, toolNotOffered: 1, setupFailed: 1 },
       passedAll: true,
       flipped: false,
     });
@@ -634,7 +595,9 @@ describe("formatReliabilityTable", () => {
       [result({ id: "1" })],
       [result({ id: "1", excludedAsEmptyGeneration: true, passed: false })],
     ]);
-    expect(formatReliabilityTable(agg)[0]).toBe("  ✓ 1  1/1 reps · 1 excluded");
+    expect(formatReliabilityTable(agg)[0]).toBe(
+      "  ✓ 1  1/1 reps · 1 excluded (degenerate empty generation)",
+    );
   });
 
   test("a scenario excluded in every rep says so rather than reading as a fail", () => {
@@ -643,7 +606,7 @@ describe("formatReliabilityTable", () => {
       [result({ id: "1", excludedAsEmptyGeneration: true, passed: false })],
     ]);
     expect(formatReliabilityTable(agg)[0]).toBe(
-      "  ⊘ 1  excluded in all 2 rep(s) — never scored",
+      "  ⊘ 1  excluded in all 2 rep(s) (degenerate empty generation) — never scored",
     );
   });
 
@@ -653,6 +616,53 @@ describe("formatReliabilityTable", () => {
     ]);
     expect(formatReliabilityTable(agg)[0]).toBe(
       "  ⊘ 1  excluded (degenerate empty generation) — never scored",
+    );
+  });
+
+  // A scenario whose group's setup failed was never sent. Reported as an empty
+  // generation, it named an inference bug that had not happened, and a run
+  // that lost five scenarios this way read as five inference faults.
+  test("a scenario blocked by its group's setup is not reported as an empty generation", () => {
+    const agg = aggregateReps([
+      [result({ id: "1", excludedAsSetupFailed: true, passed: false, turns: [] })],
+    ]);
+    const line = formatReliabilityTable(agg)[0];
+    expect(line).toBe("  ⊗ 1  excluded (group setup failed) — never scored");
+    expect(line).not.toContain("empty generation");
+  });
+
+  test("a scenario never offered its tool is reported as that", () => {
+    const agg = aggregateReps([
+      [result({ id: "1", excludedAsToolNotOffered: true, passed: false })],
+      [result({ id: "1", excludedAsToolNotOffered: true, passed: false })],
+    ]);
+    expect(formatReliabilityTable(agg)[0]).toBe(
+      "  ⊗ 1  excluded in all 2 rep(s) (asserted tool never offered) — never scored",
+    );
+  });
+
+  test("reps excluded for different causes are each counted", () => {
+    const agg = aggregateReps([
+      [result({ id: "1", excludedAsSetupFailed: true, passed: false, turns: [] })],
+      [result({ id: "1", excludedAsEmptyGeneration: true, passed: false })],
+      [result({ id: "1", excludedAsSetupFailed: true, passed: false, turns: [] })],
+    ]);
+    expect(formatReliabilityTable(agg)[0]).toBe(
+      "  ⊗ 1  excluded in all 3 rep(s) (degenerate empty generation ×1, group setup failed ×2) — never scored",
+    );
+  });
+});
+
+describe("describeExclusions", () => {
+  test("one cause is named without a count", () => {
+    expect(describeExclusions({ emptyGeneration: 0, toolNotOffered: 3, setupFailed: 0 })).toBe(
+      "asserted tool never offered",
+    );
+  });
+
+  test("several causes each carry their rep count", () => {
+    expect(describeExclusions({ emptyGeneration: 1, toolNotOffered: 0, setupFailed: 2 })).toBe(
+      "degenerate empty generation ×1, group setup failed ×2",
     );
   });
 });

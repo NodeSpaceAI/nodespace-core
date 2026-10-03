@@ -353,14 +353,6 @@ export interface ScenarioResult {
    * missing, so a red here would describe the fixture, not the model.
    */
   excludedAsSetupFailed?: boolean;
-  /**
-   * On a `setup: true` turn that failed its own assertion: the turn did
-   * nothing and the fixture showed the state it establishes already present
-   * (see `EvalFixture.setupStatePresent`), so the scenarios after it were
-   * scored rather than excluded. Recorded so a results file shows which groups
-   * were scored on that basis.
-   */
-  setupStateAlreadyPresent?: boolean;
 }
 
 /**
@@ -415,47 +407,14 @@ export interface EvalFixture {
    *
    * Runs through the CLI rather than touching a store directly, so seeded state
    * is byte-identical to what the daemon would have produced.
+   *
+   * It runs before the first group of a rep too, against a database
+   * `--between-runs` may just have wiped, so a seed must create everything it
+   * depends on rather than wait for a turn to create it. A seed that waited
+   * once found nothing, did nothing, and every scenario scored against a
+   * workspace missing its instance.
    */
   seedGroup?(env: EvalEnv, group: ScenarioGroup): void;
-  /**
-   * Establish graph state ONCE PER REP, before the rep's first group runs.
-   *
-   * The distinction from [`seedGroup`] is the database lifecycle, and it is
-   * the whole reason this exists. `--between-runs` wipes the database between
-   * reps, so every rep begins cold. `seedGroup` fires inside the group loop,
-   * which means the first group of every rep sees a database that the rep's
-   * own setup turns have not populated yet — a seed that depends on a type
-   * those turns create finds nothing and silently no-ops.
-   *
-   * That failure is invisible: the fixture runs, every scenario scores, and
-   * the numbers describe a workspace missing the state the scenarios were
-   * written against. It cost several full 3-rep runs to diagnose, each of
-   * which looked like a model result rather than a harness one.
-   *
-   * Use `seedGroup` for state scoped to particular groups; use this for state
-   * an entire rep depends on. A fixture whose scenarios act on named INSTANCES
-   * wants this one: instances must exist before any scenario asks the agent to
-   * resolve a name to them, and they must be re-established after each wipe.
-   *
-   * Runs after the between-runs hook and after the preflight gate, so the
-   * daemon is up and the model is loaded. Throwing aborts the run as an
-   * environment failure rather than scoring scenarios against a workspace that
-   * was never established.
-   */
-  seedRun?(env: EvalEnv): void;
-  /**
-   * Whether the state a `setup` scenario exists to establish is present in the
-   * workspace, asked of the daemon after the setup turn has run.
-   *
-   * Consulted only when the setup turn fails its own assertion by doing
-   * nothing at all. Groups in a rep share a database, so a setup turn can find
-   * its state already there and rightly do nothing; without this the runner
-   * reads that as a failed setup and excludes every scenario after it.
-   *
-   * Return `undefined` for a scenario this fixture cannot check, or when the
-   * check itself fails; the runner then keeps the turn's own verdict.
-   */
-  setupStatePresent?(env: EvalEnv, scenario: Scenario): boolean | undefined;
   /**
    * Score one scenario from its turns. `turns` excludes prior-context turns,
    * which the runner strips before calling this.
@@ -645,6 +604,16 @@ export interface RepSummary {
   trajectoryDisagreements?: number;
 }
 
+/** How many of a scenario's reps each kind of exclusion took out of scoring. */
+export interface ExclusionCounts {
+  /** See `ScenarioResult.excludedAsEmptyGeneration`. */
+  emptyGeneration: number;
+  /** See `ScenarioResult.excludedAsToolNotOffered`. */
+  toolNotOffered: number;
+  /** See `ScenarioResult.excludedAsSetupFailed`. */
+  setupFailed: number;
+}
+
 /**
  * One scenario's outcome across every rep of a run.
  *
@@ -668,6 +637,12 @@ export interface ScenarioReliability {
    * unreliable.
    */
   excludedReps: number;
+  /**
+   * `excludedReps` by cause. The three mean different things (an inference
+   * bug, a routing miss, the fixture's own precondition), so a report names
+   * the one that happened.
+   */
+  excludedBy: ExclusionCounts;
   /**
    * The scenario passed in every rep where it was scored, and was scored at
    * least once. This is the pass^k predicate: an all-or-nothing verdict, which

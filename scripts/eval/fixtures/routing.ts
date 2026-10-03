@@ -172,6 +172,15 @@ const FIXTURES: RoutingScenario[] = [
     scenario:
       "Ambiguous: 'organize my design docs' → clarify (schema vs collection)",
     prompt: "organize my design docs",
+    // A search before the question is accepted, and that is a decision. On the
+    // locked model Stage 1 routes this as a query rather than clarifying, the
+    // Organization skill leads, and Stage 2 searches for the design docs, finds
+    // none, and asks how to proceed ("Could you provide more context, like a
+    // collection name or the topic of the documents?"). The ambiguity this
+    // scenario exists for — a type or a collection, and for which documents —
+    // is still put to the user, and nothing was changed to get there. Looking
+    // first is what lets the question name what exists. What still fails is
+    // organizing without asking, or asking after a write.
     expected: { kind: "clarify" },
     loadBearing: true,
   },
@@ -313,24 +322,49 @@ export function constantAnswerBaseline(scenarios: RoutingScenario[]): {
 // Scoring
 // ---------------------------------------------------------------------------
 
-function isClarification(reply: string): boolean {
-  const lower = reply.toLowerCase();
-  // A clarification contains a question directed at the user about their intent.
-  // Avoid false positives from rhetorical questions or confirmations.
-  const hasQuestion = reply.includes("?");
-  const hasIntentWords =
-    lower.includes("did you") ||
-    lower.includes("do you mean") ||
-    lower.includes("would you like") ||
-    lower.includes("are you looking") ||
-    lower.includes("could you clarify") ||
-    lower.includes("what would you like") ||
-    lower.includes("which one") ||
-    lower.includes("which would") ||
-    lower.includes("which do") ||
-    lower.includes("clarif");
-  return hasQuestion && hasIntentWords;
+/**
+ * Whether a reply asks the user something about what they want.
+ *
+ * A question mark alone is not enough: "Anything else?" closes a turn that
+ * already acted. The question has to be put to the user, which a reply does
+ * by asking them to choose, confirm or say more. "Could you provide more
+ * context, like a collection name?" is one, and an earlier list that knew only
+ * "could you clarify" scored it as no question at all, so a scenario passed or
+ * failed on which of two equivalent phrasings the model picked.
+ *
+ * The phrase must be in a sentence that is itself the question. Matched
+ * across the whole reply, "Let me know if you need more. Anything else?"
+ * passed, and so did a quoted title ending in a question mark.
+ */
+export function isClarification(reply: string): boolean {
+  // Quoted text is what something is called, not what the reply asks. A full
+  // stop ends a sentence only before whitespace, so "e.g." stays inside the
+  // question it is part of.
+  const unquoted = reply.toLowerCase().replace(/["“][^"”]*["”]/g, "");
+  const questions = unquoted.match(/(?:[^.!?\n]|\.(?=\S))*\?/g) ?? [];
+  return questions.some((question) =>
+    ASKS_THE_USER.some((phrase) => question.includes(phrase)),
+  );
 }
+
+/** How a question put to the user about what they want opens or turns. */
+const ASKS_THE_USER = [
+  "did you",
+  "do you mean",
+  "do you want",
+  "want me to",
+  "would you like",
+  "are you looking",
+  "could you",
+  "can you tell",
+  "how would you like",
+  "what would you like",
+  "what kind",
+  "which one",
+  "which would",
+  "which do",
+  "clarif",
+];
 
 function skillNameFromTurns(turns: TurnRecord[]): string | null {
   // The matched skill name appears in the reply or is implicit from subsequent
@@ -457,17 +491,20 @@ export function assertFixture(
     }
 
     case "clarify": {
-      if (!clarified) {
+      // The turn must end by asking, and must not have changed anything on
+      // the way. Stage 1's own clarification is a recorded fact; one asked at
+      // Stage 2 is read off the reply. A read before the question is allowed
+      // for every clarify scenario (`ambiguous-client-contacts` says why).
+      if (!askedToClarify(turns) && !clarified) {
         return {
           passed: false,
           failure: `Expected a clarification question but got: ${allReplies.slice(0, 300)}`,
         };
       }
-      // Adversarial: mutating adversarial fixtures must NOT fire a mutating tool
-      if (fixture.adversarial && calledMutatingTool(turns)) {
+      if (calledMutatingTool(turns)) {
         return {
           passed: false,
-          failure: `Adversarial check failed: fired a mutating tool (${turns.flatMap((t) => t.toolsCalled).join(",")}) without clarifying first`,
+          failure: `Fired a mutating tool (${turns.flatMap((t) => t.toolsCalled).join(",")}) on a request it should have asked about first`,
         };
       }
       return { passed: true };

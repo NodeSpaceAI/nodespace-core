@@ -17,78 +17,47 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolCallRecord, TurnRecord } from "../types.ts";
-import fixture, { listedSchemas, setupTypePresent } from "./decisions.ts";
+import fixture, { groupSeeds, listedSchemaIds } from "./decisions.ts";
 
 describe("decision fixture assembly", () => {
-  test("every scored scenario gets its own group", () => {
-    // The confound this split exists to remove: with all scenarios in one
-    // group they shared a chat, and a measured 3-rep run recorded
-    // `toolsCalled: []` for every scenario after the fourth — including ones
-    // unrelated to the change under test, which pass in isolation. That is
-    // conversation length being scored as decision quality.
-    const scoredPerGroup = fixture.groups.map(
-      (g) => g.filter((s) => s.setup !== true).length,
-    );
-    expect(scoredPerGroup.every((n) => n === 1)).toBe(true);
+  test("every scenario gets its own chat, with no turn ahead of it but its own", () => {
+    // Two confounds this pins. With all scenarios in one chat, a measured
+    // 3-rep run recorded `toolsCalled: []` for every scenario after the
+    // fourth: conversation length scored as decision quality. With two setup
+    // turns ahead of each scenario, the chats after the first met types that
+    // already existed, and each scenario was asked after two failed turns.
+    expect(fixture.groups.every((g) => g.length === 1)).toBe(true);
+    expect(fixture.groups.flat().some((s) => s.setup === true)).toBe(false);
   });
 
-  test("every group carries the full setup prefix", () => {
-    // Each group is a fresh chat, so a group missing its setup turns would run
-    // its scenario against a workspace with no types to select among — which
-    // scores as a model failure rather than the fixture fault it is.
-    for (const group of fixture.groups) {
-      const setupIds = group.filter((s) => s.setup === true).map((s) => s.id);
-      expect(setupIds).toEqual(["setup-company", "setup-venue"]);
-    }
-  });
-
-  test("setup turns precede the scored scenario in every group", () => {
-    for (const group of fixture.groups) {
-      const firstScored = group.findIndex((s) => s.setup !== true);
-      const lastSetup = group.map((s) => s.setup === true).lastIndexOf(true);
-      expect(lastSetup).toBeLessThan(firstScored);
-    }
-  });
-
-  test("instance seeding is run-scoped, not group-scoped", () => {
-    // The defect this pins cost three measured 3-rep runs, each of which
-    // looked like a model result.
-    //
-    // `--between-runs` wipes the database between reps, and `seedGroup` fires
-    // inside the group loop — so the first group of every rep sees a workspace
-    // whose types its own setup turns have not created yet. A seed hung on
-    // `seedGroup` finds nothing, silently no-ops, and every scenario scores
-    // against a workspace with no instance in it.
-    //
-    // `seedRun` fires once per rep, after the wipe and before any group, which
-    // is the only point where "every scenario in this rep has the instance" is
-    // expressible. Moving this back to `seedGroup` reintroduces a failure that
-    // is invisible in the results.
-    expect(typeof fixture.seedRun).toBe("function");
-  });
-
-  // An env whose CLI does not exist: any seeding attempt throws.
-  const noDaemon = {
-    nsBin: "/nonexistent/nodespace",
-    socket: "/nonexistent/daemon.sock",
-    log: "",
-    model: "",
-    timeoutMs: 0,
-    aichat: "",
-  };
   const isLinked = (g: (typeof fixture.groups)[number]) =>
     g.some((s) => (s as { linkedSkills?: boolean }).linkedSkills === true);
 
-  test("group seeding touches only the linked-skill groups", () => {
-    // Three more skills and one more custom type change what retrieval returns
-    // for every request. Seeded for any other group, they would change what
-    // that group's scenario is scored against.
-    for (const group of fixture.groups.filter((g) => !isLinked(g))) {
-      expect(() => fixture.seedGroup?.(noDaemon, group)).not.toThrow();
+  test("every chat is seeded with the workspace, and only the linked-skill ones with linked skills", () => {
+    // The workspace is set back before each chat: an earlier scenario moved
+    // Northwind's date, and a later one was scored against the move. Three
+    // more skills and a custom type change what retrieval returns for every
+    // request, so they go only where they are measured.
+    for (const group of fixture.groups) {
+      expect(groupSeeds(group)).toEqual(
+        isLinked(group) ? ["workspace", "linked-skills"] : ["workspace"],
+      );
     }
-    const linked = fixture.groups.filter(isLinked);
-    expect(linked.length).toBeGreaterThan(0);
-    for (const group of linked) {
+    expect(fixture.groups.filter(isLinked).length).toBeGreaterThan(0);
+  });
+
+  test("seeding runs through the daemon before every chat", () => {
+    // `seedGroup` is the hook the runner calls before each chat; a seed that
+    // never reached the CLI would leave the chat on whatever came before it.
+    const noDaemon = {
+      nsBin: "/nonexistent/nodespace",
+      socket: "/nonexistent/daemon.sock",
+      log: "",
+      model: "",
+      timeoutMs: 0,
+      aichat: "",
+    };
+    for (const group of fixture.groups) {
       expect(() => fixture.seedGroup?.(noDaemon, group)).toThrow();
     }
   });
@@ -104,9 +73,7 @@ describe("decision fixture assembly", () => {
   test("scenario ids are unique across groups", () => {
     // Results join on id across reps; a duplicate silently merges two
     // scenarios' verdicts.
-    const ids = fixture.groups
-      .flatMap((g) => g.filter((s) => s.setup !== true))
-      .map((s) => s.id);
+    const ids = fixture.groups.flat().map((s) => s.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
@@ -114,8 +81,7 @@ describe("decision fixture assembly", () => {
 describe("schema list decoding", () => {
   // The shape `nodespace --json schema list` emits: a `schemas` array of flat
   // schema nodes. A reader of any other shape finds nothing, so the fixture
-  // sees an empty workspace, tries to create types that exist, and reports a
-  // setup turn's state as missing.
+  // sees an empty workspace and tries to create types that exist.
   const output = {
     count: 2,
     schemas: [
@@ -129,58 +95,14 @@ describe("schema list decoding", () => {
     ],
   };
 
-  test("reads each schema's id, core flag and fields", () => {
-    expect(listedSchemas(output)).toEqual([
-      { id: "task", isCore: true, fields: [{ name: "status", type: "enum" }] },
-      {
-        id: "company_sold_to",
-        isCore: false,
-        fields: [{ name: "signed_date", type: "date" }],
-      },
-    ]);
+  test("reads each schema's id", () => {
+    expect(listedSchemaIds(output)).toEqual(["task", "company_sold_to"]);
   });
 
   test("an unrecognised shape decodes to no schemas", () => {
-    expect(listedSchemas(null)).toEqual([]);
-    expect(listedSchemas({ nodes: [{ id: "task" }] })).toEqual([]);
-    expect(listedSchemas({ schemas: [{ content: "no id" }] })).toEqual([]);
-  });
-});
-
-describe("setup state", () => {
-  test("every setup scenario names the type it establishes", () => {
-    // A setup scenario without it cannot be checked, so a turn that rightly
-    // creates nothing would exclude its whole group again.
-    const setups = fixture.groups[0].filter((s) => s.setup === true);
-    expect(setups.map((s) => s.establishes)).toEqual(["company", "venue"]);
-  });
-
-  test("a type is present under whatever id the model gave it", () => {
-    expect(setupTypePresent("company", ["company_sold_to"])).toBe(true);
-    expect(setupTypePresent("company", ["client_company"])).toBe(true);
-    expect(setupTypePresent("venue", ["event_location"])).toBe(true);
-    expect(setupTypePresent("venue", ["event_place"])).toBe(true);
-  });
-
-  test("the other setup type does not stand in for a missing one", () => {
-    expect(setupTypePresent("venue", ["company_sold_to"])).toBe(false);
-    expect(setupTypePresent("company", ["event_location"])).toBe(false);
-    // A venue named after its clients is still the venue type.
-    expect(setupTypePresent("company", ["client_venue"])).toBe(false);
-    expect(setupTypePresent("venue", ["client_venue"])).toBe(true);
-  });
-
-  test("the match is by word, so an unrelated type sharing one reads as present", () => {
-    // The limit of matching on a hint rather than an id: a later scenario's
-    // `event_log` would stand in for the venue type. The ids the setup turns
-    // produce are not predictable, so the match cannot be tighter.
-    expect(setupTypePresent("venue", ["event_log"])).toBe(true);
-    expect(setupTypePresent("company", ["customer_feedback"])).toBe(true);
-  });
-
-  test("an empty workspace has neither", () => {
-    expect(setupTypePresent("company", [])).toBe(false);
-    expect(setupTypePresent("venue", [])).toBe(false);
+    expect(listedSchemaIds(null)).toEqual([]);
+    expect(listedSchemaIds({ nodes: [{ id: "task" }] })).toEqual([]);
+    expect(listedSchemaIds({ schemas: [{ content: "no id" }] })).toEqual([]);
   });
 });
 
