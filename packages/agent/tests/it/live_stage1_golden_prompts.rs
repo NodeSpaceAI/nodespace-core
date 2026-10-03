@@ -672,15 +672,18 @@ enum Decision {
 /// its prompt carries the line.
 #[derive(Clone, Copy, PartialEq)]
 enum Group {
-    /// Names a type and nothing else, in a phrase not shaped like a question,
-    /// so it is not put to Stage 1 as a lookup first. The line is what routes
-    /// it: without the line it clarifies, with it it routes.
+    /// Names a type and nothing else, in a phrase that is not a question, so
+    /// Stage 1 does not read it as a lookup by itself. The line is what
+    /// routes it: without the line it clarifies, with it it routes.
     BareType,
     /// Asks about records of a type. Should route.
     KnownType,
     /// A request whose routing never was in doubt, or one that uses a type's
     /// name as an ordinary word. The line must change neither what Stage 1
-    /// decides for it nor which types its query mentions.
+    /// decides for it nor which types its query mentions. A case with no
+    /// expectation is measured and printed, and only the second is asserted:
+    /// an accepted cost, whose decision the line changes, is kept here so
+    /// every run shows it.
     Unrelated,
 }
 
@@ -853,9 +856,10 @@ fn type_words_added(message: &str, queries: &[String]) -> Vec<String> {
 /// `a_message_naming_no_type_gets_no_type_line` pins that without a model.
 ///
 /// What the line is for, with `route_lookup` offered: a request that names a
-/// type and nothing else ("my projects", "collections"). It is not shaped
-/// like a question, so it is not put to Stage 1 as a lookup first, and
-/// without the line Stage 1 asks whether to list the records or create one.
+/// type and nothing else ("my projects", "collections"). Stage 1 reads a
+/// question about records as a lookup by itself, but a bare noun phrase is
+/// not a question, and without the line nothing tells Stage 1 the noun is a
+/// kind of record: it asks whether to list the records or create one.
 ///
 /// Asserted:
 /// - every [`Group::BareType`] case clarifies on every rep without the line
@@ -910,6 +914,13 @@ fn type_words_added(message: &str, queries: &[String]) -> Vec<String> {
 /// both arms but by a different tool: "now the invoices" as a query without
 /// the line and a lookup with it, "how many tasks do we have?" the other way
 /// round. Neither is asserted.
+///
+/// With the bare type cases added, the test as it stands: bare type 0/3
+/// without the line and 3/3 with it, known type 7/7 in both, unrelated 8/8
+/// in both. Mean prompt 1038 → 1049 tokens; mean generation 3016 ms →
+/// 3102 ms over 45 runs. Both arms were about a quarter slower than in the
+/// run above, which is the machine, not the change, so compare the arms
+/// within a run, not across runs.
 #[tokio::test]
 #[ignore = "requires the locked native GGUF on disk"]
 async fn stage1_type_line_routes_requests_that_name_a_known_type() {

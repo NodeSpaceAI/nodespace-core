@@ -81,8 +81,9 @@ pub const STAGE1_MAX_TOKENS: u32 = 256;
 /// type, "the matches" were each measured calling route_clarify to ask
 /// whether to list the records or create one, and with the line each routes
 /// as a lookup. A question about records no longer needs the line, because
-/// route_lookup routes it either way; these requests are not shaped like a
-/// question, so they are not put to Stage 1 as a lookup first. The cost is
+/// Stage 1 reads a question as a lookup by itself; a bare noun phrase is not
+/// a question, and nothing but the line tells Stage 1 the noun is a kind of
+/// record. The cost is
 /// 11 more prompt tokens and under 4% more generation time on a turn that
 /// names a type, and one measured request the line makes clarify ("open
 /// deals" with a Deal type). An empty list omits the line.
