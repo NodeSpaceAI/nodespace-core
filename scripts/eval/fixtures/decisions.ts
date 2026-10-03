@@ -332,12 +332,16 @@ function listSchemaIds(env: EvalEnv): Set<string> {
  * Create the two custom types and the Northwind instance the scenarios run
  * against.
  *
- * Runs before every chat (see `groupSeeds`), so each scenario starts from the
- * same workspace whichever chats ran before it. Chats share the rep's
- * database, and some scenarios change Northwind: `op-read-then-write` moves its
- * date to April, and `outcome-record-field-is-answered`, asked after it, was
- * correctly answered with April and scored as wrong. The types are created
- * only when missing, and Northwind's fields are set back each time.
+ * Runs before every chat (see `groupSeeds`), so the seeded state each
+ * scenario reads is the same whichever chats ran before it. Chats share the
+ * rep's database, and some scenarios change Northwind: `op-read-then-write`
+ * moves its date to April, and `outcome-record-field-is-answered`, asked after
+ * it, was correctly answered with April and scored as wrong. The types are
+ * created only when missing, and Northwind's fields are set back each time.
+ *
+ * Only the seeded state is set back. A node an earlier chat created stays, so
+ * a scenario that duplicates Northwind (a create the guard missed) leaves the
+ * name resolving to two records for every chat after it.
  *
  * Idempotent, and that is load-bearing rather than defensive: a run without a
  * between-runs command, or one whose reset failed, must not leave rep 2 with
@@ -456,7 +460,7 @@ const LINKED_SKILLS: Array<{ name: string; description: string; tools: string[] 
  *
  * Seeded for the linked-skill scenarios only (see `groupSeeds`), which sit last in
  * the fixture. Three more skills and one more custom type change what
- * retrieval returns for every request, so seeding them per run would change
+ * retrieval returns for every request, so seeding them for every chat would change
  * what every other scenario is scored against.
  *
  * That holds within a rep. Across reps it needs `--between-runs` to wipe the

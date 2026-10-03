@@ -33,7 +33,7 @@ describe("decision fixture assembly", () => {
   const isLinked = (g: (typeof fixture.groups)[number]) =>
     g.some((s) => (s as { linkedSkills?: boolean }).linkedSkills === true);
 
-  test("every chat is seeded with the workspace, and only the last ones with linked skills", () => {
+  test("every chat is seeded with the workspace, and only the linked-skill ones with linked skills", () => {
     // The workspace is set back before each chat: an earlier scenario moved
     // Northwind's date, and a later one was scored against the move. Three
     // more skills and a custom type change what retrieval returns for every
