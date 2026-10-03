@@ -56,8 +56,12 @@ export class SchemaFormLoader {
    * {@link hasTitleTemplate} can consult the plugin registry for a
    * hardcoded-form type (task, person), which never populates
    * `genericSchema` (see `loadForm`'s branch below).
+   *
+   * Reactive because the viewer's header derives from `hasTitleTemplate` before
+   * `loadForm` runs: for a hardcoded-form type this field is the only thing that
+   * changes, so a plain field would leave the header on its first answer.
    */
-  private currentNodeType: string | null = null;
+  private currentNodeType = $state<string | null>(null);
 
   /**
    * True when the viewed node's type is title_template-driven — header should be

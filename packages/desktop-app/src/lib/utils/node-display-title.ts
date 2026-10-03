@@ -16,11 +16,10 @@
  *
  * Callers determine `hasTitleTemplate` themselves, since the answer comes from different
  * places depending on context (a `SchemaFormLoader` instance inside a node viewer;
- * `pluginRegistry.hasTitleTemplate(nodeType)` outside one — see `schema-form-loader.svelte.ts`'s
- * `hasTitleTemplate` getter for why the two agree: the
- * frontend's notion of "title_template-driven" is custom-schema-scoped, while the backend's
- * `compute_title()` applies a title_template to any schema carrying one, core or not; they
- * agree only because no core type ships a template today).
+ * `pluginRegistry.hasTitleTemplate(nodeType)` outside one). Both cover a core type with a
+ * hardcoded form, such as `person`, through its plugin's `hasTitleTemplate`, and every other
+ * type through its schema's `titleTemplate` — see `schema-form-loader.svelte.ts`'s
+ * `hasTitleTemplate` getter.
  */
 /**
  * Matches any Unicode letter or number. Used (not the ASCII-only `\w`) so a fully-resolved
