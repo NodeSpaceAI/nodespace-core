@@ -2531,25 +2531,68 @@ const CONVERSATION_SUMMARY_PREFIX: &str = "[Conversation summary]";
 /// One system message is not the system's own text: the conversation summary
 /// ([`CONVERSATION_SUMMARY_PREFIX`]) is a generation over the turns it
 /// replaces, what the user typed and the model said included, so an id in it
-/// grounds nothing. That has a cost. The tool results and records the summary
-/// replaced did ground their ids, and once they are summarized away a reply
-/// that links one of those nodes is taken for an invention. It errs the way
-/// the check is meant to: a real link refused, not a dead one let through.
+/// grounds nothing. The ids that the summarized tool results and records did
+/// ground are not lost with them: summarization writes them into a system
+/// message of its own ([`summarized_node_uris_message`]), which is read here
+/// like any other system record.
 fn grounded_node_uris_from_history(session: &AgentSession) -> HashSet<String> {
     let mut out = HashSet::new();
-    for msg in &session.messages {
-        let system_written = match msg.role {
-            Role::Tool => true,
-            Role::System => !msg.content.starts_with(CONVERSATION_SUMMARY_PREFIX),
-            _ => false,
-        };
-        if system_written {
-            for uri in extract_node_uris(&msg.content) {
-                out.insert(uri.to_string());
-            }
+    for msg in session.messages.iter().filter(|m| is_system_written(m)) {
+        for uri in extract_node_uris(&msg.content) {
+            out.insert(uri.to_string());
         }
     }
     out
+}
+
+/// Whether the system wrote this message's text: a tool result, or a system
+/// message other than the conversation summary. Only these ground an id.
+fn is_system_written(msg: &ChatMessage) -> bool {
+    match msg.role {
+        Role::Tool => true,
+        Role::System => !msg.content.starts_with(CONVERSATION_SUMMARY_PREFIX),
+        _ => false,
+    }
+}
+
+/// What opens the system message that keeps the ids summarized turns grounded.
+const SUMMARIZED_NODES_PREFIX: &str = "Nodes referenced earlier in this conversation:";
+
+/// The most ids [`summarized_node_uris_message`] keeps. Each one costs prompt
+/// tokens on every later turn, so a very long chat keeps only the most recent.
+const MAX_SUMMARIZED_NODE_URIS: usize = 30;
+
+/// A system record of the ids the messages being summarized away grounded, so
+/// that a later reply linking one of those nodes is not taken for an invention.
+///
+/// Reads the same messages [`grounded_node_uris_from_history`] does: tool
+/// results and system-written records, never what the user typed, the model
+/// said or an earlier summary. An earlier record of this kind is one of those
+/// system messages, so its ids carry through each further summarization.
+///
+/// Keeps the [`MAX_SUMMARIZED_NODE_URIS`] most recently seen, oldest first.
+fn summarized_node_uris_message(drained: &[ChatMessage]) -> Option<ChatMessage> {
+    let mut seen = HashSet::new();
+    let mut uris: Vec<&str> = Vec::new();
+    'messages: for msg in drained.iter().rev().filter(|m| is_system_written(m)) {
+        for uri in extract_node_uris(&msg.content).into_iter().rev() {
+            if seen.insert(uri) {
+                if uris.len() == MAX_SUMMARIZED_NODE_URIS {
+                    break 'messages;
+                }
+                uris.push(uri);
+            }
+        }
+    }
+    if uris.is_empty() {
+        return None;
+    }
+    let mut content = String::from(SUMMARIZED_NODES_PREFIX);
+    for uri in uris.iter().rev() {
+        content.push_str("\n- ");
+        content.push_str(uri);
+    }
+    Some(ChatMessage::text(Role::System, content))
 }
 
 /// Every `nodespace://` id a tool result has produced in this session: this
@@ -5476,6 +5519,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
         let older_messages: Vec<ChatMessage> = session.messages.drain(..split_point).collect();
 
+        // The summary below is the model's text and grounds no id. Keep the ids
+        // the drained tool results and records grounded in a record of their own.
+        let summarized_nodes = summarized_node_uris_message(&older_messages);
+
         // Build summarization text from older messages. A tool-call assistant
         // turn carries its signal in `tool_calls`, not `content` (content is
         // empty by construction), so render a synthetic line for it — otherwise
@@ -5553,6 +5600,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         session
             .messages
             .insert(0, ChatMessage::text(Role::System, summary_content));
+        if let Some(record) = summarized_nodes {
+            session.messages.insert(1, record);
+        }
 
         Ok(())
     }
@@ -9248,6 +9298,159 @@ mod tests {
             ungrounded_node_uris(text, &session_grounded_node_uris(&[], &session)),
             vec!["nodespace://from-a-summary".to_string()]
         );
+    }
+
+    /// Summarizing a long chat drains the tool results and records that
+    /// grounded its ids. Those ids stay grounded; ids that only the user, the
+    /// model or the summary wrote do not become grounded.
+    #[tokio::test]
+    async fn summarization_keeps_the_ids_its_drained_turns_grounded() {
+        let engine = Arc::new(MockEngine::with_context_window(
+            vec![vec![
+                StreamingChunk::Token {
+                    text: "They discussed nodespace://only-in-summary.".to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                    },
+                },
+            ]],
+            4096,
+        ));
+        let agent_loop = LocalAgentLoop::new(engine, Arc::new(MockToolExecutor::new()));
+
+        let mut session = new_session();
+        session.messages.push(ChatMessage::text(
+            Role::User,
+            "open nodespace://typed-by-the-user",
+        ));
+        session
+            .messages
+            .push(ChatMessage::assistant_with_tool_calls(
+                String::new(),
+                vec![ToolCallRaw {
+                    id: "tc_1".into(),
+                    function_name: "create_node".into(),
+                    arguments_json: "{}".into(),
+                    provider_extra: None,
+                }],
+            ));
+        session.messages.push(ChatMessage::tool_result(
+            serde_json::to_string(&json!({"id": "nodespace://from-a-tool"})).unwrap(),
+            "tc_1",
+            "create_node",
+        ));
+        session.messages.push(ChatMessage::text(
+            Role::Assistant,
+            "See nodespace://said-by-the-model.",
+        ));
+        session.messages.push(ChatMessage::text(
+            Role::System,
+            "Record of graph entities looked up in the previous turn.\n\
+             - nodespace://from-a-record \"Northwind Trading\" (company)",
+        ));
+        for i in 0..8 {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            session
+                .messages
+                .push(ChatMessage::text(role, "x".repeat(4000)));
+        }
+
+        agent_loop
+            .maybe_summarize_history(&mut session, "system")
+            .await
+            .unwrap();
+
+        assert!(
+            !session.messages.iter().any(|m| m.role == Role::Tool),
+            "the tool result must have been summarized away for this test to mean anything"
+        );
+        assert!(session.messages[0]
+            .content
+            .starts_with(CONVERSATION_SUMMARY_PREFIX));
+        assert_eq!(session.messages[1].role, Role::System);
+        assert!(session.messages[1]
+            .content
+            .starts_with(SUMMARIZED_NODES_PREFIX));
+
+        let text = "nodespace://from-a-tool nodespace://from-a-record \
+                    nodespace://typed-by-the-user nodespace://said-by-the-model \
+                    nodespace://only-in-summary";
+        assert_eq!(
+            ungrounded_node_uris(text, &session_grounded_node_uris(&[], &session)),
+            vec![
+                "nodespace://typed-by-the-user".to_string(),
+                "nodespace://said-by-the-model".to_string(),
+                "nodespace://only-in-summary".to_string(),
+            ]
+        );
+    }
+
+    /// The record a first summarization wrote is drained by the second, and
+    /// its ids are carried into the new one.
+    #[test]
+    fn summarized_node_uris_survive_a_second_summarization() {
+        let first = summarized_node_uris_message(&[ChatMessage::tool_result(
+            r#"{"id":"nodespace://first-round"}"#,
+            "tc_1",
+            "create_node",
+        )])
+        .expect("a grounded id yields a record");
+
+        let second = summarized_node_uris_message(&[
+            ChatMessage::text(
+                Role::System,
+                format!("{CONVERSATION_SUMMARY_PREFIX}: about nodespace://only-in-summary."),
+            ),
+            first,
+            ChatMessage::text(Role::User, "and nodespace://typed-by-the-user"),
+            ChatMessage::tool_result(r#"{"id":"nodespace://second-round"}"#, "tc_2", "get_node"),
+        ])
+        .expect("a grounded id yields a record");
+
+        assert_eq!(second.role, Role::System);
+        assert_eq!(
+            extract_node_uris(&second.content),
+            vec!["nodespace://first-round", "nodespace://second-round"]
+        );
+    }
+
+    #[test]
+    fn summarized_node_uris_keep_only_the_most_recent() {
+        let drained: Vec<ChatMessage> = (0..MAX_SUMMARIZED_NODE_URIS + 5)
+            .map(|i| {
+                ChatMessage::tool_result(
+                    format!(r#"{{"id":"nodespace://n{i}"}}"#),
+                    format!("tc_{i}"),
+                    "get_node",
+                )
+            })
+            .collect();
+
+        let record = summarized_node_uris_message(&drained).unwrap();
+        let kept = extract_node_uris(&record.content);
+
+        assert_eq!(kept.len(), MAX_SUMMARIZED_NODE_URIS);
+        assert_eq!(kept.first(), Some(&"nodespace://n5"));
+        assert_eq!(
+            kept.last().copied(),
+            Some(format!("nodespace://n{}", MAX_SUMMARIZED_NODE_URIS + 4).as_str())
+        );
+    }
+
+    #[test]
+    fn summarized_node_uris_message_is_absent_when_nothing_was_grounded() {
+        let drained = [
+            ChatMessage::text(Role::User, "open nodespace://typed-by-the-user"),
+            ChatMessage::text(Role::Assistant, "See nodespace://said-by-the-model."),
+        ];
+        assert!(summarized_node_uris_message(&drained).is_none());
     }
 
     /// A chat rebuilt from storage carries an earlier turn's lookups as a
