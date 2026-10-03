@@ -303,6 +303,25 @@ describe("buildStack", () => {
     expect(await git("status", "--porcelain")).toBe("");
   });
 
+  test("stacks a branch whose only change is in a merge commit", async () => {
+    const base = await init();
+    const main = await branch("main-change", base, "main.txt", "main\n");
+
+    await git("checkout", "--quiet", "-b", "pr1", base);
+    await git("merge", "--quiet", "--no-ff", "--no-commit", "main-change");
+    writeFileSync(join(cwd, "fixup.txt"), "fixup\n");
+    await git("add", "fixup.txt");
+    await git("commit", "--quiet", "--no-edit");
+    const pr1 = await git("rev-parse", "HEAD");
+
+    await git("checkout", "--quiet", "--detach", main);
+    const { stack, ejected } = await buildStack(cwd, main, [item(1, pr1)]);
+
+    expect(ejected).toEqual([]);
+    expect(stack[0].tree).toBe(await git("rev-parse", `${pr1}^{tree}`));
+    expect(readFileSync(join(cwd, "fixup.txt"), "utf8")).toBe("fixup\n");
+  });
+
   // A stacked branch whose first commit main already has by patch, after
   // which main edited the same lines: merging it conflicts, replaying it
   // skips the shared commit. A merge commit on the branch doesn't take that

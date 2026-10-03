@@ -363,8 +363,10 @@ export async function buildStack(cwd: string, mainSha: string, prs: QueuedPr[]):
     // A branch with merge commits takes its net change first, since only that
     // carries what the merges hold; any other branch replays first, which also
     // accepts a commit main already has by patch. Each falls back to the other
-    // on a conflict. The files named on an ejection are the merge's, which are
-    // the ones the author has to resolve.
+    // on a conflict. A branch with merge commits that falls back to its commits
+    // is stacked without what those merges hold; it's that or ejecting a branch
+    // that replays cleanly. The files named on an ejection are the merge's,
+    // which are the ones the author has to resolve.
     let replayed = commits;
     let replay: ReplayResult;
     if (hasMerges) {
