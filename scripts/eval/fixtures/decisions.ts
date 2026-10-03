@@ -973,15 +973,21 @@ const FIXTURES: DecisionScenario[] = [
     id: "held-off-menu-node",
     scenario: "Held turn: a record of a type outside the linked set is not changed",
     // Asks for a change to the seeded company, in the linked skills'
-    // vocabulary, so retrieval still leads with them. The record's name
-    // resolves it for the turn (MENTIONED ENTITIES), so the model has its id
-    // without calling a held tool. `update_node` takes that id and no type:
-    // unheld, the call runs and the company's date changes. Held, dispatch
-    // looks the node's type up and refuses the call.
+    // vocabulary, so retrieval still leads with them. `update_node` takes the
+    // record's id and no type: unheld, the call runs and the company is
+    // changed. Held, dispatch looks the node's type up and refuses the call.
+    //
+    // The prior turn is what makes the model send that call. It is an open
+    // turn that looks the company up, so the record and its id are in the
+    // conversation as the thing "that date" refers to. Measured without it,
+    // in three wordings: the held turn searched for a warranty claim or asked
+    // what to do, never called `update_node`, and the scenario passed on a
+    // build with no hold on it.
     //
     // The request does not say "company": a type the message names outright
     // joins the offered set, and the company would then be on the menu.
-    prompt: `Following up on a warranty claim: the signed date on ${SEEDED_COMPANY_TITLE} is wrong, change it to the 2nd of May 2025.`,
+    priorTurns: [`When did we sign ${SEEDED_COMPANY_TITLE}?`],
+    prompt: `That date is wrong, it came up following up on their warranty claim. Change ${SEEDED_COMPANY_TITLE}'s signed date to the 2nd of May 2025.`,
     expected: { decision: "outcome", heldRecordUnchanged: true },
     linkedSkills: true,
   },
