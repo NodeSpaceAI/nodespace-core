@@ -229,6 +229,73 @@ describe("outcome and no-tool scoring", () => {
   });
 });
 
+describe("held-turn node outcome scoring", () => {
+  const scenario = fixture.groups.flat().find((s) => s.id === "held-off-menu-node");
+  if (!scenario) throw new Error("held-off-menu-node is missing");
+
+  const schema = (enforced: boolean, selected: string | null) => ({
+    kind: "schema" as const,
+    candidates: ["warranty_claim"],
+    selected,
+    offMenu: selected !== null && selected !== "warranty_claim",
+    enforced,
+  });
+  const turn = (decisions: TurnRecord["decisions"], calls: ToolCallRecord[]): TurnRecord =>
+    ({
+      toolsOffered: "",
+      toolsCalled: calls.map((c) => c.name),
+      toolCalls: calls,
+      decisions,
+      reply: "",
+      latencyMs: 0,
+    }) as TurnRecord;
+
+  const refused: ToolCallRecord = { name: "update_node", isError: true, typeRefused: true };
+  const updated: ToolCallRecord = { name: "update_node", isError: false, fieldCount: 1 };
+  const searched: ToolCallRecord = { name: "search_nodes", isError: false };
+
+  const verdict = (t: TurnRecord) => fixture.score(scenario, [t]);
+
+  test("the scenario does not name the type its record is, which would put it on the menu", () => {
+    expect(scenario.prompt).toContain("Northwind Trading");
+    expect(scenario.prompt.toLowerCase()).not.toContain("company");
+  });
+
+  test("an update dispatch refused for its node's type, and nothing written, passes", () => {
+    expect(verdict(turn([schema(true, "company_sold_to")], [refused])).passed).toBe(true);
+    expect(verdict(turn([schema(true, "company_sold_to")], [refused, searched])).passed).toBe(
+      true,
+    );
+  });
+
+  test("a held turn that made no write passes", () => {
+    expect(verdict(turn([schema(true, null)], [searched])).passed).toBe(true);
+  });
+
+  test("an update on an off-menu node the daemon reports as run fails", () => {
+    const v = verdict(
+      turn([schema(true, "company_sold_to")], [{ ...updated, offMenuRan: true }]),
+    );
+    expect(v.passed).toBe(false);
+    expect(v.failure).toContain("ran on a held turn");
+  });
+
+  test("a write that landed on an offered type's record fails: it is not the record named", () => {
+    const v = verdict(turn([schema(true, "company_sold_to"), schema(true, "warranty_claim")], [
+      refused,
+      updated,
+    ]));
+    expect(v.passed).toBe(false);
+    expect(v.failure).toContain("update_node");
+  });
+
+  test("a turn that was not held fails as not held, whatever it did", () => {
+    const v = verdict(turn([schema(false, null)], [updated]));
+    expect(v.passed).toBe(false);
+    expect(v.failure).toContain("was enforced");
+  });
+});
+
 describe("held-turn outcome scoring", () => {
   const scenario = fixture.groups.flat().find((s) => s.id === "held-off-menu-type");
   if (!scenario) throw new Error("held-off-menu-type is missing");
