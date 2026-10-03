@@ -76,13 +76,17 @@ pub const STAGE1_MAX_TOKENS: u32 = 256;
 ///
 /// `type_names` is the same kind of fact about the data: which of the words
 /// in the request are kinds of record that exist ([`stage1_type_names`]).
-/// Without it a request naming one reads as plain English: "how many people
-/// do we have?" was measured calling route_clarify to ask whether to list
-/// every person or count them, and "tell me about the vendors", in a
-/// workspace with a Vendor type, to ask what about them. Of seven requests
-/// asking about records of a built-in or user-defined type, four routed
-/// without the line and all seven with it, for 11 more prompt tokens and
-/// under 4% more generation time. An empty list omits the line.
+/// Without it a request that names a type and nothing else reads as plain
+/// English: "my projects", "collections" and, in a workspace with a Match
+/// type, "the matches" were each measured calling route_clarify to ask
+/// whether to list the records or create one, and with the line each routes
+/// as a lookup. A question about records no longer needs the line, because
+/// Stage 1 reads a question as a lookup by itself; a bare noun phrase is not
+/// a question, and nothing but the line tells Stage 1 the noun is a kind of
+/// record. The cost is
+/// 11 more prompt tokens and under 4% more generation time on a turn that
+/// names a type, and one measured request the line makes clarify ("open
+/// deals" with a Deal type). An empty list omits the line.
 pub fn stage1_system_prompt(skill_names: &[String], type_names: &[String]) -> String {
     let mut prompt = String::from("You are routing a user's request to the right capability.\n");
     if !skill_names.is_empty() {

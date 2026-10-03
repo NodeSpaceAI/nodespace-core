@@ -672,11 +672,18 @@ enum Decision {
 /// its prompt carries the line.
 #[derive(Clone, Copy, PartialEq)]
 enum Group {
+    /// Names a type and nothing else, in a phrase that is not a question, so
+    /// Stage 1 does not read it as a lookup by itself. The line is what
+    /// routes it: without the line it clarifies, with it it routes.
+    BareType,
     /// Asks about records of a type. Should route.
     KnownType,
     /// A request whose routing never was in doubt, or one that uses a type's
     /// name as an ordinary word. The line must change neither what Stage 1
-    /// decides for it nor which types its query mentions.
+    /// decides for it nor which types its query mentions. A case with no
+    /// expectation is measured and printed, and only the second is asserted:
+    /// an accepted cost, whose decision the line changes, is kept here so
+    /// every run shows it.
     Unrelated,
 }
 
@@ -703,6 +710,9 @@ const USER_TYPES: &[&str] = &[
     "Vendor",
     "Incident Report",
     "Feature Writeup",
+    // Types whose names are ordinary words.
+    "Match",
+    "Deal",
 ];
 
 /// The words Stage 1 can be told name a built-in type.
@@ -720,6 +730,9 @@ const BUILT_IN_TYPE_WORDS: &[&str] = &[
 const HOW_MANY_TASKS: &str = "Could you tell me how many tasks we have here?";
 
 const TYPE_LINE_CASES: &[TypeLineCase] = &[
+    case(Group::BareType, "my projects", Some(Decision::Lookup)),
+    case(Group::BareType, "collections", Some(Decision::Lookup)),
+    case(Group::BareType, "the matches", Some(Decision::Lookup)),
     case(Group::KnownType, HOW_MANY_TASKS, Some(Decision::Lookup)),
     case(
         Group::KnownType,
@@ -794,6 +807,9 @@ const TYPE_LINE_CASES: &[TypeLineCase] = &[
         "what's the date today?",
         None,
     ),
+    // Accepted: routed as a query without the line, clarified with it, as
+    // "list the deals, or open one?".
+    case(Group::Unrelated, "open deals", None),
     case(
         Group::Unrelated,
         "search for notes about the Apollo project kickoff",
@@ -839,8 +855,19 @@ fn type_words_added(message: &str, queries: &[String]) -> Vec<String> {
 /// here names one. A message that names none sends the prompt it always did;
 /// `a_message_naming_no_type_gets_no_type_line` pins that without a model.
 ///
-/// Asserted, in the arm with the line:
-/// - every [`Group::KnownType`] case routes on every rep;
+/// What the line is for, with `route_lookup` offered: a request that names a
+/// type and nothing else ("my projects", "collections"). Stage 1 reads a
+/// question about records as a lookup by itself, but a bare noun phrase is
+/// not a question, and without the line nothing tells Stage 1 the noun is a
+/// kind of record: it asks whether to list the records or create one.
+///
+/// Asserted:
+/// - every [`Group::BareType`] case clarifies on every rep without the line
+///   and routes on every rep with it. If it routes without the line too, the
+///   line no longer decides it, and whether the line still earns its cost
+///   has to be asked again;
+/// - in the arm with the line, every [`Group::KnownType`] case routes on
+///   every rep;
 /// - every [`Group::Unrelated`] case with an expectation meets it on every
 ///   rep, with the query it wrote without the line: a type's name read as a
 ///   record type shows as a reworded query;
@@ -874,6 +901,26 @@ fn type_words_added(message: &str, queries: &[String]) -> Vec<String> {
 /// routed. "what's the date today?" calls no routing tool in either arm. Mean
 /// prompt 1040 → 1051 tokens; mean generation 2373 ms → 2460 ms over 45 runs,
 /// 21 tokens generated in each arm.
+///
+/// Looking for requests the line still decides, 28 more were measured the
+/// same way: ten that name a type and are not shaped like a question, ten
+/// that name a user type whose name is an ordinary word (Lead, Deal, Run,
+/// Story, Issue, Match), and eight routed blended with two earlier turns.
+/// Twenty-two decided alike in both arms. Three moved from clarify to a
+/// lookup with the line, the [`Group::BareType`] cases. One moved the other
+/// way: "open deals" was a query without the line and, with Deal named, a
+/// question whether to list the deals or open one; it is kept among the
+/// unrelated cases as an accepted cost. Two after earlier turns routed in
+/// both arms but by a different tool: "now the invoices" as a query without
+/// the line and a lookup with it, "how many tasks do we have?" the other way
+/// round. Neither is asserted.
+///
+/// With the bare type cases added, the test as it stands: bare type 0/3
+/// without the line and 3/3 with it, known type 7/7 in both, unrelated 8/8
+/// in both. Mean prompt 1038 → 1049 tokens; mean generation 3016 ms →
+/// 3102 ms over 45 runs. Both arms were about a quarter slower than in the
+/// run above, which is the machine, not the change, so compare the arms
+/// within a run, not across runs.
 #[tokio::test]
 #[ignore = "requires the locked native GGUF on disk"]
 async fn stage1_type_line_routes_requests_that_name_a_known_type() {
@@ -890,6 +937,8 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
     let mut met = vec![[0usize; 2]; TYPE_LINE_CASES.len()];
     // Per case, per arm: the reps that routed (query, lookup or multi).
     let mut routed = vec![[0usize; 2]; TYPE_LINE_CASES.len()];
+    // Per case, per arm: the reps that clarified.
+    let mut clarified = vec![[0usize; 2]; TYPE_LINE_CASES.len()];
     // Per case: the type words the with-line arm's queries added.
     let mut added: Vec<Vec<String>> = vec![Vec::new(); TYPE_LINE_CASES.len()];
     // Per case: the reps where the two arms wrote different queries.
@@ -964,6 +1013,9 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
                 if case.expect.is_some() && kind == case.expect {
                     met[index][arm] += 1;
                 }
+                if kind == Some(Decision::Clarify) {
+                    clarified[index][arm] += 1;
+                }
             }
             runs += 1;
             if wrote[0] != wrote[1] {
@@ -983,6 +1035,7 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
     }
 
     for (group, label) in [
+        (Group::BareType, "bare type, decided as expected"),
         (Group::KnownType, "known type, routed"),
         (Group::Unrelated, "unrelated, decided as expected"),
     ] {
@@ -1024,6 +1077,19 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
 
     for (index, case) in TYPE_LINE_CASES.iter().enumerate() {
         match case.group {
+            Group::BareType => {
+                assert_eq!(
+                    clarified[index][0], REPS,
+                    "{:?} no longer clarifies without the type line, so the line does not \
+                     decide it: ask again whether the line earns its cost",
+                    case.message
+                );
+                assert_eq!(
+                    met[index][1], REPS,
+                    "{:?} names only a type and must route as expected with the type named",
+                    case.message
+                );
+            }
             Group::KnownType => assert_eq!(
                 routed[index][1], REPS,
                 "{:?} names a known type and must route with the type named",
