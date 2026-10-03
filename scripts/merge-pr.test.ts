@@ -206,7 +206,7 @@ describe("buildStack", () => {
     return git("rev-parse", "HEAD");
   }
 
-  const item = (pr: number, head: string) => ({ pr, headRefName: `pr${pr}`, head });
+  const item = (pr: number, head: string) => ({ pr, title: `PR ${pr}`, headRefName: `pr${pr}`, head });
 
   test("stacks PRs in order, and leaves out one that conflicts with a PR ahead of it or adds nothing", async () => {
     const base = await init();
@@ -261,6 +261,8 @@ describe("buildStack", () => {
     expect(ejected).toEqual([]);
     expect(stack.map((e) => e.pr)).toEqual([1, 2]);
     expect(stack[1].commits).toHaveLength(1);
+    // The one commit is what GitHub titles the squash after.
+    expect(await git("log", "-1", "--format=%B", stack[1].commits[0])).toBe("PR 2");
     expect(await git("rev-parse", "HEAD^{tree}")).toBe(stack[1].tree);
     expect(await git("status", "--porcelain")).toBe("");
     expect(readFileSync(join(cwd, "shared.txt"), "utf8")).toBe("main and pr\nmore\n");
@@ -279,6 +281,56 @@ describe("buildStack", () => {
     expect(alone.stack[0].tree).toBe(await git("rev-parse", `${pr2}^{tree}`));
   });
 
+  // Nothing conflicts here, so the commits replay cleanly — without the fix-up
+  // the author made while merging, onto a tree they never had.
+  test("keeps a change made in a merge commit that merged main cleanly", async () => {
+    const base = await init();
+    const main = await branch("main-change", base, "name.txt", "new_name\n");
+
+    await branch("pr1", base, "caller.txt", "call old_name\n");
+    await git("merge", "--quiet", "--no-commit", "main-change");
+    writeFileSync(join(cwd, "caller.txt"), "call new_name\n");
+    await git("add", "caller.txt");
+    await git("commit", "--quiet", "--no-edit");
+    const pr1 = await commit("other.txt", "other\n", "a later commit");
+
+    await git("checkout", "--quiet", "--detach", main);
+    const { stack, ejected } = await buildStack(cwd, main, [item(1, pr1)]);
+
+    expect(ejected).toEqual([]);
+    expect(stack[0].tree).toBe(await git("rev-parse", `${pr1}^{tree}`));
+    expect(readFileSync(join(cwd, "caller.txt"), "utf8")).toBe("call new_name\n");
+    expect(await git("status", "--porcelain")).toBe("");
+  });
+
+  // A stacked branch whose first commit main already has by patch, after
+  // which main edited the same lines: merging it conflicts, replaying it
+  // skips the shared commit. A merge commit on the branch doesn't take that
+  // away.
+  test("falls back to the commits when a branch with a merge commit doesn't merge", async () => {
+    const base = await init();
+    await branch("pr1", base, "shared.txt", "one\n");
+    const shared = await git("rev-parse", "HEAD");
+    await branch("side", base, "side.txt", "side\n");
+    // main gets the patch on a different parent, so as a different commit.
+    await branch("main-change", base, "main.txt", "main\n");
+    await git("cherry-pick", shared);
+    const main = await commit("shared.txt", "one, edited\n", "main edits the same line");
+
+    await git("checkout", "--quiet", "pr1");
+    await git("merge", "--quiet", "--no-edit", "side");
+    const pr1 = await commit("other.txt", "other\n", "the PR's own change");
+
+    await git("checkout", "--quiet", "--detach", main);
+    const { stack, ejected } = await buildStack(cwd, main, [item(1, pr1)]);
+
+    expect(ejected).toEqual([]);
+    expect(stack[0].commits.length).toBeGreaterThan(1);
+    expect(readFileSync(join(cwd, "shared.txt"), "utf8")).toBe("one, edited\n");
+    expect(readFileSync(join(cwd, "other.txt"), "utf8")).toBe("other\n");
+    expect(await git("status", "--porcelain")).toBe("");
+  });
+
   test("leaves out a branch that conflicts with main, naming the files, with the checkout back at main", async () => {
     const base = await init();
     const main = await branch("main-change", base, "shared.txt", "main\n");
@@ -291,6 +343,7 @@ describe("buildStack", () => {
     expect(stack).toEqual([]);
     expect(ejected.map((e) => e.pr)).toEqual([1]);
     expect(ejected[0].reason).toContain("it conflicts with main in: shared.txt.");
+    expect(ejected[0].reason).toContain("Merge or rebase origin/main");
     expect(await git("rev-parse", "HEAD")).toBe(main);
     expect(await git("status", "--porcelain")).toBe("");
   });

@@ -264,7 +264,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    bun run merge <PR#>
    ```
    It puts the PR in the **team-wide merge queue** (git refs on origin, `scripts/merge-queue.ts`) and waits until the PR lands or leaves the queue. One gate runs at a time across every machine. Whichever `bun run merge` takes the queue's lock runs the next round, for every queued PR, yours or a teammate's:
-   - It stacks the PRs as pushed onto current main, in the persistent gate checkout (`.claude/worktrees/_gate`, kept warm so only changed crates recompile). A branch may be kept current with `main` by rebasing or by merging it: a PR whose commits don't replay one by one is stacked as its net change, so conflict resolutions made in a merge commit are kept.
+   - It stacks the PRs as pushed onto current main, in the persistent gate checkout (`.claude/worktrees/_gate`, kept warm so only changed crates recompile). A branch may be kept current with `main` by rebasing or by merging it: a branch that holds merge commits is stacked as its net change, one commit titled after the PR, so what a merge commit holds (a conflict resolution, a fix-up) is kept.
    - It runs the full pyramid once on the stack.
    - On a pass, it squash-merges the PRs in order. Before each one it checks that the PR's replay onto main reproduces the tested tree, and that it still holds the queue's lock. `--match-head-commit` pins the merge to that commit. The PR's remote branch is then deleted. A PR GitHub refuses to merge (a draft, say) is ejected.
    - On a failure, it retests the first half of the batch, down to the PR that broke it.

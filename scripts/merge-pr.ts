@@ -136,6 +136,7 @@ export function isPrBranch(localBranch: string, prBranch: string): boolean {
 }
 
 interface PullRequest {
+  title: string;
   headRefName: string;
   state: string;
   baseRefName: string;
@@ -189,17 +190,24 @@ export async function replayCommits(cwd: string, commits: string[]): Promise<Rep
  * change — what `git merge` would produce, without the merge commit. On any
  * failure the checkout is back at its HEAD.
  *
- * This is how a branch that merged main lands. Its merge commits hold the
- * conflict resolutions, and a commit-by-commit replay drops them, so the first
- * later commit that depends on one conflicts although the branch itself merges
- * cleanly. A three-way merge of the head sees the resolutions.
+ * This is how a branch that merged main lands. Its merge commits hold what the
+ * author did while merging — conflict resolutions, fix-ups for what main
+ * changed — and a commit-by-commit replay drops them. A three-way merge of
+ * the head sees them.
+ *
+ * The commit's subject is `title`, the PR's: GitHub titles the squash of a
+ * one-commit PR after that commit, so this is what main's history shows.
+ *
+ * `--allow-empty`: a head the checkout already contains merges to nothing,
+ * and the commit must still succeed so the caller can tell "no changes" from
+ * a failure by comparing trees.
  *
  * As in `replayCommits`, only unmerged paths make a failure a conflict.
  */
-export async function mergeNetChange(cwd: string, head: string): Promise<ReplayResult> {
+export async function mergeNetChange(cwd: string, head: string, title: string): Promise<ReplayResult> {
   const merge = await $`git ${NO_HOOKS} merge --squash ${head}`.cwd(cwd).quiet().nothrow();
   if (merge.exitCode === 0) {
-    const commit = await $`git ${NO_HOOKS} commit --quiet --allow-empty -m ${`Net change of ${head}`}`.cwd(cwd).quiet().nothrow();
+    const commit = await $`git ${NO_HOOKS} commit --quiet --allow-empty -m ${title}`.cwd(cwd).quiet().nothrow();
     if (commit.exitCode === 0) return { kind: "ok" };
     await $`git ${NO_HOOKS} reset --quiet --hard HEAD`.cwd(cwd).quiet().nothrow();
     const message = `${commit.stderr.toString()}${commit.stdout.toString()}`.trim();
@@ -260,7 +268,7 @@ function fail(message: string): never {
 }
 
 async function viewPr(pr: number): Promise<PullRequest | null> {
-  const out = await $`gh pr view ${pr} --json headRefName,state,baseRefName,isDraft,mergeable,isCrossRepository`.quiet().nothrow();
+  const out = await $`gh pr view ${pr} --json title,headRefName,state,baseRefName,isDraft,mergeable,isCrossRepository`.quiet().nothrow();
   return out.exitCode === 0 ? (JSON.parse(out.stdout.toString()) as PullRequest) : null;
 }
 
@@ -282,6 +290,8 @@ async function prepareGateCheckout(repoRoot: string): Promise<string> {
 /** A PR as a round sees it. */
 export interface QueuedPr {
   pr: number;
+  /** The PR's title: the subject of the commit that holds its net change. */
+  title: string;
   headRefName: string;
   /** The PR branch's head on origin when the round read it. */
   head: string;
@@ -315,12 +325,12 @@ async function resetGateCheckout(cwd: string, mainSha: string): Promise<void> {
 
 /**
  * Replays each PR's commits, in order, onto `mainSha` and the PRs below it,
- * in the checkout at `cwd` (already reset to `mainSha`). A PR whose commits
- * don't replay one by one is merged as its net change instead, so a branch
- * that merged main lands as it is. A PR that conflicts with main or with a PR
- * below it either way — or that adds nothing beyond them — is left out with
- * the reason, and the stack carries on without it. The checkout ends at the
- * top of the stack.
+ * in the checkout at `cwd` (already reset to `mainSha`). A branch that holds
+ * merge commits is merged as its net change instead, so one that merged main
+ * lands as it is; so is a PR whose commits don't replay one by one. A PR that
+ * conflicts with main or with a PR below it either way — or that adds nothing
+ * beyond them — is left out with the reason, and the stack carries on without
+ * it. The checkout ends at the top of the stack.
  *
  * Replaying rather than checking out each PR's own base: that detour rewrote
  * every file main had changed since the PR branched, then rewrote it back, and
@@ -341,20 +351,32 @@ export async function buildStack(cwd: string, mainSha: string, prs: QueuedPr[]):
     )
       .split("\n")
       .filter((c) => c !== "");
-    if (commits.length === 0) {
+    // What the author did in a merge commit — a conflict resolution, a fix-up
+    // for something main changed — is in none of the commits listed above.
+    const hasMerges = (await git(cwd, "rev-list", "--merges", "--max-count=1", `${mainSha}..${item.head}`)) !== "";
+    if (commits.length === 0 && !hasMerges) {
       ejected.push({ pr: item.pr, reason: "it has no commits of its own beyond main." });
       continue;
     }
+    // Two ways to put the PR on the stack: its commits one by one, or its net
+    // change as one commit. The merge squashes either, so they land the same.
+    // A branch with merge commits takes its net change first, since only that
+    // carries what the merges hold; any other branch replays first, which also
+    // accepts a commit main already has by patch. Each falls back to the other
+    // on a conflict. The files named on an ejection are the merge's, which are
+    // the ones the author has to resolve.
     let replayed = commits;
-    let replay = await replayCommits(cwd, commits);
-    if (replay.kind === "conflict") {
-      // The commits don't replay one by one, but the branch may still merge:
-      // one that merged main keeps its conflict resolutions in merge commits,
-      // which the list above leaves out. Its net change then stands in for its
-      // commits; the merge squashes them either way. The files named on an
-      // ejection are the merge's, which are the ones the author has to resolve.
-      replay = await mergeNetChange(cwd, item.head);
+    let replay: ReplayResult;
+    if (hasMerges) {
+      replay = await mergeNetChange(cwd, item.head, item.title);
       if (replay.kind === "ok") replayed = [await git(cwd, "rev-parse", "HEAD")];
+      else if (replay.kind === "conflict" && commits.length > 0 && (await replayCommits(cwd, commits)).kind === "ok") replay = { kind: "ok" };
+    } else {
+      replay = await replayCommits(cwd, commits);
+      if (replay.kind === "conflict") {
+        replay = await mergeNetChange(cwd, item.head, item.title);
+        if (replay.kind === "ok") replayed = [await git(cwd, "rev-parse", "HEAD")];
+      }
     }
     if (replay.kind === "conflict") {
       const ahead = stack.length > 0 ? ` or with ${stack.map((e) => `#${e.pr}`).join(", ")}, queued ahead of it,` : "";
@@ -572,7 +594,7 @@ async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, re
         moved = true;
         continue;
       }
-      candidates.push({ pr, headRefName: info.headRefName, head: head.sha });
+      candidates.push({ pr, title: info.title, headRefName: info.headRefName, head: head.sha });
     }
 
     while (candidates.length > 0 && holding) {
@@ -614,7 +636,7 @@ async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, re
         );
         return true;
       }
-      candidates = bisectBatch(stack).map(({ pr, headRefName, head }) => ({ pr, headRefName, head }));
+      candidates = bisectBatch(stack).map(({ pr, title, headRefName, head }) => ({ pr, title, headRefName, head }));
       console.log(`\n⟳ The batch failed; retesting ${candidates.map((c) => `#${c.pr}`).join(", ")} on their own.`);
     }
   } catch (err) {
@@ -638,7 +660,7 @@ async function dryRun(pr: number, info: PullRequest, repoRoot: string): Promise<
   await git(gate, "fetch", "--quiet", "origin", "main", info.headRefName);
   const mainSha = await git(gate, "rev-parse", "origin/main");
   await resetGateCheckout(gate, mainSha);
-  const { stack, ejected } = await buildStack(gate, mainSha, [{ pr, headRefName: info.headRefName, head }]);
+  const { stack, ejected } = await buildStack(gate, mainSha, [{ pr, title: info.title, headRefName: info.headRefName, head }]);
   if (stack.length === 0) fail(`PR #${pr} can't be gated: ${ejected[0]?.reason ?? "nothing to test."}`);
   console.log(`\n▶ Merge gate on #${pr} (stacked on ${mainSha.slice(0, 8)}) in ${gate}`);
   const result = await runGate(gate, mainSha);
