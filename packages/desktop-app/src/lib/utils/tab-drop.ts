@@ -7,18 +7,18 @@
  * only set by a `pointerover`, which doesn't fire when the pointer was already on
  * the tab). That is a click, not a failed drop.
  */
-export type TabDrop =
-  | { kind: 'drop'; sourceIndex: number; targetIndex: number }
+export type TabDrop<T> =
+  | { kind: 'drop'; draggedItem: T; sourceIndex: number; targetIndex: number }
   /** A pointerup with no target: a click on a tab. Nothing to do. */
   | { kind: 'click' }
   /** The library's state is incomplete or unparseable. */
   | { kind: 'invalid'; reason: 'missing-state' | 'unparseable-index' };
 
-export function readTabDrop(state: {
-  draggedItem: unknown;
+export function readTabDrop<T>(state: {
+  draggedItem: T | null | undefined;
   sourceContainer: string | null | undefined;
   targetContainer: string | null | undefined;
-}): TabDrop {
+}): TabDrop<T> {
   const { draggedItem, sourceContainer, targetContainer } = state;
   if (draggedItem && sourceContainer && !targetContainer) return { kind: 'click' };
   if (!draggedItem || !sourceContainer || !targetContainer) {
@@ -29,5 +29,5 @@ export function readTabDrop(state: {
   if (isNaN(sourceIndex) || isNaN(targetIndex)) {
     return { kind: 'invalid', reason: 'unparseable-index' };
   }
-  return { kind: 'drop', sourceIndex, targetIndex };
+  return { kind: 'drop', draggedItem, sourceIndex, targetIndex };
 }

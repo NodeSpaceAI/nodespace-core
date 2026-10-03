@@ -109,9 +109,9 @@ export class SchemaFormLoader {
    * Cached in `loadedForms` for subsequent renders.
    */
   async loadForm(nodeType: string): Promise<boolean> {
-    // Set synchronously (not after the await below) so `hasTitleTemplate` reflects the
-    // viewed type immediately — the viewer reads it on the same render pass it calls
-    // this, before any async work here has had a chance to resolve.
+    // Set synchronously (not after the await below) so `hasTitleTemplate`, and the header
+    // deriving from it, update as soon as the type is known rather than after the form's
+    // lazy import resolves.
     this.currentNodeType = nodeType;
 
     // Skip if already loaded (check for both component and explicit null).

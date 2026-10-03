@@ -184,7 +184,6 @@
    */
   function handleDrop(state: DragDropState<{ tab: Tab; paneId: string }>): void {
     try {
-      const { draggedItem, targetContainer, sourceContainer } = state;
       const drop = readTabDrop(state);
 
       // A click on a tab reaches here as a drop with no target (see readTabDrop).
@@ -193,12 +192,12 @@
         return;
       }
 
-      if (drop.kind === 'invalid' || !draggedItem) {
+      if (drop.kind === 'invalid') {
         log.warn('Invalid drop operation', {
-          reason: drop.kind === 'invalid' ? drop.reason : 'missing-state',
-          hasDraggedItem: !!draggedItem,
-          sourceContainer,
-          targetContainer,
+          reason: drop.reason,
+          hasDraggedItem: !!state.draggedItem,
+          sourceContainer: state.sourceContainer,
+          targetContainer: state.targetContainer,
           currentPaneId,
           totalTabs: displayTabs.length
         });
@@ -206,7 +205,7 @@
         return;
       }
 
-      const { sourceIndex, targetIndex } = drop;
+      const { draggedItem, sourceIndex, targetIndex } = drop;
       const sourcePaneId = draggedItem.paneId;
       const tabId = draggedItem.tab.id;
 
