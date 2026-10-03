@@ -778,6 +778,17 @@ const FIXTURES: DecisionScenario[] = [
     // duplicate, and the user asked — rather than the operation decision,
     // which the guard cannot change: the model still picks `create_node`, and
     // `operationDecision` in the results file keeps recording that miss.
+    //
+    // It once read as a regression, and no commit caused it. In the failing
+    // runs the model's first call was the title, a half-written field value
+    // and no `node_type` ("name": "Northwind Trading`, signed_date:"), which
+    // the guard could not match, so the turn ended apologising for the tool
+    // error. Bisected across the builds in question, the call came out whole
+    // or broken with the workspace, not the build: every broken one was asked
+    // with a second venue type beside the first (`event_place` and
+    // `event_venue`, named by two chats' setup turns), and the whole one
+    // without. Seeding the types per rep removed that state, and the guard
+    // now matches a create that names the record and no type.
     prompt: "Add Northwind Trading to the companies we sell to.",
     expected: { decision: "outcome", noDuplicateOf: SEEDED_COMPANY_TITLE },
     entityResolution: true,
@@ -876,6 +887,17 @@ const FIXTURES: DecisionScenario[] = [
     // intent, which is the opposite failure and equally worth catching. An
     // agent that passes the scenario above by treating every declarative as a
     // write would fail this one.
+    //
+    // Decision: kept as scored, with no fix, and read with what passing means
+    // today. Asked after the two setup turns this fixture used to have, the
+    // model called `create_node` in every run measured (`create_relationship`
+    // on older builds); the duplicate guard refused it and the user was asked.
+    // As the first turn of its own chat it passes 3 of 3, but in two of the
+    // three the model's reply claimed a change it had not made, and the agent
+    // replaced that with a request to confirm. The user is never written to,
+    // and the model still does not read a report as a report: the asymmetry
+    // the comment on this pair describes is unchanged, and fixing it is the
+    // model's or a decision layer's job, not this fixture's.
     prompt: "Northwind Trading has been a customer of ours for a long time.",
     expected: { decision: "operation", oneOf: [] },
     declarative: true,

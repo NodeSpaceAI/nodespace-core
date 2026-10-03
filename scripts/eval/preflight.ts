@@ -293,8 +293,10 @@ export function seededSkillCount(
  * state this gate exists to catch.
  *
  * Reading the embedding table directly is the only probe that asserts the real
- * property. The path comes from the daemon's own `database list`, so it cannot
- * drift onto a different database than the one being scored.
+ * property, and only its non-stale rows do: a row exists, stale, from the
+ * moment its node is created. The path comes from the daemon's own `database
+ * list`, so it cannot drift onto a different database than the one being
+ * scored.
  */
 function retrievableSkillCount(env: EvalEnv): number {
   return embeddedSkillCount(readServedDatabasePath(env));
@@ -328,8 +330,13 @@ export function embeddedSkillCount(
       [
         "sqlite3",
         db,
+        // `stale = 0`: a node gets its embedding row, marked stale, the moment
+        // it is created, and the vector only once the debounced worker has run.
+        // Counting stale rows let the wait return at once for skills seeded
+        // mid-run, and a held-turn scenario was sent before its linked skills
+        // could be retrieved.
         "SELECT COUNT(DISTINCT e.node_id) FROM node n " +
-          "JOIN embedding e ON e.node_id = n.id WHERE n.node_type = 'skill'",
+          "JOIN embedding e ON e.node_id = n.id WHERE n.node_type = 'skill' AND e.stale = 0",
       ],
       { stdout: "pipe", stderr: "pipe", timeout: SKILL_PROBE_TIMEOUT_MS },
     );
