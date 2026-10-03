@@ -788,6 +788,16 @@ pub trait AgentToolExecutor: Send + Sync {
         Vec::new()
     }
 
+    /// The type of the node `id` names, or `None` when the node cannot be
+    /// found or read.
+    ///
+    /// Asked at dispatch on a turn held to an offered set of types
+    /// (`routing::offered_types`), for a tool that names the node it changes
+    /// and no type. The default knows no node, which holds no call.
+    async fn node_type(&self, _id: &str) -> Option<String> {
+        None
+    }
+
     /// `task.status`'s currently-declared values (`core_values` +
     /// `user_values`), used to keep `update_task_status`'s parameter `enum`
     /// in step with a vocabulary ADR-076 lets a methodology bundle extend at
