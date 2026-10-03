@@ -341,9 +341,9 @@ function listSchemaIds(env: EvalEnv): Set<string> {
  * single node, and the failures would read as model non-determinism.
  */
 function seedWorkspace(env: EvalEnv): void {
-  const present = listSchemaIds(env);
+  const types = listSchemaIds(env);
   for (const type of SEEDED_TYPES) {
-    if (present.has(type.id)) continue;
+    if (types.has(type.id)) continue;
     runNs(env, ["schema", "create", "--params", JSON.stringify(type.params)]);
   }
   // The daemon derives a type's id from its name. A seed that came back under
