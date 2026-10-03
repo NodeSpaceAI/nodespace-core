@@ -146,7 +146,7 @@ pub fn normalize_response_traced(text: &str) -> (String, Vec<&'static str>) {
 
 /// Remove Markdown escapes from the id of a `nodespace://` URI.
 ///
-/// `nodespace://company\_sold\_to` -> `nodespace://company_sold_to`
+/// `nodespace://design\_decision` -> `nodespace://design_decision`
 ///
 /// Writing a list, the model escapes the underscores of an id as it would in
 /// prose. The escaped form is not the id any tool returned: the link does not
@@ -482,11 +482,11 @@ mod tests {
     #[test]
     fn unescapes_underscores_and_hyphens_in_a_uri_id() {
         let input =
-            r"See [Company Sold To](nodespace://company\_sold\_to) and nodespace://a1b2\-c3d4.";
+            r"See [Design Decision](nodespace://design\_decision) and nodespace://a1b2\-c3d4.";
         let (result, fired) = normalize_response_traced(input);
         assert_eq!(
             result,
-            "See [Company Sold To](nodespace://company_sold_to) and nodespace://a1b2-c3d4."
+            "See [Design Decision](nodespace://design_decision) and nodespace://a1b2-c3d4."
         );
         assert_eq!(fired, vec!["unescape_uri_ids"]);
     }

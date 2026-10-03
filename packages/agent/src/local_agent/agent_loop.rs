@@ -10786,17 +10786,18 @@ mod tests {
         let listing = json!({
             "count": 4,
             "nodes": [
-                {"id": "nodespace://event_venue", "title": "Event Venue", "type": "schema"},
-                {"id": "nodespace://company_sold_to", "title": "Company Sold To", "type": "schema"},
+                {"id": "nodespace://planning_cycle", "title": "Planning Cycle", "type": "schema"},
+                {"id": "nodespace://design_decision", "title": "Design Decision", "type": "schema"},
                 {"id": "nodespace://task", "title": "Task", "type": "schema"},
                 {"id": "nodespace://project", "title": "Project", "type": "schema"},
             ]
         });
         let escaped = r"The schemas include built-in types like [Task](nodespace://task), as well as:
 
-*   [Event Venue](nodespace://event_venue): tracks bookings.
-*   [Company Sold To](nodespace://company\_sold\_to): records sales agreements.";
-        let (reply, _) = run_type_listing_turn_over(listing, UNFILTERED_TYPE_LISTING, escaped).await;
+*   [Planning Cycle](nodespace://planning\_cycle): tracks each cycle and its dates.
+*   [Design Decision](nodespace://design\_decision): records a decision and who made it.";
+        let (reply, _) =
+            run_type_listing_turn_over(listing, UNFILTERED_TYPE_LISTING, escaped).await;
 
         assert_eq!(
             reply,
