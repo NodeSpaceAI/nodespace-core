@@ -12,9 +12,10 @@ describe('readTabDrop', () => {
     });
   });
 
-  it('reads source and target indices from a real drop', () => {
+  it('reads the dragged item and the source and target indices from a real drop', () => {
     expect(readTabDrop({ draggedItem: item, sourceContainer: 'tab-0', targetContainer: 'tab-3' })).toEqual({
       kind: 'drop',
+      draggedItem: item,
       sourceIndex: 0,
       targetIndex: 3
     });
