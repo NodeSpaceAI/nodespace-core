@@ -185,7 +185,8 @@ describe("buildStack", () => {
     return git("rev-parse", "HEAD");
   }
 
-  test("stacks PRs in order, and leaves out one that conflicts with a PR ahead of it or adds nothing", async () => {
+  /** A fresh repo with one commit on `main`, writing base.txt; returns that commit. */
+  async function init(): Promise<string> {
     cwd = mkdtempSync(join(tmpdir(), "merge-pr-stack-"));
     await git("init", "--quiet", "-b", "main");
     await git("config", "user.email", "test@example.com");
@@ -194,7 +195,21 @@ describe("buildStack", () => {
     writeFileSync(join(cwd, "base.txt"), "base\n");
     await git("add", "base.txt");
     await git("commit", "--quiet", "-m", "base");
-    const base = await git("rev-parse", "HEAD");
+    return git("rev-parse", "HEAD");
+  }
+
+  /** Commits `content` as `file` on the current branch; returns the commit. */
+  async function commit(file: string, content: string, message: string): Promise<string> {
+    writeFileSync(join(cwd, file), content);
+    await git("add", file);
+    await git("commit", "--quiet", "-m", message);
+    return git("rev-parse", "HEAD");
+  }
+
+  const item = (pr: number, head: string) => ({ pr, headRefName: `pr${pr}`, head });
+
+  test("stacks PRs in order, and leaves out one that conflicts with a PR ahead of it or adds nothing", async () => {
+    const base = await init();
     const main = await branch("main-change", base, "main.txt", "main\n");
 
     const pr1 = await branch("pr1", base, "a.txt", "one\n");
@@ -204,7 +219,6 @@ describe("buildStack", () => {
     const pr5 = await branch("pr5", base, "b.txt", "three\n"); // #3, queued ahead, already did it
 
     await git("checkout", "--quiet", "--detach", main);
-    const item = (pr: number, head: string) => ({ pr, headRefName: `pr${pr}`, head });
     const { stack, ejected } = await buildStack(cwd, main, [item(1, pr1), item(2, pr2), item(3, pr3), item(4, pr4), item(5, pr5)]);
 
     expect(stack.map((e) => e.pr)).toEqual([1, 3]);
@@ -224,5 +238,60 @@ describe("buildStack", () => {
     await git("checkout", "--quiet", "--detach", main);
     await git("cherry-pick", ...stack[0].commits);
     expect(await git("rev-parse", "HEAD^{tree}")).toBe(stack[0].tree);
+  });
+
+  // A branch kept current by merging main holds its conflict resolutions in
+  // the merge commits. Replayed commit by commit, without them, its later
+  // commits conflict, although the branch contains main and merges cleanly.
+  test("stacks a branch that merged main with a conflict resolution, as its net change", async () => {
+    const base = await init();
+    const main = await branch("main-change", base, "shared.txt", "main\n");
+    const pr1 = await branch("pr1", base, "a.txt", "one\n");
+
+    await branch("pr2", base, "shared.txt", "pr\n");
+    expect((await $`git merge main-change`.cwd(cwd).quiet().nothrow()).exitCode).not.toBe(0);
+    writeFileSync(join(cwd, "shared.txt"), "main and pr\n");
+    await git("add", "shared.txt");
+    await git("commit", "--quiet", "--no-edit");
+    const pr2 = await commit("shared.txt", "main and pr\nmore\n", "builds on the resolution");
+
+    await git("checkout", "--quiet", "--detach", main);
+    const { stack, ejected } = await buildStack(cwd, main, [item(1, pr1), item(2, pr2)]);
+
+    expect(ejected).toEqual([]);
+    expect(stack.map((e) => e.pr)).toEqual([1, 2]);
+    expect(stack[1].commits).toHaveLength(1);
+    expect(await git("rev-parse", "HEAD^{tree}")).toBe(stack[1].tree);
+    expect(await git("status", "--porcelain")).toBe("");
+    expect(readFileSync(join(cwd, "shared.txt"), "utf8")).toBe("main and pr\nmore\n");
+    expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\n");
+
+    // Landing replays each entry's commits onto main as the PR below left it,
+    // and must come out at the tree the gate tested.
+    await git("checkout", "--quiet", "--detach", main);
+    await git("cherry-pick", ...stack[0].commits);
+    await git("cherry-pick", ...stack[1].commits);
+    expect(await git("rev-parse", "HEAD^{tree}")).toBe(stack[1].tree);
+
+    // Alone on main, the tested tree is the branch's own tree.
+    await git("checkout", "--quiet", "--detach", main);
+    const alone = await buildStack(cwd, main, [item(2, pr2)]);
+    expect(alone.stack[0].tree).toBe(await git("rev-parse", `${pr2}^{tree}`));
+  });
+
+  test("leaves out a branch that conflicts with main, naming the files, with the checkout back at main", async () => {
+    const base = await init();
+    const main = await branch("main-change", base, "shared.txt", "main\n");
+    await branch("pr1", base, "shared.txt", "pr\n");
+    const pr1 = await commit("other.txt", "other\n", "a second commit");
+
+    await git("checkout", "--quiet", "--detach", main);
+    const { stack, ejected } = await buildStack(cwd, main, [item(1, pr1)]);
+
+    expect(stack).toEqual([]);
+    expect(ejected.map((e) => e.pr)).toEqual([1]);
+    expect(ejected[0].reason).toContain("it conflicts with main in: shared.txt.");
+    expect(await git("rev-parse", "HEAD")).toBe(main);
+    expect(await git("status", "--porcelain")).toBe("");
   });
 });

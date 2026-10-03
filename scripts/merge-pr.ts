@@ -185,6 +185,37 @@ export async function replayCommits(cwd: string, commits: string[]): Promise<Rep
 }
 
 /**
+ * Merges `head` into the checkout in `cwd` as one commit holding the PR's net
+ * change — what `git merge` would produce, without the merge commit. On any
+ * failure the checkout is back at its HEAD.
+ *
+ * This is how a branch that merged main lands. Its merge commits hold the
+ * conflict resolutions, and a commit-by-commit replay drops them, so the first
+ * later commit that depends on one conflicts although the branch itself merges
+ * cleanly. A three-way merge of the head sees the resolutions.
+ *
+ * As in `replayCommits`, only unmerged paths make a failure a conflict.
+ */
+export async function mergeNetChange(cwd: string, head: string): Promise<ReplayResult> {
+  const merge = await $`git ${NO_HOOKS} merge --squash ${head}`.cwd(cwd).quiet().nothrow();
+  if (merge.exitCode === 0) {
+    const commit = await $`git ${NO_HOOKS} commit --quiet --allow-empty -m ${`Net change of ${head}`}`.cwd(cwd).quiet().nothrow();
+    if (commit.exitCode === 0) return { kind: "ok" };
+    await $`git ${NO_HOOKS} reset --quiet --hard HEAD`.cwd(cwd).quiet().nothrow();
+    const message = `${commit.stderr.toString()}${commit.stdout.toString()}`.trim();
+    return { kind: "error", message: message || `git commit exited with code ${commit.exitCode}` };
+  }
+
+  const unmerged = (await $`git diff --name-only --diff-filter=U`.cwd(cwd).quiet().nothrow().text())
+    .split("\n")
+    .filter((p) => p !== "");
+  await $`git ${NO_HOOKS} reset --quiet --hard HEAD`.cwd(cwd).quiet().nothrow();
+  if (unmerged.length > 0) return { kind: "conflict", paths: unmerged };
+  const message = `${merge.stderr.toString()}${merge.stdout.toString()}`.trim();
+  return { kind: "error", message: message || `git merge exited with code ${merge.exitCode}` };
+}
+
+/**
  * Runs git in `cwd` with hooks disabled and returns its trimmed stdout.
  *
  * The repo's post-checkout hook runs `bun install`, which rewrites bun.lock
@@ -258,7 +289,7 @@ export interface QueuedPr {
 
 /** One PR replayed onto the stack below it. */
 export interface StackEntry extends QueuedPr {
-  /** The PR's own commits, as replayed. */
+  /** What was replayed: the PR's own commits, or the one commit holding its net change. */
   commits: string[];
   /** The tree of main plus this PR and every PR below it. */
   tree: string;
@@ -284,10 +315,12 @@ async function resetGateCheckout(cwd: string, mainSha: string): Promise<void> {
 
 /**
  * Replays each PR's commits, in order, onto `mainSha` and the PRs below it,
- * in the checkout at `cwd` (already reset to `mainSha`). A PR that conflicts
- * with main or with a PR below it — or that adds nothing beyond them — is
- * left out with the reason, and the stack carries on without it. The checkout
- * ends at the top of the stack.
+ * in the checkout at `cwd` (already reset to `mainSha`). A PR whose commits
+ * don't replay one by one is merged as its net change instead, so a branch
+ * that merged main lands as it is. A PR that conflicts with main or with a PR
+ * below it either way — or that adds nothing beyond them — is left out with
+ * the reason, and the stack carries on without it. The checkout ends at the
+ * top of the stack.
  *
  * Replaying rather than checking out each PR's own base: that detour rewrote
  * every file main had changed since the PR branched, then rewrote it back, and
@@ -312,12 +345,22 @@ export async function buildStack(cwd: string, mainSha: string, prs: QueuedPr[]):
       ejected.push({ pr: item.pr, reason: "it has no commits of its own beyond main." });
       continue;
     }
-    const replay = await replayCommits(cwd, commits);
+    let replayed = commits;
+    let replay = await replayCommits(cwd, commits);
+    if (replay.kind === "conflict") {
+      // The commits don't replay one by one, but the branch may still merge:
+      // one that merged main keeps its conflict resolutions in merge commits,
+      // which the list above leaves out. Its net change then stands in for its
+      // commits; the merge squashes them either way. The files named on an
+      // ejection are the merge's, which are the ones the author has to resolve.
+      replay = await mergeNetChange(cwd, item.head);
+      if (replay.kind === "ok") replayed = [await git(cwd, "rev-parse", "HEAD")];
+    }
     if (replay.kind === "conflict") {
       const ahead = stack.length > 0 ? ` or with ${stack.map((e) => `#${e.pr}`).join(", ")}, queued ahead of it,` : "";
       ejected.push({
         pr: item.pr,
-        reason: `it conflicts with main${ahead} in: ${replay.paths.join(", ")}. Rebase onto origin/main, push, and re-run \`bun run merge ${item.pr}\`.`,
+        reason: `it conflicts with main${ahead} in: ${replay.paths.join(", ")}. Merge or rebase origin/main, resolve the conflicts, push, and re-run \`bun run merge ${item.pr}\`.`,
       });
       continue;
     }
@@ -334,7 +377,7 @@ export async function buildStack(cwd: string, mainSha: string, prs: QueuedPr[]):
       ejected.push({ pr: item.pr, reason: "it has no changes beyond main: main already contains everything it does." });
       continue;
     }
-    stack.push({ ...item, commits, tree });
+    stack.push({ ...item, commits: replayed, tree });
   }
   return { stack, ejected };
 }
@@ -567,7 +610,7 @@ async function runRound(queue: MergeQueue, lockSha: string, repoRoot: string, re
         await eject(
           queue,
           stack[0].pr,
-          `the merge gate failed on it, rebased onto main. Reproduce with \`git rebase origin/main\` and \`bun run test:changed\`, fix, push, and re-run \`bun run merge ${stack[0].pr}\`.\n\n${fenced(stripAnsi(result.tail))}`
+          `the merge gate failed on it, on top of main. Reproduce by merging or rebasing \`origin/main\` and running \`bun run test:changed\`, fix, push, and re-run \`bun run merge ${stack[0].pr}\`.\n\n${fenced(stripAnsi(result.tail))}`
         );
         return true;
       }
@@ -600,7 +643,7 @@ async function dryRun(pr: number, info: PullRequest, repoRoot: string): Promise<
   console.log(`\n▶ Merge gate on #${pr} (stacked on ${mainSha.slice(0, 8)}) in ${gate}`);
   const result = await runGate(gate, mainSha);
   if (result.verdict === "infra") fail("This machine couldn't run the gate (see above).");
-  if (result.verdict === "failed") fail(`The merge gate failed on #${pr}, rebased onto main.`);
+  if (result.verdict === "failed") fail(`The merge gate failed on #${pr}, on top of main.`);
   console.log(`\n✓ Dry run: the merge gate passed on #${pr}. Nothing queued, pushed or merged.\n`);
 }
 
