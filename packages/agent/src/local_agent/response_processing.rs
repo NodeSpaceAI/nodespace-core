@@ -12,9 +12,9 @@ fn backtick_uri_re() -> &'static Regex {
 }
 
 /// Matches a `nodespace://` URI and the Markdown escapes inside its id: the
-/// characters an id can hold, and a backslash before `_` or `-`. The match
-/// ends where the id does, so an escape in the text after it is not part of
-/// it.
+/// characters an id can hold, the `:` of a `schema:` prefix on a type-name
+/// target, and a backslash before `_` or `-`. The match ends where the id
+/// does, so an escape in the text after it is not part of it.
 fn escapable_uri_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"nodespace://(?:[A-Za-z0-9_:-]|\\[_-])+").unwrap())
@@ -521,9 +521,11 @@ mod tests {
 
     #[test]
     fn unescapes_a_uri_id_before_the_steps_that_read_it() {
-        // Both later steps compare or unwrap the URI, so they must see the id.
+        // A label is compared with its target, and only the target is
+        // escaped here: the two are equal, and the link collapses, only when
+        // the unescape has already run.
         assert_eq!(
-            normalize_response(r"See [nodespace://a\_b](nodespace://a\_b)."),
+            normalize_response(r"See [nodespace://a_b](nodespace://a\_b)."),
             "See nodespace://a_b."
         );
         assert_eq!(

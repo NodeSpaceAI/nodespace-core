@@ -1194,6 +1194,12 @@ async fn start_tracking_requests_route_schema_creation() {
 /// to track one record that already exists is an update or a create, and the
 /// skill that owns `create_schema` holds neither tool. Node Creation or Graph
 /// Editing must still reach Stage 2 on it.
+///
+/// Graph Editing leads three of these four. Schema Creation leads "start
+/// tracking the offline sync spec's sign-off" (0.852, Graph Editing 0.811,
+/// Node Creation 0.792): that turn is recorded as routed to the type skill,
+/// with `create_schema` offered beside the record tools. Who leads is not
+/// asserted here.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn tracking_one_existing_record_still_reaches_a_record_skill() {
