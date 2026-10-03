@@ -2506,7 +2506,7 @@ fn grounded_node_uris(executions: &[ToolExecutionRecord]) -> HashSet<String> {
 const CONVERSATION_SUMMARY_PREFIX: &str = "[Conversation summary]";
 
 /// Every `nodespace://` id grounded by a PRIOR turn's tool activity, read back
-/// from `session.messages`.
+/// from `session.messages` and from the ids kept when messages were summarized.
 ///
 /// `all_tool_executions` covers only the current turn — it is rebuilt fresh
 /// per `run_turn` — but a real id created several turns ago is legitimately
@@ -5486,6 +5486,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
         // The summary that replaces these messages is the model's text and
         // grounds no id. Keep the ids their tool results and records grounded.
+        // Done before the summary is generated: a failed generation returns
+        // from here with the messages already gone.
         session
             .summarized_node_uris
             .extend(system_written_node_uris(&older_messages));
@@ -9375,8 +9377,34 @@ mod tests {
                 "round {round}"
             );
 
+            // A lookup after the first summarization, drained by the second.
+            if round == 1 {
+                session
+                    .messages
+                    .push(ChatMessage::assistant_with_tool_calls(
+                        String::new(),
+                        vec![ToolCallRaw {
+                            id: "tc_2".into(),
+                            function_name: "get_node".into(),
+                            arguments_json: "{}".into(),
+                            provider_extra: None,
+                        }],
+                    ));
+                session.messages.push(ChatMessage::tool_result(
+                    serde_json::to_string(&json!({"id": "nodespace://from-a-later-tool"})).unwrap(),
+                    "tc_2",
+                    "get_node",
+                ));
+            }
             push_filler(&mut session);
         }
+
+        // Ids from both summarizations are held together.
+        assert!(ungrounded_node_uris(
+            "nodespace://from-a-tool nodespace://from-a-later-tool",
+            &session_grounded_node_uris(&[], &session)
+        )
+        .is_empty());
     }
 
     /// A chat rebuilt from storage carries an earlier turn's lookups as a
