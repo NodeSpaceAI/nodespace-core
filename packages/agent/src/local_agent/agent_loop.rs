@@ -1017,16 +1017,15 @@ fn mentioned_entity_duplicated_by<'a>(
     if title.is_empty() {
         return None;
     }
-    mentioned_entities
-        .iter()
-        .find(|e| {
-            node_type.is_none_or(|t| e.node_type == t) && comparable_title(&e.title) == title
-        })
-        .filter(|e| {
-            !composed_clarifications
+    // One predicate, so an entity already asked about is skipped rather than
+    // ending the search: without a type, several entities can share the title.
+    mentioned_entities.iter().find(|e| {
+        node_type.is_none_or(|t| e.node_type == t)
+            && comparable_title(&e.title) == title
+            && !composed_clarifications
                 .iter()
                 .any(|asked| asked.contains(e.id.as_str()))
-        })
+    })
 }
 
 /// Build the tool result returned in place of a `create_node` that would
@@ -12048,6 +12047,26 @@ mod tests {
             !duplicated(json!({"content": "Tailspin Toys"})),
             "a title the user did not refer to is the executor's error to report"
         );
+    }
+
+    #[test]
+    fn a_typeless_create_skips_a_same_titled_entity_already_asked_about() {
+        let mut session = session_mentioning_northwind();
+        session
+            .mentioned_entities
+            .push(crate::agent_types::MentionedEntity {
+                id: "nw-venue".to_string(),
+                title: "Northwind Trading".to_string(),
+                node_type: "event_venue".to_string(),
+            });
+        let asked = vec!["Did you mean nodespace://nw-1 or a new one?".to_string()];
+        let matched = mentioned_entity_duplicated_by(
+            &session.mentioned_entities,
+            &asked,
+            "create_node",
+            &json!({"content": "Northwind Trading"}),
+        );
+        assert_eq!(matched.map(|e| e.id.as_str()), Some("nw-venue"));
     }
 
     /// The call the locked model made for "Add Northwind Trading to the

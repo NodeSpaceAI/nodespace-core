@@ -779,16 +779,11 @@ const FIXTURES: DecisionScenario[] = [
     // which the guard cannot change: the model still picks `create_node`, and
     // `operationDecision` in the results file keeps recording that miss.
     //
-    // It once read as a regression, and no commit caused it. In the failing
-    // runs the model's first call was the title, a half-written field value
-    // and no `node_type` ("name": "Northwind Trading`, signed_date:"), which
-    // the guard could not match, so the turn ended apologising for the tool
-    // error. Bisected across the builds in question, the call came out whole
-    // or broken with the workspace, not the build: every broken one was asked
-    // with a second venue type beside the first (`event_place` and
-    // `event_venue`, named by two chats' setup turns), and the whole one
-    // without. Seeding the types per rep removed that state, and the guard
-    // now matches a create that names the record and no type.
+    // Sensitive to the workspace, not just the build: asked with a second
+    // venue type beside the first, the model's first call came out as the
+    // title, a half-written field value and no `node_type`. The fixture seeds
+    // exactly two types for that reason (see "Workspace" above), and the guard
+    // matches a create that names the record and no type.
     prompt: "Add Northwind Trading to the companies we sell to.",
     expected: { decision: "outcome", noDuplicateOf: SEEDED_COMPANY_TITLE },
     entityResolution: true,

@@ -330,11 +330,10 @@ export function embeddedSkillCount(
       [
         "sqlite3",
         db,
-        // `stale = 0`: a node gets its embedding row, marked stale, the moment
-        // it is created, and the vector only once the debounced worker has run.
-        // Counting stale rows let the wait return at once for skills seeded
-        // mid-run, and a held-turn scenario was sent before its linked skills
-        // could be retrieved.
+        // `stale = 0`: a node's embedding row is marked stale when the node is
+        // created or edited, and holds a current vector only once the debounced
+        // worker has run. Counted, stale rows let the wait return before skills
+        // seeded mid-run could be retrieved.
         "SELECT COUNT(DISTINCT e.node_id) FROM node n " +
           "JOIN embedding e ON e.node_id = n.id WHERE n.node_type = 'skill' AND e.stale = 0",
       ],

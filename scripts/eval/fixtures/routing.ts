@@ -331,29 +331,40 @@ export function constantAnswerBaseline(scenarios: RoutingScenario[]): {
  * context, like a collection name?" is one, and an earlier list that knew only
  * "could you clarify" scored it as no question at all, so a scenario passed or
  * failed on which of two equivalent phrasings the model picked.
+ *
+ * The phrase must be in a sentence that is itself the question. Matched
+ * across the whole reply, "Let me know if you need more. Anything else?"
+ * passed, and so did a quoted title ending in a question mark.
  */
 export function isClarification(reply: string): boolean {
-  const lower = reply.toLowerCase();
-  const hasQuestion = reply.includes("?");
-  const asksTheUser = [
-    "did you",
-    "do you mean",
-    "do you want",
-    "would you like",
-    "are you looking",
-    "could you",
-    "can you tell",
-    "how would you like",
-    "what would you like",
-    "what kind",
-    "which one",
-    "which would",
-    "which do",
-    "let me know",
-    "clarif",
-  ].some((phrase) => lower.includes(phrase));
-  return hasQuestion && asksTheUser;
+  // Quoted text is what something is called, not what the reply asks. A full
+  // stop ends a sentence only before whitespace, so "e.g." stays inside the
+  // question it is part of.
+  const unquoted = reply.toLowerCase().replace(/["“][^"”]*["”]/g, "");
+  const questions = unquoted.match(/(?:[^.!?\n]|\.(?=\S))*\?/g) ?? [];
+  return questions.some((question) =>
+    ASKS_THE_USER.some((phrase) => question.includes(phrase)),
+  );
 }
+
+/** How a question put to the user about what they want opens or turns. */
+const ASKS_THE_USER = [
+  "did you",
+  "do you mean",
+  "do you want",
+  "want me to",
+  "would you like",
+  "are you looking",
+  "could you",
+  "can you tell",
+  "how would you like",
+  "what would you like",
+  "what kind",
+  "which one",
+  "which would",
+  "which do",
+  "clarif",
+];
 
 function skillNameFromTurns(turns: TurnRecord[]): string | null {
   // The matched skill name appears in the reply or is implicit from subsequent
@@ -483,7 +494,7 @@ export function assertFixture(
       // The turn must end by asking, and must not have changed anything on
       // the way. Stage 1's own clarification is a recorded fact; one asked at
       // Stage 2 is read off the reply. A read before the question is allowed
-      // (see `ambiguous-client-contacts` for why).
+      // for every clarify scenario (`ambiguous-client-contacts` says why).
       if (!askedToClarify(turns) && !clarified) {
         return {
           passed: false,
