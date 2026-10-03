@@ -284,7 +284,7 @@ const SEEDED_TYPES: Array<{ id: string; params: Record<string, unknown> }> = [
 /// Seeded out of band rather than by a turn, for two reasons. First, a turn's
 /// writes are replayed into every later turn as terse facts carrying the id
 /// inline, so seeding by turn would put the answer in the prompt as literal
-/// history (see `EvalFixture.seedGroup`'s contract, which `seedRun` shares).
+/// history (see `EvalFixture.seedGroup`'s contract).
 /// Second, a turn lengthens the conversation, and length alone was enough to
 /// make the model stop emitting tool calls.
 const SEEDED_COMPANY_TITLE = "Northwind Trading";
@@ -332,9 +332,12 @@ function listSchemaIds(env: EvalEnv): Set<string> {
  * Create the two custom types and the Northwind instance the scenarios run
  * against.
  *
- * Runs as `seedRun`, once per rep, before any chat. `--between-runs` wipes the
- * database between reps, so nothing a rep needs can be left to an earlier one,
- * and a seed hung on `seedGroup` would run inside the chat loop.
+ * Runs before every chat (see `groupSeeds`), so each scenario starts from the
+ * same workspace whichever chats ran before it. Chats share the rep's
+ * database, and some scenarios change Northwind: `op-read-then-write` moves its
+ * date to April, and `outcome-record-field-is-answered`, asked after it, was
+ * correctly answered with April and scored as wrong. The types are created
+ * only when missing, and Northwind's fields are set back each time.
  *
  * Idempotent, and that is load-bearing rather than defensive: a run without a
  * between-runs command, or one whose reset failed, must not leave rep 2 with
@@ -399,6 +402,19 @@ function seedWorkspace(env: EvalEnv): void {
   ]);
 }
 
+/**
+ * What is seeded before a chat, in order: the workspace before every one, and
+ * the linked skills only before the linked-skill scenarios. Three more skills
+ * and one more custom type change what retrieval returns for every request,
+ * so seeded anywhere else they would change what that scenario is scored
+ * against. Pure, so which chats get what is testable without a daemon.
+ */
+export function groupSeeds(group: Scenario[]): Array<"workspace" | "linked-skills"> {
+  return group.some((s) => (s as DecisionScenario).linkedSkills)
+    ? ["workspace", "linked-skills"]
+    : ["workspace"];
+}
+
 /// The type the linked-skill scenarios act on, and the only one their turns
 /// are held to.
 const LINKED_TYPE = "warranty_claim";
@@ -438,7 +454,7 @@ const LINKED_SKILLS: Array<{ name: string; description: string; tools: string[] 
  * Idempotent, for the reason `seedWorkspace` is: a rep whose database was not
  * wiped must not end up with two of each skill.
  *
- * Runs as `seedGroup` for the linked-skill scenarios only, which sit last in
+ * Seeded for the linked-skill scenarios only (see `groupSeeds`), which sit last in
  * the fixture. Three more skills and one more custom type change what
  * retrieval returns for every request, so seeding them per run would change
  * what every other scenario is scored against.
@@ -1341,18 +1357,12 @@ const fixture: EvalFixture = {
   //
   // The chats still share the rep's database, so a record or a type one
   // scenario creates is there for the ones after it. The two seeded types and
-  // the seeded company are the same for all of them (see `seedWorkspace`).
+  // the seeded company are set back before each of them (see `seedWorkspace`).
   groups: FIXTURES.map((scenario) => [scenario]),
-  // Per REP, before any chat: `--between-runs` wipes the database between
-  // reps, so every rep starts cold and has to be seeded again.
-  seedRun(env: EvalEnv) {
-    seedWorkspace(env);
-  },
-  // Per group, and only for the linked-skill scenarios: see `seedLinkedSkills`
-  // for why these are kept out of every other scenario's workspace.
   seedGroup(env: EvalEnv, group) {
-    if (group.some((s) => (s as DecisionScenario).linkedSkills)) {
-      seedLinkedSkills(env);
+    for (const seed of groupSeeds(group)) {
+      if (seed === "workspace") seedWorkspace(env);
+      else seedLinkedSkills(env);
     }
   },
   score(scenario, turns) {

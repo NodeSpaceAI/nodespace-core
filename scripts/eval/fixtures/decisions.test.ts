@@ -17,7 +17,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolCallRecord, TurnRecord } from "../types.ts";
-import fixture, { listedSchemaIds } from "./decisions.ts";
+import fixture, { groupSeeds, listedSchemaIds } from "./decisions.ts";
 
 describe("decision fixture assembly", () => {
   test("every scenario gets its own chat, with no turn ahead of it but its own", () => {
@@ -30,44 +30,34 @@ describe("decision fixture assembly", () => {
     expect(fixture.groups.flat().some((s) => s.setup === true)).toBe(false);
   });
 
-  test("instance seeding is run-scoped, not group-scoped", () => {
-    // The defect this pins cost three measured 3-rep runs, each of which
-    // looked like a model result.
-    //
-    // `--between-runs` wipes the database between reps, and `seedGroup` fires
-    // inside the group loop. A seed hung on it once waited for types the first
-    // chat had not created yet, found nothing, silently no-oped, and every
-    // scenario scored against a workspace with no instance in it.
-    //
-    // `seedRun` fires once per rep, after the wipe and before any group, which
-    // is the only point where "every scenario in this rep has the instance" is
-    // expressible. Moving this back to `seedGroup` reintroduces a failure that
-    // is invisible in the results.
-    expect(typeof fixture.seedRun).toBe("function");
-  });
-
-  // An env whose CLI does not exist: any seeding attempt throws.
-  const noDaemon = {
-    nsBin: "/nonexistent/nodespace",
-    socket: "/nonexistent/daemon.sock",
-    log: "",
-    model: "",
-    timeoutMs: 0,
-    aichat: "",
-  };
   const isLinked = (g: (typeof fixture.groups)[number]) =>
     g.some((s) => (s as { linkedSkills?: boolean }).linkedSkills === true);
 
-  test("group seeding touches only the linked-skill groups", () => {
-    // Three more skills and one more custom type change what retrieval returns
-    // for every request. Seeded for any other group, they would change what
-    // that group's scenario is scored against.
-    for (const group of fixture.groups.filter((g) => !isLinked(g))) {
-      expect(() => fixture.seedGroup?.(noDaemon, group)).not.toThrow();
+  test("every chat is seeded with the workspace, and only the last ones with linked skills", () => {
+    // The workspace is set back before each chat: an earlier scenario moved
+    // Northwind's date, and a later one was scored against the move. Three
+    // more skills and a custom type change what retrieval returns for every
+    // request, so they go only where they are measured.
+    for (const group of fixture.groups) {
+      expect(groupSeeds(group)).toEqual(
+        isLinked(group) ? ["workspace", "linked-skills"] : ["workspace"],
+      );
     }
-    const linked = fixture.groups.filter(isLinked);
-    expect(linked.length).toBeGreaterThan(0);
-    for (const group of linked) {
+    expect(fixture.groups.filter(isLinked).length).toBeGreaterThan(0);
+  });
+
+  test("seeding runs through the daemon before every chat", () => {
+    // `seedGroup` is the hook the runner calls before each chat; a seed that
+    // never reached the CLI would leave the chat on whatever came before it.
+    const noDaemon = {
+      nsBin: "/nonexistent/nodespace",
+      socket: "/nonexistent/daemon.sock",
+      log: "",
+      model: "",
+      timeoutMs: 0,
+      aichat: "",
+    };
+    for (const group of fixture.groups) {
       expect(() => fixture.seedGroup?.(noDaemon, group)).toThrow();
     }
   });
