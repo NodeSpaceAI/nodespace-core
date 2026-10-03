@@ -28,6 +28,7 @@ mod live_unset_schema_field;
 mod live_update_node_noop_gate;
 mod matrix_scenario_winnability;
 mod prompt_assembly_snapshot;
+mod record_fields_beside_markdown;
 mod routing_latency;
 mod search_nodes_enumerate;
 mod search_nodes_excludes_conversations;

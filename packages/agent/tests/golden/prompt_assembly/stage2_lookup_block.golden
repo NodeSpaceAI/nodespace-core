@@ -23,10 +23,11 @@ RESULT STRUCTURE: Each result contains:
 - score: similarity score (0-1, higher = more relevant)
 - snippet: short content preview
 - markdown: the document's text, cut off after 2,000 characters (present for the top results, as many as include_markdown asks for; default 1)
+- properties: a record's field values (present beside markdown when the result is a record with fields set)
 
-USE MARKDOWN DIRECTLY: A non-empty 'markdown' field is the document's own text. Answer from it — do NOT call get_node or search_nodes again for that result.
+USE MARKDOWN DIRECTLY: A non-empty 'markdown' field is the document's own text, and 'properties' beside it holds a record's field values. A record's text is often just its name: a question about one of its fields is answered from 'properties'. Answer from the two — do NOT call get_node or search_nodes again for that result.
 
-FETCH ADDITIONAL CONTENT: Call get_node with format=markdown when a result you need came back without markdown.
+FETCH ADDITIONAL CONTENT: Call get_node with format=markdown when a result you need came back without markdown. It returns the text in 'markdown' and a record's field values in 'properties'.
 
 PARAMETER GUIDANCE:
 

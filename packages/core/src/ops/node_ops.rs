@@ -138,8 +138,10 @@ pub struct QueryNodesOutput {
 /// node comes back missing every inherited value — an `issue` extending
 /// `task` loses its `status`. Every read and write result in this module goes
 /// through here so none can skip it; the daemon applies the same collapse at
-/// its own boundary for the same reason.
-async fn nodes_to_typed_values(
+/// its own boundary for the same reason. Public for a consumer that holds
+/// [`Node`]s another op returned and needs them in this shape. Values come
+/// back in the order the nodes were given.
+pub async fn nodes_to_typed_values(
     node_service: &NodeService,
     nodes: Vec<Node>,
 ) -> Result<Vec<Value>, OpsError> {

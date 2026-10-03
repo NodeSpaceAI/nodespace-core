@@ -265,6 +265,9 @@ const SETUP: DecisionScenario[] = [
 /// alone was enough to make the model stop emitting tool calls.
 const SEEDED_COMPANY_TITLE = "Northwind Trading";
 const SEEDED_COMPANY_SIGNED = "2025-03-14";
+/// That date as a reply may write it: ISO, or the day and month in words.
+const SEEDED_COMPANY_SIGNED_IN_REPLY =
+  /2025-03-14|\bMar(ch|\.)?\s+14(th)?\b|\b14(th)?\s+(of\s+)?Mar(ch|\.)?\b|\b0?3\/14\/(20)?25\b|\b14\/0?3\/(20)?25\b/i;
 
 /// The company type this fixture creates when a rep starts cold.
 ///
@@ -432,6 +435,19 @@ function seedNorthwind(env: EvalEnv): void {
     throw new Error("company type missing after seed — schema create did not take");
   }
 
+  // The date field's name is model-derived too (`signed_date`, `date_signed`,
+  // `signed_on` have all appeared), so find it by type rather than by name.
+  // A company type with no date field fails the seed before it writes
+  // anything: a scenario is scored on the reply carrying this date
+  // (`outcome-record-field-is-answered`), and with nothing to answer from it
+  // would score a setup turn's missing field as the model failing to read one.
+  const dateField = company.fields.find((f) => f?.type === "date" && f?.name)?.name;
+  if (!dateField) {
+    throw new Error(
+      `company type '${companyType}' has no date field, so '${SEEDED_COMPANY_TITLE}' cannot be given its signing date — purge the database and re-run`,
+    );
+  }
+
   const existing = runNs(env, [
     "node",
     "query",
@@ -440,38 +456,33 @@ function seedNorthwind(env: EvalEnv): void {
     "--limit",
     "50",
   ]) as { nodes?: Array<{ content?: string; id?: string }> } | null;
-  const present = (existing?.nodes ?? []).some(
+  const present = (existing?.nodes ?? []).find(
     (n) => (n?.content ?? "").toLowerCase() === SEEDED_COMPANY_TITLE.toLowerCase(),
   );
-  if (present) return;
 
-  const created = runNs(env, [
-    "node",
-    "create",
-    "--type",
-    companyType,
-    "--content",
-    SEEDED_COMPANY_TITLE,
-  ]) as { id?: string } | null;
-  const id = created?.id;
+  // An existing Northwind is given the date too: a rep whose update failed
+  // after the create would otherwise leave it dateless for every rep after.
+  const id =
+    present?.id ??
+    (
+      runNs(env, [
+        "node",
+        "create",
+        "--type",
+        companyType,
+        "--content",
+        SEEDED_COMPANY_TITLE,
+      ]) as { id?: string } | null
+    )?.id;
   if (!id) throw new Error(`seeding '${SEEDED_COMPANY_TITLE}' returned no id`);
 
-  // The date field's name is model-derived too (`signed_date`, `date_signed`,
-  // `signed_on` have all appeared), so find it by type rather than by name.
-  // Skipped rather than failed when absent: the scenario that reads it
-  // (`schema-shared-name-signed`) is scored on which TYPE the model selects,
-  // not on the value it returns, so a missing date weakens one assertion
-  // rather than invalidating the seed.
-  const dateField = company.fields.find((f) => f?.type === "date" && f?.name)?.name;
-  if (dateField) {
-    runNs(env, [
-      "node",
-      "update",
-      id.replace(/^nodespace:\/\//, ""),
-      "--property",
-      `${dateField}=${SEEDED_COMPANY_SIGNED}`,
-    ]);
-  }
+  runNs(env, [
+    "node",
+    "update",
+    id.replace(/^nodespace:\/\//, ""),
+    "--property",
+    `${dateField}=${SEEDED_COMPANY_SIGNED}`,
+  ]);
 }
 
 /// The type the linked-skill scenarios act on, and the only one their turns
@@ -750,6 +761,21 @@ const FIXTURES: DecisionScenario[] = [
     knowledgeQuestion: true,
   },
   {
+    id: "outcome-record-field-is-answered",
+    scenario: "Outcome: a question about a record's field is answered with its value",
+    // The date is a field of the record, not text in it, so the reply carries
+    // it only when the fields reached the model. A record read as a document
+    // came back as its title alone, and the reply was that the signing date
+    // "is not visible"; which way the model reads a record varies between
+    // runs of the same prompt, so this is scored on the reply, not the call.
+    //
+    // Needs the seeded date, which `seedNorthwind` sets or fails the run.
+    prompt: "When did we sign Northwind Trading?",
+    expected: { decision: "outcome", replyMatches: SEEDED_COMPANY_SIGNED_IN_REPLY },
+    knowledgeQuestion: true,
+    entityResolution: true,
+  },
+  {
     id: "outcome-follow-up-keeps-its-answer",
     scenario: "Outcome: a follow-up on the last answer still answers about it",
     // A follow-up has nothing to look up and nothing to change, so the reply
@@ -763,9 +789,8 @@ const FIXTURES: DecisionScenario[] = [
     priorTurns: ["When did we sign Northwind Trading?"],
     prompt: "Can you say that again more simply?",
     // The company, not the date. Whether the turn before found the date is
-    // not this scenario's subject, and it does not always: the model reads
-    // the record as JSON on some runs and as markdown, which leaves the
-    // properties out, on others. Either answer said again names the company.
+    // `outcome-record-field-is-answered`'s subject, not this one's. Either
+    // answer said again names the company.
     // Every reply this scenario exists to catch ("I'm not sure what you
     // mean", "I don't see a record of that in this conversation", a request
     // to confirm) names nothing.
