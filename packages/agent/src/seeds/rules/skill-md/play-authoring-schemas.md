@@ -1,0 +1,1 @@
+Run `nodespace schema get <type>` for each type the rules name, and use the field and relationship names it prints exactly.

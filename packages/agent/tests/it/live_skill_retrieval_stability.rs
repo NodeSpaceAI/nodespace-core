@@ -1345,3 +1345,74 @@ async fn adds_to_an_existing_list_keep_a_skill_that_can_create() {
          reached the top-{RETRIEVAL_TOP_K}, for {misses:?}"
     );
 }
+
+/// A request to change an automation, or to switch it, must reach Play
+/// Authoring: `update_play` is whitelisted by that skill alone, so a turn it
+/// misses cannot write the play at all.
+///
+/// Covers the user's own words and the capability phrasings Stage 1 produces
+/// for them.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn play_change_requests_route_play_authoring() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "change the roll-up play so it also runs when a task is cancelled",
+            "make that rule fire only for high priority tasks",
+            "add a rule to the sprint close-out play",
+            "remove the second rule from this automation",
+            "edit the conditions of an automation rule",
+            "turn this play off",
+            "disable the weekly triage automation",
+            "switch the play back on",
+        ],
+        "Play Authoring",
+        false,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Play Authoring missed the top-{RETRIEVAL_TOP_K} for {misses:?}"
+    );
+}
+
+/// Control for the case above. The two play skills share every noun (play,
+/// rule, automation, workflow), and a question about why a rule has not fired
+/// is Play Workflow State's: it must stay in the top 3, where its read tool
+/// is offered.
+///
+/// Top 3 rather than rank 1, because rank does not decide whether a read tool
+/// is offered, and a turn with Play Workflow State among its candidates is
+/// not held to Play Authoring's `play` link (an unlinked tool-bearing
+/// candidate leaves the turn open). Measured with Play Authoring seeded: Play
+/// Workflow State leads three of these by 0.036 to 0.141, and "why didn't the
+/// play trigger for that story?" leads with Play Authoring, 0.887 to 0.863.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn control_why_a_rule_has_not_fired_still_reaches_play_workflow_state() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "why hasn't the sprint close-out rule fired for this ticket?",
+            "what is still missing before the automation runs on this task?",
+            "why didn't the play trigger for that story?",
+            "check which conditions of the workflow are unmet for this node",
+        ],
+        "Play Workflow State",
+        false,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Play Workflow State missed the top-{RETRIEVAL_TOP_K} for {misses:?}"
+    );
+}

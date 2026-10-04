@@ -1,0 +1,1 @@
+The `schemas` in get_play's result list the fields and relationships of every type the rules reference: use those names exactly.

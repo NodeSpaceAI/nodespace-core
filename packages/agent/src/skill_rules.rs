@@ -735,6 +735,13 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     procedure_rule!("play-workflow-call"),
     procedure_rule!("play-workflow-rerun"),
     procedure_rule!("play-workflow-find-first"),
+    // Play Authoring
+    procedure_rule!("play-authoring-read"),
+    procedure_rule!("play-authoring-find-first"),
+    procedure_rule!("play-authoring-schemas"),
+    procedure_rule!("play-authoring-ask-first"),
+    procedure_rule!("play-authoring-write"),
+    procedure_rule!("play-authoring-switch"),
     // Bulk Import
     procedure_rule!("bulk-import-steps"),
     // Organization

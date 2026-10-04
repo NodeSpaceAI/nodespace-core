@@ -27,7 +27,8 @@
 
 use crate::skill_rules::{resolve_includes, RuleForm};
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
-use nodespace_core::models::{CoreNodeType, SkillFields};
+use nodespace_core::models::{CoreNodeType, SkillFields, SKILL_APPLIES_TO};
+use nodespace_core::services::{NodeService, NodeServiceError};
 
 /// One built-in skill, as its table row.
 #[derive(Debug, Clone, Copy)]
@@ -45,6 +46,10 @@ pub struct SkillSeed {
     pub max_iterations: u32,
     /// What the skill is not for, scored against the query separately.
     pub exclusion: Option<&'static str>,
+    /// The schemas the skill is about, by id: each gets an `applies_to` link
+    /// from the skill ([`link_seeded_skills`]). Empty for a skill that is
+    /// generic across every type.
+    pub applies_to: &'static [&'static str],
     /// The guidance, as plain Markdown with rule includes.
     pub body: &'static str,
 }
@@ -83,8 +88,9 @@ impl SkillSeed {
 /// that prefer the older skill-scoped flow. The local agent ignores them and
 /// just uses the description/name returned by `search_skills`.
 ///
-/// None links to a schema through `applies_to`: the built-ins are generic
-/// across every type, so each takes skill search's unlinked fallback.
+/// Play Authoring links to the `play` schema through `applies_to`. The others
+/// link to none: they are generic across every type, so each takes skill
+/// search's unlinked fallback.
 pub const SKILL_SEEDS: &[SkillSeed] = &[
     SkillSeed {
         // Research & Search
@@ -132,6 +138,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["search_semantic", "search_nodes", "get_node"],
         max_iterations: 4,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/research-and-search.md"),
     },
     SkillSeed {
@@ -184,6 +191,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["create_node", "update_node", "update_task_status", "search_semantic", "search_nodes", "get_node", "route_clarify"],
         max_iterations: 3,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/node-creation.md"),
     },
     SkillSeed {
@@ -252,6 +260,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["create_schema", "update_schema", "get_node"],
         max_iterations: 3,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/schema-creation.md"),
     },
     SkillSeed {
@@ -325,6 +334,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `removing_a_field_still_reaches_graph_editing`, and
         // `graph_editing_exclusion_leaves_completion_state_scores_unchanged`.
         exclusion: Some("Remove them, delete them, get rid of them, purge them."),
+        applies_to: &[],
         body: include_str!("seeds/skills/graph-editing.md"),
     },
     SkillSeed {
@@ -373,6 +383,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["create_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/relationship-management.md"),
     },
     SkillSeed {
@@ -415,6 +426,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["delete_node", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/node-deletion.md"),
     },
     SkillSeed {
@@ -446,6 +458,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["list_conflicts", "get_conflict", "dismiss_conflict", "adopt_existing_conflict", "search_nodes"],
         max_iterations: 3,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/conflict-journal.md"),
     },
     SkillSeed {
@@ -465,6 +478,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["merge_conflict", "dismiss_conflict", "adopt_existing_conflict", "get_conflict", "get_node", "search_nodes"],
         max_iterations: 3,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/node-merge.md"),
     },
     SkillSeed {
@@ -480,7 +494,38 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["get_workflow_state", "search_semantic", "search_nodes"],
         max_iterations: 3,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/play-workflow-state.md"),
+    },
+    SkillSeed {
+        // Play Authoring (ADR-090 §6)
+        //
+        // The one built-in linked to a schema: `applies_to → play`. A turn
+        // that routes to it alone is held to plays, and `get_play` hands it
+        // the schemas of the types the rules walk, since a held turn cannot
+        // search for them.
+        //
+        // The rule shape is stated on `update_play`'s parameter schema
+        // (ADR-064 rule 1). The body holds procedure: read first, ask before
+        // a rules write, write the list whole, repair from the errors. Its two
+        // description rules are the fragments the shipped command reference
+        // renders (`PLAY_RULES`), so both audiences read one text.
+        //
+        // The description names changing a play and switching it, and says
+        // nothing of why a rule has not fired: that is Play Workflow State's
+        // request, and the two share every noun.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0c",
+        title: "Play Authoring",
+        description: "Change a Play automation: edit when a rule runs, its conditions, or its actions, add or remove a rule, or turn the Play on or off. Use when the user wants an automation, rule, or workflow to behave differently or to stop running.",
+        // `route_clarify` is how the skill asks before a rules write.
+        // `search_nodes` finds a play by name; on a held turn its
+        // `node_type` is limited to `play`.
+        tools: &["get_play", "update_play", "search_nodes", "route_clarify"],
+        // Read, write, and two repairs of a rejected write.
+        max_iterations: 5,
+        exclusion: None,
+        applies_to: &[nodespace_core::models::PLAY_NODE_TYPE],
+        body: include_str!("seeds/skills/play-authoring.md"),
     },
     SkillSeed {
         // Bulk Import
@@ -493,6 +538,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["create_nodes_from_markdown"],
         max_iterations: 2,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/bulk-import.md"),
     },
     SkillSeed {
@@ -506,6 +552,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["create_relationship", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,
         exclusion: None,
+        applies_to: &[],
         body: include_str!("seeds/skills/organization.md"),
     },
 ];
@@ -562,6 +609,38 @@ const SCHEMA_RULES_NOT_IN_PROMPT: &[&str] = &[
 /// The built-in skill seeds, one per row of [`SKILL_SEEDS`], in table order.
 pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
     SKILL_SEEDS.iter().map(SkillSeed::template).collect()
+}
+
+/// Link each built-in skill to the schemas its row names, through
+/// `applies_to`.
+///
+/// Runs after the skills are seeded, on every open, like the seeding itself:
+/// a link that is already there is left alone, and one that was removed is
+/// made again.
+pub async fn link_seeded_skills(node_service: &NodeService) -> Result<(), NodeServiceError> {
+    let linked: Vec<&SkillSeed> = SKILL_SEEDS
+        .iter()
+        .filter(|seed| !seed.applies_to.is_empty())
+        .collect();
+    let skill_ids: Vec<String> = linked.iter().map(|seed| seed.id.to_string()).collect();
+    let existing = node_service
+        .store()
+        .get_edge_targets_by_source(&skill_ids, SKILL_APPLIES_TO)
+        .await
+        .map_err(NodeServiceError::from_store)?;
+
+    for seed in linked {
+        let targets = existing.get(seed.id);
+        for schema_id in seed.applies_to {
+            if targets.is_some_and(|targets| targets.iter().any(|t| t == schema_id)) {
+                continue;
+            }
+            node_service
+                .create_relationship(seed.id, SKILL_APPLIES_TO, schema_id, serde_json::json!({}))
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// The guidance of the built-in skill with node id `skill_id`, for an agent
@@ -747,6 +826,23 @@ mod tests {
         );
     }
 
+    /// `body` without the value of each `"action_type"` key. A play rule's
+    /// action types (`update_node`, `create_node`) are spelled like the local
+    /// agent's tools and are not them: they are part of the rule payload both
+    /// audiences write.
+    fn without_action_types(body: &str) -> String {
+        const KEY: &str = "\"action_type\": \"";
+        let mut out = String::with_capacity(body.len());
+        let mut rest = body;
+        while let Some(at) = rest.find(KEY) {
+            out.push_str(&rest[..at + KEY.len()]);
+            let value = &rest[at + KEY.len()..];
+            rest = &value[value.find('"').unwrap_or(value.len())..];
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// What an agent outside the app is served names nothing it cannot use:
     /// none of the local agent's tools, and none of the prompt blocks only
     /// the local agent is shown.
@@ -764,7 +860,7 @@ mod tests {
 
         let mut leaks = Vec::new();
         for seed in SKILL_SEEDS {
-            let body = seed.external_body();
+            let body = without_action_types(&seed.external_body());
             for token in body.split(|c: char| !c.is_alphanumeric() && c != '_') {
                 if tools.contains(&token) {
                     leaks.push(format!("{} names the tool `{token}`", seed.title));
@@ -939,7 +1035,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 11, "Should have 11 seed skills");
+        assert_eq!(seeds.len(), 12, "Should have 12 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());
@@ -1309,6 +1405,7 @@ mod tests {
             ("Node Merge", true, true),
             ("Bulk Import", true, false),
             ("Organization", true, false),
+            ("Play Authoring", true, false),
             ("Research & Search", false, false),
         ];
 
@@ -1536,12 +1633,19 @@ mod tests {
         // reachable from exactly one retrieval winner (Node Merge), not
         // offered alongside Conflict Journal's lower-stakes
         // dismiss/adopt-existing actions.
+        //
+        // `update_play`: the same reasoning as `create_schema`. Changing an
+        // automation's rules is its own intent with its own long guidance
+        // (read first, ask, write the list whole, repair), and no other skill
+        // is a plausible home for it. The chat a play's Edit opens pins Play
+        // Authoring, so there the tool does not depend on retrieval at all.
         const SINGLE_OWNER_BY_DESIGN: &[&str] = &[
             "delete_node",
             "create_schema",
             "update_schema",
             "create_nodes_from_markdown",
             "merge_conflict",
+            "update_play",
         ];
 
         // Enumerated from the REGISTRY, not from `owners`. Iterating the map

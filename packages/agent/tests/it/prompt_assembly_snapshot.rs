@@ -772,6 +772,56 @@ fn stage2_tool_surface_held_to_offered_types_matches_golden() {
     golden::assert_matches("stage2_tool_surface_offered_types", &rendered);
 }
 
+/// Sites 2 and 3 for a turn routed to Play Authoring: the candidate block,
+/// then the tool surface as the model receives it.
+///
+/// Its own golden because nothing else pins it. This is the one built-in
+/// skill linked to a schema, so its candidate carries the core `play` schema
+/// rather than the fixture's custom types, and its turn is held to its
+/// offered types (ADR-090 §6). `update_play`'s parameter schema is where the
+/// rule shape is stated, and it reaches no other fixture's surface.
+#[test]
+fn stage2_play_authoring_matches_golden() {
+    let seeds = seed_skill_nodes();
+    let authoring = seeds
+        .iter()
+        .find(|t| t.title == "Play Authoring")
+        .expect("seed_skill_nodes must still seed a Play Authoring skill");
+    let core_schemas = nodespace_core::models::core_schemas::get_core_schemas();
+    let play = core_schemas
+        .iter()
+        .find(|s| s.envelope.id == "play")
+        .expect("play is a core schema");
+    let candidates = vec![SkillCandidate {
+        id: authoring.id.clone(),
+        name: authoring.title.clone(),
+        description: skill_description(authoring),
+        score: 0.85,
+        tools: skill_whitelist(authoring),
+        instructions: render_seed_instructions(authoring),
+        schema_metadata: serde_json::Value::Array(vec![EntityTypeDescriptor::from_corpus(
+            play,
+            &core_schemas,
+        )
+        .to_json()]),
+        schemas_linked: true,
+    }];
+
+    let block = render_candidates_for_prompt(&candidates)
+        .expect("a mutating candidate at 0.85 clears its score gate");
+    let tools = declare_write_tool_fields(
+        &candidates,
+        stage2_tools(&candidates, &model_facing_tool_definitions()),
+    );
+    let offered = offered_types(&candidates).expect("the candidate is linked");
+    let tools = hold_to_offered_types(tools, &offered);
+
+    golden::assert_matches(
+        "stage2_play_authoring",
+        &format!("{block}\n\nTOOLS:\n{}", render_tool_definitions(&tools)),
+    );
+}
+
 /// Site 4: the Stage-1 request — `stage1_system_prompt` plus
 /// `stage1_tool_definitions()`, exactly as `agent_loop.rs::route` sends it.
 #[test]

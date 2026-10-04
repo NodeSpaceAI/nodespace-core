@@ -1,0 +1,1 @@
+Ask the user directly, and run no `nodespace node update` on the Play until they answer.

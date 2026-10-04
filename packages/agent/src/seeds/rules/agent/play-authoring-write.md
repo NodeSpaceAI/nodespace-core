@@ -1,0 +1,1 @@
+call update_play with the play's id and `rules` holding every rule the play should have afterwards: the changed rule, and every other rule copied exactly from get_play. A rule left out is deleted.
