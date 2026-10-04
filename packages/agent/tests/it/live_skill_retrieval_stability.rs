@@ -484,6 +484,7 @@ async fn completion_state_updates_route_graph_editing() {
             "mark the invoice as paid",
             "close out the support ticket",
             "mark the outage report done",
+            "mark the offline sync spec as signed off",
         ],
         "Graph Editing",
         false,
@@ -1151,4 +1152,196 @@ async fn linear_playbook_skills_do_not_displace_built_ins() {
         }
     }
     assert!(misses.is_empty(), "displaced a built-in: {misses:#?}");
+}
+
+/// A request to start tracking something asks for a new type, and the model
+/// can only make one when the skill owning `create_schema` reaches Stage 2.
+/// Schema Creation's description used to say "keep track of" and not "start
+/// tracking", and "start tracking planning cycles" (what Stage 1 makes of
+/// "start tracking our planning cycles") ranked Graph Editing, Relationship
+/// Management, Node Creation, then Schema Creation at 0.778: `create_schema`
+/// was off the surface and the turn tried `create_node` until it gave up.
+///
+/// Rank 1, since the leading candidate is the one a turn is recorded as routed
+/// to. Covers the raw message as well as Stage 1's wording of it.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn start_tracking_requests_route_schema_creation() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "start tracking planning cycles",
+            "start tracking our planning cycles",
+            "start tracking release trains",
+            "begin tracking design decisions",
+            "we should start tracking production incidents",
+            "track planning cycles",
+        ],
+        "Schema Creation",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Schema Creation lost rank 1 for {misses:?}"
+    );
+}
+
+/// The cost side of Schema Creation opening with the tracking verb: a request
+/// to track one record that already exists is an update or a create, and the
+/// skill that owns `create_schema` holds neither tool. Node Creation or Graph
+/// Editing must still reach Stage 2 on it.
+///
+/// Graph Editing leads three of these four. Schema Creation leads "start
+/// tracking the offline sync spec's sign-off" (0.853, Graph Editing 0.811,
+/// Node Creation 0.792): that turn is recorded as routed to the type skill,
+/// with `create_schema` offered beside the record tools. Who leads is not
+/// asserted here; `updates_to_one_record_do_not_lead_with_schema_creation`
+/// asserts it for requests that carry no tracking verb.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn tracking_one_existing_record_still_reaches_a_record_skill() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for query in [
+        "start tracking the login timeout bug",
+        "track this task's progress",
+        "start tracking the offline sync spec's sign-off",
+        "keep track of the Q4 cycle's status",
+    ] {
+        eprintln!(
+            "{query:?}: {:?}",
+            scored_ranking(&embedding_service, &node_service, query, 6).await
+        );
+        let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+        let holds = |ranked: &Vec<String>| {
+            ranked
+                .iter()
+                .any(|n| n == "Node Creation" || n == "Graph Editing")
+        };
+        if !rankings.iter().all(holds) {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "neither Node Creation nor Graph Editing reached the top-{RETRIEVAL_TOP_K} for {misses:?}"
+    );
+}
+
+/// The other cost side of Schema Creation's opening: a change to one record,
+/// with no tracking verb in it, must not lead with the type skill. An earlier
+/// opening ("Start tracking or begin tracking a new kind of thing: …") lifted
+/// Schema Creation by about 0.03 on requests of every kind and took the lead
+/// from Graph Editing on the first of these (0.799 against 0.793) and from
+/// Conflict Journal on the second. "Start tracking: …" wins the tracking
+/// requests by margins as large and leaves both leaders where they were.
+///
+/// One cost of the opening is recorded here and not accepted: "mark the
+/// offline sync spec as signed off" now leads with Schema Creation by 0.001
+/// (0.791, Graph Editing 0.790). Without the opening Graph Editing led it,
+/// 0.790 to 0.773. Schema Creation's description lists specs, and no opening
+/// measured both won the tracking requests and stayed under Graph Editing
+/// there. It is left out of the lead assertion below, and
+/// `completion_state_updates_route_graph_editing` asserts Graph Editing still
+/// reaches Stage 2 on it, so `update_node` is offered, though without its
+/// declared fields, which come only from the top-scoring candidates
+/// (`routing::declare_write_tool_fields`).
+///
+/// Each request must also keep a skill that can write a record in the top 3:
+/// the second leads with Conflict Journal, which holds no `update_node`.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn updates_to_one_record_do_not_lead_with_schema_creation() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for query in [
+        "update Northwind Trading booking to April",
+        "move the offline sync spec's review to next week",
+        "change the owner of the Q4 cycle to Priya",
+    ] {
+        eprintln!(
+            "{query:?}: {:?}",
+            scored_ranking(&embedding_service, &node_service, query, 6).await
+        );
+        let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+        let holds = |ranked: &Vec<String>| {
+            ranked.first().is_some_and(|n| n != "Schema Creation")
+                && ranked
+                    .iter()
+                    .any(|n| n == "Graph Editing" || n == "Node Creation")
+        };
+        if !rankings.iter().all(holds) {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "Schema Creation led a change to one record, or no record skill reached the \
+         top-{RETRIEVAL_TOP_K}, for {misses:?}"
+    );
+}
+
+/// The opening's cost side on adds: one named record added to a list that
+/// already exists must not lead with the type skill, and a skill that holds
+/// `create_node` must be in the top 3. Which skill leads is not asserted: on
+/// "add Contoso Ltd to companies we sell to" Bulk Import, Organization and
+/// Node Creation score inside 0.005 of each other (0.742, 0.741, 0.737), and
+/// of those only Node Creation can create the record. Behind it are Graph
+/// Editing at 0.732, which can too, and Schema Creation at 0.730, which
+/// cannot.
+///
+/// A second cost of the opening is recorded here and not accepted: "add the
+/// offline sync spec to the specs for this cycle" led with Node Creation,
+/// 0.841 to Schema Creation's 0.835, and now leads with Schema Creation,
+/// 0.846 to 0.841. Like the completion-state request recorded on
+/// `updates_to_one_record_do_not_lead_with_schema_creation`, it names specs,
+/// which Schema Creation's description lists. For that request only the
+/// second half is asserted: Node Creation is in the top 3, so `create_node`
+/// is offered. It is offered without its declared fields, which come only
+/// from the top-scoring candidates (`routing::declare_write_tool_fields`).
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn adds_to_an_existing_list_keep_a_skill_that_can_create() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for (query, lead_asserted) in [
+        ("add Contoso Ltd to companies we sell to", true),
+        ("Add Contoso Ltd to the companies we sell to.", true),
+        ("add the Q4 cycle to our planning cycles", true),
+        (
+            "add the offline sync spec to the specs for this cycle",
+            false,
+        ),
+    ] {
+        eprintln!(
+            "{query:?}: {:?}",
+            scored_ranking(&embedding_service, &node_service, query, 6).await
+        );
+        let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+        let holds = |ranked: &Vec<String>| {
+            (!lead_asserted || ranked.first().is_some_and(|n| n != "Schema Creation"))
+                && ranked
+                    .iter()
+                    .any(|n| n == "Node Creation" || n == "Graph Editing")
+        };
+        if !rankings.iter().all(holds) {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "Schema Creation led an add to an existing list, or no skill holding create_node \
+         reached the top-{RETRIEVAL_TOP_K}, for {misses:?}"
+    );
 }

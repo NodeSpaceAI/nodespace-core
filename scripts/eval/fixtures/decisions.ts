@@ -83,6 +83,17 @@ type Expected =
    */
   | { decision: "skill"; matches: RegExp }
   /**
+   * The leading skill's name must NOT match `not`, and a skill matching
+   * `reaches` must be among the retrieved candidates.
+   *
+   * For a request several skills serve equally well, where which of them leads
+   * is not a property worth pinning and one particular skill leading is the
+   * failure. `reaches` is what keeps that from passing on a turn that cannot
+   * do the work: the candidates' tools are offered together, so the turn can
+   * act only while a skill holding the tool is one of them.
+   */
+  | { decision: "skill"; not: RegExp; reaches: RegExp }
+  /**
    * The turn must not create a second copy of this existing record, and must
    * either ask the user about it (a clarification naming it) or act on it.
    *
@@ -625,8 +636,26 @@ const FIXTURES: DecisionScenario[] = [
     scenario: "Skill: a single-instance request must NOT route to Schema Creation",
     // The mirror, and the direction Laya failed on: an explicitly single named
     // entity of a type that already exists.
+    //
+    // Asserts what the scenario is for: the type skill does not lead, and a
+    // skill that holds `create_node` is among the candidates, so the record
+    // can be written. It used to name the skills that should lead (Node
+    // Creation, Graph Editing, Organization), and failed 3 of 3 on a lead that
+    // is chance: retrieval scores Bulk Import 0.742, Organization 0.741 and
+    // Node Creation 0.737 on this request, inside 0.005 of each other. A
+    // clause added to Node Creation's description made it lead by 0.010; that
+    // is a description tuned to this one sentence, so it was not kept.
+    //
+    // Which of the three leads is not asserted. That Node Creation or Graph
+    // Editing places is: of the three, only Node Creation holds `create_node`.
+    // Behind it are Graph Editing at 0.732, which holds it too, and Schema
+    // Creation at 0.730, which does not.
     prompt: "Add Contoso Ltd to the companies we sell to.",
-    expected: { decision: "skill", matches: /node creation|graph editing|organization/i },
+    expected: {
+      decision: "skill",
+      not: /^schema creation$/i,
+      reaches: /^(node creation|graph editing)$/i,
+    },
     instanceVsType: true,
   },
 
@@ -1322,6 +1351,21 @@ function assertFixture(
           `Nothing cleared its score bar, so the turn fell open to the full ` +
           `tool surface. Retrieved: ${decision.candidates.join(", ") || "(nothing)"}`,
       };
+    }
+    if ("not" in expected) {
+      const retrieved = `Retrieved: ${decision.candidates.join(", ")}`;
+      if (expected.not.test(decision.selected)) {
+        return {
+          passed: false,
+          failure: `Led with '${decision.selected}', which matches ${expected.not}. ${retrieved}`,
+        };
+      }
+      return decision.candidates.some((c) => expected.reaches.test(c))
+        ? { passed: true }
+        : {
+            passed: false,
+            failure: `No candidate matches ${expected.reaches}, so the turn was not offered the tool it needs. ${retrieved}`,
+          };
     }
     if (!expected.matches.test(decision.selected)) {
       // Whether the right skill was even retrieved separates "retrieval missed
