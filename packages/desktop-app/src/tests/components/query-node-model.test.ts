@@ -13,7 +13,7 @@
  * (not rendering Svelte components).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, onTestFinished } from 'vitest';
 import type { Node } from '$lib/types';
 import {
   nodeToQueryNode,
@@ -258,6 +258,13 @@ describe('matchesFilter', () => {
     expect(
       resolveRelativeDate({ anchor: 'today', offset_days: -30 }, new Date(2026, 2, 30))
     ).toBe('2026-02-28');
+
+    // One fixed moment for both resolutions: the node's date and the filter's.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 2, 30, 23, 59, 59));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
 
     const due = (offsetDays: number) =>
       node('t', {

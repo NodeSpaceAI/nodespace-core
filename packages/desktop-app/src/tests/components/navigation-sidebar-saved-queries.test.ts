@@ -154,6 +154,8 @@ describe('NavigationSidebar — saved queries under Node Types', () => {
       .filter((el) => el.querySelector('.query-icon'))
       .map((el) => el.textContent?.trim());
     expect(withIcon).toEqual(['Specs by Status']);
+    // The icon is decorative: the view's accessible name is its own name.
+    expect(container.querySelector('.query-icon')?.closest('[aria-hidden="true"]')).not.toBeNull();
   });
 
   it('does not list queries whose target type has no entry in the list', async () => {

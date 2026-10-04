@@ -786,7 +786,7 @@
         data-testid="saved-query-item"
         onclick={() => handleSavedQueryClick(query.id)}
       >
-        <QueryIcon size={14} />
+        <span class="saved-query-icon" aria-hidden="true"><QueryIcon size={14} /></span>
         <span class="schema-type-name">{query.name}</span>
       </button>
     {/each}
@@ -1174,6 +1174,11 @@
   .saved-query-item {
     gap: 0.375rem;
     padding-left: 4.75rem;
+  }
+
+  .saved-query-icon {
+    display: flex;
+    flex-shrink: 0;
   }
 
   .saved-query-item :global(.query-icon) {

@@ -345,13 +345,11 @@ const ROLLOVER_TASKS: &str = "trigger.node.tasks.where(status != 'done' && statu
 /// rollover that fired the next morning would be assuming the creation Play
 /// had already succeeded, and would silently do nothing if it had not.
 ///
-/// The reassignment is add-then-remove, and both halves are required. Adding
-/// alone does not move anything: only the FORWARD cardinality is enforced on
-/// write, `cycle.tasks` is `many` on that side, and the idempotency check is
-/// keyed on `(source, target, name)` — so a second cycle claiming the same
-/// task is accepted rather than rejected or replaced. Without the removal a
-/// task accumulates one edge per cycle forever and every `sum(cycle.tasks,
-/// estimate)` double-counts.
+/// The reassignment is add-then-remove. `cycle.tasks`' reverse cardinality is
+/// `one`, enforced on write by replacing the edge from the task's previous
+/// cycle, so a task is never in two cycles and a `sum(cycle.tasks, estimate)`
+/// never double-counts. The removal states the move in the play itself rather
+/// than leaving it to that replacement.
 ///
 /// Add before remove, deliberately: a failure between the two leaves the task
 /// in both cycles, which is visible and repairable, rather than in neither,
@@ -822,9 +820,8 @@ mod tests {
         );
         assert_eq!(add["params"]["target_id"], "{item.id}");
 
-        // Adding alone is not a move: only forward cardinality is enforced on
-        // write, and `tasks` is `many` there, so the old edge survives unless
-        // something removes it.
+        // The play states the move in full: the add, then the removal of the
+        // edge from the ending cycle.
         let remove = actions
             .get(2)
             .expect("a third action must remove the old edge, or the task ends up in both cycles");

@@ -533,7 +533,13 @@ impl QueryService {
 
         // Build filter conditions (pass target_type for namespaced property access)
         for filter in &query.filters {
-            let filter = &resolve_relative_dates(filter, today)?;
+            let resolved;
+            let filter = if filter.has_relative_date() {
+                resolved = resolve_relative_dates(filter, today)?;
+                &resolved
+            } else {
+                filter
+            };
             let condition = match filter.filter_type {
                 FilterType::Property => {
                     self.build_property_filter(filter, &query.target_type, &mut built)?
