@@ -418,7 +418,7 @@
 
   .step-raw pre,
   .step-for-each code {
-    font-family: var(--font-mono, monospace);
+    font-family: ui-monospace, monospace;
     color: hsl(var(--foreground));
     background: hsl(var(--muted));
     border-radius: 0.25rem;
