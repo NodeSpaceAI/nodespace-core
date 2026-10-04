@@ -36,11 +36,11 @@
 
 use std::sync::Arc;
 
-use nodespace_agent::skill_pipeline::seed_skill_nodes;
+use nodespace_agent::skill_pipeline::{external_skill_body, seed_skill_nodes, SKILL_SEEDS};
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::models::NodeUpdate;
-use nodespace_core::services::NodeService;
+use nodespace_core::services::{render_subtree_markdown, NodeService};
 use tempfile::TempDir;
 
 const RESEARCH_AND_SEARCH: &str = "Research & Search";
@@ -63,6 +63,41 @@ async fn seeded_service() -> (NodeService, TempDir) {
         .expect("initial seed must succeed");
 
     (node_service, temp_dir)
+}
+
+/// Every built-in skill, read back from a real database, is still recognised
+/// as untouched and served to an outside agent in its CLI form.
+///
+/// A fetch renders a built-in skill in CLI commands only while the guidance
+/// the graph holds equals what the seed installs. That comparison fails soft:
+/// if storing and rendering a body changed one line of it, the fetch would
+/// serve the stored body, which names tools an outside agent cannot call, and
+/// nothing would report it. So this runs the comparison on what the store
+/// returns, for every seed.
+#[tokio::test]
+async fn an_untouched_built_in_skill_read_from_the_store_is_served_in_its_cli_form() {
+    let (node_service, _temp) = seeded_service().await;
+
+    for seed in SKILL_SEEDS {
+        let (_root, node_map, adjacency) = node_service
+            .get_subtree_data(seed.id)
+            .await
+            .unwrap_or_else(|e| panic!("{}: subtree must read: {e}", seed.title));
+        let stored = render_subtree_markdown(seed.id, &node_map, &adjacency);
+        assert!(
+            !stored.is_empty(),
+            "{} was seeded with no guidance",
+            seed.title
+        );
+
+        assert_eq!(
+            external_skill_body(seed.id, &stored),
+            Some(seed.external_body()),
+            "{}: its stored guidance no longer matches its seed, so a fetch would serve the \
+             in-app body:\n{stored}",
+            seed.title
+        );
+    }
 }
 
 #[tokio::test]

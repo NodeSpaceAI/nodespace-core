@@ -1514,8 +1514,10 @@ mod tests {
         );
     }
 
-    /// The keys read here are the ones `find_skills` writes: a renamed key
-    /// would return no schema for any request.
+    /// An entry that lacks the keys read here contributes nothing, and does
+    /// not fail the fetch. These fixtures are written by hand, so this does
+    /// not notice `find_skills` renaming a key: that is caught by the live
+    /// fetch tests, which read its real output.
     #[test]
     fn an_entry_without_the_expected_keys_contributes_nothing() {
         let found = vec![json!({ "kind": "schema", "score": 0.99, "metadata": [] })];
