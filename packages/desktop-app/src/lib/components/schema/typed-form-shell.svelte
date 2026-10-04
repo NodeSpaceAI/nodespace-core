@@ -89,12 +89,17 @@
     relationships.load(nodeId);
   });
   // An edge written elsewhere (another pane, the CLI, an agent) changes what
-  // the fields and the Relationships count show.
+  // the fields and the Relationships count show. Events come one per edge, so
+  // the reload is scheduled: a burst touching this node is one fetch.
   $effect(() => {
     const id = nodeId;
-    return onRelationshipChanged((fromId, toId) => {
-      if (fromId === id || toId === id) void relationships.reload();
+    const unsubscribe = onRelationshipChanged((fromId, toId) => {
+      if (fromId === id || toId === id) relationships.scheduleReload();
     });
+    return () => {
+      unsubscribe();
+      relationships.cancelScheduledReload();
+    };
   });
   const promotedGroups = $derived(relationships.partitioned.promoted);
   const hasCollapsible = $derived(hasFields || promotedGroups.length > 0);
@@ -122,10 +127,12 @@
   let formEl = $state<HTMLElement | null>(null);
   let autoFocusDone = false;
 
-  // Keep a control focused from the keyboard inside the visible part of the
-  // scroll region. Engines differ on whether focus alone scrolls a clipped
-  // control into view, so it is done here. A control focused by a pointer is
-  // left where it is: moving it mid-click would move the click's target.
+  // Keep a focused control inside the visible part of the scroll region.
+  // Engines differ on whether focus alone scrolls a clipped control into view,
+  // so it is done here. `:focus-visible` leaves out a button or select focused
+  // by a pointer, where moving it mid-click would move the click's target. A
+  // text field matches it however it is focused; a click on a partly clipped
+  // one brings the rest of it into view.
   function revealFocusedControl(event: FocusEvent) {
     const control = event.target;
     if (control instanceof HTMLElement && control.matches(':focus-visible')) {

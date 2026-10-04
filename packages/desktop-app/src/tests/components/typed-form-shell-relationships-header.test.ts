@@ -157,6 +157,20 @@ describe('TypedFormShell — Relationships in the header row', () => {
     expect(relationshipsButton(container)!.textContent?.trim()).toBe('Relationships');
   });
 
+  it('drops the number when a later reload fails, since it may be stale', async () => {
+    loadNodeRelationshipsView.mockResolvedValue(view([group('parts', 'many', 2)]));
+    const { container } = renderForm();
+    await waitFor(() =>
+      expect(relationshipsButton(container)?.textContent?.trim()).toBe('Relationships (2)')
+    );
+
+    loadNodeRelationshipsView.mockRejectedValue(new Error('daemon offline'));
+    notifyRelationshipChanged(NODE_ID, 'parts-1');
+    await waitFor(() =>
+      expect(relationshipsButton(container)?.textContent?.trim()).toBe('Relationships')
+    );
+  });
+
   it('keeps a header row for a type with relationships but no fields', async () => {
     loadNodeRelationshipsView.mockResolvedValue(view([group('parts', 'many', 2)]));
     const { container } = renderForm();
@@ -185,12 +199,17 @@ describe('TypedFormShell — Relationships in the header row', () => {
       expect(relationshipsButton(container)?.textContent?.trim()).toBe('Relationships (2)')
     );
 
-    // Inbound edges name this node as their far end.
+    expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(2);
+
+    // Inbound edges name this node as their far end; a burst is one fetch.
     loadNodeRelationshipsView.mockResolvedValue(view([group('parts', 'many', 0)]));
     notifyRelationshipChanged('parts-0', NODE_ID);
+    notifyRelationshipChanged('parts-1', NODE_ID);
+    notifyRelationshipChanged(NODE_ID, 'parts-2');
     await waitFor(() =>
       expect(relationshipsButton(container)?.textContent?.trim()).toBe('Relationships')
     );
+    expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(3);
   });
 
   it('stops listening once the form is gone', async () => {

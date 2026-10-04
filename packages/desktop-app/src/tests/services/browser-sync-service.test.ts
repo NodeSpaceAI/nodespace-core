@@ -8,6 +8,7 @@ import {
 } from '$lib/services/shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { getClientId } from '$lib/services/client-id';
+import { onRelationshipChanged } from '$lib/services/relationship-changes';
 import type { SseEvent } from '$lib/types/sse-events';
 import type { Node } from '$lib/types';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
@@ -117,6 +118,41 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     savedQueriesData.reset();
     clearSavedQueryRefreshTimer();
     vi.restoreAllMocks();
+  });
+
+  describe('Relationship change notifications', () => {
+    it('reports created and deleted typed edges, and never hierarchy edges', () => {
+      const changes: Array<[string, string]> = [];
+      const unsubscribe = onRelationshipChanged((fromId, toId) => changes.push([fromId, toId]));
+      const edge = (relationshipType: string) => ({
+        id: `relationship:a:b:${relationshipType}`,
+        fromId: 'a',
+        toId: 'b',
+        relationshipType
+      });
+
+      testableService.handleEvent({
+        type: 'relationshipCreated',
+        ...edge('assigned_to'),
+        properties: {}
+      } as SseEvent);
+      testableService.handleEvent({
+        type: 'relationshipDeleted',
+        ...edge('assigned_to')
+      } as SseEvent);
+      testableService.handleEvent({
+        type: 'relationshipCreated',
+        ...edge('has_child'),
+        properties: { order: 1 }
+      } as SseEvent);
+      testableService.handleEvent({ type: 'relationshipDeleted', ...edge('has_child') } as SseEvent);
+      unsubscribe();
+
+      expect(changes).toEqual([
+        ['a', 'b'],
+        ['a', 'b']
+      ]);
+    });
   });
 
   describe('Event Ordering Guarantees', () => {

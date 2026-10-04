@@ -123,12 +123,13 @@ describe('BaseNodeViewer — schema form height and scroll (browser mode)', () =
   });
 
   it('caps a long form and scrolls its fields under a fixed header row', async () => {
-    const parts = await mountViewer(360);
+    const viewerHeight = 360;
+    const parts = await mountViewer(viewerHeight);
     host = parts.host;
     const { form, header, scroll, children } = parts;
 
     // Capped at half the viewer, with the overflow scrollable inside the form.
-    expect(form.getBoundingClientRect().height).toBeLessThanOrEqual(180 + 1);
+    expect(form.getBoundingClientRect().height).toBeLessThanOrEqual(viewerHeight / 2 + 1);
     expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
     expect(getComputedStyle(scroll).overflowY).toBe('auto');
 
@@ -175,6 +176,9 @@ describe('BaseNodeViewer — schema form height and scroll (browser mode)', () =
       children.getBoundingClientRect().top + 1
     );
     expect(header.getBoundingClientRect().height).toBeGreaterThan(0);
+    expect(header.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      form.getBoundingClientRect().bottom + 1
+    );
     expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
   });
 });

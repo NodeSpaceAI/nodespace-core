@@ -20,6 +20,13 @@ import {
 
 const log = createLogger('NodeRelationshipsState');
 
+/**
+ * How long `scheduleReload` waits before it fetches. Edge events arrive one
+ * per edge, so a burst touching one node (an import, an agent linking many
+ * nodes, a reassignment's delete and create) becomes a single fetch.
+ */
+const RELOAD_COALESCE_MS = 100;
+
 export class NodeRelationshipsState {
   view = $state<NodeRelationshipsView | null>(null);
   /**
@@ -44,6 +51,7 @@ export class NodeRelationshipsState {
   // edit) can resolve out of order, and the older one must not overwrite the
   // newer.
   #generation = 0;
+  #reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Load a node's relationships. A call for the node already loaded is a
@@ -61,6 +69,22 @@ export class NodeRelationshipsState {
   /** Re-fetch the current node after a write, keeping the view until it lands. */
   async reload(): Promise<void> {
     if (this.#nodeId) await this.#fetch(this.#nodeId);
+  }
+
+  /** Reload once after a short wait, however many times this is called in it. */
+  scheduleReload(): void {
+    if (this.#reloadTimer !== null) return;
+    this.#reloadTimer = setTimeout(() => {
+      this.#reloadTimer = null;
+      void this.reload();
+    }, RELOAD_COALESCE_MS);
+  }
+
+  /** Drop a scheduled reload, for an owner that is going away. */
+  cancelScheduledReload(): void {
+    if (this.#reloadTimer === null) return;
+    clearTimeout(this.#reloadTimer);
+    this.#reloadTimer = null;
   }
 
   async #fetch(nodeId: string): Promise<void> {

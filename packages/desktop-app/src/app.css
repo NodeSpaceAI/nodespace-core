@@ -151,6 +151,7 @@
     --viewer-padding-vertical: 0.75rem; /* Top padding for node viewer content area (reduced from 1.5rem) */
     --viewer-padding-bottom: 1rem; /* Bottom padding (reduced due to sticky backlinks panel) */
     --viewer-form-max-height: 50%; /* Cap on an expanded schema form, as a share of the viewer */
+    --viewer-form-header-height: 3rem; /* A schema form's header row, the least an open form shrinks to */
     --viewer-children-min-height: 8rem; /* Floor for the children area under an expanded form */
 
     /* Panel Dimensions */

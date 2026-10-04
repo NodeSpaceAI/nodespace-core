@@ -1440,8 +1440,14 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
     flex: 0 1 auto;
     min-height: 0;
     max-height: var(--viewer-form-max-height);
+    overflow: hidden;
     padding: 0 var(--viewer-padding-horizontal);
     background: hsl(var(--background));
+  }
+
+  /* However short the viewer, a form keeps its header row: only its fields give up height */
+  .schema-form-container:has(:global(.schema-form-header)) {
+    min-height: var(--viewer-form-header-height);
   }
 
   /* Default header content styling - large, prominent titles */
