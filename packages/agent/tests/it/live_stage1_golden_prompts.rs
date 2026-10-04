@@ -324,8 +324,8 @@ async fn stage1_reformulation_for_scenario_6_update() {
 /// the rest as queries that kept only the topic, which retrieval matches to
 /// whichever skill shares a noun with it. A convention asking for the query to
 /// be worded as a search caught most of them and missed the ones that read as
-/// an action ("How do we decide which venue gets a deposit refund?" became
-/// "decide which venue gets a deposit refund").
+/// an action: a "How do we decide which …?" question came back as a query
+/// that opened with "decide which".
 #[tokio::test]
 #[ignore = "requires the locked native GGUF on disk"]
 async fn stage1_routes_a_knowledge_question_as_a_lookup() {
@@ -343,11 +343,11 @@ async fn stage1_routes_a_knowledge_question_as_a_lookup() {
         "locate the onboarding notes",
         "list the specs we have on sync",
         "find the record for the Lisbon offsite",
-        "How do we decide which venue gets a deposit refund?",
-        "How do we handle refunds for a cancelled event?",
+        "How do we decide which cycle a slipped spec moves into?",
+        "How do we handle a spec that loses its sign-off?",
         "How do we onboard a new sponsor?",
-        "Who approves a venue booking?",
-        "When did we sign Northwind?",
+        "Who approves a change to a cycle's capacity?",
+        "When did we sign off Kestrel?",
         "Who owns the billing service?",
         "Where is the deploy runbook?",
         "How does our retry policy for failed uploads work?",
@@ -379,7 +379,7 @@ async fn stage1_does_not_route_a_write_request_as_a_lookup() {
         "mark the outage report done",
         "delete the notes from the cancelled offsite",
         "Start keeping the calls we make on how the system is built, and who made each one",
-        "could you add Contoso to the companies we sell to?",
+        "could you add Lantern Autosave to the specs we keep?",
         "can you mark the invoice from Fabrikam as paid?",
     ] {
         let decision = run_stage1(&engine, message).await;
@@ -536,8 +536,8 @@ async fn stage1_lookup_judgement_calls_on_record() {
     }
 
     let after_setup = [
-        "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
-        "The schema for Event Venue already exists. You can create records of that type.",
+        "Set up a new type for our planning cycles, with a name, an end date and a capacity.",
+        "The schema for Planning Cycle already exists. You can create records of that type.",
     ];
     for message in [
         "Explain our retry policy",
@@ -580,10 +580,10 @@ async fn route_stage1_as_the_loop_does(
 /// A question is a lookup whatever the chat was doing before it.
 ///
 /// Blended with the turns ahead of it, a question takes on the chat's subject.
-/// After two turns that set up record types, "How do we decide which venue
-/// gets a deposit refund?" was routed as a query ("decide which venue gets a
-/// deposit refund") and "How do we onboard a new sponsor?" as a request to
-/// create one, three times in three. Retrieval then matched skills that had
+/// After two turns that set up record types, a "How do we decide which …?"
+/// question was routed as a query that opened with "decide which", and a "How
+/// do we onboard a new …?" question as a request to create one, three times
+/// in three. Retrieval then matched skills that had
 /// nothing to do with either, and the reply was "I do not have a tool or
 /// information" with no search. No wording of the routing tools fixed these
 /// without breaking the compound split or a find request, so the loop asks
@@ -594,20 +594,20 @@ async fn stage1_routes_a_question_as_a_lookup_after_unrelated_turns() {
     const REPS: usize = 3;
     let engine = load_engine();
     let prior = [
-        "Set up a new type for the companies we sell to, with a name and the date we signed them.",
-        "The schema for Company Sold To already exists. You can create records of that type.",
-        "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
-        "The schema for Event Venue already exists. You can create records of that type.",
+        "Set up a new type for our feature specs, with a name and the date each was signed off.",
+        "The schema for Feature Spec already exists. You can create records of that type.",
+        "Set up a new type for our planning cycles, with a name, an end date and a capacity.",
+        "The schema for Planning Cycle already exists. You can create records of that type.",
     ];
     let mut not_a_lookup = Vec::new();
     for message in [
-        "How do we decide which venue gets a deposit refund?",
-        "How do we handle refunds for a cancelled event?",
+        "How do we decide which cycle a slipped spec moves into?",
+        "How do we handle a spec that loses its sign-off?",
         "How do we onboard a new sponsor?",
         "How does our retry policy for failed uploads work?",
         "What is the rollout plan for the billing change?",
-        "When did we sign Northwind?",
-        "Who approves a venue booking?",
+        "When did we sign off Kestrel?",
+        "Who approves a change to a cycle's capacity?",
         // Lookups that are not questions: they open with a retrieval verb.
         "Explain our retry policy",
         "find the record for the Lisbon offsite",
@@ -637,14 +637,14 @@ async fn stage1_routes_a_question_as_a_lookup_after_unrelated_turns() {
 async fn stage1_does_not_route_a_question_shaped_request_as_a_lookup_after_unrelated_turns() {
     let engine = load_engine();
     let prior = [
-        "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
-        "The schema for Event Venue already exists. You can create records of that type.",
+        "Set up a new type for our planning cycles, with a name, an end date and a capacity.",
+        "The schema for Planning Cycle already exists. You can create records of that type.",
     ];
     let mut lookups = Vec::new();
     for message in [
-        "Could you add the Grand Hall as a venue?",
-        "Can you set the Grand Hall's capacity to 300?",
-        "Would you delete the venue we added by mistake?",
+        "Could you add Harbour as a planning cycle?",
+        "Can you set Harbour's capacity to 30?",
+        "Would you delete the cycle we added by mistake?",
     ] {
         let (decision, view) = route_stage1_as_the_loop_does(&engine, &prior, message).await;
         println!("GOLDEN[question-shaped write] {message:?} -> {decision:?} ({view})");

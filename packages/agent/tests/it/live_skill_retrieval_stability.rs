@@ -752,8 +752,8 @@ async fn lookups_route_research_and_search() {
         "release checklist",
         "onboarding notes",
         "Lisbon offsite record",
-        "how to decide which venue gets a deposit refund",
-        "when we signed Northwind",
+        "how to decide which cycle a slipped spec moves into",
+        "when we signed off Kestrel",
         "who owns the billing service",
         "deploy runbook",
         "retry policy for failed uploads",
@@ -1239,9 +1239,11 @@ async fn tracking_one_existing_record_still_reaches_a_record_skill() {
 /// with no tracking verb in it, must not lead with the type skill. An earlier
 /// opening ("Start tracking or begin tracking a new kind of thing: …") lifted
 /// Schema Creation by about 0.03 on requests of every kind and took the lead
-/// from Graph Editing on the first of these (0.799 against 0.793) and from
-/// Conflict Journal on the second. "Start tracking: …" wins the tracking
-/// requests by margins as large and leaves both leaders where they were.
+/// from Graph Editing on a request to move one record's date (0.799 against
+/// 0.793) and from Conflict Journal on the second of these. "Start tracking:
+/// …" wins the tracking requests by margins as large and leaves both leaders
+/// where they were: on the first of these Graph Editing leads at 0.758, with
+/// Play Authoring and Schema Creation behind it at 0.705.
 ///
 /// One cost of the opening is recorded here and not accepted: "mark the
 /// offline sync spec as signed off" now leads with Schema Creation by 0.001
@@ -1264,7 +1266,7 @@ async fn updates_to_one_record_do_not_lead_with_schema_creation() {
     };
     let mut misses = Vec::new();
     for query in [
-        "update Northwind Trading booking to April",
+        "update Kestrel Gateway sign-off to 2 April 2025",
         "move the offline sync spec's review to next week",
         "change the owner of the Q4 cycle to Priya",
     ] {
@@ -1293,11 +1295,10 @@ async fn updates_to_one_record_do_not_lead_with_schema_creation() {
 /// The opening's cost side on adds: one named record added to a list that
 /// already exists must not lead with the type skill, and a skill that holds
 /// `create_node` must be in the top 3. Which skill leads is not asserted: on
-/// "add Contoso Ltd to companies we sell to" Bulk Import, Organization and
-/// Node Creation score inside 0.005 of each other (0.742, 0.741, 0.737), and
-/// of those only Node Creation can create the record. Behind it are Graph
-/// Editing at 0.732, which can too, and Schema Creation at 0.730, which
-/// cannot.
+/// "Add Lantern Autosave to the specs we keep." Graph Editing leads at 0.840,
+/// and Schema Creation (0.826), Node Creation (0.825) and Play Authoring
+/// (0.821) follow inside 0.005 of each other. Graph Editing and Node Creation
+/// can create the record; Schema Creation and Play Authoring cannot.
 ///
 /// A second cost of the opening is recorded here and not accepted: "add the
 /// offline sync spec to the specs for this cycle" led with Node Creation,
@@ -1316,8 +1317,8 @@ async fn adds_to_an_existing_list_keep_a_skill_that_can_create() {
     };
     let mut misses = Vec::new();
     for (query, lead_asserted) in [
-        ("add Contoso Ltd to companies we sell to", true),
-        ("Add Contoso Ltd to the companies we sell to.", true),
+        ("add Lantern Autosave to specs we keep", true),
+        ("Add Lantern Autosave to the specs we keep.", true),
         ("add the Q4 cycle to our planning cycles", true),
         (
             "add the offline sync spec to the specs for this cycle",

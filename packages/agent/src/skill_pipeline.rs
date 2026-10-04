@@ -184,10 +184,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // resolving it by guessing. Without it, the guidance below
         // ("ask which they meant") would name a tool the turn cannot
         // reach, and the model's only options are to create a
-        // duplicate or to refuse in prose — measured: "Add Northwind
-        // Trading to the companies we sell to", with Northwind already
-        // in the graph and rendered in MENTIONED ENTITIES, produced
-        // `create_node` and a silent duplicate on 3 of 3 reps.
+        // duplicate or to refuse in prose — measured: a request to add a
+        // named record to a list, with that record already in the graph
+        // and rendered in MENTIONED ENTITIES, produced `create_node` and
+        // a silent duplicate on 3 of 3 reps.
         tools: &["create_node", "update_node", "update_task_status", "search_semantic", "search_nodes", "get_node", "route_clarify"],
         max_iterations: 3,
         exclusion: None,
@@ -234,8 +234,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // Two words and no more. "Start tracking or begin tracking a new
         // kind of thing: …" won the same requests by margins no larger
         // and also lifted this skill by about 0.03 on requests of every
-        // kind, enough to lead "update Northwind Trading booking to April"
-        // over Graph Editing (0.799 against 0.793). The verb moved inside
+        // kind, enough to lead a request to move one record's date over
+        // Graph Editing (0.799 against 0.793). The verb moved inside
         // the existing sentence ("…a structured way to start tracking,
         // keep track of…") did not win the tracking requests at all.
         //
