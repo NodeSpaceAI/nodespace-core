@@ -517,13 +517,24 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0c",
         title: "Play Authoring",
         description: "Change a Play automation: edit when a rule runs, its conditions, or its actions, add or remove a rule, or turn the Play on or off. Use when the user wants an automation, rule, or workflow to behave differently or to stop running.",
+        // The exclusion is what separates the two. Without it "why didn't the
+        // play trigger for that story?" led with this skill, 0.887 to Play
+        // Workflow State's 0.863, putting a write skill first on a question
+        // that asks for no change. With it Play Workflow State leads every
+        // such question, and each request to change or switch a play still
+        // leads here; the one measured cost is "make that rule fire only for
+        // high priority tasks", 0.883 to 0.838, still first. Guarded in
+        // `tests/it/live_skill_retrieval_stability.rs` by
+        // `play_change_requests_route_play_authoring` and
+        // `control_why_a_rule_has_not_fired_still_routes_play_workflow_state`.
+        //
         // `route_clarify` is how the skill asks before a rules write.
         // `search_nodes` finds a play by name; on a held turn its
         // `node_type` is limited to `play`.
         tools: &["get_play", "update_play", "search_nodes", "route_clarify"],
         // Read, write, and two repairs of a rejected write.
         max_iterations: 5,
-        exclusion: None,
+        exclusion: Some("Why a rule has not fired, or what is still missing before it runs."),
         applies_to: &[nodespace_core::models::PLAY_NODE_TYPE],
         body: include_str!("seeds/skills/play-authoring.md"),
     },
@@ -635,9 +646,13 @@ pub async fn link_seeded_skills(node_service: &NodeService) -> Result<(), NodeSe
             if targets.is_some_and(|targets| targets.iter().any(|t| t == schema_id)) {
                 continue;
             }
-            node_service
+            // One link that fails does not cost the other skills theirs.
+            if let Err(e) = node_service
                 .create_relationship(seed.id, SKILL_APPLIES_TO, schema_id, serde_json::json!({}))
-                .await?;
+                .await
+            {
+                tracing::warn!(skill = seed.title, schema = schema_id, error = %e, "Failed to link a seeded skill to its schema");
+            }
         }
     }
     Ok(())
@@ -1512,7 +1527,10 @@ mod tests {
             .filter(|t| tmpl_skill(t).exclusion.is_some())
             .map(|t| t.title)
             .collect();
-        assert_eq!(with_exclusion, vec!["Graph Editing".to_string()]);
+        assert_eq!(
+            with_exclusion,
+            vec!["Graph Editing".to_string(), "Play Authoring".to_string()]
+        );
     }
 
     /// The verbs a real deletion request uses must all be present, since the

@@ -19,7 +19,7 @@ WRITE THE WHOLE RULE LIST: call update_play with the play's id and `rules` holdi
 
 STALE PLAY DESCRIPTIONS: When you change part of a play's rules, rewrite that part's `description` in the same write. A changed condition `expr`, a changed action (`action_type`, `params` or `for_each`), or a changed rule `trigger` or `class` that keeps its stored description is rejected. A rule is matched to the stored rule with the same `name`, and its conditions and actions by position; a renamed rule is a new rule. The error names the rule, the part and its number, e.g. "rule `complete parent`, condition 2: its expression changed and its description didn't". Rewrite that description and send the write again with the corrected payload.
 
-REPAIR A REJECTED WRITE: a write that is refused changes nothing and says why, naming the rule, the part of it (trigger, condition or action) and that part's number. Fix exactly what each problem names and write again. Don't tell the user the change is made until a write has succeeded.
+REPAIR A REJECTED WRITE: a write that is refused changes nothing and says why, naming the rule and the part of it (trigger, condition or action) in one of two ways. By the rule's name and the part's number counted from one: "rule `complete parent`, condition 2" is the second condition. Or by position counted from zero: "rule[0].condition[1]" is the second condition of the first rule. Fix exactly what each problem names and write again. Don't tell the user the change is made until a write has succeeded.
 
 ON AND OFF: to turn a play off, call update_play with its id and `enabled` false. To turn it on, call update_play with `enabled` true, which also clears a suspension. Leave `rules` out of either call.
 
@@ -240,7 +240,7 @@ parameters_schema:
                   "type": "string"
                 },
                 "params": {
-                  "description": "create_node: node_type, content, properties. update_node: node_id, content, properties. add_relationship and remove_relationship: source_id, relationship_type, target_id. reject (invariant rules only): message. A string may bind a value in braces, e.g. {trigger.node.id}.",
+                  "description": "create_node: node_type, content, properties. update_node: node_id, content, properties, node_type (to retype). add_relationship: source_id, relationship_type, target_id, edge_data. remove_relationship: source_id, relationship_type, target_id. reject (invariant rules only): message. A string may bind a value in braces, e.g. {trigger.node.id}.",
                   "type": "object"
                 }
               },

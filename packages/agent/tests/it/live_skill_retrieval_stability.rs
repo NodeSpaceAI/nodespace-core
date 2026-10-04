@@ -1372,29 +1372,54 @@ async fn play_change_requests_route_play_authoring() {
             "switch the play back on",
         ],
         "Play Authoring",
-        false,
+        true,
     )
     .await;
     assert!(
         misses.is_empty(),
-        "Play Authoring missed the top-{RETRIEVAL_TOP_K} for {misses:?}"
+        "Play Authoring lost rank 1 for {misses:?}"
     );
+
+    // Once linked as the daemon links it, retrieval hands the skill the
+    // `play` schema as a linked set, which is what holds its turn to plays.
+    nodespace_agent::skill_pipeline::link_seeded_skills(&node_service)
+        .await
+        .expect("the seeded skills link");
+    let output = find_skills(
+        &embedding_service,
+        &node_service,
+        FindSkillsInput {
+            query: "turn this play off".to_string(),
+            limit: Some(RETRIEVAL_TOP_K),
+        },
+    )
+    .await
+    .expect("find_skills must succeed");
+    let authoring = output
+        .skills
+        .iter()
+        .find(|s| s.get("name").and_then(|v| v.as_str()) == Some("Play Authoring"))
+        .expect("Play Authoring is retrieved");
+    assert_eq!(authoring["schemas_linked"], true, "{authoring}");
+    let types: Vec<&str> = authoring["schema_metadata"]
+        .as_array()
+        .expect("schema metadata")
+        .iter()
+        .filter_map(|s| s["type_id"].as_str())
+        .collect();
+    assert_eq!(types, ["play"]);
 }
 
 /// Control for the case above. The two play skills share every noun (play,
 /// rule, automation, workflow), and a question about why a rule has not fired
-/// is Play Workflow State's: it must stay in the top 3, where its read tool
-/// is offered.
+/// is Play Workflow State's: it must lead, so a question that asks for no
+/// change is not answered with a write skill first.
 ///
-/// Top 3 rather than rank 1, because rank does not decide whether a read tool
-/// is offered, and a turn with Play Workflow State among its candidates is
-/// not held to Play Authoring's `play` link (an unlinked tool-bearing
-/// candidate leaves the turn open). Measured with Play Authoring seeded: Play
-/// Workflow State leads three of these by 0.036 to 0.141, and "why didn't the
-/// play trigger for that story?" leads with Play Authoring, 0.887 to 0.863.
+/// Play Authoring's `exclusion` is what holds this. Without it "why didn't the
+/// play trigger for that story?" led with Play Authoring, 0.887 to 0.863.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
-async fn control_why_a_rule_has_not_fired_still_reaches_play_workflow_state() {
+async fn control_why_a_rule_has_not_fired_still_routes_play_workflow_state() {
     let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
         return;
     };
@@ -1408,11 +1433,11 @@ async fn control_why_a_rule_has_not_fired_still_reaches_play_workflow_state() {
             "check which conditions of the workflow are unmet for this node",
         ],
         "Play Workflow State",
-        false,
+        true,
     )
     .await;
     assert!(
         misses.is_empty(),
-        "Play Workflow State missed the top-{RETRIEVAL_TOP_K} for {misses:?}"
+        "Play Workflow State lost rank 1 for {misses:?}"
     );
 }

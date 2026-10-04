@@ -242,7 +242,6 @@ struct GetWorkflowStateParams {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GetPlayParams {
-    #[serde(alias = "play_id")]
     pub id: String,
 }
 
@@ -631,12 +630,15 @@ fn ok_result(tool_call_id: &str, name: &str, data: Value) -> ToolResult {
 /// its rules in the shape `update_play` takes, its switch, and the engine's
 /// suspension when there is one.
 ///
-/// A play whose stored rules do not decode is one the engine suspends, and
-/// the one an agent is most likely asked to repair. It is reported with the
-/// fields that do decode and `rules_error` saying what is wrong with the rest.
+/// A play whose stored fields do not all decode is one the engine suspends,
+/// and the one an agent is most likely asked to repair. It is reported with
+/// the fields that do decode and `decode_error` saying what is wrong. Rules
+/// that do not decode are handed over as stored, under `stored_rules`, and
+/// never as an empty `rules`: that would say the play has none, and a write
+/// built on it would delete them.
 fn play_value(node: &nodespace_core::models::Node) -> (nodespace_core::models::PlayFields, Value) {
     use nodespace_core::models::PlayFields;
-    let (fields, rules_error) = match PlayFields::from_properties(&node.properties) {
+    let (fields, decode_error) = match PlayFields::from_properties(&node.properties) {
         Ok(fields) => (fields, None),
         Err(e) => (
             PlayFields::readable_from_properties(&node.properties),
@@ -647,8 +649,16 @@ fn play_value(node: &nodespace_core::models::Node) -> (nodespace_core::models::P
         "id": node_uri(&node.id),
         "title": node.content,
         "enabled": fields.enabled,
-        "rules": fields.rules,
     });
+    let stored_rules =
+        PlayFields::stored_field(&node.properties, nodespace_core::models::PLAY_RULES_FIELD);
+    match stored_rules {
+        // The readable fields hold no rule the store does: they did not decode.
+        Some(stored) if decode_error.is_some() && fields.rules.is_empty() => {
+            play["stored_rules"] = stored.clone();
+        }
+        _ => play["rules"] = json!(fields.rules),
+    }
     if let Some(description) = &fields.description {
         play["description"] = json!(description);
     }
@@ -659,8 +669,8 @@ fn play_value(node: &nodespace_core::models::Node) -> (nodespace_core::models::P
             "at": at,
         });
     }
-    if let Some(error) = rules_error {
-        play["rules_error"] = json!(error);
+    if let Some(error) = decode_error {
+        play["decode_error"] = json!(error);
     }
     (fields, play)
 }
@@ -2252,7 +2262,7 @@ fn def_update_play() -> ToolDefinition {
                                         },
                                         "params": {
                                             "type": "object",
-                                            "description": "create_node: node_type, content, properties. update_node: node_id, content, properties. add_relationship and remove_relationship: source_id, relationship_type, target_id. reject (invariant rules only): message. A string may bind a value in braces, e.g. {trigger.node.id}."
+                                            "description": "create_node: node_type, content, properties. update_node: node_id, content, properties, node_type (to retype). add_relationship: source_id, relationship_type, target_id, edge_data. remove_relationship: source_id, relationship_type, target_id. reject (invariant rules only): message. A string may bind a value in braces, e.g. {trigger.node.id}."
                                         },
                                         "for_each": {
                                             "type": "string",
@@ -4645,6 +4655,8 @@ impl GraphToolExecutor {
     ) -> Result<nodespace_core::models::Node, ToolResult> {
         let refused = |message: String| error_result(tool_call_id, tool, &message);
         match ns.get_node(id).await {
+            // Exactly `play`, as the typed update is: a subtype would have
+            // its own fields, which these tools neither read nor write.
             Ok(Some(node)) if CoreNodeType::Play.is_exactly(&node.node_type) => Ok(node),
             Ok(Some(node)) => Err(refused(format!(
                 "'{id}' is a {} node, not a play",
@@ -4712,7 +4724,7 @@ impl GraphToolExecutor {
         let Value::Object(mut args) = args else {
             return Err(invalid("expected an object"));
         };
-        let id = match args.remove("id").or_else(|| args.remove("play_id")) {
+        let id = match args.remove("id") {
             Some(Value::String(id)) => id,
             Some(_) => return Err(invalid("`id` must be a string")),
             None => return Err(invalid("missing field `id`")),

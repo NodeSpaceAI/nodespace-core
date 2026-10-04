@@ -72,7 +72,9 @@ pub use nodespace_types::{Priority, ProjectStatus, TaskStatus};
 
 // The stored query's typed fields — the only reader of a query node's
 // properties (see `QueryDefinition::from_fields` for the execution mapping).
-pub use nodespace_types::{PlayFields, PlayNodeUpdate, PlaySuspensionReason, PLAY_NODE_TYPE};
+pub use nodespace_types::{
+    PlayFields, PlayNodeUpdate, PlaySuspensionReason, PLAY_NODE_TYPE, PLAY_RULES_FIELD,
+};
 pub use nodespace_types::{QueryFields, QueryGeneratedBy, QUERY_NODE_TYPE};
 
 // The lifecycle-status allow-list and its validator live in nodespace-types

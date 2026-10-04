@@ -162,6 +162,70 @@ async fn get_play_reports_the_engines_suspension() {
     assert!(got.result["suspended"]["at"].is_string());
 }
 
+/// Rules that no longer decode are handed over as stored, with the reason.
+/// An empty `rules` would say the play has none, and the next write would
+/// delete the ones it has.
+#[tokio::test]
+async fn get_play_hands_over_rules_that_do_not_decode_as_stored() {
+    let (executor, ns, _tmp) = make_executor().await;
+    let play_id = seed_play(&ns).await;
+    // Written past validation, as a sync from a device with other rules is.
+    ns.store()
+        .set_property_strings(
+            &play_id,
+            &[("$.play.rules".to_string(), "not a rule list".to_string())],
+        )
+        .await
+        .unwrap();
+
+    let got = call(&executor, "get_play", json!({ "id": play_id })).await;
+    assert!(!got.is_error, "{}", got.result);
+    assert!(got.result.get("rules").is_none(), "{}", got.result);
+    assert_eq!(got.result["stored_rules"], "not a rule list");
+    assert!(
+        got.result["decode_error"]
+            .as_str()
+            .unwrap()
+            .contains("expected an array of rules"),
+        "{}",
+        got.result
+    );
+    assert_eq!(got.result["enabled"], true);
+    assert_eq!(got.result["schemas"], json!([]));
+}
+
+/// The cron form `update_play`'s parameter schema shows is one the engine
+/// accepts.
+#[tokio::test]
+async fn the_cron_example_on_the_tool_schema_saves() {
+    let (executor, ns, _tmp) = make_executor().await;
+    let play_id = seed_play(&ns).await;
+    let tools = executor.available_tools().await.unwrap();
+    let update_play = tools.iter().find(|t| t.name == "update_play").unwrap();
+    let cron = &update_play.parameters_schema["properties"]["rules"]["items"]["properties"]
+        ["trigger"]["properties"]["cron"]["description"];
+    let example = "0 0 9 * * *";
+    assert!(cron.as_str().unwrap().contains(example), "{cron}");
+
+    let saved = call(
+        &executor,
+        "update_play",
+        json!({ "id": play_id, "rules": [{
+            "name": "morning sweep",
+            "description": "Close every finished story's epic each morning",
+            "trigger": { "type": "scheduled", "cron": example, "select": { "target_type": "story" } },
+            "conditions": [{ "expr": "node.state == 'done'", "description": "The story is done" }],
+            "actions": [{
+                "action_type": "update_node",
+                "description": "Mark the epic done",
+                "params": { "node_id": "{trigger.node.epic.id}", "properties": { "state": "done" } }
+            }]
+        }] }),
+    )
+    .await;
+    assert!(!saved.is_error, "{}", saved.result);
+}
+
 #[tokio::test]
 async fn the_play_tools_refuse_a_node_that_is_not_a_play() {
     let (executor, ns, _tmp) = make_executor().await;

@@ -11,7 +11,7 @@
 
 use crate::models::schema::is_reserved_relationship_name;
 use crate::ops::path_ops::{resolve_hop, HopResolution};
-use crate::playbook::actions::collect_binding_templates_in_value;
+use crate::playbook::actions::{collect_binding_templates_in_value, collect_where_chains};
 use crate::playbook::graph_resolver::declared_collection_type;
 use crate::playbook::path_extractor;
 use crate::playbook::selectors::selector_query;
@@ -46,6 +46,28 @@ pub async fn referenced_types(node_service: &NodeService, rules: &[RuleDefinitio
                 let segments: Vec<&str> = path.segments[1..].iter().map(String::as_str).collect();
                 walk(node_service, &trigger_type, &segments, &mut types).await;
             }
+            // What a comprehension's body reads starts at the item, whose
+            // type is the collection's: `node.stories.all(s, s.owner.active)`
+            // reaches `owner`'s type through `story`.
+            for collection in &extraction.collections {
+                if collection.collection.root != "node" {
+                    continue;
+                }
+                let segments: Vec<&str> = collection.collection.segments[1..]
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                let Ok(Some(item_type)) =
+                    declared_collection_type(node_service, &trigger_type, &segments).await
+                else {
+                    continue;
+                };
+                for path in &collection.item_paths {
+                    let segments: Vec<&str> =
+                        path.segments[1..].iter().map(String::as_str).collect();
+                    walk(node_service, &item_type, &segments, &mut types).await;
+                }
+            }
         }
 
         for action in &rule.actions {
@@ -69,6 +91,20 @@ pub async fn referenced_types(node_service: &NodeService, rules: &[RuleDefinitio
 
             let mut templates = Vec::new();
             collect_binding_templates_in_value(&action.params_value(), &mut templates);
+            for expression in action
+                .for_each()
+                .into_iter()
+                .chain(templates.iter().map(String::as_str))
+            {
+                where_predicates(
+                    node_service,
+                    expression,
+                    &trigger_type,
+                    item_type.as_deref(),
+                    &mut types,
+                )
+                .await;
+            }
             for template in &templates {
                 for segments in binding_paths(template, "trigger.node.") {
                     walk(node_service, &trigger_type, &segments, &mut types).await;
@@ -165,6 +201,41 @@ async fn walk(
     }
 }
 
+/// Follow what the `.where(...)` filters of a binding expression read. A
+/// predicate names the fields of the collection's items bare
+/// (`owner.active`), so its paths start at the collection's item type.
+async fn where_predicates(
+    node_service: &NodeService,
+    expression: &str,
+    trigger_type: &str,
+    item_type: Option<&str>,
+    types: &mut Vec<String>,
+) {
+    let mut chains = Vec::new();
+    collect_where_chains(expression, &mut chains);
+    for (base, predicates) in chains.into_iter().flatten() {
+        let segments: Vec<&str> = base.split('.').collect();
+        let (start, rest) = match (segments.as_slice(), item_type) {
+            (["trigger", "node", rest @ ..], _) => (trigger_type, rest),
+            (["item", rest @ ..], Some(item_type)) => (item_type, rest),
+            _ => continue,
+        };
+        let Ok(Some(filtered_type)) = declared_collection_type(node_service, start, rest).await
+        else {
+            continue;
+        };
+        for predicate in predicates {
+            let Ok(extraction) = path_extractor::extract_paths(predicate) else {
+                continue;
+            };
+            for path in &extraction.paths {
+                let segments: Vec<&str> = path.segments.iter().map(String::as_str).collect();
+                walk(node_service, &filtered_type, &segments, types).await;
+            }
+        }
+    }
+}
+
 /// The dot-paths in a binding expression that start with `root`
 /// (`trigger.node.` or `item.`), each as its segments after the root.
 ///
@@ -203,6 +274,7 @@ mod tests {
         let service = Arc::new(NodeService::new(&mut store).await.unwrap());
         for schema in [
             json!({ "name": "Epic", "fields": [{ "name": "state", "type": "text" }] }),
+            json!({ "name": "Retro", "fields": [{ "name": "summary", "type": "text" }] }),
             json!({
                 "name": "Story",
                 "fields": [{ "name": "state", "type": "text" }],
@@ -210,9 +282,12 @@ mod tests {
                     "name": "epic", "targetType": "epic", "direction": "out",
                     "cardinality": "one", "reverseName": "stories",
                     "reverseCardinality": "many"
+                }, {
+                    "name": "retro", "targetType": "retro", "direction": "out",
+                    "cardinality": "one", "reverseName": "retro_stories",
+                    "reverseCardinality": "many"
                 }]
             }),
-            json!({ "name": "Retro", "fields": [{ "name": "summary", "type": "text" }] }),
         ] {
             handle_create_schema(&service, schema)
                 .await
@@ -272,6 +347,47 @@ mod tests {
         }]));
 
         assert_eq!(referenced_types(&service, &rules).await, ["epic", "story"]);
+    }
+
+    /// A comprehension's body and a `.where(...)` predicate read the items of
+    /// a collection, so their paths start at the collection's type.
+    #[tokio::test]
+    async fn paths_read_from_a_collections_items_are_followed() {
+        let (service, _tmp) = service().await;
+        let trigger = json!({
+            "type": "graph_event", "on": "property_changed",
+            "select": { "target_type": "epic" }
+        });
+
+        let in_a_condition = rules(json!([{
+            "name": "close epic",
+            "description": "Close an epic whose stories all have a retro written",
+            "trigger": trigger,
+            "conditions": [{
+                "expr": "node.stories.all(s, s.retro.summary != '')",
+                "description": "Every story's retro has a summary"
+            }]
+        }]));
+        assert_eq!(
+            referenced_types(&service, &in_a_condition).await,
+            ["epic", "story", "retro"]
+        );
+
+        let in_a_filter = rules(json!([{
+            "name": "close stories",
+            "description": "Close the stories that have a retro written",
+            "trigger": trigger,
+            "actions": [{
+                "action_type": "update_node",
+                "description": "Mark the story done",
+                "for_each": "trigger.node.stories.where(retro.summary != '')",
+                "params": { "node_id": "{item.id}", "properties": { "state": "done" } }
+            }]
+        }]));
+        assert_eq!(
+            referenced_types(&service, &in_a_filter).await,
+            ["epic", "story", "retro"]
+        );
     }
 
     /// What does not resolve names nothing: validation reports it on a write.
