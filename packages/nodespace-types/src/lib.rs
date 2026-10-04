@@ -74,8 +74,8 @@ pub use person::{PersonNode, PersonNodeUpdate};
 pub use play::{
     Action, ActionType, AddRelationshipParams, CreateNodeParams, GraphEventType, InlineSelector,
     PlayFields, PlayNode, PlayNodeUpdate, PlaySuspensionReason, RejectParams,
-    RemoveRelationshipParams, RuleClass, RuleCondition, RuleDefinition, SavedQuerySelector, Selector, Trigger,
-    UpdateNodeParams, PLAY_ENABLED_FIELD, PLAY_NODE_TYPE, PLAY_RULES_FIELD,
+    RemoveRelationshipParams, RuleClass, RuleCondition, RuleDefinition, SavedQuerySelector,
+    Selector, Trigger, UpdateNodeParams, PLAY_ENABLED_FIELD, PLAY_NODE_TYPE, PLAY_RULES_FIELD,
     PLAY_SUSPENDED_AT_FIELD, PLAY_SUSPENDED_MESSAGE_FIELD, PLAY_SUSPENDED_REASON_FIELD,
     PLAY_SUSPENSION_FIELDS,
 };

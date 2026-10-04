@@ -303,7 +303,8 @@ mod playbook_tests {
 
     #[test]
     fn test_an_unknown_action_type_does_not_decode() {
-        let action = json!({ "description": "Test action", "action_type": "spawn_agent", "params": {} });
+        let action =
+            json!({ "description": "Test action", "action_type": "spawn_agent", "params": {} });
         assert!(serde_json::from_value::<Action>(action).is_err());
     }
 
@@ -327,7 +328,9 @@ mod playbook_tests {
     #[test]
     fn test_rule_class_defaults_to_reactive() {
         // A rule definition with no `class` field parses as Reactive.
-        let def = rule_def(json!({ "name": "no class", "description": "Test rule", "trigger": on_created("task") }));
+        let def = rule_def(
+            json!({ "name": "no class", "description": "Test rule", "trigger": on_created("task") }),
+        );
         assert_eq!(RuleClass::default(), RuleClass::Reactive);
         assert_eq!(parse_rule(&def).unwrap().class, RuleClass::Reactive);
     }
@@ -408,7 +411,8 @@ mod playbook_tests {
     /// top-level `rules` is not the play's rules.
     #[test]
     fn test_parse_rules_prefers_the_play_bucket() {
-        let stray = json!([{ "name": "stray", "description": "Test rule", "trigger": on_created("task") }]);
+        let stray =
+            json!([{ "name": "stray", "description": "Test rule", "trigger": on_created("task") }]);
         let properties = json!({ "play": { "rules": [] }, "rules": stray });
         assert!(parse_rules_from_properties(&properties).unwrap().is_empty());
     }

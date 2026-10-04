@@ -239,8 +239,9 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
       rules: [
         {
           name: 'greet',
+          description: 'Greet a new task',
           trigger: { type: 'graph_event', on: 'node_created', select: { target_type: 'task' } },
-          conditions: ["node.content == 'hello'"],
+          conditions: [{ expr: "node.content == 'hello'", description: 'The task says hello' }],
           actions: [],
         },
       ],

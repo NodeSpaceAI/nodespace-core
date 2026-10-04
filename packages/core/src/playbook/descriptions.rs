@@ -146,7 +146,13 @@ pub fn check_descriptions(
 }
 
 /// What an action's description describes: everything but the description.
-fn action_content(action: &Action) -> (crate::playbook::types::ActionType, serde_json::Value, Option<&str>) {
+fn action_content(
+    action: &Action,
+) -> (
+    crate::playbook::types::ActionType,
+    serde_json::Value,
+    Option<&str>,
+) {
     (
         action.action_type(),
         action.params_value(),
@@ -258,7 +264,8 @@ mod tests {
 
     #[test]
     fn a_changed_action_must_change_its_description() {
-        let changes: [(&str, fn(&mut Value)); 3] = [
+        type Change = fn(&mut Value);
+        let changes: [(&str, Change); 3] = [
             ("params", |action| {
                 action["params"]["properties"]["status"] = json!("cancelled")
             }),
@@ -362,12 +369,11 @@ mod tests {
         incoming[0]["conditions"][1]["expr"] = json!("node.priority == 'urgent'");
         incoming[0]["actions"][0]["description"] = json!("");
         incoming[0]["class"] = json!("invariant");
-        let messages: Vec<String> =
-            check_descriptions(&rules(incoming), Some(&rules(stored())))
-                .unwrap_err()
-                .iter()
-                .map(ToString::to_string)
-                .collect();
+        let messages: Vec<String> = check_descriptions(&rules(incoming), Some(&rules(stored())))
+            .unwrap_err()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         assert_eq!(
             messages,
             [

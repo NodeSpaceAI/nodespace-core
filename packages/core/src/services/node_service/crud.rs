@@ -2634,10 +2634,9 @@ impl NodeService {
         let stored_rules = stored
             .filter(|stored| !Self::restores_shipped_rules(properties, stored))
             .and_then(|stored| parse_rules_from_properties(stored).ok());
-        if let Err(errors) = crate::playbook::descriptions::check_descriptions(
-            &rule_defs,
-            stored_rules.as_deref(),
-        ) {
+        if let Err(errors) =
+            crate::playbook::descriptions::check_descriptions(&rule_defs, stored_rules.as_deref())
+        {
             return Err(NodeServiceError::PlayValidationFailed {
                 errors: errors
                     .iter()

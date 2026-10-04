@@ -851,7 +851,9 @@ mod tests {
 
     #[test]
     fn class_conditions_and_actions_take_their_defaults() {
-        let rule = decode(json!({ "name": "r", "description": "Test rule", "trigger": graph_event() })).unwrap();
+        let rule =
+            decode(json!({ "name": "r", "description": "Test rule", "trigger": graph_event() }))
+                .unwrap();
         assert_eq!(rule.class, RuleClass::Reactive);
         assert!(rule.conditions.is_empty());
         assert!(rule.actions.is_empty());
@@ -1102,7 +1104,10 @@ mod tests {
         let decoded = PlayFields::from_properties(&json!({ "rules": [described] })).unwrap();
         assert_eq!(decoded.rules[0].description, "Close the parent");
         assert_eq!(decoded.rules[0].conditions[0].expr, "node.status == 'done'");
-        assert_eq!(decoded.rules[0].actions[0].description(), "Refuse the write");
+        assert_eq!(
+            decoded.rules[0].actions[0].description(),
+            "Refuse the write"
+        );
         assert_eq!(serde_json::to_value(&decoded.rules[0]).unwrap(), described);
 
         let without = |pointer: &str| {

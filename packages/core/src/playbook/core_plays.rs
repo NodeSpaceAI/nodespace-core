@@ -174,7 +174,10 @@ mod tests {
     #[test]
     fn every_core_play_describes_its_rules_conditions_and_actions() {
         for play in core_plays() {
-            for rules in [&play.properties["rules"], &play.properties["_seed"]["default_rules"]] {
+            for rules in [
+                &play.properties["rules"],
+                &play.properties["_seed"]["default_rules"],
+            ] {
                 let rules = parse_rules_from_properties(&json!({ "rules": rules }))
                     .unwrap_or_else(|e| panic!("{}: {e}", play.id));
                 assert!(!rules.is_empty(), "{} has no rules", play.id);
