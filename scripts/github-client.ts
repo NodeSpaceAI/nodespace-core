@@ -243,9 +243,7 @@ export class GitHubClient {
     issueNumbers: number[], 
     status: keyof typeof this.statusOptions
   ): Promise<Array<{ issueNumber: number; success: boolean; error?: string }>> {
-    const statusOptionId = this.statusOptions[status];
-    
-    if (!statusOptionId) {
+    if (!(status in this.statusOptions)) {
       throw new Error(`Invalid status: ${status}. Valid options: ${Object.keys(this.statusOptions).join(", ")}`);
     }
 
@@ -495,16 +493,16 @@ export class GitHubClient {
       // A new issue is filed, not queued: put it in Backlog. Without a status
       // the item sits on the board in no column, and reads back with a blank
       // status that is easy to mistake for the issue not being on the board.
-      const statusSet = await this.setItemStatus(itemId, NEW_ISSUE_STATUS)
-        .then(() => true)
-        .catch(() => false);
-
-      if (!statusSet) {
+      // The cause is printed: with the add having just succeeded, a failure
+      // here is most likely a stale status field or option id, and the
+      // message is what tells that apart from an outage.
+      await this.setItemStatus(itemId, NEW_ISSUE_STATUS).catch((error: unknown) => {
         console.warn(
           `⚠️  Issue #${response.data.number} was added to the project board but its status could not be ` +
-            `set to '${NEW_ISSUE_STATUS}'. Run \`gh:status\` on it to set one.`,
+            `set to '${NEW_ISSUE_STATUS}' (${error instanceof Error ? error.message : String(error)}). ` +
+            "Run `gh:status` on it to set one.",
         );
-      }
+      });
     }
 
     return {

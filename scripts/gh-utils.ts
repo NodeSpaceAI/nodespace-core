@@ -149,8 +149,8 @@ class NodeSpaceGitHubManager {
       console.log(`#${issue.number}: ${title}`);
       console.log(`URL: ${issue.url}`);
       // GitHubClient.createIssue itself warns (console.warn) when the
-      // board add fails -- no need to re-derive that from
-      // `issue.addedToProject` here too.
+      // board add or the status write fails -- no need to re-derive that
+      // from `issue.addedToProject` here too.
 
       return issue;
     } catch (error: unknown) {
@@ -357,7 +357,8 @@ class NodeSpaceGitHubManager {
       console.log(`No existing open issue found -- created #${issue.number}`);
       console.log(`URL: ${issue.url}`);
       // GitHubClient.createIssue itself warns (console.warn) when the
-      // issue could not be added to the project board -- e.g. every
+      // issue could not be added to the project board, or its status
+      // could not be set -- e.g. every
       // invocation of this helper from a scheduled CI workflow, whose
       // token can never carry Projects v2 write scope. No need to
       // re-derive that from `issue.addedToProject` here too.

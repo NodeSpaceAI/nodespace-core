@@ -102,8 +102,9 @@ describe("GitHubClient project-board membership", () => {
   const ISSUE_NUMBER = 2390;
   const ISSUE_NODE_ID = "I_kwDOtestnode";
   const NEW_ITEM_ID = "PVTI_lADOnewitem";
-  // The board's single-select option id for "Backlog".
+  // The board's single-select option ids for "Backlog" and "Done".
   const BACKLOG_OPTION_ID = "230488b9";
+  const DONE_OPTION_ID = "58fb1205";
 
   function makeClientWithStubbedOctokit(options: { alreadyOnBoard: boolean }) {
     const graphqlCalls: Array<{ query: string; vars: Record<string, unknown> }> = [];
@@ -245,7 +246,9 @@ describe("GitHubClient project-board membership", () => {
       expect(issue.addedToProject).toBe(true);
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`#${ISSUE_NUMBER}`));
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("status could not be set"));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("status could not be"));
+      // The cause is in the warning, so a stale field or option id is diagnosable.
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("status field unreachable"));
     } finally {
       warnSpy.mockRestore();
     }
@@ -288,6 +291,8 @@ describe("GitHubClient project-board membership", () => {
     // The status write must target the item the add returned.
     const update = graphqlCalls.find((c) => c.query.includes("updateProjectV2ItemFieldValue"));
     expect(update!.vars.itemId).toBe(NEW_ITEM_ID);
+    // And carry the option the caller asked for, not the one a new issue gets.
+    expect(update!.vars.value).toEqual({ singleSelectOptionId: DONE_OPTION_ID });
   });
 
   test("an issue already on the board is not re-added", async () => {
