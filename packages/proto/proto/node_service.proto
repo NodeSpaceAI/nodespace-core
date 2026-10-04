@@ -41,6 +41,10 @@ service NodeService {
   // An empty query lists every skill by name and description instead, with
   // no procedures and no schemas, and needs no embedding model.
   rpc GetSkillGuidance(SkillGuidanceRequest) returns (SkillGuidanceResponse);
+  // One skill, by its exact name or its id, with what a match returns for it:
+  // its procedure, the schemas it is linked to and the commands of the tools
+  // it names. Needs no embedding model. NOT_FOUND when no skill has the name.
+  rpc GetSkill(GetSkillRequest) returns (SkillGuidanceResponse);
   rpc GetChildren(GetChildrenRequest) returns (NodeListResponse);
   rpc GetChildrenTree(GetChildrenTreeRequest) returns (NodeTreeResponse);
   rpc SearchNodes(SearchRequest) returns (NodeListResponse);
@@ -523,8 +527,21 @@ message SkillGuidanceEntry {
   // The skill's procedure as markdown, written for an agent that drives
   // NodeSpace through the CLI. Empty in a listing.
   string instructions = 5;
-  // The skill search's score. Unset in a listing, which ranks nothing.
+  // The skill search's score. Unset in a listing, which ranks nothing, and
+  // in a fetch by name.
   optional double confidence = 6;
+  // The CLI command of each registry tool the skill lists in its
+  // tool_whitelist or names in its procedure. A tool that records no command
+  // has no entry. Empty in a listing.
+  repeated ToolCommandEntry tool_commands = 7;
+}
+
+message ToolCommandEntry {
+  // The tool's name, as the skill names it.
+  string tool = 1;
+  // The `nodespace` command and subcommand that does what the tool does,
+  // with no arguments.
+  string command = 2;
 }
 
 message SchemaGuidanceEntry {
@@ -542,6 +559,20 @@ message SkillGuidanceResponse {
   // The schemas relevant to the query: the ones the search matched, and the
   // ones a matched skill is linked to. Empty in a listing.
   repeated SchemaGuidanceEntry schemas = 2;
+  // The version of the skill list, set in a listing only. It changes when a
+  // skill is added, removed or archived, and when a skill's name,
+  // description, tool list or procedure changes; two listings with no such
+  // change between them carry the same version.
+  string version = 3;
+}
+
+// ---------------------------------------------------------------------------
+// GetSkill
+// ---------------------------------------------------------------------------
+
+message GetSkillRequest {
+  // The skill's exact name, or its id.
+  string name_or_id = 1;
 }
 
 // ---------------------------------------------------------------------------

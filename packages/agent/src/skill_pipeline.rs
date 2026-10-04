@@ -597,22 +597,28 @@ pub fn external_skill_body(skill_id: &str, stored: &str) -> Option<String> {
 /// - `description`: embedded for semantic tool discovery
 /// - `parameter_schema`: typed JSON Schema the model uses when calling the tool
 /// - `enabled`: `true`; a native tool is offered whatever it says
+/// - `cli_command`: the `nodespace` command that does the same thing, for a
+///   tool that has one
 pub fn seed_tool_nodes() -> Vec<NodeTemplate> {
     use crate::local_agent::tools::Tool;
     Tool::ALL
         .iter()
         .map(|tool| {
             let def = tool.definition();
+            let mut root_properties = serde_json::json!({
+                "handler": def.name,
+                "description": def.description,
+                "parameter_schema": def.parameters_schema,
+                "enabled": true,
+            });
+            if let Some(command) = tool.cli_command() {
+                root_properties["cli_command"] = serde_json::json!(command);
+            }
             NodeTemplate {
                 id: tool.seed_id().to_string(),
                 title: def.name.clone(),
                 root_node_type: CoreNodeType::ToolNative.as_str().to_string(),
-                root_properties: serde_json::json!({
-                    "handler": def.name,
-                    "description": def.description,
-                    "parameter_schema": def.parameters_schema,
-                    "enabled": true,
-                }),
+                root_properties,
                 child_node_type: None,
                 tier: SeedTier::System,
                 markdown_content: String::new(),
@@ -2073,6 +2079,76 @@ mod tests {
                 "Tool '{}' must have a non-empty description",
                 seed.title
             );
+        }
+    }
+
+    /// Built-in tools no `nodespace` command does the work of, each with the
+    /// reason. A tool a seeded skill names must have a command or be here.
+    const NO_CLI_EQUIVALENT: &[crate::local_agent::tools::Tool] = &[
+        // Hands a question back to the user. An agent outside the app asks
+        // the user itself: there is nothing to run.
+        crate::local_agent::tools::Tool::RouteClarify,
+    ];
+
+    /// Every built-in tool a seeded skill names, in its tool list or in its
+    /// body, carries the CLI command an agent outside the app runs in its
+    /// place. A fetch returns a skill's tools with their commands, and a tool
+    /// with none is left out without a word, so a skill naming one would
+    /// reach that agent with a step it cannot carry out.
+    #[test]
+    fn every_tool_a_seeded_skill_names_has_a_cli_command() {
+        use crate::local_agent::tools::Tool;
+        use nodespace_core::ops::skill_ops::names_identifier;
+
+        for seed in SKILL_SEEDS {
+            let body = seed.template().markdown_content;
+            for tool in Tool::ALL {
+                let named =
+                    seed.tools.contains(&tool.name()) || names_identifier(&body, tool.name());
+                if !named || NO_CLI_EQUIVALENT.contains(tool) {
+                    continue;
+                }
+                assert!(
+                    tool.cli_command().is_some(),
+                    "{:?} names `{}`, which has no CLI command: give it one in \
+                     `Tool::cli_command`, or record why it has none in NO_CLI_EQUIVALENT",
+                    seed.title,
+                    tool.name()
+                );
+            }
+        }
+        for tool in NO_CLI_EQUIVALENT {
+            assert_eq!(
+                tool.cli_command(),
+                None,
+                "`{}` has a command, so it does not belong in NO_CLI_EQUIVALENT",
+                tool.name()
+            );
+        }
+    }
+
+    /// A seeded tool's node records the tool's command, and a tool with none
+    /// leaves the field unset. Each command is a `nodespace` command and
+    /// subcommand with no arguments.
+    #[test]
+    fn seed_tool_nodes_record_each_tools_cli_command() {
+        use crate::local_agent::tools::Tool;
+        for seed in seed_tool_nodes() {
+            let tool = Tool::from_name(&seed.title).expect("a seeded tool is in the registry");
+            let stored = seed
+                .root_properties
+                .get("cli_command")
+                .and_then(|v| v.as_str());
+            assert_eq!(stored, tool.cli_command(), "{}", seed.title);
+            if let Some(command) = stored {
+                let words: Vec<&str> = command.split(' ').collect();
+                assert_eq!(words[0], "nodespace", "{command}");
+                assert!((2..=3).contains(&words.len()), "{command}");
+                assert!(
+                    words.iter().all(|w| !w.is_empty() && !w.starts_with('-')),
+                    "{command}"
+                );
+            }
         }
     }
 

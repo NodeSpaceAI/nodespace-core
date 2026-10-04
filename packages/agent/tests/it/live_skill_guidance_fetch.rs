@@ -18,19 +18,23 @@
 
 use std::sync::Arc;
 
-use nodespace_agent::skill_pipeline::{seed_skill_nodes, SKILL_SEEDS};
+use nodespace_agent::local_agent::tools::Tool;
+use nodespace_agent::skill_pipeline::{seed_skill_nodes, seed_tool_nodes, SKILL_SEEDS};
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::methodology::{install_playbook, playbook_by_id};
+use nodespace_core::models::SkillFields;
 use nodespace_core::ops::search_ops::{search_semantic, SearchSemanticInput};
 use nodespace_core::ops::skill_ops::{find_skill_guidance, find_skills, FindSkillsInput};
 use nodespace_core::schema::handle_create_schema;
-use nodespace_core::services::{NodeAccessor, NodeEmbeddingService, NodeService};
+use nodespace_core::services::{
+    CreateNodeParams, InsertPositionOwned, NodeAccessor, NodeEmbeddingService, NodeService,
+};
 use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
 use serde_json::json;
 use tempfile::TempDir;
 
-/// A database seeded with the built-in skills and every queued root
+/// A database seeded with the built-in skills and tools and every queued root
 /// embedded. With `with_workspace_types` it is also a workspace with types of
 /// its own: the Linear-style setup (its skills linked to `issue` and
 /// `cycle`), and two user-defined types no skill is linked to. Returns `None`
@@ -62,12 +66,13 @@ async fn seeded_and_embedded(
 
     let groups: Vec<_> = seed_skill_nodes()
         .iter()
+        .chain(seed_tool_nodes().iter())
         .map(|t| prepare_nodes_from_template(t).expect("template must parse"))
         .collect();
     node_service
         .seed_nodes_from_templates(groups)
         .await
-        .expect("seeding the built-in skills must succeed");
+        .expect("seeding the built-in skills and tools must succeed");
 
     if with_workspace_types {
         let playbook = playbook_by_id("linear").expect("the linear playbook ships");
@@ -354,6 +359,100 @@ async fn a_fetch_returns_the_unlinked_types_a_task_is_about_and_no_others() {
             unlinked_types_for(task).await,
             Vec::<String>::new(),
             "{task:?} is about neither type"
+        );
+    }
+}
+
+/// A skill a user wrote names built-in tools, which an agent outside the app
+/// cannot call. A fetch for its task returns it as written, with the
+/// `nodespace` command of each tool it names: what that agent runs in the
+/// tool's place. A tool named only inside a longer identifier is not one of
+/// them.
+///
+/// The command is then run over the real transport by
+/// `cli_integration::skill_guidance_fetches_skills_and_schemas_end_to_end`.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn a_user_written_skill_naming_a_tool_is_fetched_with_the_command_for_it() {
+    let Some((embedding_service, node_service, _temp_dir)) = seeded_and_embedded(false).await
+    else {
+        return;
+    };
+
+    let description = "Record a decision the team made and link it to the task it settles.";
+    let skill = SkillFields::new(description, &["get_node"], 3).into_node("Recording a Decision");
+    let skill_id = skill.id.clone();
+    node_service
+        .create_node(skill)
+        .await
+        .expect("the user's skill must create");
+    node_service
+        .create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "text".to_string(),
+            content: "Find the task with `search_nodes`, then link the decision to it with \
+                      create_relationship. Never call update_nodes_from_markdown."
+                .to_string(),
+            parent_id: Some(skill_id.clone()),
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        })
+        .await
+        .expect("the user's procedure must create");
+    embedding_service
+        .embed_root_node(&skill_id)
+        .await
+        .expect("the user's skill must embed");
+
+    let guidance = find_skill_guidance(&embedding_service, &node_service, input(description, 3))
+        .await
+        .expect("the fetch must succeed");
+    let fetched = guidance
+        .skills
+        .iter()
+        .find(|s| s.id == skill_id)
+        .unwrap_or_else(|| {
+            panic!(
+                "the user's skill did not match its own description: {:?}",
+                guidance.skills.iter().map(|s| &s.name).collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        fetched.instructions.contains("create_relationship"),
+        "a user's skill is served as written: {}",
+        fetched.instructions
+    );
+    let commands: Vec<(&str, &str)> = fetched
+        .tool_commands
+        .iter()
+        .map(|c| (c.tool.as_str(), c.command.as_str()))
+        .collect();
+    assert_eq!(
+        commands,
+        [
+            ("create_relationship", "nodespace relationship create"),
+            ("get_node", "nodespace node get"),
+            ("search_nodes", "nodespace query"),
+        ],
+        "the tools it lists and names, each with its command"
+    );
+    for command in &fetched.tool_commands {
+        assert!(
+            Tool::is_seeded_as(&command.tool, &command.node_id),
+            "{} was read from a node that is not the tool's seed",
+            command.tool
+        );
+    }
+
+    // Every built-in skill the same fetch returns carries its tools' commands
+    // too.
+    for skill in guidance.skills.iter().filter(|s| s.id != skill_id) {
+        assert!(
+            !skill.tool_commands.is_empty(),
+            "{:?} came back with no tool commands",
+            skill.name
         );
     }
 }

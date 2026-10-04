@@ -2426,6 +2426,46 @@ impl Tool {
         }
     }
 
+    /// The `nodespace` command that does what this tool does, as its seeded
+    /// node records it: the command and subcommand, with no arguments.
+    /// `None` for a tool with no CLI equivalent. Exhaustive, so a tool added
+    /// to the registry states which it is.
+    pub const fn cli_command(self) -> Option<&'static str> {
+        match self {
+            Tool::SearchNodes => Some("nodespace query"),
+            // The CLI has no resolver of its own: its caller writes the
+            // query the reference resolves to.
+            Tool::ResolveQuery => Some("nodespace query"),
+            Tool::SearchSemantic => Some("nodespace search"),
+            Tool::GetNode => Some("nodespace node get"),
+            Tool::CreateNode => Some("nodespace node create"),
+            Tool::UpdateNode => Some("nodespace node update"),
+            Tool::CreateSchema => Some("nodespace schema create"),
+            Tool::UpdateSchema => Some("nodespace schema update"),
+            Tool::UpdateTaskStatus => Some("nodespace node set-status"),
+            Tool::CreateRelationship => Some("nodespace relationship create"),
+            Tool::GetRelatedNodes => Some("nodespace relationship get"),
+            Tool::SearchSkills => Some("nodespace skill guidance"),
+            Tool::DeleteNode => Some("nodespace node delete"),
+            Tool::CreateNodesFromMarkdown => Some("nodespace import file"),
+            // Asking the user is not a command.
+            Tool::RouteClarify => None,
+            Tool::ListConflicts => Some("nodespace conflicts list"),
+            Tool::GetConflict => Some("nodespace conflicts show"),
+            Tool::DismissConflict => Some("nodespace conflicts dismiss"),
+            Tool::AdoptExistingConflict => Some("nodespace conflicts adopt"),
+            Tool::MergeConflict => Some("nodespace conflicts merge"),
+            Tool::GetWorkflowState => Some("nodespace playbook get-workflow-state"),
+        }
+    }
+
+    /// Whether the node `node_id` is the seeded node of the built-in tool
+    /// named `name`. A built-in tool is defined by its own seeded node and no
+    /// other (ADR-086 §12).
+    pub fn is_seeded_as(name: &str, node_id: &str) -> bool {
+        Tool::from_name(name).is_some_and(|tool| tool.seed_id() == node_id)
+    }
+
     /// Resolve a wire name back to its registry entry. Returns `None` for any
     /// name not in the registry — used for dispatch and for validating
     /// skill `tool_whitelist` references.
@@ -4722,10 +4762,9 @@ impl AgentToolExecutor for GraphToolExecutor {
             // that is not the seed of the handler it names is refused, and so
             // is any other subtype that takes a built-in tool's name: neither
             // can put its own description and schema in that tool's place.
-            let is_the_seed = Tool::from_name(&name).map(|tool| tool.seed_id() == node_id);
             let admitted = match origin {
-                ToolOrigin::Native => is_the_seed == Some(true),
-                ToolOrigin::External => is_the_seed.is_none(),
+                ToolOrigin::Native => Tool::is_seeded_as(&name, node_id),
+                ToolOrigin::External => Tool::from_name(&name).is_none(),
             };
             if !admitted {
                 tracing::warn!(

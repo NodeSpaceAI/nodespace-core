@@ -3,9 +3,12 @@
 //! Shared logic for skill search used by the local agent's `search_skills`
 //! tool and the MCP `find_skills` handler exposed to external agents.
 
-use crate::models::{SchemaNode, SkillFields, SKILL_APPLIES_TO};
+use crate::behaviors::ToolOrigin;
+use crate::models::{CoreNodeType, Node, SchemaNode, SkillFields, SKILL_APPLIES_TO};
 use crate::services::{render_subtree_markdown, NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::OpsError;
@@ -139,11 +142,32 @@ async fn render_node_subtree(node_service: &NodeService, root_id: &str) -> Strin
 /// Render a skill node's child subtree as markdown — the actual
 /// procedure the model must follow.
 ///
-/// One `get_subtree_data` query per skill. Acceptable under
-/// `MAX_SKILL_LIMIT = 10`; a batch API would eliminate serial round trips if
-/// the limit grows.
+/// One `get_subtree_data` query per skill. Acceptable for a search, which
+/// renders at most `MAX_SKILL_LIMIT = 10`; a batch API would eliminate serial
+/// round trips if the limit grows. A failed read renders as no procedure.
 async fn render_skill_instructions(node_service: &NodeService, skill_id: &str) -> String {
     render_node_subtree(node_service, skill_id).await
+}
+
+/// A skill's procedure for the list's version, where a failed read is an
+/// error: an empty body in its place would give a version that says the
+/// skill changed.
+///
+/// One query per skill, for every skill, each time the list is read. Skill
+/// libraries are tens of nodes; a batch read is the fix if they grow.
+async fn read_skill_instructions(
+    node_service: &NodeService,
+    skill_id: &str,
+) -> Result<String, OpsError> {
+    let (_, node_map, adjacency_list) = node_service
+        .get_subtree_data(skill_id)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to read the skill {skill_id}: {e}")))?;
+    Ok(render_subtree_markdown(
+        skill_id,
+        &node_map,
+        &adjacency_list,
+    ))
 }
 
 /// Render a schema node's own description subtree as markdown.
@@ -157,6 +181,38 @@ async fn render_skill_instructions(node_service: &NodeService, skill_id: &str) -
 /// the model once found. This is that delivery path.
 async fn render_schema_description(node_service: &NodeService, schema_id: &str) -> String {
     render_node_subtree(node_service, schema_id).await
+}
+
+/// One schema in the `schema_metadata` form: its fields and relationships
+/// (each with its own `description`, via `EntityTypeDescriptor::to_json`),
+/// plus the schema's own description subtree as a sibling `description` key.
+///
+/// Encoded from the same descriptor the prompt block renders from, so this
+/// JSON cannot describe a schema differently than the model is told about it.
+/// `description_cache` holds the description subtrees already read in this
+/// call: a schema's cannot change mid-call, and the same schema commonly
+/// appears for more than one skill.
+async fn schema_definition(
+    node_service: &NodeService,
+    schema: &SchemaNode,
+    all_schemas: &[SchemaNode],
+    description_cache: &mut HashMap<String, String>,
+) -> Value {
+    let mut entry =
+        super::entity_types_block::EntityTypeDescriptor::from_corpus(schema, all_schemas).to_json();
+
+    let description = match description_cache.get(&schema.envelope.id) {
+        Some(cached) => cached.clone(),
+        None => {
+            let rendered = render_schema_description(node_service, &schema.envelope.id).await;
+            description_cache.insert(schema.envelope.id.clone(), rendered.clone());
+            rendered
+        }
+    };
+    if !description.is_empty() {
+        entry["description"] = json!(description);
+    }
+    entry
 }
 
 /// Whether `phrase` (already lowercased) appears in `haystack` (already
@@ -634,8 +690,7 @@ pub async fn find_skills(
     // skill (e.g. every generic node-creation skill scoped to it), and its
     // description subtree cannot change mid-call, so re-fetching it per skill
     // would be a repeat DB round trip for identical content.
-    let mut schema_description_cache: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut schema_description_cache: HashMap<String, String> = HashMap::new();
 
     for (node, confidence) in &skill_results {
         // `exclusion` was spent on ranking in `rerank_with_exclusions`; it is
@@ -691,26 +746,15 @@ pub async fn find_skills(
         // carried by `to_json`.
         let mut schema_metadata: Vec<Value> = Vec::with_capacity(schema_candidates.len());
         for schema in schema_candidates {
-            // Encoded from the same descriptor the prompt block renders
-            // from, so this JSON cannot describe a schema differently than
-            // the model is told about it.
-            let mut entry =
-                super::entity_types_block::EntityTypeDescriptor::from_corpus(schema, &all_schemas)
-                    .to_json();
-
-            let schema_description = match schema_description_cache.get(&schema.envelope.id) {
-                Some(cached) => cached.clone(),
-                None => {
-                    let rendered =
-                        render_schema_description(node_service.as_ref(), &schema.envelope.id).await;
-                    schema_description_cache.insert(schema.envelope.id.clone(), rendered.clone());
-                    rendered
-                }
-            };
-            if !schema_description.is_empty() {
-                entry["description"] = json!(schema_description);
-            }
-            schema_metadata.push(entry);
+            schema_metadata.push(
+                schema_definition(
+                    node_service.as_ref(),
+                    schema,
+                    &all_schemas,
+                    &mut schema_description_cache,
+                )
+                .await,
+            );
         }
 
         let instructions = render_skill_instructions(node_service.as_ref(), &node.id).await;
@@ -742,23 +786,15 @@ pub async fn find_skills(
     // so a `kind: "schema"` result never drifts from what a `kind: "skill"`
     // result would show for the identical schema.
     for (schema, confidence) in &schema_candidates {
-        let mut entry =
-            super::entity_types_block::EntityTypeDescriptor::from_corpus(schema, &all_schemas)
-                .to_json();
-
-        let schema_description = match schema_description_cache.get(&schema.envelope.id) {
-            Some(cached) => cached.clone(),
-            None => {
-                let rendered =
-                    render_schema_description(node_service.as_ref(), &schema.envelope.id).await;
-                schema_description_cache.insert(schema.envelope.id.clone(), rendered.clone());
-                rendered
-            }
-        };
-        if !schema_description.is_empty() {
-            entry["description"] = json!(schema_description);
-        }
-        let schema_metadata: Vec<Value> = vec![entry];
+        let schema_metadata: Vec<Value> = vec![
+            schema_definition(
+                node_service.as_ref(),
+                schema,
+                &all_schemas,
+                &mut schema_description_cache,
+            )
+            .await,
+        ];
 
         skills.push(json!({
             "id": schema.envelope.id,
@@ -822,10 +858,26 @@ pub struct GuidanceSkill {
     /// RFC 3339.
     pub modified_at: String,
     /// The retrieval score the skill search gave it. `None` in a listing,
-    /// which ranks nothing.
+    /// which ranks nothing, and in a fetch by name.
     pub confidence: Option<f64>,
     /// The skill's stored procedure, as markdown. Empty in a listing.
     pub instructions: String,
+    /// The CLI command of each registry tool the skill lists in its
+    /// `tool_whitelist` or names in its procedure. Empty in a listing.
+    pub tool_commands: Vec<GuidanceToolCommand>,
+}
+
+/// A registry tool a fetched skill names, with the `nodespace` command that
+/// does what the tool does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GuidanceToolCommand {
+    /// The tool node the command was read from. A caller that admits a
+    /// built-in tool only from its own seeded node decides by this id.
+    pub node_id: String,
+    /// The tool's name, as a skill names it.
+    pub tool: String,
+    /// The command and subcommand, with no arguments.
+    pub command: String,
 }
 
 /// One schema in a guidance fetch: the shape of a type the request touches.
@@ -847,45 +899,282 @@ pub struct SkillGuidance {
     pub schemas: Vec<GuidanceSchema>,
 }
 
-fn guidance_skill(node: &crate::models::Node, confidence: Option<f64>) -> Option<GuidanceSkill> {
-    let description = match SkillFields::from_node(node) {
-        Ok(skill) => skill.description,
-        Err(e) => {
+/// Every skill in the graph, without procedures, and the version of that
+/// list.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SkillListing {
+    pub skills: Vec<GuidanceSkill>,
+    /// Changes when a skill is added, removed or archived, and when a skill's
+    /// name, description, tool list or procedure changes. Two listings with
+    /// no such change between them carry the same version.
+    pub version: String,
+}
+
+/// A skill node's fields, or `None` for a node that does not decode as a
+/// skill. `SkillNodeBehavior::validate` rejects that shape on write, so only
+/// a raw store write can produce it.
+fn skill_fields(node: &Node) -> Option<SkillFields> {
+    SkillFields::from_node(node)
+        .map_err(|e| {
             tracing::warn!(skill_id = %node.id, error = %e, "skill guidance: skipping malformed skill node");
-            return None;
-        }
-    };
-    Some(GuidanceSkill {
+        })
+        .ok()
+}
+
+fn guidance_skill(node: &Node, fields: &SkillFields, confidence: Option<f64>) -> GuidanceSkill {
+    GuidanceSkill {
         id: node.id.clone(),
         name: node.content.clone(),
-        description,
+        description: fields.description.clone(),
         modified_at: node.modified_at.to_rfc3339(),
         confidence,
         instructions: String::new(),
+        tool_commands: Vec::new(),
+    }
+}
+
+/// A skill as a fetch returns it: its procedure, and the command of every
+/// registry tool it lists or names.
+fn fetched_skill(
+    node: &Node,
+    fields: &SkillFields,
+    confidence: Option<f64>,
+    instructions: String,
+    registry: &[GuidanceToolCommand],
+) -> GuidanceSkill {
+    let tool_commands = skill_tool_commands(registry, &fields.tool_whitelist, &instructions);
+    GuidanceSkill {
+        instructions,
+        tool_commands,
+        ..guidance_skill(node, fields, confidence)
+    }
+}
+
+/// Whether `text` names `identifier` as a whole word: not as part of a
+/// longer identifier, so `update_node` is not named by
+/// `update_nodes_from_markdown`. An underscore is part of a word here, which
+/// is why this is not [`mentions_phrase`]: that splits on it, and would find
+/// `update_node` in the prose "update node".
+pub fn names_identifier(text: &str, identifier: &str) -> bool {
+    if identifier.is_empty() {
+        return false;
+    }
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(identifier).any(|(start, matched)| {
+        let before = text[..start].chars().next_back();
+        let after = text[start + matched.len()..].chars().next();
+        !before.is_some_and(is_word) && !after.is_some_and(is_word)
     })
 }
 
-/// Every skill in the graph, by name, with its description and no procedure:
-/// what an agent browses to learn which skills exist.
-///
-/// Reads no embedding, so it answers while the embedding model is loading.
-pub async fn list_skill_guidance(
-    node_service: &NodeService,
-) -> Result<Vec<GuidanceSkill>, OpsError> {
-    let mut skills: Vec<GuidanceSkill> = node_service
-        .query_nodes_by_type(crate::models::CoreNodeType::Skill.as_str(), false)
-        .await
-        .map_err(|e| OpsError::Internal(format!("Failed to list skills: {}", e)))?
+/// The tools of `registry` that a skill lists in `tool_whitelist` or names in
+/// `body`, in registry order.
+fn skill_tool_commands(
+    registry: &[GuidanceToolCommand],
+    tool_whitelist: &[String],
+    body: &str,
+) -> Vec<GuidanceToolCommand> {
+    registry
         .iter()
-        .filter_map(|node| guidance_skill(node, None))
-        .collect();
-    skills.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(skills)
+        .filter(|entry| {
+            tool_whitelist.iter().any(|listed| listed == &entry.tool)
+                || names_identifier(body, &entry.tool)
+        })
+        .cloned()
+        .collect()
 }
 
-/// The skills matching `query`, each with its procedure, and the schemas
-/// relevant to the same query: what an agent outside the app fetches before
-/// an operation.
+/// Every native tool in the registry that records a CLI command, by name.
+///
+/// A tool takes part like any node, so an archived one is not read. A native
+/// tool is called by its `handler` key, which is the name a skill uses for
+/// it. A tool with no command has no entry. A failed read returns nothing:
+/// the fetch it serves still succeeds, without commands.
+async fn registry_tool_commands(node_service: &NodeService) -> Vec<GuidanceToolCommand> {
+    let nodes = match node_service
+        .query_nodes_by_type(CoreNodeType::Tool.as_str(), false)
+        .await
+    {
+        Ok(nodes) => nodes,
+        Err(e) => {
+            tracing::warn!(error = %e, "skill guidance: failed to read the tool registry");
+            return Vec::new();
+        }
+    };
+
+    // Each tool subtype's chain, resolved once however many nodes share it.
+    let mut origins: HashMap<String, Option<ToolOrigin>> = HashMap::new();
+    let mut commands = Vec::new();
+    for node in &nodes {
+        let origin = match origins.get(&node.node_type) {
+            Some(origin) => *origin,
+            None => {
+                // An unresolved chain is no tool's chain.
+                let chain = node_service
+                    .resolve_type_chain(&node.node_type)
+                    .await
+                    .unwrap_or_default();
+                let origin = ToolOrigin::of(&chain);
+                origins.insert(node.node_type.clone(), origin);
+                origin
+            }
+        };
+        if origin != Some(ToolOrigin::Native) {
+            continue;
+        }
+        let field = |name: &str| {
+            node.properties
+                .get(CoreNodeType::ToolNative.as_str())
+                .and_then(|bucket| bucket.get(name))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        };
+        if let (Some(tool), Some(command)) = (field("handler"), field("cli_command")) {
+            commands.push(GuidanceToolCommand {
+                node_id: node.id.clone(),
+                tool: tool.to_string(),
+                command: command.to_string(),
+            });
+        }
+    }
+    commands.sort_by(|a, b| a.tool.cmp(&b.tool).then_with(|| a.node_id.cmp(&b.node_id)));
+    commands
+}
+
+/// The version of a skill list: a digest of every skill's id, name,
+/// description, tool list and procedure. Derived from what is stored, so
+/// nothing is written when a skill changes, and a change to any other node
+/// leaves it as it was.
+fn skill_list_version(skills: &[(&Node, SkillFields, String)]) -> String {
+    let mut ordered: Vec<&(&Node, SkillFields, String)> = skills.iter().collect();
+    ordered.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+
+    let mut hasher = Sha256::new();
+    // Each part is length-prefixed, so no two different lists share a byte
+    // stream.
+    let mut part = |text: &str| {
+        hasher.update((text.len() as u64).to_le_bytes());
+        hasher.update(text.as_bytes());
+    };
+    for (node, fields, body) in ordered {
+        part(&node.id);
+        part(&node.content);
+        part(&fields.description);
+        part(&fields.tool_whitelist.len().to_string());
+        for tool in &fields.tool_whitelist {
+            part(tool);
+        }
+        part(body);
+    }
+    let digest = format!("{:x}", hasher.finalize());
+    digest[..16].to_string()
+}
+
+/// Every skill in the graph, by name, with its description and no procedure,
+/// and the list's version: what an agent browses to learn which skills exist,
+/// and what a client compares to learn whether that list changed.
+///
+/// Reads no embedding, so it answers while the embedding model is loading.
+pub async fn list_skill_guidance(node_service: &NodeService) -> Result<SkillListing, OpsError> {
+    let nodes = participating_skills(node_service).await?;
+
+    let mut read: Vec<(&Node, SkillFields, String)> = Vec::with_capacity(nodes.len());
+    for node in &nodes {
+        let Some(fields) = skill_fields(node) else {
+            continue;
+        };
+        let body = read_skill_instructions(node_service, &node.id).await?;
+        read.push((node, fields, body));
+    }
+
+    let version = skill_list_version(&read);
+
+    let mut skills: Vec<GuidanceSkill> = read
+        .iter()
+        .map(|(node, fields, _)| guidance_skill(node, fields, None))
+        .collect();
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(SkillListing { skills, version })
+}
+
+async fn participating_skills(node_service: &NodeService) -> Result<Vec<Node>, OpsError> {
+    node_service
+        .query_nodes_by_type(CoreNodeType::Skill.as_str(), false)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to list skills: {}", e)))
+}
+
+/// One skill, by its exact name or its id, with what a match returns for it:
+/// its procedure, the schemas it is linked to through `applies_to` (and their
+/// subtypes), and the command of every registry tool it lists or names.
+///
+/// Reads no embedding. An id is tried before a name. A name no skill has, or
+/// one that several share, is an error that says so.
+pub async fn get_skill_guidance(
+    node_service: &NodeService,
+    name_or_id: &str,
+) -> Result<SkillGuidance, OpsError> {
+    let key = name_or_id.trim();
+    let nodes = participating_skills(node_service).await?;
+    let node = match nodes.iter().find(|node| node.id == key) {
+        Some(node) => node,
+        None => {
+            let named: Vec<&Node> = nodes.iter().filter(|node| node.content == key).collect();
+            match named.as_slice() {
+                [node] => *node,
+                [] => {
+                    return Err(OpsError::NotFound {
+                        id: format!("skill \"{key}\""),
+                    })
+                }
+                several => {
+                    let ids: Vec<&str> = several.iter().map(|node| node.id.as_str()).collect();
+                    return Err(OpsError::InvalidParams(format!(
+                        "{} skills are named \"{key}\"; fetch one by its id: {}",
+                        several.len(),
+                        ids.join(", ")
+                    )));
+                }
+            }
+        }
+    };
+    let fields = skill_fields(node)
+        .ok_or_else(|| OpsError::Internal(format!("skill \"{key}\" does not decode as a skill")))?;
+
+    let instructions = render_skill_instructions(node_service, &node.id).await;
+    let registry = registry_tool_commands(node_service).await;
+
+    let all_schemas = node_service
+        .get_all_schemas()
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to read schemas: {}", e)))?;
+    let applies_to = node_service
+        .store()
+        .get_edge_targets_by_source(std::slice::from_ref(&node.id), SKILL_APPLIES_TO)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to read applies_to links: {}", e)))?;
+    let linked = applies_to
+        .get(&node.id)
+        .map(|targets| linked_schemas(targets, &all_schemas))
+        .unwrap_or_default();
+    let mut description_cache = HashMap::new();
+    let mut schemas = Vec::with_capacity(linked.len());
+    for schema in linked {
+        let definition =
+            schema_definition(node_service, schema, &all_schemas, &mut description_cache).await;
+        schemas.extend(guidance_schema(&definition));
+    }
+
+    Ok(SkillGuidance {
+        skills: vec![fetched_skill(node, &fields, None, instructions, &registry)],
+        schemas,
+    })
+}
+
+/// The skills matching `query`, each with its procedure and the command of
+/// every registry tool it lists or names, and the schemas relevant to the
+/// same query: what an agent outside the app fetches before an operation.
 ///
 /// Ranked by [`find_skills`], so a request gets the skills the in-app agent
 /// would get for it, in the same order.
@@ -914,6 +1203,7 @@ pub async fn find_skill_guidance(
         skills: Vec::new(),
         schemas: guidance_schemas(&found.skills, &query),
     };
+    let registry = registry_tool_commands(node_service).await;
 
     for entry in found.skills.iter().filter(|entry| !is_schema_entry(entry)) {
         let Some(id) = entry.get("id").and_then(Value::as_str) else {
@@ -927,19 +1217,40 @@ pub async fn find_skill_guidance(
                 continue;
             }
         };
-        let confidence = entry.get("confidence").and_then(Value::as_f64);
-        let Some(mut skill) = guidance_skill(&node, confidence) else {
+        let Some(fields) = skill_fields(&node) else {
             continue;
         };
-        skill.instructions = entry
+        let confidence = entry.get("confidence").and_then(Value::as_f64);
+        let instructions = entry
             .get("instructions")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        guidance.skills.push(skill);
+        guidance.skills.push(fetched_skill(
+            &node,
+            &fields,
+            confidence,
+            instructions,
+            &registry,
+        ));
     }
 
     Ok(guidance)
+}
+
+/// A schema of a guidance fetch, from its `schema_metadata` definition.
+fn guidance_schema(definition: &Value) -> Option<GuidanceSchema> {
+    let id = definition.get("type_id").and_then(Value::as_str)?;
+    let name = definition
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(id)
+        .to_string();
+    Some(GuidanceSchema {
+        id: id.to_string(),
+        name,
+        definition: definition.clone(),
+    })
 }
 
 fn is_schema_entry(entry: &Value) -> bool {
@@ -962,22 +1273,11 @@ fn guidance_schemas(found: &[Value], query: &str) -> Vec<GuidanceSchema> {
 
     let mut schemas: Vec<GuidanceSchema> = Vec::new();
     let mut add = |definition: &Value| {
-        let Some(id) = definition.get("type_id").and_then(Value::as_str) else {
-            return;
-        };
-        if schemas.iter().any(|s| s.id == id) {
-            return;
+        if let Some(schema) = guidance_schema(definition) {
+            if !schemas.iter().any(|s| s.id == schema.id) {
+                schemas.push(schema);
+            }
         }
-        let name = definition
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(id)
-            .to_string();
-        schemas.push(GuidanceSchema {
-            id: id.to_string(),
-            name,
-            definition: definition.clone(),
-        });
     };
 
     for entry in found {
@@ -1075,6 +1375,121 @@ mod tests {
         let all = vec![extending("a", "b", false), extending("b", "a", false)];
         assert!(linked_ids(&["task"], &all).is_empty());
         assert_eq!(linked_ids(&["a"], &all), ["a", "b"]);
+    }
+
+    #[test]
+    fn names_identifier_matches_a_tool_name_as_a_whole_word() {
+        assert!(names_identifier("call update_node once", "update_node"));
+        assert!(names_identifier("update_node", "update_node"));
+        assert!(names_identifier("Use `update_node`.", "update_node"));
+        assert!(names_identifier("(update_node, get_node)", "get_node"));
+        // Inside a longer identifier, on either side.
+        assert!(!names_identifier(
+            "call update_nodes_from_markdown",
+            "update_node"
+        ));
+        assert!(!names_identifier("call bulk_update_node", "update_node"));
+        assert!(!names_identifier("call update_node2", "update_node"));
+        // The words of a name are not the name.
+        assert!(!names_identifier("then update node X", "update_node"));
+        assert!(!names_identifier("anything", ""));
+        // A later whole-word use counts after an earlier partial one.
+        assert!(names_identifier(
+            "update_nodes_from_markdown, then update_node",
+            "update_node"
+        ));
+    }
+
+    fn registry_entry(tool: &str, command: &str) -> GuidanceToolCommand {
+        GuidanceToolCommand {
+            node_id: format!("node-{tool}"),
+            tool: tool.to_string(),
+            command: command.to_string(),
+        }
+    }
+
+    #[test]
+    fn skill_tool_commands_returns_listed_and_named_tools_in_registry_order() {
+        let registry = vec![
+            registry_entry("create_node", "nodespace node create"),
+            registry_entry("get_node", "nodespace node get"),
+            registry_entry("update_node", "nodespace node update"),
+        ];
+        let listed = vec!["update_node".to_string(), "not_in_registry".to_string()];
+
+        let commands = skill_tool_commands(&registry, &listed, "First call get_node.");
+
+        let tools: Vec<&str> = commands.iter().map(|c| c.tool.as_str()).collect();
+        assert_eq!(tools, ["get_node", "update_node"]);
+        assert!(skill_tool_commands(&registry, &[], "No tool here.").is_empty());
+    }
+
+    fn versioned_skill(
+        id: &str,
+        name: &str,
+        description: &str,
+        tools: &[&str],
+    ) -> (Node, SkillFields) {
+        let fields = SkillFields::new(description, tools, 3);
+        let node = Node::new_with_id(
+            id.to_string(),
+            "skill".to_string(),
+            name.to_string(),
+            fields.properties(),
+        );
+        (node, fields)
+    }
+
+    #[test]
+    fn skill_list_version_follows_what_a_skill_holds_and_not_the_order_read() {
+        let (a, a_fields) = versioned_skill("a", "Alpha", "First", &["get_node"]);
+        let (b, b_fields) = versioned_skill("b", "Beta", "Second", &[]);
+        let version = |skills: &[(&Node, SkillFields, String)]| skill_list_version(skills);
+
+        let base = version(&[
+            (&a, a_fields.clone(), "Body A".to_string()),
+            (&b, b_fields.clone(), "Body B".to_string()),
+        ]);
+        assert_eq!(base.len(), 16);
+        assert_eq!(
+            base,
+            version(&[
+                (&b, b_fields.clone(), "Body B".to_string()),
+                (&a, a_fields.clone(), "Body A".to_string()),
+            ]),
+            "the order skills are read in is not a change"
+        );
+
+        let (renamed, _) = versioned_skill("a", "Alpha Two", "First", &["get_node"]);
+        let (_, redescribed) = versioned_skill("a", "Alpha", "First, reworded", &["get_node"]);
+        let (_, relisted) = versioned_skill("a", "Alpha", "First", &["get_node", "update_node"]);
+        let b_entry = || (&b, b_fields.clone(), "Body B".to_string());
+        let changes = [
+            version(&[
+                (&renamed, a_fields.clone(), "Body A".to_string()),
+                b_entry(),
+            ]),
+            version(&[(&a, redescribed, "Body A".to_string()), b_entry()]),
+            version(&[(&a, relisted, "Body A".to_string()), b_entry()]),
+            version(&[(&a, a_fields.clone(), "Body A.".to_string()), b_entry()]),
+            version(&[(&a, a_fields.clone(), "Body A".to_string())]),
+            version(&[]),
+        ];
+        for (i, changed) in changes.iter().enumerate() {
+            assert_ne!(changed, &base, "change {i} left the version as it was");
+            assert!(
+                !changes[..i].contains(changed),
+                "change {i} collides with an earlier one"
+            );
+        }
+
+        // Text moving between two fields is a change: each part is delimited.
+        let (_, split_one) = versioned_skill("a", "Alpha", "ab", &[]);
+        let (_, split_two) = versioned_skill("a", "Alpha", "a", &[]);
+        assert_ne!(
+            version(&[(&a, split_one, "c".to_string())]),
+            version(&[(&a, split_two, "bc".to_string())])
+        );
     }
 
     #[test]
