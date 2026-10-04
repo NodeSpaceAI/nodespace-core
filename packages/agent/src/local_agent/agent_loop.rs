@@ -1813,6 +1813,26 @@ fn off_menu_node_refused_result(
     })
 }
 
+/// Build the tool result returned in place of a call that would change a node
+/// whose type could not be read, on a turn with an offered set.
+///
+/// The call is not run: the node could not be checked against the set, and a
+/// check that lets through what it cannot read holds nothing. A node that
+/// does not exist is a different case, and goes to the tool's own error.
+///
+/// Flagged as an error: nothing ran. It is not a `type_not_offered` refusal,
+/// since the node's type is not known to be off the menu.
+fn node_type_unread_result(reason: &crate::agent_types::ToolError) -> serde_json::Value {
+    serde_json::json!({
+        "error": "node_type_unread",
+        "message": format!(
+            "Not executed, and nothing was changed: this node's type could not be read, so the \
+             call could not be checked against the types this request covers ({reason}). \
+             Re-send the call to try again."
+        ),
+    })
+}
+
 /// Whether `result` is the refusal of a call that named a type outside the
 /// turn's offered set, or a node of one.
 fn is_off_menu_type_refusal(result: &serde_json::Value) -> bool {
@@ -3580,7 +3600,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     .filter(|_| offered_types.is_some())
                     .and_then(|(name, args)| super::tools::held_node_id(name, args));
                 let selected_type = match held_node {
-                    Some(id) => self.tool_executor.node_type(id).await,
+                    // A read that fails records no selection. Dispatch
+                    // makes its own read and does not run the call on a
+                    // failure.
+                    Some(id) => self.tool_executor.node_type(id).await.ok().flatten(),
                     None => first_call
                         .as_ref()
                         .and_then(|(name, args)| decisions::selected_schema(name, args)),
@@ -4297,6 +4320,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // for the `Tool executed` line, which reports whether a call
                 // on an off-menu node ran.
                 let mut target_node_type: Option<String> = None;
+                // Set when that lookup failed. The call is then not run.
+                let mut target_node_unread: Option<crate::agent_types::ToolError> = None;
                 let (args, tool_result) = match parsed_args {
                     Ok(mut args) => {
                         consecutive_malformed_calls = 0;
@@ -4394,12 +4419,16 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                             // Looked up only for a call the guard above lets
                             // past, and only on a turn with an offered set. A
                             // node that cannot be found has no type here, and
-                            // the call goes on to the executor's own error.
+                            // the call goes on to the executor's own error. A
+                            // read that fails is kept, and stops the call.
                             if already_written.is_none() && offered_types.is_some() {
                                 if let Some(id) =
                                     super::tools::held_node_id(&tc.function_name, &args)
                                 {
-                                    target_node_type = self.tool_executor.node_type(id).await;
+                                    match self.tool_executor.node_type(id).await {
+                                        Ok(node_type) => target_node_type = node_type,
+                                        Err(e) => target_node_unread = Some(e),
+                                    }
                                 }
                             }
                             if let Some(prior) = already_written {
@@ -4466,6 +4495,24 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                         tool_call_id: tc.id.clone(),
                                         name: tc.function_name.clone(),
                                         result: refused,
+                                        is_error: true,
+                                    }),
+                                )
+                            } else if let Some(reason) = &target_node_unread {
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    tool = %tc.function_name,
+                                    iteration = iteration,
+                                    error = %reason,
+                                    "Tool call not run — its node's type could not be read on a turn with an offered set"
+                                );
+                                let unread = node_type_unread_result(reason);
+                                (
+                                    args,
+                                    Ok(crate::agent_types::ToolResult {
+                                        tool_call_id: tc.id.clone(),
+                                        name: tc.function_name.clone(),
+                                        result: unread,
                                         is_error: true,
                                     }),
                                 )
@@ -14199,11 +14246,17 @@ mod tests {
         async fn user_type_names(&self) -> Vec<String> {
             self.user_types.clone()
         }
-        async fn node_type(&self, id: &str) -> Option<String> {
+        async fn node_type(&self, id: &str) -> Result<Option<String>, ToolError> {
             self.type_lookups.lock().unwrap().push(id.to_string());
-            self.node_types.get(id).cloned()
+            if id == UNREADABLE_NODE {
+                return Err(ToolError::ExecutionFailed("the store is locked".into()));
+            }
+            Ok(self.node_types.get(id).cloned())
         }
     }
+
+    /// A node id whose type [`RoutingToolExecutor`] fails to read.
+    const UNREADABLE_NODE: &str = "unreadable";
 
     fn skill_candidate(name: &str, score: f32, tools: &[&str]) -> SkillCandidate {
         SkillCandidate {
@@ -16167,6 +16220,35 @@ mod tests {
             json!({"id": "nodespace://n-1", "property_count": 1}),
             "the executor's own result is returned"
         );
+    }
+
+    /// A node whose type cannot be read was not checked against the set, so
+    /// the call is not run. That is not a refusal for its type, and the round's
+    /// schema decision records no selection.
+    #[tokio::test]
+    async fn update_node_on_a_node_whose_type_cannot_be_read_is_not_run() {
+        let args = json!({"id": UNREADABLE_NODE, "content": "April"});
+        let (executed, lookups, result) = run_held_update(args.clone()).await;
+
+        assert!(
+            lookups.contains(&UNREADABLE_NODE.to_string()),
+            "{lookups:?}"
+        );
+        assert!(executed.is_empty(), "an unchecked call ran: {executed:?}");
+        let call = &result.tool_calls_made[0];
+        assert!(call.is_error);
+        assert_eq!(call.result["error"], json!("node_type_unread"));
+        assert_eq!(
+            call.result["message"],
+            json!(
+                "Not executed, and nothing was changed: this node's type could not be read, so \
+                 the call could not be checked against the types this request covers (tool \
+                 execution failed: the store is locked). Re-send the call to try again."
+            )
+        );
+
+        let decision = schema_decision(vec![billing_candidate(true)], "update_node", args).await;
+        assert_eq!(decision["selected"], json!(null));
     }
 
     /// No offered set: no node's type is looked up, and `update_node` runs on

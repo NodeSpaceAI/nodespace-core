@@ -1504,7 +1504,10 @@ pub(crate) fn off_menu_type<'a>(
 }
 
 /// A second name the executor accepts for a node id parameter called `id`
-/// (the `alias` on [`AgentUpdateNodeParams`]).
+/// (the `alias` on [`AgentUpdateNodeParams`]). [`held_node_id`] reads it for
+/// every held tool, which is right while `update_node` is the only one: a
+/// tool added to [`Tool::held_node_id_parameter`] has to be checked for the
+/// aliases its own parameters accept.
 const NODE_ID_ALIAS: &str = "node_id";
 
 /// The id of the node a call changes, for a tool held by that node's type
@@ -4963,17 +4966,18 @@ impl AgentToolExecutor for GraphToolExecutor {
 
     /// The stored type of the node `id` names, read through the node service.
     ///
-    /// A node that is missing or cannot be read has no type here. The caller
-    /// then lets the call through, and the tool reports the failure itself.
-    async fn node_type(&self, id: &str) -> Option<String> {
-        let ns = self.node_service.as_ref()?;
-        match ns.get_node(strip_node_uri(id)).await {
-            Ok(node) => node.map(|node| node.node_type),
-            Err(e) => {
-                tracing::warn!(error = %e, "Could not read a node's type");
-                None
-            }
-        }
+    /// A missing node has no type here: the caller lets the call through,
+    /// and the tool reports that itself. So does an executor with no node
+    /// service, where every tool fails the same way. A read that fails is an
+    /// error, so the caller does not run a call it could not check.
+    async fn node_type(&self, id: &str) -> Result<Option<String>, ToolError> {
+        let Some(ns) = self.node_service.as_ref() else {
+            return Ok(None);
+        };
+        ns.get_node(strip_node_uri(id))
+            .await
+            .map(|node| node.map(|node| node.node_type))
+            .map_err(|e| ToolError::ExecutionFailed(format!("could not read the node's type: {e}")))
     }
 
     /// Run skill retrieval as a deterministic system step (ADR-038).
@@ -5627,22 +5631,47 @@ mod tests {
             .expect("the task is created");
         let uri = created.result["id"].as_str().expect("id").to_string();
 
-        assert_eq!(executor.node_type(&uri).await.as_deref(), Some("task"));
         assert_eq!(
-            executor.node_type(strip_node_uri(&uri)).await.as_deref(),
+            executor.node_type(&uri).await.unwrap().as_deref(),
+            Some("task")
+        );
+        assert_eq!(
+            executor
+                .node_type(strip_node_uri(&uri))
+                .await
+                .unwrap()
+                .as_deref(),
             Some("task")
         );
         assert_eq!(
             executor
                 .node_type("00000000-0000-4000-8000-000000000000")
-                .await,
+                .await
+                .unwrap(),
             None
         );
     }
 
     #[tokio::test]
     async fn node_type_is_none_without_a_node_service() {
-        assert_eq!(test_executor().node_type("n-1").await, None);
+        assert_eq!(test_executor().node_type("n-1").await.unwrap(), None);
+    }
+
+    /// `held_node_id` reads one id from a call that carries two, or reads the
+    /// alias when `id` is not a string. The check is still sound, because the
+    /// executor refuses each of those calls and changes nothing. A params
+    /// struct that started accepting one would need the check to follow.
+    #[test]
+    fn the_executor_refuses_a_call_whose_id_forms_disagree() {
+        for args in [
+            json!({"id": "n-1", "node_id": "c-1", "content": "x"}),
+            json!({"id": 7, "node_id": "c-1", "content": "x"}),
+        ] {
+            assert!(
+                serde_json::from_value::<AgentUpdateNodeParams>(args.clone()).is_err(),
+                "{args} must not be accepted"
+            );
+        }
     }
 
     #[test]
