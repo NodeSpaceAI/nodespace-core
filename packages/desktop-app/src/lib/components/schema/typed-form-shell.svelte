@@ -6,7 +6,7 @@
   - the Collapsible shell + summary row ("X/Y fields | N related nodes", with
     the chevron at the far edge; the whole row is the trigger), with the
     expanded fields as the form's own scroll region: the viewer caps the
-    form's height, the header row stays put and the fields scroll under it
+    form's height, the summary row stays put and the fields scroll under it
   - the node's typed relationships (both directions), loaded once per nodeId
     via NodeRelationshipsState and reused by whichever form renders:
     single-valued ones (`isFormPromoted`) render as RelationshipFields after
@@ -184,6 +184,11 @@
               {relationships.modalCount}
               {relationships.modalCount === 1 ? 'related node' : 'related nodes'}
             </span>
+          {/if}
+          <!-- Nothing to count (no fields, and the relationships did not
+               load): the row still says what it opens. -->
+          {#if stats.total === 0 && !showRelatedCount}
+            <span>Relationships</span>
           {/if}
           <svg
             class="h-4 w-4 transition-transform duration-200"

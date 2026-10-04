@@ -139,6 +139,14 @@ describe('BaseNodeViewer — schema form height and scroll (browser mode)', () =
       parts.host.getBoundingClientRect().bottom + 1
     );
 
+    // The chevron is the last thing in the header row, at its far edge.
+    const chevron = header.querySelector('svg:last-child');
+    if (!chevron) throw new Error('No chevron rendered');
+    expect(chevron.getBoundingClientRect().right).toBeCloseTo(
+      header.getBoundingClientRect().right,
+      0
+    );
+
     // Scrolling the fields leaves the header row where it was.
     const headerTop = header.getBoundingClientRect().top;
     scroll.scrollTop = scroll.scrollHeight;

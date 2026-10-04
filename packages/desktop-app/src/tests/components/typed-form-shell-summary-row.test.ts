@@ -196,7 +196,8 @@ describe('TypedFormShell — summary row and Relationships entry point', () => {
     const { container } = renderForm();
 
     await waitFor(() => expect(relationshipsButton(container)).toBeTruthy());
-    expect(summary(container)).toBe('');
+    // No fields and no count: the row names what it opens.
+    expect(summary(container)).toBe('Relationships');
   });
 
   it('drops the count when a later reload fails, since it may be stale', async () => {
@@ -206,7 +207,7 @@ describe('TypedFormShell — summary row and Relationships entry point', () => {
 
     loadNodeRelationshipsView.mockRejectedValue(new Error('daemon offline'));
     notifyRelationshipChanged(NODE_ID, 'parts-1');
-    await waitFor(() => expect(summary(container)).toBe(''));
+    await waitFor(() => expect(summary(container)).toBe('Relationships'));
     expect(relationshipsButton(container)).toBeTruthy();
   });
 
@@ -217,6 +218,34 @@ describe('TypedFormShell — summary row and Relationships entry point', () => {
     await waitFor(() => expect(summary(container)).toBe('2 related nodes'));
     const button = relationshipsButton(container)!;
     expect(container.querySelector('[data-collapsible-content]')?.contains(button)).toBe(true);
+
+    // Expanding it and pressing the button reaches the modal.
+    await fireEvent.click(trigger(container));
+    await fireEvent.click(button);
+    await waitFor(() => expect(document.body.querySelector('[role="dialog"]')).toBeTruthy());
+  });
+
+  it('focuses the first field, not the Relationships button, when it opens by itself', async () => {
+    loadNodeRelationshipsView.mockResolvedValue(view([group('parts', 'many', 2)]));
+    const withField: SchemaNode = {
+      ...schema(),
+      fields: [
+        {
+          name: 'label',
+          friendlyName: 'Label',
+          type: 'text',
+          protection: 'user',
+          indexed: false,
+          required: false
+        }
+      ]
+    };
+    const { container, getByLabelText } = render(GenericSchemaForm, {
+      props: { nodeId: NODE_ID, schema: withField, autoOpen: true }
+    });
+
+    await waitFor(() => expect(relationshipsButton(container)).toBeTruthy());
+    await waitFor(() => expect(document.activeElement).toBe(getByLabelText('Label')));
   });
 
   it('updates the count when an edge of this node changes elsewhere', async () => {
