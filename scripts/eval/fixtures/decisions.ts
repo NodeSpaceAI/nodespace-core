@@ -20,6 +20,10 @@
  * ones the pipeline already computed and the outcomes are the ones the model
  * already produced (see `local_agent::decisions`).
  *
+ * A measurement quoted in a comment below was taken on the wording the fixture
+ * had before it was re-themed into this domain, unless the comment says
+ * otherwise. The scenarios measure the same things; the rates may not carry.
+ *
  * Scenario wording must stay independent of packages/agent/src/agent_guidance.rs;
  * `guidance_is_not_contaminated_by_eval_prompts` parses the `prompt:` literals
  * out of this file and fails the build if guidance reproduces one.
@@ -45,9 +49,9 @@ import type {
 
 // Schema expectations deliberately never name an exact type id. `create_schema`
 // derives the id from the MODEL's phrasing of the request, not from the
-// fixture's: "a new type for the companies we sell to" produced
-// `company_sold_to`, and "the places we hold events" produced a type the model
-// called "Event Venue". An assertion naming `company` or `venue` fails on a
+// fixture's: asked for a new type in the user's words, the model has named one
+// after a clause of the request and given another a display name the request
+// never used. An assertion naming the id the fixture expected fails on a
 // naming mismatch rather than a decision error, which is a fixture bug wearing
 // a model bug's clothes — and it cost two full 3-rep runs to notice. Assert on
 // the PROPERTY being scored (did it stay on the menu? did it pick the right one
@@ -189,7 +193,7 @@ interface DecisionScenario extends Scenario {
    *
    * These were previously scored as schema-selection failures, which measured
    * the wrong layer: the model never reached a choice among the candidates on
-   * offer — it could not get from "Northwind" to a node id, so it deferred and
+   * offer — it could not get from a record's name to a node id, so it deferred and
    * asked the user for one. Scoring that as a bad schema pick attributes a
    * lookup failure to a judgment the model never made.
    */
@@ -248,7 +252,7 @@ interface DecisionScenario extends Scenario {
 //   that had failed ("I couldn't complete the schema creation"), which is the
 //   history in which `schema-on-menu-company` stopped passing.
 // - `create_schema` names a type from the model's own phrasing, so a later
-//   chat could add a second venue type (`event_place` beside `event_venue`)
+//   chat could add a second type for the same kind of thing under another id,
 //   and every scenario after it chose among three types, not two.
 // - A setup turn that replied "that type already exists" without a call failed
 //   its assertion, and the scenario after it was not scored. A full run lost
@@ -267,42 +271,55 @@ interface DecisionScenario extends Scenario {
 /// invalidate. The schema assertions still match on a pattern, because those
 /// score what the model chose.
 ///
-/// The venue type has no `name` field: a record's name is its title, and that
-/// is the shape the agent gives a type asked for "with a name, a booking date
-/// and a capacity". The company type keeps the `name` field it has always been
-/// seeded with, so its scenarios are scored against the type they were
-/// measured on, and Northwind's `name` is set to its title (see
-/// `seedWorkspace`).
-const COMPANY_TYPE = "company_sold_to";
-const VENUE_TYPE = "event_venue";
-const SIGNED_DATE_FIELD = "signed_date";
+/// What the scenarios rely on is the types' structure, not their vocabulary:
+///
+/// - Both carry a date and only the cycle carries a number, so a message about
+///   a capacity can only mean the cycle.
+/// - The cycle type has no `name` field: a record's name is its title, and
+///   that is the shape the agent gives a type asked for "with a name, an end
+///   date and a capacity". The spec type has one, and the seeded spec's `name`
+///   is set to its title (see `seedWorkspace`).
+/// - Both ids contain an underscore, which a model may escape when it lists
+///   them (`outcome-list-types`).
+const SPEC_TYPE = "feature_spec";
+const CYCLE_TYPE = "planning_cycle";
+const SIGNED_OFF_DATE_FIELD = "signed_off_date";
 
 const SEEDED_TYPES: Array<{ id: string; params: Record<string, unknown> }> = [
   {
-    id: COMPANY_TYPE,
+    id: SPEC_TYPE,
     params: {
-      name: COMPANY_TYPE,
-      description: "A company we sell to, and the date we signed them",
+      name: SPEC_TYPE,
+      description: "A feature spec, and the date it was signed off",
       fields: [
         { name: "name", type: "text" },
-        { name: SIGNED_DATE_FIELD, type: "date" },
+        { name: SIGNED_OFF_DATE_FIELD, type: "date" },
       ],
     },
   },
   {
-    id: VENUE_TYPE,
+    id: CYCLE_TYPE,
     params: {
-      name: "Event Venue",
-      description: "A place we hold events, with its booking date and capacity",
+      name: "Planning Cycle",
+      description: "A planning cycle, with its end date and capacity",
       fields: [
-        { name: "booking_date", type: "date" },
+        { name: "end_date", type: "date" },
         { name: "capacity", type: "number" },
       ],
     },
   },
 ];
 
-/// The company instance the entity scenarios act on.
+/// The spec the entity scenarios act on.
+///
+/// Its title does not contain its type's name. A request that names a type
+/// outright puts that type on a held turn's menu, and `held-off-menu-node`
+/// needs this record's type off it.
+///
+/// Neither word of it, nor of the two absent records the scenarios name,
+/// appears in a built-in skill's description. A record called "… Sync" pulled
+/// Conflict Journal ("sync collisions") level with the lookup skill on a
+/// question about its date.
 ///
 /// Seeded out of band rather than by a turn, for two reasons. First, a turn's
 /// writes are replayed into every later turn as terse facts carrying the id
@@ -310,10 +327,10 @@ const SEEDED_TYPES: Array<{ id: string; params: Record<string, unknown> }> = [
 /// history (see `EvalFixture.seedGroup`'s contract).
 /// Second, a turn lengthens the conversation, and length alone was enough to
 /// make the model stop emitting tool calls.
-const SEEDED_COMPANY_TITLE = "Northwind Trading";
-const SEEDED_COMPANY_SIGNED = "2025-03-14";
+const SEEDED_SPEC_TITLE = "Kestrel Gateway";
+const SEEDED_SPEC_SIGNED_OFF = "2025-03-14";
 /// That date as a reply may write it: ISO, or the day and month in words.
-const SEEDED_COMPANY_SIGNED_IN_REPLY =
+const SEEDED_SPEC_SIGNED_OFF_IN_REPLY =
   /2025-03-14|\bMar(ch|\.)?\s+14(th)?\b|\b14(th)?\s+(of\s+)?Mar(ch|\.)?\b|\b0?3\/14\/(20)?25\b|\b14\/0?3\/(20)?25\b/i;
 
 function runNs(env: EvalEnv, args: string[]): unknown {
@@ -352,23 +369,23 @@ function listSchemaIds(env: EvalEnv): Set<string> {
 }
 
 /**
- * Create the two custom types and the Northwind instance the scenarios run
+ * Create the two custom types and the Kestrel Gateway spec the scenarios run
  * against.
  *
  * Runs before every chat (see `groupSeeds`), so the seeded state each
  * scenario reads is the same whichever chats ran before it. Chats share the
- * rep's database, and some scenarios change Northwind: `op-read-then-write`
+ * rep's database, and some scenarios change the spec: `op-read-then-write`
  * moves its date to April, and `outcome-record-field-is-answered`, asked after
  * it, was correctly answered with April and scored as wrong. The types are
- * created only when missing, and Northwind's fields are set back each time.
+ * created only when missing, and the spec's fields are set back each time.
  *
  * Only the seeded state is set back. A node an earlier chat created stays, so
- * a scenario that duplicates Northwind (a create the guard missed) leaves the
+ * a scenario that duplicates the spec (a create the guard missed) leaves the
  * name resolving to two records for every chat after it.
  *
  * Idempotent, and that is load-bearing rather than defensive: a run without a
  * between-runs command, or one whose reset failed, must not leave rep 2 with
- * two Northwinds and rep 3 with three. The name would stop resolving to a
+ * two Kestrel Gateways and rep 3 with three. The name would stop resolving to a
  * single node, and the failures would read as model non-determinism.
  */
 function seedWorkspace(env: EvalEnv): void {
@@ -390,15 +407,15 @@ function seedWorkspace(env: EvalEnv): void {
     "node",
     "query",
     "--type",
-    COMPANY_TYPE,
+    SPEC_TYPE,
     "--limit",
     "50",
   ]) as { nodes?: Array<{ content?: string; id?: string }> } | null;
   const present = (existing?.nodes ?? []).find(
-    (n) => (n?.content ?? "").toLowerCase() === SEEDED_COMPANY_TITLE.toLowerCase(),
+    (n) => (n?.content ?? "").toLowerCase() === SEEDED_SPEC_TITLE.toLowerCase(),
   );
 
-  // An existing Northwind is given the date too: a rep whose update failed
+  // An existing spec is given the date too: a rep whose update failed
   // after the create would otherwise leave it dateless for every rep after,
   // and `outcome-record-field-is-answered` is scored on the reply carrying it.
   const id =
@@ -408,24 +425,24 @@ function seedWorkspace(env: EvalEnv): void {
         "node",
         "create",
         "--type",
-        COMPANY_TYPE,
+        SPEC_TYPE,
         "--content",
-        SEEDED_COMPANY_TITLE,
+        SEEDED_SPEC_TITLE,
       ]) as { id?: string } | null
     )?.id;
-  if (!id) throw new Error(`seeding '${SEEDED_COMPANY_TITLE}' returned no id`);
+  if (!id) throw new Error(`seeding '${SEEDED_SPEC_TITLE}' returned no id`);
 
   runNs(env, [
     "node",
     "update",
     id.replace(/^nodespace:\/\//, ""),
     "--property",
-    `${SIGNED_DATE_FIELD}=${SEEDED_COMPANY_SIGNED}`,
+    `${SIGNED_OFF_DATE_FIELD}=${SEEDED_SPEC_SIGNED_OFF}`,
     // The type declares a `name` field, and a record whose `name` is empty
-    // cannot be found by it: asked when Northwind was signed, the model
-    // filtered on `name`, matched nothing, and reported no such record.
+    // cannot be found by it: asked for the record's date, the model filtered
+    // on `name`, matched nothing, and reported no such record.
     "--property",
-    `name=${SEEDED_COMPANY_TITLE}`,
+    `name=${SEEDED_SPEC_TITLE}`,
   ]);
 }
 
@@ -444,7 +461,7 @@ export function groupSeeds(group: Scenario[]): Array<"workspace" | "linked-skill
 
 /// The type the linked-skill scenarios act on, and the only one their turns
 /// are held to.
-const LINKED_TYPE = "warranty_claim";
+const LINKED_TYPE = "bug_report";
 
 /// Skills linked to `LINKED_TYPE` through `applies_to`.
 ///
@@ -452,24 +469,24 @@ const LINKED_TYPE = "warranty_claim";
 /// candidate that clears its bar is linked, and Stage 2 judges the top three:
 /// fewer would leave room for an unlinked built-in, and the turn would not be
 /// held. Their descriptions share the scenarios' vocabulary so that they, and
-/// not the built-ins, lead retrieval for a warranty request.
+/// not the built-ins, lead retrieval for a bug-report request.
 const LINKED_SKILLS: Array<{ name: string; description: string; tools: string[] }> = [
   {
-    name: "Warranty Claim Intake",
+    name: "Bug Report Intake",
     description:
-      "File a warranty claim: record a new warranty claim for a product with its status and the date it was filed.",
+      "File a bug report: record a new bug report for a component with its status and the date it was filed.",
     tools: ["search_nodes", "create_node"],
   },
   {
-    name: "Warranty Claim Follow-up",
+    name: "Bug Report Follow-up",
     description:
-      "Follow up on a warranty claim: find the warranty claim and change its status or add what happened next.",
+      "Follow up on a bug report: find the bug report and change its status or add what happened next.",
     tools: ["search_nodes", "update_node", "create_node"],
   },
   {
-    name: "Warranty Claim Lookup",
+    name: "Bug Report Lookup",
     description:
-      "Look up warranty claims: list warranty claims by product, status or the date they were filed.",
+      "Look up bug reports: list bug reports by component, status or the date they were filed.",
     tools: ["search_nodes"],
   },
 ];
@@ -499,16 +516,16 @@ function seedLinkedSkills(env: EvalEnv): void {
       "create",
       "--params",
       JSON.stringify({
-        name: "Warranty Claim",
-        description: "A warranty claim filed against a product we sold",
+        name: "Bug Report",
+        description: "A bug report filed against a component we ship",
         fields: [
-          { name: "product", type: "text" },
+          { name: "component", type: "text" },
           {
             name: "status",
             type: "enum",
             coreValues: [
               { value: "open", label: "Open" },
-              { value: "approved", label: "Approved" },
+              { value: "fixed", label: "Fixed" },
               { value: "rejected", label: "Rejected" },
             ],
           },
@@ -563,7 +580,7 @@ const FIXTURES: DecisionScenario[] = [
     // ADR-056 Scenario 5: `execute_query` was called where `search_nodes` was
     // wanted. The two tools were later collapsed into one, so the historical
     // failure cannot recur by that name — this scores the surviving choice.
-    prompt: "Which companies did we sign this year?",
+    prompt: "Which specs did we sign off this year?",
     expected: { decision: "operation", oneOf: ["search_nodes"] },
     adr056: true,
   },
@@ -573,7 +590,13 @@ const FIXTURES: DecisionScenario[] = [
     // ADR-056 Scenario 6: the read fired and the write never did. Scored on the
     // FIRST operation being a resolution step rather than a blind write — the
     // turn-completion half is what the matrix eval already covers.
-    prompt: "Northwind Trading has moved their booking to April.",
+    //
+    // The write this asks for can land: the date it moves is the one field a
+    // spec holds, and it is given in full. On an earlier wording the message
+    // named a field the record's type did not have and a month with no day,
+    // so the model wrote a partial date, validation refused it, and the reply
+    // asked for the day. That passed, on a write that could not succeed.
+    prompt: "Kestrel Gateway has moved its sign-off to the 2nd of April 2025.",
     expected: {
       decision: "operation",
       oneOf: ["search_nodes", "resolve_query", "update_node"],
@@ -587,12 +610,12 @@ const FIXTURES: DecisionScenario[] = [
     // a turn that answers from it names those and none of the built-in ones.
     // Measured on the locked model before `search_nodes` said where the full
     // list comes from: 3 of 3 reps answered with the two custom types and
-    // called nothing. The custom type is matched loosely because its id is
-    // model-derived on a warm rep, and the model escapes underscores in a list.
+    // called nothing. The custom type is matched loosely because the model
+    // escapes underscores in a list and may write the name with a space.
     prompt: "What schemas do we have here?",
     expected: {
       decision: "outcome",
-      listsTypes: [/\btask\b/i, /\bperson\b/i, /\bproject\b/i, /compan/i],
+      listsTypes: [/\btask\b/i, /\bperson\b/i, /\bproject\b/i, /feature[\W_]*spec/i],
     },
   },
 
@@ -613,10 +636,11 @@ const FIXTURES: DecisionScenario[] = [
     id: "skill-type-request-direct",
     scenario: "Skill: an explicit type request routes to Schema Creation",
     // Worded to avoid reusing `create_schema`'s own description verbatim — the
-    // contamination guard rejected "Define a new entity type called Sponsor…"
-    // for sharing five consecutive words with it, which would have let this
-    // scenario pass by keyword recall rather than by generalizing.
-    prompt: "Sponsors aren't something we can record yet — set that up, with a tier and a renewal date.",
+    // contamination guard rejected a wording that opened the way that
+    // description does, for sharing five consecutive words with it, which
+    // would have let this scenario pass by keyword recall rather than by
+    // generalizing.
+    prompt: "Postmortems aren't something we can record yet — set that up, with a severity and a review date.",
     expected: { decision: "skill", matches: /schema/i },
     instanceVsType: true,
   },
@@ -626,7 +650,7 @@ const FIXTURES: DecisionScenario[] = [
     // The exact shape that misrouted during development: phrased as "a way to
     // track <plural things>", which embeds near Node Creation's vocabulary
     // (create, record, item, entry) despite being a type-definition request.
-    prompt: "I need a way to keep track of sponsorship deals, each with a tier and a renewal date.",
+    prompt: "I need a way to keep track of incident postmortems, each with a severity and a review date.",
     expected: { decision: "skill", matches: /schema/i },
     instanceVsType: true,
     loadBearing: true,
@@ -641,16 +665,17 @@ const FIXTURES: DecisionScenario[] = [
     // skill that holds `create_node` is among the candidates, so the record
     // can be written. It used to name the skills that should lead (Node
     // Creation, Graph Editing, Organization), and failed 3 of 3 on a lead that
-    // is chance: retrieval scores Bulk Import 0.742, Organization 0.741 and
-    // Node Creation 0.737 on this request, inside 0.005 of each other. A
-    // clause added to Node Creation's description made it lead by 0.010; that
-    // is a description tuned to this one sentence, so it was not kept.
+    // was chance: on the request it then held, several skills scored within a
+    // few thousandths of each other. A clause added to Node Creation's description
+    // made it lead; that is a description tuned to one sentence, so it was not
+    // kept.
     //
-    // Which of the three leads is not asserted. That Node Creation or Graph
-    // Editing places is: of the three, only Node Creation holds `create_node`.
-    // Behind it are Graph Editing at 0.732, which holds it too, and Schema
-    // Creation at 0.730, which does not.
-    prompt: "Add Contoso Ltd to the companies we sell to.",
+    // Which skill leads is not asserted, as long as it is not the type skill.
+    // That Node Creation or Graph Editing places is: they are the skills that
+    // hold `create_node`. The scores retrieval gives this request are
+    // recorded on `adds_to_an_existing_list_keep_a_skill_that_can_create`
+    // (`packages/agent/tests/it/live_skill_retrieval_stability.rs`).
+    prompt: "Add Lantern Autosave to the specs we keep.",
     expected: {
       decision: "skill",
       not: /^schema creation$/i,
@@ -708,7 +733,7 @@ const FIXTURES: DecisionScenario[] = [
     // for more. Whether the search then finds anything is not scored — the
     // workspace holds nothing on this topic, and "I searched and found
     // nothing" is the correct answer.
-    prompt: "How do we decide which venue gets a deposit refund?",
+    prompt: "How do we decide which cycle a slipped spec moves into?",
     expected: { decision: "outcome", searchesBeforeReplying: true },
     knowledgeQuestion: true,
   },
@@ -740,13 +765,13 @@ const FIXTURES: DecisionScenario[] = [
     scenario: "Outcome: a question about a record's field is answered with its value",
     // The date is a field of the record, not text in it, so the reply carries
     // it only when the fields reached the model. A record read as a document
-    // came back as its title alone, and the reply was that the signing date
-    // "is not visible"; which way the model reads a record varies between
+    // came back as its title alone, and the reply was that the date "is not
+    // visible"; which way the model reads a record varies between
     // runs of the same prompt, so this is scored on the reply, not the call.
     //
     // Needs the seeded date, which `seedWorkspace` sets or fails the run.
-    prompt: "When did we sign Northwind Trading?",
-    expected: { decision: "outcome", replyMatches: SEEDED_COMPANY_SIGNED_IN_REPLY },
+    prompt: "When did we sign off Kestrel Gateway?",
+    expected: { decision: "outcome", replyMatches: SEEDED_SPEC_SIGNED_OFF_IN_REPLY },
     knowledgeQuestion: true,
     entityResolution: true,
   },
@@ -761,15 +786,15 @@ const FIXTURES: DecisionScenario[] = [
     // told to act, and said it did not know what was meant. A question is no
     // longer put back in an intent that composed no clarifying question, so
     // this one scores the first path, and the scenario after it the second.
-    priorTurns: ["When did we sign Northwind Trading?"],
+    priorTurns: ["When did we sign off Kestrel Gateway?"],
     prompt: "Can you say that again more simply?",
-    // The company, not the date. Whether the turn before found the date is
+    // The spec, not the date. Whether the turn before found the date is
     // `outcome-record-field-is-answered`'s subject, not this one's. Either
-    // answer said again names the company.
+    // answer said again names the spec.
     // Every reply this scenario exists to catch ("I'm not sure what you
     // mean", "I don't see a record of that in this conversation", a request
     // to confirm) names nothing.
-    expected: { decision: "outcome", replyMatches: /northwind/i },
+    expected: { decision: "outcome", replyMatches: /kestrel/i },
     knowledgeQuestion: true,
     entityResolution: true,
   },
@@ -785,11 +810,11 @@ const FIXTURES: DecisionScenario[] = [
     // two questions ahead of the follow-up: one question alone would leave
     // the reply to stand untouched.
     priorTurns: [
-      "When did we sign Northwind Trading?",
-      "Which company was that about?",
+      "When did we sign off Kestrel Gateway?",
+      "Which spec was that about?",
     ],
     prompt: "Say that again more simply.",
-    expected: { decision: "outcome", replyMatches: /northwind/i },
+    expected: { decision: "outcome", replyMatches: /kestrel/i },
     knowledgeQuestion: true,
     entityResolution: true,
   },
@@ -809,7 +834,7 @@ const FIXTURES: DecisionScenario[] = [
     id: "schema-on-menu-company",
     scenario: "Schema: a name that already exists is an update, not a create",
     // Ambiguous BY DESIGN now that the workspace is seeded with the
-    // company. "Add X to the companies we sell to" could mean create this or
+    // spec. "Add X to the specs we keep" could mean create this or
     // you already have this — and with the instance present, the right answer
     // is the latter. That ambiguity is the point: it is the disambiguation
     // case the entity tier exists to settle, and it is only a real test while
@@ -818,7 +843,7 @@ const FIXTURES: DecisionScenario[] = [
     // Scored on the OPERATION rather than the schema: what changed with the
     // tier is not which type gets picked but whether the model acts on the
     // existing node instead of creating a duplicate.
-    // Measured: with Northwind seeded and rendered in MENTIONED ENTITIES, the
+    // Measured: with the record seeded and rendered in MENTIONED ENTITIES, the
     // model called `create_node` on 3 of 3 reps — a silent duplicate. The
     // resolution worked; what was missing was any instruction for what to DO
     // about a collision, and any tool to do it with (`route_clarify` was not
@@ -846,32 +871,32 @@ const FIXTURES: DecisionScenario[] = [
     // which the guard cannot change: the model still picks `create_node`, and
     // `operationDecision` in the results file keeps recording that miss.
     //
-    // Sensitive to the workspace, not just the build: asked with a second
-    // venue type beside the first, the model's first call came out as the
+    // Sensitive to the workspace, not just the build: asked with a third
+    // custom type beside the two, the model's first call came out as the
     // title, a half-written field value and no `node_type`. The fixture seeds
     // exactly two types for that reason (see "Workspace" above), and the guard
     // matches a create that names the record and no type.
-    prompt: "Add Northwind Trading to the companies we sell to.",
-    expected: { decision: "outcome", noDuplicateOf: SEEDED_COMPANY_TITLE },
+    prompt: "Add Kestrel Gateway to the specs we keep.",
+    expected: { decision: "outcome", noDuplicateOf: SEEDED_SPEC_TITLE },
     entityResolution: true,
   },
   {
     id: "schema-field-disambiguates",
     scenario: "Entity: the named field settles which type is meant",
-    // Both seeded types carry a date, but only the venue has a capacity — so a
-    // message about seating can only mean the venue. The disambiguating signal
+    // Both seeded types carry a date, but only the cycle has a capacity — so a
+    // message about how much fits can only mean the cycle. The disambiguating signal
     // is structural (which type even has that field), not semantic similarity,
     // which is the case embedding distance alone cannot resolve.
     //
     // Scored on the OPERATION, not the schema, and that is a fixture fix
     // rather than a weakening. Measured: the model called `update_node`, which
-    // is right — setting a capacity on an existing venue is an update — but
+    // is right — setting a capacity on an existing record is an update — but
     // `update_node` takes a node id, so no schema decision is ever recorded
     // and a `decision: "schema"` assertion could not pass however well the
     // model reasoned. It was asserting on a decision the correct operation
     // does not make. What this scenario can actually observe is whether the
     // turn updates the existing record rather than creating a second one.
-    prompt: "Northwind can seat 200 people now.",
+    prompt: "Kestrel can take on 40 points now.",
     expected: {
       decision: "operation",
       oneOf: ["update_node", "search_nodes", "resolve_query", "get_node"],
@@ -881,14 +906,14 @@ const FIXTURES: DecisionScenario[] = [
   },
   {
     id: "schema-shared-name-signed",
-    scenario: "Entity: shared name, company-only attribute",
+    scenario: "Entity: shared name, spec-only attribute",
     // The mirror: the same bare name, but the attribute mentioned exists only
-    // on the company type. With the instance seeded this is a READ of an
+    // on the spec type. With the instance seeded this is a READ of an
     // existing node, which is what makes it an entity-resolution case — the
-    // recorded failure was "I do not have a specific node ID for Northwind
-    // Trading, so I cannot tell you the signing date."
-    prompt: "When did we sign Northwind?",
-    expected: { decision: "schema", matches: /compan/i },
+    // recorded failure was a reply that it had no node id for the record, so
+    // it could not give the date.
+    prompt: "When did we sign off Kestrel?",
+    expected: { decision: "schema", matches: /spec/i },
     ambiguous: true,
     entityResolution: true,
   },
@@ -898,8 +923,8 @@ const FIXTURES: DecisionScenario[] = [
     // The other half of the tier, and the reason its output is three-state.
     // "Resolved to nothing" is a positive fact — this thing does not exist, so
     // make it — and it must not read the same as "the resolver did not run".
-    // Tailspin is deliberately absent from the seeded workspace.
-    prompt: "Add Tailspin Toys to the companies we sell to.",
+    // Tundra Billing is deliberately absent from the seeded workspace.
+    prompt: "Add Tundra Billing to the specs we keep.",
     expected: { decision: "operation", oneOf: ["create_node"] },
     entityResolution: true,
   },
@@ -908,8 +933,8 @@ const FIXTURES: DecisionScenario[] = [
   //
   // Isolates the one question the entity tier does NOT obviously answer.
   //
-  // A declarative state-change ("Northwind has moved their booking") is
-  // surface-identical to a fact-report ("Northwind moved offices last year").
+  // A declarative state-change ("Kestrel has moved its sign-off") is
+  // surface-identical to a fact-report ("Kestrel slipped a cycle last year").
   // The tier tells the model WHICH NODE is meant; it does not tell it that a
   // CHANGE IS BEING REQUESTED. So resolution may fix the imperative case while
   // leaving the declarative one exactly as it was.
@@ -921,7 +946,7 @@ const FIXTURES: DecisionScenario[] = [
   // 12B too. Three models, one shape — so it reads as a property of the
   // problem rather than of any model.
   //
-  // These scenarios name `Northwind Trading`, which the seeded workspace
+  // These scenarios name `Kestrel Gateway`, which the seeded workspace
   // contains, so resolution succeeds and the only thing left to judge is
   // whether a declarative sentence is a request to act. If the agent acts on
   // these, entity grounding solved more than its own failure and the residual
@@ -933,7 +958,7 @@ const FIXTURES: DecisionScenario[] = [
     // Deliberately parallel to `op-read-then-write` — same shape, but that one
     // ran before the tier existed and could fail for want of an entity. Here
     // the entity is seeded, so a failure isolates the phrasing.
-    prompt: "Northwind Trading signed on a different date — it was the 20th of March.",
+    prompt: "Kestrel Gateway was signed off on a different date — it was the 20th of March.",
     expected: {
       decision: "operation",
       oneOf: ["update_node", "search_nodes", "resolve_query"],
@@ -954,13 +979,15 @@ const FIXTURES: DecisionScenario[] = [
     // today. Asked after the two setup turns this fixture used to have, the
     // model called `create_node` in every run measured (`create_relationship`
     // on older builds); the duplicate guard refused it and the user was asked.
-    // As the first turn of its own chat it passes 3 of 3, but in two of the
-    // three the model's reply claimed a change it had not made, and the agent
-    // replaced that with a request to confirm. The user is never written to,
+    // As the first turn of its own chat it passed 3 of 3 on its earlier
+    // wording, but in two of the three the model's reply claimed a change it
+    // had not made, and the agent replaced that with a request to confirm.
+    // On this wording it fails 3 of 3: the turn searches for the record
+    // before it replies, and writes nothing. The user is never written to,
     // and the model still does not read a report as a report: the asymmetry
     // the comment on this pair describes is unchanged, and fixing it is the
     // model's or a decision layer's job, not this fixture's.
-    prompt: "Northwind Trading has been a customer of ours for a long time.",
+    prompt: "Kestrel Gateway has been on our roadmap for a long time.",
     expected: { decision: "operation", oneOf: [] },
     declarative: true,
     entityResolution: true,
@@ -980,7 +1007,7 @@ const FIXTURES: DecisionScenario[] = [
     scenario: "Held turn: a request for the linked type acts on it",
     // The control. Holding a turn to its skills' types must not stop it doing
     // what those skills are for.
-    prompt: "File a warranty claim for the Aurora blender, its motor failed, filed today.",
+    prompt: "File a bug report for the Aurora renderer, its font loading failed, filed today.",
     expected: { decision: "schema", onMenu: true },
     linkedSkills: true,
   },
@@ -991,32 +1018,45 @@ const FIXTURES: DecisionScenario[] = [
     // vocabulary, so retrieval still leads with them. Unheld, the model names
     // `task` and the call runs. Held, a call naming `task` is refused, and the
     // turn should end with the user asked or told. Creating the reminder as a
-    // warranty claim instead fails, whether the model does it after a refusal
+    // bug report instead fails, whether the model does it after a refusal
     // or by following the `enum` on its first call.
     prompt:
-      "For the Aurora blender warranty claim, add a task to ring the buyer back on Friday.",
+      "For the Aurora renderer bug report, add a task to ring the reporter back on Friday.",
     expected: { decision: "outcome", heldToOfferedTypes: true },
     linkedSkills: true,
   },
   {
     id: "held-off-menu-node",
     scenario: "Held turn: a record of a type outside the linked set is not changed",
-    // Asks for a change to the seeded company, in the linked skills'
+    // Asks for a change to the seeded spec, in the linked skills'
     // vocabulary, so retrieval still leads with them. `update_node` takes the
-    // record's id and no type: unheld, the call runs and the company is
+    // record's id and no type: unheld, the call runs and the spec is
     // changed. Held, dispatch looks the node's type up and refuses the call.
     //
     // The prior turn is what makes the model send that call. It is an open
-    // turn that looks the company up, so the record and its id are in the
+    // turn that looks the spec up, so the record and its id are in the
     // conversation as the thing "that date" refers to. Measured without it,
-    // in three wordings: the held turn searched for a warranty claim or asked
-    // what to do, never called `update_node`, and the scenario passed on a
-    // build with no hold on it.
+    // in three wordings: the held turn searched for a record of the linked
+    // type or asked what to do, never called `update_node`, and the scenario
+    // passed on a build with no hold on it.
     //
-    // The request does not say "company": a type the message names outright
-    // joins the offered set, and the company would then be on the menu.
-    priorTurns: [`When did we sign ${SEEDED_COMPANY_TITLE}?`],
-    prompt: `That date is wrong, it came up following up on their warranty claim. Change ${SEEDED_COMPANY_TITLE}'s signed date to the 2nd of May 2025.`,
+    // The request does not say "spec": a type the message names outright
+    // joins the offered set, and the spec type would then be on the menu.
+    //
+    // The request opens by asking for the follow-up on a named bug report,
+    // which is what holds the turn: measured on this wording, held in 3 of 3.
+    // With the bug report mentioned as an aside, the routing pass dropped it
+    // or kept it last, a built-in skill led retrieval, and the turn was not
+    // held in 11 of 12. It says nothing about the bug report itself, so there
+    // is no change to that record for the turn to make: any write is a write
+    // the request did not ask for.
+    //
+    // The bug report it names exists only when `held-on-menu-type` ran earlier
+    // in the same rep. The 3 of 3 was measured with this scenario run alone,
+    // so with no such report in the workspace. Whether the turn is held does
+    // not depend on it; what the turn finds when it searches does.
+    priorTurns: [`When did we sign off ${SEEDED_SPEC_TITLE}?`],
+    prompt: `That date is wrong. Follow up on the Aurora renderer bug report: change ${SEEDED_SPEC_TITLE}'s signed-off date to the 2nd of May 2025.`,
     expected: { decision: "outcome", heldRecordUnchanged: true },
     linkedSkills: true,
   },
@@ -1477,7 +1517,7 @@ const fixture: EvalFixture = {
   //
   // The chats still share the rep's database, so a record or a type one
   // scenario creates is there for the ones after it. The two seeded types and
-  // the seeded company are set back before each of them (see `seedWorkspace`).
+  // the seeded spec are set back before each of them (see `seedWorkspace`).
   groups: FIXTURES.map((scenario) => [scenario]),
   seedGroup(env: EvalEnv, group) {
     for (const seed of groupSeeds(group)) {

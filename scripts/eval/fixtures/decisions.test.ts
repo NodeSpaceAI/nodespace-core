@@ -35,7 +35,7 @@ describe("decision fixture assembly", () => {
 
   test("every chat is seeded with the workspace, and only the linked-skill ones with linked skills", () => {
     // The workspace is set back before each chat: an earlier scenario moved
-    // Northwind's date, and a later one was scored against the move. Three
+    // the seeded spec's date, and a later one was scored against the move. Three
     // more skills and a custom type change what retrieval returns for every
     // request, so they go only where they are measured.
     for (const group of fixture.groups) {
@@ -87,16 +87,16 @@ describe("schema list decoding", () => {
     schemas: [
       { id: "task", content: "Task", is_core: true, fields: [{ name: "status", type: "enum" }] },
       {
-        id: "company_sold_to",
-        content: "Company Sold To",
+        id: "feature_spec",
+        content: "Feature Spec",
         is_core: false,
-        fields: [{ name: "signed_date", type: "date" }],
+        fields: [{ name: "signed_off_date", type: "date" }],
       },
     ],
   };
 
   test("reads each schema's id", () => {
-    expect(listedSchemaIds(output)).toEqual(["task", "company_sold_to"]);
+    expect(listedSchemaIds(output)).toEqual(["task", "feature_spec"]);
   });
 
   test("an unrecognised shape decodes to no schemas", () => {
@@ -125,14 +125,14 @@ describe("outcome and no-tool scoring", () => {
 
   test("a refused create followed by a clarification naming the record passes", () => {
     const reply =
-      'I can take that a couple of ways. "Northwind Trading" already exists as a company_sold_to (nodespace://nw-1).';
+      'I can take that a couple of ways. "Kestrel Gateway" already exists as a feature_spec (nodespace://ks-1).';
     expect(passes(turn(reply, [["create_node", true]]))).toBe(true);
   });
 
   test("a create that succeeded fails, whatever the reply says", () => {
     // A clarifying reply over a duplicate that landed anyway is still the
     // silent duplicate — the reply cannot undo the write.
-    const reply = "I can take that a couple of ways. Northwind Trading?";
+    const reply = "I can take that a couple of ways. Kestrel Gateway?";
     expect(passes(turn(reply, [["create_node", false]]))).toBe(false);
   });
 
@@ -145,7 +145,7 @@ describe("outcome and no-tool scoring", () => {
   test("tools called with no recorded outcomes fails loudly", () => {
     // Without per-call outcomes a landed create is indistinguishable from a
     // refused one; reading absence as "none succeeded" would pass a duplicate.
-    const t = { ...turn("I can take that a couple of ways. Northwind Trading", []) };
+    const t = { ...turn("I can take that a couple of ways. Kestrel Gateway", []) };
     t.toolsCalled = ["create_node"];
     delete t.toolCalls;
     expect(passes(t)).toBe(false);
@@ -263,9 +263,9 @@ describe("held-turn node outcome scoring", () => {
 
   const schema = (enforced: boolean, selected: string | null) => ({
     kind: "schema" as const,
-    candidates: ["warranty_claim"],
+    candidates: ["bug_report"],
     selected,
-    offMenu: selected !== null && selected !== "warranty_claim",
+    offMenu: selected !== null && selected !== "bug_report",
     enforced,
   });
   const turn = (decisions: TurnRecord["decisions"], calls: ToolCallRecord[]): TurnRecord =>
@@ -285,13 +285,13 @@ describe("held-turn node outcome scoring", () => {
   const verdict = (t: TurnRecord) => fixture.score(scenario, [t]);
 
   test("the scenario does not name the type its record is, which would put it on the menu", () => {
-    expect(scenario.prompt).toContain("Northwind Trading");
-    expect(scenario.prompt.toLowerCase()).not.toContain("company");
+    expect(scenario.prompt).toContain("Kestrel Gateway");
+    expect(scenario.prompt.toLowerCase()).not.toContain("spec");
   });
 
   test("an update dispatch refused for its node's type, and nothing written, passes", () => {
-    expect(verdict(turn([schema(true, "company_sold_to")], [refused])).passed).toBe(true);
-    expect(verdict(turn([schema(true, "company_sold_to")], [refused, searched])).passed).toBe(
+    expect(verdict(turn([schema(true, "feature_spec")], [refused])).passed).toBe(true);
+    expect(verdict(turn([schema(true, "feature_spec")], [refused, searched])).passed).toBe(
       true,
     );
   });
@@ -302,14 +302,14 @@ describe("held-turn node outcome scoring", () => {
 
   test("an update on an off-menu node the daemon reports as run fails", () => {
     const v = verdict(
-      turn([schema(true, "company_sold_to")], [{ ...updated, offMenuRan: true }]),
+      turn([schema(true, "feature_spec")], [{ ...updated, offMenuRan: true }]),
     );
     expect(v.passed).toBe(false);
     expect(v.failure).toContain("ran on a held turn");
   });
 
   test("a write that landed on an offered type's record fails: it is not the record named", () => {
-    const v = verdict(turn([schema(true, "company_sold_to"), schema(true, "warranty_claim")], [
+    const v = verdict(turn([schema(true, "feature_spec"), schema(true, "bug_report")], [
       refused,
       updated,
     ]));
@@ -332,9 +332,9 @@ describe("held-turn outcome scoring", () => {
 
   const schema = (enforced: boolean, selected: string) => ({
     kind: "schema" as const,
-    candidates: ["warranty_claim"],
+    candidates: ["bug_report"],
     selected,
-    offMenu: selected !== "warranty_claim",
+    offMenu: selected !== "bug_report",
     enforced,
   });
   const turn = (decisions: TurnRecord["decisions"], calls: Call[]): TurnRecord =>
@@ -382,8 +382,8 @@ describe("held-turn outcome scoring", () => {
 
   test("a record created after the refusal fails: it is the wrong type", () => {
     // The user asked for a task. Refused, the model re-sent the same record as
-    // a warranty claim, which is on the menu and is not what was asked for.
-    const t = turn([schema(true, "task"), schema(true, "warranty_claim")], [refused, created]);
+    // a bug report, which is on the menu and is not what was asked for.
+    const t = turn([schema(true, "task"), schema(true, "bug_report")], [refused, created]);
     const v = verdict(t);
     expect(v.passed).toBe(false);
     expect(v.failure).toContain("after a refusal");
@@ -391,8 +391,8 @@ describe("held-turn outcome scoring", () => {
 
   test("a record created with no refusal fails the same way", () => {
     // The model followed the `enum` on its first call and wrote the reminder
-    // as a warranty claim. Nothing was refused, and the record is still wrong.
-    const v = verdict(turn([schema(true, "warranty_claim")], [created]));
+    // as a bug report. Nothing was refused, and the record is still wrong.
+    const v = verdict(turn([schema(true, "bug_report")], [created]));
     expect(v.passed).toBe(false);
     expect(v.failure).toContain("not after a refusal");
   });
@@ -401,7 +401,7 @@ describe("held-turn outcome scoring", () => {
     // Skipped for a route_clarify in the same round, or answered by the
     // duplicate-write guard: not an error, and nothing persisted.
     const skipped: Call = { name: "create_node", isError: false };
-    expect(verdict(turn([schema(true, "warranty_claim")], [skipped])).passed).toBe(true);
+    expect(verdict(turn([schema(true, "bug_report")], [skipped])).passed).toBe(true);
   });
 
   test("a turn that was not held fails as unmeasured, not as a model failure", () => {
@@ -416,12 +416,12 @@ describe("held-turn outcome scoring", () => {
     const control = fixture.groups.flat().find((s) => s.id === "held-on-menu-type");
     if (!control) throw new Error("held-on-menu-type is missing");
 
-    const open = fixture.score(control, [turn([schema(false, "warranty_claim")], [created])]);
+    const open = fixture.score(control, [turn([schema(false, "bug_report")], [created])]);
     expect(open.passed).toBe(false);
     expect(open.failure).toContain("nothing here was measured");
 
     // Held, the control creates the record: that is what it is for.
-    const held = fixture.score(control, [turn([schema(true, "warranty_claim")], [created])]);
+    const held = fixture.score(control, [turn([schema(true, "bug_report")], [created])]);
     expect(held.passed).toBe(true);
   });
 
@@ -439,7 +439,7 @@ describe("held-turn outcome scoring", () => {
     // A create that persisted nothing is not a write.
     expect(after([{ name: "create_node", isError: false }], "Done.")).toBe("replied");
     // Nothing refused: nothing to report.
-    const clean = turn([schema(true, "warranty_claim")], [created]);
+    const clean = turn([schema(true, "bug_report")], [created]);
     expect(fixture.extra?.(scenario, [clean]).afterRefusal).toBeNull();
   });
 });
@@ -460,15 +460,15 @@ describe("type-listing outcome scoring", () => {
   const passes = (t: TurnRecord) => fixture.score(scenario, [t]).passed;
 
   const everyType =
-    "The schemas available are: company\\_sold\\_to, venue, person, project, date, text, and task.";
+    "The schemas available are: feature\\_spec, planning\\_cycle, person, project, date, text, and task.";
 
   test("a reply naming built-in and custom types off a successful search passes", () => {
     expect(passes(turn(everyType, [["search_nodes", false]]))).toBe(true);
   });
 
-  test("the reported reply, read from the context block, fails", () => {
+  test("a reply naming only the custom types, with no tool called, fails", () => {
     // Custom types only, and no tool called.
-    expect(passes(turn("The schemas we currently have are 'company_sold_to' and 'venue'.", []))).toBe(false);
+    expect(passes(turn("The schemas we currently have are 'feature_spec' and 'planning_cycle'.", []))).toBe(false);
   });
 
   test("a complete reply with no successful search fails", () => {
@@ -479,13 +479,13 @@ describe("type-listing outcome scoring", () => {
   });
 
   test("a search whose reply leaves a built-in type out fails", () => {
-    const reply = "Found 21 node types, including built-in ones like 'text' and custom schemas such as 'company_sold_to'.";
+    const reply = "Found 21 node types, including built-in ones like 'text' and custom schemas such as 'feature_spec'.";
     expect(passes(turn(reply, [["search_nodes", false]]))).toBe(false);
   });
 
   test("a type is matched as a word, not inside another", () => {
     // `task` must not be satisfied by a type named `subtask_list`.
-    const reply = "The schemas are: company_sold_to, person, project, subtask_list.";
+    const reply = "The schemas are: feature_spec, person, project, subtask_list.";
     expect(passes(turn(reply, [["search_nodes", false]]))).toBe(false);
   });
 
