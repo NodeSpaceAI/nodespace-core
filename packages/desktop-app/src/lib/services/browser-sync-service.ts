@@ -27,9 +27,11 @@ import { createLogger } from '$lib/utils/logger';
 import {
   scheduleCollectionRefresh,
   scheduleSchemaRefresh,
-  scheduleSavedQueryRefresh
+  scheduleSavedQueryRefresh,
+  schedulePlayRefresh
 } from '$lib/utils/collection-refresh';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
+import { playsData } from '$lib/stores/plays.svelte';
 import { registerSchemaPlugin, unregisterSchemaPlugin } from '$lib/plugins/schema-plugin-loader';
 import { applyHasChildCreated, applyHasChildUpdated, applyHasChildDeleted } from './hierarchy-sync';
 import { normalizeNodeData } from './node-normalize';
@@ -237,6 +239,11 @@ class BrowserSyncService {
           scheduleSavedQueryRefresh();
         }
 
+        // If a play is created, refresh the Plays list in the sidebar
+        if (isA(event.nodeType, 'play')) {
+          schedulePlayRefresh();
+        }
+
         // Fetch full node data only if we need to display it — for a node
         // this session hasn't seen before, always fetch, since it might
         // belong in the current view (sidebar list, tree, ...).
@@ -270,6 +277,12 @@ class BrowserSyncService {
         if (savedQueriesData.has(event.nodeId)) {
           scheduleSavedQueryRefresh();
         }
+        // A listed play's row shows its title and state, and the update may
+        // have archived it. A play is rarely in the node store, so the fetch
+        // below would not catch this.
+        if (playsData.has(event.nodeId)) {
+          schedulePlayRefresh();
+        }
         // Only fetch if node is already in the store (visible to user)
         // This avoids unnecessary API calls for nodes not in the current view
         if (sharedNodeStore.hasNode(event.nodeId)) {
@@ -289,6 +302,9 @@ class BrowserSyncService {
         unregisterSchemaPlugin(event.nodeId);
         if (savedQueriesData.has(event.nodeId)) {
           scheduleSavedQueryRefresh();
+        }
+        if (playsData.has(event.nodeId)) {
+          schedulePlayRefresh();
         }
         break;
 
@@ -393,6 +409,10 @@ class BrowserSyncService {
         // update touched a query (e.g. a retarget into a listed type).
         if (isA(normalizedNode.nodeType, 'query')) {
           scheduleSavedQueryRefresh();
+        }
+        // Likewise a play that is not listed yet (one restored from the archive).
+        if (isA(normalizedNode.nodeType, 'play')) {
+          schedulePlayRefresh();
         }
         log.debug(`${eventType}: updated store for node`, nodeId);
       } else {

@@ -39,6 +39,7 @@ describe('Layout Store - Layout State Management', () => {
       collectionsExpanded: false,
       nodeTypesExpanded: false,
       aiChatsExpanded: false,
+      playsExpanded: false,
       collapsedTypeViews: []
     };
   });
@@ -109,6 +110,7 @@ describe('Layout Store - Layout State Management', () => {
         collectionsExpanded: false,
         nodeTypesExpanded: false,
         aiChatsExpanded: false,
+        playsExpanded: false,
         collapsedTypeViews: []
       };
 
@@ -124,6 +126,7 @@ describe('Layout Store - Layout State Management', () => {
         collectionsExpanded: false,
         nodeTypesExpanded: false,
         aiChatsExpanded: false,
+        playsExpanded: false,
         collapsedTypeViews: []
       };
 
@@ -139,6 +142,7 @@ describe('Layout Store - Layout State Management', () => {
         collectionsExpanded: false,
         nodeTypesExpanded: false,
         aiChatsExpanded: false,
+        playsExpanded: false,
         collapsedTypeViews: []
       };
 
@@ -175,6 +179,7 @@ describe('Layout Store - Layout State Management', () => {
         collectionsExpanded: false,
         nodeTypesExpanded: false,
         aiChatsExpanded: false,
+        playsExpanded: false,
         collapsedTypeViews: []
       };
 
@@ -590,6 +595,47 @@ describe('Layout Store - Persistence Integration', () => {
       expect(LayoutPersistenceService.save).toHaveBeenCalledWith(
         expect.objectContaining({ aiChatsExpanded: true })
       );
+    });
+  });
+
+  describe('setPlaysExpanded', () => {
+    it('sets playsExpanded', async () => {
+      const { setPlaysExpanded, layoutStore } = await import('$lib/stores/layout.svelte');
+      setPlaysExpanded(true);
+      expect(layoutStore.state.playsExpanded).toBe(true);
+      setPlaysExpanded(false);
+      expect(layoutStore.state.playsExpanded).toBe(false);
+    });
+
+    it('persists playsExpanded and restores it', async () => {
+      vi.mocked(LayoutPersistenceService.load).mockReturnValue({
+        version: 4,
+        sidebarCollapsed: false,
+        playsExpanded: true
+      });
+      const { loadPersistedLayoutState, setPlaysExpanded, layoutStore } =
+        await import('$lib/stores/layout.svelte');
+
+      loadPersistedLayoutState();
+      expect(layoutStore.state.playsExpanded).toBe(true);
+      vi.clearAllMocks();
+
+      setPlaysExpanded(false);
+      expect(LayoutPersistenceService.save).toHaveBeenCalledWith(
+        expect.objectContaining({ playsExpanded: false })
+      );
+    });
+
+    it('starts collapsed when nothing was persisted for it', async () => {
+      vi.mocked(LayoutPersistenceService.load).mockReturnValue({
+        version: 4,
+        sidebarCollapsed: false
+      });
+      const { loadPersistedLayoutState, layoutStore } = await import('$lib/stores/layout.svelte');
+
+      loadPersistedLayoutState();
+
+      expect(layoutStore.state.playsExpanded).toBe(false);
     });
   });
 

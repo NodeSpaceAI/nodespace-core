@@ -28,6 +28,7 @@
     actionForEach,
     describeTrigger,
     playState,
+    playTitle,
     rawAction,
     rawTrigger,
     rulesWarnedOnDisable
@@ -87,7 +88,7 @@
 
 <div class="play-node-viewer">
   {#if play}
-    {@const title = play.title || play.content || 'Untitled play'}
+    {@const title = playTitle(play)}
     <div class="play-header">
       <div class="play-title">
         <h1>{title}</h1>

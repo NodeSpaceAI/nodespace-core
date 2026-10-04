@@ -9,6 +9,7 @@ export interface LayoutState {
   collectionsExpanded: boolean;
   nodeTypesExpanded: boolean;
   aiChatsExpanded: boolean;
+  playsExpanded: boolean;
   /**
    * Node types whose saved views are collapsed in the sidebar. A type's views
    * show until the user collapses them, so a newly saved view is visible.
@@ -31,6 +32,7 @@ const initialLayoutState: LayoutState = {
   collectionsExpanded: false,
   nodeTypesExpanded: false,
   aiChatsExpanded: false,
+  playsExpanded: false,
   collapsedTypeViews: [],
 };
 
@@ -113,6 +115,7 @@ class LayoutStore {
         collectionsExpanded: persisted.collectionsExpanded ?? false,
         nodeTypesExpanded: persisted.nodeTypesExpanded ?? false,
         aiChatsExpanded: persisted.aiChatsExpanded ?? false,
+        playsExpanded: persisted.playsExpanded ?? false,
         collapsedTypeViews: persisted.collapsedTypeViews ?? [],
       };
     }
@@ -150,6 +153,11 @@ class LayoutStore {
 
   setAiChatsExpanded(expanded: boolean): void {
     this.state = { ...this.state, aiChatsExpanded: expanded };
+    this.#persist();
+  }
+
+  setPlaysExpanded(expanded: boolean): void {
+    this.state = { ...this.state, playsExpanded: expanded };
     this.#persist();
   }
 
@@ -192,3 +200,5 @@ export const setNodeTypesExpanded = (expanded: boolean): void =>
   layoutStore.setNodeTypesExpanded(expanded);
 export const setAiChatsExpanded = (expanded: boolean): void =>
   layoutStore.setAiChatsExpanded(expanded);
+export const setPlaysExpanded = (expanded: boolean): void =>
+  layoutStore.setPlaysExpanded(expanded);

@@ -33,12 +33,14 @@ import {
   scheduleCollectionRefresh,
   scheduleSchemaRefresh,
   scheduleAiChatRefresh,
-  scheduleSavedQueryRefresh
+  scheduleSavedQueryRefresh,
+  schedulePlayRefresh
 } from '$lib/utils/collection-refresh';
 import { registerSchemaPlugin, unregisterSchemaPlugin } from '$lib/plugins/schema-plugin-loader';
 import { applyHasChildCreated, applyHasChildUpdated, applyHasChildDeleted } from './hierarchy-sync';
 import { normalizeNodeData } from './node-normalize';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
+import { playsData } from '$lib/stores/plays.svelte';
 import { isActiveDatabaseEvent } from '$lib/stores/database.svelte';
 import { notifyRelationshipChanged } from './relationship-changes';
 
@@ -193,6 +195,7 @@ async function flushPendingNodeFetches(): Promise<void> {
           maybeRefreshSchemaPlugin(normalizedNode);
           maybeRefreshAiChats(normalizedNode);
           maybeRefreshSavedQueries(normalizedNode);
+          maybeRefreshPlays(normalizedNode);
           applied++;
         } catch (error) {
           log.error('burst-coalesce: failed to apply node', { nodeId: chunk[i], error });
@@ -258,6 +261,18 @@ function maybeRefreshAiChats(node: Node): void {
 function maybeRefreshSavedQueries(node: Node): void {
   if (!isA(node.nodeType, 'query')) return;
   scheduleSavedQueryRefresh();
+}
+
+/**
+ * If the given (already-fetched) node is a play, schedule a debounced refresh
+ * of the Plays sidebar list. One hook covers a play being created, switched on
+ * or off, suspended by the engine and archived: all but the first arrive as
+ * `node:updated`, which carries no type. An archived play is still fetched
+ * here; the reload is what drops it from the list.
+ */
+function maybeRefreshPlays(node: Node): void {
+  if (!isA(node.nodeType, 'play')) return;
+  schedulePlayRefresh();
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +461,10 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       // deleted node is a listed saved query.
       if (savedQueriesData.has(event.payload.id)) {
         scheduleSavedQueryRefresh();
+      }
+      // Likewise for a listed play.
+      if (playsData.has(event.payload.id)) {
+        schedulePlayRefresh();
       }
     });
 

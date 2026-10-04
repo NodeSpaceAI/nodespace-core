@@ -13,7 +13,8 @@ import type { SseEvent } from '$lib/types/sse-events';
 import type { Node } from '$lib/types';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
-import { clearSavedQueryRefreshTimer } from '$lib/utils/collection-refresh';
+import { playsData } from '$lib/stores/plays.svelte';
+import { clearPlayRefreshTimer, clearSavedQueryRefreshTimer } from '$lib/utils/collection-refresh';
 
 /**
  * Type-safe test interface for accessing private methods.
@@ -117,6 +118,8 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     mockNodes.clear();
     savedQueriesData.reset();
     clearSavedQueryRefreshTimer();
+    playsData.reset();
+    clearPlayRefreshTimer();
     vi.restoreAllMocks();
   });
 
@@ -579,6 +582,69 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
 
       await new Promise((resolve) => setTimeout(resolve, 400));
       expect(queryNodesSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Plays sidebar refresh', () => {
+    function playNode(id: string, title: string, fields: Record<string, unknown> = {}): Node {
+      return {
+        id,
+        nodeType: 'play',
+        content: title,
+        properties: {},
+        mentions: [],
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        version: 1,
+        isSeeded: false,
+        rules: [],
+        enabled: true,
+        ...fields
+      } as unknown as Node;
+    }
+
+    const rows = () => playsData.plays.map((p) => [p.title, p.state]);
+
+    async function listed(plays: Node[]) {
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue(plays);
+      await playsData.loadPlays();
+    }
+
+    it('lists a play when its nodeCreated event arrives', async () => {
+      const created = playNode('p1', 'Task status');
+      registerMockNode(created);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([created]);
+
+      testableService.handleEvent({ type: 'nodeCreated', nodeId: 'p1', nodeType: 'play' });
+
+      await vi.waitFor(() => expect(rows()).toEqual([['Task status', 'on']]), { timeout: 1000 });
+    });
+
+    it('shows a listed play suspended when its nodeUpdated arrives, though no viewer holds it', async () => {
+      await listed([playNode('p1', 'Task status')]);
+      expect(sharedNodeStore.hasNode('p1')).toBe(false);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([
+        playNode('p1', 'Task status', {
+          version: 2,
+          suspendedAt: '2026-03-01T10:00:00.000Z',
+          suspendedMessage: 'Action 2 failed'
+        })
+      ]);
+
+      testableService.handleEvent({ type: 'nodeUpdated', nodeId: 'p1' });
+
+      await vi.waitFor(() => expect(rows()).toEqual([['Task status', 'suspended']]), {
+        timeout: 1000
+      });
+    });
+
+    it('drops a listed play when its nodeDeleted event arrives', async () => {
+      await listed([playNode('p1', 'Task status')]);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([]);
+
+      testableService.handleEvent({ type: 'nodeDeleted', nodeId: 'p1' });
+
+      await vi.waitFor(() => expect(rows()).toEqual([]), { timeout: 1000 });
     });
   });
 

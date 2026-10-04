@@ -46,8 +46,8 @@
         />
       </div>
       <p class="text-muted-foreground m-0 text-sm leading-relaxed">
-        Show the Playbooks settings, where you install and manage playbooks. Playbooks you have
-        already installed keep running whether or not this is on.
+        Show the Plays section in the sidebar, which lists your plays and whether each is on.
+        Plays keep running whether or not this is on.
       </p>
     </CardHeader>
   </Card>

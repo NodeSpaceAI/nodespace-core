@@ -6,6 +6,7 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { collectionsData, collectionsState } from '$lib/stores/collections.svelte';
 import { schemasData } from '$lib/stores/schemas.svelte';
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
+import { playsData } from '$lib/stores/plays.svelte';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
 import { conflictsStore } from '$lib/stores/conflicts.svelte';
 import { resyncSchemaPluginsForDatabaseSwitch } from '$lib/plugins/schema-plugin-loader';
@@ -565,6 +566,8 @@ class DatabaseStore {
     schemasData.invalidateForDatabaseSwitch();
     // Saved queries are per-database too.
     savedQueriesData.invalidateForDatabaseSwitch();
+    // So are plays.
+    playsData.invalidateForDatabaseSwitch();
     // As with collectionsData.forgetLocallyCreated() above: invalidate any
     // in-flight "+ New chat" create, so its result can't land in a store that
     // now represents a different database.
@@ -582,6 +585,7 @@ class DatabaseStore {
     collectionsData.loadCollections();
     schemasData.loadSchemas();
     savedQueriesData.loadSavedQueries();
+    playsData.loadPlays();
     aiChatsData.loadAiChats();
     void conflictsStore.load();
     // Re-sync the schema plugin registry (hasTitleTemplate/titleTemplate)

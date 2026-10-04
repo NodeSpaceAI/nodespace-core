@@ -6,6 +6,7 @@
     setCollectionsExpanded,
     setNodeTypesExpanded,
     setAiChatsExpanded,
+    setPlaysExpanded,
     type NavigationItem
   } from '$lib/stores/layout.svelte';
   import { navigationStore, setActiveTab, addTab } from '$lib/stores/navigation.svelte';
@@ -20,12 +21,14 @@
   import { schemasStore, schemasData } from '$lib/stores/schemas.svelte';
   import { aiChatsData } from '$lib/stores/ai-chats.svelte';
   import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
+  import { playsData } from '$lib/stores/plays.svelte';
   import { labsFlags } from '$lib/stores/labs-flags.svelte';
   import {
     clearCollectionRefreshTimer,
     clearSchemaRefreshTimer,
     clearAiChatRefreshTimer,
-    clearSavedQueryRefreshTimer
+    clearSavedQueryRefreshTimer,
+    clearPlayRefreshTimer
   } from '$lib/utils/collection-refresh';
   import { aiChatDisplayTitle } from '$lib/utils/ai-chat-title';
   import QueryIcon from '$lib/design/icons/components/query-icon.svelte';
@@ -61,6 +64,8 @@
   let nodeTypesExpanded = $derived(layoutStore.state.nodeTypesExpanded);
   // AI Chats expanded state from layout store (persisted)
   let aiChatsExpanded = $derived(layoutStore.state.aiChatsExpanded);
+  // Plays expanded state from layout store (persisted)
+  let playsExpanded = $derived(layoutStore.state.playsExpanded);
 
   // Collections state from collections store (UI-only, not persisted)
   let subPanelOpen = $derived(collectionsState.state.subPanelOpen);
@@ -133,13 +138,20 @@
   let createChatBusy = $derived(aiChatsData.createBusy);
   let createChatError = $derived(aiChatsData.createError);
 
-  // Load collections, schemas, and AI chats from backend on mount
+  // Plays and the state each row shows, from the global store (reactive:
+  // reloaded on play node events, and read live for a play open in a viewer)
+  let plays = $derived(playsData.plays);
+
+  const PLAY_STATE_LABELS = { on: 'On', off: 'Off', suspended: 'Suspended' } as const;
+
+  // Load collections, schemas, AI chats and plays from backend on mount
   onMount(() => {
     databaseStore.load();
     collectionsData.loadCollections();
     schemasData.loadSchemas();
     aiChatsData.loadAiChats();
     savedQueriesData.loadSavedQueries();
+    playsData.loadPlays();
   });
 
   // Cancel any pending debounced refreshes when the sidebar is destroyed
@@ -149,6 +161,7 @@
     clearSchemaRefreshTimer();
     clearAiChatRefreshTimer();
     clearSavedQueryRefreshTimer();
+    clearPlayRefreshTimer();
   });
 
   // Element references for click-outside detection
@@ -260,6 +273,11 @@
     if (created) {
       handleAiChatClick(created.id, created.nodeType);
     }
+  }
+
+  /** Open (or focus) a play in its viewer, where its switch is (ADR-090). */
+  function handlePlayClick(playId: string, nodeType: string) {
+    getNavigationService().focusOrOpenNode(playId, { nodeType });
   }
 
   /**
@@ -723,6 +741,59 @@
     {/if}
     {/if}
 
+    <!-- Plays section (after AI Chats) - accordion toggle -->
+    <!-- Gated behind the Labs "Playbooks" toggle (default OFF). The gate hides
+         this list only: plays run whether or not it shows. -->
+    {#if labsFlags.playbooksEnabled}
+    {#if !isCollapsed}
+      <Collapsible.Root open={playsExpanded} onOpenChange={(open) => setPlaysExpanded(open)}>
+        <Collapsible.Trigger
+          class="nav-item"
+          aria-label={playsExpanded ? 'Collapse Plays' : 'Expand Plays'}
+        >
+          {@render playsIcon()}
+          <span class="nav-label">Plays</span>
+        </Collapsible.Trigger>
+
+        <Collapsible.Content>
+          <div class="play-list">
+            {#if plays.length === 0}
+              <span class="schema-type-empty">No plays yet</span>
+            {:else}
+              <!-- A row shows the play's state and opens it. The switch is in
+                   the viewer, so a row writes nothing. -->
+              {#each plays as play (play.id)}
+                <button
+                  class="play-item"
+                  data-testid="play-item"
+                  title={play.suspendedMessage}
+                  onclick={() => handlePlayClick(play.id, play.nodeType)}
+                >
+                  <span class="play-name">{play.title}</span>
+                  <span class="play-state" data-state={play.state}>
+                    {PLAY_STATE_LABELS[play.state]}
+                  </span>
+                </button>
+              {/each}
+            {/if}
+          </div>
+        </Collapsible.Content>
+      </Collapsible.Root>
+    {:else}
+      <!-- Collapsed state: just show icon -->
+      <button
+        class="nav-item"
+        title="Plays"
+        onclick={() => {
+          toggleSidebar();
+          setPlaysExpanded(true);
+        }}
+      >
+        {@render playsIcon()}
+      </button>
+    {/if}
+    {/if}
+
     <!-- Remaining nav items (Search, Settings) -->
     {#each navItems.slice(1) as item}
       {@render navItemButton(item)}
@@ -748,6 +819,23 @@
   </div>
 
 </nav>
+
+{#snippet playsIcon()}
+  <svg
+    class="nav-icon"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <!-- Two steps joined by a connector: a rule running from trigger to action -->
+    <rect x="3" y="3" width="8" height="8" rx="2" />
+    <path d="M7 11v4a2 2 0 0 0 2 2h4" />
+    <rect x="13" y="13" width="8" height="8" rx="2" />
+  </svg>
+{/snippet}
 
 {#snippet typeRow(schema: SchemaNode)}
   {@const views = savedQueriesData.forType(schema.id)}
@@ -1266,5 +1354,66 @@
   .ai-chat-error:hover {
     background: none;
     color: hsl(var(--destructive));
+  }
+
+  /* Plays list (expanded content) - mirrors ai-chat-list */
+  .play-list {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    margin: 0 -1rem;
+    overflow-y: auto;
+    max-height: calc(10 * 28px); /* ~10 items tall before scrolling, matches collection-list */
+    scrollbar-width: thin;
+    background: hsl(var(--active-nav-background));
+  }
+
+  .play-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Play row - mirrors ai-chat-item, with the play's state at its right edge */
+  .play-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 1rem 0.4rem 3.5rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.8125rem;
+    width: 100%;
+    flex-shrink: 0;
+  }
+
+  .play-item:hover {
+    background: hsl(var(--border));
+    color: hsl(var(--foreground));
+  }
+
+  .play-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* State label: the same words and colours the play's viewer uses. The word
+     carries the state; the colour only repeats it. */
+  .play-state {
+    flex-shrink: 0;
+    font-size: 0.6875rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .play-state[data-state='on'] {
+    color: hsl(var(--success));
+  }
+
+  .play-state[data-state='suspended'] {
+    color: hsl(var(--warning));
   }
 </style>

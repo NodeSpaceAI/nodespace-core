@@ -19,6 +19,8 @@ export interface PersistedLayoutState {
   collectionsExpanded?: boolean; // Added in version 2
   nodeTypesExpanded?: boolean; // Added in version 3
   aiChatsExpanded?: boolean; // Added in version 4
+  /** Whether the Plays section is expanded; absent means collapsed. */
+  playsExpanded?: boolean;
   /** Node types whose saved views are collapsed in the sidebar; absent means none. */
   collapsedTypeViews?: string[];
 }
@@ -65,6 +67,7 @@ export class LayoutPersistenceService {
         collectionsExpanded: state.collectionsExpanded,
         nodeTypesExpanded: state.nodeTypesExpanded,
         aiChatsExpanded: state.aiChatsExpanded,
+        playsExpanded: state.playsExpanded,
         collapsedTypeViews: state.collapsedTypeViews
       };
 

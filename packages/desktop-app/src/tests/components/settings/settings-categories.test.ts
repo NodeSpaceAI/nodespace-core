@@ -65,7 +65,6 @@ const CORE_ALL = [
   'ai-models',
   'import',
   'integrations',
-  'playbooks',
   'labs',
   'about'
 ];
@@ -94,23 +93,23 @@ describe('core categories', () => {
       'AI Models',
       'Import Sources',
       'Integrations',
-      'Playbooks',
       'Labs',
       'About'
     ]);
   });
 
-  it('hides the two Labs-gated categories when all flags are off', () => {
+  it('hides the Labs-gated category when all flags are off', () => {
     expect(ids()).toEqual(CORE_OFF);
   });
 
-  it('follows each Labs flag independently', () => {
+  it('lists AI Models with the AI Chat flag, and nothing with the Playbooks flag', () => {
     labsFlags.aiChatEnabled = true;
-    expect(ids()).toEqual(['database', 'display', 'ai-models', 'import', 'integrations', 'labs', 'about']);
+    expect(ids()).toEqual(CORE_ALL);
 
+    // The Playbooks flag gates the Plays navigation section, not a category.
     labsFlags.aiChatEnabled = false;
     labsFlags.playbooksEnabled = true;
-    expect(ids()).toEqual(['database', 'display', 'import', 'integrations', 'playbooks', 'labs', 'about']);
+    expect(ids()).toEqual(CORE_OFF);
   });
 
   it('keys a core entry by its id and gives it no section', () => {
@@ -247,13 +246,13 @@ describe('id collisions', () => {
   });
 
   it('ignores a section whose id is a core id even when that category is hidden', () => {
-    register('collides-hidden', [section('playbooks', { label: 'Impostor' })]);
+    register('collides-hidden', [section('ai-models', { label: 'Impostor' })]);
 
     expect(ids()).toEqual(CORE_OFF);
-    expect(isSettingsCategoryVisible('playbooks')).toBe(false);
+    expect(isSettingsCategoryVisible('ai-models')).toBe(false);
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('ignored'),
-      expect.objectContaining({ key: 'collides-hidden/playbooks' })
+      expect.objectContaining({ key: 'collides-hidden/ai-models' })
     );
   });
 
@@ -357,11 +356,9 @@ describe('isSettingsCategoryVisible', () => {
 
   it('is false for a Labs-gated category while its flag is off, true once on', () => {
     expect(isSettingsCategoryVisible('ai-models')).toBe(false);
-    expect(isSettingsCategoryVisible('playbooks')).toBe(false);
 
     setAllLabsFlags(true);
     expect(isSettingsCategoryVisible('ai-models')).toBe(true);
-    expect(isSettingsCategoryVisible('playbooks')).toBe(true);
   });
 
   it('is false for an id nothing registered', () => {

@@ -30,8 +30,7 @@ export interface CoreSettingsCategory {
 
 /**
  * Core's categories in display order. "AI Models" is gated behind the Labs "AI
- * Chat" toggle and "Playbooks" behind the Labs "Playbooks" toggle (both default
- * off); the flags gate the UI only.
+ * Chat" toggle (default off); the flag gates the UI only.
  */
 export const CORE_SETTINGS_CATEGORIES: readonly CoreSettingsCategory[] = [
   { id: 'database', label: 'Database' },
@@ -39,7 +38,6 @@ export const CORE_SETTINGS_CATEGORIES: readonly CoreSettingsCategory[] = [
   { id: 'ai-models', label: 'AI Models', visible: () => labsFlags.aiChatEnabled },
   { id: 'import', label: 'Import Sources' },
   { id: 'integrations', label: 'Integrations' },
-  { id: 'playbooks', label: 'Playbooks', visible: () => labsFlags.playbooksEnabled },
   { id: 'labs', label: 'Labs' },
   { id: 'about', label: 'About' }
 ];

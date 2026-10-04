@@ -26,6 +26,11 @@ export function playState(play: Pick<PlayNode, 'enabled' | 'suspendedAt'>): Play
   return play.suspendedAt ? 'suspended' : 'on';
 }
 
+/** The name a play is shown by: its title, or a placeholder while it has none. */
+export function playTitle(play: Pick<PlayNode, 'title' | 'content'>): string {
+  return play.title || play.content || 'Untitled play';
+}
+
 /** The noun a selector's nodes are named by: `task`, `node the saved query selects`. */
 function selectorNoun(select: Selector): string {
   if ('query_id' in select) return 'node the saved query selects';

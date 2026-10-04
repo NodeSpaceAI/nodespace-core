@@ -12,6 +12,7 @@ import { collectionsData, collectionsState } from '$lib/stores/collections.svelt
 import { schemasData } from '$lib/stores/schemas.svelte';
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
+import { playsData } from '$lib/stores/plays.svelte';
 import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('CollectionRefresh');
@@ -155,5 +156,35 @@ export function clearSavedQueryRefreshTimer(): void {
   if (savedQueryRefreshTimer) {
     clearTimeout(savedQueryRefreshTimer);
     savedQueryRefreshTimer = null;
+  }
+}
+
+// Debounce timer for plays refreshes
+let playRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Debounced refresh of the Plays sidebar list. Called when a play is created,
+ * updated or deleted out of band: installed or removed, switched on or off
+ * from the CLI, archived, or suspended by the engine.
+ */
+export function schedulePlayRefresh(): void {
+  if (playRefreshTimer) {
+    clearTimeout(playRefreshTimer);
+  }
+
+  playRefreshTimer = setTimeout(async () => {
+    playRefreshTimer = null;
+    log.debug('Refreshing plays after change');
+    await playsData.loadPlays();
+  }, COLLECTION_REFRESH_DEBOUNCE_MS);
+}
+
+/**
+ * Clear any pending plays refresh timer.
+ */
+export function clearPlayRefreshTimer(): void {
+  if (playRefreshTimer) {
+    clearTimeout(playRefreshTimer);
+    playRefreshTimer = null;
   }
 }
