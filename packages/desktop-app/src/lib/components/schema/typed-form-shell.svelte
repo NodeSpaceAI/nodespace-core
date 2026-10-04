@@ -3,16 +3,17 @@
 
   Owns everything that GenericSchemaForm and TaskSchemaForm used to each
   implement on their own:
-  - the Collapsible shell + header row (X/Y-fields badge, chevron), with the
+  - the Collapsible shell + summary row ("X/Y fields | N related nodes", with
+    the chevron at the far edge; the whole row is the trigger), with the
     expanded fields as the form's own scroll region: the viewer caps the
-    form's height, the header row stays put and the fields scroll under it
+    form's height, the summary row stays put and the fields scroll under it
   - the node's typed relationships (both directions), loaded once per nodeId
     via NodeRelationshipsState and reused by whichever form renders:
     single-valued ones (`isFormPromoted`) render as RelationshipFields after
     the form's own grid, and everything else lives behind the Relationships
-    entry point at the right of the header row, which carries the number of
-    related nodes the modal lists and shows only when the modal has something
-    to show
+    entry point, the first thing in the expanded form, above its fields. It
+    shows only when the modal has something to show, and the summary row then
+    carries the number of related nodes the modal lists
   - the shared NestedPropertyModal wiring for object/array fields
 
   A composing form supplies only its own field grid (as the `fields` snippet,
@@ -29,8 +30,9 @@
     counts every visible schema field). The shell adds its promoted
     relationship fields on top.
   - hasFields: whether the caller has any fields of its own (a schema with
-    zero fields and no promoted relationships shows no collapsible, only a
-    header row carrying the Relationships entry point)
+    zero fields and no promoted relationships still gets the collapsible when
+    the modal has something to show: its summary is the related-node count
+    alone, and it expands to the Relationships entry point)
   - autoOpen: mirrors GenericSchemaForm's existing autoOpen behavior —
     starts open and focuses the first control once, for types whose header is
     read-only (title_template) and need the properties panel front and center
@@ -102,7 +104,13 @@
     };
   });
   const promotedGroups = $derived(relationships.partitioned.promoted);
-  const hasCollapsible = $derived(hasFields || promotedGroups.length > 0);
+  // The form has something to expand: fields, or the Relationships entry point.
+  const hasCollapsible = $derived(
+    hasFields || promotedGroups.length > 0 || relationships.showModalTrigger
+  );
+  // The summary's "N related nodes". Left out after a failed load, when the
+  // entry point still shows but a count would be a guess.
+  const showRelatedCount = $derived(relationships.showModalTrigger && !relationships.loadFailed);
 
   // Promoted relationship fields count toward the badge like any other field.
   const stats = $derived({
@@ -152,55 +160,52 @@
   });
 </script>
 
-<!-- Relationships entry point, for everything not already a field. A sibling
-     of the collapsible's trigger, never inside it: both are buttons, and
-     opening the modal must not toggle the form. -->
-{#snippet relationshipsTrigger()}
-  <button
-    type="button"
-    class="flex shrink-0 items-center gap-2 py-3 text-sm font-medium text-muted-foreground transition-all hover:opacity-80"
-    onclick={() => (showRelationships = true)}
-  >
-    <WaypointsIcon class="h-4 w-4" />
-    <span
-      >Relationships{relationships.modalCount > 0 ? ` (${relationships.modalCount})` : ''}</span
-    >
-  </button>
-{/snippet}
-
 <div class="schema-form-wrapper">
   {#if hasCollapsible}
     <Collapsible.Root bind:open={isOpen} class="flex min-h-0 flex-col">
-      <div class="schema-form-header flex shrink-0 items-center gap-4">
-        <Collapsible.Trigger
-          class="flex min-w-0 flex-1 items-center justify-between py-3 font-medium transition-all hover:opacity-80"
-        >
-          <div class="flex items-center gap-3">
-            {#if headerLeft}{@render headerLeft()}{/if}
-          </div>
+      <!-- The summary row: the whole of it is the trigger, with the chevron at
+           the far edge. -->
+      <Collapsible.Trigger
+        class="schema-form-header flex w-full shrink-0 items-center justify-between py-3 font-medium transition-all hover:opacity-80"
+      >
+        <div class="flex items-center gap-3">
+          {#if headerLeft}{@render headerLeft()}{/if}
+        </div>
 
-          <div class="flex items-center gap-2">
-            <span class="text-sm text-muted-foreground">
-              {stats.filled}/{stats.total} fields
+        <div class="flex items-center gap-2 text-sm text-muted-foreground">
+          {#if stats.total > 0}
+            <span>{stats.filled}/{stats.total} fields</span>
+          {/if}
+          {#if stats.total > 0 && showRelatedCount}
+            <span aria-hidden="true">|</span>
+          {/if}
+          {#if showRelatedCount}
+            <span>
+              {relationships.modalCount}
+              {relationships.modalCount === 1 ? 'related node' : 'related nodes'}
             </span>
-            <svg
-              class="h-4 w-4 text-muted-foreground transition-transform duration-200"
-              class:rotate-180={isOpen}
-              viewBox="0 0 16 16"
-              fill="none"
-            >
-              <path
-                d="M4 6l4 4 4-4"
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </div>
-        </Collapsible.Trigger>
-        {#if relationships.showModalTrigger}{@render relationshipsTrigger()}{/if}
-      </div>
+          {/if}
+          <!-- Nothing to count (no fields, and the relationships did not
+               load): the row still says what it opens. -->
+          {#if stats.total === 0 && !showRelatedCount}
+            <span>Relationships</span>
+          {/if}
+          <svg
+            class="h-4 w-4 transition-transform duration-200"
+            class:rotate-180={isOpen}
+            viewBox="0 0 16 16"
+            fill="none"
+          >
+            <path
+              d="M4 6l4 4 4-4"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </div>
+      </Collapsible.Trigger>
 
       <!-- The scroll region. The padding is on the element inside it, so the
            region itself can shrink to nothing under a squeezed viewer; the
@@ -208,6 +213,19 @@
            keeps a control's focus ring inside the clip. -->
       <Collapsible.Content class="schema-form-scroll -mx-1 -mt-1 min-h-0 overflow-y-auto">
         <div class="px-1 pb-4 pt-1" bind:this={formEl} onfocusin={revealFocusedControl}>
+          <!-- Relationships entry point, for everything not already a field:
+               the first thing in the expanded form, above its fields. -->
+          {#if relationships.showModalTrigger}
+            <button
+              type="button"
+              class="flex items-center gap-2 text-sm font-medium text-muted-foreground transition-all hover:opacity-80"
+              class:mb-4={hasFields || promotedGroups.length > 0}
+              onclick={() => (showRelationships = true)}
+            >
+              <WaypointsIcon class="h-4 w-4" />
+              <span>Relationships</span>
+            </button>
+          {/if}
           {#if hasFields}{@render fields(openNestedModal)}{/if}
           <!-- Promoted relationships follow the form's own fields as one group:
                scalar fields and relationships share no declaration order to
@@ -231,11 +249,6 @@
         </div>
       </Collapsible.Content>
     </Collapsible.Root>
-  {:else if relationships.showModalTrigger}
-    <!-- No fields to collapse: the header row carries the entry point alone. -->
-    <div class="schema-form-header flex items-center justify-end">
-      {@render relationshipsTrigger()}
-    </div>
   {/if}
 </div>
 
@@ -276,7 +289,7 @@
   }
 
   /* The viewer never shrinks a form below this same token, so the two agree */
-  .schema-form-header {
+  .schema-form-wrapper :global(.schema-form-header) {
     min-height: var(--viewer-form-header-height);
   }
 

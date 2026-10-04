@@ -113,6 +113,10 @@ describe('GenericSchemaForm — Relationships trigger gate', () => {
     const { queryByText } = render(GenericSchemaForm, {
       props: { nodeId: 'n3', schema: schema(), autoOpen: true }
     });
-    await waitFor(() => expect(queryByText('Relationships')).toBeTruthy());
+    // With no fields and no count, the summary row is also named
+    // "Relationships"; the trigger is the button inside the form.
+    await waitFor(() =>
+      expect(queryByText('Relationships', { selector: 'button > span' })).toBeTruthy()
+    );
   });
 });
