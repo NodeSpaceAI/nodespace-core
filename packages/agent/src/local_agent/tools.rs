@@ -4977,7 +4977,7 @@ impl AgentToolExecutor for GraphToolExecutor {
         ns.get_node(strip_node_uri(id))
             .await
             .map(|node| node.map(|node| node.node_type))
-            .map_err(|e| ToolError::ExecutionFailed(format!("could not read the node's type: {e}")))
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))
     }
 
     /// Run skill retrieval as a deterministic system step (ADR-038).

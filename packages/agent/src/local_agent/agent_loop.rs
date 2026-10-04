@@ -1820,6 +1820,10 @@ fn off_menu_node_refused_result(
 /// check that lets through what it cannot read holds nothing. A node that
 /// does not exist is a different case, and goes to the tool's own error.
 ///
+/// The message asks for no re-send. A re-send would be this same call, which
+/// the per-turn duplicate guard stops before it is looked up again, so the
+/// way on is to tell the user.
+///
 /// Flagged as an error: nothing ran. It is not a `type_not_offered` refusal,
 /// since the node's type is not known to be off the menu.
 fn node_type_unread_result(reason: &crate::agent_types::ToolError) -> serde_json::Value {
@@ -1828,7 +1832,7 @@ fn node_type_unread_result(reason: &crate::agent_types::ToolError) -> serde_json
         "message": format!(
             "Not executed, and nothing was changed: this node's type could not be read, so the \
              call could not be checked against the types this request covers ({reason}). \
-             Re-send the call to try again."
+             Do not re-send it: tell the user the change was not made because the record could not be read, and that they can ask again."
         ),
     })
 }
@@ -16227,7 +16231,9 @@ mod tests {
     /// schema decision records no selection.
     #[tokio::test]
     async fn update_node_on_a_node_whose_type_cannot_be_read_is_not_run() {
-        let args = json!({"id": UNREADABLE_NODE, "content": "April"});
+        // The stray `node_type` is there for the decision record below: a
+        // failed read must not fall back to it.
+        let args = json!({"id": UNREADABLE_NODE, "content": "April", "node_type": "album"});
         let (executed, lookups, result) = run_held_update(args.clone()).await;
 
         assert!(
@@ -16243,7 +16249,7 @@ mod tests {
             json!(
                 "Not executed, and nothing was changed: this node's type could not be read, so \
                  the call could not be checked against the types this request covers (tool \
-                 execution failed: the store is locked). Re-send the call to try again."
+                 execution failed: the store is locked). Do not re-send it: tell the user the change was not made because the record could not be read, and that they can ask again."
             )
         );
 
