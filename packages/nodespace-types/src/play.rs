@@ -9,6 +9,10 @@
 //!
 //! Rule keys are snake_case in storage and on the wire alike: a rule is
 //! authored and replaced whole, so it has one spelling.
+//!
+//! A rule, each of its conditions and each of its actions carry a required
+//! `description`: what that part means, written by the play's author in the
+//! same write (ADR-090 §1). The trigger has none; its fields describe it.
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -302,7 +306,7 @@ pub struct RejectParams {
 }
 
 /// One step of a rule. Tagged on `action_type`, with that action's own
-/// `params`.
+/// `params` and the author's `description` of what the step does.
 ///
 /// `for_each` runs the action once per node a path reaches
 /// (`trigger.node.tasks`, optionally narrowed with `.where(...)`), binding
@@ -313,26 +317,31 @@ pub struct RejectParams {
 #[serde(tag = "action_type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     CreateNode {
+        description: String,
         params: CreateNodeParams,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         for_each: Option<String>,
     },
     UpdateNode {
+        description: String,
         params: UpdateNodeParams,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         for_each: Option<String>,
     },
     AddRelationship {
+        description: String,
         params: AddRelationshipParams,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         for_each: Option<String>,
     },
     RemoveRelationship {
+        description: String,
         params: RemoveRelationshipParams,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         for_each: Option<String>,
     },
     Reject {
+        description: String,
         params: RejectParams,
     },
 }
@@ -345,6 +354,17 @@ impl Action {
             Self::AddRelationship { .. } => ActionType::AddRelationship,
             Self::RemoveRelationship { .. } => ActionType::RemoveRelationship,
             Self::Reject { .. } => ActionType::Reject,
+        }
+    }
+
+    /// What the step does, in its author's words.
+    pub fn description(&self) -> &str {
+        match self {
+            Self::CreateNode { description, .. }
+            | Self::UpdateNode { description, .. }
+            | Self::AddRelationship { description, .. }
+            | Self::RemoveRelationship { description, .. }
+            | Self::Reject { description, .. } => description,
         }
     }
 
@@ -367,7 +387,7 @@ impl Action {
             Self::UpdateNode { params, .. } => to_json(params),
             Self::AddRelationship { params, .. } => to_json(params),
             Self::RemoveRelationship { params, .. } => to_json(params),
-            Self::Reject { params } => to_json(params),
+            Self::Reject { params, .. } => to_json(params),
         }
     }
 }
@@ -376,21 +396,36 @@ impl Action {
 // Rules
 // ============================================================================
 
+/// One condition of a rule: a CEL expression over the triggering node, and
+/// what it requires in the author's words. A bare expression does not decode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(
+    deny_unknown_fields,
+    expecting = "an object { \"expr\": \"<CEL>\", \"description\": \"<what must hold>\" }"
+)]
+pub struct RuleCondition {
+    pub expr: String,
+    pub description: String,
+}
+
 /// One rule of a play: when it runs, what must hold, and what it does.
 ///
-/// `conditions` are CEL expressions over the triggering node; all must pass.
+/// Every condition must pass. `description` says what the rule does, in one
+/// sentence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct RuleDefinition {
     pub name: String,
+    pub description: String,
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub class: RuleClass,
     pub trigger: Trigger,
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
-    pub conditions: Vec<String>,
+    pub conditions: Vec<RuleCondition>,
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub actions: Vec<Action>,
@@ -526,7 +561,8 @@ impl PlayFields {
     ///
     /// `InvalidProperties` naming the field. For `rules` the message names
     /// the rule and what in it failed to decode: an unknown trigger type,
-    /// event or action, a missing param, or a param the action does not take.
+    /// event or action, a missing description, a condition written as a bare
+    /// expression, a missing param, or a param the action does not take.
     pub fn from_properties(properties: &Value) -> Result<Self, ValidationError> {
         let bucket = play_bucket(properties);
 
@@ -609,26 +645,47 @@ fn decode_field<T: serde::de::DeserializeOwned>(
         .transpose()
 }
 
-/// Decode a stored `rules` value, one rule at a time so an error names the
-/// rule it is in.
+/// Decode a stored `rules` value.
 fn decode_rules(value: &Value) -> Result<Vec<RuleDefinition>, ValidationError> {
+    decode_rule_list(value).map_err(|detail| invalid("rules", &detail))
+}
+
+/// Decode a `rules` value one rule at a time, so an error names the rule it
+/// is in and the field within it (`conditions[1]`, `actions[0]`).
+fn decode_rule_list(value: &Value) -> Result<Vec<RuleDefinition>, String> {
     let rules = value
         .as_array()
-        .ok_or_else(|| invalid("rules", "expected an array of rules"))?;
+        .ok_or_else(|| "expected an array of rules".to_string())?;
     rules
         .iter()
         .enumerate()
         .map(|(index, rule)| {
-            serde_json::from_value(rule.clone()).map_err(|e| {
+            serde_path_to_error::deserialize(rule).map_err(|e| {
                 let name = rule.get("name").and_then(Value::as_str);
                 let label = match name {
                     Some(name) => format!("rule[{index}] ('{name}')"),
                     None => format!("rule[{index}]"),
                 };
-                invalid("rules", &format!("{label}: {e}"))
+                let path = e.path().to_string();
+                if path == "." {
+                    format!("{label}: {}", e.inner())
+                } else {
+                    format!("{label}: {path}: {}", e.inner())
+                }
             })
         })
         .collect()
+}
+
+/// Decode an update's `rules` the way stored rules are decoded, so a typed
+/// update's error names the rule and the field too.
+fn deserialize_update_rules<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<RuleDefinition>>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    decode_rule_list(&value)
+        .map(Some)
+        .map_err(|detail| serde::de::Error::custom(format!("rules: {detail}")))
 }
 
 fn invalid(key: &str, detail: &str) -> ValidationError {
@@ -667,7 +724,11 @@ pub struct PlayNode {
 #[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlayNodeUpdate {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_update_rules"
+    )]
     pub rules: Option<Vec<RuleDefinition>>,
     #[serde(
         default,

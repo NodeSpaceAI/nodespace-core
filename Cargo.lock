@@ -3645,6 +3645,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "serde_path_to_error",
  "thiserror 1.0.69",
  "ts-rs",
  "uuid",

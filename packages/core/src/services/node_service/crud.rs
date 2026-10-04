@@ -617,7 +617,7 @@ impl NodeService {
             .await?
         {
             Self::ensure_play_created_unsuspended(&node)?;
-            self.validate_play_rules(&node.properties).await?;
+            self.validate_play_rules(&node.properties, None).await?;
         }
         if self
             .type_is_a(&node.node_type, crate::models::CoreNodeType::Query)
@@ -1806,7 +1806,8 @@ impl NodeService {
         // nothing about the rules, so it succeeds for a play whose rules a
         // schema change has since broken (ADR-087 §5).
         if play_rules_changed {
-            self.validate_play_rules(&updated.properties).await?;
+            self.validate_play_rules(&updated.properties, Some(&existing.properties))
+                .await?;
         }
         // The same gate for a saved query's relationship paths.
         if properties_changed
@@ -2604,9 +2605,15 @@ impl NodeService {
     }
 
     /// Validate play rules before persisting.
+    ///
+    /// `stored` is the play's properties before a write that changes its
+    /// rules, and `None` for a new play. The rules' descriptions are checked
+    /// against it (ADR-090 §1): a component whose content changed must not
+    /// keep the description it was stored with.
     pub(crate) async fn validate_play_rules(
         &self,
         properties: &serde_json::Value,
+        stored: Option<&serde_json::Value>,
     ) -> Result<(), NodeServiceError> {
         use crate::playbook::types::{parse_rule, parse_rules_from_properties};
 
@@ -2620,7 +2627,27 @@ impl NodeService {
             }
         };
 
-        // Step 2: Parse each rule definition into a ParsedRule
+        // Step 2: Check the descriptions, against the stored rules when
+        // there are any that decode. Restoring a seeded play's shipped rules
+        // is never stale: they were described when they shipped, whatever
+        // the play holds now.
+        let stored_rules = stored
+            .filter(|stored| !Self::restores_shipped_rules(properties, stored))
+            .and_then(|stored| parse_rules_from_properties(stored).ok());
+        if let Err(errors) = crate::playbook::descriptions::check_descriptions(
+            &rule_defs,
+            stored_rules.as_deref(),
+        ) {
+            return Err(NodeServiceError::PlayValidationFailed {
+                errors: errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            });
+        }
+
+        // Step 3: Parse each rule definition into a ParsedRule
         let mut parsed_rules = Vec::with_capacity(rule_defs.len());
         for def in &rule_defs {
             match parse_rule(def) {
@@ -2633,12 +2660,26 @@ impl NodeService {
             }
         }
 
-        // Step 3: Run the full validation pipeline (schema checks, CEL compile, paths)
+        // Step 4: Run the full validation pipeline (schema checks, CEL compile, paths)
         if let Err(errors) = crate::playbook::validation::validate_play(&parsed_rules, self).await {
             return Err(NodeServiceError::play_validation_failed(&errors));
         }
 
         Ok(())
+    }
+
+    /// Whether a write sets a seeded play's rules to the ones it shipped with
+    /// (`_seed.default_rules`, ADR-060 §8).
+    fn restores_shipped_rules(properties: &serde_json::Value, stored: &serde_json::Value) -> bool {
+        let shipped = stored
+            .get("_seed")
+            .and_then(|seed| seed.get("default_rules"));
+        shipped.is_some()
+            && shipped
+                == crate::models::PlayFields::stored_field(
+                    properties,
+                    nodespace_types::PLAY_RULES_FIELD,
+                )
     }
 
     /// Resolve a saved query's relationship paths before persisting.

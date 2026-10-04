@@ -15,8 +15,8 @@ use std::sync::Arc;
 use crate::playbook::cel::CompiledCondition;
 
 pub use nodespace_types::{
-    Action, ActionType, GraphEventType, InlineSelector, PlayFields, RuleClass, RuleDefinition,
-    SavedQuerySelector, Selector, Trigger,
+    Action, ActionType, GraphEventType, InlineSelector, PlayFields, RuleClass, RuleCondition,
+    RuleDefinition, SavedQuerySelector, Selector, Trigger,
 };
 
 /// Maximum depth for play execution chains (ADR-060 §5).
@@ -408,7 +408,9 @@ pub fn parse_rule(def: &RuleDefinition) -> Result<ParsedRule, PlayParseError> {
     let conditions = def
         .conditions
         .iter()
-        .map(|expr| CompiledCondition::compile(expr).map_err(PlayParseError::InvalidCondition))
+        .map(|condition| {
+            CompiledCondition::compile(&condition.expr).map_err(PlayParseError::InvalidCondition)
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ParsedRule {

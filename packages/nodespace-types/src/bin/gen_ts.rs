@@ -134,6 +134,7 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         RemoveRelationshipParams,
         RejectParams,
         Action,
+        RuleCondition,
         RuleDefinition,
         PlayFields,
         PlayNode,

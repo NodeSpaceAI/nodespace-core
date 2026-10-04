@@ -25,6 +25,7 @@ pub mod actions;
 pub mod cel;
 pub mod core_plays;
 pub mod cron_runner;
+pub mod descriptions;
 pub mod engine;
 pub mod graph_resolver;
 pub mod lifecycle;
