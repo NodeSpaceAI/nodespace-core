@@ -500,16 +500,19 @@ pub struct AgentSession {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prior_turns: Vec<PriorTurn>,
 
-    /// `nodespace://` ids that tool results and system records in this
-    /// session produced before history summarization replaced those messages.
+    /// Every `nodespace://` id a tool result or system record has produced in
+    /// this session: the only ids a reply may link.
     ///
-    /// The summary is the model's text, so a node id in it proves nothing.
-    /// These are the ids the replaced messages did prove real, kept so a reply
-    /// that links one is not taken for an invention. Held here and not in a
-    /// message: the model needs no list of bare ids, and the prompt pays
-    /// nothing for it.
+    /// Written where such content enters the session: from the history a
+    /// session is created with, and by [`AgentSession::push_tool_result`] and
+    /// [`AgentSession::push_system_record`], which are how a tool or system
+    /// message is appended. It does not depend on `messages`, so history
+    /// summarization, which replaces messages with the model's own text,
+    /// leaves it whole. What the user typed, the model said, a tool call
+    /// passed as an argument or the conversation summary mentions never
+    /// enters it.
     #[serde(default, skip_serializing_if = "HashSet::is_empty")]
-    pub summarized_node_uris: HashSet<String>,
+    pub grounded_node_uris: HashSet<String>,
 }
 
 /// An earlier turn as the clarification contract sees it.
