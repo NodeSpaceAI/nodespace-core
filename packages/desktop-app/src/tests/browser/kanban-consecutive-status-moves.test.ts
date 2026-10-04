@@ -106,6 +106,24 @@ function cardsIn(column: HTMLElement): string[] {
   );
 }
 
+/** Open a card's "Move to" menu without a mouse (M on the focused card) and
+ *  return the columns it offers, by label. */
+async function openMoveMenu(container: HTMLElement, title: string): Promise<HTMLElement[]> {
+  const card = cardFor(container, title).querySelector('.kanban-card-title') as HTMLElement;
+  card.focus();
+  await fireEvent.keyDown(card, { key: 'm' });
+  return Array.from(container.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+}
+
+/** Move a card to the column labelled `column` through its "Move to" menu. */
+async function moveViaMenu(container: HTMLElement, title: string, column: string): Promise<void> {
+  const item = (await openMoveMenu(container, title)).find(
+    (el) => el.textContent?.trim() === column
+  );
+  if (!item) throw new Error(`No "${column}" item in the move menu of "${title}"`);
+  await fireEvent.click(item);
+}
+
 describe('KanbanView — consecutive status moves on a task node (browser mode)', () => {
   beforeEach(() => {
     sharedNodeStore.clearAll();
@@ -138,7 +156,7 @@ describe('KanbanView — consecutive status moves on a task node (browser mode)'
       }
     );
 
-    const { container, getByRole } = render(KanbanView, {
+    const { container } = render(KanbanView, {
       props: {
         nodeIds: ['t1'],
         schema: taskSchema(),
@@ -148,22 +166,13 @@ describe('KanbanView — consecutive status moves on a task node (browser mode)'
       }
     });
 
-    const moveSelect = getByRole('combobox', {
-      name: 'Move Ship it to another column'
-    }) as HTMLSelectElement;
-    expect(moveSelect.value).toBe('open');
-
-    // First move: open -> in_progress
-    await fireEvent.change(moveSelect, { target: { value: 'in_progress' } });
+    await moveViaMenu(container, 'Ship it', 'In Progress');
     await waitFor(() => {
       expect(cardsIn(columnFor(container, 'In Progress'))).toEqual(['Ship it']);
     });
 
     // Second move, on the SAME rendered instance (no remount): in_progress -> done
-    const moveSelectAgain = getByRole('combobox', {
-      name: 'Move Ship it to another column'
-    }) as HTMLSelectElement;
-    await fireEvent.change(moveSelectAgain, { target: { value: 'done' } });
+    await moveViaMenu(container, 'Ship it', 'Done');
     await waitFor(() => {
       expect(cardsIn(columnFor(container, 'Done'))).toEqual(['Ship it']);
     });
@@ -250,7 +259,7 @@ describe('KanbanView — consecutive status moves on a task node (browser mode)'
 
     const updateSpy = vi.spyOn(backendAdapter, 'updateTaskNode');
 
-    const { container, getByRole } = render(KanbanView, {
+    const { container } = render(KanbanView, {
       props: {
         nodeIds: ['t1'],
         schema: taskSchema(),
@@ -268,15 +277,12 @@ describe('KanbanView — consecutive status moves on a task node (browser mode)'
       )
     ).toEqual(['Open', 'In Progress', 'Done']);
 
-    // The per-card "Move to" select offers the same three columns, no
-    // Unassigned option a user could pick to trigger a silent no-op write.
-    const moveSelect = getByRole('combobox', {
-      name: 'Move Ship it to another column'
-    }) as HTMLSelectElement;
-    const optionValues = Array.from(moveSelect.options).map((o) => o.value);
-    expect(optionValues).toEqual(['open', 'in_progress', 'done']);
+    // The card's "Move to" menu offers the other two columns, no Unassigned
+    // item a user could pick to trigger a silent no-op write.
+    const offered = await openMoveMenu(container, 'Ship it');
+    expect(offered.map((el) => el.textContent?.trim())).toEqual(['In Progress', 'Done']);
 
-    // Defense-in-depth: even a direct write attempt (bypassing the select)
+    // Defense-in-depth: even a direct write attempt (bypassing the menu)
     // must not silently clear status — moveCard's own guard rejects it
     // before ever reaching the backend.
     expect(updateSpy).not.toHaveBeenCalled();

@@ -42,7 +42,12 @@ export type QueryViewKind = 'list' | 'table' | 'kanban';
  */
 export interface QueryViewConfigState {
   lastView: QueryViewKind;
-  kanban?: { groupBy?: string };
+  kanban?: {
+    groupBy?: string;
+    /** The board's column order, per group-by field: field name → enum values
+     *  in display order. Kept per field so switching group-by loses nothing. */
+    columnOrder?: Record<string, string[]>;
+  };
 }
 
 export const DEFAULT_VIEW_CONFIG: QueryViewConfigState = { lastView: 'table' };
@@ -71,10 +76,27 @@ export function parseQueryDefinition(node: QueryNode): QueryDefinition {
   };
 }
 
-/** Read a query node's view config, with defaults. */
-export function parseViewConfig(node: QueryNode | null | undefined): QueryViewConfigState {
-  const obj = node?.viewConfig;
-  if (!obj || typeof obj !== 'object') return { ...DEFAULT_VIEW_CONFIG };
+/**
+ * Read a stored `kanban.columnOrder`: the entries that are a list of strings.
+ * `undefined` when nothing usable is stored.
+ */
+function parseColumnOrder(raw: unknown): Record<string, string[]> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const entries = Object.entries(raw).filter(
+    (entry): entry is [string, string[]] =>
+      Array.isArray(entry[1]) && entry[1].every((value) => typeof value === 'string')
+  );
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+/**
+ * Read a stored view config object, with defaults — the one reader for both
+ * places the shape is stored: a query node's `viewConfig` and the default
+ * view's per-type preferences.
+ */
+export function parseViewConfigObject(raw: unknown): QueryViewConfigState {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_VIEW_CONFIG };
+  const obj = raw as Record<string, unknown>;
 
   const lastView: QueryViewKind =
     obj.lastView === 'list' || obj.lastView === 'table' || obj.lastView === 'kanban'
@@ -85,11 +107,20 @@ export function parseViewConfig(node: QueryNode | null | undefined): QueryViewCo
 
   const kanbanRaw = obj.kanban;
   if (kanbanRaw && typeof kanbanRaw === 'object') {
-    const groupBy = (kanbanRaw as Record<string, unknown>).groupBy;
-    result.kanban = typeof groupBy === 'string' ? { groupBy } : {};
+    const { groupBy, columnOrder: columnOrderRaw } = kanbanRaw as Record<string, unknown>;
+    const columnOrder = parseColumnOrder(columnOrderRaw);
+    result.kanban = {
+      ...(typeof groupBy === 'string' ? { groupBy } : {}),
+      ...(columnOrder ? { columnOrder } : {})
+    };
   }
 
   return result;
+}
+
+/** Read a query node's view config, with defaults. */
+export function parseViewConfig(node: QueryNode | null | undefined): QueryViewConfigState {
+  return parseViewConfigObject(node?.viewConfig);
 }
 
 /** Merge a partial view-config change onto an existing view config. */

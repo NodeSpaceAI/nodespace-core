@@ -125,6 +125,32 @@ describe('parseViewConfig', () => {
     const vc = parseViewConfig(queryNode({ viewConfig: { lastView: 'grid' } }));
     expect(vc.lastView).toBe('table');
   });
+
+  it('reads the kanban column order, per group-by field', () => {
+    const kanban = {
+      groupBy: 'status',
+      columnOrder: { status: ['done', 'open'], priority: ['high', 'low'] }
+    };
+    const vc = parseViewConfig(queryNode({ viewConfig: { lastView: 'kanban', kanban } }));
+    expect(vc).toEqual({ lastView: 'kanban', kanban });
+  });
+
+  it('drops column order entries that are not a list of strings', () => {
+    const vc = parseViewConfig(
+      queryNode({
+        viewConfig: {
+          lastView: 'kanban',
+          kanban: { columnOrder: { status: ['open'], priority: 'high', size: [1, 2] } }
+        }
+      })
+    );
+    expect(vc.kanban).toEqual({ columnOrder: { status: ['open'] } });
+
+    const none = parseViewConfig(
+      queryNode({ viewConfig: { lastView: 'kanban', kanban: { columnOrder: ['open'] } } })
+    );
+    expect(none.kanban).toEqual({});
+  });
 });
 
 describe('mergeViewConfig', () => {
@@ -138,6 +164,20 @@ describe('mergeViewConfig', () => {
   it('merges a kanban groupBy change without dropping lastView', () => {
     const merged = mergeViewConfig({ lastView: 'kanban' }, { kanban: { groupBy: 'priority' } });
     expect(merged).toEqual({ lastView: 'kanban', kanban: { groupBy: 'priority' } });
+  });
+
+  it('keeps the stored column order across a view change and a group-by change', () => {
+    const columnOrder = { status: ['done', 'open'] };
+    const stored = { lastView: 'kanban' as const, kanban: { groupBy: 'status', columnOrder } };
+
+    expect(mergeViewConfig(stored, { lastView: 'list' })).toEqual({
+      lastView: 'list',
+      kanban: { groupBy: 'status', columnOrder }
+    });
+    expect(mergeViewConfig(stored, { kanban: { groupBy: 'priority' } })).toEqual({
+      lastView: 'kanban',
+      kanban: { groupBy: 'priority', columnOrder }
+    });
   });
 });
 

@@ -22,6 +22,15 @@ describe('default view prefs', () => {
     expect(loadDefaultViewPrefs('task')).toEqual({ lastView: 'list' });
   });
 
+  it('round-trips a kanban column order', () => {
+    const config = {
+      lastView: 'kanban' as const,
+      kanban: { groupBy: 'status', columnOrder: { status: ['done', 'open'] } }
+    };
+    saveDefaultViewPrefs('skill', config);
+    expect(loadDefaultViewPrefs('skill')).toEqual(config);
+  });
+
   it('ignores corrupt stored values', () => {
     localStorage.setItem('nodespace:default-view:skill', '{not json');
     expect(loadDefaultViewPrefs('skill')).toEqual({ lastView: 'table' });

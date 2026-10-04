@@ -35,9 +35,9 @@ export type QueryFields = {
    */
   lastExecuted?: string;
   /**
-   * How the query renders. Its keys (`lastView`, `kanban.groupBy`) are the
-   * viewer's own vocabulary, not schema field names, so the object is
-   * carried as-is rather than typed here.
+   * How the query renders. Its keys (`lastView`, `kanban.groupBy`,
+   * `kanban.columnOrder`) are the viewer's own vocabulary, not schema field
+   * names, so the object is carried as-is rather than typed here.
    */
   viewConfig?: Record<string, unknown>;
 };

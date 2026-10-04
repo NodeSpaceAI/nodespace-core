@@ -303,6 +303,124 @@ describe('QueryNodeViewer — materialize race', () => {
     expect(queryByRole('button', { name: 'Edit Query' })).toBeNull();
   });
 
+  describe('Kanban column order', () => {
+    const QUERY_ID = 'saved-board';
+    const columnOrder = { status: ['closed', 'open'], size: ['small', 'big'] };
+
+    const twoFieldSchema = (): SchemaNode => {
+      const [status] = schema().fields;
+      return {
+        ...schema(),
+        fields: [
+          {
+            ...status,
+            coreValues: [
+              { value: 'open', label: 'Open' },
+              { value: 'closed', label: 'Closed' }
+            ]
+          },
+          {
+            ...status,
+            name: 'size',
+            friendlyName: 'Size',
+            coreValues: [
+              { value: 'big', label: 'Big' },
+              { value: 'small', label: 'Small' }
+            ]
+          }
+        ]
+      };
+    };
+
+    const columnTitles = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('.kanban-column-title')).map((el) =>
+        el.textContent?.trim()
+      );
+
+    /** The view config of every write the viewer made, in order. */
+    const writtenViewConfigs = () =>
+      mockUpdateQueryNode.mock.calls.map(
+        (call) => (call[2] as QueryNodeUpdate).viewConfig as Record<string, unknown>
+      );
+
+    it('shows a saved query in its stored order and keeps the order across view and group-by changes', async () => {
+      mockGetSchema.mockResolvedValue(twoFieldSchema());
+      mockGetNode.mockResolvedValue({
+        ...materializedQueryNode(QUERY_ID),
+        viewConfig: { lastView: 'kanban', kanban: { groupBy: 'status', columnOrder } }
+      });
+      mockExecuteQuery.mockResolvedValue([widgetRow('w1')]);
+      mockUpdateQueryNode.mockImplementation(async (id: string) => sharedNodeStore.getNode(id));
+
+      const { container, getByRole, getByLabelText } = render(QueryNodeViewer, {
+        props: { nodeId: QUERY_ID, onNodeIdChange: () => {} }
+      });
+      await waitFor(() =>
+        expect(columnTitles(container)).toEqual(['Closed', 'Open', 'Unassigned'])
+      );
+
+      // Group by the other field: its own stored order applies.
+      await fireEvent.change(getByLabelText('Group by'), { target: { value: 'size' } });
+      await waitFor(() =>
+        expect(columnTitles(container)).toEqual(['Small', 'Big', 'Unassigned'])
+      );
+
+      // Leave the board and come back.
+      await fireEvent.click(getByRole('button', { name: 'List' }));
+      await fireEvent.click(getByRole('button', { name: 'Kanban' }));
+      await waitFor(() =>
+        expect(columnTitles(container)).toEqual(['Small', 'Big', 'Unassigned'])
+      );
+
+      await waitFor(() => expect(mockUpdateQueryNode).toHaveBeenCalled());
+      for (const viewConfig of writtenViewConfigs()) {
+        expect((viewConfig.kanban as Record<string, unknown>).columnOrder).toEqual(columnOrder);
+      }
+      expect(
+        (sharedNodeStore.getNode(QUERY_ID) as unknown as QueryNode).viewConfig
+      ).toEqual({ lastView: 'kanban', kanban: { groupBy: 'size', columnOrder } });
+    });
+
+    it('carries a default view stored order into its per-type preferences and the node it materializes', async () => {
+      localStorage.setItem(
+        `nodespace:default-view:${SCHEMA_ID}`,
+        JSON.stringify({ lastView: 'kanban', kanban: { groupBy: 'status', columnOrder } })
+      );
+      mockGetSchema.mockResolvedValue(twoFieldSchema());
+      mockGetNode.mockResolvedValue(null);
+      mockQueryNodes.mockResolvedValue([widgetRow('w1')]);
+      mockCreateNode.mockImplementation(async (input: { id: string }) => ({
+        id: input.id,
+        placement: null
+      }));
+
+      const { container, getByRole, getByLabelText } = render(QueryNodeViewer, {
+        props: { nodeId: SCHEMA_ID, onNodeIdChange: () => {} }
+      });
+      await waitFor(() =>
+        expect(columnTitles(container)).toEqual(['Closed', 'Open', 'Unassigned'])
+      );
+
+      await fireEvent.click(getByRole('button', { name: 'List' }));
+      expect(
+        JSON.parse(localStorage.getItem(`nodespace:default-view:${SCHEMA_ID}`) ?? '{}')
+      ).toEqual({ lastView: 'list', kanban: { groupBy: 'status', columnOrder } });
+
+      const title = getByLabelText('Query name') as HTMLInputElement;
+      await fireEvent.focus(title);
+      await fireEvent.input(title, { target: { value: 'My Board' } });
+      await fireEvent.blur(title);
+      await waitFor(() => expect(mockCreateNode).toHaveBeenCalledTimes(1));
+      const { properties } = mockCreateNode.mock.calls[0][0] as {
+        properties: { view_config: unknown };
+      };
+      expect(properties.view_config).toEqual({
+        lastView: 'list',
+        kanban: { groupBy: 'status', columnOrder }
+      });
+    });
+  });
+
   describe('Kanban gating', () => {
     const noEnumSchema = (): SchemaNode => ({ ...schema(), fields: [] });
 

@@ -550,7 +550,9 @@ fn blocker_gate() -> PlayStep {
 ///
 /// Grouped by the inherited `status`, so the columns are the extended
 /// vocabulary (`backlog`, `triage`, `in_review` alongside the base values)
-/// rather than anything this view has to declare.
+/// rather than anything this view has to declare. Their order is declared:
+/// the enum lists the base values before the extended ones, and the board
+/// reads as a workflow, left to right.
 fn issues_by_status_view() -> ViewStep {
     ViewStep {
         view_id: ISSUES_BY_STATUS_ID,
@@ -563,10 +565,24 @@ fn issues_by_status_view() -> ViewStep {
         },
         view_config: json!({
             "lastView": "kanban",
-            "kanban": { "groupBy": "status" },
+            "kanban": {
+                "groupBy": "status",
+                "columnOrder": { "status": ISSUE_STATUS_COLUMN_ORDER },
+            },
         }),
     }
 }
+
+/// The Issues by Status board's columns, in workflow order.
+const ISSUE_STATUS_COLUMN_ORDER: [&str; 7] = [
+    "triage",
+    "backlog",
+    "open",
+    "in_progress",
+    "in_review",
+    "done",
+    "cancelled",
+];
 
 /// Cycles, most recent first.
 ///
@@ -634,6 +650,34 @@ mod tests {
                 maps_to
             );
         }
+    }
+
+    /// The viewer ignores an ordered value the enum does not have and appends
+    /// one the order leaves out, so a typo or a status added later would
+    /// misplace a column without failing anything.
+    #[test]
+    fn the_issue_board_orders_every_status_and_nothing_else() {
+        let ext = issue_status_values();
+        let mut statuses: Vec<&str> = vec!["open", "in_progress", "done", "cancelled"];
+        statuses.extend(
+            ext.params["add_field_values"][0]["values"]
+                .as_array()
+                .expect("values array")
+                .iter()
+                .map(|v| v["value"].as_str().expect("value")),
+        );
+        statuses.sort_unstable();
+
+        let view = issues_by_status_view();
+        let mut ordered: Vec<&str> = view.view_config["kanban"]["columnOrder"]["status"]
+            .as_array()
+            .expect("the board declares its status column order")
+            .iter()
+            .map(|v| v.as_str().expect("value"))
+            .collect();
+        ordered.sort_unstable();
+
+        assert_eq!(ordered, statuses);
     }
 
     #[test]

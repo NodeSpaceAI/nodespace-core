@@ -57,11 +57,31 @@ export function eligibleGroupByFields(schema: SchemaNode | null): SchemaField[] 
 /**
  * The ordered set of columns for an enum field: its core values followed by its
  * user-extensible values, each mapped to `{ value, label }`.
+ *
+ * `order` is the query's stored column order for this field
+ * (`viewConfig.kanban.columnOrder[field]`). Listed values come first, in the
+ * listed order; values it omits follow in enum order, so a value added to the
+ * enum later still gets a column. A listed value the enum no longer has is
+ * ignored.
  */
-export function enumColumns(field: SchemaField | undefined | null): KanbanColumn[] {
+export function enumColumns(
+  field: SchemaField | undefined | null,
+  order?: readonly string[]
+): KanbanColumn[] {
   if (!field) return [];
-  const all = [...(field.coreValues ?? []), ...(field.userValues ?? [])];
-  return all.map((ev) => ({ value: ev.value, label: ev.label }));
+  const all = [...(field.coreValues ?? []), ...(field.userValues ?? [])].map((ev) => ({
+    value: ev.value,
+    label: ev.label
+  }));
+  if (!Array.isArray(order) || order.length === 0) return all;
+
+  const byValue = new Map(all.map((col) => [col.value, col]));
+  const listed = new Map<string, KanbanColumn>();
+  for (const value of order) {
+    const col = byValue.get(value);
+    if (col) listed.set(value, col);
+  }
+  return [...listed.values(), ...all.filter((col) => !listed.has(col.value))];
 }
 
 /**

@@ -177,9 +177,9 @@ pub struct QueryFields {
     /// System-managed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_executed: Option<String>,
-    /// How the query renders. Its keys (`lastView`, `kanban.groupBy`) are the
-    /// viewer's own vocabulary, not schema field names, so the object is
-    /// carried as-is rather than typed here.
+    /// How the query renders. Its keys (`lastView`, `kanban.groupBy`,
+    /// `kanban.columnOrder`) are the viewer's own vocabulary, not schema field
+    /// names, so the object is carried as-is rather than typed here.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional, type = "Record<string, unknown>"))]
     pub view_config: Option<Value>,
