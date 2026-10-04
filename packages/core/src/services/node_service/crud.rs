@@ -2669,6 +2669,10 @@ impl NodeService {
 
     /// Whether a write sets a seeded play's rules to the ones it shipped with
     /// (`_seed.default_rules`, ADR-060 §8).
+    ///
+    /// `_seed` is an ordinary property a client can write, so this relaxes
+    /// the stale-description comparison and nothing else: the rules still
+    /// decode, carry descriptions that are not blank, and validate in full.
     fn restores_shipped_rules(properties: &serde_json::Value, stored: &serde_json::Value) -> bool {
         let shipped = stored
             .get("_seed")

@@ -416,7 +416,8 @@ fn sprint_transition_gate() -> PlayStep {
             {
                 "name": "reject-illegal-sprint-transition",
                 "description":
-                    "Refuse a sprint status change other than future to active or active to closed",
+                    "Refuse a sprint status change other than a first setting to future, a start, \
+                     or a close of an active sprint",
                 "class": "invariant",
                 "trigger": {
                     "type": "graph_event",
@@ -430,7 +431,7 @@ fn sprint_transition_gate() -> PlayStep {
                     "expr": format!("!({legal})"),
                     "description":
                         "The status change is not a first setting to future, a start from \
-                         future, or a close from active",
+                         future or from no status, or a close from active",
                 }],
                 "actions": [{
                     "action_type": "reject",

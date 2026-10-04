@@ -12,6 +12,9 @@
 //!   actions by index within it. A component with no match is new, and needs
 //!   only a description that is not blank.
 //!
+//! Matching by name needs a name to identify one rule, so two rules of a
+//! play sharing a name are rejected too.
+//!
 //! The checks read the typed rules and nothing else, so they need no store.
 //! Their messages are read by agents repairing a rejected write: each names
 //! the rule, the component and its 1-based index, and what to change.
@@ -34,6 +37,9 @@ pub enum DescriptionProblem {
     Blank,
     /// The component's content changed and its description did not.
     Stale,
+    /// An earlier rule of the play has the same name, so the name does not
+    /// say which rule a stored description belongs to.
+    DuplicateName,
 }
 
 /// One description a write is rejected for.
@@ -75,6 +81,9 @@ impl std::fmt::Display for DescriptionError {
                 "its action changed and its description didn't. Rewrite the description to \
                  say what the action does now"
             }
+            (DescriptionProblem::DuplicateName, _) => {
+                "more than one rule in this play has this name. Give each rule its own name"
+            }
         };
         write!(f, ": {detail}")
     }
@@ -90,7 +99,14 @@ pub fn check_descriptions(
     stored: Option<&[RuleDefinition]>,
 ) -> Result<(), Vec<DescriptionError>> {
     let mut errors = Vec::new();
-    for rule in rules {
+    for (index, rule) in rules.iter().enumerate() {
+        if rules[..index].iter().any(|earlier| earlier.name == rule.name) {
+            errors.push(DescriptionError {
+                rule: rule.name.clone(),
+                component: DescribedComponent::Rule,
+                problem: DescriptionProblem::DuplicateName,
+            });
+        }
         let previous =
             stored.and_then(|stored| stored.iter().find(|previous| previous.name == rule.name));
         let mut check = |component, description: &str, stale: bool| {
@@ -113,7 +129,7 @@ pub fn check_descriptions(
             &rule.description,
             previous.is_some_and(|previous| {
                 (previous.trigger != rule.trigger || previous.class != rule.class)
-                    && previous.description == rule.description
+                    && same_text(&previous.description, &rule.description)
             }),
         );
         for (index, condition) in rule.conditions.iter().enumerate() {
@@ -122,7 +138,8 @@ pub fn check_descriptions(
                 DescribedComponent::Condition(index),
                 &condition.description,
                 before.is_some_and(|before| {
-                    before.expr != condition.expr && before.description == condition.description
+                    before.expr != condition.expr
+                        && same_text(&before.description, &condition.description)
                 }),
             );
         }
@@ -133,7 +150,7 @@ pub fn check_descriptions(
                 action.description(),
                 before.is_some_and(|before| {
                     action_content(before) != action_content(action)
-                        && before.description() == action.description()
+                        && same_text(before.description(), action.description())
                 }),
             );
         }
@@ -143,6 +160,12 @@ pub fn check_descriptions(
     } else {
         Err(errors)
     }
+}
+
+/// Whether two descriptions say the same thing: surrounding whitespace is
+/// not a rewrite.
+fn same_text(before: &str, after: &str) -> bool {
+    before.trim() == after.trim()
 }
 
 /// What an action's description describes: everything but the description.
@@ -258,8 +281,33 @@ mod tests {
             [(DescribedComponent::Condition(1), DescriptionProblem::Stale)]
         );
 
+        // Padding the stored text is not a rewrite.
+        incoming[0]["conditions"][1]["description"] = json!(" The task is high priority\n");
+        assert_eq!(
+            problems(&incoming),
+            [(DescribedComponent::Condition(1), DescriptionProblem::Stale)]
+        );
+
         incoming[0]["conditions"][1]["description"] = json!("The task is urgent");
         assert_eq!(problems(&incoming), []);
+    }
+
+    /// A rule is matched to the stored rule by name, so a play can't hold two
+    /// rules with one name: on a new play as on an update.
+    #[test]
+    fn two_rules_with_one_name_are_rejected() {
+        let twice = json!([stored()[0], stored()[0]]);
+        for stored_rules in [None, Some(rules(stored()))] {
+            let errors = check_descriptions(&rules(twice.clone()), stored_rules.as_deref())
+                .unwrap_err();
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert_eq!(errors[0].problem, DescriptionProblem::DuplicateName);
+            assert_eq!(
+                errors[0].to_string(),
+                "rule `complete parent`: more than one rule in this play has this name. Give \
+                 each rule its own name"
+            );
+        }
     }
 
     #[test]

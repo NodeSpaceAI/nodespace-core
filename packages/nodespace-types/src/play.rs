@@ -1175,6 +1175,12 @@ mod tests {
         assert!(patch["description"].is_null());
 
         assert!(PlayNodeUpdate::default().is_empty());
+
+        // `rules` has no clear path: an empty list is how a play has no rules.
+        let err = serde_json::from_value::<PlayNodeUpdate>(json!({ "rules": null }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rules: expected an array of rules"), "{err}");
     }
 
     #[test]
