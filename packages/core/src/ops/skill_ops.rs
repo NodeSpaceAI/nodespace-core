@@ -826,11 +826,6 @@ pub struct GuidanceSkill {
     pub confidence: Option<f64>,
     /// The skill's stored procedure, as markdown. Empty in a listing.
     pub instructions: String,
-    /// Whether a user has edited the stored procedure of a seeded skill
-    /// (ADR-072). A caller that renders a seeded skill for its own audience
-    /// may do so only when this is `false`; an edited procedure is served as
-    /// stored.
-    pub guidance_modified: bool,
 }
 
 /// One schema in a guidance fetch: the shape of a type the request touches.
@@ -860,12 +855,6 @@ fn guidance_skill(node: &crate::models::Node, confidence: Option<f64>) -> Option
             return None;
         }
     };
-    let guidance_modified = node
-        .properties
-        .get("_seed")
-        .and_then(|seed| seed.get("guidance_modified"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
     Some(GuidanceSkill {
         id: node.id.clone(),
         name: node.content.clone(),
@@ -873,7 +862,6 @@ fn guidance_skill(node: &crate::models::Node, confidence: Option<f64>) -> Option
         modified_at: node.modified_at.to_rfc3339(),
         confidence,
         instructions: String::new(),
-        guidance_modified,
     })
 }
 
@@ -920,58 +908,14 @@ pub async fn find_skill_guidance(
     node_service: &Arc<NodeService>,
     input: FindSkillsInput,
 ) -> Result<SkillGuidance, OpsError> {
-    let query_lower = input.query.to_lowercase();
+    let query = input.query.clone();
     let found = find_skills(embedding_service, node_service, input).await?;
-    let mut guidance = SkillGuidance::default();
-
-    let is_schema = |entry: &Value| entry.get("kind").and_then(Value::as_str) == Some("schema");
-    let named = |definition: &Value| {
-        ["type_id", "name"].iter().any(|key| {
-            definition
-                .get(*key)
-                .and_then(Value::as_str)
-                .is_some_and(|text| mentions_phrase(&query_lower, &text.to_lowercase()))
-        })
+    let mut guidance = SkillGuidance {
+        skills: Vec::new(),
+        schemas: guidance_schemas(&found.skills, &query),
     };
 
-    fn add_schema(schemas: &mut Vec<GuidanceSchema>, definition: &Value) {
-        let Some(id) = definition.get("type_id").and_then(Value::as_str) else {
-            return;
-        };
-        if schemas.iter().any(|s| s.id == id) {
-            return;
-        }
-        let name = definition
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(id)
-            .to_string();
-        schemas.push(GuidanceSchema {
-            id: id.to_string(),
-            name,
-            definition: definition.clone(),
-        });
-    }
-
-    for entry in &found.skills {
-        let schema_metadata = entry
-            .get("schema_metadata")
-            .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or_default();
-        if is_schema(entry) {
-            let clears_the_bar = entry
-                .get("confidence")
-                .and_then(Value::as_f64)
-                .is_some_and(|score| score >= GUIDANCE_SCHEMA_SCORE_BAR);
-            for definition in schema_metadata {
-                if clears_the_bar || named(definition) {
-                    add_schema(&mut guidance.schemas, definition);
-                }
-            }
-            continue;
-        }
-
+    for entry in found.skills.iter().filter(|entry| !is_schema_entry(entry)) {
         let Some(id) = entry.get("id").and_then(Value::as_str) else {
             continue;
         };
@@ -993,15 +937,72 @@ pub async fn find_skill_guidance(
             .unwrap_or_default()
             .to_string();
         guidance.skills.push(skill);
-
-        if entry.get("schemas_linked").and_then(Value::as_bool) == Some(true) {
-            for definition in schema_metadata {
-                add_schema(&mut guidance.schemas, definition);
-            }
-        }
     }
 
     Ok(guidance)
+}
+
+fn is_schema_entry(entry: &Value) -> bool {
+    entry.get("kind").and_then(Value::as_str) == Some("schema")
+}
+
+/// The schemas a guidance fetch returns, chosen from [`find_skills`]' entries
+/// for `query` by the three signs [`find_skill_guidance`] documents. Each
+/// type appears once, in the order first met.
+fn guidance_schemas(found: &[Value], query: &str) -> Vec<GuidanceSchema> {
+    let query_lower = query.to_lowercase();
+    let named = |definition: &Value| {
+        ["type_id", "name"].iter().any(|key| {
+            definition
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|text| mentions_phrase(&query_lower, &text.to_lowercase()))
+        })
+    };
+
+    let mut schemas: Vec<GuidanceSchema> = Vec::new();
+    let mut add = |definition: &Value| {
+        let Some(id) = definition.get("type_id").and_then(Value::as_str) else {
+            return;
+        };
+        if schemas.iter().any(|s| s.id == id) {
+            return;
+        }
+        let name = definition
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(id)
+            .to_string();
+        schemas.push(GuidanceSchema {
+            id: id.to_string(),
+            name,
+            definition: definition.clone(),
+        });
+    };
+
+    for entry in found {
+        let definitions = entry
+            .get("schema_metadata")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if is_schema_entry(entry) {
+            let clears_the_bar = entry
+                .get("confidence")
+                .and_then(Value::as_f64)
+                .is_some_and(|score| score >= GUIDANCE_SCHEMA_SCORE_BAR);
+            for definition in definitions {
+                if clears_the_bar || named(definition) {
+                    add(definition);
+                }
+            }
+        } else if entry.get("schemas_linked").and_then(Value::as_bool) == Some(true) {
+            for definition in definitions {
+                add(definition);
+            }
+        }
+    }
+    schemas
 }
 
 #[cfg(test)]
@@ -1441,6 +1442,84 @@ mod tests {
         let true_positive = schema_named_in_query("add a log for today's workout", &schemas);
         assert_eq!(false_positive.map(|s| s.envelope.id.as_str()), Some("log"));
         assert_eq!(true_positive.map(|s| s.envelope.id.as_str()), Some("log"));
+    }
+
+    fn schema_entry(type_id: &str, name: &str, confidence: f64) -> Value {
+        json!({
+            "id": type_id, "name": name, "kind": "schema", "confidence": confidence,
+            "schemas_linked": false,
+            "schema_metadata": [{ "type_id": type_id, "name": name, "fields": [] }],
+        })
+    }
+
+    fn skill_entry(name: &str, linked: bool, types: &[&str]) -> Value {
+        let metadata: Vec<Value> = types
+            .iter()
+            .map(|t| json!({ "type_id": t, "name": t, "fields": [] }))
+            .collect();
+        json!({
+            "id": name, "name": name, "kind": "skill", "confidence": 0.9,
+            "schemas_linked": linked, "schema_metadata": metadata,
+        })
+    }
+
+    fn guidance_schema_ids(found: &[Value], query: &str) -> Vec<String> {
+        guidance_schemas(found, query)
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    #[test]
+    fn a_schema_match_is_returned_at_the_bar_and_not_below_it() {
+        let found = vec![
+            schema_entry("invoice", "Invoice", GUIDANCE_SCHEMA_SCORE_BAR),
+            schema_entry("venue", "Venue", GUIDANCE_SCHEMA_SCORE_BAR - 0.01),
+        ];
+        assert_eq!(guidance_schema_ids(&found, "bill the client"), ["invoice"]);
+    }
+
+    #[test]
+    fn a_schema_below_the_bar_is_returned_when_the_request_names_it() {
+        let found = vec![schema_entry("release_plan", "Release Plan", 0.4)];
+        assert_eq!(
+            guidance_schema_ids(&found, "delete the release plan for Q3"),
+            ["release_plan"]
+        );
+        assert!(guidance_schema_ids(&found, "delete a node").is_empty());
+    }
+
+    #[test]
+    fn a_skills_linked_schemas_are_returned_and_its_fallback_is_not() {
+        let found = vec![
+            skill_entry("Sprints and Cycles", true, &["cycle", "issue"]),
+            skill_entry("Node Creation", false, &["venue"]),
+        ];
+        assert_eq!(
+            guidance_schema_ids(&found, "plan the week"),
+            ["cycle", "issue"]
+        );
+    }
+
+    #[test]
+    fn a_type_reached_twice_is_returned_once() {
+        let found = vec![
+            skill_entry("Creating an Issue", true, &["issue"]),
+            skill_entry("Sprints and Cycles", true, &["cycle", "issue"]),
+            schema_entry("issue", "Issue", 0.95),
+        ];
+        assert_eq!(
+            guidance_schema_ids(&found, "file a bug"),
+            ["issue", "cycle"]
+        );
+    }
+
+    /// The keys read here are the ones `find_skills` writes: a renamed key
+    /// would return no schema for any request.
+    #[test]
+    fn an_entry_without_the_expected_keys_contributes_nothing() {
+        let found = vec![json!({ "kind": "schema", "score": 0.99, "metadata": [] })];
+        assert!(guidance_schema_ids(&found, "anything").is_empty());
     }
 
     fn make_node(id: &str, content: &str) -> Node {

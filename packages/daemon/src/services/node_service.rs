@@ -2833,19 +2833,16 @@ fn relationship_to_proto(
 /// One skill of a guidance fetch, as the wire entry an agent outside the app
 /// reads.
 ///
-/// A seeded skill whose guidance nobody has edited is rendered from its seed
-/// in the form that names CLI commands: the stored body names the in-app
-/// agent's tools, which an outside agent cannot call. A skill a user wrote,
-/// installed or edited is served as stored.
+/// A built-in skill whose stored guidance is still the seed's is rendered
+/// from its seed in the form that names CLI commands: the stored body names
+/// the in-app agent's tools, which an outside agent cannot call. A skill a
+/// user wrote or installed, and a built-in one whose guidance they changed
+/// in any way, is served as stored.
 fn skill_guidance_entry(skill: GuidanceSkill) -> SkillGuidanceEntry {
-    let rendered = (!skill.guidance_modified)
-        .then(|| nodespace_agent::skill_pipeline::external_skill_body(&skill.id))
-        .flatten();
-    // A listing carries no procedures, and stays that way.
-    let instructions = match rendered {
-        Some(body) if !skill.instructions.is_empty() => body,
-        _ => skill.instructions,
-    };
+    // A listing carries no procedures: its empty body matches no seed.
+    let instructions =
+        nodespace_agent::skill_pipeline::external_skill_body(&skill.id, &skill.instructions)
+            .unwrap_or(skill.instructions);
     SkillGuidanceEntry {
         id: skill.id,
         name: skill.name,
@@ -6185,7 +6182,7 @@ mod tests {
             .is_none());
     }
 
-    fn fetched_skill(id: &str, instructions: &str, guidance_modified: bool) -> GuidanceSkill {
+    fn fetched_skill(id: &str, instructions: &str) -> GuidanceSkill {
         GuidanceSkill {
             id: id.to_string(),
             name: "A skill".to_string(),
@@ -6193,7 +6190,6 @@ mod tests {
             modified_at: "2026-10-01T00:00:00+00:00".to_string(),
             confidence: Some(0.8),
             instructions: instructions.to_string(),
-            guidance_modified,
         }
     }
 
@@ -6208,7 +6204,7 @@ mod tests {
         let stored = seed.template().markdown_content;
         assert!(stored.contains("delete_node"), "{stored}");
 
-        let entry = skill_guidance_entry(fetched_skill(seed.id, &stored, false));
+        let entry = skill_guidance_entry(fetched_skill(seed.id, &stored));
 
         assert_eq!(entry.instructions, seed.external_body());
         assert!(
@@ -6224,13 +6220,21 @@ mod tests {
         assert_eq!(entry.confidence, Some(0.8));
     }
 
-    /// A built-in skill a user has edited is theirs: it is served as stored
-    /// (ADR-072), never replaced by the seed's text.
+    /// A built-in skill a user has changed is theirs: it is served as stored
+    /// (ADR-072), never replaced by the seed's text. That holds for a
+    /// rewrite and for a paragraph added beneath the seed's own.
     #[test]
-    fn a_user_edited_built_in_skill_is_served_as_stored() {
+    fn a_user_changed_built_in_skill_is_served_as_stored() {
         let seed = &nodespace_agent::skill_pipeline::SKILL_SEEDS[0];
-        let entry = skill_guidance_entry(fetched_skill(seed.id, "Our own procedure.", true));
+        let entry = skill_guidance_entry(fetched_skill(seed.id, "Our own procedure."));
         assert_eq!(entry.instructions, "Our own procedure.");
+
+        let extended = format!(
+            "{}\n\nFile every decision under the decisions collection.",
+            seed.template().markdown_content
+        );
+        let entry = skill_guidance_entry(fetched_skill(seed.id, &extended));
+        assert_eq!(entry.instructions, extended);
     }
 
     /// A skill a user wrote, or an installed workflow added, has no seed to
@@ -6240,7 +6244,6 @@ mod tests {
         let entry = skill_guidance_entry(fetched_skill(
             "9d0c1b7e-0000-4000-8000-000000000001",
             "File ADRs under the decisions collection.",
-            false,
         ));
         assert_eq!(
             entry.instructions,
@@ -6253,7 +6256,7 @@ mod tests {
     #[test]
     fn a_listed_skill_carries_no_instructions() {
         let seed = &nodespace_agent::skill_pipeline::SKILL_SEEDS[0];
-        let mut listed = fetched_skill(seed.id, "", false);
+        let mut listed = fetched_skill(seed.id, "");
         listed.confidence = None;
         let entry = skill_guidance_entry(listed);
         assert_eq!(entry.instructions, "");

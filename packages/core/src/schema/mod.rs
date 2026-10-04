@@ -3416,8 +3416,10 @@ pub async fn update_schema(
     // The schema's embedding is built from its name, fields and description,
     // so a change to any of them leaves it stale. A Phase 1 rename is
     // persisted whether or not the group above committed, so it queues too.
-    // A call that changed nothing queues nothing: a stale embedding is out of
-    // the index until it is rebuilt. The transaction runs in a caller-held
+    // A rejected call queues nothing: a stale embedding is out of the index
+    // until it is rebuilt. A committed call queues whatever it changed, a
+    // relationship-only change included, though relationships are not part
+    // of the embedded text. The transaction runs in a caller-held
     // boundary, which queues nothing itself (ADR-069 §5).
     #[cfg(feature = "nlp")]
     if committed.is_ok() || fields_renamed > 0 {

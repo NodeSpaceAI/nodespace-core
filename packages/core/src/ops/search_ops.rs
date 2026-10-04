@@ -51,8 +51,12 @@ pub fn normalize_enumerate_query(query: &str) -> Option<String> {
 /// A search that names no types keeps the default scope, so system types stay
 /// out of it. An explicitly requested `scope` always applies
 /// (`scope_is_default` is `false` then).
-fn should_skip_scope_filter(has_node_types: bool, scope_is_default: bool) -> bool {
-    has_node_types && scope_is_default
+///
+/// An empty list names no type. It is treated as no list at all: read as a
+/// filter it would drop the default scope and put nothing in its place, and
+/// the search would return system types.
+fn should_skip_scope_filter(node_types: Option<&[String]>, scope_is_default: bool) -> bool {
+    node_types.is_some_and(|types| !types.is_empty()) && scope_is_default
 }
 
 /// Maximum depth for markdown tree traversal
@@ -725,7 +729,7 @@ pub async fn search_semantic(
     };
 
     let skip_scope_filter =
-        should_skip_scope_filter(input.node_types.is_some(), input.scope.is_none());
+        should_skip_scope_filter(input.node_types.as_deref(), input.scope.is_none());
 
     // User-defined types belong to the `Knowledge` scope but aren't known
     // statically, so read them from the schema list — only when that scope
@@ -1009,17 +1013,23 @@ mod tests {
 
     #[test]
     fn explicit_node_types_replace_the_default_scope_and_nothing_else_does() {
+        let skill = vec!["skill".to_string()];
+
         // Named types with no scope requested: the types are the filter, for
         // a query and for an enumerate alike.
-        assert!(should_skip_scope_filter(true, true));
+        assert!(should_skip_scope_filter(Some(&skill), true));
 
         // No named types: the default scope stands, so an unfiltered search
         // keeps system types out.
-        assert!(!should_skip_scope_filter(false, true));
+        assert!(!should_skip_scope_filter(None, true));
+
+        // An empty list names no type. A model can send one, and it must not
+        // widen the search to every type.
+        assert!(!should_skip_scope_filter(Some(&[]), true));
 
         // A requested scope always applies, with or without named types.
-        assert!(!should_skip_scope_filter(true, false));
-        assert!(!should_skip_scope_filter(false, false));
+        assert!(!should_skip_scope_filter(Some(&skill), false));
+        assert!(!should_skip_scope_filter(None, false));
     }
 
     /// Verify that graph_boost re-ranking formula correctly promotes well-connected nodes.

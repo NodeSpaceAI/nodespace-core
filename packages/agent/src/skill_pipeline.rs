@@ -565,12 +565,27 @@ pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
 }
 
 /// The guidance of the built-in skill with node id `skill_id`, for an agent
-/// outside the app; `None` when no built-in skill has that id.
-pub fn external_skill_body(skill_id: &str) -> Option<String> {
-    SKILL_SEEDS
-        .iter()
-        .find(|seed| seed.id == skill_id)
-        .map(SkillSeed::external_body)
+/// outside the app, when `stored` (the skill's guidance as the graph holds
+/// it) is still what the seed installs.
+///
+/// `None` when no built-in skill has that id, or when the stored guidance
+/// differs from the seed's in any line: a user who edited, added to or cut
+/// from a built-in skill is served what they wrote. The stored text itself
+/// decides, not a flag beside it, so no way of changing the guidance can be
+/// missed.
+pub fn external_skill_body(skill_id: &str, stored: &str) -> Option<String> {
+    // A body is parsed into nodes and rendered back, which keeps every
+    // line and may change the blank lines between them.
+    fn lines(markdown: &str) -> impl Iterator<Item = &str> {
+        markdown
+            .lines()
+            .map(str::trim_end)
+            .filter(|l| !l.is_empty())
+    }
+    let seed = SKILL_SEEDS.iter().find(|seed| seed.id == skill_id)?;
+    lines(stored)
+        .eq(lines(&seed.template().markdown_content))
+        .then(|| seed.external_body())
 }
 
 /// The built-in tool seeds, one per [`crate::local_agent::tools::Tool`], in
@@ -800,13 +815,34 @@ mod tests {
         assert_eq!(naming_a_tool, vec!["Graph Editing"]);
     }
 
-    /// A built-in skill is looked up for an external fetch by its node id.
+    /// A built-in skill is looked up for an external fetch by its node id,
+    /// and rendered for it only while its stored guidance is the seed's.
     #[test]
-    fn external_skill_body_is_found_by_the_seeds_fixed_id() {
+    fn external_skill_body_is_served_for_a_seed_whose_guidance_is_untouched() {
         for seed in SKILL_SEEDS {
-            assert_eq!(external_skill_body(seed.id), Some(seed.external_body()));
+            let stored = seed.template().markdown_content;
+            assert_eq!(
+                external_skill_body(seed.id, &stored),
+                Some(seed.external_body()),
+                "{}",
+                seed.title
+            );
+            // Parsing into nodes and rendering back may change blank lines.
+            let respaced = stored.replace("\n\n", "\n");
+            assert_eq!(
+                external_skill_body(seed.id, &respaced),
+                Some(seed.external_body()),
+                "{}",
+                seed.title
+            );
+
+            // Edited, added to, or cut: the user's text is theirs.
+            let added = format!("{stored}\n\nOur team archives instead of deleting.");
+            assert_eq!(external_skill_body(seed.id, &added), None, "{}", seed.title);
+            let cut: String = stored.lines().skip(1).collect::<Vec<_>>().join("\n");
+            assert_eq!(external_skill_body(seed.id, &cut), None, "{}", seed.title);
         }
-        assert_eq!(external_skill_body("not-a-seeded-skill"), None);
+        assert_eq!(external_skill_body("not-a-seeded-skill", "anything"), None);
     }
 
     /// Relationship Management carries the direction rule and the
