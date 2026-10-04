@@ -292,7 +292,21 @@ impl QueryService {
     /// - Database query execution fails
     /// - Result deserialization fails
     pub async fn execute(&self, query: &QueryDefinition) -> Result<Vec<Node>> {
-        let built = self.build_query(query)?;
+        self.execute_excluding(query, &[]).await
+    }
+
+    /// [`Self::execute`], leaving out every node whose type is one of
+    /// `excluded` or extends one of them.
+    ///
+    /// The exclusion is a condition of the statement, so `limit` counts only
+    /// rows the caller gets back: a page is never short because excluded rows
+    /// filled it.
+    pub async fn execute_excluding(
+        &self,
+        query: &QueryDefinition,
+        excluded: &[crate::models::CoreNodeType],
+    ) -> Result<Vec<Node>> {
+        let built = self.build_query(query, excluded)?;
 
         // Get node IDs that match the query
         let node_ids = self.execute_query_for_ids(&built).await?;
@@ -505,8 +519,16 @@ impl QueryService {
     ///
     /// A filter's relative date resolves against the local date at this
     /// moment: the day the query runs, on the device running it (ADR-091).
-    fn build_where_clause(&self, query: &QueryDefinition) -> Result<BoundSql> {
-        self.build_where_clause_on(query, chrono::Local::now().date_naive())
+    ///
+    /// `excluded` is the caller's own type exclusion, one more condition of
+    /// the clause. Only [`Self::execute_excluding`] passes one: a count and a
+    /// membership check have no excluding form, and pass none.
+    fn build_where_clause(
+        &self,
+        query: &QueryDefinition,
+        excluded: &[crate::models::CoreNodeType],
+    ) -> Result<BoundSql> {
+        self.build_where_clause_on(query, chrono::Local::now().date_naive(), excluded)
     }
 
     /// [`Self::build_where_clause`] with the day the query runs given, so a
@@ -515,6 +537,7 @@ impl QueryService {
         &self,
         query: &QueryDefinition,
         today: chrono::NaiveDate,
+        excluded: &[crate::models::CoreNodeType],
     ) -> Result<BoundSql> {
         query.validate_identifiers()?;
 
@@ -557,6 +580,11 @@ impl QueryService {
         // The definition has no opt-in; an archived node is reached by id.
         conditions.extend(crate::governance::default_query_conditions("", false));
 
+        // The caller's own exclusion, resolved through the ancestry table
+        // like the type filter above. The ids are the registry's, so nothing
+        // binds.
+        conditions.extend(crate::governance::excluded_types_sql("node_type", excluded));
+
         if !conditions.is_empty() {
             built.sql = format!(" WHERE {}", conditions.join(" AND "));
         }
@@ -598,7 +626,7 @@ impl QueryService {
     ///
     /// Returns an error if query building or database execution fails.
     pub async fn matches(&self, query: &QueryDefinition, node_id: &str) -> Result<bool> {
-        let mut built = self.build_where_clause(query)?;
+        let mut built = self.build_where_clause(query, &[])?;
         let id = built.bind(libsql::Value::Text(node_id.to_string()));
         let narrowed = if built.sql.is_empty() {
             format!(" WHERE id = {id}")
@@ -625,7 +653,7 @@ impl QueryService {
     /// cannot differ in how it treats a value any more than it can in which rows
     /// it matches.
     fn build_count_query(&self, query: &QueryDefinition) -> Result<BoundSql> {
-        let mut built = self.build_where_clause(query)?;
+        let mut built = self.build_where_clause(query, &[])?;
         built.sql = format!("SELECT COUNT(*) FROM node{};", built.sql);
         Ok(built)
     }
@@ -641,8 +669,15 @@ impl QueryService {
     /// Filter values are bound rather than interpolated — see
     /// [`Self::build_where_clause`], which owns every binding. ORDER BY and
     /// LIMIT, added here, contribute no values.
-    fn build_query(&self, query: &QueryDefinition) -> Result<BoundSql> {
-        let mut built = self.build_where_clause(query)?;
+    ///
+    /// `excluded` leaves out those types and every type extending one of
+    /// them; see [`Self::execute_excluding`].
+    fn build_query(
+        &self,
+        query: &QueryDefinition,
+        excluded: &[crate::models::CoreNodeType],
+    ) -> Result<BoundSql> {
+        let mut built = self.build_where_clause(query, excluded)?;
         built.sql = format!("SELECT * FROM node{}", built.sql);
 
         // Add sorting (pass target_type for namespaced property access)

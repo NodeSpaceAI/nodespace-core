@@ -1873,10 +1873,25 @@ impl SqliteStore {
     }
 
     pub async fn query_nodes(&self, query: NodeQuery) -> Result<Vec<Node>> {
+        self.query_nodes_excluding(query, &[]).await
+    }
+
+    /// [`Self::query_nodes`], leaving out every node whose type is one of
+    /// `excluded` or extends one of them.
+    ///
+    /// The exclusion is a condition of each statement this runs, the title
+    /// stem fallback included, so it applies before `limit` and a page is
+    /// never short because excluded rows filled it.
+    pub async fn query_nodes_excluding(
+        &self,
+        query: NodeQuery,
+        excluded: &[crate::models::CoreNodeType],
+    ) -> Result<Vec<Node>> {
         if let Some(ref mentioned_node_id) = query.mentioned_by {
             let sql = format!(
-                "SELECT n.* FROM node n JOIN relationship r ON r.in_node = n.id WHERE r.out_node = ?1 AND r.relationship_type = 'mentions'{}",
-                Self::and_default_query_conditions("n", query.include_archived)
+                "SELECT n.* FROM node n JOIN relationship r ON r.in_node = n.id WHERE r.out_node = ?1 AND r.relationship_type = 'mentions'{}{}",
+                Self::and_default_query_conditions("n", query.include_archived),
+                Self::and_excluded_types("n.node_type", excluded)
             );
             let mut rows = self
                 .read()
@@ -1900,8 +1915,9 @@ impl SqliteStore {
         let subtypes = self
             .resolve_query_subtypes(query.node_type.as_deref())
             .await?;
-        let (conditions, bind_values) =
+        let (mut conditions, bind_values) =
             Self::build_scalar_conditions_with_subtypes(&query, subtypes.as_deref());
+        conditions.extend(crate::governance::excluded_types_sql("node_type", excluded));
 
         // id-scoping (e.g. a collection's members). Build `id IN (…)` and
         // CHUNK it under SQLite's bound-parameter ceiling so a large member set
@@ -2002,6 +2018,7 @@ impl SqliteStore {
                             search_q,
                             query.node_type.as_deref(),
                             query.include_archived,
+                            excluded,
                             query.limit,
                             query.offset,
                         )
@@ -2131,6 +2148,14 @@ impl SqliteStore {
     /// listed, and leads to its chat (ADR-088 §3).
     pub(super) fn and_participates(alias: &str) -> String {
         format!(" AND {}", crate::governance::participates_sql(alias))
+    }
+
+    /// The condition leaving out `excluded` and every type extending one of
+    /// them, as an ` AND ...` suffix. Empty when nothing is excluded.
+    fn and_excluded_types(type_column: &str, excluded: &[crate::models::CoreNodeType]) -> String {
+        crate::governance::excluded_types_sql(type_column, excluded)
+            .map(|condition| format!(" AND {condition}"))
+            .unwrap_or_default()
     }
 
     /// The governance conditions for a default query over the `node` table
@@ -2366,6 +2391,7 @@ impl SqliteStore {
         search_q: &str,
         node_type: Option<&str>,
         include_archived: bool,
+        excluded: &[crate::models::CoreNodeType],
         limit: Option<usize>,
         offset: Option<usize>,
     ) -> Result<Vec<Node>> {
@@ -2389,7 +2415,11 @@ impl SqliteStore {
         // `query_nodes` but silently narrow to exact matches the moment it
         // fell back to stem matching.
         let subtypes = self.resolve_query_subtypes(node_type).await?;
-        let governed = Self::and_default_query_conditions("", include_archived);
+        let governed = format!(
+            "{}{}",
+            Self::and_default_query_conditions("", include_archived),
+            Self::and_excluded_types("node_type", excluded)
+        );
 
         let (sql, params) = match (node_type, subtypes.as_deref()) {
             (Some(_), Some(types)) if types.len() > 1 => {

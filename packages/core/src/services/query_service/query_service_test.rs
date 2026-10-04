@@ -2114,7 +2114,9 @@ mod tests {
             },
         ]);
 
-        let built = query_service.build_where_clause_on(&query, today).unwrap();
+        let built = query_service
+            .build_where_clause_on(&query, today, &[])
+            .unwrap();
         let dates: Vec<&str> = built
             .params
             .iter()
@@ -2349,7 +2351,7 @@ mod tests {
             limit: None,
         };
 
-        let where_clause = query_service.build_where_clause(&query).unwrap();
+        let where_clause = query_service.build_where_clause(&query, &[]).unwrap();
         // The conditions name their columns but carry placeholders, not values:
         // both operands are bound (see the parameter-binding tests below).
         assert!(
@@ -2367,7 +2369,7 @@ mod tests {
         );
         assert!(
             query_service
-                .build_query(&query)
+                .build_query(&query, &[])
                 .unwrap()
                 .sql
                 .contains(&where_clause.sql),
@@ -2380,6 +2382,81 @@ mod tests {
             where_clause.params,
             "count must bind exactly the values the shared WHERE clause bound"
         );
+    }
+
+    /// An exclusion is one more condition of the statement, resolved through
+    /// the ancestry table, ahead of ORDER BY and LIMIT. It binds nothing.
+    #[tokio::test]
+    async fn an_excluded_type_is_a_condition_of_the_select() {
+        use crate::models::CoreNodeType;
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let query = QueryDefinition {
+            target_type: "*".to_string(),
+            filters: vec![],
+            sorting: None,
+            limit: Some(2),
+        };
+
+        let plain = query_service.build_query(&query, &[]).unwrap();
+        let excluding = query_service
+            .build_query(&query, &[CoreNodeType::AiChat])
+            .unwrap();
+        let condition =
+            crate::governance::excluded_types_sql("node_type", &[CoreNodeType::AiChat]).unwrap();
+
+        assert!(!plain.sql.contains(&condition), "{}", plain.sql);
+        assert!(
+            excluding.sql.contains(&format!(" AND {condition} LIMIT 2")),
+            "the exclusion must sit in the WHERE clause, before the limit: {}",
+            excluding.sql
+        );
+        assert_eq!(excluding.params, plain.params);
+    }
+
+    /// With more excluded rows than `limit` ahead of it in the sort order,
+    /// the one row that is not excluded still comes back, and a subtype of an
+    /// excluded type is excluded with it.
+    #[tokio::test]
+    async fn excluded_rows_do_not_count_against_the_limit() {
+        use crate::models::CoreNodeType;
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        let note = node_service
+            .create_node(Node::new(
+                "text".to_string(),
+                "the note".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        for i in 0..5 {
+            node_service
+                .create_node(Node::new(
+                    "ai-chat-native".to_string(),
+                    format!("chat {i}"),
+                    json!({ "agent": "nodespace" }),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let query = QueryDefinition {
+            target_type: "*".to_string(),
+            filters: vec![],
+            sorting: Some(vec![SortConfig {
+                field: "created_at".to_string(),
+                direction: SortDirection::Descending,
+            }]),
+            limit: Some(1),
+        };
+
+        let found = query_service
+            .execute_excluding(&query, &[CoreNodeType::AiChat])
+            .await
+            .unwrap();
+        let ids: Vec<&str> = found.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec![note.as_str()]);
     }
 
     /// A query matching nothing counts zero rather than erroring on the empty
@@ -2427,7 +2504,7 @@ mod tests {
             limit: None,
         };
 
-        let built = query_service.build_query(&query).unwrap();
+        let built = query_service.build_query(&query, &[]).unwrap();
 
         assert!(
             !built.sql.contains("'open'"),
@@ -2471,7 +2548,7 @@ mod tests {
             limit: None,
         };
 
-        let built = query_service.build_query(&query).unwrap();
+        let built = query_service.build_query(&query, &[]).unwrap();
 
         assert!(
             built.sql.contains("IN (?1, ?2, ?3)"),
@@ -2533,7 +2610,7 @@ mod tests {
             limit: None,
         };
 
-        let built = query_service.build_query(&query).unwrap();
+        let built = query_service.build_query(&query, &[]).unwrap();
         assert!(
             !built.sql.contains(quoted),
             "the value must not appear in the SQL text: {}",
@@ -2679,7 +2756,7 @@ mod tests {
             limit: None,
         };
 
-        let built = query_service.build_query(&query).unwrap();
+        let built = query_service.build_query(&query, &[]).unwrap();
 
         assert!(
             !built.sql.contains("parent-1"),
@@ -2740,7 +2817,7 @@ mod tests {
             limit: None,
         };
 
-        let built = query_service.build_query(&query).unwrap();
+        let built = query_service.build_query(&query, &[]).unwrap();
 
         assert_eq!(
             built.params,
