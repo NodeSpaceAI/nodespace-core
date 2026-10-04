@@ -128,7 +128,13 @@ pub fn in_default_queries_sql(type_column: &str) -> Option<String> {
     excluded_types_sql(type_column, &CoreNodeType::excluded_from_default_queries())
 }
 
-fn excluded_types_sql(type_column: &str, excluded: &[CoreNodeType]) -> Option<String> {
+/// A SQL predicate that is true when `type_column` holds none of `excluded`
+/// and no type extending one of them, or `None` when `excluded` is empty.
+///
+/// For a surface that leaves out types default queries include: the agent's
+/// node search never returns a conversation. The types resolve through the
+/// ancestry table, so a new subtype is left out with no change to the caller.
+pub fn excluded_types_sql(type_column: &str, excluded: &[CoreNodeType]) -> Option<String> {
     (!excluded.is_empty()).then(|| is_not_a_sql(type_column, excluded))
 }
 

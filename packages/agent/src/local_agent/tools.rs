@@ -280,45 +280,30 @@ pub(crate) const DEFAULT_SEARCH_LIMIT: usize = 50;
 /// Default semantic search result limit.
 const DEFAULT_SEMANTIC_LIMIT: usize = 5;
 
-/// Extra rows an unscoped `search_nodes` asks for on its first fetch, so that
-/// dropping conversations from the page usually still leaves `limit` rows.
-///
-/// A first guess, not a bound: when a full page comes back short after the
-/// conversations are dropped, the fetch is repeated with a larger page until
-/// it is not (see `GraphToolExecutor::run_node_query`). A keyword search
-/// rarely matches more than the chat it was asked in; a search with no
-/// keyword, newest first, can match every chat there is.
-const CONVERSATION_FETCH_HEADROOM: usize = 25;
-
-/// How much larger each repeat of that fetch is.
-const CONVERSATION_FETCH_GROWTH: usize = 4;
-
-/// What a node search asks for, apart from how many rows: the part that stays
-/// the same when the fetch is repeated with a larger page.
-#[derive(Clone)]
-struct NodePageQuery {
-    node_type: Option<String>,
-    /// The title keyword, or `None` to enumerate.
-    query: Option<String>,
-    filters: Vec<query_ops::AgentFilterItem>,
-    sorting: Option<Vec<query_ops::AgentSortItem>>,
-}
+/// The types a node search never returns: a conversation with an agent, and
+/// through the type registry every type extending it.
+const CONVERSATION_TYPES: &[nodespace_core::models::CoreNodeType] =
+    &[nodespace_core::models::CoreNodeType::AiChat];
 
 /// Whether `node_type` is a conversation with an agent, or a subtype of one.
 ///
 /// Resolved through the type registry, so a chat subtype is a conversation
-/// too. An empty type — a schema row carries none — is not one.
+/// too.
 async fn is_conversation_type(
     ns: &NodeService,
     node_type: &str,
     tool_name: &str,
 ) -> Result<bool, ToolError> {
-    if node_type.is_empty() {
-        return Ok(false);
+    for conversation in CONVERSATION_TYPES {
+        let is_one = ns
+            .type_is_a(node_type, *conversation)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("{tool_name}: {e}")))?;
+        if is_one {
+            return Ok(true);
+        }
     }
-    ns.type_is_a(node_type, nodespace_core::models::CoreNodeType::AiChat)
-        .await
-        .map_err(|e| ToolError::ExecutionFailed(format!("{tool_name}: {e}")))
+    Ok(false)
 }
 
 /// Minimum similarity threshold for semantic search.
@@ -3061,99 +3046,26 @@ impl GraphToolExecutor {
         // matches, silently returning zero results.
         let query = search_ops::normalize_enumerate_query(&query);
 
-        // Only a search across every type can match a conversation, so only
-        // that search asks for more than `limit` rows.
-        let all_types = node_type
-            .as_deref()
-            .is_none_or(|t| t.is_empty() || t == "*");
-        let mut fetch_limit = if all_types {
-            limit.saturating_add(CONVERSATION_FETCH_HEADROOM)
-        } else {
-            limit
-        };
-
-        let wanted = NodePageQuery {
-            node_type,
-            query,
-            filters,
-            sorting,
-        };
-
-        // Resolved once per distinct type, across every page.
-        let mut conversation_types: std::collections::HashMap<String, bool> =
-            std::collections::HashMap::new();
-        loop {
-            let page = self
-                .fetch_node_page(&ns, wanted.clone(), fetch_limit, tool_name)
-                .await?;
-
-            // Truncate node data for token efficiency. Properties are always
-            // included so the model can see and act on typed fields (status,
-            // amount, etc.).
-            let mut summaries = Vec::with_capacity(limit.min(page.len()));
-            for node in &page {
-                if summaries.len() == limit {
-                    break;
-                }
-                let node_type = wire_node_type(node);
-                let is_conversation = match conversation_types.get(node_type) {
-                    Some(known) => *known,
-                    None => {
-                        let resolved = is_conversation_type(&ns, node_type, tool_name).await?;
-                        conversation_types.insert(node_type.to_string(), resolved);
-                        resolved
-                    }
-                };
-                if !is_conversation {
-                    summaries.push(search_result_summary(node));
-                }
-            }
-
-            // Conversations are dropped after the fetch, so a page full of
-            // them hides the rows behind it: thirty recent chats ahead of the
-            // notes in a newest-first listing would come back as nothing at
-            // all, and "nothing matches" is a wrong answer. A short page is
-            // the whole result; a full one that came up short is fetched
-            // again, larger.
-            let exhausted = page.len() < fetch_limit;
-            if summaries.len() == limit || exhausted {
-                return Ok(summaries);
-            }
-            fetch_limit = fetch_limit.saturating_mul(CONVERSATION_FETCH_GROWTH);
-        }
-    }
-
-    /// One page of raw nodes for [`Self::run_node_query`], conversations and
-    /// all.
-    ///
-    /// Routes by capability:
-    ///
-    /// `sorting` is only honoured by the QueryService path, so a sorted
-    /// request routes there even with no property filters. Sending it down
-    /// the `query_nodes` branch instead would accept the argument, drop it,
-    /// and hand back an arbitrary row reported as a success — the shape a
-    /// model reads as "the largest one" when asking for a superlative via
-    /// `sorting` + `limit: 1`.
-    ///
-    /// Both branches match the keyword against TITLE, so which one runs
-    /// cannot change what a keyword means. That matters because title is not
-    /// simply the content: a schema carrying a `title_template` builds it
-    /// from properties instead, so matching content there would silently
-    /// return a DIFFERENT set — trading the dropped-sort bug for a
-    /// dropped-keyword one.
-    async fn fetch_node_page(
-        &self,
-        ns: &Arc<NodeService>,
-        wanted: NodePageQuery,
-        fetch_limit: usize,
-        tool_name: &str,
-    ) -> Result<Vec<Value>, ToolError> {
-        let NodePageQuery {
-            node_type,
-            query,
-            filters,
-            sorting,
-        } = wanted;
+        // Routing, by capability.
+        //
+        // `sorting` is only honoured by the QueryService path, so a sorted
+        // request routes there even with no property filters. Sending it down
+        // the `query_nodes` branch instead would accept the argument, drop
+        // it, and hand back an arbitrary row reported as a success — the
+        // shape a model reads as "the largest one" when asking for a
+        // superlative via `sorting` + `limit: 1`.
+        //
+        // Both branches match the keyword against TITLE, so which one runs
+        // cannot change what a keyword means. That matters because title is
+        // not simply the content: a schema carrying a `title_template` builds
+        // it from properties instead, so matching content there would
+        // silently return a DIFFERENT set — trading the dropped-sort bug for
+        // a dropped-keyword one.
+        //
+        // Both branches leave conversations out in the statement itself, so
+        // `limit` counts only rows that come back: any number of recent chats
+        // ahead of the notes in a newest-first listing costs the caller
+        // nothing.
         let sorted = sorting.as_ref().is_some_and(|s| !s.is_empty());
 
         let output = if filters.is_empty() && !sorted {
@@ -3166,16 +3078,17 @@ impl GraphToolExecutor {
                 }]
             });
 
-            node_ops::query_nodes(
-                ns,
+            node_ops::query_nodes_excluding(
+                &ns,
                 node_ops::QueryNodesInput {
                     node_type,
-                    limit: Some(fetch_limit),
+                    limit: Some(limit),
                     offset: None,
                     collection_id: None,
                     collection: None,
                     filters,
                 },
+                CONVERSATION_TYPES,
             )
             .await
             .map_err(|e| ops_error_to_tool(e, tool_name))?
@@ -3196,19 +3109,24 @@ impl GraphToolExecutor {
                 });
             }
 
-            query_ops::execute_query(
-                ns,
+            query_ops::execute_query_excluding(
+                &ns,
                 query_ops::ExecuteQueryInput {
                     target_type: node_type.unwrap_or_else(|| "*".to_string()),
                     filters,
                     sorting,
-                    limit: Some(fetch_limit),
+                    limit: Some(limit),
                 },
+                CONVERSATION_TYPES,
             )
             .await
             .map_err(|e| ops_error_to_tool(e, tool_name))?
         };
-        Ok(output.nodes)
+
+        // Truncate node data for token efficiency. Properties are always
+        // included so the model can see and act on typed fields (status,
+        // amount, etc.).
+        Ok(output.nodes.iter().map(search_result_summary).collect())
     }
 
     async fn exec_search_nodes(

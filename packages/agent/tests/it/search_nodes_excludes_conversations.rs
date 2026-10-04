@@ -166,6 +166,28 @@ async fn matching_conversations_do_not_crowd_the_note_out_of_a_small_limit() {
     );
 }
 
+/// A keyword with no exact title match falls back to matching word stems,
+/// which is a statement of its own. It leaves conversations out too.
+#[tokio::test]
+async fn a_stem_matched_keyword_search_excludes_conversations() {
+    let (executor, ns, _tmp) = make_executor().await;
+    let note_id = seed_note_among_chats(&ns, 3).await;
+
+    let result = executor
+        .execute(
+            "search_nodes",
+            json!({ "query": "shared data layers", "limit": 1 }),
+        )
+        .await
+        .expect("search_nodes must succeed");
+
+    assert_eq!(types_of(&result.result), vec!["text"]);
+    assert_eq!(
+        result.result["nodes"][0]["id"],
+        format!("nodespace://{note_id}")
+    );
+}
+
 /// The wildcard spelling of "every type" is unscoped too.
 #[tokio::test]
 async fn a_wildcard_type_search_excludes_conversations() {

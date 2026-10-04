@@ -91,6 +91,18 @@ impl NodeService {
     /// # }
     /// ```
     pub async fn query_nodes(&self, filter: NodeFilter) -> Result<Vec<Node>, NodeServiceError> {
+        self.query_nodes_excluding(filter, &[]).await
+    }
+
+    /// [`Self::query_nodes`], leaving out every node whose type is one of
+    /// `excluded` or extends one of them.
+    ///
+    /// The store applies the exclusion in the statement, ahead of `limit`.
+    pub async fn query_nodes_excluding(
+        &self,
+        filter: NodeFilter,
+        excluded: &[crate::models::CoreNodeType],
+    ) -> Result<Vec<Node>, NodeServiceError> {
         // Property filters are evaluated in memory (ADR-078 scope resolution
         // needs per-row schema context SQL can't express), so offset/limit can
         // only apply AFTER filtering: fetch the whole type-scoped set, unpaged.
@@ -121,7 +133,7 @@ impl NodeService {
 
         let nodes = self
             .store
-            .query_nodes(query)
+            .query_nodes_excluding(query, excluded)
             .await
             .map_err(NodeServiceError::from_store)?;
 

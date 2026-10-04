@@ -459,6 +459,17 @@ pub async fn query_nodes(
     node_service: &Arc<NodeService>,
     input: QueryNodesInput,
 ) -> Result<QueryNodesOutput, OpsError> {
+    query_nodes_excluding(node_service, input, &[]).await
+}
+
+/// [`query_nodes`], leaving out every node whose type is one of `excluded` or
+/// extends one of them. The exclusion is part of the statement, so `limit`
+/// rows come back whenever that many match.
+pub async fn query_nodes_excluding(
+    node_service: &Arc<NodeService>,
+    input: QueryNodesInput,
+    excluded: &[crate::models::CoreNodeType],
+) -> Result<QueryNodesOutput, OpsError> {
     // Resolve collection ID if path provided
     let collection_id = if let Some(path) = &input.collection {
         let collection_service = CollectionService::new(node_service.store(), node_service);
@@ -564,7 +575,7 @@ pub async fn query_nodes(
     filter = filter.with_order_by(OrderBy::CreatedDesc);
 
     let nodes = node_service
-        .query_nodes(filter)
+        .query_nodes_excluding(filter, excluded)
         .await
         .map_err(|e| OpsError::Internal(format!("Failed to query nodes: {}", e)))?;
 

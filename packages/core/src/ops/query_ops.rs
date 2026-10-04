@@ -346,11 +346,22 @@ pub async fn execute_query_nodes(
     node_service: &Arc<NodeService>,
     input: ExecuteQueryInput,
 ) -> Result<Vec<Node>, OpsError> {
+    execute_query_nodes_excluding(node_service, input, &[]).await
+}
+
+/// [`execute_query_nodes`], leaving out every node whose type is one of
+/// `excluded` or extends one of them. The exclusion is part of the statement,
+/// so `limit` rows come back whenever that many match.
+pub async fn execute_query_nodes_excluding(
+    node_service: &Arc<NodeService>,
+    input: ExecuteQueryInput,
+    excluded: &[crate::models::CoreNodeType],
+) -> Result<Vec<Node>, OpsError> {
     let query = to_query_definition(node_service, input).await?;
 
     let query_service = QueryService::new(node_service.store().clone());
     query_service
-        .execute(&query)
+        .execute_excluding(&query, excluded)
         .await
         .map_err(|e| OpsError::Internal(format!("execute_query failed: {}", e)))
 }
@@ -435,7 +446,17 @@ pub async fn execute_query(
     node_service: &Arc<NodeService>,
     input: ExecuteQueryInput,
 ) -> Result<ExecuteQueryOutput, OpsError> {
-    let nodes = execute_query_nodes(node_service, input).await?;
+    execute_query_excluding(node_service, input, &[]).await
+}
+
+/// [`execute_query`], leaving out every node whose type is one of `excluded`
+/// or extends one of them.
+pub async fn execute_query_excluding(
+    node_service: &Arc<NodeService>,
+    input: ExecuteQueryInput,
+    excluded: &[crate::models::CoreNodeType],
+) -> Result<ExecuteQueryOutput, OpsError> {
+    let nodes = execute_query_nodes_excluding(node_service, input, excluded).await?;
     let count = nodes.len();
     let typed_nodes = nodes_to_typed_values(nodes)?;
 

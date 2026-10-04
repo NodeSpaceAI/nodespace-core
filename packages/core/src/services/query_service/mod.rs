@@ -292,7 +292,21 @@ impl QueryService {
     /// - Database query execution fails
     /// - Result deserialization fails
     pub async fn execute(&self, query: &QueryDefinition) -> Result<Vec<Node>> {
-        let built = self.build_query(query)?;
+        self.execute_excluding(query, &[]).await
+    }
+
+    /// [`Self::execute`], leaving out every node whose type is one of
+    /// `excluded` or extends one of them.
+    ///
+    /// The exclusion is a condition of the statement, so `limit` counts only
+    /// rows the caller gets back: a page is never short because excluded rows
+    /// filled it.
+    pub async fn execute_excluding(
+        &self,
+        query: &QueryDefinition,
+        excluded: &[crate::models::CoreNodeType],
+    ) -> Result<Vec<Node>> {
+        let built = self.build_query(query, excluded)?;
 
         // Get node IDs that match the query
         let node_ids = self.execute_query_for_ids(&built).await?;
@@ -516,6 +530,17 @@ impl QueryService {
         query: &QueryDefinition,
         today: chrono::NaiveDate,
     ) -> Result<BoundSql> {
+        self.build_where_clause_with(query, today, &[])
+    }
+
+    /// The clause itself: the definition's conditions, the governance rules
+    /// every default query carries, and the caller's own type exclusion.
+    fn build_where_clause_with(
+        &self,
+        query: &QueryDefinition,
+        today: chrono::NaiveDate,
+        excluded: &[crate::models::CoreNodeType],
+    ) -> Result<BoundSql> {
         query.validate_identifiers()?;
 
         let mut built = BoundSql::default();
@@ -556,6 +581,11 @@ impl QueryService {
         // them, and neither is a type the registry leaves out (ADR-087 §2).
         // The definition has no opt-in; an archived node is reached by id.
         conditions.extend(crate::governance::default_query_conditions("", false));
+
+        // The caller's own exclusion, resolved through the ancestry table
+        // like the type filter above. The ids are the registry's, so nothing
+        // binds.
+        conditions.extend(crate::governance::excluded_types_sql("node_type", excluded));
 
         if !conditions.is_empty() {
             built.sql = format!(" WHERE {}", conditions.join(" AND "));
@@ -641,8 +671,16 @@ impl QueryService {
     /// Filter values are bound rather than interpolated — see
     /// [`Self::build_where_clause`], which owns every binding. ORDER BY and
     /// LIMIT, added here, contribute no values.
-    fn build_query(&self, query: &QueryDefinition) -> Result<BoundSql> {
-        let mut built = self.build_where_clause(query)?;
+    ///
+    /// `excluded` leaves out those types and every type extending one of
+    /// them; see [`Self::execute_excluding`].
+    fn build_query(
+        &self,
+        query: &QueryDefinition,
+        excluded: &[crate::models::CoreNodeType],
+    ) -> Result<BoundSql> {
+        let mut built =
+            self.build_where_clause_with(query, chrono::Local::now().date_naive(), excluded)?;
         built.sql = format!("SELECT * FROM node{}", built.sql);
 
         // Add sorting (pass target_type for namespaced property access)
