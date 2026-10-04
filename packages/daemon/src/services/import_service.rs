@@ -16,6 +16,7 @@ use std::sync::Arc;
 use nodespace_core::markdown::{
     prepare_nodes_from_markdown, transform_links_in_nodes_with_mentions, PreparedNode,
 };
+use nodespace_core::models::CoreNodeType;
 use nodespace_core::services::{CollectionService, NodeService as CoreNodeService};
 use nodespace_core::SqliteStore;
 use tokio::sync::mpsc;
@@ -66,6 +67,21 @@ const IMPORT_ROOT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 /// Derive a document's root node id deterministically from its identity key.
 /// The key is the file's base-directory-relative path, so the same file yields
 /// the same root id across imports regardless of the absolute checkout path.
+/// The content of a document's root node: the plain title. A title taken from
+/// the file's first line loses a leading Markdown heading marker (`#` to
+/// `######` and the space after it); a filename-derived title is used as is.
+fn root_content_for_title(title: &str, from_filename: bool) -> String {
+    if from_filename {
+        return title.to_string();
+    }
+    let trimmed = title.trim();
+    let level = trimmed.bytes().take_while(|b| *b == b'#').count();
+    match trimmed[level..].strip_prefix(' ') {
+        Some(rest) if (1..=6).contains(&level) => rest.trim().to_string(),
+        _ => trimmed.to_string(),
+    }
+}
+
 fn deterministic_root_id(key: &str) -> String {
     uuid::Uuid::new_v5(&IMPORT_ROOT_NAMESPACE, key.as_bytes()).to_string()
 }
@@ -229,10 +245,13 @@ async fn import_single_file(
     };
     let root_id = deterministic_root_id(&import_key);
 
+    let root_content = root_content_for_title(&title, opts.use_filename_as_title);
+
     match import_markdown_content(
         node_service,
         &root_id,
         &title,
+        &root_content,
         &content,
         is_archived,
         opts.replace,
@@ -842,7 +861,7 @@ impl Phase2Writer {
             } else if !exists {
                 rows.push((
                     file.root_id.clone(),
-                    "header".to_string(),
+                    CoreNodeType::Text.as_str().to_string(),
                     file.root_content,
                     None,
                     1.0,
@@ -1071,11 +1090,7 @@ fn prepare_file_import(
 
     let root_id = deterministic_root_id(&file_read.relative_path);
 
-    let root_content = if title.starts_with('#') {
-        title.clone()
-    } else {
-        format!("# {}", title)
-    };
+    let root_content = root_content_for_title(&title, use_filename_as_title);
 
     let content_for_children = {
         let first_line = file_read.content.lines().find(|l| !l.trim().is_empty());
@@ -1410,17 +1425,12 @@ async fn import_markdown_content(
     node_service: &CoreNodeService,
     root_id: &str,
     title: &str,
+    root_content: &str,
     content: &str,
     is_archived: bool,
     replace: bool,
 ) -> Result<(String, usize), String> {
     use nodespace_core::services::CreateNodeParams;
-
-    let clean_title = if title.starts_with('#') {
-        title.to_string()
-    } else {
-        format!("# {}", title)
-    };
 
     let content_for_children = {
         let first_line = content.lines().find(|l| !l.trim().is_empty());
@@ -1468,7 +1478,7 @@ async fn import_markdown_content(
         // Refresh in place: keep + update the root (non-destructive) so inbound
         // links/mentions survive, and capture its current children to prune only
         // after the fresh subtree is inserted below.
-        let mut update = nodespace_core::NodeUpdate::new().with_content(clean_title);
+        let mut update = nodespace_core::NodeUpdate::new().with_content(root_content.to_string());
         if is_archived {
             update = update.with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string());
         }
@@ -1488,8 +1498,8 @@ async fn import_markdown_content(
         node_service
             .create_node_with_parent(CreateNodeParams {
                 id: Some(root_id.to_string()),
-                node_type: "header".to_string(),
-                content: clean_title,
+                node_type: CoreNodeType::Text.as_str().to_string(),
+                content: root_content.to_string(),
                 parent_id: None,
                 position: nodespace_core::services::InsertPositionOwned::End,
                 properties: serde_json::json!({}),
@@ -1749,7 +1759,7 @@ mod tests {
         let content =
             "# Setup\n- Install\n  1. Download deps\n     - bun\n     - cargo\n  2. Build\n     continuation line\n- Run\n  - quickly";
 
-        import_markdown_content(&ns, &root_id, "# Setup", content, false, false)
+        import_markdown_content(&ns, &root_id, "# Setup", "Setup", content, false, false)
             .await
             .expect("the document imports");
 
@@ -1765,7 +1775,7 @@ mod tests {
         assert_eq!(
             read,
             vec![
-                (0, "# Setup"),
+                (0, "Setup"),
                 (1, "Install"),
                 (1, "1. Download deps"),
                 (1, "bun"),
@@ -1909,7 +1919,7 @@ mod tests {
             let stored_root = ns.get_node(&root).await.unwrap().expect("root kept");
             assert_eq!(
                 stored_root.content,
-                format!("# {tag} Note {i}"),
+                format!("{tag} Note {i}"),
                 "note {i}'s root is refreshed only with its committed subtree",
             );
             assert_eq!(
@@ -2068,6 +2078,23 @@ mod tests {
         assert!(uuid::Uuid::parse_str(&deterministic_root_id("any/path.md")).is_ok());
     }
 
+    /// A document root holds the plain title: a first-line title loses its
+    /// heading marker, whatever its level, and a filename-derived title is
+    /// used as is.
+    #[test]
+    fn root_content_is_the_plain_title() {
+        for first_line in ["# Title", "## Title", "###### Title", "Title", "#  Title  "] {
+            assert_eq!(root_content_for_title(first_line, false), "Title");
+        }
+        // Not a heading marker: no space after it, or more than six `#`.
+        assert_eq!(root_content_for_title("#tag", false), "#tag");
+        assert_eq!(
+            root_content_for_title("####### Seven", false),
+            "####### Seven"
+        );
+        assert_eq!(root_content_for_title("# C# notes", true), "# C# notes");
+    }
+
     /// Single-file path: a plain re-import of an unchanged file is a no-op (the
     /// deterministic root id resolves to the same document, nothing is created,
     /// nothing duplicates); `--replace` keeps that root id while refreshing its
@@ -2090,7 +2117,10 @@ mod tests {
         assert!(r1.success, "first import failed: {:?}", r1.error);
         assert!(r1.nodes_created > 0);
         let root_id = r1.root_id.clone().expect("root id");
-        let headers_after_first = ns.store().count_nodes_by_type("header").await.unwrap();
+        let root = ns.get_node(&root_id).await.unwrap().expect("root node");
+        assert!(CoreNodeType::Text.is_exactly(&root.node_type));
+        assert_eq!(root.content, "Guide");
+        let text_nodes_after_first = ns.store().count_nodes_by_type("text").await.unwrap();
         let subtree_after_first = ns.get_descendants(&root_id).await.unwrap().len();
         assert!(subtree_after_first > 0);
 
@@ -2100,8 +2130,8 @@ mod tests {
         assert_eq!(r2.nodes_created, 0, "a plain re-import must create nothing");
         assert_eq!(r2.root_id.as_deref(), Some(root_id.as_str()));
         assert_eq!(
-            ns.store().count_nodes_by_type("header").await.unwrap(),
-            headers_after_first,
+            ns.store().count_nodes_by_type("text").await.unwrap(),
+            text_nodes_after_first,
             "a plain re-import must not duplicate any node",
         );
 
@@ -2119,17 +2149,20 @@ mod tests {
             Some(root_id.as_str()),
             "replace keeps the root id",
         );
-        assert!(
-            ns.get_node(&root_id).await.unwrap().is_some(),
-            "root node survives replace",
-        );
+        let root = ns
+            .get_node(&root_id)
+            .await
+            .unwrap()
+            .expect("root node survives replace");
+        assert!(CoreNodeType::Text.is_exactly(&root.node_type));
+        assert_eq!(root.content, "Guide");
         let subtree_after_replace = ns.get_descendants(&root_id).await.unwrap().len();
         assert!(
             subtree_after_replace < subtree_after_first,
             "replace pruned the removed section (was {subtree_after_first}, now {subtree_after_replace})",
         );
         assert!(
-            ns.store().count_nodes_by_type("header").await.unwrap() <= headers_after_first,
+            ns.store().count_nodes_by_type("text").await.unwrap() <= text_nodes_after_first,
             "replace refreshes in place — it must never grow the document set",
         );
     }
@@ -2227,9 +2260,12 @@ mod tests {
         run_batch_and_wait(Arc::clone(&ns), files.clone(), opts.clone()).await;
         let id_a = deterministic_root_id("a.md");
         let id_b = deterministic_root_id("b.md");
-        assert!(ns.get_node(&id_a).await.unwrap().is_some(), "Doc A created");
-        assert!(ns.get_node(&id_b).await.unwrap().is_some(), "Doc B created");
-        let headers_after_first = ns.store().count_nodes_by_type("header").await.unwrap();
+        for (id, title) in [(&id_a, "Doc A"), (&id_b, "Doc B")] {
+            let root = ns.get_node(id).await.unwrap().expect("root created");
+            assert!(CoreNodeType::Text.is_exactly(&root.node_type));
+            assert_eq!(root.content, title);
+        }
+        let text_nodes_after_first = ns.store().count_nodes_by_type("text").await.unwrap();
         assert!(
             !ns.store()
                 .get_node_memberships(&id_a)
@@ -2242,8 +2278,8 @@ mod tests {
         // Plain batch re-import: no duplication.
         run_batch_and_wait(Arc::clone(&ns), files.clone(), opts.clone()).await;
         assert_eq!(
-            ns.store().count_nodes_by_type("header").await.unwrap(),
-            headers_after_first,
+            ns.store().count_nodes_by_type("text").await.unwrap(),
+            text_nodes_after_first,
             "a plain batch re-import must not duplicate",
         );
         assert!(ns.get_node(&id_a).await.unwrap().is_some());
@@ -2257,13 +2293,14 @@ mod tests {
         };
         run_batch_and_wait(Arc::clone(&ns), files.clone(), opts_replace).await;
         assert_eq!(
-            ns.store().count_nodes_by_type("header").await.unwrap(),
-            headers_after_first,
+            ns.store().count_nodes_by_type("text").await.unwrap(),
+            text_nodes_after_first,
             "replacing unchanged docs must keep the node count stable",
         );
-        assert!(
-            ns.get_node(&id_a).await.unwrap().is_some(),
-            "Doc A root kept across replace",
+        assert_eq!(
+            ns.get_node(&id_a).await.unwrap().map(|n| n.content),
+            Some("Doc A".to_string()),
+            "Doc A root kept across replace, with its plain title",
         );
         assert!(
             ns.get_node(&id_b).await.unwrap().is_some(),
@@ -2326,7 +2363,7 @@ mod tests {
                 .is_empty(),
             "membership removed — the root is now orphaned from its collection",
         );
-        let headers_before = ns.store().count_nodes_by_type("header").await.unwrap();
+        let text_nodes_before = ns.store().count_nodes_by_type("text").await.unwrap();
 
         // Plain re-import (no --replace) must re-assert the lost membership and
         // create no new node.
@@ -2340,8 +2377,8 @@ mod tests {
             "plain re-import re-asserts the lost topic-collection membership (self-heal)",
         );
         assert_eq!(
-            ns.store().count_nodes_by_type("header").await.unwrap(),
-            headers_before,
+            ns.store().count_nodes_by_type("text").await.unwrap(),
+            text_nodes_before,
             "self-heal adds only the missing edge — it must not duplicate any node",
         );
     }

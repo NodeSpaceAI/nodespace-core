@@ -48,4 +48,14 @@ describe('CollectionSubPanel', () => {
     expect(props.onNodeClick).toHaveBeenCalledWith('m1', 'header');
     expect(props.onOpenCollection).not.toHaveBeenCalled();
   });
+
+  it('shows a member row as its name and type tag, with no icon', () => {
+    const { getByRole } = render(CollectionSubPanel, { props: baseProps() });
+
+    const row = getByRole('button', { name: /System Overview/i });
+
+    expect(row.querySelector('svg')).toBeNull();
+    expect(row.querySelector('.node-name')?.textContent?.trim()).toBe('System Overview');
+    expect(row.querySelector('.node-type-tag')).not.toBeNull();
+  });
 });

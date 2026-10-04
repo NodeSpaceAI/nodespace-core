@@ -248,7 +248,6 @@
       {@const trimmedName = member.name.trim()}
       <li>
         <button class="node-item" onclick={() => onNodeClick(member.id, member.nodeType)}>
-          <Icon name={getNodeIcon(member.nodeType)} size={16} />
           <span class="node-name" class:node-name--untitled={!trimmedName}>
             {trimmedName || fallbackName(member.nodeType)}
           </span>
