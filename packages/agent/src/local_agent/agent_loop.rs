@@ -10977,8 +10977,8 @@ mod tests {
         })
     }
 
-    /// An executor whose `search_nodes` answers with [`type_listing_result`].
-    struct TypeListingExecutor;
+    /// An executor whose `search_nodes` answers with the given listing.
+    struct TypeListingExecutor(serde_json::Value);
 
     #[async_trait]
     impl AgentToolExecutor for TypeListingExecutor {
@@ -10997,7 +10997,7 @@ mod tests {
             Ok(ToolResult {
                 tool_call_id: "tc".into(),
                 name: name.into(),
-                result: type_listing_result(),
+                result: self.0.clone(),
                 is_error: false,
             })
         }
@@ -11006,8 +11006,17 @@ mod tests {
     /// Run one turn in which the model lists types with `args` and answers
     /// `reply`. Returns the final reply and the session.
     async fn run_type_listing_turn(args: &str, reply: &str) -> (String, AgentSession) {
+        run_type_listing_turn_over(type_listing_result(), args, reply).await
+    }
+
+    /// [`run_type_listing_turn`] over a workspace whose listing is `listing`.
+    async fn run_type_listing_turn_over(
+        listing: serde_json::Value,
+        args: &str,
+        reply: &str,
+    ) -> (String, AgentSession) {
         let engine = Arc::new(MockEngine::tool_then_text("search_nodes", args, reply));
-        let agent_loop = LocalAgentLoop::new(engine, Arc::new(TypeListingExecutor));
+        let agent_loop = LocalAgentLoop::new(engine, Arc::new(TypeListingExecutor(listing)));
         let mut session = new_session();
         let result = agent_loop
             .run_turn(
@@ -11074,6 +11083,53 @@ mod tests {
                        and [Project](nodespace://proj ect).";
         let (reply, _) = run_type_listing_turn(UNFILTERED_TYPE_LISTING, slipped).await;
         assert_eq!(reply, EVERY_TYPE_LISTED);
+    }
+
+    /// The shape of the measured reply on a workspace whose custom types have underscores
+    /// in their ids: the model escapes them inside the links, as it would in
+    /// prose. An escaped id is not the one the search returned, and the reply
+    /// was replaced with a request to confirm although every type it named
+    /// exists. The links are read as the ids they are, the reply stands, and
+    /// the types it left out are appended.
+    #[tokio::test]
+    async fn a_type_listing_with_escaped_ids_is_kept_and_completed() {
+        let listing = json!({
+            "count": 4,
+            "nodes": [
+                {"id": "nodespace://planning_cycle", "title": "Planning Cycle", "type": "schema"},
+                {"id": "nodespace://design_decision", "title": "Design Decision", "type": "schema"},
+                {"id": "nodespace://task", "title": "Task", "type": "schema"},
+                {"id": "nodespace://project", "title": "Project", "type": "schema"},
+            ]
+        });
+        let escaped = r"The schemas include built-in types like [Task](nodespace://task), as well as:
+
+*   [Planning Cycle](nodespace://planning\_cycle): tracks each cycle and its dates.
+*   [Design Decision](nodespace://design\_decision): records a decision and who made it.";
+        let (reply, _) =
+            run_type_listing_turn_over(listing, UNFILTERED_TYPE_LISTING, escaped).await;
+
+        assert_eq!(
+            reply,
+            format!(
+                "{}\n\nThe other types in this workspace: [Project](nodespace://project).",
+                escaped.replace(r"\_", "_")
+            )
+        );
+    }
+
+    /// A link to a type name no tool returned is reduced to its label, and
+    /// that holds when the model escaped the name's underscore: the target is
+    /// read as the type name it is, not as an invented id that replaces the
+    /// reply.
+    #[tokio::test]
+    async fn an_escaped_link_to_an_unknown_type_name_keeps_its_label() {
+        let (reply, _) = run_type_listing_turn(
+            r#"{"node_type":"schema","query":"release"}"#,
+            r"There is no [Release Train](nodespace://release\_train) type yet.",
+        )
+        .await;
+        assert_eq!(reply, "There is no Release Train type yet.");
     }
 
     /// The same stand-ins are left alone when the search was not a listing of

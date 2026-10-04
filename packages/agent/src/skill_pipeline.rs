@@ -201,9 +201,42 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // explicit, reviewed record of every `SCHEMA_RULES` entry the body
         // deliberately does not include — see its own doc comment for why a
         // hand-maintained list, rather than nothing, is the guard.
+        //
+        // The description opens with the tracking verb itself. It said
+        // "keep track of" and never "start tracking", and "start tracking
+        // planning cycles" placed this skill fourth at 0.778, behind Graph
+        // Editing, Relationship Management and Node Creation:
+        // `create_schema` left the surface and the turn retried
+        // `create_node` until it gave up. With the opening it leads at
+        // 0.872, and leads the other tracking requests measured beside it
+        // by 0.01 to 0.06.
+        //
+        // Two words and no more. "Start tracking or begin tracking a new
+        // kind of thing: …" won the same requests by margins no larger
+        // and also lifted this skill by about 0.03 on requests of every
+        // kind, enough to lead "update Northwind Trading booking to April"
+        // over Graph Editing (0.799 against 0.793). The verb moved inside
+        // the existing sentence ("…a structured way to start tracking,
+        // keep track of…") did not win the tracking requests at all.
+        //
+        // It has two measured costs, both on requests naming a spec, which
+        // this description lists: "mark the offline sync spec as signed
+        // off" led with Graph Editing by 0.017 and now leads with this
+        // skill by 0.001, and "add the offline sync spec to the specs for
+        // this cycle" led with Node Creation by 0.006 and now leads with
+        // this skill by 0.005. The tool each needs is still offered, but
+        // without its declared fields: those come only from the candidates
+        // at the turn's top score (`routing::declare_write_tool_fields`),
+        // and that is now this skill. What Stage 2 does with either
+        // request was not measured.
+        // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
+        // `start_tracking_requests_route_schema_creation`,
+        // `tracking_one_existing_record_still_reaches_a_record_skill`,
+        // `updates_to_one_record_do_not_lead_with_schema_creation` and
+        // `adds_to_an_existing_list_keep_a_skill_that_can_create`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c03",
         title: "Schema Creation",
-        description: "Set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
+        description: "Start tracking: set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
         tools: &["create_schema", "update_schema", "get_node"],
         max_iterations: 3,
         exclusion: None,

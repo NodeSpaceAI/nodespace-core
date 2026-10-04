@@ -216,6 +216,34 @@ describe("outcome and no-tool scoring", () => {
     ).toBe(false);
   });
 
+  test("a must-not-lead skill expectation fails on the named skill, on no leader, and on no skill that can act", () => {
+    const single = fixture.groups.flat().find((s) => s.id === "skill-instance-request");
+    if (!single) throw new Error("skill-instance-request is missing");
+    const led = (selected: string | null, candidates: string[]): TurnRecord =>
+      ({
+        ...turn("Done.", [["create_node", false]]),
+        decisions: [{ kind: "skill", selected, offMenu: false, enforced: false, candidates }],
+      }) as TurnRecord;
+    const tied = ["Bulk Import", "Organization", "Node Creation"];
+    const passes = (selected: string | null, candidates: string[]) =>
+      fixture.score(single, [led(selected, candidates)]).passed;
+
+    // Any of the near-tied skills may lead.
+    expect(passes("Bulk Import", tied)).toBe(true);
+    expect(passes("Node Creation", ["Node Creation", "Bulk Import", "Organization"])).toBe(true);
+    // The type skill leading is the failure the scenario is for.
+    expect(passes("Schema Creation", ["Schema Creation", "Bulk Import", "Node Creation"])).toBe(
+      false,
+    );
+    // So is the type skill taking the place of the only skill that can create
+    // the record: the leader is unchanged and `create_node` is not offered.
+    expect(passes("Bulk Import", ["Bulk Import", "Organization", "Schema Creation"])).toBe(false);
+    // Graph Editing holds `create_node` too.
+    expect(passes("Bulk Import", ["Bulk Import", "Organization", "Graph Editing"])).toBe(true);
+    // Nothing clearing its bar is not a pass by default.
+    expect(passes(null, tied)).toBe(false);
+  });
+
   test("the clarification opener matches the agent's", () => {
     // The scorer recognises a clarification by its opening words. Drift from
     // the agent's constant would fail every clarified turn as "not asked" —
