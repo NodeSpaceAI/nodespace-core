@@ -67,6 +67,10 @@ const IMPORT_ROOT_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 /// Derive a document's root node id deterministically from its identity key.
 /// The key is the file's base-directory-relative path, so the same file yields
 /// the same root id across imports regardless of the absolute checkout path.
+fn deterministic_root_id(key: &str) -> String {
+    uuid::Uuid::new_v5(&IMPORT_ROOT_NAMESPACE, key.as_bytes()).to_string()
+}
+
 /// The content of a document's root node: the plain title. A title taken from
 /// the file's first line loses a leading Markdown heading marker (`#` to
 /// `######` and the space after it); a filename-derived title is used as is.
@@ -80,10 +84,6 @@ fn root_content_for_title(title: &str, from_filename: bool) -> String {
         Some(rest) if (1..=6).contains(&level) => rest.trim().to_string(),
         _ => trimmed.to_string(),
     }
-}
-
-fn deterministic_root_id(key: &str) -> String {
-    uuid::Uuid::new_v5(&IMPORT_ROOT_NAMESPACE, key.as_bytes()).to_string()
 }
 
 #[derive(Clone)]
@@ -245,13 +245,11 @@ async fn import_single_file(
     };
     let root_id = deterministic_root_id(&import_key);
 
-    let root_content = root_content_for_title(&title, opts.use_filename_as_title);
-
     match import_markdown_content(
         node_service,
         &root_id,
         &title,
-        &root_content,
+        opts.use_filename_as_title,
         &content,
         is_archived,
         opts.replace,
@@ -1425,12 +1423,14 @@ async fn import_markdown_content(
     node_service: &CoreNodeService,
     root_id: &str,
     title: &str,
-    root_content: &str,
+    title_from_filename: bool,
     content: &str,
     is_archived: bool,
     replace: bool,
 ) -> Result<(String, usize), String> {
     use nodespace_core::services::CreateNodeParams;
+
+    let root_content = root_content_for_title(title, title_from_filename);
 
     let content_for_children = {
         let first_line = content.lines().find(|l| !l.trim().is_empty());
@@ -1478,7 +1478,7 @@ async fn import_markdown_content(
         // Refresh in place: keep + update the root (non-destructive) so inbound
         // links/mentions survive, and capture its current children to prune only
         // after the fresh subtree is inserted below.
-        let mut update = nodespace_core::NodeUpdate::new().with_content(root_content.to_string());
+        let mut update = nodespace_core::NodeUpdate::new().with_content(root_content);
         if is_archived {
             update = update.with_lifecycle_status(nodespace_core::governance::ARCHIVED.to_string());
         }
@@ -1499,7 +1499,7 @@ async fn import_markdown_content(
             .create_node_with_parent(CreateNodeParams {
                 id: Some(root_id.to_string()),
                 node_type: CoreNodeType::Text.as_str().to_string(),
-                content: root_content.to_string(),
+                content: root_content,
                 parent_id: None,
                 position: nodespace_core::services::InsertPositionOwned::End,
                 properties: serde_json::json!({}),
@@ -1759,7 +1759,7 @@ mod tests {
         let content =
             "# Setup\n- Install\n  1. Download deps\n     - bun\n     - cargo\n  2. Build\n     continuation line\n- Run\n  - quickly";
 
-        import_markdown_content(&ns, &root_id, "# Setup", "Setup", content, false, false)
+        import_markdown_content(&ns, &root_id, "# Setup", false, content, false, false)
             .await
             .expect("the document imports");
 
@@ -2092,6 +2092,9 @@ mod tests {
             root_content_for_title("####### Seven", false),
             "####### Seven"
         );
+        // A marker with no title after it, or a tab after it, is kept as written.
+        assert_eq!(root_content_for_title("# ", false), "#");
+        assert_eq!(root_content_for_title("#\tTitle", false), "#\tTitle");
         assert_eq!(root_content_for_title("# C# notes", true), "# C# notes");
     }
 
