@@ -19,6 +19,7 @@ vi.mock('$lib/services/navigation-service', () => ({
 // adapter offers is a spy, so a test can assert the section made none.
 const backend = vi.hoisted(() => ({
   plays: [] as unknown[],
+  archived: [] as unknown[],
   writes: [] as string[]
 }));
 vi.mock('$lib/services/backend-adapter', () => {
@@ -30,8 +31,12 @@ vi.mock('$lib/services/backend-adapter', () => {
     backendAdapter: {
       getAllSchemas: async () => [],
       getNode: async () => null,
-      queryNodes: async (query: { nodeType?: string; includeArchived?: boolean }) =>
-        query.nodeType === 'play' && !query.includeArchived ? backend.plays : [],
+      // As the backend does, an archived play is returned only to a query
+      // that opts in.
+      queryNodes: async (query: { nodeType?: string; includeArchived?: boolean }) => {
+        if (query.nodeType !== 'play') return [];
+        return query.includeArchived ? [...backend.plays, ...backend.archived] : backend.plays;
+      },
       updateNode: write('updateNode'),
       updatePlayNode: write('updatePlayNode'),
       createNode: write('createNode'),
@@ -86,6 +91,7 @@ describe('NavigationSidebar — Plays section', () => {
     localStorage.clear();
     focusOrOpenNode.mockClear();
     backend.plays = [];
+    backend.archived = [];
     backend.writes = [];
     playsData.reset();
     labsFlags.playbooksEnabled = true;
@@ -169,6 +175,7 @@ describe('NavigationSidebar — Plays section', () => {
       play('p-user', 'Weekly review'),
       play('p-core', 'Task status', { isSeeded: true })
     ];
+    backend.archived = [play('p-archived', 'Archived play')];
     const { container, queryByText } = render(NavigationSidebar);
 
     await waitFor(() =>

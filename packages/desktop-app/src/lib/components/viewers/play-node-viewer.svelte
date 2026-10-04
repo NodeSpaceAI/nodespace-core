@@ -22,10 +22,9 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
-  import { isA } from '$lib/types/core-node-types';
-  import type { PlayNode } from '$lib/types';
   import {
     actionForEach,
+    asPlayNode,
     describeTrigger,
     playState,
     playTitle,
@@ -43,10 +42,7 @@
   } = $props();
 
   // The store's node is the play: no local copy (ADR-049).
-  const play = $derived.by(() => {
-    const node = sharedNodeStore.getNode(nodeId);
-    return node && isA(node.nodeType, 'play') ? (node as unknown as PlayNode) : undefined;
-  });
+  const play = $derived(asPlayNode(sharedNodeStore.getNode(nodeId)));
   const playStatus = $derived(play ? playState(play) : 'off');
   const warnedRules = $derived(play ? rulesWarnedOnDisable(play) : []);
 

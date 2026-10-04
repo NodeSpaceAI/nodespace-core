@@ -22,7 +22,10 @@ vi.mock('$lib/services/backend-adapter', () => ({
 }));
 
 import { playsData } from '$lib/stores/plays.svelte';
-import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import {
+  sharedNodeStore,
+  SimplePersistenceCoordinator
+} from '$lib/services/shared-node-store.svelte';
 
 function makePlay(id: string, content: string, fields: Record<string, unknown> = {}): Node {
   return {
@@ -151,6 +154,43 @@ describe('playsData', () => {
     await playsData.loadPlays();
 
     expect(playsData.plays[0].state).toBe('off');
+  });
+
+  it('a load leaves alone a play whose local write is still in flight', async () => {
+    // The viewer switched the play off and the backend has committed it, but
+    // the write's response has not landed: the load carries the newer version.
+    sharedNodeStore.setNode(makePlay('p', 'Play', { enabled: false }), {
+      type: 'database',
+      reason: 'test'
+    });
+    const hasPending = vi
+      .spyOn(SimplePersistenceCoordinator.getInstance(), 'hasPending')
+      .mockImplementation((id) => id === 'p');
+    const setNode = vi.spyOn(sharedNodeStore, 'setNode');
+    mockQueryNodes.mockResolvedValue([makePlay('p', 'Play', { enabled: false, version: 2 })]);
+
+    await playsData.loadPlays();
+
+    // No write to the node store, so no conflict notice for the user's own switch.
+    expect(setNode).not.toHaveBeenCalled();
+    expect(playsData.plays.map((p) => [p.id, p.state])).toEqual([['p', 'off']]);
+
+    hasPending.mockRestore();
+    setNode.mockRestore();
+  });
+
+  it('the latest of two overlapping loads wins, whichever resolves last', async () => {
+    let resolveFirst: (nodes: Node[]) => void = () => {};
+    mockQueryNodes.mockReturnValueOnce(new Promise<Node[]>((resolve) => (resolveFirst = resolve)));
+    mockQueryNodes.mockResolvedValueOnce([makePlay('new', 'Newer')]);
+
+    const first = playsData.loadPlays();
+    await playsData.loadPlays();
+    resolveFirst([makePlay('old', 'Older')]);
+    await first;
+
+    expect(playsData.plays.map((p) => p.id)).toEqual(['new']);
+    expect(playsData.has('old')).toBe(false);
   });
 
   it('pins the listed plays in the node store, and releases them when it stops listing them', async () => {

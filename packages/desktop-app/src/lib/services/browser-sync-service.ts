@@ -404,9 +404,10 @@ class BrowserSyncService {
         if (isA(normalizedNode.nodeType, 'query')) {
           scheduleSavedQueryRefresh();
         }
-        // Likewise a play: the update may have archived a listed one or
-        // restored one that is not listed. (Listed plays are always in the
-        // store, so their updates are always fetched.)
+        // Likewise a play: the update may have archived a listed one. Listed
+        // plays are always in the store, so their updates are always fetched.
+        // A restored play is caught only while its node is still cached; after
+        // that it is listed on the next reload.
         if (isA(normalizedNode.nodeType, 'play')) {
           schedulePlayRefresh();
         }

@@ -633,7 +633,9 @@ describe('TauriSyncListener', () => {
 
       emitTauriEvent('node:deleted', { id: 'p1' });
 
-      await vi.waitFor(() => expect(rows()).toEqual([]), { timeout: 1000 });
+      // The row goes with the node; the reload is what stops listing the id.
+      expect(rows()).toEqual([]);
+      await vi.waitFor(() => expect(playsData.has('p1')).toBe(false), { timeout: 1000 });
     });
 
     it('does not reload plays for a node that is not a play', async () => {

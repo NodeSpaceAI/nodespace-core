@@ -17,11 +17,18 @@
  */
 
 import { backendAdapter } from '$lib/services/backend-adapter';
-import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import {
+  sharedNodeStore,
+  SimplePersistenceCoordinator
+} from '$lib/services/shared-node-store.svelte';
 import { createLogger } from '$lib/utils/logger';
 import { onDaemonReconnect } from '$lib/services/daemon-status';
-import { isA } from '$lib/types/core-node-types';
-import { playState, playTitle, type PlayState } from '$lib/components/play/play-node-model';
+import {
+  asPlayNode,
+  playState,
+  playTitle,
+  type PlayState
+} from '$lib/components/play/play-node-model';
 import type { PlayNode } from '$lib/types';
 
 const log = createLogger('PlaysStore');
@@ -65,13 +72,17 @@ class PlaysStore {
   plays = $derived.by(() =>
     this.#ids
       .flatMap((id) => {
-        const node = sharedNodeStore.getNode(id);
-        return node && isA(node.nodeType, 'play') ? [toListItem(node as unknown as PlayNode)] : [];
+        const play = asPlayNode(sharedNodeStore.getNode(id));
+        return play ? [toListItem(play)] : [];
       })
       .sort(comparePlays)
   );
 
-  /** See `SchemasStore.#generation`. */
+  /**
+   * Bumped by every load and by a database switch. A load applies its result
+   * only while it is still the latest, so neither an older load that resolves
+   * late nor one issued against the previous database changes the list.
+   */
   #generation = 0;
 
   /** True when `nodeId` is a listed play (used to react to its deletion). */
@@ -85,18 +96,23 @@ class PlaysStore {
    * drops off the list on the load that follows its archiving.
    */
   async loadPlays(): Promise<void> {
-    const generation = this.#generation;
+    const generation = ++this.#generation;
     try {
       const nodes = await backendAdapter.queryNodes({ nodeType: 'play' });
       if (generation !== this.#generation) {
         log.debug('Discarding plays load that resolved after the store moved on');
         return;
       }
+      const coordinator = SimplePersistenceCoordinator.getInstance();
       for (const node of nodes) {
         // A copy the node store already holds is the one a viewer writes and
         // node events keep current, so only a newer version replaces it: a
-        // load must not put back what a switch just changed.
+        // load must not put back what a switch just changed. While that
+        // switch's write is in flight the load leaves the play alone: the
+        // newer version it may carry is the write itself, which its own
+        // response applies.
         const stored = sharedNodeStore.getNode(node.id);
+        if (stored && coordinator.hasPending(node.id)) continue;
         if (!stored || node.version > stored.version) {
           sharedNodeStore.setNode(node, { type: 'database', reason: 'plays-list load' });
         }

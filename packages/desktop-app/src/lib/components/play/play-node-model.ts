@@ -12,6 +12,13 @@ import type {
   Selector,
   Trigger
 } from '$lib/types/generated';
+import type { Node } from '$lib/types/node';
+import { isA } from '$lib/types/core-node-types';
+
+/** `node` as the play it is, or `undefined` when it is missing or not a play. */
+export function asPlayNode(node: Node | undefined): PlayNode | undefined {
+  return node && isA(node.nodeType, 'play') ? (node as unknown as PlayNode) : undefined;
+}
 
 /** A play's state as its header shows it. */
 export type PlayState = 'on' | 'off' | 'suspended';
