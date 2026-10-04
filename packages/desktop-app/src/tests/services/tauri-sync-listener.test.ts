@@ -10,8 +10,10 @@ import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
 import { schemasStore } from '$lib/stores/schemas.svelte';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
+import { playsData } from '$lib/stores/plays.svelte';
 import {
   clearAiChatRefreshTimer,
+  clearPlayRefreshTimer,
   clearSavedQueryRefreshTimer,
   clearSchemaRefreshTimer
 } from '$lib/utils/collection-refresh';
@@ -168,6 +170,8 @@ describe('TauriSyncListener', () => {
     clearAiChatRefreshTimer();
     savedQueriesData.reset();
     clearSavedQueryRefreshTimer();
+    playsData.reset();
+    clearPlayRefreshTimer();
     // This file installs the Tauri bridge markers; clear them rather than relying on a
     // later file's setup to do it, which only works by accident of ordering.
     Reflect.deleteProperty(window, '__TAURI__');
@@ -519,6 +523,129 @@ describe('TauriSyncListener', () => {
         .mockResolvedValue([]);
 
       emitTauriEvent('node:updated', { id: 'node1' });
+
+      await vi.waitFor(() => {
+        expect(sharedNodeStore.hasNode('node1')).toBe(true);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      expect(queryNodesSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  // The Plays section lists each play with its state. A play installed,
+  // removed, switched or suspended out-of-band (the CLI, an agent, the engine)
+  // must reach that list without a reload.
+  describe('plays sidebar refresh', () => {
+    beforeEach(async () => {
+      await initializeTauriSyncListeners();
+    });
+
+    function mockPlayNode(id: string, title: string, fields: Record<string, unknown> = {}): Node {
+      return {
+        id,
+        nodeType: 'play',
+        content: title,
+        properties: {},
+        mentions: [],
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        version: 1,
+        isSeeded: false,
+        rules: [],
+        enabled: true,
+        ...fields
+      } as unknown as Node;
+    }
+
+    /** The plays the backend holds: what a reload of the list returns. */
+    function backendHolds(plays: Node[]) {
+      for (const play of plays) registerMockNode(play);
+      return vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue(plays);
+    }
+
+    /** List `plays` as already loaded, then let the test change the backend. */
+    async function listed(plays: Node[]) {
+      backendHolds(plays);
+      await playsData.loadPlays();
+    }
+
+    const rows = () => playsData.plays.map((p) => [p.title, p.state]);
+
+    it('lists a play installed externally', async () => {
+      backendHolds([mockPlayNode('p1', 'Task status')]);
+
+      emitTauriEvent('node:created', { id: 'p1', nodeType: 'play' });
+
+      await vi.waitFor(() => expect(rows()).toEqual([['Task status', 'on']]), { timeout: 1000 });
+    });
+
+    it('shows a play switched off, then on again, out-of-band', async () => {
+      await listed([mockPlayNode('p1', 'Task status')]);
+
+      backendHolds([mockPlayNode('p1', 'Task status', { enabled: false, version: 2 })]);
+      emitTauriEvent('node:updated', { id: 'p1' });
+      await vi.waitFor(() => expect(rows()).toEqual([['Task status', 'off']]), { timeout: 1000 });
+
+      backendHolds([mockPlayNode('p1', 'Task status', { enabled: true, version: 3 })]);
+      emitTauriEvent('node:updated', { id: 'p1' });
+      await vi.waitFor(() => expect(rows()).toEqual([['Task status', 'on']]), { timeout: 1000 });
+    });
+
+    it('shows a play the engine suspended, with its message', async () => {
+      await listed([mockPlayNode('p1', 'Task status')]);
+
+      backendHolds([
+        mockPlayNode('p1', 'Task status', {
+          version: 2,
+          suspendedAt: '2026-03-01T10:00:00.000Z',
+          suspendedReason: 'error',
+          suspendedMessage: 'Action 2 failed: no such field'
+        })
+      ]);
+      emitTauriEvent('node:updated', { id: 'p1' });
+
+      await vi.waitFor(
+        () =>
+          expect(playsData.plays.map((p) => [p.state, p.suspendedMessage])).toEqual([
+            ['suspended', 'Action 2 failed: no such field']
+          ]),
+        { timeout: 1000 }
+      );
+    });
+
+    it('drops a play that was archived', async () => {
+      await listed([mockPlayNode('p1', 'Task status'), mockPlayNode('p2', 'Weekly review')]);
+
+      // The archived play is still a node, so its update is fetched; the
+      // reloaded list is what leaves it out (the participation rule).
+      registerMockNode(mockPlayNode('p1', 'Task status', { version: 2 }));
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([
+        mockPlayNode('p2', 'Weekly review')
+      ]);
+      emitTauriEvent('node:updated', { id: 'p1' });
+
+      await vi.waitFor(() => expect(rows()).toEqual([['Weekly review', 'on']]), { timeout: 1000 });
+    });
+
+    it('drops a listed play when it is removed', async () => {
+      await listed([mockPlayNode('p1', 'Task status')]);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([]);
+
+      emitTauriEvent('node:deleted', { id: 'p1' });
+
+      // The row goes with the node; the reload is what stops listing the id.
+      expect(rows()).toEqual([]);
+      await vi.waitFor(() => expect(playsData.has('p1')).toBe(false), { timeout: 1000 });
+    });
+
+    it('does not reload plays for a node that is not a play', async () => {
+      registerMockNode(createTestNode('node1', 'Just a text node'));
+      const queryNodesSpy = vi
+        .spyOn(backendAdapterModule.backendAdapter, 'queryNodes')
+        .mockResolvedValue([]);
+
+      emitTauriEvent('node:updated', { id: 'node1' });
+      emitTauriEvent('node:deleted', { id: 'some-other-node' });
 
       await vi.waitFor(() => {
         expect(sharedNodeStore.hasNode('node1')).toBe(true);

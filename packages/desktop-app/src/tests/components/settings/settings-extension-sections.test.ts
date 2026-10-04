@@ -228,11 +228,11 @@ describe('SettingsPane with a contributed section', () => {
   });
 
   it('lists a section after a Labs-gated category once that category is listed', () => {
-    registerFixture({ after: 'playbooks' });
+    registerFixture({ after: 'ai-models' });
     testExtensionFlags.section = true;
-    labsFlags.playbooksEnabled = true;
+    labsFlags.aiChatEnabled = true;
     const view = render(SettingsPane);
 
-    expect(sidebarLabels(view.container).slice(-4)).toEqual(['Playbooks', 'Test section', 'Labs', 'About']);
+    expect(sidebarLabels(view.container).slice(2, 4)).toEqual(['AI Models', 'Test section']);
   });
 });

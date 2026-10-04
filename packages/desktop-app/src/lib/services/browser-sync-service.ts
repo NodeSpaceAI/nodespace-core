@@ -27,9 +27,11 @@ import { createLogger } from '$lib/utils/logger';
 import {
   scheduleCollectionRefresh,
   scheduleSchemaRefresh,
-  scheduleSavedQueryRefresh
+  scheduleSavedQueryRefresh,
+  schedulePlayRefresh
 } from '$lib/utils/collection-refresh';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
+import { playsData } from '$lib/stores/plays.svelte';
 import { registerSchemaPlugin, unregisterSchemaPlugin } from '$lib/plugins/schema-plugin-loader';
 import { applyHasChildCreated, applyHasChildUpdated, applyHasChildDeleted } from './hierarchy-sync';
 import { normalizeNodeData } from './node-normalize';
@@ -237,6 +239,11 @@ class BrowserSyncService {
           scheduleSavedQueryRefresh();
         }
 
+        // If a play is created, refresh the Plays list in the sidebar
+        if (isA(event.nodeType, 'play')) {
+          schedulePlayRefresh();
+        }
+
         // Fetch full node data only if we need to display it — for a node
         // this session hasn't seen before, always fetch, since it might
         // belong in the current view (sidebar list, tree, ...).
@@ -289,6 +296,9 @@ class BrowserSyncService {
         unregisterSchemaPlugin(event.nodeId);
         if (savedQueriesData.has(event.nodeId)) {
           scheduleSavedQueryRefresh();
+        }
+        if (playsData.has(event.nodeId)) {
+          schedulePlayRefresh();
         }
         break;
 
@@ -393,6 +403,13 @@ class BrowserSyncService {
         // update touched a query (e.g. a retarget into a listed type).
         if (isA(normalizedNode.nodeType, 'query')) {
           scheduleSavedQueryRefresh();
+        }
+        // Likewise a play: the update may have archived a listed one. Listed
+        // plays are always in the store, so their updates are always fetched.
+        // A restored play is caught only while its node is still cached; after
+        // that it is listed on the next reload.
+        if (isA(normalizedNode.nodeType, 'play')) {
+          schedulePlayRefresh();
         }
         log.debug(`${eventType}: updated store for node`, nodeId);
       } else {

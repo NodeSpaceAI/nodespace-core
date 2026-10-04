@@ -10,7 +10,6 @@
     import DiagnosticsSettings from './sections/diagnostics-settings.svelte';
     import ModelManager from './model-manager.svelte';
     import IntegrationsSettings from './sections/integrations-settings.svelte';
-    import PlaybooksSettings from './sections/playbooks-settings.svelte';
     import LabsSettings from './sections/labs-settings.svelte';
 
     const initial = settingsStore.initialCategory;
@@ -53,8 +52,6 @@
             <ModelManager />
         {:else if activeCategory === 'integrations'}
             <IntegrationsSettings />
-        {:else if activeCategory === 'playbooks'}
-            <PlaybooksSettings />
         {:else if activeCategory === 'labs'}
             <LabsSettings />
         {:else if activeCategory === 'about'}

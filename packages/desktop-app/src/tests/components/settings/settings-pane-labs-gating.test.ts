@@ -1,7 +1,8 @@
 /**
- * settings-pane.svelte — routing guard for the Labs-gated AI Models and
- * Playbooks categories. A remembered/requested active category that is hidden
- * while its flag is off must fall back to Database.
+ * settings-pane.svelte — routing guard for the Labs-gated AI Models category.
+ * A remembered/requested active category that is hidden while its flag is off
+ * must fall back to Database. So must an id no category has: the Labs
+ * "Playbooks" flag gates the Plays navigation section, not a Settings page.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, cleanup, waitFor } from '@testing-library/svelte';
@@ -12,12 +13,6 @@ vi.mock('$lib/utils/logger', () => ({
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   open: vi.fn()
-}));
-
-vi.mock('$lib/services/methodology-service', () => ({
-  listMethodologies: vi.fn().mockResolvedValue([]),
-  installMethodology: vi.fn(),
-  summarizeReport: vi.fn()
 }));
 
 import SettingsPane from '$lib/components/settings/settings-pane.svelte';
@@ -31,36 +26,17 @@ function resetFlags() {
   settingsStore.initialCategory = null;
 }
 
-describe('SettingsPane — Labs routing guard for AI Models and Playbooks', () => {
+describe('SettingsPane — Labs routing guard', () => {
   beforeEach(resetFlags);
   afterEach(() => {
     cleanup();
     resetFlags();
   });
 
-  it('falls back to Database when opened on "playbooks" while the flag is off', async () => {
+  it('has no Playbooks page, whether the Playbooks flag is on or off', async () => {
+    labsFlags.playbooksEnabled = true;
     settingsStore.initialCategory = 'playbooks';
     const { getByText, queryByRole } = render(SettingsPane);
-
-    await waitFor(() => expect(getByText('Databases')).toBeTruthy());
-    expect(queryByRole('heading', { name: 'Playbooks' })).toBeNull();
-  });
-
-  it('renders the Playbooks page when the flag is on', async () => {
-    labsFlags.playbooksEnabled = true;
-    settingsStore.initialCategory = 'playbooks';
-    const { findByRole } = render(SettingsPane);
-
-    expect(await findByRole('heading', { name: 'Playbooks' })).toBeTruthy();
-  });
-
-  it('falls back to Database when the flag flips off while "playbooks" is active', async () => {
-    labsFlags.playbooksEnabled = true;
-    settingsStore.initialCategory = 'playbooks';
-    const { findByRole, getByText, queryByRole } = render(SettingsPane);
-    await findByRole('heading', { name: 'Playbooks' });
-
-    labsFlags.playbooksEnabled = false;
 
     await waitFor(() => expect(getByText('Databases')).toBeTruthy());
     expect(queryByRole('heading', { name: 'Playbooks' })).toBeNull();
@@ -82,5 +58,17 @@ describe('SettingsPane — Labs routing guard for AI Models and Playbooks', () =
     // The sidebar lists it and the Database page never renders.
     await waitFor(() => expect(getAllByText('AI Models').length).toBeGreaterThan(0));
     expect(queryByText('Databases')).toBeNull();
+  });
+
+  it('falls back to Database when AI Chat flips off while "ai-models" is active', async () => {
+    labsFlags.aiChatEnabled = true;
+    settingsStore.initialCategory = 'ai-models';
+    const { getByText, getAllByText, queryByText } = render(SettingsPane);
+    await waitFor(() => expect(getAllByText('AI Models').length).toBeGreaterThan(0));
+
+    labsFlags.aiChatEnabled = false;
+
+    await waitFor(() => expect(getByText('Databases')).toBeTruthy());
+    expect(queryByText('AI Models')).toBeNull();
   });
 });

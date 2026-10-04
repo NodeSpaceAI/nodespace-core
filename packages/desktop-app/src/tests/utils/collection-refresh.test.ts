@@ -6,6 +6,7 @@ const {
   mockLoadSchemas,
   mockLoadAiChats,
   mockLoadSavedQueries,
+  mockLoadPlays,
   mockCollectionsState
 } = vi.hoisted(() => {
   const mockLoadCollections = vi.fn().mockResolvedValue(undefined);
@@ -13,6 +14,7 @@ const {
   const mockLoadSchemas = vi.fn().mockResolvedValue(undefined);
   const mockLoadAiChats = vi.fn().mockResolvedValue(undefined);
   const mockLoadSavedQueries = vi.fn().mockResolvedValue(undefined);
+  const mockLoadPlays = vi.fn().mockResolvedValue(undefined);
 
   // Minimal rune-store-like mock: exposes a reactive-style `state` field.
   // `set` is a test helper to configure that field.
@@ -29,6 +31,7 @@ const {
     mockLoadSchemas,
     mockLoadAiChats,
     mockLoadSavedQueries,
+    mockLoadPlays,
     mockCollectionsState
   };
 });
@@ -50,6 +53,12 @@ vi.mock('$lib/stores/schemas.svelte', () => ({
 vi.mock('$lib/stores/saved-queries.svelte', () => ({
   savedQueriesData: {
     loadSavedQueries: (...args: unknown[]) => mockLoadSavedQueries(...args)
+  }
+}));
+
+vi.mock('$lib/stores/plays.svelte', () => ({
+  playsData: {
+    loadPlays: (...args: unknown[]) => mockLoadPlays(...args)
   }
 }));
 
@@ -76,7 +85,9 @@ import {
   scheduleAiChatRefresh,
   clearAiChatRefreshTimer,
   scheduleSavedQueryRefresh,
-  clearSavedQueryRefreshTimer
+  clearSavedQueryRefreshTimer,
+  schedulePlayRefresh,
+  clearPlayRefreshTimer
 } from '$lib/utils/collection-refresh';
 
 describe('Collection Refresh', () => {
@@ -251,6 +262,33 @@ describe('Collection Refresh', () => {
       await vi.advanceTimersByTimeAsync(300);
 
       expect(mockLoadSavedQueries).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('schedulePlayRefresh', () => {
+    afterEach(() => {
+      clearPlayRefreshTimer();
+    });
+
+    it('refreshes plays once after the debounce delay, coalescing bursts', async () => {
+      schedulePlayRefresh();
+      schedulePlayRefresh();
+      schedulePlayRefresh();
+
+      expect(mockLoadPlays).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(mockLoadPlays).toHaveBeenCalledTimes(1);
+    });
+
+    it('clearPlayRefreshTimer cancels a pending refresh', async () => {
+      schedulePlayRefresh();
+      clearPlayRefreshTimer();
+
+      await vi.advanceTimersByTimeAsync(300);
+
+      expect(mockLoadPlays).not.toHaveBeenCalled();
     });
   });
 

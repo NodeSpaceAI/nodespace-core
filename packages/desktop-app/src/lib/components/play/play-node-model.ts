@@ -12,6 +12,13 @@ import type {
   Selector,
   Trigger
 } from '$lib/types/generated';
+import type { Node } from '$lib/types/node';
+import { isA } from '$lib/types/core-node-types';
+
+/** `node` as the play it is, or `undefined` when it is missing or not a play. */
+export function asPlayNode(node: Node | undefined): PlayNode | undefined {
+  return node && isA(node.nodeType, 'play') ? (node as unknown as PlayNode) : undefined;
+}
 
 /** A play's state as its header shows it. */
 export type PlayState = 'on' | 'off' | 'suspended';
@@ -24,6 +31,11 @@ export type PlayState = 'on' | 'off' | 'suspended';
 export function playState(play: Pick<PlayNode, 'enabled' | 'suspendedAt'>): PlayState {
   if (!play.enabled) return 'off';
   return play.suspendedAt ? 'suspended' : 'on';
+}
+
+/** The name a play is shown by: its title, or a placeholder while it has none. */
+export function playTitle(play: Pick<PlayNode, 'title' | 'content'>): string {
+  return play.title || play.content || 'Untitled play';
 }
 
 /** The noun a selector's nodes are named by: `task`, `node the saved query selects`. */

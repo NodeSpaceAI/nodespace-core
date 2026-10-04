@@ -12,7 +12,7 @@ const LOCAL_STORAGE_KEY = 'nodespace-labs-flags';
  */
 export interface LabsFlags {
   aiChatEnabled: boolean;
-  /** Gates the Playbooks settings category only; installed playbooks keep running. */
+  /** Gates the Plays section of the navigation sidebar only; plays keep running. */
   playbooksEnabled: boolean;
 }
 
