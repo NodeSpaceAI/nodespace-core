@@ -93,6 +93,8 @@ const REACHABLE_WITHOUT_PIN: Record<string, string> = {
     "Reads the title of its viewer's own nodeId, same as the chat viewers that host it.",
   'lib/components/viewers/ai-chat-pty-session.svelte':
     "Reads the viewer's own nodeId, same as ai-chat-native-node-viewer.svelte.",
+  'lib/components/viewers/play-node-viewer.svelte':
+    "Reads the viewer's own nodeId — the open tab root.",
   'lib/services/navigation-service.ts':
     'Resolves a navigation target synchronously to open a tab with it — a one-time read, not a live display binding; once opened the node is a tab root.',
   'lib/components/query/list-view.svelte':
