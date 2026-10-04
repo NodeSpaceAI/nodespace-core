@@ -110,3 +110,82 @@ describe('NodeRelationshipsState', () => {
   // class: see the "fails open" cases in the task, person and generic
   // schema form tests.
 });
+
+describe('NodeRelationshipsState — modal count and scheduled reloads', () => {
+  beforeEach(() => loadNodeRelationshipsView.mockReset());
+
+  /** A promoted `one` group with an edge, and a `many` group with `parts` edges. */
+  function mixedView(parts: number): NodeRelationshipsView {
+    const related = (prefix: string, n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `${prefix}-${i}`,
+        nodeType: 'widget',
+        title: `${prefix} ${i}`,
+        contentPreview: '',
+        edgeProperties: {}
+      }));
+    const group = (name: string, cardinality: 'one' | 'many', n: number) => ({
+      relationshipName: name,
+      direction: 'out' as const,
+      targetType: 'widget',
+      reverseName: `${name}_of`,
+      sourceType: 'gadget',
+      cardinality,
+      farCardinality: 'many' as const,
+      required: null,
+      edgeFields: null,
+      description: null,
+      related: related(name, n),
+      count: n
+    });
+    return buildRelationshipsView({
+      nodeId: 'n1',
+      nodeType: 'gadget',
+      groups: [group('owner', 'one', 1), group('parts', 'many', parts)]
+    });
+  }
+
+  it('counts the related nodes the modal lists, leaving out promoted fields', async () => {
+    loadNodeRelationshipsView.mockResolvedValue(mixedView(3));
+    const state = new NodeRelationshipsState();
+    state.load('n1');
+    await settle();
+    flushSync();
+
+    expect(state.modalCount).toBe(3);
+  });
+
+  it('turns a burst of scheduled reloads into one fetch', async () => {
+    vi.useFakeTimers();
+    try {
+      loadNodeRelationshipsView.mockResolvedValue(mixedView(1));
+      const state = new NodeRelationshipsState();
+      state.load('n1');
+      expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(1);
+
+      for (let i = 0; i < 20; i++) state.scheduleReload();
+      expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(200);
+      expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never fetches for a scheduled reload that was cancelled', async () => {
+    vi.useFakeTimers();
+    try {
+      loadNodeRelationshipsView.mockResolvedValue(mixedView(1));
+      const state = new NodeRelationshipsState();
+      state.load('n1');
+
+      state.scheduleReload();
+      state.cancelScheduledReload();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

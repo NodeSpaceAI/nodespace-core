@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener';
 import { SharedNodeStore, sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
+import { onRelationshipChanged } from '$lib/services/relationship-changes';
 import type { Node } from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
@@ -599,6 +600,48 @@ describe('TauriSyncListener', () => {
 
       await vi.waitFor(() => expect(sharedNodeStore.hasNode('new-id')).toBe(true));
       expect(sharedNodeStore.hasNode('old-id')).toBe(false);
+    });
+  });
+
+  // A surface showing a node's typed relationships re-reads them when an edge
+  // touching its node changes. It compares against bare ids, so the `node:`
+  // prefix on the event's ends is stripped here.
+  describe('Relationship change notifications', () => {
+    let changes: Array<[string, string]>;
+    let unsubscribe: () => void;
+
+    beforeEach(async () => {
+      changes = [];
+      unsubscribe = onRelationshipChanged((fromId, toId) => changes.push([fromId, toId]));
+      await initializeTauriSyncListeners();
+    });
+
+    afterEach(() => unsubscribe());
+
+    function edge(relationshipType: string) {
+      return {
+        id: `relationship:a:b:${relationshipType}`,
+        fromId: 'node:a',
+        toId: 'node:b',
+        relationshipType
+      };
+    }
+
+    it('reports a created and a deleted typed edge by bare ids', () => {
+      emitTauriEvent('relationship:created', { ...edge('assigned_to'), properties: {} });
+      emitTauriEvent('relationship:deleted', edge('assigned_to'));
+
+      expect(changes).toEqual([
+        ['a', 'b'],
+        ['a', 'b']
+      ]);
+    });
+
+    it('does not report hierarchy edges', () => {
+      emitTauriEvent('relationship:created', { ...edge('has_child'), properties: { order: 1 } });
+      emitTauriEvent('relationship:deleted', edge('has_child'));
+
+      expect(changes).toEqual([]);
     });
   });
 

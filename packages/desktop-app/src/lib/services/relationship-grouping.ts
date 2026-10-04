@@ -460,6 +460,14 @@ export function hasModalContent(partitioned: PartitionedGroups): boolean {
   return partitioned.populated.length > 0 || partitioned.addable.length > 0;
 }
 
+/**
+ * How many related nodes the Relationships modal lists, across all its groups.
+ * Promoted groups are left out: their edges are form fields, not modal rows.
+ */
+export function modalRelationshipCount(partitioned: PartitionedGroups): number {
+  return partitioned.populated.reduce((total, group) => total + group.count, 0);
+}
+
 /** A group plus one of its rows, resolved together against the current view. */
 export interface ResolvedRow {
   group: RelationshipGroupView;

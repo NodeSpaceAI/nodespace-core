@@ -13,11 +13,19 @@ import { createLogger } from '$lib/utils/logger';
 import { loadNodeRelationshipsView } from './relationship-viewer-service';
 import {
   hasModalContent,
+  modalRelationshipCount,
   partitionGroups,
   type NodeRelationshipsView
 } from './relationship-grouping';
 
 const log = createLogger('NodeRelationshipsState');
+
+/**
+ * How long `scheduleReload` waits before it fetches. Edge events arrive one
+ * per edge, so a burst touching one node (an import, an agent linking many
+ * nodes, a reassignment's delete and create) becomes a single fetch.
+ */
+const RELOAD_COALESCE_MS = 100;
 
 export class NodeRelationshipsState {
   view = $state<NodeRelationshipsView | null>(null);
@@ -30,6 +38,11 @@ export class NodeRelationshipsState {
 
   readonly partitioned = $derived(partitionGroups(this.view?.groups ?? []));
   readonly showModalTrigger = $derived(this.loadFailed || hasModalContent(this.partitioned));
+  /**
+   * The number the modal's entry point shows. Zero after a failed load, even
+   * when an earlier view is still held: a count that may be stale is not shown.
+   */
+  readonly modalCount = $derived(this.loadFailed ? 0 : modalRelationshipCount(this.partitioned));
 
   // The node whose data `view` holds or is loading.
   #nodeId: string | null = null;
@@ -38,6 +51,7 @@ export class NodeRelationshipsState {
   // edit) can resolve out of order, and the older one must not overwrite the
   // newer.
   #generation = 0;
+  #reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Load a node's relationships. A call for the node already loaded is a
@@ -55,6 +69,22 @@ export class NodeRelationshipsState {
   /** Re-fetch the current node after a write, keeping the view until it lands. */
   async reload(): Promise<void> {
     if (this.#nodeId) await this.#fetch(this.#nodeId);
+  }
+
+  /** Reload once after a short wait, however many times this is called in it. */
+  scheduleReload(): void {
+    if (this.#reloadTimer !== null) return;
+    this.#reloadTimer = setTimeout(() => {
+      this.#reloadTimer = null;
+      void this.reload();
+    }, RELOAD_COALESCE_MS);
+  }
+
+  /** Drop a scheduled reload, when the owner stops listening. */
+  cancelScheduledReload(): void {
+    if (this.#reloadTimer === null) return;
+    clearTimeout(this.#reloadTimer);
+    this.#reloadTimer = null;
   }
 
   async #fetch(nodeId: string): Promise<void> {
