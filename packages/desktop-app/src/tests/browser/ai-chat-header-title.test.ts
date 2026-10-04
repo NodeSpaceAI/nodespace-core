@@ -44,11 +44,14 @@ const actions = createRawSnippet(() => ({
 }));
 
 /** Render the header in a fixed-width host, as a viewer pane would hold it. */
-function renderHeader(): HTMLElement {
+function renderHeader({ withActions = true } = {}): HTMLElement {
   const host = document.createElement('div');
   host.style.width = `${HEADER_WIDTH}px`;
   document.body.appendChild(host);
-  render(AiChatHeader, { target: host, props: { nodeId: CHAT_ID, actions } });
+  render(AiChatHeader, {
+    target: host,
+    props: withActions ? { nodeId: CHAT_ID, actions } : { nodeId: CHAT_ID }
+  });
   return host;
 }
 
@@ -89,6 +92,24 @@ describe('AiChatHeader — title layout (browser mode)', () => {
     const button = titleButton(host);
     expect(button.textContent?.trim()).toBe('Untitled');
     expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
+
+    // The left side takes the row's free space rather than shrinking to the
+    // title: everything but the header's padding, the gap and the actions.
+    const left = host.querySelector<HTMLElement>('.chat-viewer-header-left');
+    if (!left) throw new Error('Header left side not rendered');
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    expect(left.getBoundingClientRect().width).toBeCloseTo(
+      HEADER_WIDTH - ACTIONS_WIDTH - 2.75 * rem,
+      0
+    );
+  });
+
+  it('shows a short title in full when the header has no actions', () => {
+    seedChat('Untitled');
+    host = renderHeader({ withActions: false });
+
+    const button = titleButton(host);
+    expect(button.scrollWidth).toBeLessThanOrEqual(button.clientWidth);
   });
 
   it('truncates a long title only where it reaches the actions', () => {
@@ -112,7 +133,6 @@ describe('AiChatHeader — title layout (browser mode)', () => {
     // The text runs the full width of the left side, and the hover target
     // around it stops short of the actions.
     expect(textRight).toBeCloseTo(leftRect.right, 0);
-    expect(leftRect.width).toBeGreaterThan(HEADER_WIDTH - ACTIONS_WIDTH - 64);
     expect(button.getBoundingClientRect().right).toBeLessThanOrEqual(
       actionsEl.getBoundingClientRect().left
     );
