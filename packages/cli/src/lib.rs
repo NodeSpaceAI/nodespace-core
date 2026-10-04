@@ -188,7 +188,8 @@ pub enum Command {
     Uninstall(commands::uninstall::UninstallArgs),
     /// Install, remove, or check the NodeSpace skill for detected AI-agent
     /// harnesses (Claude Code, Codex, Antigravity CLI, OpenCode, Pi) -- the
-    /// CLI-only equivalent of the desktop app's first-launch skill installer.
+    /// CLI-only equivalent of the desktop app's first-launch skill
+    /// installer -- and fetch the graph's own skills for a task (`guidance`).
     Skill {
         #[command(subcommand)]
         action: commands::skill::SkillAction,
@@ -660,10 +661,10 @@ async fn dispatch(cli: Cli) -> Result<()> {
         // `install`/`uninstall`/`status` never touch the daemon -- they shell
         // out to the bundled/compiled skill installer directly. `guidance`
         // and `reset` are the two `skill` subcommands that do: `guidance`
-        // fetches procedural guidance from the graph via the same
-        // `NodeService.SearchNodes` RPC `search` uses, and `reset` calls the
-        // new `NodeService.ResetSeedNode` RPC -- both need a routed
-        // `NodeClient` here.
+        // fetches skills and schemas from the graph through
+        // `NodeService.GetSkillGuidance`, and `reset` calls
+        // `NodeService.ResetSeedNode` -- both need a routed `NodeClient`
+        // here.
         Command::Skill { action } => match action {
             commands::skill::SkillAction::Guidance(args) => {
                 let (interceptor, _) = resolve_routing(&sock, selection).await?;

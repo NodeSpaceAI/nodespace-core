@@ -3414,14 +3414,17 @@ pub async fn update_schema(
         .await;
 
     // The schema's embedding is built from its name, fields and description,
-    // so a change to any of them leaves it stale. Queued whether or not the
-    // group above committed: a Phase 1 rename is already persisted either
-    // way. The transaction runs in a caller-held boundary, which queues
-    // nothing itself (ADR-069 §5).
+    // so a change to any of them leaves it stale. A Phase 1 rename is
+    // persisted whether or not the group above committed, so it queues too.
+    // A call that changed nothing queues nothing: a stale embedding is out of
+    // the index until it is rebuilt. The transaction runs in a caller-held
+    // boundary, which queues nothing itself (ADR-069 §5).
     #[cfg(feature = "nlp")]
-    node_service
-        .queue_root_for_embedding(&params.schema_id)
-        .await;
+    if committed.is_ok() || fields_renamed > 0 {
+        node_service
+            .queue_root_for_embedding(&params.schema_id)
+            .await;
+    }
 
     committed.map_err(|e| match e {
         NodeServiceError::InvalidUpdate(_) => MarkdownError::invalid_params(e.to_string()),

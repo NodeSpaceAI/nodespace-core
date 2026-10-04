@@ -230,6 +230,42 @@ async fn changing_a_schemas_relationships_requeues_it() -> Result<()> {
     Ok(())
 }
 
+/// A rejected update changed nothing, so it queues nothing: a stale embedding
+/// is out of the index until it is rebuilt, and a call that failed must not
+/// take the schema out of search.
+#[tokio::test]
+async fn a_rejected_update_leaves_the_embedding_as_it_was() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let schema_id = create_invoice(&service).await?;
+    embed_fresh(&service, &schema_id).await?;
+
+    let rejected = handle_update_schema(
+        &service,
+        json!({
+            "schema_id": schema_id,
+            "add_relationships": [{
+                "name": "billed_to",
+                "targetType": "no_such_type",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "invoices",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await;
+
+    assert!(
+        rejected.is_err(),
+        "a relationship to a missing type is rejected"
+    );
+    assert!(
+        !is_queued(&service, &schema_id).await?,
+        "a rejected update re-queued the schema"
+    );
+    Ok(())
+}
+
 /// What a schema is embedded as: its name and its fields with their
 /// descriptions, so a request phrased in the user's words reaches a type
 /// whose name it never uses.

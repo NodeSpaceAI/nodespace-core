@@ -977,7 +977,7 @@ Uninstall NodeSpace: stop daemon, remove binaries and service registration
 
 ### `nodespace skill`
 
-Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (Claude Code, Codex, Antigravity CLI, OpenCode, Pi) -- the CLI-only equivalent of the desktop app's first-launch skill installer
+Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (Claude Code, Codex, Antigravity CLI, OpenCode, Pi) -- the CLI-only equivalent of the desktop app's first-launch skill installer -- and fetch the graph's own skills for a task (`guidance`)
 
 **`nodespace skill install`** — Detect AI-agent harnesses and install the NodeSpace skill into them. Safe to re-run: already-installed harnesses are left alone, and a harness installed since the last run is picked up
 
