@@ -152,6 +152,8 @@
     const _nodeIdsDep = nodeIds;
     void _nodeIdsDep;
     const currentBuckets = untrack(() => buckets);
+    // An open "Move to" menu belongs to the board that was on screen.
+    moveMenuFor = null;
     revealedIds.clear();
     for (const col of cols) {
       const ids = currentBuckets.get(col.value) ?? [];
@@ -365,8 +367,11 @@
     card?.querySelector<HTMLElement>('.kanban-card-title')?.focus();
   }
 
-  function openMoveMenu(node: Node): void {
-    if (moveTargets(node).length > 0) moveMenuFor = node.id;
+  /** Open a card's "Move to" menu; false when it has nowhere to move to. */
+  function openMoveMenu(node: Node): boolean {
+    if (moveTargets(node).length === 0) return false;
+    moveMenuFor = node.id;
+    return true;
   }
 
   /** Close the menu and hand focus back to its card. */
@@ -406,7 +411,7 @@
       e.key === 'ArrowDown'
         ? items[(at + 1) % items.length]
         : e.key === 'ArrowUp'
-          ? items[(at - 1 + items.length) % items.length]
+          ? items[(Math.max(at, 0) - 1 + items.length) % items.length]
           : e.key === 'Home'
             ? items[0]
             : e.key === 'End'
@@ -417,7 +422,12 @@
     next.focus();
   }
 
-  /** Focus leaving the menu (Tab, a click elsewhere) closes it. */
+  /**
+   * Focus leaving the menu (Tab, a click elsewhere) closes it. A press inside
+   * the menu must not move focus — the markup cancels `mousedown` — because
+   * not every engine focuses a clicked button, and a blur to nothing here
+   * would unmount the menu before the click lands.
+   */
   function onMenuFocusOut(e: FocusEvent): void {
     const menu = e.currentTarget as HTMLElement;
     if (e.relatedTarget instanceof globalThis.Node && menu.contains(e.relatedTarget)) return;
@@ -519,8 +529,8 @@
                   ondragstart={(e) => onDragStart(e, id)}
                   ondragend={onDragEnd}
                   oncontextmenu={(e) => {
-                    e.preventDefault();
-                    openMoveMenu(node);
+                    // The native menu stays when there is nothing to offer.
+                    if (openMoveMenu(node)) e.preventDefault();
                   }}
                 >
                   <button
@@ -528,7 +538,7 @@
                     onclick={() => onRowClick(id)}
                     onkeydown={(e) => onCardKeydown(e, node)}
                     aria-keyshortcuts="M"
-                    title={`Open ${title}`}
+                    title={`Open ${title} (M to move)`}
                   >
                     {title}
                   </button>
@@ -540,6 +550,7 @@
                       aria-label={`Move ${title} to`}
                       onkeydown={(e) => onMenuKeydown(e, id)}
                       onfocusout={onMenuFocusOut}
+                      onmousedown={(e) => e.preventDefault()}
                       use:focusFirstItem
                     >
                       {#each moveTargets(node) as target (target.value)}

@@ -127,6 +127,9 @@ describe('KanbanView — card', () => {
     });
 
     const card = container.querySelector('.kanban-card') as HTMLElement;
+    expect(getByRole('button', { name: 'Fix the bug' }).getAttribute('title')).toBe(
+      'Open Fix the bug (M to move)'
+    );
     expect(card.querySelector('select')).toBeNull();
     expect(card.querySelector('[role="menu"]')).toBeNull();
     expect(card.textContent?.trim()).toBe('Fix the bug');
@@ -189,6 +192,37 @@ describe('KanbanView — card', () => {
     await waitFor(() => expect(document.activeElement).toBe(card));
     expect(cardsIn(container, 'Open')).toEqual(['Fix the bug']);
     expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it('closes without a write when focus leaves the menu, and a press inside it keeps focus', async () => {
+    const updateSpy = vi.spyOn(backendAdapter, 'updateNode');
+    const { container, getByRole } = renderBoard([ticket('t1', 'open', 'Fix the bug')]);
+
+    await fireEvent.keyDown(getByRole('button', { name: 'Fix the bug' }), { key: 'm' });
+    const menu = getByRole('menu');
+
+    // A press on an item must not blur the focused one: fireEvent returns
+    // false when the handler cancelled the event.
+    expect(await fireEvent.mouseDown(getByRole('menuitem', { name: 'Blocked' }))).toBe(false);
+    expect(container.querySelector('[role="menu"]')).not.toBeNull();
+
+    // Focus moving between items keeps it open; focus leaving closes it.
+    await fireEvent.focusOut(getByRole('menuitem', { name: 'Closed' }), {
+      relatedTarget: getByRole('menuitem', { name: 'Blocked' })
+    });
+    expect(container.querySelector('[role="menu"]')).not.toBeNull();
+    await fireEvent.focusOut(menu, { relatedTarget: null });
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  it('ArrowUp from the menu itself goes to the last item', async () => {
+    const { getByRole } = renderBoard([ticket('t1', 'open', 'Fix the bug')]);
+    await fireEvent.keyDown(getByRole('button', { name: 'Fix the bug' }), { key: 'm' });
+    const menu = getByRole('menu');
+    menu.focus();
+    await fireEvent.keyDown(menu, { key: 'ArrowUp' });
+    expect(document.activeElement?.textContent?.trim()).toBe('Unassigned');
   });
 
   it('opens the same menu from the card context menu, and leaves shortcuts with a modifier alone', async () => {

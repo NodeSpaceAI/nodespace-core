@@ -346,6 +346,12 @@ mod tests {
                     let per_field = column_order.as_object().unwrap_or_else(|| {
                         panic!("{}: columnOrder must be keyed by field", view.view_id)
                     });
+                    let group_by = view.view_config["kanban"]["groupBy"].as_str();
+                    assert!(
+                        group_by.is_some_and(|field| per_field.contains_key(field)),
+                        "{}: columnOrder must order the groupBy field",
+                        view.view_id
+                    );
                     for (field, values) in per_field {
                         let all_strings = values
                             .as_array()

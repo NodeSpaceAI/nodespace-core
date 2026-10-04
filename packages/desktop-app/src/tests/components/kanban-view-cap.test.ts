@@ -2,8 +2,8 @@
  * KanbanView — per-column render cap.
  *
  * kanban-view.svelte buckets and rendered ALL matching nodes per column with
- * no bound, while List/Table paginate at PAGE_SIZE = 25. These tests cover the fix: each column renders
- * at most a batch of cards, with a "+N more" control that grows the *set* of
+ * no bound, while List/Table paginate at PAGE_SIZE = 25. These tests cover
+ * the fix: each column renders at most a batch of cards, with a "+N more" control that grows the *set* of
  * revealed cards (tracked by id, not position) — a card already on screen
  * can't disappear because a different card's bucket membership shifted
  * elsewhere in the result order, which a plain positional cutoff can't
