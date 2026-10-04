@@ -3,12 +3,17 @@
  *
  * The plays listed in the "Plays" section of the navigation sidebar, each with
  * the state its row shows (ADR-090). The section only lists and opens plays:
- * this store makes no writes.
+ * this store never changes one.
  *
- * Follows the `savedQueriesData` pattern: a `load*` method called from the
- * sidebar's `onMount`, refreshed by the debounced `schedulePlayRefresh` wired
- * to node domain events, reloaded after a daemon reconnect, and guarded by a
- * database-switch generation counter.
+ * It holds which plays are listed, not the plays: each row is read from
+ * `SharedNodeStore`, the same node the play's viewer shows and writes
+ * (ADR-049). So a switch flipped in the viewer shows on the row at once, and a
+ * node event that updates the play there updates the row with it.
+ *
+ * Follows the `savedQueriesData` pattern otherwise: a `load*` method called
+ * from the sidebar's `onMount`, refreshed by the debounced `schedulePlayRefresh`
+ * wired to node domain events, reloaded after a daemon reconnect, and guarded
+ * by a database-switch generation counter.
  */
 
 import { backendAdapter } from '$lib/services/backend-adapter';
@@ -20,6 +25,9 @@ import { playState, playTitle, type PlayState } from '$lib/components/play/play-
 import type { PlayNode } from '$lib/types';
 
 const log = createLogger('PlaysStore');
+
+/** The owner the listed plays are pinned under in `SharedNodeStore`. */
+const PIN_OWNER_ID = 'plays-navigation-section';
 
 export interface PlayListItem {
   id: string;
@@ -50,21 +58,15 @@ function toListItem(play: PlayNode): PlayListItem {
 }
 
 class PlaysStore {
-  /** The plays the last load returned. */
-  #loaded = $state<PlayNode[]>([]);
+  /** Ids of the plays the last load returned. */
+  #ids = $state<string[]>([]);
 
-  /**
-   * The listed plays, ordered by title. A play the node store also holds is
-   * read from there, so a switch flipped in its viewer shows on its row at
-   * once instead of after the next load.
-   */
+  /** The listed plays, ordered by title. A play deleted from the node store drops out at once. */
   plays = $derived.by(() =>
-    this.#loaded
-      .map((loaded) => {
-        const live = sharedNodeStore.getNode(loaded.id);
-        return toListItem(
-          live && isA(live.nodeType, 'play') ? (live as unknown as PlayNode) : loaded
-        );
+    this.#ids
+      .flatMap((id) => {
+        const node = sharedNodeStore.getNode(id);
+        return node && isA(node.nodeType, 'play') ? [toListItem(node as unknown as PlayNode)] : [];
       })
       .sort(comparePlays)
   );
@@ -72,9 +74,9 @@ class PlaysStore {
   /** See `SchemasStore.#generation`. */
   #generation = 0;
 
-  /** True when `nodeId` is a listed play (used to react to updates and deletes). */
+  /** True when `nodeId` is a listed play (used to react to its deletion). */
   has(nodeId: string): boolean {
-    return this.#loaded.some((play) => play.id === nodeId);
+    return this.#ids.includes(nodeId);
   }
 
   /**
@@ -90,22 +92,38 @@ class PlaysStore {
         log.debug('Discarding plays load that resolved after the store moved on');
         return;
       }
-      this.#loaded = nodes as unknown as PlayNode[];
+      for (const node of nodes) {
+        // A copy the node store already holds is the one a viewer writes and
+        // node events keep current, so only a newer version replaces it: a
+        // load must not put back what a switch just changed.
+        const stored = sharedNodeStore.getNode(node.id);
+        if (!stored || node.version > stored.version) {
+          sharedNodeStore.setNode(node, { type: 'database', reason: 'plays-list load' });
+        }
+      }
+      this.#ids = nodes.map((node) => node.id);
+      // The rows show these plays outside any open document, so the node store
+      // must keep them while they are listed.
+      sharedNodeStore.pinNodes(PIN_OWNER_ID, this.#ids);
       log.debug('Plays loaded', { count: nodes.length });
     } catch (err) {
       log.error('Failed to load plays', err);
     }
   }
 
-  /** Invalidate any load issued against a database this store no longer represents. */
+  /**
+   * Invalidate any load issued against a database this store no longer
+   * represents, and stop listing that database's plays.
+   */
   invalidateForDatabaseSwitch(): void {
     this.#generation++;
+    this.#ids = [];
+    sharedNodeStore.unpinAll(PIN_OWNER_ID);
   }
 
   /** Reset to empty (test use only). */
   reset(): void {
-    this.#generation++;
-    this.#loaded = [];
+    this.invalidateForDatabaseSwitch();
   }
 }
 

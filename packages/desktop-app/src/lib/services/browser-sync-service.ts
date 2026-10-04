@@ -277,12 +277,6 @@ class BrowserSyncService {
         if (savedQueriesData.has(event.nodeId)) {
           scheduleSavedQueryRefresh();
         }
-        // A listed play's row shows its title and state, and the update may
-        // have archived it. A play is rarely in the node store, so the fetch
-        // below would not catch this.
-        if (playsData.has(event.nodeId)) {
-          schedulePlayRefresh();
-        }
         // Only fetch if node is already in the store (visible to user)
         // This avoids unnecessary API calls for nodes not in the current view
         if (sharedNodeStore.hasNode(event.nodeId)) {
@@ -410,7 +404,9 @@ class BrowserSyncService {
         if (isA(normalizedNode.nodeType, 'query')) {
           scheduleSavedQueryRefresh();
         }
-        // Likewise a play that is not listed yet (one restored from the archive).
+        // Likewise a play: the update may have archived a listed one or
+        // restored one that is not listed. (Listed plays are always in the
+        // store, so their updates are always fetched.)
         if (isA(normalizedNode.nodeType, 'play')) {
           schedulePlayRefresh();
         }

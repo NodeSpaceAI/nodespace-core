@@ -620,22 +620,33 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       await vi.waitFor(() => expect(rows()).toEqual([['Task status', 'on']]), { timeout: 1000 });
     });
 
-    it('shows a listed play suspended when its nodeUpdated arrives, though no viewer holds it', async () => {
+    it('shows a listed play suspended when its nodeUpdated arrives, though no viewer has it open', async () => {
       await listed([playNode('p1', 'Task status')]);
-      expect(sharedNodeStore.hasNode('p1')).toBe(false);
-      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([
-        playNode('p1', 'Task status', {
-          version: 2,
-          suspendedAt: '2026-03-01T10:00:00.000Z',
-          suspendedMessage: 'Action 2 failed'
-        })
-      ]);
+      const suspended = playNode('p1', 'Task status', {
+        version: 2,
+        suspendedAt: '2026-03-01T10:00:00.000Z',
+        suspendedMessage: 'Action 2 failed'
+      });
+      registerMockNode(suspended);
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([suspended]);
 
       testableService.handleEvent({ type: 'nodeUpdated', nodeId: 'p1' });
 
       await vi.waitFor(() => expect(rows()).toEqual([['Task status', 'suspended']]), {
         timeout: 1000
       });
+    });
+
+    it('drops a listed play that a nodeUpdated archived', async () => {
+      await listed([playNode('p1', 'Task status'), playNode('p2', 'Weekly review')]);
+      registerMockNode(playNode('p1', 'Task status', { version: 2 }));
+      vi.spyOn(backendAdapterModule.backendAdapter, 'queryNodes').mockResolvedValue([
+        playNode('p2', 'Weekly review')
+      ]);
+
+      testableService.handleEvent({ type: 'nodeUpdated', nodeId: 'p1' });
+
+      await vi.waitFor(() => expect(rows()).toEqual([['Weekly review', 'on']]), { timeout: 1000 });
     });
 
     it('drops a listed play when its nodeDeleted event arrives', async () => {

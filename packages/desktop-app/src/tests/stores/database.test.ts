@@ -72,6 +72,15 @@ vi.mock('$lib/stores/ai-chats.svelte', () => ({
   }
 }));
 
+const loadPlays = vi.fn((..._a: unknown[]) => undefined);
+const playsInvalidateForDatabaseSwitch = vi.fn((..._a: unknown[]) => undefined);
+vi.mock('$lib/stores/plays.svelte', () => ({
+  playsData: {
+    loadPlays: (...a: unknown[]) => loadPlays(...a),
+    invalidateForDatabaseSwitch: (...a: unknown[]) => playsInvalidateForDatabaseSwitch(...a)
+  }
+}));
+
 const loadConflicts = vi.fn((..._a: unknown[]) => Promise.resolve(true));
 const conflictsInvalidateForDatabaseSwitch = vi.fn((..._a: unknown[]) => undefined);
 vi.mock('$lib/stores/conflicts.svelte', () => ({
@@ -514,6 +523,12 @@ describe('Database Store', () => {
       expect(invalidateForDatabaseSwitch).toHaveBeenCalledOnce();
       expect(invalidateForDatabaseSwitch.mock.invocationCallOrder[0]).toBeLessThan(
         loadAiChats.mock.invocationCallOrder[0]
+      );
+      // And for plays: the previous database's list is dropped before the reload.
+      expect(playsInvalidateForDatabaseSwitch).toHaveBeenCalledOnce();
+      expect(loadPlays).toHaveBeenCalledOnce();
+      expect(playsInvalidateForDatabaseSwitch.mock.invocationCallOrder[0]).toBeLessThan(
+        loadPlays.mock.invocationCallOrder[0]
       );
       // Same discipline for schemas — an in-flight loadSchemas must
       // be invalidated before the reload, so its result can't land in the

@@ -1,9 +1,9 @@
 /**
  * Plays store — the list behind the "Plays" navigation section.
  *
- * `loadPlays` fetches every participating play and the store derives each
- * row's title and state. A play the node store also holds is read from there,
- * so a switch flipped in its viewer shows without a reload.
+ * `loadPlays` fetches every participating play into the node store and the
+ * store derives each row's title and state from the node held there, so a
+ * switch flipped in the play's viewer shows without a reload.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -43,6 +43,7 @@ function makePlay(id: string, content: string, fields: Record<string, unknown> =
 describe('playsData', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sharedNodeStore.clearAll();
     playsData.reset();
   });
 
@@ -112,7 +113,7 @@ describe('playsData', () => {
     expect(playsData.plays[0].title).toBe('Untitled play');
   });
 
-  it('reads a listed play from the node store when it is there', async () => {
+  it('reads each listed play from the node store, so a change there shows without a reload', async () => {
     mockQueryNodes.mockResolvedValue([makePlay('p', 'Play')]);
     await playsData.loadPlays();
     expect(playsData.plays[0].state).toBe('on');
@@ -127,6 +128,54 @@ describe('playsData', () => {
       { id: 'p', nodeType: 'play', title: 'Play renamed', state: 'off', suspendedMessage: undefined }
     ]);
     expect(mockQueryNodes).toHaveBeenCalledTimes(1);
+  });
+
+  it('a load does not put back what the node store already holds at that version', async () => {
+    // The viewer switched the play off; the write has not come back yet, so
+    // the stored node still carries the version the backend returns.
+    sharedNodeStore.setNode(makePlay('p', 'Play', { enabled: false }), {
+      type: 'database',
+      reason: 'test'
+    });
+    mockQueryNodes.mockResolvedValue([makePlay('p', 'Play', { enabled: true })]);
+
+    await playsData.loadPlays();
+
+    expect(playsData.plays[0].state).toBe('off');
+  });
+
+  it('a load replaces a stored play with a newer version', async () => {
+    sharedNodeStore.setNode(makePlay('p', 'Play'), { type: 'database', reason: 'test' });
+    mockQueryNodes.mockResolvedValue([makePlay('p', 'Play', { enabled: false, version: 2 })]);
+
+    await playsData.loadPlays();
+
+    expect(playsData.plays[0].state).toBe('off');
+  });
+
+  it('pins the listed plays in the node store, and releases them when it stops listing them', async () => {
+    const pinNodes = vi.spyOn(sharedNodeStore, 'pinNodes');
+    const unpinAll = vi.spyOn(sharedNodeStore, 'unpinAll');
+    mockQueryNodes.mockResolvedValue([makePlay('p', 'Play'), makePlay('q', 'Other')]);
+
+    await playsData.loadPlays();
+    expect(pinNodes).toHaveBeenLastCalledWith('plays-navigation-section', ['p', 'q']);
+
+    playsData.invalidateForDatabaseSwitch();
+    expect(unpinAll).toHaveBeenCalledWith('plays-navigation-section');
+    expect(playsData.plays).toEqual([]);
+
+    pinNodes.mockRestore();
+    unpinAll.mockRestore();
+  });
+
+  it('drops a play deleted from the node store at once', async () => {
+    mockQueryNodes.mockResolvedValue([makePlay('p', 'Play'), makePlay('q', 'Other')]);
+    await playsData.loadPlays();
+
+    sharedNodeStore.deleteNode('p', { type: 'database', reason: 'test' }, true);
+
+    expect(playsData.plays.map((p) => p.id)).toEqual(['q']);
   });
 
   it('knows which plays are listed', async () => {
