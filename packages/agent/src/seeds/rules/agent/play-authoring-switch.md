@@ -1,0 +1,1 @@
+to turn a play off, call update_play with its id and `enabled` false. To turn it on, call update_play with `enabled` true, which also clears a suspension. Leave `rules` out of either call.

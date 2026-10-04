@@ -1,0 +1,1 @@
+FIND THE PLAY: if you don't already have the Play's id, run `nodespace playbook list`, which prints every Play with its id and state.

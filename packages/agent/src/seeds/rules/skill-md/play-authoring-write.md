@@ -1,0 +1,1 @@
+run `nodespace node update <play-id> --property 'rules=[...]'` with every rule the Play should have afterwards: the changed rule, and every other rule copied exactly from what you read. A rule left out is deleted.

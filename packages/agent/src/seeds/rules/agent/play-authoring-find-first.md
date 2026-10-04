@@ -1,0 +1,1 @@
+FIND THE PLAY: if you don't already have the play's id, call search_nodes with node_type "play" and the play's name, then call get_play with the id it returns.

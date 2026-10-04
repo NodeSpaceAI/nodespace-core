@@ -1,0 +1,1 @@
+run `nodespace playbook disable <play-id>` to turn a Play off, and `nodespace playbook enable <play-id>` to turn it on, which also clears a suspension. Neither touches the rules.

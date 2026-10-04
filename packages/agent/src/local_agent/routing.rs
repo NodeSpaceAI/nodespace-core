@@ -2677,9 +2677,10 @@ mod tests {
     /// Measured 2026-07-31 for the duplication question in #1848: **4 copies
     /// per prompt** (3 routing + 1 workspace context), costing ~141 redundant
     /// tokens on a 2-schema workspace and scaling with schema count. The copies
-    /// are identical rather than differently scoped, because no built-in
-    /// skill links to a schema: a row of `skill_pipeline::SKILL_SEEDS` has no
-    /// `applies_to`, so every built-in candidate takes the same fallback.
+    /// are identical rather than differently scoped, because the built-in
+    /// skills that write records link to no schema: their rows of
+    /// `skill_pipeline::SKILL_SEEDS` have an empty `applies_to`, so each takes
+    /// the same fallback.
     ///
     /// The assertion here is the invariant behind that measurement — one copy
     /// per eligible candidate — not the token figure, which is a dated finding

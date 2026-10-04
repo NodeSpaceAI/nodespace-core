@@ -1,0 +1,348 @@
+REFERENCE — procedures relevant to this request. Use whichever applies and IGNORE the rest. Do not describe, quote, or summarise any of it. Your reply must be the tool call itself. If none applies, answer the user normally.
+
+--- Candidate 1: Play Authoring
+Purpose: Change a Play automation: edit when a rule runs, its conditions, or its actions, add or remove a rule, or turn the Play on or off. Use when the user wants an automation, rule, or workflow to behave differently or to stop running.
+
+This skill changes a Play: an automation made of rules, where each rule has a trigger (when it runs), conditions (what must hold) and actions (what it does). Use it to change what a rule does or when it runs, to add or remove a rule, or to turn the Play on or off.
+
+FIND THE PLAY: if you don't already have the play's id, call search_nodes with node_type "play" and the play's name, then call get_play with the id it returns.
+
+READ THE PLAY FIRST: call get_play with the play's id before anything else. It returns the rules exactly as they are stored, each with its description, whether the play is switched on, and why the engine suspended it if it did.
+
+CHECK EVERY NAME AGAINST THE SCHEMAS: a condition or a binding walks from the triggering node through relationships to a field, and every name on that walk must be one the types declare. The `schemas` in get_play's result list the fields and relationships of every type the rules reference: use those names exactly.
+
+PLAY RULE DESCRIPTIONS: A play's rule, each of its conditions and each of its actions carry a required `description`: one plain sentence saying what that part means, written in the same write as the part. A condition is an object with `expr` and `description`, never a bare expression. An action carries `description` beside `action_type`, `params` and `for_each`. The trigger takes no description. A missing or blank description is rejected. Example: `{"name": "complete parent", "description": "Mark a task done once all its sub-tasks are done", "trigger": {"type": "graph_event", "on": "property_changed", "select": {"target_type": "task"}, "property_key": "task.status"}, "conditions": [{"expr": "node.child_of.has_child.all(c, c.status == 'done')", "description": "Every sub-task of the parent is done"}], "actions": [{"action_type": "update_node", "description": "Mark the parent task done", "params": {"node_id": "{trigger.node.child_of.id}", "properties": {"status": "done"}}}]}`.
+
+SAY WHAT WILL CHANGE, THEN ASK: before changing a Play's rules, tell the user in one or two plain sentences what the Play will do differently, and write only after they agree. Ask by calling route_clarify, with the change as the `question` and `options` empty. Turning a Play on or off needs no question: the request already says exactly what to do.
+
+WRITE THE WHOLE RULE LIST: call update_play with the play's id and `rules` holding every rule the play should have afterwards: the changed rule, and every other rule copied exactly from get_play. A rule left out is deleted.
+
+STALE PLAY DESCRIPTIONS: When you change part of a play's rules, rewrite that part's `description` in the same write. A changed condition `expr`, a changed action (`action_type`, `params` or `for_each`), or a changed rule `trigger` or `class` that keeps its stored description is rejected. A rule is matched to the stored rule with the same `name`, and its conditions and actions by position; a renamed rule is a new rule. The error names the rule, the part and its number, e.g. "rule `complete parent`, condition 2: its expression changed and its description didn't". Rewrite that description and send the write again with the corrected payload.
+
+REPAIR A REJECTED WRITE: a write that is refused changes nothing and says why, naming the rule and the part of it (trigger, condition or action) in one of two ways. By the rule's name and the part's number counted from one: "rule `complete parent`, condition 2" is the second condition. Or by position counted from zero: "rule[0].condition[1]" is the second condition of the first rule. Fix exactly what each problem names and write again. Don't tell the user the change is made until a write has succeeded.
+
+ON AND OFF: to turn a play off, call update_play with its id and `enabled` false. To turn it on, call update_play with `enabled` true, which also clears a suspension. Leave `rules` out of either call.
+
+EXISTING SCHEMAS (do not recreate these; do not copy their fields onto a new type):
+- play "Play" -> rules: array; description: text; enabled: boolean; suspended_reason: enum {validation_failed, action_failed, cycle_limit, schema_drift}; suspended_message: text; suspended_at: datetime
+
+
+TOOLS:
+### search_nodes
+description: Find, list, and filter nodes by title, type, or stored field value. Returns each node's id and fields. Use when the node you need is not already identified in this conversation — re-searching for a record already returned earlier wastes a turn. This is the single tool for querying the graph by title, type, and/or typed properties — use it for all three of: (1) title/keyword lookup (query='auth'); (2) listing every node of a type (query='' or query='*', node_type='ticket' — both enumerate all of that type; do not expect '*' to do a wildcard substring match, it means "no keyword filter" just like ''); (3) filtering by typed properties with operators (status='in_dev', a date field before a given date) — pass 'filters' for these. Combine as needed (e.g. node_type + a property filter). To answer which types or schemas exist, call this with node_type='schema': it returns every type, built-in and custom. The EXISTING SCHEMAS block is not that list — it holds only the custom types related to the current message. A count of 0 means nothing in the workspace matches — it does not mean the query was wrong. When a type-scoped search returns no matches, the result carries 'filterable_properties' — the fields that type actually defines, with allowed values where they are constrained. Use it to check the filter you sent: retry with a listed field or value if yours was not among them, otherwise the result is genuinely empty. Never ask the user to confirm a field name or value that appears in that list. Dates use YYYY-MM-DD. Prefer this over search_semantic when you know the name/type or want structured results; use search_semantic only for meaning-based / fuzzy questions. A name shown after '~>' in an EXISTING SCHEMAS line is a relationship, not a filterable property — 'filters' only accepts a type's own fields (before '~>'). To find a node connected via a relationship (e.g. 'the contract a given vendor signed'), use get_related_nodes with that relationship's name, not a filter here.
+parameters_schema:
+{
+  "properties": {
+    "filters": {
+      "description": "Optional typed-property filters. Use for status/due_date/amount and any custom schema field, with operators. Omit for plain title/type listing.",
+      "items": {
+        "properties": {
+          "case_sensitive": {
+            "description": "For 'contains' operator: case sensitivity (default: true)",
+            "type": "boolean"
+          },
+          "node_id": {
+            "description": "For 'relationship' filters: the node the path must reach. {\"path\": [\"child_of\"], \"node_id\": X} selects the children of X.",
+            "type": "string"
+          },
+          "operator": {
+            "description": "Comparison operator",
+            "enum": [
+              "equals",
+              "contains",
+              "gt",
+              "lt",
+              "gte",
+              "lte",
+              "in",
+              "exists"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "For 'relationship' filters: the relationship names to follow from each node, in order. [\"child_of\"] is the node's parent, [\"has_child\"] its children, [\"mentions\"] the nodes it mentions, [\"mentioned_by\"] the nodes that mention it. A schema-declared relationship or its reverseName works too, e.g. [\"project\"].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "property": {
+            "description": "Property key. Example: {\"type\": \"property\", \"property\": \"status\", \"operator\": \"equals\", \"value\": \"open\"} — status is a property filter, not metadata.",
+            "type": "string"
+          },
+          "type": {
+            "description": "Filter category: 'property' for ANY schema/node field (status, due_date, priority, and all custom schema fields) — use this for status. 'content' for node text. 'metadata' ONLY for the 4 built-in fields created_at, modified_at, node_type, content — NEVER use 'metadata' for status or any schema field, it will fail with 'Invalid metadata field'. 'relationship' for graph edges.",
+            "enum": [
+              "property",
+              "content",
+              "metadata",
+              "relationship"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "description": "Value to compare against — NOT a way to request a field. Filters only narrow WHICH nodes are returned; every matching node comes back with all of its properties, so never filter just to read a property. Use string for dates (YYYY-MM-DD), string/number for others, array for 'in'. Never null: to ask whether a property is set at all, use the 'exists' operator and omit this.",
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "type",
+          "operator"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "limit": {
+      "description": "Max results to return (default 50)",
+      "type": "integer"
+    },
+    "node_type": {
+      "description": "Filter to one type: one of these type ids, copied exactly. No other type applies to this request. Omit to search all types.",
+      "enum": [
+        "play"
+      ],
+      "type": "string"
+    },
+    "query": {
+      "description": "Keyword or phrase to match against node titles (substring match). Pass empty string or '*' to skip the title filter and enumerate all matching nodes (e.g. to list all nodes of a type).",
+      "type": "string"
+    },
+    "sorting": {
+      "description": "Optional sort configuration, applied in order.",
+      "items": {
+        "properties": {
+          "direction": {
+            "description": "Sort direction (default: asc)",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "type": "string"
+          },
+          "field": {
+            "description": "Field to sort by (e.g. 'due_date', 'created_at', 'status')",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [],
+  "type": "object"
+}
+
+### route_clarify
+description: Ask the user one specific clarifying question when a request can't be completed as understood — e.g. a search returned more than one plausible match and nothing already said picks one, the request's wording could mean more than one thing, or none of the available tools can do what was asked. Any question for the user goes through this tool — never ask one in a plain reply. Ends the turn with the question; do not call another tool in the same turn.
+parameters_schema:
+{
+  "properties": {
+    "options": {
+      "description": "The concrete records the request could mean, one entry each. Empty when the question is not a choice between records.",
+      "items": {
+        "properties": {
+          "id": {
+            "description": "The candidate's id, copied exactly from a prior tool result.",
+            "type": "string"
+          },
+          "label": {
+            "description": "How to describe this candidate to the user.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "question": {
+      "description": "The question to put to the user, one sentence.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "question",
+    "options"
+  ],
+  "type": "object"
+}
+
+### get_play
+description: Read a Play automation: its rules with their descriptions, whether it is switched on, and any suspension the engine recorded, together with the fields and relationships of every type its rules reference. Rules that no longer decode come back as stored, under `stored_rules`, with `decode_error` saying what is wrong. Read-only.
+parameters_schema:
+{
+  "properties": {
+    "id": {
+      "description": "ID of the play to read",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+}
+
+### update_play
+description: Change a Play automation: replace its rules, set its one-line description, or switch it on or off. Returns the updated play, or the problems that stopped the write, each naming the rule and the part of it to fix.
+parameters_schema:
+{
+  "properties": {
+    "description": {
+      "description": "What the play automates, in one line.",
+      "type": "string"
+    },
+    "enabled": {
+      "description": "The play's switch: false turns it off, true turns it on.",
+      "type": "boolean"
+    },
+    "id": {
+      "description": "ID of the play to change",
+      "type": "string"
+    },
+    "rules": {
+      "description": "The play's whole rule list after the change. It replaces the stored list, so include every rule the play keeps, copied exactly from get_play. Omit to leave the rules as they are.",
+      "items": {
+        "properties": {
+          "actions": {
+            "description": "What the rule does, in order.",
+            "items": {
+              "properties": {
+                "action_type": {
+                  "enum": [
+                    "create_node",
+                    "update_node",
+                    "add_relationship",
+                    "remove_relationship",
+                    "reject"
+                  ],
+                  "type": "string"
+                },
+                "description": {
+                  "description": "What the action does, in one plain sentence.",
+                  "type": "string"
+                },
+                "for_each": {
+                  "description": "Run the action once per node a path reaches, e.g. trigger.node.has_child, with each bound as `item`.",
+                  "type": "string"
+                },
+                "params": {
+                  "description": "create_node: node_type, content, properties. update_node: node_id, content, properties, node_type (to retype). add_relationship: source_id, relationship_type, target_id, edge_data. remove_relationship: source_id, relationship_type, target_id. reject (invariant rules only): message. A string may bind a value in braces, e.g. {trigger.node.id}.",
+                  "type": "object"
+                }
+              },
+              "required": [
+                "action_type",
+                "description",
+                "params"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "class": {
+            "description": "reactive (the default) runs after the triggering write. invariant runs inside it and can reject it.",
+            "enum": [
+              "reactive",
+              "invariant"
+            ],
+            "type": "string"
+          },
+          "conditions": {
+            "description": "What must hold for the actions to run. Every condition must pass.",
+            "items": {
+              "properties": {
+                "description": {
+                  "description": "What must hold, in one plain sentence.",
+                  "type": "string"
+                },
+                "expr": {
+                  "description": "A CEL expression over the triggering node as `node`, e.g. node.status == 'done'.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expr",
+                "description"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "description": {
+            "description": "What the rule does, in one plain sentence.",
+            "type": "string"
+          },
+          "name": {
+            "description": "Identifies the rule within the play. Keep it when changing a rule: a new name is a new rule.",
+            "type": "string"
+          },
+          "trigger": {
+            "description": "What makes the rule run. It takes no description.",
+            "properties": {
+              "cron": {
+                "description": "scheduled only: when to run, as six cron fields starting with seconds, e.g. 0 0 9 * * * for 09:00 every day.",
+                "type": "string"
+              },
+              "on": {
+                "description": "graph_event only: the change that fires the rule.",
+                "enum": [
+                  "node_created",
+                  "property_changed",
+                  "relationship_added",
+                  "relationship_removed"
+                ],
+                "type": "string"
+              },
+              "property_key": {
+                "description": "property_changed only: the one property to watch, as <type>.<field>, e.g. task.status. Omit to fire on any property change.",
+                "type": "string"
+              },
+              "select": {
+                "description": "Which nodes the rule applies to: {\"target_type\": \"<type id>\"}, or for a scheduled trigger {\"query_id\": \"<saved query id>\"}.",
+                "type": "object"
+              },
+              "type": {
+                "enum": [
+                  "graph_event",
+                  "scheduled"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "select"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "trigger"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+}
+

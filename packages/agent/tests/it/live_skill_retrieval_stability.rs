@@ -1345,3 +1345,106 @@ async fn adds_to_an_existing_list_keep_a_skill_that_can_create() {
          reached the top-{RETRIEVAL_TOP_K}, for {misses:?}"
     );
 }
+
+/// A request to change an automation, or to switch it, must reach Play
+/// Authoring: `update_play` is whitelisted by that skill alone, so a turn it
+/// misses cannot write the play at all.
+///
+/// Covers the user's own words and the capability phrasings Stage 1 produces
+/// for them, including requests worded with "fire" and "run": the verbs a
+/// question about why a rule has not fired uses too, and so the ones the
+/// skill's exclusion must not cost it. The closest is "stop that rule firing
+/// for low priority tasks", 0.868 to Play Workflow State's 0.860.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn play_change_requests_route_play_authoring() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "change the roll-up play so it also runs when a task is cancelled",
+            "make that rule fire only for high priority tasks",
+            "stop that rule firing for low priority tasks",
+            "make the rule not run on weekends",
+            "have the play run when a story is closed too",
+            "add a rule to the sprint close-out play",
+            "remove the second rule from this automation",
+            "edit the conditions of an automation rule",
+            "turn this play off",
+            "disable the weekly triage automation",
+            "switch the play back on",
+        ],
+        "Play Authoring",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Play Authoring lost rank 1 for {misses:?}"
+    );
+
+    // Once linked as the daemon links it, retrieval hands the skill the
+    // `play` schema as a linked set, which is what holds its turn to plays.
+    nodespace_agent::skill_pipeline::link_seeded_skills(&node_service)
+        .await
+        .expect("the seeded skills link");
+    let output = find_skills(
+        &embedding_service,
+        &node_service,
+        FindSkillsInput {
+            query: "turn this play off".to_string(),
+            limit: Some(RETRIEVAL_TOP_K),
+        },
+    )
+    .await
+    .expect("find_skills must succeed");
+    let authoring = output
+        .skills
+        .iter()
+        .find(|s| s.get("name").and_then(|v| v.as_str()) == Some("Play Authoring"))
+        .expect("Play Authoring is retrieved");
+    assert_eq!(authoring["schemas_linked"], true, "{authoring}");
+    let types: Vec<&str> = authoring["schema_metadata"]
+        .as_array()
+        .expect("schema metadata")
+        .iter()
+        .filter_map(|s| s["type_id"].as_str())
+        .collect();
+    assert_eq!(types, ["play"]);
+}
+
+/// Control for the case above. The two play skills share every noun (play,
+/// rule, automation, workflow), and a question about why a rule has not fired
+/// is Play Workflow State's: it must lead, so a question that asks for no
+/// change is not answered with a write skill first.
+///
+/// Play Authoring's `exclusion` is what holds this. Without it "why didn't the
+/// play trigger for that story?" led with Play Authoring, 0.887 to 0.863; with
+/// it Play Workflow State leads, 0.863 to 0.846.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn control_why_a_rule_has_not_fired_still_routes_play_workflow_state() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &[
+            "why hasn't the sprint close-out rule fired for this ticket?",
+            "what is still missing before the automation runs on this task?",
+            "why didn't the play trigger for that story?",
+            "check which conditions of the workflow are unmet for this node",
+        ],
+        "Play Workflow State",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Play Workflow State lost rank 1 for {misses:?}"
+    );
+}

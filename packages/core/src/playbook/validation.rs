@@ -3151,7 +3151,7 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vt_cron_field_count", 1, json!([])).await;
 
-            // Standard 5-field cron (no seconds/year) — this engine requires 7 fields
+            // Standard 5-field cron (no seconds) — this engine requires at least 6 fields
             let rules = vec![make_scheduled_rule(
                 "* * * * *",
                 "vt_cron_field_count",

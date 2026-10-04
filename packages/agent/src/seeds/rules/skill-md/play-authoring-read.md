@@ -1,0 +1,1 @@
+run `nodespace node get <play-id>` before anything else. It prints the rules exactly as they are stored, each with its description, whether the Play is switched on (`enabled`), and why the engine suspended it if it did.

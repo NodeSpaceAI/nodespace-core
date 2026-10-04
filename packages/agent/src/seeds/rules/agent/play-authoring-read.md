@@ -1,0 +1,1 @@
+call get_play with the play's id before anything else. It returns the rules exactly as they are stored, each with its description, whether the play is switched on, and why the engine suspended it if it did.

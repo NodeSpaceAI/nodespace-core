@@ -238,6 +238,13 @@ struct GetWorkflowStateParams {
     pub node_id: String,
 }
 
+/// Parameters for the get_play tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GetPlayParams {
+    pub id: String,
+}
+
 /// Parameters for the dismiss_conflict tool
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -619,6 +626,55 @@ fn ok_result(tool_call_id: &str, name: &str, data: Value) -> ToolResult {
     }
 }
 
+/// A play as the play tools report it, beside the fields it was built from:
+/// its rules in the shape `update_play` takes, its switch, and the engine's
+/// suspension when there is one.
+///
+/// A play whose stored fields do not all decode is one the engine suspends,
+/// and the one an agent is most likely asked to repair. It is reported with
+/// the fields that do decode and `decode_error` saying what is wrong. Rules
+/// that do not decode are handed over as stored, under `stored_rules`, and
+/// never as an empty `rules`: that would say the play has none, and a write
+/// built on it would delete them.
+fn play_value(node: &nodespace_core::models::Node) -> (nodespace_core::models::PlayFields, Value) {
+    use nodespace_core::models::PlayFields;
+    let (fields, decode_error) = match PlayFields::from_properties(&node.properties) {
+        Ok(fields) => (fields, None),
+        Err(e) => (
+            PlayFields::readable_from_properties(&node.properties),
+            Some(e.to_string()),
+        ),
+    };
+    let mut play = json!({
+        "id": node_uri(&node.id),
+        "title": node.content,
+        "enabled": fields.enabled,
+    });
+    let stored_rules =
+        PlayFields::stored_field(&node.properties, nodespace_core::models::PLAY_RULES_FIELD);
+    match stored_rules {
+        // The readable fields hold no rule the store does: they did not decode.
+        Some(stored) if decode_error.is_some() && fields.rules.is_empty() => {
+            play["stored_rules"] = stored.clone();
+        }
+        _ => play["rules"] = json!(fields.rules),
+    }
+    if let Some(description) = &fields.description {
+        play["description"] = json!(description);
+    }
+    if let Some(at) = &fields.suspended_at {
+        play["suspended"] = json!({
+            "reason": fields.suspended_reason,
+            "message": fields.suspended_message,
+            "at": at,
+        });
+    }
+    if let Some(error) = decode_error {
+        play["decode_error"] = json!(error);
+    }
+    (fields, play)
+}
+
 /// Prefix a bare node ID with `nodespace://` so the model sees the URI format
 /// it should use when referencing nodes in responses.
 pub(crate) fn node_uri(id: &str) -> String {
@@ -946,8 +1002,8 @@ fn def_search_nodes() -> ToolDefinition {
 ///
 /// Not a limitation of the resolver — a consequence of its required
 /// `node_type` parameter, whose description sends the model to the `EXISTING
-/// SCHEMAS` block. No built-in skill links to a schema, so on a turn routed
-/// to built-ins every path that fills that block drops `is_core` schemas
+/// SCHEMAS` block. No built-in skill that whitelists it links to a schema, so on
+/// a turn routed to built-ins every path that fills that block drops `is_core` schemas
 /// (`skill_ops`'s unlinked non-core fallback and
 /// `context_ops::non_core_schema_hits`): for a bare-value update
 /// against `task`/`text` the block never names the type, and
@@ -2082,6 +2138,157 @@ fn def_get_workflow_state() -> ToolDefinition {
     }
 }
 
+fn def_get_play() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_play".into(),
+        description: "Read a Play automation: its rules with their descriptions, whether it is \
+            switched on, and any suspension the engine recorded, together with the fields and \
+            relationships of every type its rules reference. Rules that no longer decode come back \
+            as stored, under `stored_rules`, with `decode_error` saying what is wrong. Read-only."
+            .into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "ID of the play to read"
+                }
+            },
+            "required": ["id"]
+        }),
+    }
+}
+
+/// `update_play`'s parameter schema is where the rule shape is stated
+/// (ADR-064 rule 1): the model reads it right before the call, and the
+/// play-authoring skill's guidance does not restate it.
+///
+/// The shape is the one `nodespace_types::play` decodes. `rules` is replaced
+/// whole, so its description says to send every rule; the suspension fields
+/// and the lifecycle are not parameters, and the handler refuses them.
+fn def_update_play() -> ToolDefinition {
+    ToolDefinition {
+        name: "update_play".into(),
+        description: "Change a Play automation: replace its rules, set its one-line description, \
+            or switch it on or off. Returns the updated play, or the problems that stopped the \
+            write, each naming the rule and the part of it to fix."
+            .into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "ID of the play to change"
+                },
+                "rules": {
+                    "type": "array",
+                    "description": "The play's whole rule list after the change. It replaces the stored list, so include every rule the play keeps, copied exactly from get_play. Omit to leave the rules as they are.",
+                    "items": {
+                        "type": "object",
+                        "required": ["name", "description", "trigger"],
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Identifies the rule within the play. Keep it when changing a rule: a new name is a new rule."
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "What the rule does, in one plain sentence."
+                            },
+                            "class": {
+                                "type": "string",
+                                "enum": ["reactive", "invariant"],
+                                "description": "reactive (the default) runs after the triggering write. invariant runs inside it and can reject it."
+                            },
+                            "trigger": {
+                                "type": "object",
+                                "description": "What makes the rule run. It takes no description.",
+                                "required": ["type", "select"],
+                                "properties": {
+                                    "type": {
+                                        "type": "string",
+                                        "enum": ["graph_event", "scheduled"]
+                                    },
+                                    "on": {
+                                        "type": "string",
+                                        "enum": ["node_created", "property_changed", "relationship_added", "relationship_removed"],
+                                        "description": "graph_event only: the change that fires the rule."
+                                    },
+                                    "select": {
+                                        "type": "object",
+                                        "description": "Which nodes the rule applies to: {\"target_type\": \"<type id>\"}, or for a scheduled trigger {\"query_id\": \"<saved query id>\"}."
+                                    },
+                                    "property_key": {
+                                        "type": "string",
+                                        "description": "property_changed only: the one property to watch, as <type>.<field>, e.g. task.status. Omit to fire on any property change."
+                                    },
+                                    "cron": {
+                                        "type": "string",
+                                        "description": "scheduled only: when to run, as six cron fields starting with seconds, e.g. 0 0 9 * * * for 09:00 every day."
+                                    }
+                                }
+                            },
+                            "conditions": {
+                                "type": "array",
+                                "description": "What must hold for the actions to run. Every condition must pass.",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["expr", "description"],
+                                    "properties": {
+                                        "expr": {
+                                            "type": "string",
+                                            "description": "A CEL expression over the triggering node as `node`, e.g. node.status == 'done'."
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "What must hold, in one plain sentence."
+                                        }
+                                    }
+                                }
+                            },
+                            "actions": {
+                                "type": "array",
+                                "description": "What the rule does, in order.",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["action_type", "description", "params"],
+                                    "properties": {
+                                        "action_type": {
+                                            "type": "string",
+                                            "enum": ["create_node", "update_node", "add_relationship", "remove_relationship", "reject"]
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "What the action does, in one plain sentence."
+                                        },
+                                        "params": {
+                                            "type": "object",
+                                            "description": "create_node: node_type, content, properties. update_node: node_id, content, properties, node_type (to retype). add_relationship: source_id, relationship_type, target_id, edge_data. remove_relationship: source_id, relationship_type, target_id. reject (invariant rules only): message. A string may bind a value in braces, e.g. {trigger.node.id}."
+                                        },
+                                        "for_each": {
+                                            "type": "string",
+                                            "description": "Run the action once per node a path reaches, e.g. trigger.node.has_child, with each bound as `item`."
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What the play automates, in one line."
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "The play's switch: false turns it off, true turns it on."
+                }
+            },
+            "required": ["id"]
+        }),
+    }
+}
+
 fn def_update_task_status() -> ToolDefinition {
     ToolDefinition {
         name: "update_task_status".into(),
@@ -2241,6 +2448,8 @@ pub enum Tool {
     AdoptExistingConflict,
     MergeConflict,
     GetWorkflowState,
+    GetPlay,
+    UpdatePlay,
 }
 
 impl Tool {
@@ -2274,6 +2483,8 @@ impl Tool {
         Tool::AdoptExistingConflict,
         Tool::MergeConflict,
         Tool::GetWorkflowState,
+        Tool::GetPlay,
+        Tool::UpdatePlay,
     ];
 
     /// The number of variants, counted by walking every one of them.
@@ -2311,7 +2522,9 @@ impl Tool {
                 Tool::DismissConflict => Tool::AdoptExistingConflict,
                 Tool::AdoptExistingConflict => Tool::MergeConflict,
                 Tool::MergeConflict => Tool::GetWorkflowState,
-                Tool::GetWorkflowState => break,
+                Tool::GetWorkflowState => Tool::GetPlay,
+                Tool::GetPlay => Tool::UpdatePlay,
+                Tool::UpdatePlay => break,
             };
         }
         n
@@ -2359,6 +2572,8 @@ impl Tool {
                 Tool::AdoptExistingConflict => 18,
                 Tool::MergeConflict => 19,
                 Tool::GetWorkflowState => 20,
+                Tool::GetPlay => 21,
+                Tool::UpdatePlay => 22,
             };
             assert!(expected == i, "Tool::ALL lists a variant out of order");
             i += 1;
@@ -2393,6 +2608,8 @@ impl Tool {
             Tool::AdoptExistingConflict => "adopt_existing_conflict",
             Tool::MergeConflict => "merge_conflict",
             Tool::GetWorkflowState => "get_workflow_state",
+            Tool::GetPlay => "get_play",
+            Tool::UpdatePlay => "update_play",
         }
     }
 
@@ -2423,6 +2640,8 @@ impl Tool {
             Tool::AdoptExistingConflict => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9613",
             Tool::MergeConflict => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9614",
             Tool::GetWorkflowState => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9615",
+            Tool::GetPlay => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9616",
+            Tool::UpdatePlay => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9617",
         }
     }
 
@@ -2456,6 +2675,10 @@ impl Tool {
             Tool::AdoptExistingConflict => Some("nodespace conflicts adopt"),
             Tool::MergeConflict => Some("nodespace conflicts merge"),
             Tool::GetWorkflowState => Some("nodespace playbook get-workflow-state"),
+            // A play is read and written as the node it is: the CLI has no
+            // play-specific read or write, and the shipped skill teaches these.
+            Tool::GetPlay => Some("nodespace node get"),
+            Tool::UpdatePlay => Some("nodespace node update"),
         }
     }
 
@@ -2497,6 +2720,8 @@ impl Tool {
             Tool::AdoptExistingConflict => def_adopt_existing_conflict(),
             Tool::MergeConflict => def_merge_conflict(),
             Tool::GetWorkflowState => def_get_workflow_state(),
+            Tool::GetPlay => def_get_play(),
+            Tool::UpdatePlay => def_update_play(),
         }
     }
 
@@ -2528,6 +2753,8 @@ impl Tool {
             Tool::AdoptExistingConflict => "conflict resolution",
             Tool::MergeConflict => "node merge",
             Tool::GetWorkflowState => "workflow state lookup",
+            Tool::GetPlay => "play lookup",
+            Tool::UpdatePlay => "play update",
         }
     }
 
@@ -2549,7 +2776,8 @@ impl Tool {
             | Tool::RouteClarify
             | Tool::ListConflicts
             | Tool::GetConflict
-            | Tool::GetWorkflowState => WriteSemantics::Read,
+            | Tool::GetWorkflowState
+            | Tool::GetPlay => WriteSemantics::Read,
 
             // Idempotent writes. Setting a node to the same content, or a task
             // to the same status, twice is a no-op — the second call is not a
@@ -2562,10 +2790,14 @@ impl Tool {
             // already-resolved guard, unlike detection's own upsert), so
             // calling either again with the same conflict_id/args re-asserts
             // the same terminal state instead of duplicating anything.
+            //
+            // update_play replaces a play's rules whole and sets its switch, so
+            // the same call twice leaves the same play.
             Tool::UpdateNode
             | Tool::UpdateTaskStatus
             | Tool::DismissConflict
-            | Tool::AdoptExistingConflict => WriteSemantics::IdempotentWrite,
+            | Tool::AdoptExistingConflict
+            | Tool::UpdatePlay => WriteSemantics::IdempotentWrite,
 
             // Not idempotent, but not guarded either. A repeated `add_fields`
             // or `add_relationships` rejects the field as already present, and
@@ -2606,7 +2838,7 @@ impl Tool {
     /// a write tool added later has to say here where its record goes.
     pub fn written_node(self) -> Option<WrittenNode> {
         match self {
-            Tool::CreateNode | Tool::UpdateNode | Tool::UpdateTaskStatus => {
+            Tool::CreateNode | Tool::UpdateNode | Tool::UpdateTaskStatus | Tool::UpdatePlay => {
                 Some(WrittenNode::Reported("id"))
             }
             Tool::CreateSchema | Tool::UpdateSchema => Some(WrittenNode::Reported("schemaId")),
@@ -2623,7 +2855,8 @@ impl Tool {
             | Tool::RouteClarify
             | Tool::ListConflicts
             | Tool::GetConflict
-            | Tool::GetWorkflowState => None,
+            | Tool::GetWorkflowState
+            | Tool::GetPlay => None,
         }
     }
 
@@ -2682,7 +2915,9 @@ impl Tool {
             | Tool::GetConflict
             | Tool::DismissConflict
             | Tool::AdoptExistingConflict
-            | Tool::GetWorkflowState => false,
+            | Tool::GetWorkflowState
+            | Tool::GetPlay
+            | Tool::UpdatePlay => false,
         }
     }
 
@@ -2715,6 +2950,9 @@ impl Tool {
             | Tool::ListConflicts
             | Tool::GetConflict
             | Tool::GetWorkflowState => false,
+            // get_play is called with a play's id, which the turn already holds:
+            // it surfaces no node the turn did not have.
+            Tool::GetPlay => false,
             Tool::CreateNode
             | Tool::UpdateNode
             | Tool::CreateSchema
@@ -2725,7 +2963,8 @@ impl Tool {
             | Tool::CreateNodesFromMarkdown
             | Tool::DismissConflict
             | Tool::AdoptExistingConflict
-            | Tool::MergeConflict => false,
+            | Tool::MergeConflict
+            | Tool::UpdatePlay => false,
         }
     }
 
@@ -2767,7 +3006,9 @@ impl Tool {
             | Tool::DismissConflict
             | Tool::AdoptExistingConflict
             | Tool::MergeConflict
-            | Tool::GetWorkflowState => false,
+            | Tool::GetWorkflowState
+            | Tool::GetPlay
+            | Tool::UpdatePlay => false,
         }
     }
 
@@ -2805,7 +3046,9 @@ impl Tool {
             | Tool::DismissConflict
             | Tool::AdoptExistingConflict
             | Tool::MergeConflict
-            | Tool::GetWorkflowState => None,
+            | Tool::GetWorkflowState
+            | Tool::GetPlay
+            | Tool::UpdatePlay => None,
         }
     }
 
@@ -2832,7 +3075,10 @@ impl Tool {
             | Tool::GetWorkflowState => None,
             // Reads by id. A held turn may follow a relationship from one of
             // its records to a related record of another type.
-            Tool::GetNode | Tool::GetRelatedNodes | Tool::GetConflict => None,
+            Tool::GetNode | Tool::GetRelatedNodes | Tool::GetConflict | Tool::GetPlay => None,
+            // Writes a play and nothing else: its own type check refuses any
+            // other node, so there is no type for the hold to add.
+            Tool::UpdatePlay => None,
             // Has its own score bar and confirmation.
             Tool::DeleteNode => None,
             // Writes by id that the hold does not cover: widening it to them
@@ -4403,6 +4649,148 @@ impl GraphToolExecutor {
         Ok(ok_result(tool_call_id, "get_workflow_state", json!(state)))
     }
 
+    /// The play `id` names, or the tool error to hand the model when it names
+    /// none.
+    async fn fetch_play(
+        &self,
+        ns: &NodeService,
+        id: &str,
+        tool: &str,
+        tool_call_id: &str,
+    ) -> Result<nodespace_core::models::Node, ToolResult> {
+        let refused = |message: String| error_result(tool_call_id, tool, &message);
+        match ns.get_node(id).await {
+            // Exactly `play`, as the typed update is: a subtype would have
+            // its own fields, which these tools neither read nor write.
+            Ok(Some(node)) if CoreNodeType::Play.is_exactly(&node.node_type) => Ok(node),
+            Ok(Some(node)) => Err(refused(format!(
+                "'{id}' is a {} node, not a play",
+                node.node_type
+            ))),
+            Ok(None) => Err(refused(format!("no node found with id '{id}'"))),
+            Err(e) => Err(refused(format!("{tool} failed: {e}"))),
+        }
+    }
+
+    async fn exec_get_play(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: GetPlayParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "get_play".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let ns = self.node_service()?;
+        let node = match self
+            .fetch_play(&ns, strip_node_uri(&params.id), "get_play", tool_call_id)
+            .await
+        {
+            Ok(node) => node,
+            Err(refused) => return Ok(refused),
+        };
+
+        let (fields, mut play) = play_value(&node);
+        let referenced =
+            nodespace_core::playbook::referenced_types::referenced_types(&ns, &fields.rules).await;
+        let all_schemas = ns
+            .get_all_schemas()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("get_play failed: {e}")))?;
+        // The same descriptor a routed turn's candidate block is built from,
+        // so a type reads the same here as anywhere else the model meets it.
+        let schemas: Vec<Value> = referenced
+            .iter()
+            .filter_map(|type_id| all_schemas.iter().find(|s| &s.envelope.id == type_id))
+            .map(|schema| {
+                nodespace_core::ops::entity_types_block::EntityTypeDescriptor::from_corpus(
+                    schema,
+                    &all_schemas,
+                )
+                .to_json()
+            })
+            .collect();
+        play["schemas"] = json!(schemas);
+
+        Ok(ok_result(tool_call_id, "get_play", play))
+    }
+
+    async fn exec_update_play(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let invalid = |reason: &str| ToolError::InvalidArguments {
+            tool: "update_play".to_string(),
+            reason: reason.to_string(),
+        };
+        let Value::Object(mut args) = args else {
+            return Err(invalid("expected an object"));
+        };
+        let id = match args.remove("id") {
+            Some(Value::String(id)) => id,
+            Some(_) => return Err(invalid("`id` must be a string")),
+            None => return Err(invalid("missing field `id`")),
+        };
+
+        // What is left is the typed play update, decoded as every other
+        // writer's is: it carries `rules`, `description` and `enabled` and
+        // nothing else, so a call naming the lifecycle or a suspension field
+        // is refused here, and a rule that does not decode is reported by its
+        // name and the field in it.
+        let update: nodespace_core::models::PlayNodeUpdate =
+            match serde_json::from_value(Value::Object(args)) {
+                Ok(update) => update,
+                Err(e) => {
+                    return Ok(error_result(
+                        tool_call_id,
+                        "update_play",
+                        &format!("The play was not changed: {e}"),
+                    ))
+                }
+            };
+        if update.is_empty() {
+            return Ok(error_result(
+                tool_call_id,
+                "update_play",
+                "Nothing to change: give `rules`, `description` or `enabled`",
+            ));
+        }
+
+        let ns = self.node_service()?;
+        let node = match self
+            .fetch_play(&ns, strip_node_uri(&id), "update_play", tool_call_id)
+            .await
+        {
+            Ok(node) => node,
+            Err(refused) => return Ok(refused),
+        };
+
+        match ns.update_play_node(&node.id, node.version, update).await {
+            Ok(updated) => Ok(ok_result(
+                tool_call_id,
+                "update_play",
+                play_value(&updated).1,
+            )),
+            // A tool result, not a failed call: the message names the rule and
+            // the part of it to fix, and the model repairs the write from it.
+            Err(nodespace_core::services::NodeServiceError::PlayValidationFailed { errors }) => {
+                Ok(error_result(
+                    tool_call_id,
+                    "update_play",
+                    &format!("The play was not changed: {errors}"),
+                ))
+            }
+            Err(e) => Ok(error_result(
+                tool_call_id,
+                "update_play",
+                &format!("The play was not changed: {e}"),
+            )),
+        }
+    }
+
     async fn exec_dismiss_conflict(
         &self,
         tool_call_id: &str,
@@ -4875,6 +5263,8 @@ impl AgentToolExecutor for GraphToolExecutor {
             }
             Tool::MergeConflict => self.exec_merge_conflict(&tool_call_id, args).await,
             Tool::GetWorkflowState => self.exec_get_workflow_state(&tool_call_id, args).await,
+            Tool::GetPlay => self.exec_get_play(&tool_call_id, args).await,
+            Tool::UpdatePlay => self.exec_update_play(&tool_call_id, args).await,
         }
     }
 
@@ -6149,7 +6539,7 @@ mod tests {
     fn definitions_count() {
         // Derived from the registry: one definition per `Tool::ALL` entry.
         assert_eq!(all_tool_definitions().len(), Tool::ALL.len());
-        assert_eq!(all_tool_definitions().len(), 21);
+        assert_eq!(all_tool_definitions().len(), 23);
     }
 
     #[test]

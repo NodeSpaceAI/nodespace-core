@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use nodespace_agent::agent_catalog::context_assembly::GraphContextAssembler;
 use nodespace_agent::prompt_assembler::PromptAssembler;
 use nodespace_agent::pty::PtySessionManager;
-use nodespace_agent::skill_pipeline::{seed_skill_nodes, seed_tool_nodes};
+use nodespace_agent::skill_pipeline::{link_seeded_skills, seed_skill_nodes, seed_tool_nodes};
 use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::services::node_service::access_gate::SubtreeAccessGate;
 use nodespace_core::services::{
@@ -703,9 +703,10 @@ pub async fn unrouted_services_if_default_refused(
     Ok(Arc::new(build_unrouted_services(shared).await?))
 }
 
-/// Seed the agent-guidance, skill, and tool tables. Runs on every open and
-/// reconciles by id: a seed already in the database is left alone unless its
-/// table row changed, and one that was deleted is created again.
+/// Seed the agent-guidance, skill, and tool tables, and link each skill to the
+/// schemas its row names. Runs on every open and reconciles by id: a seed
+/// already in the database is left alone unless its table row changed, and one
+/// that was deleted is created again.
 async fn seed_agent_nodes(node_service: &mut CoreNodeService) {
     let prompt_templates = PromptAssembler::seed_agent_guidance_nodes();
     let skill_templates = seed_skill_nodes();
@@ -730,6 +731,10 @@ async fn seed_agent_nodes(node_service: &mut CoreNodeService) {
         .await
     {
         tracing::warn!(error = %e, "Failed to seed agent nodes (non-fatal)");
+    }
+
+    if let Err(e) = link_seeded_skills(node_service).await {
+        tracing::warn!(error = %e, "Failed to link seeded skills to their schemas (non-fatal)");
     }
 }
 

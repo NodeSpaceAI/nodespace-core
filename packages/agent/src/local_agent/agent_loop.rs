@@ -18863,4 +18863,290 @@ mod tests {
         // 8 (stage 1) + 20 + 30 from the scripted responses.
         assert_eq!(result.usage.prompt_tokens, 58);
     }
+
+    // -----------------------------------------------------------------------
+    // Play authoring (ADR-090 §6): turns routed to the seeded skill, over the
+    // real tools and a real store.
+    // -----------------------------------------------------------------------
+
+    /// The production tool executor, with retrieval answering every turn with
+    /// the seeded Play Authoring skill, linked to `play` as it is once seeded.
+    struct PlayAuthoringExecutor {
+        inner: crate::local_agent::tools::GraphToolExecutor,
+    }
+
+    impl PlayAuthoringExecutor {
+        fn candidate() -> SkillCandidate {
+            let seed = crate::skill_pipeline::SKILL_SEEDS
+                .iter()
+                .find(|seed| seed.title == "Play Authoring")
+                .expect("Play Authoring is a built-in skill");
+            SkillCandidate {
+                id: seed.id.to_string(),
+                name: seed.title.to_string(),
+                description: seed.description.to_string(),
+                score: 0.95,
+                tools: seed.tools.iter().map(|t| t.to_string()).collect(),
+                instructions: seed.template().markdown_content,
+                schema_metadata: json!(seed
+                    .applies_to
+                    .iter()
+                    .map(|id| json!({"type_id": id, "fields": []}))
+                    .collect::<Vec<_>>()),
+                schemas_linked: true,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AgentToolExecutor for PlayAuthoringExecutor {
+        async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+            self.inner.available_tools().await
+        }
+        async fn execute(
+            &self,
+            name: &str,
+            args: serde_json::Value,
+        ) -> Result<ToolResult, ToolError> {
+            self.inner.execute(name, args).await
+        }
+        async fn routing_available(&self) -> bool {
+            true
+        }
+        async fn retrieve_skills(
+            &self,
+            _query: &str,
+            _limit: usize,
+        ) -> Result<crate::agent_types::SkillRetrieval, ToolError> {
+            Ok(crate::agent_types::SkillRetrieval {
+                candidates: vec![Self::candidate()],
+            })
+        }
+        async fn skill_names(&self) -> Vec<String> {
+            vec![Self::candidate().name]
+        }
+        async fn node_type(&self, id: &str) -> Result<Option<String>, ToolError> {
+            self.inner.node_type(id).await
+        }
+    }
+
+    /// The rules of the play [`play_fixture`] stores: one rule with one
+    /// condition and one action.
+    fn play_fixture_rules() -> serde_json::Value {
+        json!([{
+            "name": "close parent",
+            "description": "Mark a task's parent done when the task is done",
+            "class": "reactive",
+            "trigger": {
+                "type": "graph_event",
+                "on": "property_changed",
+                "select": { "target_type": "task" },
+                "property_key": "task.status"
+            },
+            "conditions": [
+                { "expr": "node.status == 'done'", "description": "The task is done" }
+            ],
+            "actions": [{
+                "action_type": "update_node",
+                "description": "Mark the parent done",
+                "params": {
+                    "node_id": "{trigger.node.child_of.id}",
+                    "properties": { "status": "done" }
+                }
+            }]
+        }])
+    }
+
+    /// A store holding one play, and that play's id.
+    async fn play_fixture() -> (
+        Arc<nodespace_core::services::NodeService>,
+        String,
+        tempfile::TempDir,
+    ) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(
+            nodespace_core::db::SqliteStore::new(tmp.path().join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let ns = Arc::new(
+            nodespace_core::services::NodeService::new(&mut store)
+                .await
+                .unwrap(),
+        );
+        let play_id = ns
+            .create_node(nodespace_core::models::Node::new(
+                "play".to_string(),
+                "Parent roll-up".to_string(),
+                json!({ "rules": play_fixture_rules() }),
+            ))
+            .await
+            .expect("the play is created");
+        (ns, play_id, tmp)
+    }
+
+    /// Run one turn that routes to Play Authoring and makes `rounds` of
+    /// calls: the Stage-2 tool definitions the model was sent, and the turn's
+    /// result.
+    async fn run_play_turn(
+        ns: &Arc<nodespace_core::services::NodeService>,
+        request: &str,
+        rounds: &[&[(&str, serde_json::Value)]],
+    ) -> (Vec<ToolDefinition>, AgentTurnResult) {
+        let engine = RecordingEngine::new(scripted_engine(rounds));
+        let tools = engine.tools_handle();
+        let exec = PlayAuthoringExecutor {
+            inner: crate::local_agent::tools::GraphToolExecutor {
+                node_service: Some(ns.clone()),
+                embedding_service: Arc::new(tokio::sync::RwLock::new(None)),
+                inference_engine: None,
+                playbook_lifecycle: None,
+            },
+        };
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+        let result = loop_
+            .run_turn(
+                &mut session,
+                request,
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+        let stage2_tools = tools.lock().unwrap()[1].clone();
+        (stage2_tools, result)
+    }
+
+    async fn stored_play(
+        ns: &nodespace_core::services::NodeService,
+        play_id: &str,
+    ) -> nodespace_core::models::PlayFields {
+        let node = ns.get_node(play_id).await.unwrap().expect("the play");
+        nodespace_core::models::PlayFields::from_node(&node).expect("the stored play decodes")
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_changes_a_condition_writes_rules_with_updated_descriptions() {
+        let (ns, play_id, _tmp) = play_fixture().await;
+        let mut rules = play_fixture_rules();
+        rules[0]["conditions"][0] =
+            json!({ "expr": "node.status == 'cancelled'", "description": "The task is cancelled" });
+
+        let (tools, result) = run_play_turn(
+            &ns,
+            "make the roll-up run when a task is cancelled instead of done",
+            &[
+                &[("get_play", json!({ "id": play_id }))],
+                &[("update_play", json!({ "id": play_id, "rules": rules }))],
+            ],
+        )
+        .await;
+
+        // The turn is offered the skill's tools, and held to plays.
+        let mut offered: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        offered.sort_unstable();
+        assert_eq!(
+            offered,
+            ["get_play", "route_clarify", "search_nodes", "update_play"]
+        );
+        assert_eq!(
+            declared_enum(&tools, "search_nodes", "node_type"),
+            Some(&json!(["play"]))
+        );
+
+        let calls: Vec<(&str, bool)> = result
+            .tool_calls_made
+            .iter()
+            .map(|call| (call.name.as_str(), call.is_error))
+            .collect();
+        assert_eq!(calls, [("get_play", false), ("update_play", false)]);
+        // What the model read is the shape it writes back.
+        assert_eq!(
+            result.tool_calls_made[0].result["rules"],
+            play_fixture_rules()
+        );
+
+        let play = stored_play(&ns, &play_id).await;
+        assert_eq!(
+            play.rules[0].conditions[0].expr,
+            "node.status == 'cancelled'"
+        );
+        assert_eq!(
+            play.rules[0].conditions[0].description,
+            "The task is cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_whose_first_write_is_rejected_repairs_it_and_succeeds() {
+        let (ns, play_id, _tmp) = play_fixture().await;
+        // The expression changes and the description stays: stale.
+        let mut stale = play_fixture_rules();
+        stale[0]["conditions"][0]["expr"] = json!("node.status == 'cancelled'");
+        let mut repaired = stale.clone();
+        repaired[0]["conditions"][0]["description"] = json!("The task is cancelled");
+
+        let (_, result) = run_play_turn(
+            &ns,
+            "make the roll-up run when a task is cancelled instead of done",
+            &[
+                &[("update_play", json!({ "id": play_id, "rules": stale }))],
+                &[("update_play", json!({ "id": play_id, "rules": repaired }))],
+            ],
+        )
+        .await;
+
+        let [rejected, accepted] = result.tool_calls_made.as_slice() else {
+            panic!("expected two writes, got {:?}", result.tool_calls_made);
+        };
+        assert!(rejected.is_error, "{}", rejected.result);
+        let reason = rejected.result["error"].as_str().unwrap();
+        assert!(
+            reason.contains(
+                "rule `close parent`, condition 1: its expression changed and its description \
+                 didn't"
+            ),
+            "the rejection names what to repair: {reason}"
+        );
+        assert!(!accepted.is_error, "{}", accepted.result);
+
+        let play = stored_play(&ns, &play_id).await;
+        assert_eq!(
+            play.rules[0].conditions[0].expr,
+            "node.status == 'cancelled'"
+        );
+        assert_eq!(
+            play.rules[0].conditions[0].description,
+            "The task is cancelled"
+        );
+    }
+
+    #[tokio::test]
+    async fn turn_this_play_off_sets_enabled_false() {
+        let (ns, play_id, _tmp) = play_fixture().await;
+        assert!(stored_play(&ns, &play_id).await.enabled);
+
+        let (_, result) = run_play_turn(
+            &ns,
+            "turn this play off",
+            &[&[("update_play", json!({ "id": play_id, "enabled": false }))]],
+        )
+        .await;
+
+        assert_eq!(result.tool_calls_made.len(), 1);
+        assert!(
+            !result.tool_calls_made[0].is_error,
+            "{}",
+            result.tool_calls_made[0].result
+        );
+        let play = stored_play(&ns, &play_id).await;
+        assert!(!play.enabled);
+        assert_eq!(
+            serde_json::to_value(&play.rules).unwrap()[0]["name"],
+            "close parent",
+            "the switch leaves the rules alone"
+        );
+    }
 }
