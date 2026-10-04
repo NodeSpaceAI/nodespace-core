@@ -230,6 +230,27 @@ describe('updateNode routing for typed core types', () => {
     expect(play.enabled).toBe(true);
   });
 
+  it("applies the response's read-only fields for every type that has them (a query's execution count)", async () => {
+    store.setNode(
+      makeNode('q2', 'query', { targetType: 'task', filters: [], executionCount: 1 }),
+      dbSource
+    );
+    vi.spyOn(backendAdapter, 'updateQueryNode').mockImplementation(
+      async (id, version, update) =>
+        ({
+          ...makeNode(id, 'query', { targetType: 'task', filters: [], ...update }),
+          executionCount: 2,
+          version: version + 1
+        }) as unknown as QueryNode
+    );
+
+    store.updateQueryNode('q2', { limit: 10 }, viewerSource);
+
+    await vi.waitFor(() =>
+      expect((store.getNode('q2') as unknown as QueryNode).executionCount).toBe(2)
+    );
+  });
+
   // The store routes every type the registry gives a typed update to that
   // update, so a type the backend adds one for without a route here has no
   // write path.

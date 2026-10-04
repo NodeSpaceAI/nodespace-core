@@ -96,7 +96,7 @@
         </span>
         <Switch
           class="play-switch"
-          aria-label={playStatus === 'on' ? 'Turn this play off' : 'Turn this play on'}
+          aria-label="Play on"
           bind:checked={() => playStatus === 'on', handleSwitch}
         />
       </div>
@@ -123,7 +123,9 @@
         <p class="empty-state">This play has no rules.</p>
       {:else}
         <ol class="rule-list">
-          {#each play.rules as rule (rule.name)}
+          <!-- Keyed by position: a play written around validation can repeat a
+               rule name, and it still has to render. -->
+          {#each play.rules as rule, ruleIndex (ruleIndex)}
             <li class="rule-lane" aria-label={rule.name}>
               <div class="rule-heading">
                 <h2>{rule.name}</h2>
@@ -190,22 +192,25 @@
       <Dialog.Content class="sm:max-w-md">
         <Dialog.Header>
           <Dialog.Title>Turn off {title}?</Dialog.Title>
+          <!-- The rules and the consequence are part of the description, so a
+               screen reader announces what the warning names, not only its lead-in. -->
           <Dialog.Description>
-            This play ships with NodeSpace and enforces
-            {warnedRules.length === 1 ? 'a rule' : 'rules'} on every write. While it is off, nothing
-            enforces:
+            <p>
+              This play ships with NodeSpace and enforces
+              {warnedRules.length === 1 ? 'a rule' : 'rules'} on every write. While it is off, nothing
+              enforces:
+            </p>
+            <ul class="warned-rules">
+              {#each warnedRules as rule, index (index)}
+                <li>{rule.description}</li>
+              {/each}
+            </ul>
+            <p>
+              Nodes written from now on are no longer held to
+              {warnedRules.length === 1 ? 'it' : 'them'}. Nodes already written keep what they got.
+            </p>
           </Dialog.Description>
         </Dialog.Header>
-
-        <ul class="warned-rules">
-          {#each warnedRules as rule (rule.name)}
-            <li>{rule.description}</li>
-          {/each}
-        </ul>
-        <p class="warned-consequence">
-          Nodes written from now on are no longer held to
-          {warnedRules.length === 1 ? 'it' : 'them'}. Nodes already written keep what they got.
-        </p>
 
         <Dialog.Footer>
           <Button variant="outline" onclick={cancelDisable}>Cancel</Button>
@@ -436,15 +441,9 @@
   }
 
   .warned-rules {
-    margin: 0;
+    margin: 0.5rem 0;
     padding-left: 1.25rem;
-    font-size: 0.875rem;
+    text-align: left;
     color: hsl(var(--foreground));
-  }
-
-  .warned-consequence {
-    margin: 0;
-    font-size: 0.875rem;
-    color: hsl(var(--muted-foreground));
   }
 </style>

@@ -182,6 +182,9 @@ describe('PlayNodeViewer', () => {
 
       const dialog = getByRole('dialog');
       expect(dialog.textContent).toContain('Refuses a task with no title');
+      // The rule's effect is in the dialog's accessible description.
+      const description = document.getElementById(dialog.getAttribute('aria-describedby') ?? '');
+      expect(description?.textContent).toContain('Refuses a task with no title');
       expect(dialog.textContent).not.toContain(closeParent.description);
       expect(updatePlayNode).not.toHaveBeenCalled();
 
@@ -227,6 +230,13 @@ describe('PlayNodeViewer', () => {
       ]);
       expect(lanes[0].querySelector('.invariant-marker')).not.toBeNull();
       expect(lanes[1].querySelector('.invariant-marker')).toBeNull();
+    });
+
+    it('still shows a play whose rules repeat a name', () => {
+      // Validation rejects this on write; a play stored around it must render.
+      const { container } = open({ rules: [guard, { ...guard, description: 'A second guard' }] });
+
+      expect(container.querySelectorAll('.rule-lane')).toHaveLength(2);
     });
 
     it('describes the trigger, each condition and each action, naming the for_each collection', () => {
