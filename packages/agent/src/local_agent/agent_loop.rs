@@ -2516,7 +2516,10 @@ fn extract_node_uris(text: &str) -> Vec<&str> {
 /// (`create_node`, `update_node`), an array of results (`search_nodes`), a
 /// `resolved`/`id` pair (`resolve_query`) — and `node_uri()` (tools.rs)
 /// normalizes all of them to the `nodespace://` form before they reach the
-/// model. Walking the whole value rather than picking specific keys means
+/// model. Object keys are read as well as values, so this finds exactly the
+/// ids a scan of the result's serialized text would (which is how a tool
+/// message in a starting history is read, see `system_written_node_uris`).
+/// Walking the whole value rather than picking specific keys means
 /// this stays correct as tools add new result shapes, at the cost of also
 /// grounding ids that appear in unrelated string fields (e.g. a node's title
 /// happening to contain the literal text) — an acceptable direction of error,
@@ -2535,7 +2538,10 @@ fn collect_node_uris(value: &serde_json::Value, out: &mut HashSet<String>) {
             }
         }
         serde_json::Value::Object(map) => {
-            for v in map.values() {
+            for (key, v) in map {
+                for uri in extract_node_uris(key) {
+                    out.insert(uri.to_string());
+                }
                 collect_node_uris(v, out);
             }
         }
@@ -2624,13 +2630,15 @@ impl AgentSession {
     }
 
     /// Append a system message whose text the system wrote, grounding every id
-    /// in it. The one way a system message is appended to a session after
-    /// creation. Not for the conversation summary, which is the model's text.
+    /// in it, by the same rule a starting history is read with (so text that
+    /// opens as the conversation summary, which is the model's, grounds
+    /// nothing). The one way a system message is appended to a session after
+    /// creation.
     pub fn push_system_record(&mut self, content: impl Into<String>) {
-        let content = content.into();
+        let message = ChatMessage::text(Role::System, content.into());
         self.grounded_node_uris
-            .extend(extract_node_uris(&content).into_iter().map(str::to_string));
-        self.messages.push(ChatMessage::text(Role::System, content));
+            .extend(system_written_node_uris(std::slice::from_ref(&message)));
+        self.messages.push(message);
     }
 }
 
@@ -3866,10 +3874,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
                 // Fabricated-id guard: a `nodespace://<id>` in the model's text
                 // that is not in the session's grounded set (no tool result or
-                // system record, this turn or earlier, produced it) is invented — ids are never something
-                // the model should originate, they come from a tool result or
-                // they do not exist. This catches the shape #2257's
-                // zero-tool-call guard above cannot: the write genuinely
+                // system record, this turn or earlier, produced it) is
+                // invented — ids are never something the model should
+                // originate, they come from a tool result or they do not
+                // exist. This catches the shape the zero-tool-call guard above
+                // cannot: the write genuinely
                 // succeeded and the model DID call a tool, but then narrated a
                 // different id than the one the tool actually returned. A
                 // fabricated id in `nodespace://` form is worse than a vague
@@ -9553,6 +9562,34 @@ mod tests {
         assert_eq!(session.messages[0].role, Role::System);
     }
 
+    /// A result object keyed by node id grounds those ids, as scanning its
+    /// serialized text would.
+    #[test]
+    fn push_tool_result_grounds_ids_used_as_object_keys() {
+        let mut session = new_session();
+        session.push_tool_result(exec_record_with(
+            "get_nodes",
+            json!({}),
+            json!({"nodes": {"nodespace://keyed": {"title": "Northwind"}}}),
+        ));
+        assert_eq!(
+            session.grounded_node_uris,
+            system_written_node_uris(&session.messages)
+        );
+        assert!(session.grounded_node_uris.contains("nodespace://keyed"));
+    }
+
+    /// Text that opens as the conversation summary is the model's, whichever
+    /// way it reaches the session.
+    #[test]
+    fn push_system_record_does_not_ground_a_conversation_summary() {
+        let mut session = new_session();
+        session.push_system_record(format!(
+            "{CONVERSATION_SUMMARY_PREFIX}: about nodespace://from-a-summary."
+        ));
+        assert!(session.grounded_node_uris.is_empty());
+    }
+
     /// What the model or the user wrote grounds nothing: an id is real because
     /// a tool produced it, not because it was said before.
     #[test]
@@ -9943,6 +9980,47 @@ mod tests {
             response,
             "Created the task as nodespace://d7e3bb35-170a-4865-a6f6-063fbd1e0a09."
         );
+    }
+
+    /// After a turn that ran tools, every id readable from the session's tool
+    /// and system messages is in the grounded set: the loop appended none of
+    /// them around `push_tool_result` / `push_system_record`.
+    #[tokio::test]
+    async fn a_turn_leaves_no_system_written_id_outside_the_grounded_set() {
+        let engine = Arc::new(MockEngine::tool_then_text(
+            "search_nodes",
+            r#"{"query":"invoice"}"#,
+            "I found 2 invoice nodes in your workspace.",
+        ));
+        let agent_loop = LocalAgentLoop::new(
+            engine,
+            Arc::new(FixedResultExecutor {
+                tool: "search_nodes",
+                result: json!({"count": 2, "results": [
+                    {"id": "nodespace://a"},
+                    {"id": "nodespace://b"},
+                ]}),
+            }),
+        );
+        let mut session = new_session();
+        agent_loop
+            .run_turn(
+                &mut session,
+                "find the invoices",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        let in_messages = system_written_node_uris(&session.messages);
+        assert_eq!(
+            in_messages,
+            HashSet::from(["nodespace://a".to_string(), "nodespace://b".to_string()]),
+            "the turn must have appended the tool result for this test to mean anything"
+        );
+        assert!(in_messages.is_subset(&session.grounded_node_uris));
     }
 
     #[tokio::test]
