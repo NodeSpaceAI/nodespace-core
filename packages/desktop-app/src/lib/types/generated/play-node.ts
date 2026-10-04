@@ -10,6 +10,12 @@ import type { RuleDefinition } from './rule-definition';
  * promoted to the top level and `properties` keeps only extension fields.
  */
 export type PlayNode = {
+  /**
+   * True for a play that shipped with the product. Derived from the stored
+   * `_seed` marker, which never reaches the wire, and read-only: no update
+   * accepts it.
+   */
+  isSeeded: boolean;
   id: string;
   nodeType: string;
   content: string;

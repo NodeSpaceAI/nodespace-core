@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 /// Whether `node` (a play node) was seeded — carries a `_seed` marker.
 pub fn is_seeded_play(node: &Node) -> bool {
-    node.properties.get("_seed").is_some()
+    PlayFields::seeded_in(&node.properties)
 }
 
 /// Whether any rule in `rules` is `RuleClass::Invariant`.

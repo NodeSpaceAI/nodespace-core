@@ -190,6 +190,19 @@ describe('storageNodeToApiFields', () => {
     }
   });
 
+  it('derives isSeeded for a play from its `_seed` marker, which stays off the wire', () => {
+    const seeded = storageNodeToApiFields('play', {
+      play: { rules: [] },
+      _seed: { default_rules: [] }
+    });
+    expect(seeded.isSeeded).toBe(true);
+    expect(seeded.properties).toEqual({});
+
+    expect(storageNodeToApiFields('play', { play: { rules: [] } }).isSeeded).toBe(false);
+    // Only a play carries the field.
+    expect('isSeeded' in storageNodeToApiFields('task', { _seed: {} })).toBe(false);
+  });
+
   // The browser/dev-proxy HTTP transport (packages/dev-tools/src/dev-proxy.ts)
   // receives a node's `properties` exactly as stored — namespaced under the
   // node's own type. The Tauri IPC layer's `node_to_typed_value`

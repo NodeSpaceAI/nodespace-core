@@ -126,7 +126,7 @@ describe('Core Plugins Integration', () => {
 
   describe('Core Plugins Collection', () => {
     it('should export all core plugins in corePlugins array', () => {
-      expect(corePlugins).toHaveLength(15); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, ai-chat, person
+      expect(corePlugins).toHaveLength(16); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
       expect(corePlugins).toContain(textNodePlugin);
       expect(corePlugins).toContain(headerNodePlugin);
       expect(corePlugins).toContain(taskNodePlugin);
@@ -147,7 +147,7 @@ describe('Core Plugins Integration', () => {
     it('should register all core plugins successfully', () => {
       registerCorePlugins(registry);
 
-      expect(registry.getAllPlugins()).toHaveLength(15); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, ai-chat-native, ai-chat-pty, person
+      expect(registry.getAllPlugins()).toHaveLength(16); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
 
       // Verify each core plugin is registered
       for (const plugin of corePlugins) {
@@ -162,10 +162,10 @@ describe('Core Plugins Integration', () => {
       // Verify registration statistics through the registry API
       // Note: Logger output is intentionally silenced during tests
       const stats = registry.getStats();
-      expect(stats.pluginsCount).toBe(15); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, ai-chat-native, ai-chat-pty, person
+      expect(stats.pluginsCount).toBe(16); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
       expect(stats.slashCommandsCount).toBe(11); // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, horizontal-line: 1, table: 1, query: 0 (no slash command), collection: 0, date: 0, ai-chat-native: 0, ai-chat-pty: 0, person: 0 (entity types are not slash-creatable)
-      expect(stats.viewersCount).toBe(6); // date, task, collection, query, ai-chat-native, and ai-chat-pty have custom viewers
-      expect(stats.referencesCount).toBe(15); // all plugins have references
+      expect(stats.viewersCount).toBe(7); // date, task, collection, query, play, ai-chat-native, and ai-chat-pty have custom viewers
+      expect(stats.referencesCount).toBe(16); // all plugins have references
     });
 
     it('should provide correct slash command count', () => {
@@ -400,7 +400,7 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should handle registry clearing', () => {
-      expect(registry.getAllPlugins()).toHaveLength(15); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, ai-chat-native, ai-chat-pty, person
+      expect(registry.getAllPlugins()).toHaveLength(16); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
 
       registry.clear();
 

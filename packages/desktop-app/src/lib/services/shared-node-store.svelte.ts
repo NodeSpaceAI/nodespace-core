@@ -3476,6 +3476,12 @@ export class SharedNodeStore {
             confirmedFields[field] = confirmed[field];
           }
         }
+        // Read-only fields are the backend's alone, so the response is always
+        // the latest value: a write can change one (switching a play on clears
+        // its suspension), and this client's own writes are not echoed back.
+        for (const field of TYPED_CORE_FIELDS[pending.nodeType] ?? []) {
+          if (field.readOnly) confirmedFields[field.wire] = confirmed[field.wire];
+        }
         Object.assign(localNode, confirmedFields);
         this.nodesSet(nodeId, localNode);
       }
@@ -3709,6 +3715,19 @@ export class SharedNodeStore {
     options: Pick<UpdateOptions, 'onPersistSuccess' | 'onPersistError'> = {}
   ): void {
     this.updateTypedNode(nodeId, 'query', { ...update }, source, options);
+  }
+
+  /**
+   * Update a play's typed fields (rules, description, enabled). See
+   * `updateTypedNode()` for the write path.
+   */
+  updatePlayNode(
+    nodeId: string,
+    update: import('$lib/types').PlayNodeUpdate,
+    source: UpdateSource,
+    options: Pick<UpdateOptions, 'onPersistSuccess' | 'onPersistError'> = {}
+  ): void {
+    this.updateTypedNode(nodeId, 'play', { ...update }, source, options);
   }
 
   /**

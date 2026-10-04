@@ -8,7 +8,7 @@ import {
   nodeToAiChatNativeNode,
   nodeToAiChatPtyNode
 } from '$lib/types/ai-chat-node';
-import { typeChain } from '$lib/types/core-node-types';
+import { isA, typeChain } from '$lib/types/core-node-types';
 import {
   hasTypedUpdate,
   TYPED_CORE_DEFAULTS,
@@ -170,6 +170,11 @@ export function storageNodeToApiFields(
       promoted[wire] = date ? normalizeDate(raw) : raw;
     }
     delete properties[storage];
+  }
+  // Derived as `play_node_to_value` derives it: the stored `_seed` marker
+  // never reaches the wire, and a play says whether it had one.
+  if (isA(nodeType, 'play')) {
+    promoted.isSeeded = isPlainObject(storageProperties) && '_seed' in storageProperties;
   }
   return { ...promoted, properties };
 }
