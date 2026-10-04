@@ -1080,6 +1080,85 @@ async fn the_issues_board_is_seeded_as_a_saved_kanban_that_finds_issues() -> Res
     Ok(())
 }
 
+/// The current-cycle board shows the issues of the cycle spanning today, and
+/// no others: its relative dates resolve when it runs, and both filters
+/// constrain the one cycle an issue is in.
+#[tokio::test]
+async fn the_current_cycle_board_shows_exactly_the_issues_of_the_cycle_spanning_today() -> Result<()>
+{
+    let (service, _tmp) = test_service().await?;
+    let report = install_playbook(&service, &linear()).await;
+    assert!(report.success, "first failure: {:?}", report.failure());
+
+    // The local date: what a relative date resolves against. A day either
+    // side of it keeps the current cycle current across midnight.
+    let today = chrono::Local::now().date_naive();
+    let day = |offset: i64| {
+        (today + chrono::Duration::days(offset))
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+
+    let mut issue_in = std::collections::HashMap::new();
+    for (name, start, end) in [
+        ("past", day(-30), day(-10)),
+        ("current", day(-1), day(1)),
+        ("upcoming", day(10), day(30)),
+    ] {
+        let cycle = service
+            .create_node(Node::new(
+                "cycle".to_string(),
+                format!("The {name} cycle"),
+                serde_json::json!({ "start_date": start, "end_date": end, "duration_days": 14 }),
+            ))
+            .await?;
+        let issue = service
+            .create_node(Node::new(
+                "issue".to_string(),
+                format!("Work in the {name} cycle"),
+                serde_json::json!({ "status": "in_progress" }),
+            ))
+            .await?;
+        service
+            .create_relationship(&cycle, "tasks", &issue, serde_json::json!({}))
+            .await?;
+        issue_in.insert(name, issue);
+    }
+    // An issue in no cycle is not in the current one.
+    service
+        .create_node(Node::new(
+            "issue".to_string(),
+            "Unplanned work".to_string(),
+            serde_json::json!({ "status": "backlog" }),
+        ))
+        .await?;
+
+    let view = service
+        .get_node(nodespace_core::methodology::linear::CURRENT_CYCLE_ISSUES_ID)
+        .await?
+        .expect("the current-cycle board should be seeded");
+    assert_eq!(view.content, "Current Cycle Issues");
+    let fields = QueryFields::from_node(&view)?;
+    assert!(
+        fields.filters.iter().all(|f| f.has_relative_date()),
+        "the stored filters keep their relative dates, never a resolved one"
+    );
+
+    let mut definition = QueryDefinition::from_fields(&fields);
+    definition.filters = nodespace_core::ops::query_ops::resolve_filters(
+        &service,
+        &definition.target_type,
+        definition.filters,
+    )
+    .await?;
+    let results = QueryService::new(service.store().clone())
+        .execute(&definition)
+        .await?;
+    let ids: Vec<&str> = results.iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(ids, vec![issue_in["current"].as_str()]);
+    Ok(())
+}
+
 /// A re-keyed schema takes its views with it. A workspace that already has an
 /// `issue` gets the playbook's issue type under a suffixed id, and the seeded
 /// board must target that — not silently filter the stranger's schema, which
@@ -1124,14 +1203,14 @@ async fn a_re_keyed_schema_retargets_the_views_seeded_over_it() -> Result<()> {
         "groupBy is a field name and must not be rewritten"
     );
 
-    let cycles = service
-        .get_node(nodespace_core::methodology::linear::CYCLES_ID)
+    let current = service
+        .get_node(nodespace_core::methodology::linear::CURRENT_CYCLE_ISSUES_ID)
         .await?
-        .expect("the cycles view should be seeded");
+        .expect("the current-cycle board should be seeded");
     assert_eq!(
-        QueryFields::from_node(&cycles)?.target_type,
-        "cycle",
-        "a view over a schema that did not collide is left alone"
+        QueryFields::from_node(&current)?.target_type,
+        new_id,
+        "every view over the re-keyed type follows it"
     );
     Ok(())
 }

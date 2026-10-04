@@ -36,7 +36,7 @@
 //! reads as the task lifecycle to a consumer that knows that name.
 
 use crate::methodology::skills::{PlaybookSkill, DEFAULT_TOOLS};
-use crate::methodology::{MethodologyPlaybook, PlayStep, SchemaStep, ViewStep};
+use crate::methodology::{view_filters, MethodologyPlaybook, PlayStep, SchemaStep, ViewStep};
 use crate::services::QueryDefinition;
 use serde_json::json;
 
@@ -51,8 +51,8 @@ pub const SPRINT_COMPLETION_STAMP_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f
 pub const SPRINT_CLOSE_LOCK_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f03";
 /// The `jira-epics-by-status` saved view.
 pub const EPICS_BY_STATUS_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f04";
-/// The `jira-sprints-by-status` saved view.
-pub const SPRINTS_BY_STATUS_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f05";
+/// The `jira-active-sprint-issues` saved view.
+pub const ACTIVE_SPRINT_ISSUES_ID: &str = "7a1d94b8-52c3-4e7e-8a40-5e2c9d3b6f05";
 
 /// The guidance skills, in install order.
 const SKILLS: &[PlaybookSkill] = &[
@@ -140,7 +140,7 @@ pub fn playbook() -> MethodologyPlaybook {
         ],
         skills: SKILLS,
         overview: OVERVIEW,
-        views: vec![epics_by_status_view(), sprints_by_status_view()],
+        views: vec![epics_by_status_view(), active_sprint_issues_view()],
     }
 }
 
@@ -702,20 +702,30 @@ fn epics_by_status_view() -> ViewStep {
     }
 }
 
-/// Sprints by lifecycle: what is being planned, what is running, what is done.
-fn sprints_by_status_view() -> ViewStep {
+/// Active Sprint Issues — the work in a sprint that has been started and not
+/// yet closed, as a board.
+///
+/// Targets `task`, as `sprint.issues` does, so tasks, stories and bugs all
+/// appear. A sprint's status is stored, so the filter compares it directly.
+fn active_sprint_issues_view() -> ViewStep {
     ViewStep {
-        view_id: SPRINTS_BY_STATUS_ID,
-        name: "Sprints",
+        view_id: ACTIVE_SPRINT_ISSUES_ID,
+        name: "Active Sprint Issues",
         definition: QueryDefinition {
-            target_type: "sprint".to_string(),
-            filters: vec![],
+            target_type: "task".to_string(),
+            filters: view_filters(json!([{
+                "type": "related", "operator": "exists", "path": ["sprint"],
+                "filter": {
+                    "type": "property", "operator": "equals", "property": "sprint_status",
+                    "value": "active",
+                },
+            }])),
             sorting: None,
             limit: None,
         },
         view_config: json!({
             "lastView": "kanban",
-            "kanban": { "groupBy": "sprint_status" },
+            "kanban": { "groupBy": "status" },
         }),
     }
 }

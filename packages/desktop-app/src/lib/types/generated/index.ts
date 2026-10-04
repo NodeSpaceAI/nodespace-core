@@ -61,6 +61,8 @@ export type { RelationshipCardinality } from './relationship-cardinality';
 export type { RelationshipDirection } from './relationship-direction';
 export type { RelationshipHop } from './relationship-hop';
 export type { RelationshipPath } from './relationship-path';
+export type { RelativeDate } from './relative-date';
+export type { RelativeDateAnchor } from './relative-date-anchor';
 export type { RemoveRelationshipParams } from './remove-relationship-params';
 export type { RuleClass } from './rule-class';
 export type { RuleCondition } from './rule-condition';

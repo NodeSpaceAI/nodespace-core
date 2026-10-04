@@ -978,6 +978,16 @@ mod tests {
             out.sorting, definition.sorting,
             "a sort field is a field name"
         );
+
+        let over_another_type = QueryDefinition {
+            target_type: "cycle".to_string(),
+            ..definition.clone()
+        };
+        assert_eq!(
+            rewrite_view_step_ids(&over_another_type, &renames).target_type,
+            "cycle",
+            "a view over a schema that did not collide is left alone"
+        );
     }
 
     #[test]

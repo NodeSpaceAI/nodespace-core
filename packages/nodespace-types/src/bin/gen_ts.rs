@@ -114,6 +114,8 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         RelationshipHop,
         RelationshipPath,
         SortDirection,
+        RelativeDateAnchor,
+        RelativeDate,
         QueryFilter,
         SortConfig,
         QueryGeneratedBy,

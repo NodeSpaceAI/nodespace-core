@@ -9,6 +9,11 @@ export interface LayoutState {
   collectionsExpanded: boolean;
   nodeTypesExpanded: boolean;
   aiChatsExpanded: boolean;
+  /**
+   * Node types whose saved views are collapsed in the sidebar. A type's views
+   * show until the user collapses them, so a newly saved view is visible.
+   */
+  collapsedTypeViews: string[];
 }
 
 export interface NavigationItem {
@@ -26,6 +31,7 @@ const initialLayoutState: LayoutState = {
   collectionsExpanded: false,
   nodeTypesExpanded: false,
   aiChatsExpanded: false,
+  collapsedTypeViews: [],
 };
 
 const initialNavigationItems: NavigationItem[] = [
@@ -107,6 +113,7 @@ class LayoutStore {
         collectionsExpanded: persisted.collectionsExpanded ?? false,
         nodeTypesExpanded: persisted.nodeTypesExpanded ?? false,
         aiChatsExpanded: persisted.aiChatsExpanded ?? false,
+        collapsedTypeViews: persisted.collapsedTypeViews ?? [],
       };
     }
 
@@ -143,6 +150,23 @@ class LayoutStore {
 
   setAiChatsExpanded(expanded: boolean): void {
     this.state = { ...this.state, aiChatsExpanded: expanded };
+    this.#persist();
+  }
+
+  /** Whether the saved views under a node type are showing. */
+  isTypeViewsExpanded(typeId: string): boolean {
+    return !this.state.collapsedTypeViews.includes(typeId);
+  }
+
+  /** Collapse or expand the saved views under a node type. */
+  toggleTypeViewsExpanded(typeId: string): void {
+    const collapsed = this.state.collapsedTypeViews;
+    this.state = {
+      ...this.state,
+      collapsedTypeViews: collapsed.includes(typeId)
+        ? collapsed.filter((id) => id !== typeId)
+        : [...collapsed, typeId],
+    };
     this.#persist();
   }
 

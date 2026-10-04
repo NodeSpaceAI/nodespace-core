@@ -2,6 +2,7 @@
 import type { FilterOperator } from './filter-operator';
 import type { FilterType } from './filter-type';
 import type { RelationshipPath } from './relationship-path';
+import type { RelativeDate } from './relative-date';
 
 /**
  * Individual filter condition
@@ -28,6 +29,12 @@ export type QueryFilter = {
    * Expected value
    */
   value?: unknown;
+  /**
+   * A date relative to the day the query runs, compared in place of
+   * [`Self::value`] by a [`FilterType::Property`] filter on a date field.
+   * A filter carries one or the other, never both.
+   */
+  relative_date?: RelativeDate | null;
   /**
    * Case sensitivity for text comparisons
    */
