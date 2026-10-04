@@ -622,6 +622,12 @@ impl PlayFields {
     pub fn suspended_in(properties: &Value) -> bool {
         Self::stored_field(properties, PLAY_SUSPENDED_AT_FIELD).is_some()
     }
+
+    /// Whether the play shipped with the product: its properties carry the
+    /// `_seed` marker.
+    pub fn seeded_in(properties: &Value) -> bool {
+        properties.get("_seed").is_some()
+    }
 }
 
 /// The `play` bucket of stored properties, or the properties themselves when
@@ -710,6 +716,10 @@ pub struct PlayNode {
     pub envelope: NodeEnvelope,
     #[serde(flatten)]
     pub fields: PlayFields,
+    /// True for a play that shipped with the product. Derived from the stored
+    /// `_seed` marker, which never reaches the wire, and read-only: no update
+    /// accepts it.
+    pub is_seeded: bool,
 }
 
 /// Partial update for a play's fields.
@@ -1189,7 +1199,12 @@ mod tests {
         assert!(!update.is_empty());
         assert_eq!(update.to_properties_patch(), json!({ "enabled": false }));
 
-        for key in ["suspendedReason", "suspendedMessage", "suspendedAt"] {
+        for key in [
+            "suspendedReason",
+            "suspendedMessage",
+            "suspendedAt",
+            "isSeeded",
+        ] {
             assert!(
                 serde_json::from_value::<PlayNodeUpdate>(json!({ key: "x" })).is_err(),
                 "a typed update must not carry `{key}`"

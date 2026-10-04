@@ -45,6 +45,8 @@ fn normalize_date_field(s: &str) -> String {
 /// The `wire_contract` tests below pin that shape.
 pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
     let mut node = node;
+    // Read before flattening drops the `_seed` marker.
+    let is_seeded = PlayFields::seeded_in(&node.properties);
     flatten_properties_for_api(&mut node);
 
     let node_id = node.id.clone();
@@ -64,7 +66,7 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         Some(CoreNodeType::Skill) => skill_node_to_value(node),
         Some(CoreNodeType::DatabaseSettings) => database_settings_node_to_value(node),
         Some(CoreNodeType::Query) => query_node_to_value(node),
-        Some(CoreNodeType::Play) => play_node_to_value(node),
+        Some(CoreNodeType::Play) => play_node_to_value(node, is_seeded),
         Some(
             CoreNodeType::Text
             | CoreNodeType::Header
@@ -676,7 +678,10 @@ fn query_node_to_value(node: Node) -> Result<serde_json::Value, String> {
 /// malformed query does. Writes are checked by `PlayNodeBehavior::validate`,
 /// so this only meets a row written around the service layer. Such a play is
 /// one the engine suspends, so its switch and suspension are kept readable.
-fn play_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+///
+/// `is_seeded` is read from the stored properties by the caller: the `_seed`
+/// marker is gone from the flattened `node` this receives.
+fn play_node_to_value(node: Node, is_seeded: bool) -> Result<serde_json::Value, String> {
     let fields = PlayFields::from_properties(&node.properties).unwrap_or_else(|e| {
         eprintln!("play node '{}' has unreadable fields: {e}", node.id);
         PlayFields::readable_from_properties(&node.properties)
@@ -685,6 +690,7 @@ fn play_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     let play = PlayNode {
         envelope: extension_envelope(node, CoreNodeType::Play),
         fields,
+        is_seeded,
     };
 
     serde_json::to_value(&play).map_err(|e| format!("Failed to serialize play node: {}", e))
@@ -1092,6 +1098,19 @@ mod wire_contract {
             serde_json::json!({ "custom:owner": "ada" }),
             "properties keeps extension fields only"
         );
+        assert_eq!(out["isSeeded"], true, "derived from the `_seed` marker");
+    }
+
+    #[test]
+    fn play_without_a_seed_marker_is_not_seeded() {
+        let node = Node::new(
+            "play".to_string(),
+            "My play".to_string(),
+            serde_json::json!({ "play": { "rules": [] } }),
+        );
+        let out = node_to_typed_value(node).unwrap();
+
+        assert_eq!(out["isSeeded"], false);
     }
 
     #[test]

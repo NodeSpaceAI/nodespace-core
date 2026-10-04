@@ -197,6 +197,60 @@ describe('updateNode routing for typed core types', () => {
     expect((store.getNode('pl1') as unknown as PlayNode).description).toBe('Greets new tasks');
   });
 
+  it("applies the response's read-only fields: switching a suspended play on clears its suspension", async () => {
+    store.setNode(
+      makeNode('pl2', 'play', {
+        rules: [],
+        enabled: true,
+        suspendedReason: 'action_failed',
+        suspendedMessage: 'update_node failed',
+        suspendedAt: '2026-10-01T09:00:00Z'
+      }),
+      dbSource
+    );
+    // The backend clears a suspension on `enabled: true`; the confirmed play
+    // omits the three suspension keys.
+    const typedSpy = vi.spyOn(backendAdapter, 'updatePlayNode').mockImplementation(
+      async (id, version) =>
+        ({
+          ...makeNode(id, 'play', { rules: [], enabled: true }),
+          version: version + 1
+        }) as unknown as PlayNode
+    );
+
+    store.updatePlayNode('pl2', { enabled: true }, viewerSource);
+
+    await vi.waitFor(() => expect(typedSpy).toHaveBeenCalledWith('pl2', 1, { enabled: true }));
+    await vi.waitFor(() =>
+      expect((store.getNode('pl2') as unknown as PlayNode).suspendedAt).toBeUndefined()
+    );
+    const play = store.getNode('pl2') as unknown as PlayNode;
+    expect(play.suspendedReason).toBeUndefined();
+    expect(play.suspendedMessage).toBeUndefined();
+    expect(play.enabled).toBe(true);
+  });
+
+  it("applies the response's read-only fields for every type that has them (a query's execution count)", async () => {
+    store.setNode(
+      makeNode('q2', 'query', { targetType: 'task', filters: [], executionCount: 1 }),
+      dbSource
+    );
+    vi.spyOn(backendAdapter, 'updateQueryNode').mockImplementation(
+      async (id, version, update) =>
+        ({
+          ...makeNode(id, 'query', { targetType: 'task', filters: [], ...update }),
+          executionCount: 2,
+          version: version + 1
+        }) as unknown as QueryNode
+    );
+
+    store.updateQueryNode('q2', { limit: 10 }, viewerSource);
+
+    await vi.waitFor(() =>
+      expect((store.getNode('q2') as unknown as QueryNode).executionCount).toBe(2)
+    );
+  });
+
   // The store routes every type the registry gives a typed update to that
   // update, so a type the backend adds one for without a route here has no
   // write path.

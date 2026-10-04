@@ -512,6 +512,31 @@ export const collectionNodePlugin: PluginDefinition = {
 };
 
 /**
+ * Play Node Plugin
+ *
+ * A play is shown read-only, as its rules, with its on/off switch; rules are
+ * changed through a chat bound to the play (ADR-090). Plays are authored by
+ * agents and playbooks, so there is no slash command.
+ */
+export const playNodePlugin: PluginDefinition = {
+  id: 'play',
+  name: 'Play',
+  description: 'Automation rules that run when the graph changes or on a schedule',
+  version: '1.0.0',
+  config: {
+    slashCommands: [],
+  },
+  viewer: {
+    lazyLoad: () => import('../components/viewers/play-node-viewer.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  }
+};
+
+/**
  * AI Chat Node Plugins
  *
  * AI chat conversations stored as first-class knowledge graph nodes, so a chat
@@ -638,6 +663,7 @@ export const corePlugins = [
   tableNodePlugin,
   queryNodePlugin,
   collectionNodePlugin,
+  playNodePlugin,
   aiChatNativeNodePlugin,
   aiChatPtyNodePlugin,
   personNodePlugin

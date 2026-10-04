@@ -6,12 +6,14 @@
   let {
     ref = $bindable(null),
     class: className,
+    checked = $bindable(false),
     ...restProps
   }: SwitchProps = $props();
 </script>
 
 <SwitchPrimitive.Root
   bind:ref
+  bind:checked
   data-slot="switch"
   class={cn(
     // No focus indicator, and `focus-visible:outline-none` keeps the UA ring

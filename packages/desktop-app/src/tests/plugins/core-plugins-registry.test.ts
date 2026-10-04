@@ -20,7 +20,6 @@ const CORE_TYPES_WITHOUT_PLUGIN: Record<string, string> = {
   skill: 'agent-owned content with a schema-driven form; shown as an entity row',
   'database-settings': 'a singleton edited through Settings; shown as an entity row',
   schema: 'edited through the schema surfaces, never as an outline node',
-  play: 'authored through the playbook surfaces; shown as an entity row',
   'tool-native': 'seeded by the agent runtime, never typed in; shown as an entity row',
   'ai-chat-message':
     'a message of a native chat, rendered only by the chat viewer through ChatMessage; never an outline row or a slash command'
