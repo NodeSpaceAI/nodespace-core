@@ -24,15 +24,19 @@ use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::methodology::{install_playbook, playbook_by_id};
 use nodespace_core::ops::search_ops::{search_semantic, SearchSemanticInput};
 use nodespace_core::ops::skill_ops::{find_skill_guidance, find_skills, FindSkillsInput};
+use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{NodeAccessor, NodeEmbeddingService, NodeService};
 use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
+use serde_json::json;
 use tempfile::TempDir;
 
-/// A database seeded with the built-in skills, with or without the
-/// Linear-style setup installed, and every queued root embedded. Returns
-/// `None` when the embedding model is not on disk, so the test skips.
+/// A database seeded with the built-in skills and every queued root
+/// embedded. With `with_workspace_types` it is also a workspace with types of
+/// its own: the Linear-style setup (its skills linked to `issue` and
+/// `cycle`), and two user-defined types no skill is linked to. Returns `None`
+/// when the embedding model is not on disk, so the test skips.
 async fn seeded_and_embedded(
-    with_linear_setup: bool,
+    with_workspace_types: bool,
 ) -> Option<(Arc<NodeEmbeddingService>, Arc<NodeService>, TempDir)> {
     let temp_dir = TempDir::new().expect("tempdir");
     let db_path = temp_dir.path().join("test.db");
@@ -65,10 +69,31 @@ async fn seeded_and_embedded(
         .await
         .expect("seeding the built-in skills must succeed");
 
-    if with_linear_setup {
+    if with_workspace_types {
         let playbook = playbook_by_id("linear").expect("the linear playbook ships");
         let report = install_playbook(&node_service, &playbook).await;
         assert!(report.success, "the linear playbook must install");
+
+        // Two types of the user's own, with no skill linked to either.
+        for params in [
+            json!({
+                "name": "Invoice",
+                "description": "A bill sent to a client for work done",
+                "fields": [
+                    { "name": "amount", "type": "number", "description": "What the client owes" },
+                    { "name": "paid_on", "type": "date" }
+                ]
+            }),
+            json!({
+                "name": "Venue",
+                "description": "A place an event can be held",
+                "fields": [{ "name": "capacity", "type": "number" }]
+            }),
+        ] {
+            handle_create_schema(&node_service, params)
+                .await
+                .expect("schema must create");
+        }
     }
 
     // Embed what the write paths queued, and nothing else: a root no path
@@ -162,8 +187,7 @@ async fn plainly_worded_tasks_return_the_skill_for_them() {
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn a_fetch_ranks_skills_as_the_in_app_skill_search_does() {
-    let Some((embedding_service, node_service, _temp_dir)) = seeded_and_embedded(true).await
-    else {
+    let Some((embedding_service, node_service, _temp_dir)) = seeded_and_embedded(true).await else {
         return;
     };
 
@@ -207,8 +231,7 @@ async fn a_fetch_ranks_skills_as_the_in_app_skill_search_does() {
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn a_task_in_an_installed_domain_returns_its_skills_and_its_schemas() {
-    let Some((embedding_service, node_service, _temp_dir)) = seeded_and_embedded(true).await
-    else {
+    let Some((embedding_service, node_service, _temp_dir)) = seeded_and_embedded(true).await else {
         return;
     };
 
@@ -262,6 +285,77 @@ async fn a_task_in_an_installed_domain_returns_its_skills_and_its_schemas() {
         "a schema carries its relationships: {}",
         issue.definition
     );
+}
+
+/// A fetch returns the schema of a type the task is about and no skill is
+/// linked to, and does not hand back a type for a task that is about none.
+///
+/// The schema search has no score floor, so it matches some type to every
+/// task. A fetch keeps a match only when it clears the measured bar, when a
+/// returned skill is linked to the type, or when the task names the type.
+/// `invoice` and `venue` have no skill linked, so the first and last of
+/// those are the only ways they can come back.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn a_fetch_returns_the_unlinked_types_a_task_is_about_and_no_others() {
+    let Some((embedding_service, node_service, _temp_dir)) = seeded_and_embedded(true).await else {
+        return;
+    };
+
+    // The unlinked types among a fetch's schemas.
+    let unlinked_types_for = |task: &'static str| {
+        let embedding_service = embedding_service.clone();
+        let node_service = node_service.clone();
+        async move {
+            let guidance = find_skill_guidance(&embedding_service, &node_service, input(task, 3))
+                .await
+                .expect("the fetch must succeed");
+            let mut ids: Vec<String> = guidance
+                .schemas
+                .into_iter()
+                .map(|s| s.id)
+                .filter(|id| id == "invoice" || id == "venue")
+                .collect();
+            ids.sort();
+            ids
+        }
+    };
+
+    // About a type, in words that never name it.
+    for (task, expected) in [
+        ("bill the client for the March work", "invoice"),
+        ("book a place for the offsite", "venue"),
+        ("how many people does the hall hold", "venue"),
+    ] {
+        assert_eq!(
+            unlinked_types_for(task).await,
+            vec![expected.to_string()],
+            "{task:?} is about `{expected}` and not the other"
+        );
+    }
+
+    // Named outright, on a task the schema search matches only weakly.
+    assert_eq!(
+        unlinked_types_for("delete the invoice we sent by mistake").await,
+        vec!["invoice".to_string()],
+        "a type the task names is returned"
+    );
+
+    // About an operation, or about another domain: neither type comes back.
+    for task in [
+        "delete a node",
+        "import this markdown document",
+        "merge two duplicate records into one",
+        "define a new type with an enum field",
+        "add an issue to the current cycle",
+        "what did we decide about the retry budget",
+    ] {
+        assert_eq!(
+            unlinked_types_for(task).await,
+            Vec::<String>::new(),
+            "{task:?} is about neither type"
+        );
+    }
 }
 
 /// `nodespace search "<query>" --type skill` returns matching skills, and a

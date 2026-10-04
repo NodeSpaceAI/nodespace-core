@@ -65,6 +65,30 @@ const EXCLUSION_PENALTY_WEIGHT: f64 = 1.0;
 /// unconditionally injects its own recoveries rather than scoring them.
 const LEXICAL_SCHEMA_MATCH_CONFIDENCE: f64 = 1.0;
 
+/// The score a schema-search match needs before a guidance fetch returns it.
+///
+/// The schema search has no floor and always returns its nearest types, so
+/// on its own it hands back a type for every request, related or not.
+/// Measured on the locked embedding model, fifteen requests against a
+/// workspace with four custom types (two with a skill linked, two without):
+///
+/// - a type the request was about scored 0.855 to 1.000: "bill the client
+///   for the March work" put `invoice` at 0.908, "how many people does the
+///   hall hold" put `venue` at 0.855;
+/// - a type it was not about scored 0.633 to 0.829: "delete a node" put
+///   `cycle` at 0.757, and the highest, "link the rebuild task to the
+///   decision it depends on", put `cycle` at 0.829.
+///
+/// One request about a type fell among the unrelated ones and is not
+/// returned: "record what Acme owes us for the redesign" put `invoice` at
+/// 0.789, with `cycle` at 0.763 beside it. No bar separates those two.
+///
+/// The margin is thin (0.855 over 0.829), and it is specific to this model
+/// and to the document prefix queries are embedded with: re-measure when
+/// either changes. A match below the bar still reaches the reader when a
+/// returned skill is linked to the type or the request names it.
+const GUIDANCE_SCHEMA_SCORE_BAR: f64 = 0.85;
+
 /// Input for find_skills operation.
 #[derive(Debug)]
 pub struct FindSkillsInput {
@@ -581,8 +605,7 @@ pub async fn find_skills(
     let mut schema_hits = non_core_schema_hits_with_scores(schema_search_results, &all_schemas);
     schema_hits.truncate(limit);
 
-    let schema_candidates =
-        append_named_schema_candidates(schema_hits, &all_schemas, &input.query);
+    let schema_candidates = append_named_schema_candidates(schema_hits, &all_schemas, &input.query);
 
     let mut skills = Vec::with_capacity(skill_results.len() + schema_candidates.len());
 
@@ -766,6 +789,11 @@ pub async fn find_skills(
 
     let total_results = skills.len();
     let all_scores = format_all_scores(&skill_results);
+    let schema_scores = schema_candidates
+        .iter()
+        .map(|(schema, score)| format!("{}={:.3}", schema.envelope.id, score))
+        .collect::<Vec<_>>()
+        .join(", ");
     let top_score = skills.first().map(confidence_of).unwrap_or(0.0);
 
     tracing::info!(
@@ -774,6 +802,7 @@ pub async fn find_skills(
         top_score = top_score,
         all_scores = %all_scores,
         schema_candidates_found = schema_candidates.len(),
+        schema_scores = %schema_scores,
         "find_skills executed"
     );
 
@@ -871,18 +900,39 @@ pub async fn list_skill_guidance(
 /// an operation.
 ///
 /// Ranked by [`find_skills`], so a request gets the skills the in-app agent
-/// would get for it, in the same order. The schemas are the ones that search
-/// matched, plus the ones each matched skill is linked to through
-/// `applies_to`. A skill's unlinked fallback (the first few custom types) is
-/// left out: it is a guess, and the in-app agent holds it against a tool
-/// surface an outside agent does not have.
+/// would get for it, in the same order.
+///
+/// A schema is returned when the request is about its type, by one of three
+/// signs:
+///
+/// - a returned skill is linked to it through `applies_to`;
+/// - the request names it (see [`mentions_phrase`]);
+/// - the schema search matched it at or above
+///   [`GUIDANCE_SCHEMA_SCORE_BAR`].
+///
+/// A skill's unlinked fallback (the first few custom types) is left out: it
+/// is a guess, and the in-app agent holds it against a tool surface an
+/// outside agent does not have. The in-app agent is given every schema match
+/// with its score, and its routing judges them; this is the judgment for a
+/// reader that has no routing step.
 pub async fn find_skill_guidance(
     embedding_service: &Arc<NodeEmbeddingService>,
     node_service: &Arc<NodeService>,
     input: FindSkillsInput,
 ) -> Result<SkillGuidance, OpsError> {
+    let query_lower = input.query.to_lowercase();
     let found = find_skills(embedding_service, node_service, input).await?;
     let mut guidance = SkillGuidance::default();
+
+    let is_schema = |entry: &Value| entry.get("kind").and_then(Value::as_str) == Some("schema");
+    let named = |definition: &Value| {
+        ["type_id", "name"].iter().any(|key| {
+            definition
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|text| mentions_phrase(&query_lower, &text.to_lowercase()))
+        })
+    };
 
     fn add_schema(schemas: &mut Vec<GuidanceSchema>, definition: &Value) {
         let Some(id) = definition.get("type_id").and_then(Value::as_str) else {
@@ -909,9 +959,15 @@ pub async fn find_skill_guidance(
             .and_then(Value::as_array)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        if entry.get("kind").and_then(Value::as_str) == Some("schema") {
+        if is_schema(entry) {
+            let clears_the_bar = entry
+                .get("confidence")
+                .and_then(Value::as_f64)
+                .is_some_and(|score| score >= GUIDANCE_SCHEMA_SCORE_BAR);
             for definition in schema_metadata {
-                add_schema(&mut guidance.schemas, definition);
+                if clears_the_bar || named(definition) {
+                    add_schema(&mut guidance.schemas, definition);
+                }
             }
             continue;
         }

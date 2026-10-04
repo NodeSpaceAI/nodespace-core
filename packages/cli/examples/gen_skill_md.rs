@@ -85,7 +85,8 @@ fn regions() -> Vec<GeneratedRegion> {
         GeneratedRegion {
             id: "relationship-rules",
             file: "references/cli.md",
-            source_note: "packages/agent/src/seeds/rules/skill-md/relationship-direction.md, \
+            source_note:
+                "packages/agent/src/seeds/rules/skill-md/relationship-direction.md, \
                           packages/agent/src/seeds/rules/skill-md/relationship-reverse-traversal.md",
             render: nodespace_agent::skill_rules::skill_md_relationship_rules,
         },

@@ -202,7 +202,7 @@ async fn changing_a_schemas_relationships_requeues_it() -> Result<()> {
         json!({ "name": "Client", "fields": [{ "name": "region", "type": "text" }] }),
     )
     .await
-        .map_err(|e| anyhow::anyhow!("create_schema rejected: {e}"))?;
+    .map_err(|e| anyhow::anyhow!("create_schema rejected: {e}"))?;
     let schema_id = create_invoice(&service).await?;
     embed_fresh(&service, &schema_id).await?;
 
@@ -261,8 +261,7 @@ async fn a_schema_is_embedded_as_its_name_and_its_fields() -> Result<()> {
         .expect("a schema is embeddable");
 
     assert_eq!(
-        text,
-        "Invoice\nAmount: What the client owes\nPaid on",
+        text, "Invoice\nAmount: What the client owes\nPaid on",
         "name first, then one line per field: its label, and its description where it has one"
     );
     Ok(())

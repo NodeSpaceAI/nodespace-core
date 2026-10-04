@@ -257,10 +257,7 @@ fn cited_commands(text: &str) -> Vec<Vec<String>> {
         .filter_map(|span| span.strip_prefix("nodespace "))
         .map(|rest| {
             rest.split_whitespace()
-                .take_while(|word| {
-                    word.chars()
-                        .all(|c| c.is_ascii_lowercase() || c == '-')
-                })
+                .take_while(|word| word.chars().all(|c| c.is_ascii_lowercase() || c == '-'))
                 .map(str::to_string)
                 .collect::<Vec<_>>()
         })
@@ -291,10 +288,7 @@ fn every_seeded_skill_is_served_in_real_cli_commands() {
         }
         for words in commands {
             let shown = format!("nodespace {}", words.join(" "));
-            let Some(group) = visible(&cli)
-                .into_iter()
-                .find(|c| c.get_name() == words[0])
-            else {
+            let Some(group) = visible(&cli).into_iter().find(|c| c.get_name() == words[0]) else {
                 problems.push(format!("{}: `{shown}` is not a command", seed.title));
                 continue;
             };

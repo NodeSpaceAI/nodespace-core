@@ -3424,32 +3424,32 @@ pub async fn update_schema(
         .await;
 
     committed.map_err(|e| match e {
-            NodeServiceError::InvalidUpdate(_) => MarkdownError::invalid_params(e.to_string()),
-            NodeServiceError::VersionConflict { ref node_id, .. } => {
-                // Phase 1 renames commit on their own, ahead of this group,
-                // so a caller retrying the whole call must not resend them.
-                let renames_note = if fields_renamed > 0 {
-                    " The field renames in this call WERE applied before the conflict was \
+        NodeServiceError::InvalidUpdate(_) => MarkdownError::invalid_params(e.to_string()),
+        NodeServiceError::VersionConflict { ref node_id, .. } => {
+            // Phase 1 renames commit on their own, ahead of this group,
+            // so a caller retrying the whole call must not resend them.
+            let renames_note = if fields_renamed > 0 {
+                " The field renames in this call WERE applied before the conflict was \
                      detected — omit rename_fields when retrying."
-                } else {
-                    ""
-                };
-                let changed = if *node_id == params.schema_id {
-                    format!("Schema '{}' changed concurrently", node_id)
-                } else {
-                    format!(
-                        "Schema '{}', on the new extends chain of '{}', changed concurrently",
-                        node_id, params.schema_id
-                    )
-                };
-                MarkdownError::invalid_params(format!(
-                    "{} while this update was being applied; none of its field, relationship or \
+            } else {
+                ""
+            };
+            let changed = if *node_id == params.schema_id {
+                format!("Schema '{}' changed concurrently", node_id)
+            } else {
+                format!(
+                    "Schema '{}', on the new extends chain of '{}', changed concurrently",
+                    node_id, params.schema_id
+                )
+            };
+            MarkdownError::invalid_params(format!(
+                "{} while this update was being applied; none of its field, relationship or \
                      description changes were written.{} Re-read the schema and retry.",
-                    changed, renames_note
-                ))
-            }
-            other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),
-        })?;
+                changed, renames_note
+            ))
+        }
+        other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),
+    })?;
 
     Ok(SchemaUpdateOutput {
         schema_id: params.schema_id,
