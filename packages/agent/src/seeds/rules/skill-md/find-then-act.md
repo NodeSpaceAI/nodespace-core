@@ -1,1 +1,1 @@
-if you don't already have the target node's ID, search for it first, then act on the resolved ID.
+If you don't already have the node's ID, look it up first — by name with `nodespace node query --title-contains "<name>"`, by topic with `nodespace search` — then act on the resolved ID. Do not guess IDs.

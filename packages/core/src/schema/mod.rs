@@ -2249,6 +2249,18 @@ pub async fn create_schema(
             )),
         })?;
 
+    // A schema is found by meaning (skill search and the workspace context
+    // both search schemas semantically), so the committed schema is queued
+    // for embedding. The create ran in a caller-held transaction, which
+    // queues nothing itself.
+    node_service
+        .queue_created_root_for_embedding(
+            &created_schema_id,
+            crate::models::CoreNodeType::Schema.as_str(),
+            false,
+        )
+        .await;
+
     // Build the result from the COMMITTED row, not from the request.
     //
     // Everything above this point describes what the caller asked for. Echoing
@@ -3275,7 +3287,7 @@ pub async fn update_schema(
         }
     }
     let node_service_for_tx = Arc::clone(node_service);
-    node_service
+    let committed = node_service
         .with_transaction(move |tx| {
             let node_service = Arc::clone(&node_service_for_tx);
             let schema_id = schema_id_for_tx.clone();
@@ -3399,8 +3411,19 @@ pub async fn update_schema(
                 Ok(())
             })
         })
-        .await
-        .map_err(|e| match e {
+        .await;
+
+    // The schema's embedding is built from its name, fields and description,
+    // so a change to any of them leaves it stale. Queued whether or not the
+    // group above committed: a Phase 1 rename is already persisted either
+    // way. The transaction runs in a caller-held boundary, which queues
+    // nothing itself (ADR-069 §5).
+    #[cfg(feature = "nlp")]
+    node_service
+        .queue_root_for_embedding(&params.schema_id)
+        .await;
+
+    committed.map_err(|e| match e {
             NodeServiceError::InvalidUpdate(_) => MarkdownError::invalid_params(e.to_string()),
             NodeServiceError::VersionConflict { ref node_id, .. } => {
                 // Phase 1 renames commit on their own, ahead of this group,

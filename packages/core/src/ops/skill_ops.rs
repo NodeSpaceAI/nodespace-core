@@ -40,11 +40,10 @@ const MAX_SKILL_LIMIT: usize = 10;
 ///
 /// A penalty only ever lowers a skill, so it can promote a skill that ranked
 /// below `limit` on raw similarity. The promotion is exact when the pool holds
-/// every skill: that needs a registry of at most this many skills, all of them
-/// surviving the typed search's KNN window (which ranks every embedding before
-/// filtering by type — see `search_embeddings_by_node_type`). Past that, a
-/// skill ranked below the pool on raw similarity cannot be promoted. Twice
-/// [`MAX_SKILL_LIMIT`] covers the registry sizes that cap is sized for.
+/// every skill, which needs a registry of at most this many skills (the typed
+/// search scores every skill, see `search_embeddings_by_node_type`). Past
+/// that, a skill ranked below the pool on raw similarity cannot be promoted.
+/// Twice [`MAX_SKILL_LIMIT`] covers the registry sizes that cap is sized for.
 const SKILL_RERANK_POOL: usize = 2 * MAX_SKILL_LIMIT;
 
 /// Weight on a skill's exclusion margin in [`exclusion_penalized_score`].
@@ -550,24 +549,8 @@ pub async fn find_skills(
         .map_err(|e| OpsError::Internal(format!("Skill search failed: {}", e)))?;
     let skill_results = rerank_with_exclusions(embedding_service, &query_vector, skill_pool, limit);
 
-    // Schema discovery, independent of any hand-authored skill matching the
-    // query — see this function's own doc comment. Same primitive
-    // (`semantic_search_nodes_of_type`), same node type ("schema"), same
-    // threshold as the skill search above; the two are deliberately
-    // separate calls rather than a combined query because they populate two
-    // differently-shaped result kinds below.
-    let schema_search_results = embedding_service
-        .semantic_search_nodes_of_type_with_vector(
-            &query_vector,
-            "schema",
-            limit,
-            SKILL_SEARCH_THRESHOLD,
-        )
-        .await
-        .map_err(|e| OpsError::Internal(format!("Schema search failed: {}", e)))?;
-
     // Fetch all schemas once; used to attach metadata to each matched skill
-    // AND (below) to resolve and lexically backstop the schema search above.
+    // AND (below) to resolve and lexically backstop the schema search.
     let all_schemas = node_service
         .get_all_schemas()
         .await
@@ -576,11 +559,30 @@ pub async fn find_skills(
         })
         .unwrap_or_default();
 
-    let schema_candidates = append_named_schema_candidates(
-        non_core_schema_hits_with_scores(schema_search_results, &all_schemas),
-        &all_schemas,
-        &input.query,
-    );
+    // Schema discovery, independent of any hand-authored skill matching the
+    // query — see this function's own doc comment. Same primitive
+    // (`semantic_search_nodes_of_type`), same node type ("schema"), same
+    // threshold as the skill search above; the two are deliberately
+    // separate calls rather than a combined query because they populate two
+    // differently-shaped result kinds below.
+    //
+    // Every schema is ranked, and `limit` applies after core types are
+    // dropped: core schemas are embedded too, so a limit on the search itself
+    // would let them take the places of the custom types this is for.
+    let schema_search_results = embedding_service
+        .semantic_search_nodes_of_type_with_vector(
+            &query_vector,
+            "schema",
+            all_schemas.len().max(limit),
+            SKILL_SEARCH_THRESHOLD,
+        )
+        .await
+        .map_err(|e| OpsError::Internal(format!("Schema search failed: {}", e)))?;
+    let mut schema_hits = non_core_schema_hits_with_scores(schema_search_results, &all_schemas);
+    schema_hits.truncate(limit);
+
+    let schema_candidates =
+        append_named_schema_candidates(schema_hits, &all_schemas, &input.query);
 
     let mut skills = Vec::with_capacity(skill_results.len() + schema_candidates.len());
 
@@ -780,6 +782,170 @@ pub async fn find_skills(
         query: input.query,
         total_results,
     })
+}
+
+/// One skill in a guidance fetch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GuidanceSkill {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// RFC 3339.
+    pub modified_at: String,
+    /// The retrieval score the skill search gave it. `None` in a listing,
+    /// which ranks nothing.
+    pub confidence: Option<f64>,
+    /// The skill's stored procedure, as markdown. Empty in a listing.
+    pub instructions: String,
+    /// Whether a user has edited the stored procedure of a seeded skill
+    /// (ADR-072). A caller that renders a seeded skill for its own audience
+    /// may do so only when this is `false`; an edited procedure is served as
+    /// stored.
+    pub guidance_modified: bool,
+}
+
+/// One schema in a guidance fetch: the shape of a type the request touches.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GuidanceSchema {
+    pub id: String,
+    pub name: String,
+    /// The type's definition in the `schema_metadata` form: `type_id`,
+    /// `fields` (each with its type, description and enum values),
+    /// `relationships`, and the schema's own `description` where it has one.
+    pub definition: Value,
+}
+
+/// What a guidance fetch returns: the skills matching a request, and the
+/// schemas relevant to it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SkillGuidance {
+    pub skills: Vec<GuidanceSkill>,
+    pub schemas: Vec<GuidanceSchema>,
+}
+
+fn guidance_skill(node: &crate::models::Node, confidence: Option<f64>) -> Option<GuidanceSkill> {
+    let description = match SkillFields::from_node(node) {
+        Ok(skill) => skill.description,
+        Err(e) => {
+            tracing::warn!(skill_id = %node.id, error = %e, "skill guidance: skipping malformed skill node");
+            return None;
+        }
+    };
+    let guidance_modified = node
+        .properties
+        .get("_seed")
+        .and_then(|seed| seed.get("guidance_modified"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    Some(GuidanceSkill {
+        id: node.id.clone(),
+        name: node.content.clone(),
+        description,
+        modified_at: node.modified_at.to_rfc3339(),
+        confidence,
+        instructions: String::new(),
+        guidance_modified,
+    })
+}
+
+/// Every skill in the graph, by name, with its description and no procedure:
+/// what an agent browses to learn which skills exist.
+///
+/// Reads no embedding, so it answers while the embedding model is loading.
+pub async fn list_skill_guidance(
+    node_service: &NodeService,
+) -> Result<Vec<GuidanceSkill>, OpsError> {
+    let mut skills: Vec<GuidanceSkill> = node_service
+        .query_nodes_by_type(crate::models::CoreNodeType::Skill.as_str(), false)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to list skills: {}", e)))?
+        .iter()
+        .filter_map(|node| guidance_skill(node, None))
+        .collect();
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(skills)
+}
+
+/// The skills matching `query`, each with its procedure, and the schemas
+/// relevant to the same query: what an agent outside the app fetches before
+/// an operation.
+///
+/// Ranked by [`find_skills`], so a request gets the skills the in-app agent
+/// would get for it, in the same order. The schemas are the ones that search
+/// matched, plus the ones each matched skill is linked to through
+/// `applies_to`. A skill's unlinked fallback (the first few custom types) is
+/// left out: it is a guess, and the in-app agent holds it against a tool
+/// surface an outside agent does not have.
+pub async fn find_skill_guidance(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    input: FindSkillsInput,
+) -> Result<SkillGuidance, OpsError> {
+    let found = find_skills(embedding_service, node_service, input).await?;
+    let mut guidance = SkillGuidance::default();
+
+    fn add_schema(schemas: &mut Vec<GuidanceSchema>, definition: &Value) {
+        let Some(id) = definition.get("type_id").and_then(Value::as_str) else {
+            return;
+        };
+        if schemas.iter().any(|s| s.id == id) {
+            return;
+        }
+        let name = definition
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(id)
+            .to_string();
+        schemas.push(GuidanceSchema {
+            id: id.to_string(),
+            name,
+            definition: definition.clone(),
+        });
+    }
+
+    for entry in &found.skills {
+        let schema_metadata = entry
+            .get("schema_metadata")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if entry.get("kind").and_then(Value::as_str) == Some("schema") {
+            for definition in schema_metadata {
+                add_schema(&mut guidance.schemas, definition);
+            }
+            continue;
+        }
+
+        let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let node = match node_service.get_node(id).await {
+            Ok(Some(node)) => node,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(skill_id = %id, error = %e, "skill guidance: failed to read a matched skill");
+                continue;
+            }
+        };
+        let confidence = entry.get("confidence").and_then(Value::as_f64);
+        let Some(mut skill) = guidance_skill(&node, confidence) else {
+            continue;
+        };
+        skill.instructions = entry
+            .get("instructions")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        guidance.skills.push(skill);
+
+        if entry.get("schemas_linked").and_then(Value::as_bool) == Some(true) {
+            for definition in schema_metadata {
+                add_schema(&mut guidance.schemas, definition);
+            }
+        }
+    }
+
+    Ok(guidance)
 }
 
 #[cfg(test)]

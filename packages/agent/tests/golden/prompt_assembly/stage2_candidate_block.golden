@@ -3,8 +3,6 @@ REFERENCE — procedures relevant to this request. Use whichever applies and IGN
 --- Candidate 1: Node Creation
 Purpose: Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.
 
-# Node Creation Guidance
-
 NEW RECORD OR EXISTING ONE? If the user is changing something that already exists — marking it done or signed off, correcting a value, setting a field on a record already in this conversation — call update_node with that record's id, NOT create_node. Creating a second copy leaves the original unchanged and silently duplicates the user's data. If they are adding something that does not exist yet, create_node is right and the rest of this guidance applies.
 
 ALREADY IN THE GRAPH? Before creating, check MENTIONED ENTITIES in your context. If a record listed there is the same thing the user is asking you to add — same name, same type — do NOT call create_node. "Add X" when X already exists is ambiguous: it can mean they want a second, genuinely distinct record, or it can mean they did not know X was already there. You cannot tell which from the message, and guessing wrong either duplicates their data or refuses work they wanted done. Call route_clarify instead, naming the existing record as an option with its id from MENTIONED ENTITIES, and say plainly that it already exists. Let them choose. If MENTIONED ENTITIES says "none found", nothing by that name exists and create_node is right — that line is always complete. A list of records is not always complete. If it carries a "more matches not shown" line, other records matched too: before treating a name as unique or as new, look it up with search_nodes. And check every name in the message against the list: a name the user gave that is not listed may still exist, so look it up with search_nodes before creating it.
@@ -27,8 +25,6 @@ EXISTING SCHEMAS (do not recreate these; do not copy their fields onto a new typ
 
 --- Candidate 2: Schema Creation
 Purpose: Start tracking: set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.
-
-# Schema Creation & Editing Guidance
 
 CREATING A SCHEMA — call create_schema:
 

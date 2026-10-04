@@ -35,6 +35,12 @@ service NodeService {
   // never does this. `dry_run` returns the before-state summary without
   // changing anything, for a CLI confirmation prompt.
   rpc ResetSeedNode(ResetSeedNodeRequest) returns (ResetSeedNodeResponse);
+  // Fetch the skills matching a task, each with its procedure, and the
+  // schemas relevant to the same task: what an agent outside the app reads
+  // before an operation. Ranked by the skill search the in-app agent uses.
+  // An empty query lists every skill by name and description instead, with
+  // no procedures and no schemas, and needs no embedding model.
+  rpc GetSkillGuidance(SkillGuidanceRequest) returns (SkillGuidanceResponse);
   rpc GetChildren(GetChildrenRequest) returns (NodeListResponse);
   rpc GetChildrenTree(GetChildrenTreeRequest) returns (NodeTreeResponse);
   rpc SearchNodes(SearchRequest) returns (NodeListResponse);
@@ -495,6 +501,47 @@ message ResetSeedNodeResponse {
   // for guidance. Empty string when that aspect was not requested.
   string config_summary = 4;
   string guidance_summary = 5;
+}
+
+// ---------------------------------------------------------------------------
+// GetSkillGuidance
+// ---------------------------------------------------------------------------
+
+message SkillGuidanceRequest {
+  // The task at hand, in the caller's words. Empty (or "*") lists every skill.
+  string query = 1;
+  // Maximum skills to return for a non-empty query; 0 takes the default.
+  int32 limit = 2;
+}
+
+message SkillGuidanceEntry {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  // RFC 3339.
+  string modified_at = 4;
+  // The skill's procedure as markdown, written for an agent that drives
+  // NodeSpace through the CLI. Empty in a listing.
+  string instructions = 5;
+  // The skill search's score. Unset in a listing, which ranks nothing.
+  optional double confidence = 6;
+}
+
+message SchemaGuidanceEntry {
+  // The type id, as `node_type` takes it.
+  string id = 1;
+  string name = 2;
+  // The type's definition as JSON: `type_id`, `fields` (each with its type,
+  // description and enum values), `relationships`, and the schema's own
+  // `description` where it has one.
+  string definition = 3;
+}
+
+message SkillGuidanceResponse {
+  repeated SkillGuidanceEntry skills = 1;
+  // The schemas relevant to the query: the ones the search matched, and the
+  // ones a matched skill is linked to. Empty in a listing.
+  repeated SchemaGuidanceEntry schemas = 2;
 }
 
 // ---------------------------------------------------------------------------

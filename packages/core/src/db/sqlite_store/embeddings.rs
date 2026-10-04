@@ -527,6 +527,18 @@ impl SqliteStore {
         Ok(results)
     }
 
+    /// Exact cosine search over the embeddings of one node type.
+    ///
+    /// Reads every non-stale chunk whose node has the type and scores it here,
+    /// rather than taking a KNN window over all embeddings and filtering by
+    /// type afterwards. A type with few nodes (skills, schemas) falls out of
+    /// that window in a graph with many documents, and the search then returns
+    /// nothing for a query its nodes match well.
+    ///
+    /// Every chunk of a node is scored, so the composite's density term is
+    /// always full and a node scores as its best chunk. The cost is one row
+    /// per chunk of the type, which is what limits this to types with few
+    /// nodes.
     pub async fn search_embeddings_by_node_type(
         &self,
         query_vector: &[f32],
@@ -536,40 +548,36 @@ impl SqliteStore {
     ) -> Result<Vec<crate::models::EmbeddingSearchResult>> {
         let min_score = threshold.unwrap_or(0.5);
 
-        // Same vec0 KNN as `search_embeddings`, with the node-type filter folded into the
-        // JOIN. The type filter is applied AFTER KNN, so use a larger over-fetch to keep
-        // enough surviving candidates of the requested type.
-        let query_blob: Vec<u8> = query_vector.iter().flat_map(|f| f.to_le_bytes()).collect();
-        let k = (limit * EMBEDDING_KNN_OVERFETCH * 5).max(limit);
-
         let mut node_scores: HashMap<String, (f64, i64, i64)> = HashMap::new();
 
-        // Scoped so the cursor drops before the per-result `get_node` calls below
-        // check out a second reader connection — see `ReadRows` in `connections.rs`.
+        // Scoped so the cursor drops before the batch node fetch below checks
+        // out a second reader connection — see `ReadRows` in `connections.rs`.
         {
             let mut rows = self
                 .read()
                 .await?
                 .query(
                     &format!(
-                        "SELECT e.node_id, e.total_chunks, v.distance \
-             FROM vec_embeddings v \
-             JOIN embedding e ON e.id = v.embedding_id \
+                        "SELECT e.node_id, e.total_chunks, e.vector \
+             FROM embedding e \
              JOIN node n ON n.id = e.node_id \
-             WHERE v.vector MATCH ?1 AND k = ?2 AND e.stale = 0 AND n.node_type = ?3 \
-             AND {}",
+             WHERE e.stale = 0 AND n.node_type = ?1 AND {}",
                         crate::governance::participates_sql("n")
                     ),
-                    libsql::params![query_blob, k, node_type.to_string()],
+                    libsql::params![node_type.to_string()],
                 )
                 .await
-                .context("Failed to run typed vec0 KNN search")?;
+                .context("Failed to run typed embedding scan")?;
 
             while let Some(row) = rows.next().await? {
                 let node_id: String = row.get(0)?;
                 let total_chunks: i64 = row.get(1)?;
-                let distance: f64 = row.get(2)?;
-                let similarity = 1.0 - distance;
+                let blob: Vec<u8> = row.get(2)?;
+                let vector: Vec<f32> = blob
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .collect();
+                let similarity = cosine_similarity(query_vector, &vector);
 
                 let entry = node_scores.entry(node_id).or_insert((0.0, 0, total_chunks));
                 if similarity > entry.0 {
@@ -583,23 +591,6 @@ impl SqliteStore {
         // batched query — see `search_embeddings` for why a per-result `get_node` loop
         // is the expensive shape.
         let mut scored = rank_candidates(node_scores, min_score);
-
-        // The node_type filter runs after the global top-k, so a type that is rare
-        // relative to the corpus can be crowded out of the KNN window — surfacing as
-        // fewer than `limit` results. Counted before truncation, so it reports how many
-        // candidates actually cleared the threshold. Surface that as a debug signal
-        // rather than failing silently; raising EMBEDDING_KNN_OVERFETCH is the lever if
-        // recall suffers.
-        if (scored.len() as i64) < limit {
-            tracing::debug!(
-                node_type,
-                returned = scored.len(),
-                limit,
-                k,
-                "typed embedding search returned fewer than `limit` results; node_type may be under-represented in the KNN window"
-            );
-        }
-
         scored.truncate(limit as usize);
 
         let ids: Vec<String> = scored.iter().map(|(id, ..)| id.clone()).collect();
@@ -820,11 +811,9 @@ pub(crate) fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 
 /// Score, threshold and rank embedding candidates.
 ///
-/// Both `search_embeddings` and `search_embeddings_by_node_type` reduce their KNN
+/// Both `search_embeddings` and `search_embeddings_by_node_type` reduce their
 /// candidates the same way: a composite of peak chunk similarity and the share of
-/// a node's chunks that matched, thresholded, then ranked best-first. They diverge
-/// only in what they do next — the typed variant counts survivors before
-/// truncating — so ranking is shared and truncation is not.
+/// a node's chunks that matched, thresholded, then ranked best-first.
 ///
 /// Returns `(node_id, composite_score, max_similarity, matching_chunks)`.
 fn rank_candidates(

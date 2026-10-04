@@ -37,29 +37,22 @@ pub fn normalize_enumerate_query(query: &str) -> Option<String> {
     }
 }
 
-/// Whether the default `Knowledge` scope's allowlist (text/header/code-block/
-/// schema/table) should be bypassed for an explicit `node_types` filter.
+/// Whether an explicit `node_types` filter replaces the default `Knowledge`
+/// scope's allowlist (text/header/code-block/schema/table, plus user-defined
+/// types).
 ///
-/// An explicit `node_types` filter is a more specific statement of intent
-/// than the default scope guess: without this, a search scoped to
-/// `node_types: ["invoice"]` would return zero results not because no
-/// invoices exist, but because "invoice" isn't a knowledge-scope type — and
-/// no caller of `search_semantic` can express `--scope everything` today (no
-/// CLI/RPC surface for it — see `packages/cli/src/commands/search.rs`).
+/// Naming the types is a more specific statement of intent than the default
+/// scope: a search for `node_types: ["skill"]` asks for skills, and dropping
+/// every result because `skill` is a system type answers "there are none"
+/// when there are. The `node_types` filter still applies, so the results are
+/// exactly the named types and nothing outside them. This holds for a query
+/// and for an enumerate alike.
 ///
-/// Scoped to `is_enumerate` only: an ordinary semantic query that also sets
-/// `node_types` (e.g. "overdue payments" + node_types: ["invoice"]) must
-/// keep the default scope filter — bypassing it for every `node_types`-
-/// bearing call would silently disable scope filtering for real semantic
-/// searches too, not just the enumerate case this exists for. An
-/// explicitly-requested non-default `scope` always applies as normal
-/// (`scope_is_default` is `false` in that case).
-fn should_skip_scope_filter(
-    is_enumerate: bool,
-    has_node_types: bool,
-    scope_is_default: bool,
-) -> bool {
-    is_enumerate && has_node_types && scope_is_default
+/// A search that names no types keeps the default scope, so system types stay
+/// out of it. An explicitly requested `scope` always applies
+/// (`scope_is_default` is `false` then).
+fn should_skip_scope_filter(has_node_types: bool, scope_is_default: bool) -> bool {
+    has_node_types && scope_is_default
 }
 
 /// Maximum depth for markdown tree traversal
@@ -731,11 +724,8 @@ pub async fn search_semantic(
         }
     };
 
-    let skip_scope_filter = should_skip_scope_filter(
-        is_enumerate,
-        input.node_types.is_some(),
-        input.scope.is_none(),
-    );
+    let skip_scope_filter =
+        should_skip_scope_filter(input.node_types.is_some(), input.scope.is_none());
 
     // User-defined types belong to the `Knowledge` scope but aren't known
     // statically, so read them from the schema list — only when that scope
@@ -1018,27 +1008,18 @@ mod tests {
     }
 
     #[test]
-    fn test_should_skip_scope_filter_only_for_enumerate_with_explicit_node_types_and_default_scope()
-    {
-        // The one case that should skip: enumerate + explicit node_types + no
-        // explicit scope requested.
-        assert!(should_skip_scope_filter(true, true, true));
+    fn explicit_node_types_replace_the_default_scope_and_nothing_else_does() {
+        // Named types with no scope requested: the types are the filter, for
+        // a query and for an enumerate alike.
+        assert!(should_skip_scope_filter(true, true));
 
-        // A literal/semantic query must never skip scope filtering, even with
-        // node_types set — this is the bug the review caught: widening
-        // `skip_scope_filter` to every `node_types`-bearing call would
-        // silently disable scope filtering for real semantic searches.
-        assert!(!should_skip_scope_filter(false, true, true));
+        // No named types: the default scope stands, so an unfiltered search
+        // keeps system types out.
+        assert!(!should_skip_scope_filter(false, true));
 
-        // No explicit node_types → nothing to be more specific than the
-        // scope guess, so never skip.
-        assert!(!should_skip_scope_filter(true, false, true));
-        assert!(!should_skip_scope_filter(false, false, true));
-
-        // An explicitly-requested non-default scope always applies as
-        // normal, regardless of enumerate/node_types.
-        assert!(!should_skip_scope_filter(true, true, false));
-        assert!(!should_skip_scope_filter(false, true, false));
+        // A requested scope always applies, with or without named types.
+        assert!(!should_skip_scope_filter(true, false));
+        assert!(!should_skip_scope_filter(false, false));
     }
 
     /// Verify that graph_boost re-ranking formula correctly promotes well-connected nodes.

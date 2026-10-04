@@ -30,6 +30,7 @@ use nodespace_core::ops::{
     },
     node_ops, query_ops, rel_ops,
     search_ops::{self, SearchSemanticInput},
+    skill_ops::{self, FindSkillsInput, GuidanceSkill},
     OpsError,
 };
 use nodespace_core::services::{
@@ -69,8 +70,9 @@ use crate::nodespace::{
     RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
     RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
     ResetSeedNodeResponse, ResolveConflictRequest, SchemaListResponse, SchemaParamsRequest,
-    SchemaResponse, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
-    UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
+    SchemaGuidanceEntry, SchemaResponse, SchemaResultResponse, SearchRequest,
+    SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest,
+    SkillGuidanceResponse, UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
     UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
     UpdatePlayNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
     UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
@@ -607,6 +609,66 @@ impl GrpcNodeService for NodeServiceImpl {
             existed: output.existed,
             deleted_count: output.deleted_count,
             ..Default::default()
+        }))
+    }
+
+    async fn get_skill_guidance(
+        &self,
+        request: Request<SkillGuidanceRequest>,
+    ) -> Result<Response<SkillGuidanceResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        // An empty query lists what exists. It reads no embedding, so it
+        // answers while the embedding model is still loading.
+        if search_ops::normalize_enumerate_query(&req.query).is_none() {
+            let skills = skill_ops::list_skill_guidance(&this.node_service)
+                .await
+                .map_err(ops_error_to_status)?
+                .into_iter()
+                .map(skill_guidance_entry)
+                .collect();
+            return Ok(Response::new(SkillGuidanceResponse {
+                skills,
+                schemas: Vec::new(),
+            }));
+        }
+
+        // Cloned out of the guard, as in `search_nodes`.
+        let embedding_service = {
+            let guard = this.embedding_state.read().await;
+            guard
+                .as_ref()
+                .map(|r| Arc::clone(&r.embedding_service))
+                .ok_or_else(|| Status::unavailable("embedding model loading, please retry"))?
+        };
+
+        let guidance = skill_ops::find_skill_guidance(
+            &embedding_service,
+            &this.node_service,
+            FindSkillsInput {
+                query: req.query,
+                limit: (req.limit > 0).then_some(req.limit as usize),
+            },
+        )
+        .await
+        .map_err(ops_error_to_status)?;
+
+        Ok(Response::new(SkillGuidanceResponse {
+            skills: guidance
+                .skills
+                .into_iter()
+                .map(skill_guidance_entry)
+                .collect(),
+            schemas: guidance
+                .schemas
+                .into_iter()
+                .map(|schema| SchemaGuidanceEntry {
+                    id: schema.id,
+                    name: schema.name,
+                    definition: schema.definition.to_string(),
+                })
+                .collect(),
         }))
     }
 
@@ -2765,6 +2827,32 @@ fn relationship_to_proto(
         to_id: rel.to_id.clone(),
         relationship_type: rel.relationship_type.clone(),
         properties: rel.properties.to_string(),
+    }
+}
+
+/// One skill of a guidance fetch, as the wire entry an agent outside the app
+/// reads.
+///
+/// A seeded skill whose guidance nobody has edited is rendered from its seed
+/// in the form that names CLI commands: the stored body names the in-app
+/// agent's tools, which an outside agent cannot call. A skill a user wrote,
+/// installed or edited is served as stored.
+fn skill_guidance_entry(skill: GuidanceSkill) -> SkillGuidanceEntry {
+    let rendered = (!skill.guidance_modified)
+        .then(|| nodespace_agent::skill_pipeline::external_skill_body(&skill.id))
+        .flatten();
+    // A listing carries no procedures, and stays that way.
+    let instructions = match rendered {
+        Some(body) if !skill.instructions.is_empty() => body,
+        _ => skill.instructions,
+    };
+    SkillGuidanceEntry {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        modified_at: skill.modified_at,
+        instructions,
+        confidence: skill.confidence,
     }
 }
 

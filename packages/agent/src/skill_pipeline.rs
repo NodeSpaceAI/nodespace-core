@@ -7,11 +7,15 @@
 //! [`nodespace_core::markdown::prepare_nodes_from_template`] to expand one
 //! into the nodes `NodeService::seed_nodes_from_templates` reconciles.
 //!
-//! A skill body states its own procedure and includes the rules it shares
-//! with other skills and with the skill external agents install, by id:
-//! `<!-- include: find-then-act -->`. The rule's text lives once, in
-//! `seeds/rules/` (see [`crate::skill_rules`]), so two skills that carry the
-//! same rule cannot drift apart, and neither can the two surfaces.
+//! A skill body is read by two audiences: the in-app local agent, and an
+//! agent outside the app that fetches it with `nodespace skill guidance`. The
+//! body states its procedure in words both can follow, opens with that
+//! procedure rather than a heading, and includes a rule by id wherever a step
+//! has to name how it is done: `<!-- include: find-then-act -->`. A rule's
+//! text lives in `seeds/rules/` (see [`crate::skill_rules`]), once per
+//! audience, so the local agent reads a tool name where the outside agent
+//! reads a CLI command, and two skills that carry the same rule cannot drift
+//! apart.
 //!
 //! Skill discovery is LLM-orchestrated through the `search_skills` tool
 //! exposed by [`crate::local_agent::tools`]; nothing here routes a turn.
@@ -59,6 +63,14 @@ impl SkillSeed {
             skill,
             resolve_includes(self.body, RuleForm::Agent),
         )
+    }
+
+    /// The same guidance for an agent outside the app, which drives NodeSpace
+    /// through the CLI: every rule include resolved to its shipped-skill
+    /// form. The body's own prose names no tool, so it reads the same to both
+    /// audiences.
+    pub fn external_body(&self) -> String {
+        resolve_includes(self.body, RuleForm::SkillMd)
     }
 }
 
@@ -125,9 +137,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
     SkillSeed {
         // Node Creation
         //
-        // The body includes the shared named-record rule, so the external
-        // skill's copy of it (`packages/skill/SKILL.md`) cannot drift from
-        // this one on substance.
+        // The body includes the shared named-record rule, so an agent
+        // outside the app reads the same rule in its own vocabulary.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c02",
         title: "Node Creation",
         description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
@@ -193,9 +204,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // What the body holds is procedure: which tool to call, in what order, and
         // facts about the API's response contract (already-exists, validation-error
         // retry) that a schema cannot express. Those rules are included from
-        // [`crate::skill_rules`], so they cannot drift from the "Schema
-        // inspection and management" section of `packages/skill/SKILL.md`, which
-        // renders the same rules in their prose form.
+        // [`crate::skill_rules`], so they cannot drift from what an agent
+        // outside the app reads: this skill fetched in its CLI form, and the
+        // "Schema inspection and management" section of
+        // `packages/skill/references/cli.md`, which renders the same rules.
         //
         // `SCHEMA_RULES_NOT_IN_PROMPT` (test-only, below this table) is the
         // explicit, reviewed record of every `SCHEMA_RULES` entry the body
@@ -318,9 +330,9 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
     SkillSeed {
         // Relationship Management
         //
-        // The body of the Relationship Management skill, including
-        // the shared find-then-act and success-means-stop rules.
-        // The DIRECTION rule below is stated in prose here as well as on
+        // The body of the Relationship Management skill, including the
+        // shared direction, reverse-traversal and success-means-stop rules.
+        // The direction rule is included here as well as stated on
         // `create_relationship`'s own `from_id`/`to_id` parameter descriptions
         // (`local_agent/tools.rs`) — a deliberate duplication, not a drift risk left
         // unguarded: `create_relationship` is whitelisted by BOTH this skill and
@@ -552,6 +564,15 @@ pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
     SKILL_SEEDS.iter().map(SkillSeed::template).collect()
 }
 
+/// The guidance of the built-in skill with node id `skill_id`, for an agent
+/// outside the app; `None` when no built-in skill has that id.
+pub fn external_skill_body(skill_id: &str) -> Option<String> {
+    SKILL_SEEDS
+        .iter()
+        .find(|seed| seed.id == skill_id)
+        .map(SkillSeed::external_body)
+}
+
 /// The built-in tool seeds, one per [`crate::local_agent::tools::Tool`], in
 /// registry order.
 ///
@@ -609,24 +630,182 @@ mod tests {
             .markdown_content
     }
 
+    /// The include markers a seed body carries, by rule id.
+    fn included_rule_ids(body: &str) -> Vec<&str> {
+        body.split("<!-- include: ")
+            .skip(1)
+            .filter_map(|rest| rest.split(" -->").next())
+            .collect()
+    }
+
     /// A skill body is the file's text: plain Markdown with no frontmatter,
-    /// and every rule it includes is a real one.
+    /// every rule it includes is a real one, and it opens with its guidance
+    /// rather than a heading, for either audience.
+    ///
+    /// A leading `# <Name> Guidance` became the skill's only direct child,
+    /// repeating the skill's own name where a user reads it as a second skill.
+    /// The name and purpose are already shown with the body wherever it is
+    /// read.
     #[test]
     fn skill_bodies_are_plain_markdown_files_whose_includes_resolve() {
         for seed in SKILL_SEEDS {
             assert!(
-                seed.body.starts_with("# "),
-                "{} must open with its heading, not frontmatter",
+                !seed.body.starts_with("---"),
+                "{} starts with frontmatter",
                 seed.title
             );
             // Panics on an include that names no rule.
-            let resolved = seed.template().markdown_content;
+            for (audience, resolved) in [
+                ("local agent", seed.template().markdown_content),
+                ("external agent", seed.external_body()),
+            ] {
+                assert!(
+                    !resolved.contains("<!--"),
+                    "{} has an unresolved include marker for the {audience}",
+                    seed.title
+                );
+                assert!(
+                    !resolved.trim_start().starts_with('#'),
+                    "{} opens with a heading for the {audience}",
+                    seed.title
+                );
+            }
+        }
+    }
+
+    /// No skill shows a child that repeats its name.
+    #[test]
+    fn no_seed_skill_child_repeats_the_skills_name() {
+        for seed in seed_skill_nodes() {
+            let nodes = prepare_nodes_from_template(&seed)
+                .unwrap_or_else(|e| panic!("Template '{}' failed: {:?}", seed.title, e));
+            for child in &nodes[1..] {
+                let text = child.content.trim_start_matches('#').trim();
+                assert!(
+                    !text.starts_with(seed.title.as_str()),
+                    "skill {:?} has a child that opens with its own name: {:?}",
+                    seed.title,
+                    child.content
+                );
+            }
+        }
+    }
+
+    /// Every interaction rule and every procedure rule is included by at
+    /// least one seed skill.
+    ///
+    /// A rule is registered in a table and published by an include marker in
+    /// a body, and nothing ties the two: `relationship-reverse-traversal` was
+    /// registered and included nowhere, so neither audience was ever shown
+    /// it. One marker serves both audiences, so a rule a body includes
+    /// reaches the local agent in its tool form and an agent outside the app
+    /// in its CLI form.
+    ///
+    /// Schema rules have their own check,
+    /// `schema_rules_are_wired_or_explicitly_excluded`, which also allows the
+    /// ones [`SCHEMA_RULES_NOT_IN_PROMPT`] names.
+    #[test]
+    fn every_interaction_and_procedure_rule_reaches_a_seed_skill() {
+        let included: std::collections::HashSet<&str> = SKILL_SEEDS
+            .iter()
+            .flat_map(|seed| included_rule_ids(seed.body))
+            .collect();
+
+        let registered = crate::skill_rules::INTERACTION_RULES
+            .iter()
+            .map(|r| r.id)
+            .chain(crate::skill_rules::PROCEDURE_RULES.iter().map(|r| r.id));
+        let unreached: Vec<&str> = registered.filter(|id| !included.contains(id)).collect();
+
+        assert!(
+            unreached.is_empty(),
+            "these rules are registered in skill_rules.rs but no seed skill includes them, so \
+             no agent is ever shown them: {}. Include each in the body of the skill it belongs \
+             to (packages/agent/src/seeds/skills/), or delete the rule.",
+            unreached.join(", ")
+        );
+    }
+
+    /// What an agent outside the app is served names nothing it cannot use:
+    /// none of the local agent's tools, and none of the prompt blocks only
+    /// the local agent is shown.
+    ///
+    /// A body's own prose is shared by both audiences, so a tool named there
+    /// reaches the external rendering unchanged. A step that has to name how
+    /// it is done belongs in a rule, which has a form for each audience.
+    #[test]
+    fn a_skill_served_to_an_external_agent_names_no_in_app_tool() {
+        let tools: Vec<&str> = crate::local_agent::tools::Tool::ALL
+            .iter()
+            .map(|t| t.name())
+            .collect();
+        let prompt_blocks = ["MENTIONED ENTITIES", "EXISTING SCHEMAS"];
+
+        let mut leaks = Vec::new();
+        for seed in SKILL_SEEDS {
+            let body = seed.external_body();
+            for token in body.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                if tools.contains(&token) {
+                    leaks.push(format!("{} names the tool `{token}`", seed.title));
+                }
+            }
+            for block in prompt_blocks {
+                if body.contains(block) {
+                    leaks.push(format!("{} names the prompt block {block:?}", seed.title));
+                }
+            }
             assert!(
-                !resolved.contains("<!--"),
-                "{} has an unresolved include marker",
+                body.contains("nodespace "),
+                "{} tells an external agent nothing it can run: its rendering names no \
+                 `nodespace` command",
                 seed.title
             );
         }
+        leaks.sort();
+        leaks.dedup();
+
+        assert!(
+            leaks.is_empty(),
+            "the external rendering of these skills names something only the local agent \
+             has:\n{}\nMove the step into a rule fragment (packages/agent/src/seeds/rules/) \
+             whose `skill-md` form names the CLI command instead.",
+            leaks.join("\n")
+        );
+    }
+
+    /// A built-in skill is looked up for an external fetch by its node id.
+    #[test]
+    fn external_skill_body_is_found_by_the_seeds_fixed_id() {
+        for seed in SKILL_SEEDS {
+            assert_eq!(external_skill_body(seed.id), Some(seed.external_body()));
+        }
+        assert_eq!(external_skill_body("not-a-seeded-skill"), None);
+    }
+
+    /// Relationship Management carries the direction rule and the
+    /// reverse-traversal rule from their shared fragments, so each audience
+    /// reads them in its own vocabulary.
+    #[test]
+    fn relationship_rules_reach_both_audiences_from_one_fragment() {
+        let seed = SKILL_SEEDS
+            .iter()
+            .find(|s| s.title == "Relationship Management")
+            .expect("Relationship Management must be seeded");
+        let local = seed.template().markdown_content;
+        let external = seed.external_body();
+
+        for rule in [
+            crate::skill_rules::RELATIONSHIP_DIRECTION,
+            crate::skill_rules::RELATIONSHIP_REVERSE_TRAVERSAL,
+        ] {
+            assert!(local.contains(rule.imperative), "{} (local)", rule.id);
+            assert!(external.contains(rule.prose), "{} (external)", rule.id);
+        }
+        assert!(local.contains("from_id is the record that ACTS"), "{local}");
+        assert!(
+            external.contains("`--from` is the record that ACTS"),
+            "{external}"
+        );
     }
 
     /// Every `SCHEMA_RULES` entry must either reach the in-app agent prompt
@@ -910,11 +1089,9 @@ mod tests {
         }
     }
 
-    /// Skill guidance children must come out as real markdown types (`header`,
-    /// `text`, ...), not the retired `prompt` type — the entire point of
-    /// `child_node_type: None` on every seed. Every seed's `markdown_content`
-    /// starts with a `# Heading` line, so this also confirms `header` nodes
-    /// are actually produced, not just `text`.
+    /// Skill guidance children must come out as real markdown types (`text`,
+    /// `header`, ...), not the retired `prompt` type — the entire point of
+    /// `child_node_type: None` on every seed.
     #[test]
     fn seed_skill_children_are_real_markdown_types_not_prompt() {
         let seeds = seed_skill_nodes();
@@ -928,12 +1105,6 @@ mod tests {
             );
 
             let children = &nodes[1..];
-            assert!(
-                children.iter().any(|c| c.node_type == "header"),
-                "Skill '{}' guidance starts with a markdown heading and must \
-                 produce at least one 'header' child",
-                seed.title
-            );
             for child in children {
                 assert_ne!(
                     child.node_type, "prompt",
@@ -1619,6 +1790,9 @@ mod tests {
         for r in crate::skill_rules::INTERACTION_RULES {
             texts.push((r.id, r.imperative));
         }
+        for r in crate::skill_rules::PROCEDURE_RULES {
+            texts.push((r.id, r.imperative));
+        }
 
         let mut bad: Vec<String> = Vec::new();
         for (id, text) in texts {
@@ -1626,6 +1800,11 @@ mod tests {
             for pair in words.windows(2) {
                 let verb = pair[0].trim_matches(|c: char| !c.is_alphanumeric());
                 if !verb.eq_ignore_ascii_case("call") && !verb.eq_ignore_ascii_case("calling") {
+                    continue;
+                }
+                // A verb that ends its sentence ("…before calling. field_values
+                // is…") has no object in the next one.
+                if pair[0].ends_with(['.', '!', '?']) {
                     continue;
                 }
                 // Tool names reach here bare, backticked, followed by an

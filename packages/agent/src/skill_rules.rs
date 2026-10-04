@@ -1,33 +1,36 @@
-//! Shared source of truth for core-type rules that must stay in sync between
-//! the seeded skills ([`crate::skill_pipeline::SKILL_SEEDS`], guidance for the
-//! in-app, instance-aware local agent) and the generated sections of
-//! `packages/skill/SKILL.md` (a static, instance-blind reference installed by
-//! external PTY agents).
+//! The rules the seeded skills ([`crate::skill_pipeline::SKILL_SEEDS`]) are
+//! built from, each stated once per audience.
 //!
-//! Each rule here covers a constraint that is true regardless of which
-//! surface acts on it — schema-authoring conventions, or interaction habits
-//! like "search before acting on an ID". Instance-specific guidance (custom
-//! schemas actually registered on a running daemon) and CLI-only reference
-//! material (flags, `--database` selection, output shapes) do not belong
-//! here — they have no analog on the other side and are not a drift risk.
+//! A seeded skill is read by two audiences. The in-app local agent acts
+//! through its tools (`create_node`, `search_nodes`). An agent outside the
+//! app (Claude Code, Codex) fetches the same skill with `nodespace skill
+//! guidance` and acts through the CLI. A skill's body states its procedure in
+//! words both can follow, and includes a rule wherever the step has to name
+//! how it is done.
 //!
 //! # Rules are Markdown fragments
 //!
 //! A rule's text lives in `seeds/rules/`, one `.md` fragment per form:
 //!
-//! - `seeds/rules/agent/<id>.md` — the terse, ALL-CAPS-header form the local
-//!   agent reads ([`SchemaRule::imperative`] / [`InteractionRule::imperative`]).
-//! - `seeds/rules/skill-md/<id>.md` — the bold-lead-sentence prose form the
-//!   shipped skill carries ([`SchemaRule::prose`] / [`InteractionRule::prose`]).
+//! - `seeds/rules/agent/<id>.md` — the form the local agent reads, naming its
+//!   tools ([`SchemaRule::imperative`], [`InteractionRule::imperative`],
+//!   [`ProcedureRule::imperative`]).
+//! - `seeds/rules/skill-md/<id>.md` — the form an agent outside the app
+//!   reads, naming CLI commands ([`SchemaRule::prose`],
+//!   [`InteractionRule::prose`], [`ProcedureRule::prose`]).
 //!
 //! A seed body or a generated region includes a rule by id, with an
 //! `<!-- include: <id> -->` marker that [`resolve_includes`] replaces with the
-//! fragment for the surface being built. Nothing restates a rule's text: a
-//! skill body, a guidance section and the shipped skill all read the same
-//! files, and `packages/cli/examples/gen_skill_md.rs` renders
-//! [`skill_md_schema_rules`] into the shipped skill content, where a
+//! fragment for the audience being served. Nothing restates a rule's text: a
+//! skill body, a guidance section and the shipped command reference all read
+//! the same files, and `packages/cli/examples/gen_skill_md.rs` renders
+//! [`skill_md_schema_rules`] into `packages/skill/references/cli.md`, where a
 //! checked-in copy is verified against that output so the file cannot
 //! silently go stale.
+//!
+//! There are three kinds. A [`SchemaRule`] is a schema- or play-authoring
+//! convention. An [`InteractionRule`] is a habit several skills share. A
+//! [`ProcedureRule`] is a step of one skill's own procedure.
 //!
 //! The two forms of a [`SchemaRule`] are still two hand-written fragments —
 //! they differ on purpose, since each names its own surface's verbs
@@ -70,19 +73,42 @@ pub struct SchemaRule {
     pub anchors: &'static [&'static str],
 }
 
-/// A generic interaction habit repeated across multiple skills/CLI verbs
+/// A generic interaction habit repeated across several skills
 /// (find-then-act, ask-one-clarifying-question, success-means-stop).
+///
+/// Both forms reach their audience through the skills that include the rule:
+/// the local agent in a skill's stored body, an agent outside the app in the
+/// same skill fetched with `nodespace skill guidance`.
 pub struct InteractionRule {
     pub id: &'static str,
     pub imperative: &'static str,
     pub prose: &'static str,
-    /// A short, distinctive substring that must appear somewhere in
-    /// `packages/skill/SKILL.md` for this rule to be considered present.
-    /// Unlike [`SchemaRule`]'s `prose`, `InteractionRule::prose` is woven
-    /// mid-sentence into hand-written CLI prose rather than generated
-    /// verbatim, so presence is checked via this shorter, drift-resistant
-    /// phrase instead of an exact match on `prose` itself.
-    pub skill_md_key_phrase: &'static str,
+}
+
+/// A step of one skill's own procedure, where the step has to name how it is
+/// done: the tool the local agent calls (`imperative`), or the command an
+/// agent outside the app runs (`prose`).
+///
+/// The two forms are written separately because the two surfaces differ in
+/// more than names. A tool takes its values as arguments and the CLI takes
+/// them as flags; `delete_node` is confirmed by the app, and `node delete`
+/// previews first and is confirmed by the agent. What a skill body says
+/// outside its includes is common to both.
+pub struct ProcedureRule {
+    pub id: &'static str,
+    pub imperative: &'static str,
+    pub prose: &'static str,
+}
+
+/// The [`ProcedureRule`] whose two fragments are named `$id`.
+macro_rules! procedure_rule {
+    ($id:literal) => {
+        ProcedureRule {
+            id: $id,
+            imperative: agent_form!($id),
+            prose: skill_md_form!($id),
+        }
+    };
 }
 
 pub const ONE_SCHEMA_PER_REQUEST: SchemaRule = SchemaRule {
@@ -535,7 +561,6 @@ pub const FIND_THEN_ACT: InteractionRule = InteractionRule {
     id: "find-then-act",
     imperative: agent_form!("find-then-act"),
     prose: skill_md_form!("find-then-act"),
-    skill_md_key_phrase: "if you don't have its ID",
 };
 
 /// A name is not an id, and whether a named record already exists is decided
@@ -544,21 +569,15 @@ pub const FIND_THEN_ACT: InteractionRule = InteractionRule {
 ///
 /// The two surfaces get the lookup from different places. The local agent is
 /// handed it: the entity tier resolves names into MENTIONED ENTITIES before
-/// the turn starts. An external agent has to run it, and the command matters —
-/// a query-bearing `nodespace search` runs under the default `knowledge` scope,
-/// which keeps only text/header/code-block/schema/table rows, and without title
-/// matching. So a task (not embedded at all) or a user-defined entity (embedded,
-/// but outside that scope) is never returned for its own name. Pointed there,
-/// "nothing came back, so create it" duplicates every existing record. `node
-/// query --title-contains` is the lexical title lookup. (The empty-query
-/// `search "" --type <type>` listing skips the scope filter and does list them,
-/// but it enumerates rather than looks up.)
+/// the turn starts. An external agent has to run it, and the command matters:
+/// `nodespace search` ranks by meaning, so it returns records that are only
+/// similar and cannot show that a record is absent, and a task has no
+/// embedding to be found by. `node query --title-contains` is the lexical
+/// title lookup.
 ///
 /// What both surfaces share is the judgment on the result — same name, same
-/// type — which is why that phrase is the key: it is where the external copy
-/// would first trail the local one. The judgment is on sameness rather than
-/// emptiness because both lookups also return records that merely share a
-/// word with the name.
+/// type. The judgment is on sameness rather than emptiness because both
+/// lookups also return records that merely share a word with the name.
 ///
 /// On the local surface only "none found" is complete. A populated
 /// MENTIONED ENTITIES list can be cut two ways. A cut by the tier's cap is
@@ -572,28 +591,22 @@ pub const NAMED_RECORD_RESOLUTION: InteractionRule = InteractionRule {
     id: "named-record-resolution",
     imperative: agent_form!("named-record-resolution"),
     prose: skill_md_form!("named-record-resolution"),
-    skill_md_key_phrase: "same name, same type",
 };
 
 pub const AMBIGUITY_CLARIFY: InteractionRule = InteractionRule {
     id: "ambiguity-clarify",
-    // Retargeted from prose ("ask one specific clarifying question") to
-    // calling route_clarify: the golden corpus measured calling the tool as
-    // more reliable than answering in prose, since prose is invisible to
-    // anything downstream that expects a tool call. `prose` and
-    // `skill_md_key_phrase` below are unchanged — they serve
-    // packages/skill/SKILL.md, a separate external-agent-facing document
-    // with no route_clarify tool of its own to point at.
+    // The local form calls route_clarify rather than asking in prose: the
+    // golden corpus measured calling the tool as more reliable, since prose
+    // is invisible to anything downstream that expects a tool call. An agent
+    // outside the app has no such tool, so its form asks the user directly.
     imperative: agent_form!("ambiguity-clarify"),
     prose: skill_md_form!("ambiguity-clarify"),
-    skill_md_key_phrase: "ask the user one specific clarifying question rather than retrying",
 };
 
 pub const SUCCESS_NO_REVERIFY: InteractionRule = InteractionRule {
     id: "success-no-reverify",
     imperative: agent_form!("success-no-reverify"),
     prose: skill_md_form!("success-no-reverify"),
-    skill_md_key_phrase: "don't re-fetch",
 };
 
 /// The dedicated-verb instruction is a stable API constraint and is stated
@@ -614,15 +627,16 @@ pub const TASK_STATUS_DEDICATED_VERB: InteractionRule = InteractionRule {
     id: "task-status-dedicated-verb",
     imperative: agent_form!("task-status-dedicated-verb"),
     prose: skill_md_form!("task-status-dedicated-verb"),
-    skill_md_key_phrase: "for task status changes",
 };
 
+/// The two forms differ on who asks for confirmation. The app asks the user
+/// before a local agent's delete removes anything, so the local form tells
+/// the model not to ask. `node delete` previews and leaves the asking to the
+/// agent that ran it.
 pub const SINGLE_ITEM_PER_CALL: InteractionRule = InteractionRule {
     id: "single-item-per-call",
     imperative: agent_form!("single-item-per-call"),
     prose: skill_md_form!("single-item-per-call"),
-    skill_md_key_phrase:
-        "Delete one node per call; confirm each deletion before moving to the next",
 };
 
 /// Collection assignment is a create-time argument, not a follow-up write.
@@ -634,7 +648,6 @@ pub const COLLECTION_AT_CREATE_TIME: InteractionRule = InteractionRule {
     id: "collection-at-create-time",
     imperative: agent_form!("collection-at-create-time"),
     prose: skill_md_form!("collection-at-create-time"),
-    skill_md_key_phrase: "collection membership is an argument to the create call",
 };
 
 /// A relationship is declared once, on the source type, but is legitimately
@@ -652,18 +665,29 @@ pub const RELATIONSHIP_REVERSE_TRAVERSAL: InteractionRule = InteractionRule {
     id: "relationship-reverse-traversal",
     imperative: agent_form!("relationship-reverse-traversal"),
     prose: skill_md_form!("relationship-reverse-traversal"),
-    skill_md_key_phrase: "`--direction` has nothing to select",
+};
+
+/// Which end of an edge is which. A reversed edge is accepted and records the
+/// opposite fact, so nothing downstream reports the mistake: the rule is the
+/// only thing between a caller and a silently wrong graph. The local form
+/// names the tool's `from_id`/`to_id`, the other the CLI's `--from`/`--to`.
+///
+/// `create_relationship`'s own parameter descriptions state it as well: a
+/// turn routed to Organization holds the tool without this skill's guidance.
+pub const RELATIONSHIP_DIRECTION: InteractionRule = InteractionRule {
+    id: "relationship-direction",
+    imperative: agent_form!("relationship-direction"),
+    prose: skill_md_form!("relationship-direction"),
 };
 
 pub const BULK_IMPORT_NO_FOLLOWUP_SEARCH: InteractionRule = InteractionRule {
     id: "bulk-import-no-followup-search",
     imperative: agent_form!("bulk-import-no-followup-search"),
     prose: skill_md_form!("bulk-import-no-followup-search"),
-    skill_md_key_phrase: "don't follow up with search calls to verify",
 };
 
 /// All generic interaction-pattern rules, in no particular required order —
-/// each is consumed independently by whichever skill/CLI section needs it.
+/// each is consumed independently by whichever skill needs it.
 pub const INTERACTION_RULES: &[InteractionRule] = &[
     FIND_THEN_ACT,
     NAMED_RECORD_RESOLUTION,
@@ -672,17 +696,60 @@ pub const INTERACTION_RULES: &[InteractionRule] = &[
     TASK_STATUS_DEDICATED_VERB,
     SINGLE_ITEM_PER_CALL,
     COLLECTION_AT_CREATE_TIME,
+    RELATIONSHIP_DIRECTION,
     RELATIONSHIP_REVERSE_TRAVERSAL,
     BULK_IMPORT_NO_FOLLOWUP_SEARCH,
 ];
 
-/// Which surface a body is being built for, and so which form of a rule an
+/// Every step of a seeded skill's procedure that names a tool or a command,
+/// grouped by the skill that includes it.
+pub const PROCEDURE_RULES: &[ProcedureRule] = &[
+    // Research & Search
+    procedure_rule!("research-search-first"),
+    procedure_rule!("research-search-reference"),
+    // Node Creation
+    procedure_rule!("node-creation-new-or-existing"),
+    procedure_rule!("node-creation-steps"),
+    // Schema Creation
+    procedure_rule!("schema-creation-call"),
+    // Graph Editing
+    procedure_rule!("graph-editing-existing-or-new"),
+    procedure_rule!("graph-editing-call-now"),
+    procedure_rule!("graph-editing-update-call"),
+    procedure_rule!("graph-editing-indirect-reference"),
+    procedure_rule!("graph-editing-carry-the-change"),
+    procedure_rule!("graph-editing-content-vs-fields"),
+    // Relationship Management
+    procedure_rule!("relationship-create"),
+    procedure_rule!("relationship-find-before-link"),
+    // Node Deletion
+    procedure_rule!("node-deletion-wrong-skill"),
+    procedure_rule!("node-deletion-delete-call"),
+    // Conflict Journal
+    procedure_rule!("conflict-journal-find"),
+    procedure_rule!("conflict-journal-dismiss-vs-adopt"),
+    // Node Merge
+    procedure_rule!("node-merge-not-always"),
+    procedure_rule!("node-merge-steps"),
+    // Play Workflow State
+    procedure_rule!("play-workflow-call"),
+    procedure_rule!("play-workflow-rerun"),
+    procedure_rule!("play-workflow-find-first"),
+    // Bulk Import
+    procedure_rule!("bulk-import-steps"),
+    // Organization
+    procedure_rule!("organization-existing-only"),
+    procedure_rule!("organization-add-existing"),
+];
+
+/// Which audience a body is being built for, and so which form of a rule an
 /// include marker resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleForm {
-    /// The local agent: seeded guidance and skills.
+    /// The local agent: seeded guidance and skills, naming its tools.
     Agent,
-    /// The skill external agents install.
+    /// An agent outside the app: a skill fetched with `nodespace skill
+    /// guidance`, and the shipped command reference. Names CLI commands.
     SkillMd,
 }
 
@@ -697,6 +764,12 @@ pub fn rule_text(id: &str, form: RuleForm) -> Option<&'static str> {
         .map(|r| pick(r.imperative, r.prose))
         .or_else(|| {
             INTERACTION_RULES
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| pick(r.imperative, r.prose))
+        })
+        .or_else(|| {
+            PROCEDURE_RULES
                 .iter()
                 .find(|r| r.id == id)
                 .map(|r| pick(r.imperative, r.prose))
@@ -757,6 +830,22 @@ pub fn skill_md_play_rules() -> String {
 mod tests {
     use super::*;
 
+    /// Every form of every rule, of every kind, as `(id, text)`.
+    fn every_rule_form() -> impl Iterator<Item = (&'static str, &'static str)> {
+        anchored_rules()
+            .flat_map(|r| [(r.id, r.imperative), (r.id, r.prose)])
+            .chain(
+                INTERACTION_RULES
+                    .iter()
+                    .flat_map(|r| [(r.id, r.imperative), (r.id, r.prose)]),
+            )
+            .chain(
+                PROCEDURE_RULES
+                    .iter()
+                    .flat_map(|r| [(r.id, r.imperative), (r.id, r.prose)]),
+            )
+    }
+
     #[test]
     fn an_include_marker_resolves_to_the_form_for_its_surface() {
         let body = "FIND THEN UPDATE: <!-- include: find-then-act --> Then stop.";
@@ -785,14 +874,7 @@ mod tests {
     /// include of another fragment.
     #[test]
     fn rule_fragments_are_plain_markdown() {
-        let texts = anchored_rules()
-            .flat_map(|r| [(r.id, r.imperative), (r.id, r.prose)])
-            .chain(
-                INTERACTION_RULES
-                    .iter()
-                    .flat_map(|r| [(r.id, r.imperative), (r.id, r.prose)]),
-            );
-        for (id, text) in texts {
+        for (id, text) in every_rule_form() {
             assert_eq!(text, text.trim_end(), "{id} ends in whitespace");
             assert!(!text.starts_with("---"), "{id} starts with frontmatter");
             assert!(
@@ -909,32 +991,23 @@ mod tests {
         );
     }
 
+    /// An include marker names a rule by id alone, whatever its kind, so an
+    /// id shared by two rules would resolve to whichever kind is looked up
+    /// first.
     #[test]
-    fn all_interaction_rule_ids_are_unique() {
-        let mut ids: Vec<&str> = INTERACTION_RULES.iter().map(|r| r.id).collect();
+    fn rule_ids_are_unique_across_every_kind() {
+        let mut ids: Vec<&str> = every_rule_form().map(|(id, _)| id).collect();
+        let forms = ids.len();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(
-            ids.len(),
-            INTERACTION_RULES.len(),
-            "duplicate InteractionRule id"
-        );
+        // Each rule contributes two forms under one id.
+        assert_eq!(ids.len() * 2, forms, "duplicate rule id");
     }
 
     #[test]
     fn no_rule_text_is_empty() {
-        for r in anchored_rules() {
-            assert!(!r.imperative.is_empty(), "{} imperative is empty", r.id);
-            assert!(!r.prose.is_empty(), "{} prose is empty", r.id);
-        }
-        for r in INTERACTION_RULES {
-            assert!(!r.imperative.is_empty(), "{} imperative is empty", r.id);
-            assert!(!r.prose.is_empty(), "{} prose is empty", r.id);
-            assert!(
-                !r.skill_md_key_phrase.is_empty(),
-                "{} skill_md_key_phrase is empty",
-                r.id
-            );
+        for (id, text) in every_rule_form() {
+            assert!(!text.is_empty(), "{id} has an empty form");
         }
     }
 
@@ -1033,52 +1106,6 @@ mod tests {
             assert!(
                 SCHEMA_RULES.iter().any(|r| r.id == *id),
                 "PROSE_ONLY_EXAMPLES names {id:?}, which is not in SCHEMA_RULES"
-            );
-        }
-    }
-
-    /// Interaction rules are woven mid-sentence into hand-written SKILL.md
-    /// prose (unlike SchemaRule, which is regenerated verbatim from
-    /// [`skill_md_schema_rules`] — see `gen_skill_md.rs`'s staleness test). This
-    /// only catches outright removal of a rule's substance; it does not
-    /// guarantee SKILL.md's wording matches `prose` exactly.
-    #[test]
-    fn skill_md_still_mentions_every_interaction_rule() {
-        // Read the whole shipped skill, not `SKILL.md` alone. The body is kept
-        // within the Agent Skills size recommendation by moving the CLI
-        // reference into `references/`, which the standard defines as the
-        // on-demand tier. Guidance that moved there is still shipped and still
-        // reachable by an agent, so scanning only the body would report drift
-        // for content that simply changed tier.
-        let skill_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skill");
-
-        let read = |p: &std::path::Path| -> String {
-            std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("failed to read {}: {e}", p.display()))
-        };
-
-        let mut skill_md = read(&skill_dir.join("SKILL.md"));
-        let refs_dir = skill_dir.join("references");
-        let entries = std::fs::read_dir(&refs_dir)
-            .unwrap_or_else(|e| panic!("failed to read {}: {e}", refs_dir.display()));
-        for entry in entries {
-            let path = entry.expect("bad dir entry").path();
-            if path.extension().is_some_and(|x| x == "md") {
-                skill_md.push('\n');
-                skill_md.push_str(&read(&path));
-            }
-        }
-
-        for r in INTERACTION_RULES {
-            assert!(
-                skill_md.contains(r.skill_md_key_phrase),
-                "the shipped skill (packages/skill/SKILL.md + references/) no \
-                 longer mentions the '{}' rule (expected to find the phrase \
-                 {:?}) — if this rule's guidance moved or was reworded, update \
-                 skill_md_key_phrase in skill_rules.rs to match; if the rule's \
-                 substance was removed, that's the drift this test exists to catch",
-                r.id,
-                r.skill_md_key_phrase
             );
         }
     }

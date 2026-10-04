@@ -6,8 +6,6 @@ REFERENCE — procedures relevant to this request. Use whichever applies and IGN
 --- Candidate 1: Research & Search
 Purpose: Find, look up, locate, list, or search for nodes, records, notes, and documents of any type that are already stored. Search stored knowledge to answer a question: how does something work, how is it applied, what is it, what does it do, why was it chosen.
 
-# Research & Search Guidance
-
 When the user asks about anything they may have stored:
 
 SEARCH FIRST: Nothing about the user's notes, documents, or records is known until a search returns it. Call search_semantic with their question before you answer and before you ask them for anything. Never reply that you lack context, and never ask what they mean, without having searched. Results are ordered by relevance — the first result is the best match. Only a greeting, thanks, or a question about yourself is answered without a search.

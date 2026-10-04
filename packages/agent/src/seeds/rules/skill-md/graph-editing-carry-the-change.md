@@ -1,0 +1,1 @@
+USE THE TYPE'S OWN NAMES: Set a field the type defines, with its name copied character for character from `nodespace schema get <type>`. When a field lists allowed values, use one of those values exactly — never a paraphrase of the user's wording, never a capitalised or spaced form of the value.

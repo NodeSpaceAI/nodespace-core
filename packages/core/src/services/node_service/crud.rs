@@ -757,9 +757,10 @@ impl NodeService {
     /// the node insert and parent edge (when there is a parent) land on the
     /// same `tx` the caller is already holding. Embedding-marker queueing is
     /// intentionally NOT reproduced here — it is derived state outside the
-    /// boundary by design (ADR-069 §5); a caller needing it should queue
-    /// after its own `with_transaction` commits, the way `handle_create_schema`
-    /// does not need to (schema nodes are not embedded root content).
+    /// boundary by design (ADR-069 §5). A caller creating an embedded root
+    /// queues it after its own `with_transaction` commits, with
+    /// [`Self::queue_created_root_for_embedding`], as `create_schema` does: a
+    /// schema is found by meaning, so it has to be embedded.
     pub(crate) async fn create_node_with_parent_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
@@ -977,12 +978,13 @@ impl NodeService {
         Ok((node, parent, node_type))
     }
 
-    /// Post-commit follow-up for [`Self::create_node_with_parent`]: queue the
-    /// created node's aggregate root for embedding regeneration. Deliberately
+    /// Post-commit follow-up for [`Self::create_node_with_parent`] and for a
+    /// caller of [`Self::create_node_with_parent_in_tx`]: queue the created
+    /// node's aggregate root for embedding regeneration. Deliberately
     /// outside the transaction boundary (ADR-069 §5) — embedding markers are
     /// derived state with their own reconciliation loop, and a queueing
     /// failure must never fail or roll back a create that already committed.
-    pub(super) async fn queue_created_root_for_embedding(
+    pub(crate) async fn queue_created_root_for_embedding(
         &self,
         created_id: &str,
         node_type: &str,
