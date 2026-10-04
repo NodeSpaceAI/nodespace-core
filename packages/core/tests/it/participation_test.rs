@@ -789,9 +789,11 @@ mod search_and_context {
             "retitle-new-tasks",
             json!({ "rules": [{
                 "name": "retitle",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "content": "Retitled" }
                 }]
@@ -977,9 +979,11 @@ async fn status_becomes(svc: &Arc<NodeService>, id: &str, status: &str) -> bool 
 fn close_on_create() -> serde_json::Value {
     json!({ "rules": [{
         "name": "close-on-create",
+        "description": "Test rule",
         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
         "conditions": [],
         "actions": [{
+            "description": "Test action",
             "action_type": "update_node",
             "params": { "node_id": "{trigger.node.id}", "properties": { "status": "done" } }
         }]
@@ -1011,9 +1015,11 @@ async fn seed_probe(svc: &Arc<NodeService>) {
         "mark-probes",
         json!({ "rules": [{
             "name": "mark-probes",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_probe" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": { "node_id": "{trigger.node.id}", "properties": { "seen": "yes" } }
             }]
@@ -1105,6 +1111,7 @@ async fn no_rule_fires_on_an_archived_node() {
         "close-on-note",
         json!({ "rules": [{
             "name": "close-on-note",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
@@ -1113,6 +1120,7 @@ async fn no_rule_fires_on_an_archived_node() {
             },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": { "node_id": "{trigger.node.id}", "properties": { "status": "done" } }
             }]
@@ -1172,14 +1180,17 @@ async fn no_action_touches_an_archived_node() {
         "touch-the-archived",
         json!({ "rules": [{
             "name": "touch-the-archived",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [
                 {
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": target, "properties": { "status": "touched" } }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "add_relationship",
                     "params": {
                         "source_id": "{trigger.node.id}",
@@ -1188,6 +1199,7 @@ async fn no_action_touches_an_archived_node() {
                     }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "remove_relationship",
                     "params": {
                         "source_id": filed,
@@ -1196,6 +1208,7 @@ async fn no_action_touches_an_archived_node() {
                     }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "properties": { "status": "done" } }
                 }
@@ -1276,14 +1289,16 @@ async fn a_condition_sees_no_archived_related_node() {
         "close-finished-batches",
         json!({ "rules": [{
             "name": "close-finished-batches",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
                 "select": { "target_type": "pp_batch" },
                 "property_key": "pp_batch.note"
             },
-            "conditions": ["node.jobs.all(j, j.status == 'done')"],
+            "conditions": [{ "expr": "node.jobs.all(j, j.status == 'done')", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": { "node_id": "{trigger.node.id}", "properties": { "status": "done" } }
             }]
@@ -1382,9 +1397,10 @@ async fn no_invariant_rule_fires_on_an_archived_node() {
         json!([{
             "name": "no-forbidden-jobs",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
-            "conditions": ["node.status == 'forbidden'"],
-            "actions": [{ "action_type": "reject", "params": { "message": "forbidden" } }]
+            "conditions": [{ "expr": "node.status == 'forbidden'", "description": "Test condition" }],
+            "actions": [{ "description": "Test action", "action_type": "reject", "params": { "message": "forbidden" } }]
         }]),
     );
 
@@ -1421,14 +1437,17 @@ async fn no_invariant_action_touches_an_archived_node() {
         json!([{
             "name": "touch-the-archived",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [
                 {
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": target, "properties": { "status": "touched" } }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "add_relationship",
                     "params": {
                         "source_id": "{trigger.node.id}",
@@ -1438,6 +1457,7 @@ async fn no_invariant_action_touches_an_archived_node() {
                     }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "remove_relationship",
                     "params": {
                         "source_id": filed,
@@ -1446,6 +1466,7 @@ async fn no_invariant_action_touches_an_archived_node() {
                     }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "properties": { "status": "done" } }
                 }
@@ -1499,9 +1520,11 @@ async fn a_condition_naming_the_lifecycle_fails_validation() {
             &svc,
             json!({
                 "name": "reads-lifecycle",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
-                "conditions": [condition],
+                "conditions": [{ "expr": condition, "description": "Test condition" }],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "properties": { "status": "done" } }
                 }]
@@ -1526,9 +1549,11 @@ async fn an_update_node_action_carrying_the_lifecycle_is_rejected() {
         &svc,
         json!({
             "name": "archives",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": { "node_id": "{trigger.node.id}", "lifecycle_status": "archived" }
             }]
@@ -1561,9 +1586,11 @@ async fn a_binding_naming_the_lifecycle_fails_validation() {
             &svc,
             json!({
                 "name": "copies-lifecycle",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
                 "conditions": [],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "properties": { "note": binding } }
                 }]
@@ -1582,9 +1609,11 @@ async fn a_binding_naming_the_lifecycle_fails_validation() {
         &svc,
         json!({
             "name": "iterates-lifecycle",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "for_each": "trigger.node.lifecycleStatus",
                 "params": { "node_id": "{trigger.node.id}", "properties": { "note": "x" } }
@@ -1609,9 +1638,11 @@ async fn a_binding_cannot_reach_the_lifecycle_at_run_time() {
         json!([{
             "name": "copies-lifecycle",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",

@@ -838,8 +838,9 @@ mod tests {
                 "pb-1",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
-                    "conditions": ["node.status == 'open'"],
+                    "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -909,8 +910,9 @@ mod tests {
                 "pb-2",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_task" } },
-                    "conditions": ["node.story.status == 'active'"],
+                    "conditions": [{ "expr": "node.story.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -960,8 +962,9 @@ mod tests {
                 "pb-inherited",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_bug" } },
-                    "conditions": ["node.state == 'done'"],
+                    "conditions": [{ "expr": "node.state == 'done'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1043,8 +1046,9 @@ mod tests {
                 "pb-mh",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_task_mh" } },
-                    "conditions": ["node.story.epic == 'active'"],
+                    "conditions": [{ "expr": "node.story.epic == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1088,8 +1092,9 @@ mod tests {
                 "pb-3",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_task2" } },
-                    "conditions": ["node.staatus == 'open'"],
+                    "conditions": [{ "expr": "node.staatus == 'open'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1133,8 +1138,9 @@ mod tests {
                 "pb-4",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf_task3" }, "property_key": "wf_task3.status" },
-                    "conditions": ["trigger.property.old_value == 'open'"],
+                    "conditions": [{ "expr": "trigger.property.old_value == 'open'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1171,8 +1177,9 @@ mod tests {
                 "pb-5",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" } },
-                    "conditions": ["node.status == 'overdue'"],
+                    "conditions": [{ "expr": "node.status == 'overdue'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1216,8 +1223,9 @@ mod tests {
                 "pb-6",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf_task4" }, "property_key": "wf_task4.status" },
-                    "conditions": ["node.status == 'done'"],
+                    "conditions": [{ "expr": "node.status == 'done'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1295,8 +1303,9 @@ mod tests {
                 "pb-inherit-pc",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf_sub_pc" }, "property_key": "wf_sub_pc.status" },
-                    "conditions": ["node.id != ''"],
+                    "conditions": [{ "expr": "node.id != ''", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1367,8 +1376,9 @@ mod tests {
                 "pb-inherit-cf",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_sub_cf" } },
-                    "conditions": ["node.status == 'active'"],
+                    "conditions": [{ "expr": "node.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1450,8 +1460,9 @@ mod tests {
                 "pb-inherit-rel",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_rel_sub" } },
-                    "conditions": ["node.story.status == 'active'"],
+                    "conditions": [{ "expr": "node.story.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1516,8 +1527,9 @@ mod tests {
                 "pb-extends-not-rel",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_ext_sub" } },
-                    "conditions": ["node.extends.status == 'active'"],
+                    "conditions": [{ "expr": "node.extends.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1579,8 +1591,9 @@ mod tests {
                 "pb-cron-ancestor",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "wf_base_cron" } },
-                    "conditions": ["node.id != ''"],
+                    "conditions": [{ "expr": "node.id != ''", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1662,8 +1675,9 @@ mod tests {
                 "pb-cron-stale-cache",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "wf_base_cron_stale" } },
-                    "conditions": ["node.id != ''"],
+                    "conditions": [{ "expr": "node.id != ''", "description": "Test condition" }],
                     "actions": []
                 }]),
             );
@@ -1774,8 +1788,9 @@ mod tests {
                 "pb-degraded",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_degraded" } },
-                    "conditions": [condition],
+                    "conditions": [{ "expr": condition, "description": "Test condition" }],
                     "actions": []
                 }]),
             );

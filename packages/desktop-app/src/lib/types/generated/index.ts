@@ -63,6 +63,7 @@ export type { RelationshipHop } from './relationship-hop';
 export type { RelationshipPath } from './relationship-path';
 export type { RemoveRelationshipParams } from './remove-relationship-params';
 export type { RuleClass } from './rule-class';
+export type { RuleCondition } from './rule-condition';
 export type { RuleDefinition } from './rule-definition';
 export type { SavedQuerySelector } from './saved-query-selector';
 export type { SchemaChildrenRule } from './schema-children-rule';

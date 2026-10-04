@@ -723,6 +723,7 @@ mod tests {
             "pb-1",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -740,6 +741,7 @@ mod tests {
             "pb-2",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -760,6 +762,7 @@ mod tests {
             "pb-3",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -791,6 +794,7 @@ mod tests {
             "pb-parked",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -810,7 +814,7 @@ mod tests {
 
         let broken = make_play_node(
             "pb-broken",
-            json!([{ "name": "r1", "trigger": { "type": "nope" } }]),
+            json!([{ "name": "r1", "description": "Test rule", "trigger": { "type": "nope" } }]),
         );
         assert!(parse_play_rules(&broken).is_err());
         lm.park_play(&broken, PlayStatus::Suspended, Vec::new());
@@ -839,6 +843,7 @@ mod tests {
         let mut lm = PlaybookLifecycleManager::new();
         let rules = json!([{
             "name": "r1",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
             "conditions": [],
             "actions": []
@@ -866,8 +871,9 @@ mod tests {
             "pb-4",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
-                "conditions": ["node.status == 'open'"],
+                "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                 "actions": []
             }]),
         );
@@ -890,6 +896,7 @@ mod tests {
             "pb-5",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -931,6 +938,7 @@ mod tests {
             "pb-zebra",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -941,6 +949,7 @@ mod tests {
             "pb-apple",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -980,6 +989,7 @@ mod tests {
 
         let rules_json = json!([{
             "name": "r1",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
             "conditions": [],
             "actions": []
@@ -1038,18 +1048,21 @@ mod tests {
             json!([
                 {
                     "name": "third",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "first",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "second",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
@@ -1090,8 +1103,9 @@ mod tests {
             "pb-drift-1",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
-                "conditions": ["node.status == 'open'"],
+                "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                 "actions": []
             }]),
         );
@@ -1117,8 +1131,9 @@ mod tests {
             "pb-drift-2",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
-                "conditions": ["node.story.epic.status == 'active'"],
+                "conditions": [{ "expr": "node.story.epic.status == 'active'", "description": "Test condition" }],
                 "actions": []
             }]),
         );
@@ -1136,8 +1151,9 @@ mod tests {
             "pb-drift-3",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
-                "conditions": ["node.status == 'open'"],
+                "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                 "actions": []
             }]),
         );
@@ -1159,6 +1175,7 @@ mod tests {
             "pb-drift-4",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -1407,6 +1424,7 @@ mod tests {
             "pb-base",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
                 "conditions": [],
                 "actions": []
@@ -1518,12 +1536,14 @@ mod tests {
             json!([
                 {
                     "name": "on_task",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "on_issue",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "issue" } },
                     "conditions": [],
                     "actions": []
@@ -1560,6 +1580,7 @@ mod tests {
             "pb-prop",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
@@ -1615,6 +1636,7 @@ mod tests {
             "pb-prop-ns",
             json!([{
                 "name": "r1",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",

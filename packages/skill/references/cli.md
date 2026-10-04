@@ -361,6 +361,16 @@ A Play runs when it is `enabled`, not suspended, not archived, and its rules val
 
 To bring a suspended Play back, fix the cause, then run `playbook enable <play-id>` (it clears the suspension even when the Play is already enabled) or save the corrected `rules`. The engine checks the Play again and suspends it again if the problem remains.
 
+<!-- BEGIN GENERATED: play-rules (see packages/agent/src/seeds/rules/skill-md/, packages/agent/src/seeds/skill-md/play-rules.md) -->
+**Play rule descriptions:** a Play's rule, each of its conditions and each of its actions carry a required `description`: one plain sentence saying what that part means, written in the same write as the part. A condition is an object with `expr` and `description`, never a bare expression. An action carries `description` beside `action_type`, `params` and `for_each`. The trigger takes no description. A missing or blank description is rejected. Write a Play's rules whole, with `nodespace node update <play-id> --property 'rules=[...]'`; `nodespace node get <play-id>` and `playbook list --json` print them in the same shape:
+
+```json
+{"name": "complete parent", "description": "Mark a task done once all its sub-tasks are done", "trigger": {"type": "graph_event", "on": "property_changed", "select": {"target_type": "task"}, "property_key": "task.status"}, "conditions": [{"expr": "node.child_of.has_child.all(c, c.status == 'done')", "description": "Every sub-task of the parent is done"}], "actions": [{"action_type": "update_node", "description": "Mark the parent task done", "params": {"node_id": "{trigger.node.child_of.id}", "properties": {"status": "done"}}}]}
+```
+
+**Stale Play descriptions:** when you change part of a Play's rules, rewrite that part's `description` in the same write. A changed condition `expr`, a changed action (`action_type`, `params` or `for_each`), or a changed rule `trigger` or `class` that keeps its stored description is rejected. A rule is matched to the stored rule with the same `name`, and its conditions and actions by position; a renamed rule is a new rule. The error names the rule, the part and its number, e.g. "rule `complete parent`, condition 2: its expression changed and its description didn't". Rewrite that description and run the update again with the corrected payload. A write that leaves `rules` alone is not checked, so `playbook disable` always works.
+<!-- END GENERATED: play-rules -->
+
 Archiving is not a Play's switch. An archived node takes part in nothing, so an archived Play doesn't run whatever its `state` says, no rule fires on an archived node and no action touches one; `playbook list --include-archived` shows archived Plays too, with their lifecycle. A Play's conditions and actions can't read or set whether a node is archived.
 
 A Play's execution errors are **not** in the graph: the graph holds only the suspension above. Engine diagnostics (a failed

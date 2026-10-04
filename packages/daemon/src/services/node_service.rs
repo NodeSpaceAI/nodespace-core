@@ -3269,8 +3269,9 @@ mod tests {
                     "play": {
                         "rules": [{
                             "name": "r1",
+                            "description": "Test rule",
                             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "text" } },
-                            "conditions": ["node.content == 'hello'"],
+                            "conditions": [{ "expr": "node.content == 'hello'", "description": "Test condition" }],
                             "actions": []
                         }]
                     }
@@ -4886,12 +4887,13 @@ mod tests {
         let update = serde_json::json!({
             "rules": [{
                 "name": "greet",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "node_created",
                     "select": { "target_type": "task" }
                 },
-                "conditions": ["node.content == 'hello'"],
+                "conditions": [{ "expr": "node.content == 'hello'", "description": "Test condition" }],
                 "actions": []
             }],
             "description": "Greets new tasks",
@@ -4943,7 +4945,7 @@ mod tests {
 
         for update_json in [
             r#"{"suspendedReason": "action_failed"}"#,
-            r#"{"rules": [{"name": "r", "trigger": {"type": "graph_event", "on": "node_created", "select": {"target_type": "task"}, "debounce_ms": 500}}]}"#,
+            r#"{"rules": [{"name": "r", "description": "Test rule", "trigger": {"type": "graph_event", "on": "node_created", "select": {"target_type": "task"}, "debounce_ms": 500}}]}"#,
         ] {
             let err = svc
                 .update_play_node(Request::new(crate::nodespace::UpdatePlayNodeRequest {

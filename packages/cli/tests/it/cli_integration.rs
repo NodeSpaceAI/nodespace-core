@@ -3774,6 +3774,119 @@ async fn playbook_enable_disable_round_trip() {
     let _ = shutdown.send(());
 }
 
+/// A Play's rules are written through `node update --property rules=...` and
+/// read back in the described shape (ADR-090 §1): the rule, each condition
+/// and each action carry a description, and a write that changes a condition
+/// under its stored description is refused with a message that names it.
+#[tokio::test]
+async fn play_rules_are_written_and_read_with_their_descriptions() {
+    let (sock, shutdown, _tempdir, node_service, _lifecycle) =
+        spawn_test_daemon_with_playbook().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    let rules = |expr: &str, description: &str| {
+        serde_json::json!([{
+            "name": "greet",
+            "description": "Greet a new note",
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "text" } },
+            "conditions": [{ "expr": expr, "description": description }],
+            "actions": [{
+                "action_type": "update_node",
+                "description": "Mark the note as seen",
+                "params": { "node_id": "{trigger.node.id}", "properties": { "seen": true } }
+            }]
+        }])
+    };
+    let play_id = node_service
+        .create_node(nodespace_core::models::Node::new(
+            "play".to_string(),
+            "Greeter".to_string(),
+            serde_json::json!({ "rules": rules("node.content == 'hello'", "The note says hello") }),
+        ))
+        .await
+        .expect("create play node");
+
+    let update = |rules: serde_json::Value| {
+        commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            id: play_id.clone(),
+            content: None,
+            properties: vec![("rules".to_string(), rules)],
+            collections: vec![],
+            collection_ids: vec![],
+            remove_collection_ids: vec![],
+        })
+    };
+
+    let stale = commands::node::run(
+        &mut client,
+        update(rules("node.content == 'hi'", "The note says hello")),
+        true,
+    )
+    .await
+    .expect_err("a changed expression under its stored description is refused");
+    let message = format!("{stale:#}");
+    assert!(
+        message.contains(
+            "rule `greet`, condition 1: its expression changed and its description didn't"
+        ),
+        "{message}"
+    );
+
+    let bare = commands::node::run(
+        &mut client,
+        update(serde_json::json!([{
+            "name": "greet",
+            "description": "Greet a new note",
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "text" } },
+            "conditions": ["node.content == 'hi'"]
+        }])),
+        true,
+    )
+    .await
+    .expect_err("a bare-string condition is refused");
+    let message = format!("{bare:#}");
+    assert!(
+        message.contains("rule[0] ('greet'): conditions[0]"),
+        "{message}"
+    );
+
+    commands::node::run(
+        &mut client,
+        update(rules("node.content == 'hi'", "The note says hi")),
+        true,
+    )
+    .await
+    .expect("a changed expression with a new description saves");
+
+    let listed = client
+        .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: false,
+            id: Some(play_id.clone()),
+            mentioned_by: None,
+            content_contains: None,
+            title_contains: None,
+            node_type: Some("play".to_string()),
+            limit: 0,
+            offset: 0,
+            order_by: 0,
+        })
+        .await
+        .expect("QueryNodesSimple")
+        .into_inner();
+    let printed = nodespace_cli::output::node_to_json(&listed.nodes[0]);
+    let rule = &printed["properties"]["rules"][0];
+    assert_eq!(rule["description"], "Greet a new note");
+    assert_eq!(
+        rule["conditions"][0],
+        serde_json::json!({ "expr": "node.content == 'hi'", "description": "The note says hi" })
+    );
+    assert_eq!(rule["actions"][0]["description"], "Mark the note as seen");
+
+    let _ = shutdown.send(());
+}
+
 /// `nodespace playbook get-workflow-state` over the real gRPC transport: a
 /// play activated directly on the served lifecycle manager is found and
 /// evaluated against a real node.
@@ -3794,8 +3907,9 @@ async fn playbook_get_workflow_state_round_trip() {
                 "play": {
                     "rules": [{
                         "name": "r1",
+                        "description": "Test rule",
                         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "text" } },
-                        "conditions": ["node.content == 'hello'"],
+                        "conditions": [{ "expr": "node.content == 'hello'", "description": "Test condition" }],
                         "actions": []
                     }]
                 }

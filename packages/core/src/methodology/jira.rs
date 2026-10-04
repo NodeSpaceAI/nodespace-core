@@ -415,6 +415,9 @@ fn sprint_transition_gate() -> PlayStep {
         rules: json!([
             {
                 "name": "reject-illegal-sprint-transition",
+                "description":
+                    "Refuse a sprint status change other than a first setting to future, a start, \
+                     or a close of an active sprint",
                 "class": "invariant",
                 "trigger": {
                     "type": "graph_event",
@@ -424,9 +427,15 @@ fn sprint_transition_gate() -> PlayStep {
                     // `{node_type}.{field}` form `update_node` reports.
                     "property_key": "sprint.sprint_status",
                 },
-                "conditions": [format!("!({legal})")],
+                "conditions": [{
+                    "expr": format!("!({legal})"),
+                    "description":
+                        "The status change is not a first setting to future, a start from \
+                         future or from no status, or a close from active",
+                }],
                 "actions": [{
                     "action_type": "reject",
+                    "description": "Refuse the change and say which sprint moves are allowed",
                     "params": {
                         "message":
                             "A sprint moves only from future to active, and from active to \
@@ -437,6 +446,7 @@ fn sprint_transition_gate() -> PlayStep {
             },
             {
                 "name": "reject-starting-without-dates",
+                "description": "Refuse to start a sprint that has no start or end date",
                 "class": "invariant",
                 "trigger": {
                     "type": "graph_event",
@@ -445,11 +455,18 @@ fn sprint_transition_gate() -> PlayStep {
                     "property_key": "sprint.sprint_status",
                 },
                 "conditions": [
-                    "node.sprint_status == 'active'",
-                    "!has(node.start_date) || !has(node.end_date)",
+                    {
+                        "expr": "node.sprint_status == 'active'",
+                        "description": "The sprint is active",
+                    },
+                    {
+                        "expr": "!has(node.start_date) || !has(node.end_date)",
+                        "description": "Its start date or its end date is not set",
+                    },
                 ],
                 "actions": [{
                     "action_type": "reject",
+                    "description": "Refuse the change and say both dates must be set first",
                     "params": {
                         "message":
                             "A sprint cannot start without a start_date and an end_date. Set \
@@ -459,18 +476,23 @@ fn sprint_transition_gate() -> PlayStep {
             },
             {
                 "name": "reject-creating-a-started-sprint",
+                "description": "Refuse to create a sprint that is already started or closed",
                 "class": "invariant",
                 "trigger": {
                     "type": "graph_event",
                     "on": "node_created",
                     "select": { "target_type": "sprint" },
                 },
-                "conditions": [
-                    "(has(node.sprint_status) && node.sprint_status != 'future') \
-                     || has(node.completed_date)",
-                ],
+                "conditions": [{
+                    "expr":
+                        "(has(node.sprint_status) && node.sprint_status != 'future') \
+                         || has(node.completed_date)",
+                    "description":
+                        "The new sprint has a status other than future, or a completed date",
+                }],
                 "actions": [{
                     "action_type": "reject",
+                    "description": "Refuse the create and say a sprint starts as future",
                     "params": {
                         "message":
                             "A sprint is created as future, with no completed_date. Create \
@@ -501,15 +523,20 @@ fn sprint_completion_stamp() -> PlayStep {
              time of the close.",
         rules: json!([{
             "name": "stamp-completed-date",
+            "description": "Record the time a sprint closes as its completed date",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
                 "select": { "target_type": "sprint" },
                 "property_key": "sprint.sprint_status",
             },
-            "conditions": [status_moved(&["active"], "closed")],
+            "conditions": [{
+                "expr": status_moved(&["active"], "closed"),
+                "description": "The sprint's status moved from active to closed",
+            }],
             "actions": [{
                 "action_type": "update_node",
+                "description": "Set the sprint's completed date to the time of the close",
                 "params": {
                     "node_id": "{trigger.node.id}",
                     "properties": { "completed_date": "{trigger.node.modifiedAt}" },
@@ -539,6 +566,7 @@ fn sprint_close_lock() -> PlayStep {
         .map(|field| {
             json!({
                 "name": format!("lock-closed-sprint-{field}"),
+                "description": format!("Refuse a change to a closed sprint's {field}"),
                 "class": "invariant",
                 "trigger": {
                     "type": "graph_event",
@@ -546,9 +574,14 @@ fn sprint_close_lock() -> PlayStep {
                     "select": { "target_type": "sprint" },
                     "property_key": format!("sprint.{field}"),
                 },
-                "conditions": ["node.sprint_status == 'closed'"],
+                "conditions": [{
+                    "expr": "node.sprint_status == 'closed'",
+                    "description": "The sprint is closed",
+                }],
                 "actions": [{
                     "action_type": "reject",
+                    "description":
+                        format!("Refuse the change and say a closed sprint's {field} is locked"),
                     "params": {
                         // Names the field, which also keeps each rule's
                         // action list distinct: byte-identical actions in one
@@ -565,6 +598,7 @@ fn sprint_close_lock() -> PlayStep {
 
     rules.push(json!({
         "name": "lock-completed-date",
+        "description": "Refuse a completed date that is set by hand or changed once recorded",
         "class": "invariant",
         "trigger": {
             "type": "graph_event",
@@ -576,14 +610,19 @@ fn sprint_close_lock() -> PlayStep {
         // already stamped; or this same write also moved `sprint_status` —
         // the close itself carrying a hand-set date, which would otherwise
         // pass as "closed, unset before" and pre-empt the stamp.
-        "conditions": [
-            "node.sprint_status != 'closed' \
-             || trigger.properties.exists(p, p.key == 'sprint.sprint_status') \
-             || trigger.properties.exists(p, \
-                p.key == 'sprint.completed_date' && p.old_value != null)",
-        ],
+        "conditions": [{
+            "expr":
+                "node.sprint_status != 'closed' \
+                 || trigger.properties.exists(p, p.key == 'sprint.sprint_status') \
+                 || trigger.properties.exists(p, \
+                    p.key == 'sprint.completed_date' && p.old_value != null)",
+            "description":
+                "The sprint is not closed, the same change also moves its status, or its \
+                 completed date was already recorded",
+        }],
         "actions": [{
             "action_type": "reject",
+            "description": "Refuse the change and say the completed date is set automatically",
             "params": {
                 "message":
                     "completed_date records when the sprint was closed and is set \
@@ -599,6 +638,7 @@ fn sprint_close_lock() -> PlayStep {
     ] {
         rules.push(json!({
             "name": format!("lock-closed-sprint-membership-{on}"),
+            "description": format!("Refuse work being {verb} a closed sprint"),
             "class": "invariant",
             "trigger": {
                 "type": "graph_event",
@@ -606,11 +646,20 @@ fn sprint_close_lock() -> PlayStep {
                 "select": { "target_type": "sprint" },
             },
             "conditions": [
-                "trigger.relationship.name == 'issues'",
-                "node.sprint_status == 'closed'",
+                {
+                    "expr": "trigger.relationship.name == 'issues'",
+                    "description": "The relationship is the sprint's issues",
+                },
+                {
+                    "expr": "node.sprint_status == 'closed'",
+                    "description": "The sprint is closed",
+                },
             ],
             "actions": [{
                 "action_type": "reject",
+                "description": format!(
+                    "Refuse the change and say work cannot be {verb} a closed sprint"
+                ),
                 "params": {
                     "message": format!(
                         "This sprint is closed, so work cannot be {verb} it — its issues \

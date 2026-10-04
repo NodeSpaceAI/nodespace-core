@@ -76,6 +76,13 @@ fn regions() -> Vec<GeneratedRegion> {
             render: nodespace_agent::skill_rules::skill_md_schema_rules,
         },
         GeneratedRegion {
+            id: "play-rules",
+            file: "references/cli.md",
+            source_note: "packages/agent/src/seeds/rules/skill-md/, \
+                          packages/agent/src/seeds/skill-md/play-rules.md",
+            render: nodespace_agent::skill_rules::skill_md_play_rules,
+        },
+        GeneratedRegion {
             id: "cli-surface",
             file: "references/cli.md",
             source_note:
@@ -133,6 +140,9 @@ fn end_marker(r: &GeneratedRegion) -> String {
 // `packages/agent/src/seeds/skill-md/schema-rules.md`. The seeded skills
 // include the same rules in their local-agent form, so neither surface
 // restates a rule.
+//
+// The `play-rules` region is rendered the same way, by
+// `skill_md_play_rules` from `seeds/skill-md/play-rules.md`.
 
 // ---------------------------------------------------------------------------
 // Region: cli-surface

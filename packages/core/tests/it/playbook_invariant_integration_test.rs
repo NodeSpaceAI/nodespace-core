@@ -179,9 +179,11 @@ fn stamp_approved_invariant_rule(node_type: &str) -> serde_json::Value {
     json!([{
         "name": "stamp-approved",
         "class": "invariant",
+        "description": "Test rule",
         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
-        "conditions": ["node.status == 'pending'"],
+        "conditions": [{ "expr": "node.status == 'pending'", "description": "Test condition" }],
         "actions": [{
+            "description": "Test action",
             "action_type": "update_node",
             "params": {
                 "node_id": "{trigger.node.id}",
@@ -282,9 +284,11 @@ async fn invariant_action_failure_rolls_back_the_whole_node_creation() -> Result
         json!({ "play": { "rules": [{
             "name": "self-member-of-non-collection",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_gated" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "add_relationship",
                 "params": {
                     "source_id": "{trigger.node.id}",
@@ -363,9 +367,11 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
             {
                 "name": "stamp-first",
                 "class": "invariant",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_multi" } },
                 "conditions": [],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "properties": { "approved": true } }
                 }]
@@ -373,9 +379,11 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
             {
                 "name": "fail-second",
                 "class": "invariant",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_multi" } },
                 "conditions": [],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "add_relationship",
                     "params": {
                         "source_id": "{trigger.node.id}",
@@ -619,18 +627,22 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
             {
                 "name": "invariant-stamp",
                 "class": "invariant",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_mixed_a" } },
-                "conditions": ["node.status == 'pending'"],
+                "conditions": [{ "expr": "node.status == 'pending'", "description": "Test condition" }],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "properties": { "approved": true } }
                 }]
             },
             {
                 "name": "reactive-close",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_mixed_b" } },
-                "conditions": ["node.status == 'open'"],
+                "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "properties": { "status": "done" } }
                 }]
@@ -703,6 +715,7 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
     let default_rules = json!([{
         "name": "seeded-invariant-rule",
         "class": "invariant",
+        "description": "Test rule",
         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_seeded_task" } },
         "conditions": [],
         "actions": []
@@ -796,9 +809,11 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
         json!({ "play": { "rules": [{
             "name": "create-target",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_chain_source" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "create_node",
                 "params": { "node_type": "iv_chain_target", "content": "created by rule A" }
             }]
@@ -817,9 +832,11 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
         json!({ "play": { "rules": [{
             "name": "stamp-target",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_chain_target" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -973,9 +990,11 @@ fn reject_invariant_rule(node_type: &str, condition: &str, message: &str) -> ser
     json!([{
         "name": "reject-rule",
         "class": "invariant",
+        "description": "Test rule",
         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
-        "conditions": [condition],
+        "conditions": [{ "expr": condition, "description": "Test condition" }],
         "actions": [{
+            "description": "Test action",
             "action_type": "reject",
             "params": { "message": message }
         }]
@@ -1277,13 +1296,15 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
         json!({ "play": { "rules": [{
             "name": "reject-rule",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
                 "select": { "target_type": "iv_rel_bug" },
             },
-            "conditions": ["node.status == 'done'"],
+            "conditions": [{ "expr": "node.status == 'done'", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "reject",
                 "params": { "message": "a done bug cannot block anything" }
             }]
@@ -1464,14 +1485,17 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
         json!({ "play": { "rules": [{
             "name": "reject-then-augment",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_order_a" } },
             "conditions": [],
             "actions": [
                 {
+                    "description": "Test action",
                     "action_type": "reject",
                     "params": { "message": "vetoed before the augment runs" }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": {
                         "node_id": other_id,
@@ -1548,9 +1572,11 @@ async fn reject_on_reactive_rule_bypassing_save_time_validation_is_suspended_at_
         json!({ "play": { "rules": [{
             "name": "reject-on-reactive",
             "class": "reactive",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_bypass" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "reject",
                 "params": { "message": "should never reach a caller — this play must not activate" }
             }]
@@ -1624,10 +1650,12 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
         json!({ "play": { "rules": [{
             "name": "augment-then-reject",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_order_b" } },
             "conditions": [],
             "actions": [
                 {
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": {
                         "node_id": other_id,
@@ -1635,6 +1663,7 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
                     }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "reject",
                     "params": { "message": "vetoed after the augment already ran" }
                 }
@@ -1704,9 +1733,11 @@ fn stamp_verified_on_update_invariant_rule(node_type: &str, field: &str) -> serd
     json!([{
         "name": "stamp-verified-on-update",
         "class": "invariant",
+        "description": "Test rule",
         "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": node_type }, "property_key": property_key },
         "conditions": [],
         "actions": [{
+            "description": "Test action",
             "action_type": "update_node",
             "params": {
                 "node_id": "{trigger.node.id}",
@@ -1807,9 +1838,11 @@ async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
         json!({ "play": { "rules": [{
             "name": "reject-blocked-transition",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv_update_reject" }, "property_key": "iv_update_reject.status" },
-            "conditions": ["node.status == 'blocked'"],
+            "conditions": [{ "expr": "node.status == 'blocked'", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "reject",
                 "params": { "message": "cannot transition to blocked" }
             }]
@@ -1880,9 +1913,11 @@ async fn invariant_update_rule_reject_emits_no_domain_event() -> Result<()> {
         json!({ "play": { "rules": [{
             "name": "reject-always",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv_update_no_broadcast" }, "property_key": "iv_update_no_broadcast.status" },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "reject",
                 "params": { "message": "never allowed" }
             }]
@@ -2091,9 +2126,11 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
         json!([{
             "name": "notify-on-status-change",
             // No "class" -> defaults to reactive.
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv_update_reactive" }, "property_key": "iv_update_reactive.status" },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -2171,9 +2208,11 @@ fn stamp_priority_on_task_status_update_invariant_rule() -> serde_json::Value {
     json!([{
         "name": "stamp-priority-on-status-update",
         "class": "invariant",
+        "description": "Test rule",
         "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
         "conditions": [],
         "actions": [{
+            "description": "Test action",
             "action_type": "update_node",
             "params": {
                 "node_id": "{trigger.node.id}",
@@ -2264,9 +2303,11 @@ async fn invariant_task_update_rule_reject_prevents_partial_write() -> Result<()
         json!({ "play": { "rules": [{
             "name": "reject-done-transition",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
-            "conditions": ["node.status == 'done'"],
+            "conditions": [{ "expr": "node.status == 'done'", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "reject",
                 "params": { "message": "cannot mark done while sub-issues are open" }
             }]
@@ -2331,9 +2372,11 @@ async fn invariant_task_update_rule_reject_emits_no_domain_event() -> Result<()>
         json!({ "play": { "rules": [{
             "name": "reject-always",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "reject",
                 "params": { "message": "never allowed" }
             }]
@@ -2515,9 +2558,11 @@ async fn reactive_task_update_rule_still_fires_asynchronously_post_commit() -> R
         json!([{
             "name": "notify-on-task-status-change",
             // No "class" -> defaults to reactive.
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -2591,9 +2636,11 @@ async fn user_edit_to_a_node_stamped_at_max_depth_still_fires_the_reactive_rule(
         "reactive-on-stamped-task-play",
         json!([{
             "name": "prioritize-on-status-change",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "task" }, "property_key": "task.status" },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -2761,14 +2808,16 @@ fn verified_when_done_invariant_rule(node_type: &str) -> serde_json::Value {
     json!([{
         "name": "verified-when-done",
         "class": "invariant",
+        "description": "Test rule",
         "trigger": {
             "type": "graph_event",
             "on": "property_changed",
             "select": { "target_type": node_type },
             "property_key": format!("{node_type}.status")
         },
-        "conditions": ["node.status == 'done' && !has(node.verified)"],
+        "conditions": [{ "expr": "node.status == 'done' && !has(node.verified)", "description": "Test condition" }],
         "actions": [{
+            "description": "Test action",
             "action_type": "update_node",
             "params": {
                 "node_id": "{trigger.node.id}",
@@ -3199,14 +3248,16 @@ async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant(
         json!([{
             "name": "log-on-done",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
                 "select": { "target_type": "iv_su_legal" },
                 "property_key": "iv_su_legal.status"
             },
-            "conditions": ["node.status == 'done'"],
+            "conditions": [{ "expr": "node.status == 'done'", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "create_node",
                 "params": { "node_type": "iv_su_legal_log", "content": "done recorded" }
             }]
@@ -3318,14 +3369,16 @@ async fn contradictory_invariants_ping_pong(initial_properties: serde_json::Valu
         json!([{
             "name": format!("mode-must-be-{required}"),
             "class": "invariant",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
                 "select": { "target_type": NODE_TYPE },
                 "property_key": format!("{NODE_TYPE}.mode")
             },
-            "conditions": [format!("node.mode != '{required}'")],
+            "conditions": [{ "expr": format!("node.mode != '{required}'"), "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -3463,14 +3516,16 @@ fn relay_f_rules(from: &str, target_id: &str, invert: bool) -> serde_json::Value
         json!({
             "name": format!("{from}-{when}-sets-{set}"),
             "class": "invariant",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
                 "select": { "target_type": from },
                 "property_key": format!("{from}.f")
             },
-            "conditions": [format!("node.f == '{when}'")],
+            "conditions": [{ "expr": format!("node.f == '{when}'"), "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": { "node_id": target_id, "properties": { "f": set } }
             }]

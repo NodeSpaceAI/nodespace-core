@@ -382,17 +382,24 @@ fn cycle_rollover_play() -> PlayStep {
              tasks into it. Done and cancelled tasks stay with the ending cycle as its record.",
         rules: json!([{
             "name": "create-successor-and-roll-over",
+            "description":
+                "On the day a cycle ends, create the next cycle and move the unfinished \
+                 tasks into it",
             "trigger": {
                 "type": "scheduled",
                 "cron": DAILY_AFTER_MIDNIGHT,
                 "select": { "target_type": "cycle" },
             },
-            "conditions": [
-                "node.end_date == today()",
-            ],
+            "conditions": [{
+                "expr": "node.end_date == today()",
+                "description": "The cycle ends today",
+            }],
             "actions": [
                 {
                     "action_type": "create_node",
+                    "description":
+                        "Create the next cycle, starting the day after this one ends and \
+                         lasting as many days",
                     "params": {
                         "node_type": "cycle",
                         "content": "Next cycle",
@@ -406,6 +413,7 @@ fn cycle_rollover_play() -> PlayStep {
                 },
                 {
                     "action_type": "add_relationship",
+                    "description": "Add each unfinished task to the next cycle",
                     "for_each": ROLLOVER_TASKS,
                     "params": {
                         "source_id": "{actions[0].result.id}",
@@ -415,6 +423,7 @@ fn cycle_rollover_play() -> PlayStep {
                 },
                 {
                     "action_type": "remove_relationship",
+                    "description": "Take each unfinished task out of the ending cycle",
                     "for_each": ROLLOVER_TASKS,
                     "params": {
                         "source_id": "{trigger.node.id}",
@@ -444,6 +453,7 @@ fn sub_issue_completion_gate() -> PlayStep {
              children first, or move them out from under this issue.",
         rules: json!([{
             "name": "reject-done-with-open-children",
+            "description": "Refuse to mark an issue done while it has open sub-issues",
             "class": "invariant",
             "trigger": {
                 "type": "graph_event",
@@ -457,11 +467,19 @@ fn sub_issue_completion_gate() -> PlayStep {
                 "property_key": "issue.status",
             },
             "conditions": [
-                "node.status == 'done'",
-                "node.has_child.exists(c, c.status != 'done' && c.status != 'cancelled')",
+                {
+                    "expr": "node.status == 'done'",
+                    "description": "The issue is being marked done",
+                },
+                {
+                    "expr":
+                        "node.has_child.exists(c, c.status != 'done' && c.status != 'cancelled')",
+                    "description": "At least one sub-issue is neither done nor cancelled",
+                },
             ],
             "actions": [{
                 "action_type": "reject",
+                "description": "Refuse the change and say the sub-issues must be closed first",
                 "params": {
                     "message":
                         "This issue still has open sub-issues. Close or cancel them first, \
@@ -487,6 +505,7 @@ fn blocker_gate() -> PlayStep {
              still open. Resolve the blocker, or drop the blocks edge if it no longer applies.",
         rules: json!([{
             "name": "reject-start-with-open-blocker",
+            "description": "Refuse to start an issue while something blocking it is unfinished",
             "class": "invariant",
             "trigger": {
                 "type": "graph_event",
@@ -500,11 +519,19 @@ fn blocker_gate() -> PlayStep {
                 "property_key": "issue.status",
             },
             "conditions": [
-                "node.status == 'in_progress'",
-                "node.blocked_by.exists(b, b.status != 'done' && b.status != 'cancelled')",
+                {
+                    "expr": "node.status == 'in_progress'",
+                    "description": "The issue is being started",
+                },
+                {
+                    "expr":
+                        "node.blocked_by.exists(b, b.status != 'done' && b.status != 'cancelled')",
+                    "description": "At least one blocker is neither done nor cancelled",
+                },
             ],
             "actions": [{
                 "action_type": "reject",
+                "description": "Refuse the change and say the blocker must be resolved first",
                 "params": {
                     "message":
                         "This issue is blocked by work that is not finished yet. Resolve the \

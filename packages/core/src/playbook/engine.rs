@@ -1747,8 +1747,9 @@ mod scope_tests {
     fn rule_on(node_type: &str, condition: &str) -> ParsedRule {
         let def = serde_json::from_value(json!({
             "name": "r",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
-            "conditions": [condition],
+            "conditions": [{ "expr": condition, "description": "Test condition" }],
             "actions": []
         }))
         .expect("rule definition should parse");
@@ -2804,9 +2805,11 @@ mod run_state_tests {
     fn marking_rule(name: &str) -> Value {
         json!({
             "name": name,
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": WIDGET } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": { "node_id": "{trigger.node.id}", "properties": { "marker": "set" } }
             }]
@@ -2817,9 +2820,11 @@ mod run_state_tests {
     fn failing_rule(name: &str) -> Value {
         json!({
             "name": name,
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": WIDGET } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": { "node_id": "no-such-node", "properties": { "marker": "set" } }
             }]
@@ -2831,9 +2836,10 @@ mod run_state_tests {
         json!([{
             "name": "reject-on-reactive",
             "class": "reactive",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": WIDGET } },
             "conditions": [],
-            "actions": [{ "action_type": "reject", "params": { "message": "no" } }]
+            "actions": [{ "description": "Test action", "action_type": "reject", "params": { "message": "no" } }]
         }])
     }
 
@@ -3210,9 +3216,11 @@ mod run_state_tests {
         // The rule pins the schema version it was written against.
         let rule = json!({
             "name": "pinned",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": WIDGET } },
-            "conditions": ["node.state == 'ready'"],
+            "conditions": [{ "expr": "node.state == 'ready'", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "create_node",
                 "params": { "node_type": WIDGET, "version": 1, "content": "another" }
             }]

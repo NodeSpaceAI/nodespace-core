@@ -82,9 +82,10 @@ fn reject_on_create(node_type: &str, condition: &str, message: &str) -> serde_js
     json!([{
         "name": "reject-on-create",
         "class": "invariant",
+        "description": "Test rule",
         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
-        "conditions": [condition],
-        "actions": [{ "action_type": "reject", "params": { "message": message } }]
+        "conditions": [{ "expr": condition, "description": "Test condition" }],
+        "actions": [{ "description": "Test action", "action_type": "reject", "params": { "message": message } }]
     }])
 }
 
@@ -92,9 +93,11 @@ fn stamp_approved_on_create(node_type: &str) -> serde_json::Value {
     json!([{
         "name": "stamp-approved",
         "class": "invariant",
+        "description": "Test rule",
         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
-        "conditions": ["node.status == 'pending'"],
+        "conditions": [{ "expr": "node.status == 'pending'", "description": "Test condition" }],
         "actions": [{
+            "description": "Test action",
             "action_type": "update_node",
             "params": { "node_id": "{trigger.node.id}", "properties": { "approved": true } }
         }]
@@ -515,14 +518,15 @@ fn reject_on_status_change(node_type: &str) -> serde_json::Value {
     json!([{
         "name": "reject-blocked-transition",
         "class": "invariant",
+        "description": "Test rule",
         "trigger": {
             "type": "graph_event",
             "on": "property_changed",
             "select": { "target_type": node_type },
             "property_key": format!("{node_type}.status")
         },
-        "conditions": ["node.status == 'blocked'"],
-        "actions": [{ "action_type": "reject", "params": { "message": "cannot block" } }]
+        "conditions": [{ "expr": "node.status == 'blocked'", "description": "Test condition" }],
+        "actions": [{ "description": "Test action", "action_type": "reject", "params": { "message": "cannot block" } }]
     }])
 }
 
@@ -615,6 +619,7 @@ async fn bulk_update_runs_update_invariant_actions_for_changed_properties_only()
         json!([{
             "name": "stamp-verified",
             "class": "invariant",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
@@ -623,6 +628,7 @@ async fn bulk_update_runs_update_invariant_actions_for_changed_properties_only()
             },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": { "node_id": "{trigger.node.id}", "properties": { "verified": true } }
             }]

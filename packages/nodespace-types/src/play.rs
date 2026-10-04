@@ -9,6 +9,10 @@
 //!
 //! Rule keys are snake_case in storage and on the wire alike: a rule is
 //! authored and replaced whole, so it has one spelling.
+//!
+//! A rule, each of its conditions and each of its actions carry a required
+//! `description`: what that part means, written by the play's author in the
+//! same write (ADR-090 §1). The trigger has none; its fields describe it.
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -302,7 +306,7 @@ pub struct RejectParams {
 }
 
 /// One step of a rule. Tagged on `action_type`, with that action's own
-/// `params`.
+/// `params` and the author's `description` of what the step does.
 ///
 /// `for_each` runs the action once per node a path reaches
 /// (`trigger.node.tasks`, optionally narrowed with `.where(...)`), binding
@@ -313,26 +317,31 @@ pub struct RejectParams {
 #[serde(tag = "action_type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
     CreateNode {
+        description: String,
         params: CreateNodeParams,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         for_each: Option<String>,
     },
     UpdateNode {
+        description: String,
         params: UpdateNodeParams,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         for_each: Option<String>,
     },
     AddRelationship {
+        description: String,
         params: AddRelationshipParams,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         for_each: Option<String>,
     },
     RemoveRelationship {
+        description: String,
         params: RemoveRelationshipParams,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         for_each: Option<String>,
     },
     Reject {
+        description: String,
         params: RejectParams,
     },
 }
@@ -345,6 +354,17 @@ impl Action {
             Self::AddRelationship { .. } => ActionType::AddRelationship,
             Self::RemoveRelationship { .. } => ActionType::RemoveRelationship,
             Self::Reject { .. } => ActionType::Reject,
+        }
+    }
+
+    /// What the step does, in its author's words.
+    pub fn description(&self) -> &str {
+        match self {
+            Self::CreateNode { description, .. }
+            | Self::UpdateNode { description, .. }
+            | Self::AddRelationship { description, .. }
+            | Self::RemoveRelationship { description, .. }
+            | Self::Reject { description, .. } => description,
         }
     }
 
@@ -367,7 +387,7 @@ impl Action {
             Self::UpdateNode { params, .. } => to_json(params),
             Self::AddRelationship { params, .. } => to_json(params),
             Self::RemoveRelationship { params, .. } => to_json(params),
-            Self::Reject { params } => to_json(params),
+            Self::Reject { params, .. } => to_json(params),
         }
     }
 }
@@ -376,21 +396,36 @@ impl Action {
 // Rules
 // ============================================================================
 
+/// One condition of a rule: a CEL expression over the triggering node, and
+/// what it requires in the author's words. A bare expression does not decode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(
+    deny_unknown_fields,
+    expecting = "an object { \"expr\": \"<CEL>\", \"description\": \"<what must hold>\" }"
+)]
+pub struct RuleCondition {
+    pub expr: String,
+    pub description: String,
+}
+
 /// One rule of a play: when it runs, what must hold, and what it does.
 ///
-/// `conditions` are CEL expressions over the triggering node; all must pass.
+/// Every condition must pass. `description` says what the rule does, in one
+/// sentence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct RuleDefinition {
     pub name: String,
+    pub description: String,
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub class: RuleClass,
     pub trigger: Trigger,
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
-    pub conditions: Vec<String>,
+    pub conditions: Vec<RuleCondition>,
     #[serde(default)]
     #[cfg_attr(feature = "ts", ts(optional = nullable))]
     pub actions: Vec<Action>,
@@ -526,7 +561,8 @@ impl PlayFields {
     ///
     /// `InvalidProperties` naming the field. For `rules` the message names
     /// the rule and what in it failed to decode: an unknown trigger type,
-    /// event or action, a missing param, or a param the action does not take.
+    /// event or action, a missing description, a condition written as a bare
+    /// expression, a missing param, or a param the action does not take.
     pub fn from_properties(properties: &Value) -> Result<Self, ValidationError> {
         let bucket = play_bucket(properties);
 
@@ -609,26 +645,47 @@ fn decode_field<T: serde::de::DeserializeOwned>(
         .transpose()
 }
 
-/// Decode a stored `rules` value, one rule at a time so an error names the
-/// rule it is in.
+/// Decode a stored `rules` value.
 fn decode_rules(value: &Value) -> Result<Vec<RuleDefinition>, ValidationError> {
+    decode_rule_list(value).map_err(|detail| invalid("rules", &detail))
+}
+
+/// Decode a `rules` value one rule at a time, so an error names the rule it
+/// is in and the field within it (`conditions[1]`, `actions[0]`).
+fn decode_rule_list(value: &Value) -> Result<Vec<RuleDefinition>, String> {
     let rules = value
         .as_array()
-        .ok_or_else(|| invalid("rules", "expected an array of rules"))?;
+        .ok_or_else(|| "expected an array of rules".to_string())?;
     rules
         .iter()
         .enumerate()
         .map(|(index, rule)| {
-            serde_json::from_value(rule.clone()).map_err(|e| {
+            serde_path_to_error::deserialize(rule).map_err(|e| {
                 let name = rule.get("name").and_then(Value::as_str);
                 let label = match name {
                     Some(name) => format!("rule[{index}] ('{name}')"),
                     None => format!("rule[{index}]"),
                 };
-                invalid("rules", &format!("{label}: {e}"))
+                let path = e.path().to_string();
+                if path == "." {
+                    format!("{label}: {}", e.inner())
+                } else {
+                    format!("{label}: {path}: {}", e.inner())
+                }
             })
         })
         .collect()
+}
+
+/// Decode an update's `rules` the way stored rules are decoded, so a typed
+/// update's error names the rule and the field too.
+fn deserialize_update_rules<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<RuleDefinition>>, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    decode_rule_list(&value)
+        .map(Some)
+        .map_err(|detail| serde::de::Error::custom(format!("rules: {detail}")))
 }
 
 fn invalid(key: &str, detail: &str) -> ValidationError {
@@ -667,7 +724,11 @@ pub struct PlayNode {
 #[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlayNodeUpdate {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_update_rules"
+    )]
     pub rules: Option<Vec<RuleDefinition>>,
     #[serde(
         default,
@@ -718,7 +779,7 @@ mod tests {
     use serde_json::json;
 
     fn rule(trigger: Value, actions: Value) -> Value {
-        json!({ "name": "r", "trigger": trigger, "actions": actions })
+        json!({ "name": "r", "description": "Test rule", "trigger": trigger, "actions": actions })
     }
 
     fn graph_event() -> Value {
@@ -734,6 +795,7 @@ mod tests {
         let stored = json!({
             "name": "roll over",
             "class": "reactive",
+            "description": "Test rule",
             "trigger": {
                 "type": "scheduled",
                 "cron": "0 5 0 * * * *",
@@ -744,9 +806,10 @@ mod tests {
                     ]
                 }
             },
-            "conditions": ["node.end_date == today()"],
+            "conditions": [{ "expr": "node.end_date == today()", "description": "Test condition" }],
             "actions": [
                 {
+                    "description": "Test action",
                     "action_type": "create_node",
                     "params": {
                         "node_type": "cycle",
@@ -756,6 +819,7 @@ mod tests {
                     }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "add_relationship",
                     "for_each": "trigger.node.tasks.where(status != 'done')",
                     "params": {
@@ -787,7 +851,9 @@ mod tests {
 
     #[test]
     fn class_conditions_and_actions_take_their_defaults() {
-        let rule = decode(json!({ "name": "r", "trigger": graph_event() })).unwrap();
+        let rule =
+            decode(json!({ "name": "r", "description": "Test rule", "trigger": graph_event() }))
+                .unwrap();
         assert_eq!(rule.class, RuleClass::Reactive);
         assert!(rule.conditions.is_empty());
         assert!(rule.actions.is_empty());
@@ -858,7 +924,7 @@ mod tests {
     fn an_unknown_action_is_rejected() {
         let err = decode(rule(
             graph_event(),
-            json!([{ "action_type": "spawn_agent", "params": {} }]),
+            json!([{ "description": "Test action", "action_type": "spawn_agent", "params": {} }]),
         ))
         .unwrap_err();
         assert!(err.contains("spawn_agent"), "{err}");
@@ -898,7 +964,7 @@ mod tests {
         for (action_type, params, unknown) in cases {
             let err = decode(rule(
                 graph_event(),
-                json!([{ "action_type": action_type, "params": params }]),
+                json!([{ "description": "Test action", "action_type": action_type, "params": params }]),
             ))
             .unwrap_err();
             assert!(
@@ -926,7 +992,7 @@ mod tests {
             assert!(
                 decode(rule(
                     graph_event(),
-                    json!([{ "action_type": action_type, "params": params }]),
+                    json!([{ "description": "Test action", "action_type": action_type, "params": params }]),
                 ))
                 .is_err(),
                 "{action_type} must require its params"
@@ -940,10 +1006,12 @@ mod tests {
             graph_event(),
             json!([
                 {
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "n", "properties": { "anything": { "nested": [1, 2] } } }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "add_relationship",
                     "params": {
                         "source_id": "a", "relationship_type": "t", "target_id": "b",
@@ -965,7 +1033,7 @@ mod tests {
         // The open leaves are objects, not arbitrary JSON.
         assert!(decode(rule(
             graph_event(),
-            json!([{ "action_type": "update_node", "params": { "node_id": "n", "properties": "x" } }]),
+            json!([{ "description": "Test action", "action_type": "update_node", "params": { "node_id": "n", "properties": "x" } }]),
         ))
         .is_err());
     }
@@ -974,7 +1042,7 @@ mod tests {
     fn a_reject_action_takes_no_for_each() {
         let err = decode(rule(
             graph_event(),
-            json!([{ "action_type": "reject", "params": { "message": "no" }, "for_each": "trigger.node.tasks" }]),
+            json!([{ "description": "Test action", "action_type": "reject", "params": { "message": "no" }, "for_each": "trigger.node.tasks" }]),
         ))
         .unwrap_err();
         assert!(err.contains("for_each"), "{err}");
@@ -1002,7 +1070,7 @@ mod tests {
         let err = PlayFields::from_properties(&json!({
             "rules": [
                 rule(graph_event(), json!([])),
-                { "name": "broken", "trigger": { "type": "nope" } }
+                { "name": "broken", "description": "Test rule", "trigger": { "type": "nope" } }
             ]
         }))
         .unwrap_err()
@@ -1013,6 +1081,85 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("'rules'"), "{err}");
+    }
+
+    /// A rule, each condition and each action must carry a description, and a
+    /// condition is an object: the error names the rule and the field.
+    #[test]
+    fn a_missing_description_or_a_bare_condition_names_the_rule_and_the_field() {
+        let described = json!({
+            "name": "close parent",
+            "description": "Close the parent",
+            "class": "reactive",
+            "trigger": graph_event(),
+            "conditions": [
+                { "expr": "node.status == 'done'", "description": "The task is done" }
+            ],
+            "actions": [{
+                "action_type": "reject",
+                "description": "Refuse the write",
+                "params": { "message": "no" }
+            }]
+        });
+        let decoded = PlayFields::from_properties(&json!({ "rules": [described] })).unwrap();
+        assert_eq!(decoded.rules[0].description, "Close the parent");
+        assert_eq!(decoded.rules[0].conditions[0].expr, "node.status == 'done'");
+        assert_eq!(
+            decoded.rules[0].actions[0].description(),
+            "Refuse the write"
+        );
+        assert_eq!(serde_json::to_value(&decoded.rules[0]).unwrap(), described);
+
+        let without = |pointer: &str| {
+            let mut rule = described.clone();
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            rule.pointer_mut(parent)
+                .and_then(Value::as_object_mut)
+                .unwrap()
+                .remove(key);
+            rule
+        };
+        let mut bare = described.clone();
+        bare["conditions"][0] = json!("node.status == 'done'");
+
+        for (rule, expected) in [
+            (without("/description"), "missing field `description`"),
+            (
+                without("/conditions/0/description"),
+                "conditions[0]: missing field `description`",
+            ),
+            (
+                without("/conditions/0/expr"),
+                "conditions[0]: missing field `expr`",
+            ),
+            (
+                without("/actions/0/description"),
+                "actions[0]: missing field `description`",
+            ),
+            (bare.clone(), "conditions[0]: invalid type: string"),
+        ] {
+            let stored = PlayFields::from_properties(&json!({ "rules": [rule] }))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                stored.contains(&format!("rule[0] ('close parent'): {expected}")),
+                "{stored}"
+            );
+
+            // The typed update reports the same thing.
+            let update = serde_json::from_value::<PlayNodeUpdate>(json!({ "rules": [rule] }))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                update.contains(&format!("rule[0] ('close parent'): {expected}")),
+                "{update}"
+            );
+        }
+
+        let bare = PlayFields::from_properties(&json!({ "rules": [bare] }))
+            .unwrap_err()
+            .to_string();
+        assert!(bare.contains(r#"expected an object { "expr""#), "{bare}");
     }
 
     #[test]
@@ -1028,6 +1175,12 @@ mod tests {
         assert!(patch["description"].is_null());
 
         assert!(PlayNodeUpdate::default().is_empty());
+
+        // `rules` has no clear path: an empty list is how a play has no rules.
+        let err = serde_json::from_value::<PlayNodeUpdate>(json!({ "rules": null }))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rules: expected an array of rules"), "{err}");
     }
 
     #[test]
@@ -1099,7 +1252,7 @@ mod tests {
     #[test]
     fn a_play_with_broken_rules_keeps_its_readable_fields() {
         let properties = json!({ "play": {
-            "rules": [{ "name": "r", "trigger": { "type": "nope" } }],
+            "rules": [{ "name": "r", "description": "Test rule", "trigger": { "type": "nope" } }],
             "description": "d",
             "enabled": false,
             "suspended_reason": "validation_failed",

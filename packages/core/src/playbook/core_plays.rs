@@ -69,6 +69,7 @@ pub const CORE_PLAY_IDS: &[&str] = &[PARENT_TASK_COMPLETION_PLAY_ID];
 pub fn parent_task_completion_rules() -> serde_json::Value {
     json!([{
         "name": "complete-parent-when-all-children-done",
+        "description": "Mark a task done once every one of its sub-tasks is done or cancelled",
         "class": "reactive",
         "trigger": {
             "type": "graph_event",
@@ -76,11 +77,13 @@ pub fn parent_task_completion_rules() -> serde_json::Value {
             "select": { "target_type": "task" },
             "property_key": "task.status"
         },
-        "conditions": [
-            "node.child_of.has_child.all(c, c.status == 'done' || c.status == 'cancelled')"
-        ],
+        "conditions": [{
+            "expr": "node.child_of.has_child.all(c, c.status == 'done' || c.status == 'cancelled')",
+            "description": "Every sub-task of the task's parent is done or cancelled"
+        }],
         "actions": [{
             "action_type": "update_node",
+            "description": "Mark the parent task done",
             "params": {
                 "node_id": "{trigger.node.child_of.id}",
                 "properties": { "status": "done" }
@@ -164,6 +167,26 @@ mod tests {
             play.properties["_seed"]["default_rules"], play.properties["rules"],
             "the stored default must match the shipped rules"
         );
+    }
+
+    /// Every core play ships a description on each rule, condition and action
+    /// (ADR-090 §1), in its live rules and in its reset target alike.
+    #[test]
+    fn every_core_play_describes_its_rules_conditions_and_actions() {
+        for play in core_plays() {
+            for rules in [
+                &play.properties["rules"],
+                &play.properties["_seed"]["default_rules"],
+            ] {
+                let rules = parse_rules_from_properties(&json!({ "rules": rules }))
+                    .unwrap_or_else(|e| panic!("{}: {e}", play.id));
+                assert!(!rules.is_empty(), "{} has no rules", play.id);
+                if let Err(errors) = crate::playbook::descriptions::check_descriptions(&rules, None)
+                {
+                    panic!("{}: {errors:?}", play.id);
+                }
+            }
+        }
     }
 
     /// The id is load-bearing for cross-device rule ordering (ADR-060 §5), so

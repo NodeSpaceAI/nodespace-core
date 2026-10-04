@@ -222,9 +222,11 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
         "close-open-tasks",
         json!([{
             "name": "auto-close",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb_task" } },
-            "conditions": ["node.status == 'open'"],
+            "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -320,9 +322,11 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
         "close-open-sync-tasks",
         json!([{
             "name": "auto-close-sync",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb_sync_task" } },
-            "conditions": ["node.status == 'open'"],
+            "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -425,9 +429,11 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
         "close-open-bulk-sync-tasks",
         json!([{
             "name": "auto-close-bulk-sync",
+            "description": "Test rule",
             "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb_bulk_sync_task" } },
-            "conditions": ["node.status == 'open'"],
+            "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -559,9 +565,11 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
         "touch-on-schedule",
         json!([{
             "name": "touch-scheduled",
+            "description": "Test rule",
             "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "target_type": "pb_cron_task" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -676,9 +684,11 @@ async fn scheduled_play_selects_through_a_saved_query_and_walks_a_path() -> Resu
         "touch-ready-items-under-go",
         json!([{
             "name": "touch-selected",
+            "description": "Test rule",
             "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "query_id": query_id } },
-            "conditions": ["node.child_of.content == 'go'"],
+            "conditions": [{ "expr": "node.child_of.content == 'go'", "description": "Test condition" }],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -782,9 +792,11 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
         "compute-cycle-end-date",
         json!([{
             "name": "compute-end-date-scheduled",
+            "description": "Test rule",
             "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "target_type": "pb_cycle_source" } },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "create_node",
                 "params": {
                     "node_type": "pb_cycle_result",
@@ -919,6 +931,7 @@ async fn setup_cycle_total_estimate_play(
         &format!("recompute-cycle-total-{cycle_suffix}"),
         json!([{
             "name": "recompute-total",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
@@ -933,6 +946,7 @@ async fn setup_cycle_total_estimate_play(
             },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -1090,6 +1104,7 @@ async fn recompute_over_a_relationship_with_zero_current_matches_does_not_fail_t
         "recompute-cycle-total-zero",
         json!([{
             "name": "recompute-total",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
@@ -1098,6 +1113,7 @@ async fn recompute_over_a_relationship_with_zero_current_matches_does_not_fail_t
             },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -1309,6 +1325,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
         "notify-on-relationship-added",
         json!([{
             "name": "mark-notified",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
@@ -1316,6 +1333,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
             },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -1417,6 +1435,7 @@ async fn relationship_removed_rule_fires_on_matching_relationship_delete() -> Re
         "notify-on-relationship-removed",
         json!([{
             "name": "mark-notified",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_removed",
@@ -1424,6 +1443,7 @@ async fn relationship_removed_rule_fires_on_matching_relationship_delete() -> Re
             },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -1487,6 +1507,7 @@ async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() ->
         "notify-on-relationship-added-base-scope",
         json!([{
             "name": "mark-notified",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
@@ -1495,6 +1516,7 @@ async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() ->
             },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -1572,6 +1594,7 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
         "notify-on-relationship-added-non-matching",
         json!([{
             "name": "mark-notified",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
@@ -1579,6 +1602,7 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
             },
             "conditions": [],
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": {
                     "node_id": "{trigger.node.id}",
@@ -1658,18 +1682,22 @@ async fn an_action_failure_in_a_running_engine_suspends_the_play_until_it_is_ena
         json!([
             {
                 "name": "touch-target",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
                 "conditions": [],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.target}", "properties": { "marker": "touched" } }
                 }]
             },
             {
                 "name": "mark",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": node_type } },
                 "conditions": [],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "properties": { "marker": "set" } }
                 }]

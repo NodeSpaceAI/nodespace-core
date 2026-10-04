@@ -563,6 +563,7 @@ fn generate_plays(count: usize, node_type: &str) -> Vec<Node> {
                 &format!("pb-bench-{}", i),
                 json!([{
                     "name": format!("rule-{}", i),
+                    "description": "Test rule",
                     "trigger": {
                         "type": "graph_event",
                         "on": "node_created",

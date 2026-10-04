@@ -773,6 +773,7 @@ mod tests {
 
         let rules = serde_json::json!([{
             "name": "a cycle of work",
+            "description": "Test rule",
             "trigger": {
                 "type": "scheduled",
                 "cron": "0 5 0 * * * *",
@@ -786,10 +787,12 @@ mod tests {
             },
             "actions": [
                 {
+                    "description": "Test action",
                     "action_type": "create_node",
                     "params": { "node_type": "cycle", "content": "cycle" },
                 },
                 {
+                    "description": "Test action",
                     "action_type": "add_relationship",
                     "params": {
                         "source_id": "{actions[0].result.id}",

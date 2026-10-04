@@ -321,6 +321,7 @@ mod tests {
             let default_rules = json!([{
                 "name": "default-private",
                 "class": "invariant",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -335,6 +336,7 @@ mod tests {
             let edited = crate::models::NodeUpdate::default().with_properties(json!({
                 "rules": [{
                     "name": "user-edited",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                     "conditions": [],
                     "actions": []
@@ -368,6 +370,49 @@ mod tests {
                 rules, default_rules,
                 "reset must restore the exact shipped default rules"
             );
+        }
+
+        /// A reset changes rule content back while the user may have kept the
+        /// shipped description, which an ordinary write would reject as
+        /// stale. Restoring the shipped rules is exempt.
+        #[tokio::test]
+        async fn reset_is_not_rejected_for_a_description_the_user_kept() {
+            let (svc, _tmp) = create_test_service().await;
+            let id = "0b0cbd6c-5d0c-4f5e-9a55-1f2c8b9c3a11";
+            let rule = |expr: &str, description: &str| {
+                json!([{
+                    "name": "flag-open",
+                    "description": "Flag open tasks",
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
+                    "conditions": [{ "expr": expr, "description": description }],
+                    "actions": []
+                }])
+            };
+            let shipped = rule("node.status == 'open'", "The task is open");
+            svc.create_node(seeded_play_node(id, shipped.clone()))
+                .await
+                .unwrap();
+
+            // Change the condition and its description, then put the shipped
+            // description back over the changed condition.
+            for rules in [
+                rule("node.status == 'done'", "The task is done"),
+                rule("node.status == 'done'", "The task is open"),
+            ] {
+                let current = svc.get_node(id).await.unwrap().unwrap();
+                svc.update_node(
+                    id,
+                    current.version,
+                    NodeUpdate::default().with_properties(json!({ "rules": rules })),
+                )
+                .await
+                .unwrap();
+            }
+
+            let restored = reset_seeded_play_to_default(&svc, id)
+                .await
+                .expect("a reset is not a stale write");
+            assert_eq!(restored.properties["play"]["rules"], shipped);
         }
 
         #[tokio::test]

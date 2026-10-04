@@ -260,12 +260,13 @@ async fn play_typed_update_matches_the_http_adapter_contract() {
     let update: PlayNodeUpdate = serde_json::from_value(json!({
         "rules": [{
             "name": "greet",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "node_created",
                 "select": { "target_type": "task" }
             },
-            "conditions": ["node.content == 'hello'"],
+            "conditions": [{ "expr": "node.content == 'hello'", "description": "Test condition" }],
             "actions": []
         }],
         "description": "Greets new tasks",

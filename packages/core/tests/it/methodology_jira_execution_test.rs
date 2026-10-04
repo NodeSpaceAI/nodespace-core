@@ -550,13 +550,15 @@ async fn a_cardinality_eviction_dispatches_its_removal() -> Result<()> {
             json!({ "rules": [{
                 "name": "reject-leaving-an-in-progress-epic",
                 "class": "invariant",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "relationship_removed",
                     "select": { "target_type": "epic" },
                 },
-                "conditions": ["node.status == 'in_progress'"],
+                "conditions": [{ "expr": "node.status == 'in_progress'", "description": "Test condition" }],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "reject",
                     "params": { "message": "in-progress epics keep their issues" },
                 }],

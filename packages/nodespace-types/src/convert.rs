@@ -1052,6 +1052,7 @@ mod wire_contract {
                     "description": "When every sub-task is done, mark the parent done",
                     "rules": [{
                         "name": "close-parent",
+                        "description": "Test rule",
                         "trigger": {
                             "type": "graph_event",
                             "on": "property_changed",
@@ -1059,6 +1060,7 @@ mod wire_contract {
                             "property_key": "task.status"
                         },
                         "actions": [{
+                            "description": "Test action",
                             "action_type": "update_node",
                             "params": { "node_id": "{trigger.node.child_of.id}" }
                         }]
@@ -1097,7 +1099,7 @@ mod wire_contract {
         let bad_play = Node::new(
             "play".to_string(),
             "Broken".to_string(),
-            serde_json::json!({ "play": { "rules": [{ "name": "r", "trigger": { "type": "nope" } }] } }),
+            serde_json::json!({ "play": { "rules": [{ "name": "r", "description": "Test rule", "trigger": { "type": "nope" } }] } }),
         );
         let good_task = Node::new(
             "task".to_string(),

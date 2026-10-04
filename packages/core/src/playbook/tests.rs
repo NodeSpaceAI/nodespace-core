@@ -74,8 +74,9 @@ mod playbook_tests {
     fn test_parse_graph_event_node_created() {
         let def = rule_def(json!({
             "name": "test rule",
+            "description": "Test rule",
             "trigger": on_created("invoice"),
-            "conditions": ["node.status == 'draft'"],
+            "conditions": [{ "expr": "node.status == 'draft'", "description": "Test condition" }],
         }));
 
         let parsed = parse_rule(&def).unwrap();
@@ -100,6 +101,7 @@ mod playbook_tests {
     fn test_parse_graph_event_property_changed() {
         let def = rule_def(json!({
             "name": "status watcher",
+            "description": "Test rule",
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
@@ -107,6 +109,7 @@ mod playbook_tests {
                 "property_key": "invoice.status"
             },
             "actions": [{
+                "description": "Test action",
                 "action_type": "update_node",
                 "params": { "node_id": "{trigger.node.id}", "properties": { "status": "overdue" } }
             }],
@@ -135,6 +138,7 @@ mod playbook_tests {
     fn test_parse_scheduled_trigger() {
         let def = rule_def(json!({
             "name": "daily check",
+            "description": "Test rule",
             "trigger": {
                 "type": "scheduled",
                 "cron": "0 9 * * *",
@@ -159,6 +163,7 @@ mod playbook_tests {
     fn test_parse_scheduled_trigger_with_a_saved_query() {
         let def = rule_def(json!({
             "name": "overdue",
+            "description": "Test rule",
             "trigger": {
                 "type": "scheduled",
                 "cron": "0 9 * * *",
@@ -188,6 +193,7 @@ mod playbook_tests {
         ] {
             let def = rule_def(json!({
                 "name": "r",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": select },
             }));
             assert!(
@@ -210,7 +216,7 @@ mod playbook_tests {
             json!({ "type": "graph_event", "on": "node_created" }),
             json!({ "type": "scheduled", "select": { "target_type": "invoice" } }),
         ] {
-            let rule = json!({ "name": "bad", "trigger": trigger });
+            let rule = json!({ "name": "bad", "description": "Test rule", "trigger": trigger });
             assert!(
                 serde_json::from_value::<RuleDefinition>(rule.clone()).is_err(),
                 "{rule} must not decode"
@@ -222,8 +228,9 @@ mod playbook_tests {
     fn test_parse_invalid_cel_condition() {
         let def = rule_def(json!({
             "name": "bad condition",
+            "description": "Test rule",
             "trigger": on_created("invoice"),
-            "conditions": ["1 + + 2"],
+            "conditions": [{ "expr": "1 + + 2", "description": "Test condition" }],
         }));
 
         assert!(matches!(
@@ -236,8 +243,9 @@ mod playbook_tests {
     fn test_parse_condition_compiles_program_once() {
         let def = rule_def(json!({
             "name": "compiled rule",
+            "description": "Test rule",
             "trigger": on_created("invoice"),
-            "conditions": ["node.status == 'draft'"],
+            "conditions": [{ "expr": "node.status == 'draft'", "description": "Test condition" }],
         }));
 
         let parsed = parse_rule(&def).unwrap();
@@ -284,7 +292,7 @@ mod playbook_tests {
             ("reject", json!({ "message": "no" }), ActionType::Reject),
         ] {
             let action: Action =
-                serde_json::from_value(json!({ "action_type": action_type, "params": params }))
+                serde_json::from_value(json!({ "description": "Test action", "action_type": action_type, "params": params }))
                     .unwrap();
             let parsed = super::super::types::parse_action(&action);
             assert_eq!(parsed.action_type, expected);
@@ -295,13 +303,15 @@ mod playbook_tests {
 
     #[test]
     fn test_an_unknown_action_type_does_not_decode() {
-        let action = json!({ "action_type": "spawn_agent", "params": {} });
+        let action =
+            json!({ "description": "Test action", "action_type": "spawn_agent", "params": {} });
         assert!(serde_json::from_value::<Action>(action).is_err());
     }
 
     #[test]
     fn test_parse_for_each_action() {
         let action: Action = serde_json::from_value(json!({
+            "description": "Test action",
             "action_type": "update_node",
             "params": { "node_id": "{item.id}", "properties": { "reviewed": true } },
             "for_each": "trigger.node.tasks"
@@ -318,7 +328,9 @@ mod playbook_tests {
     #[test]
     fn test_rule_class_defaults_to_reactive() {
         // A rule definition with no `class` field parses as Reactive.
-        let def = rule_def(json!({ "name": "no class", "trigger": on_created("task") }));
+        let def = rule_def(
+            json!({ "name": "no class", "description": "Test rule", "trigger": on_created("task") }),
+        );
         assert_eq!(RuleClass::default(), RuleClass::Reactive);
         assert_eq!(parse_rule(&def).unwrap().class, RuleClass::Reactive);
     }
@@ -328,6 +340,7 @@ mod playbook_tests {
         // JSON without a `class` key → Reactive via `#[serde(default)]`.
         let defs: Vec<RuleDefinition> = serde_json::from_value(json!([{
             "name": "r1",
+            "description": "Test rule",
             "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
             "conditions": [],
             "actions": []
@@ -343,6 +356,7 @@ mod playbook_tests {
             {
                 "name": "inv",
                 "class": "invariant",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -350,6 +364,7 @@ mod playbook_tests {
             {
                 "name": "react",
                 "class": "reactive",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -370,15 +385,17 @@ mod playbook_tests {
                 "rules": [
                     {
                         "name": "rule1",
+                        "description": "Test rule",
                         "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                         "conditions": [],
                         "actions": []
                     },
                     {
                         "name": "rule2",
+                        "description": "Test rule",
                         "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
-                        "conditions": ["node.status == 'overdue'"],
-                        "actions": [{"action_type": "update_node", "params": {"node_id": "{trigger.node.id}"}}]
+                        "conditions": [{ "expr": "node.status == 'overdue'", "description": "Test condition" }],
+                        "actions": [{"description": "Test action", "action_type": "update_node", "params": {"node_id": "{trigger.node.id}"}}]
                     }
                 ]
             }
@@ -394,7 +411,8 @@ mod playbook_tests {
     /// top-level `rules` is not the play's rules.
     #[test]
     fn test_parse_rules_prefers_the_play_bucket() {
-        let stray = json!([{ "name": "stray", "trigger": on_created("task") }]);
+        let stray =
+            json!([{ "name": "stray", "description": "Test rule", "trigger": on_created("task") }]);
         let properties = json!({ "play": { "rules": [] }, "rules": stray });
         assert!(parse_rules_from_properties(&properties).unwrap().is_empty());
     }
@@ -415,8 +433,9 @@ mod playbook_tests {
             "play": {
                 "rules": [{
                     "name": "typo",
+                    "description": "Test rule",
                     "trigger": on_created("task"),
-                    "actions": [{ "action_type": "update_node", "params": { "node": "x" } }]
+                    "actions": [{ "description": "Test action", "action_type": "update_node", "params": { "node": "x" } }]
                 }]
             }
         });
@@ -438,6 +457,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "on invoice created",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "invoice" }},
                 "conditions": [],
                 "actions": []
@@ -467,6 +487,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -486,6 +507,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -513,6 +535,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -536,6 +559,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -572,6 +596,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "status watcher",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
@@ -611,6 +636,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "any change watcher",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
@@ -641,6 +667,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "status watcher",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
@@ -657,6 +684,7 @@ mod playbook_tests {
             "pb2",
             json!([{
                 "name": "any change watcher",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
@@ -793,12 +821,14 @@ mod playbook_tests {
             json!([
                 {
                     "name": "a-rule-0",
+                    "description": "Test rule",
                     "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "a-rule-1",
+                    "description": "Test rule",
                     "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                     "conditions": [],
                     "actions": []
@@ -812,6 +842,7 @@ mod playbook_tests {
             "pb-b",
             json!([{
                 "name": "b-rule-0",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -854,6 +885,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "invoice watcher",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
@@ -884,6 +916,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "task watcher",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -909,8 +942,9 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "daily invoice check",
+                "description": "Test rule",
                 "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
-                "conditions": ["node.status == 'overdue'"],
+                "conditions": [{ "expr": "node.status == 'overdue'", "description": "Test condition" }],
                 "actions": []
             }]),
         );
@@ -932,6 +966,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "check 1",
+                "description": "Test rule",
                 "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
                 "conditions": [],
                 "actions": []
@@ -942,6 +977,7 @@ mod playbook_tests {
             "pb2",
             json!([{
                 "name": "check 2",
+                "description": "Test rule",
                 "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
                 "conditions": [],
                 "actions": []
@@ -964,6 +1000,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "daily check",
+                "description": "Test rule",
                 "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "invoice" }},
                 "conditions": [],
                 "actions": []
@@ -988,6 +1025,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "on relationship added",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "relationship_added",
@@ -1024,6 +1062,7 @@ mod playbook_tests {
             "pb-node-only",
             json!([{
                 "name": "on created",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "conditions": [],
                 "actions": []
@@ -1039,6 +1078,7 @@ mod playbook_tests {
             "pb-with-relationship",
             json!([{
                 "name": "on relationship added",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "relationship_added",
@@ -1074,18 +1114,21 @@ mod playbook_tests {
             json!([
                 {
                     "name": "on created",
+                    "description": "Test rule",
                     "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "daily scan",
+                    "description": "Test rule",
                     "trigger": {"type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "task" }},
                     "conditions": [],
                     "actions": []
                 },
                 {
                     "name": "on rel added",
+                    "description": "Test rule",
                     "trigger": {
                         "type": "graph_event",
                         "on": "relationship_added",
@@ -1122,6 +1165,7 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "rule1",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -1132,6 +1176,7 @@ mod playbook_tests {
             "pb2",
             json!([{
                 "name": "rule2",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
                 "conditions": [],
                 "actions": []
@@ -1254,9 +1299,10 @@ mod playbook_tests {
             "pb1",
             json!([{
                 "name": "on task created",
+                "description": "Test rule",
                 "trigger": {"type": "graph_event", "on": "node_created", "select": { "target_type": "task" }},
-                "conditions": ["node.status == 'open'"],
-                "actions": [{"action_type": "update_node", "params": {"node_id": "{trigger.node.id}"}}]
+                "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
+                "actions": [{"description": "Test action", "action_type": "update_node", "params": {"node_id": "{trigger.node.id}"}}]
             }]),
         );
         mgr.activate_play(&pb_node).unwrap();
