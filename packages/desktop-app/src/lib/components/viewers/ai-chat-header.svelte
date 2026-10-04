@@ -132,6 +132,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
+    flex: 1;
     min-width: 0;
   }
 
@@ -147,23 +148,31 @@
     font-weight: 600;
     margin: 0;
     color: hsl(var(--foreground));
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     min-width: 0;
   }
 
-  .chat-viewer-title-button {
+  /* The rename target and the input it turns into share one box: padding and
+     a border around the text, pulled back out by the same negative margin, so
+     the text sits on the header's left edge in both and doesn't move when one
+     replaces the other. The box is therefore wider than its container by the
+     padding and border on both sides, which the width allowance gives back —
+     without it the padding comes out of the text's room and clips the title. */
+  .chat-viewer-title-button,
+  .chat-viewer-title-input {
+    --title-inset-x: calc(0.25rem + 1px);
+    box-sizing: border-box;
     display: block;
-    width: 100%;
-    max-width: 100%;
     padding: 0.125rem 0.25rem;
-    margin: -0.125rem -0.25rem;
-    border: none;
+    margin: calc(-0.125rem - 1px) calc(-1 * var(--title-inset-x));
+    border: 1px solid transparent;
     border-radius: 0.25rem;
-    background: transparent;
     font: inherit;
     color: inherit;
+  }
+
+  .chat-viewer-title-button {
+    max-width: calc(100% + 2 * var(--title-inset-x));
+    background: transparent;
     text-align: left;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -176,12 +185,8 @@
   }
 
   .chat-viewer-title-input {
-    width: 100%;
-    max-width: 100%;
-    padding: 0.125rem 0.25rem;
-    margin: -0.125rem -0.25rem;
-    border: 1px solid hsl(var(--border));
-    border-radius: 0.25rem;
+    width: calc(100% + 2 * var(--title-inset-x));
+    border-color: hsl(var(--border));
     background: hsl(var(--background));
     font-size: 1rem;
     font-weight: 600;
