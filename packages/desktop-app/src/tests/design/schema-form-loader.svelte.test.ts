@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { flushSync } from 'svelte';
 import { SchemaFormLoader } from '$lib/design/components/schema-form-loader.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { taskNodePlugin, personNodePlugin } from '$lib/plugins/core-plugins';
@@ -140,6 +141,34 @@ describe('SchemaFormLoader', () => {
       // navigation boundary is reached mid-transition — the previous type's answer
       // must not leak through.
       expect(loader.hasTitleTemplate).toBe(false);
+    });
+
+    it('notifies a reader that is already tracking it when loadForm sets the type', async () => {
+      // The viewer's header derives from `hasTitleTemplate` on its first render, before
+      // `loadForm` runs (it runs once the children have loaded). A hardcoded-form type
+      // never sets `genericSchema`, so unless the type itself is reactive the header keeps
+      // its first answer — "Untitled" for a person — until something else changes.
+      const loader = new SchemaFormLoader();
+      const seen: boolean[] = [];
+      const stop = $effect.root(() => {
+        $effect(() => {
+          seen.push(loader.hasTitleTemplate);
+        });
+      });
+      try {
+        flushSync();
+        expect(seen).toEqual([false]);
+
+        await loader.loadForm('person');
+        flushSync();
+        expect(seen.at(-1)).toBe(true);
+
+        loader.resetGenericSchema();
+        flushSync();
+        expect(seen.at(-1)).toBe(false);
+      } finally {
+        stop();
+      }
     });
   });
 

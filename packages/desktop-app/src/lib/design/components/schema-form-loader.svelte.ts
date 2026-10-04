@@ -56,8 +56,12 @@ export class SchemaFormLoader {
    * {@link hasTitleTemplate} can consult the plugin registry for a
    * hardcoded-form type (task, person), which never populates
    * `genericSchema` (see `loadForm`'s branch below).
+   *
+   * Reactive because the viewer's header derives from `hasTitleTemplate` before
+   * `loadForm` runs: for a hardcoded-form type this field is the only thing that
+   * changes, so a plain field would leave the header on its first answer.
    */
-  private currentNodeType: string | null = null;
+  private currentNodeType = $state<string | null>(null);
 
   /**
    * True when the viewed node's type is title_template-driven — header should be
@@ -105,9 +109,9 @@ export class SchemaFormLoader {
    * Cached in `loadedForms` for subsequent renders.
    */
   async loadForm(nodeType: string): Promise<boolean> {
-    // Set synchronously (not after the await below) so `hasTitleTemplate` reflects the
-    // viewed type immediately — the viewer reads it on the same render pass it calls
-    // this, before any async work here has had a chance to resolve.
+    // Set synchronously (not after the await below) so `hasTitleTemplate`, and the header
+    // deriving from it, update as soon as the type is known rather than after the form's
+    // lazy import resolves.
     this.currentNodeType = nodeType;
 
     // Skip if already loaded (check for both component and explicit null).
