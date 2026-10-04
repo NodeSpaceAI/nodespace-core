@@ -55,6 +55,9 @@ interface GitHubIssue {
   body: string;
 }
 
+// The board status `createIssue` gives a new issue: filed, not yet queued.
+const NEW_ISSUE_STATUS = "Backlog";
+
 export class GitHubClient {
   private octokit: Octokit;
   
@@ -240,9 +243,7 @@ export class GitHubClient {
     issueNumbers: number[], 
     status: keyof typeof this.statusOptions
   ): Promise<Array<{ issueNumber: number; success: boolean; error?: string }>> {
-    const statusOptionId = this.statusOptions[status];
-    
-    if (!statusOptionId) {
+    if (!(status in this.statusOptions)) {
       throw new Error(`Invalid status: ${status}. Valid options: ${Object.keys(this.statusOptions).join(", ")}`);
     }
 
@@ -262,29 +263,7 @@ export class GitHubClient {
           itemId = await this.addIssueToProject(nodeId);
         }
 
-        const mutation = `
-          mutation UpdateProjectItemField($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
-            updateProjectV2ItemFieldValue(input: {
-              projectId: $projectId
-              itemId: $itemId
-              fieldId: $fieldId
-              value: $value
-            }) {
-              projectV2Item {
-                id
-              }
-            }
-          }
-        `;
-
-        await this.octokit.graphql(mutation, {
-          projectId: this.projectId,
-          itemId,
-          fieldId: this.statusFieldId,
-          value: {
-            singleSelectOptionId: statusOptionId
-          }
-        });
+        await this.setItemStatus(itemId, status);
 
         results.push({ issueNumber, success: true });
         
@@ -491,9 +470,8 @@ export class GitHubClient {
     // Board placement is a convenience, not the point of creating the issue,
     // so a failure here is reported rather than thrown: the issue itself
     // exists and its number is what the caller actually needs.
-    const addedToProject = await this.addIssueToProject(response.data.node_id)
-      .then(() => true)
-      .catch(() => false);
+    const itemId = await this.addIssueToProject(response.data.node_id).catch(() => null);
+    const addedToProject = itemId !== null;
 
     // Warn here rather than leaving it to each caller to re-derive from
     // `addedToProject` -- this is the one place that actually knows the add
@@ -511,6 +489,20 @@ export class GitHubClient {
           "GITHUB_TOKEN). It will be added automatically the next time `gh:status` is run " +
           "on it with a token that has project write access.",
       );
+    } else {
+      // A new issue is filed, not queued: put it in Backlog. Without a status
+      // the item sits on the board in no column, and reads back with a blank
+      // status that is easy to mistake for the issue not being on the board.
+      // The cause is printed: with the add having just succeeded, a failure
+      // here is most likely a stale status field or option id, and the
+      // message is what tells that apart from an outage.
+      await this.setItemStatus(itemId, NEW_ISSUE_STATUS).catch((error: unknown) => {
+        console.warn(
+          `⚠️  Issue #${response.data.number} was added to the project board but its status could not be ` +
+            `set to '${NEW_ISSUE_STATUS}' (${error instanceof Error ? error.message : String(error)}). ` +
+            "Run `gh:status` on it to set one.",
+        );
+      });
     }
 
     return {
@@ -518,6 +510,35 @@ export class GitHubClient {
       url: response.data.html_url,
       addedToProject
     };
+  }
+
+  /**
+   * Write the Status field of one project item.
+   */
+  private async setItemStatus(itemId: string, status: keyof typeof this.statusOptions): Promise<void> {
+    const mutation = `
+      mutation UpdateProjectItemField($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
+        updateProjectV2ItemFieldValue(input: {
+          projectId: $projectId
+          itemId: $itemId
+          fieldId: $fieldId
+          value: $value
+        }) {
+          projectV2Item {
+            id
+          }
+        }
+      }
+    `;
+
+    await this.octokit.graphql(mutation, {
+      projectId: this.projectId,
+      itemId,
+      fieldId: this.statusFieldId,
+      value: {
+        singleSelectOptionId: this.statusOptions[status]
+      }
+    });
   }
 
   /**
