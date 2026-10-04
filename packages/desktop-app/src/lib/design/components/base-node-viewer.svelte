@@ -1431,9 +1431,15 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
     background: hsl(var(--background));
   }
 
-  /* Schema form container - fixed between header and content, doesn't scroll */
+  /* Schema form container - between header and content. Takes the form's own
+     height up to a cap, and gives height back before the children area drops
+     below its minimum; the form scrolls its fields inside whatever it gets. */
   .schema-form-container {
-    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: var(--viewer-form-max-height);
     padding: 0 var(--viewer-padding-horizontal);
     background: hsl(var(--background));
   }
@@ -1451,7 +1457,8 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
     flex: 1;
     overflow-y: auto;
     overflow-x: hidden;
-    min-height: 0; /* Critical for flex scrolling */
+    /* A floor, so an expanded form never squeezes the children out of view */
+    min-height: var(--viewer-children-min-height);
     padding: var(--viewer-padding-vertical) var(--viewer-padding-horizontal);
     padding-bottom: var(
       --viewer-padding-bottom

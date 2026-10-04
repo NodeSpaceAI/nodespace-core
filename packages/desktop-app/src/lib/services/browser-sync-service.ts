@@ -33,6 +33,7 @@ import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
 import { registerSchemaPlugin, unregisterSchemaPlugin } from '$lib/plugins/schema-plugin-loader';
 import { applyHasChildCreated, applyHasChildUpdated, applyHasChildDeleted } from './hierarchy-sync';
 import { normalizeNodeData } from './node-normalize';
+import { notifyRelationshipChanged } from './relationship-changes';
 
 const log = createLogger('BrowserSyncService');
 
@@ -298,6 +299,9 @@ class BrowserSyncService {
 
       case 'relationshipCreated': {
         log.debug(`Relationship created: ${event.relationshipType} (${event.fromId} -> ${event.toId})`);
+        if (event.relationshipType !== 'has_child') {
+          notifyRelationshipChanged(event.fromId, event.toId);
+        }
         if (event.relationshipType === 'has_child') {
           applyHasChildCreated(structureTree, {
             parentId: event.fromId,
@@ -329,6 +333,9 @@ class BrowserSyncService {
 
       case 'relationshipDeleted': {
         log.debug(`Relationship deleted: ${event.relationshipType} (${event.id}) from ${event.fromId} to ${event.toId}`);
+        if (event.relationshipType !== 'has_child') {
+          notifyRelationshipChanged(event.fromId, event.toId);
+        }
         if (event.relationshipType === 'has_child') {
           applyHasChildDeleted(structureTree, {
             parentId: event.fromId,

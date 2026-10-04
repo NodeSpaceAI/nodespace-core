@@ -40,6 +40,7 @@ import { applyHasChildCreated, applyHasChildUpdated, applyHasChildDeleted } from
 import { normalizeNodeData } from './node-normalize';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
 import { isActiveDatabaseEvent } from '$lib/stores/database.svelte';
+import { notifyRelationshipChanged } from './relationship-changes';
 
 const log = createLogger('TauriSync');
 
@@ -457,6 +458,9 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       if (!isActiveDatabaseEvent(event.payload.databaseId)) return;
       const rel = event.payload;
       log.debug(`Relationship created: ${rel.relationshipType} (${rel.fromId} -> ${rel.toId})`);
+      if (rel.relationshipType !== 'has_child') {
+        notifyRelationshipChanged(stripNodePrefix(rel.fromId), stripNodePrefix(rel.toId));
+      }
 
       // Handle different relationship types
       if (rel.relationshipType === 'has_child') {
@@ -511,6 +515,9 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       if (!isActiveDatabaseEvent(event.payload.databaseId)) return;
       const { id, fromId, toId, relationshipType } = event.payload;
       log.debug(`Relationship deleted: ${relationshipType} (${id}) from ${fromId} to ${toId}`);
+      if (relationshipType !== 'has_child') {
+        notifyRelationshipChanged(stripNodePrefix(fromId), stripNodePrefix(toId));
+      }
 
       if (relationshipType === 'has_child') {
         enqueueHasChildOp({

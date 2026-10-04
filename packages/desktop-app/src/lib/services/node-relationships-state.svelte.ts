@@ -13,6 +13,7 @@ import { createLogger } from '$lib/utils/logger';
 import { loadNodeRelationshipsView } from './relationship-viewer-service';
 import {
   hasModalContent,
+  modalRelationshipCount,
   partitionGroups,
   type NodeRelationshipsView
 } from './relationship-grouping';
@@ -30,6 +31,11 @@ export class NodeRelationshipsState {
 
   readonly partitioned = $derived(partitionGroups(this.view?.groups ?? []));
   readonly showModalTrigger = $derived(this.loadFailed || hasModalContent(this.partitioned));
+  /**
+   * The number the modal's entry point shows. Zero after a failed load, even
+   * when an earlier view is still held: a count that may be stale is not shown.
+   */
+  readonly modalCount = $derived(this.loadFailed ? 0 : modalRelationshipCount(this.partitioned));
 
   // The node whose data `view` holds or is loading.
   #nodeId: string | null = null;
