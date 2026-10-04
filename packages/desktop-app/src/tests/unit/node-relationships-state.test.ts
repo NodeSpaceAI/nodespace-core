@@ -168,12 +168,22 @@ describe('NodeRelationshipsState — modal count and scheduled reloads', () => {
 
       await vi.advanceTimersByTimeAsync(200);
       expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
-      // A cancelled schedule never fetches.
+  it('never fetches for a scheduled reload that was cancelled', async () => {
+    vi.useFakeTimers();
+    try {
+      loadNodeRelationshipsView.mockResolvedValue(mixedView(1));
+      const state = new NodeRelationshipsState();
+      state.load('n1');
+
       state.scheduleReload();
       state.cancelScheduledReload();
       await vi.advanceTimersByTimeAsync(200);
-      expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(2);
+      expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

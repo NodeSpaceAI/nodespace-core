@@ -603,11 +603,6 @@ describe('TauriSyncListener', () => {
     });
   });
 
-  // A large import or bulk write floods relationship events (tens of
-  // thousands). Applied one-by-one each event costs a full reactive
-  // invalidation of the structure tree on the main thread. The has_child ops
-  // are buffered over the coalescing window and the whole burst is applied
-  // inside one structureTree batch.
   // A surface showing a node's typed relationships re-reads them when an edge
   // touching its node changes. It compares against bare ids, so the `node:`
   // prefix on the event's ends is stripped here.
@@ -650,6 +645,11 @@ describe('TauriSyncListener', () => {
     });
   });
 
+  // A large import or bulk write floods relationship events (tens of
+  // thousands). Applied one-by-one each event costs a full reactive
+  // invalidation of the structure tree on the main thread. The has_child ops
+  // are buffered over the coalescing window and the whole burst is applied
+  // inside one structureTree batch.
   describe('Relationship-event coalescing', () => {
     beforeEach(async () => {
       await initializeTauriSyncListeners();

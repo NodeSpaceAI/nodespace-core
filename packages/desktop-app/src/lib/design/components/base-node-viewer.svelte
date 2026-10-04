@@ -1440,7 +1440,6 @@ import { canHaveChild, isA, isOwnedByParentViewer } from '$lib/types/core-node-t
     flex: 0 1 auto;
     min-height: 0;
     max-height: var(--viewer-form-max-height);
-    overflow: hidden;
     padding: 0 var(--viewer-padding-horizontal);
     background: hsl(var(--background));
   }

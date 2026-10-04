@@ -202,12 +202,12 @@
         {#if relationships.showModalTrigger}{@render relationshipsTrigger()}{/if}
       </div>
 
-      <!-- The scroll region. Its inline and top padding (cancelled by matching
-           negative margins) keeps a control's focus ring inside the clip. -->
-      <Collapsible.Content
-        class="schema-form-scroll -mx-1 -mt-1 min-h-0 overflow-y-auto px-1 pb-4 pt-1"
-      >
-        <div bind:this={formEl} onfocusin={revealFocusedControl}>
+      <!-- The scroll region. The padding is on the element inside it, so the
+           region itself can shrink to nothing under a squeezed viewer; the
+           inline and top padding (cancelled by matching negative margins)
+           keeps a control's focus ring inside the clip. -->
+      <Collapsible.Content class="schema-form-scroll -mx-1 -mt-1 min-h-0 overflow-y-auto">
+        <div class="px-1 pb-4 pt-1" bind:this={formEl} onfocusin={revealFocusedControl}>
           {#if hasFields}{@render fields(openNestedModal)}{/if}
           <!-- Promoted relationships follow the form's own fields as one group:
                scalar fields and relationships share no declaration order to
@@ -273,6 +273,11 @@
     margin-left: calc(-1 * var(--viewer-padding-horizontal));
     padding: 0 var(--viewer-padding-horizontal);
     border-bottom: 1px solid hsl(var(--border));
+  }
+
+  /* The viewer never shrinks a form below this same token, so the two agree */
+  .schema-form-header {
+    min-height: var(--viewer-form-header-height);
   }
 
   .schema-form-wrapper :global(.schema-form-scroll) {

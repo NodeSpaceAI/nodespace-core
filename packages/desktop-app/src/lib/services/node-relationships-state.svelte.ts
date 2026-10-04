@@ -80,7 +80,7 @@ export class NodeRelationshipsState {
     }, RELOAD_COALESCE_MS);
   }
 
-  /** Drop a scheduled reload, for an owner that is going away. */
+  /** Drop a scheduled reload, when the owner stops listening. */
   cancelScheduledReload(): void {
     if (this.#reloadTimer === null) return;
     clearTimeout(this.#reloadTimer);

@@ -212,13 +212,33 @@ describe('TypedFormShell — Relationships in the header row', () => {
     expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(3);
   });
 
-  it('stops listening once the form is gone', async () => {
-    loadNodeRelationshipsView.mockResolvedValue(view([group('parts', 'many', 1)]));
-    const { container, unmount } = renderForm();
-    await waitFor(() => expect(relationshipsButton(container)).toBeTruthy());
+  // A reload is scheduled a moment after the event, so these run the clock
+  // past that window before counting fetches.
+  describe('once the form is gone', () => {
+    afterEach(() => vi.useRealTimers());
 
-    unmount();
-    notifyRelationshipChanged(NODE_ID, 'parts-1');
-    expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(1);
+    it('stops listening', async () => {
+      loadNodeRelationshipsView.mockResolvedValue(view([group('parts', 'many', 1)]));
+      const { container, unmount } = renderForm();
+      await waitFor(() => expect(relationshipsButton(container)).toBeTruthy());
+
+      vi.useFakeTimers();
+      unmount();
+      notifyRelationshipChanged(NODE_ID, 'parts-1');
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops a reload it had already scheduled', async () => {
+      loadNodeRelationshipsView.mockResolvedValue(view([group('parts', 'many', 1)]));
+      const { container, unmount } = renderForm();
+      await waitFor(() => expect(relationshipsButton(container)).toBeTruthy());
+
+      vi.useFakeTimers();
+      notifyRelationshipChanged(NODE_ID, 'parts-1');
+      unmount();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(loadNodeRelationshipsView).toHaveBeenCalledTimes(1);
+    });
   });
 });
