@@ -2675,6 +2675,10 @@ impl Tool {
             Tool::AdoptExistingConflict => Some("nodespace conflicts adopt"),
             Tool::MergeConflict => Some("nodespace conflicts merge"),
             Tool::GetWorkflowState => Some("nodespace playbook get-workflow-state"),
+            // A play is read and written as the node it is: the CLI has no
+            // play-specific read or write, and the shipped skill teaches these.
+            Tool::GetPlay => Some("nodespace node get"),
+            Tool::UpdatePlay => Some("nodespace node update"),
         }
     }
 
