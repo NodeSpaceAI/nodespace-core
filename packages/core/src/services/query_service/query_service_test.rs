@@ -2114,7 +2114,9 @@ mod tests {
             },
         ]);
 
-        let built = query_service.build_where_clause_on(&query, today).unwrap();
+        let built = query_service
+            .build_where_clause_on(&query, today, &[])
+            .unwrap();
         let dates: Vec<&str> = built
             .params
             .iter()
@@ -2349,7 +2351,7 @@ mod tests {
             limit: None,
         };
 
-        let where_clause = query_service.build_where_clause(&query).unwrap();
+        let where_clause = query_service.build_where_clause(&query, &[]).unwrap();
         // The conditions name their columns but carry placeholders, not values:
         // both operands are bound (see the parameter-binding tests below).
         assert!(

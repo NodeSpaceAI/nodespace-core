@@ -121,7 +121,7 @@ async fn a_keyword_search_returns_the_note_and_not_the_chat_titled_after_it() {
 }
 
 /// `sorting` routes the search through `QueryService` rather than the title
-/// listing. The exclusion sits above both, so it holds there too.
+/// listing. Each engine carries the exclusion, so it holds there too.
 #[tokio::test]
 async fn a_sorted_keyword_search_excludes_conversations_too() {
     let (executor, ns, _tmp) = make_executor().await;
@@ -142,10 +142,10 @@ async fn a_sorted_keyword_search_excludes_conversations_too() {
     assert_eq!(types_of(&result.result), vec!["text"]);
 }
 
-/// Dropping conversations after the fetch must not cost the caller the rows
-/// it asked for: with more matching chats than `limit`, the one note still
-/// comes back. A filter applied to an already-limited page would return
-/// nothing here.
+/// Leaving conversations out must not cost the caller the rows it asked for:
+/// with more matching chats than `limit`, the one note still comes back. The
+/// exclusion is part of the statement, ahead of the limit; a filter applied
+/// to an already-limited page would return nothing here.
 #[tokio::test]
 async fn matching_conversations_do_not_crowd_the_note_out_of_a_small_limit() {
     let (executor, ns, _tmp) = make_executor().await;
@@ -174,13 +174,11 @@ async fn a_stem_matched_keyword_search_excludes_conversations() {
     let note_id = seed_note_among_chats(&ns, 3).await;
 
     let result = executor
-        .execute(
-            "search_nodes",
-            json!({ "query": "shared data layers", "limit": 1 }),
-        )
+        .execute("search_nodes", json!({ "query": "shared data layers" }))
         .await
         .expect("search_nodes must succeed");
 
+    // No limit: a chat the fallback let through would be in the result.
     assert_eq!(types_of(&result.result), vec!["text"]);
     assert_eq!(
         result.result["nodes"][0]["id"],
@@ -270,9 +268,9 @@ async fn every_chat_subtype_is_excluded() {
 }
 
 /// A listing with no keyword, newest first, matches every chat there is. With
-/// more of them ahead of the notes than the first fetch allows for, the notes
-/// must still come back: a page that came up short because chats filled it is
-/// fetched again, larger. "Nothing matches" would be a wrong answer.
+/// far more of them ahead of the notes than `limit`, the notes must still
+/// come back: the chats are left out by the statement, so they take none of
+/// the limit. "Nothing matches" would be a wrong answer.
 #[tokio::test]
 async fn more_recent_chats_than_the_first_fetch_holds_do_not_hide_the_notes() {
     let (executor, ns, _tmp) = make_executor().await;

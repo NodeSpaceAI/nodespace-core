@@ -519,23 +519,21 @@ impl QueryService {
     ///
     /// A filter's relative date resolves against the local date at this
     /// moment: the day the query runs, on the device running it (ADR-091).
-    fn build_where_clause(&self, query: &QueryDefinition) -> Result<BoundSql> {
-        self.build_where_clause_on(query, chrono::Local::now().date_naive())
+    ///
+    /// `excluded` is the caller's own type exclusion, one more condition of
+    /// the clause. Only [`Self::execute_excluding`] passes one: a count and a
+    /// membership check have no excluding form, and pass none.
+    fn build_where_clause(
+        &self,
+        query: &QueryDefinition,
+        excluded: &[crate::models::CoreNodeType],
+    ) -> Result<BoundSql> {
+        self.build_where_clause_on(query, chrono::Local::now().date_naive(), excluded)
     }
 
     /// [`Self::build_where_clause`] with the day the query runs given, so a
     /// test can name it.
     fn build_where_clause_on(
-        &self,
-        query: &QueryDefinition,
-        today: chrono::NaiveDate,
-    ) -> Result<BoundSql> {
-        self.build_where_clause_with(query, today, &[])
-    }
-
-    /// The clause itself: the definition's conditions, the governance rules
-    /// every default query carries, and the caller's own type exclusion.
-    fn build_where_clause_with(
         &self,
         query: &QueryDefinition,
         today: chrono::NaiveDate,
@@ -628,7 +626,7 @@ impl QueryService {
     ///
     /// Returns an error if query building or database execution fails.
     pub async fn matches(&self, query: &QueryDefinition, node_id: &str) -> Result<bool> {
-        let mut built = self.build_where_clause(query)?;
+        let mut built = self.build_where_clause(query, &[])?;
         let id = built.bind(libsql::Value::Text(node_id.to_string()));
         let narrowed = if built.sql.is_empty() {
             format!(" WHERE id = {id}")
@@ -655,7 +653,7 @@ impl QueryService {
     /// cannot differ in how it treats a value any more than it can in which rows
     /// it matches.
     fn build_count_query(&self, query: &QueryDefinition) -> Result<BoundSql> {
-        let mut built = self.build_where_clause(query)?;
+        let mut built = self.build_where_clause(query, &[])?;
         built.sql = format!("SELECT COUNT(*) FROM node{};", built.sql);
         Ok(built)
     }
@@ -679,8 +677,7 @@ impl QueryService {
         query: &QueryDefinition,
         excluded: &[crate::models::CoreNodeType],
     ) -> Result<BoundSql> {
-        let mut built =
-            self.build_where_clause_with(query, chrono::Local::now().date_naive(), excluded)?;
+        let mut built = self.build_where_clause(query, excluded)?;
         built.sql = format!("SELECT * FROM node{}", built.sql);
 
         // Add sorting (pass target_type for namespaced property access)
