@@ -502,6 +502,7 @@ mod tests {
     #[test]
     fn reject_parses_from_json_action_type() {
         let action: Action = serde_json::from_value(serde_json::json!({
+            "description": "Test action",
             "action_type": "reject",
             "params": { "message": "no" }
         }))

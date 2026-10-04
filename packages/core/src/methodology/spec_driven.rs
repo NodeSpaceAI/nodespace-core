@@ -392,6 +392,7 @@ fn plan_approval_gate() -> PlayStep {
         rules: json!([
             {
                 "name": "reject-approval-without-approved-spec",
+                "description": "Refuse to approve a plan whose spec is not approved",
                 "class": "invariant",
                 "trigger": {
                     "type": "graph_event",
@@ -406,12 +407,21 @@ fn plan_approval_gate() -> PlayStep {
                 // carry no `spec_status` at all, and an unguarded read of it
                 // fails the condition — which lets the approval through.
                 "conditions": [
-                    "node.plan_status == 'approved'",
-                    "!has(node.spec) || !has(node.spec.spec_status) \
-                     || node.spec.spec_status != 'approved'",
+                    {
+                        "expr": "node.plan_status == 'approved'",
+                        "description": "The plan is being approved",
+                    },
+                    {
+                        "expr":
+                            "!has(node.spec) || !has(node.spec.spec_status) \
+                             || node.spec.spec_status != 'approved'",
+                        "description": "The plan has no spec, or its spec is not approved",
+                    },
                 ],
                 "actions": [{
                     "action_type": "reject",
+                    "description":
+                        "Refuse the approval and say the plan needs an approved spec first",
                     "params": {
                         "message":
                             "This plan cannot be approved until it is linked to an approved \
@@ -422,15 +432,20 @@ fn plan_approval_gate() -> PlayStep {
             },
             {
                 "name": "reject-creating-an-approved-plan",
+                "description": "Refuse to create a plan that is already approved",
                 "class": "invariant",
                 "trigger": {
                     "type": "graph_event",
                     "on": "node_created",
                     "select": { "target_type": "plan" },
                 },
-                "conditions": ["node.plan_status == 'approved'"],
+                "conditions": [{
+                    "expr": "node.plan_status == 'approved'",
+                    "description": "The new plan is already approved",
+                }],
                 "actions": [{
                     "action_type": "reject",
+                    "description": "Refuse the create and say a plan starts as a draft",
                     "params": {
                         "message":
                             "A plan cannot be created already approved: approval requires a \
@@ -462,6 +477,9 @@ fn task_lineage_gate() -> PlayStep {
              is approved and the task is also linked to the spec that plan implements.",
         rules: json!([{
             "name": "reject-advancing-without-lineage",
+            "description":
+                "Refuse to start or finish a planned task until its plan is approved and it \
+                 links the plan's spec",
             "class": "invariant",
             "trigger": {
                 "type": "graph_event",
@@ -470,14 +488,29 @@ fn task_lineage_gate() -> PlayStep {
                 "property_key": "task.status",
             },
             "conditions": [
-                "node.status == 'in_progress' || node.status == 'done'",
-                "has(node.plan)",
-                "!has(node.plan.plan_status) || node.plan.plan_status != 'approved' \
-                 || !has(node.plan.spec) || !has(node.spec) \
-                 || !node.spec.exists(s, s == node.plan.spec)",
+                {
+                    "expr": "node.status == 'in_progress' || node.status == 'done'",
+                    "description": "The task is being started or finished",
+                },
+                {
+                    "expr": "has(node.plan)",
+                    "description": "The task implements a plan",
+                },
+                {
+                    "expr":
+                        "!has(node.plan.plan_status) || node.plan.plan_status != 'approved' \
+                         || !has(node.plan.spec) || !has(node.spec) \
+                         || !node.spec.exists(s, s == node.plan.spec)",
+                    "description":
+                        "The plan is not approved, or the task is not linked to the spec the \
+                         plan implements",
+                },
             ],
             "actions": [{
                 "action_type": "reject",
+                "description":
+                    "Refuse the change and say the plan must be approved and the task linked \
+                     to its spec",
                 "params": {
                     "message":
                         "This task implements a plan, so it cannot start or finish until that \
@@ -501,6 +534,8 @@ fn task_verification_gate() -> PlayStep {
              method records how the work was checked.",
         rules: json!([{
             "name": "reject-done-without-verification",
+            "description":
+                "Refuse to mark spec-driven work done until it records how it was checked",
             "class": "invariant",
             "trigger": {
                 "type": "graph_event",
@@ -509,12 +544,23 @@ fn task_verification_gate() -> PlayStep {
                 "property_key": "task.status",
             },
             "conditions": [
-                "node.status == 'done'",
-                IN_METHODOLOGY,
-                "!has(node.verification_method) || node.verification_method == ''",
+                {
+                    "expr": "node.status == 'done'",
+                    "description": "The task is being marked done",
+                },
+                {
+                    "expr": IN_METHODOLOGY,
+                    "description": "The task is linked to a plan or a spec",
+                },
+                {
+                    "expr": "!has(node.verification_method) || node.verification_method == ''",
+                    "description": "The task has no verification method",
+                },
             ],
             "actions": [{
                 "action_type": "reject",
+                "description":
+                    "Refuse the change and say the verification method must be set first",
                 "params": {
                     "message":
                         "This task cannot be marked done until its verification method records \
@@ -550,6 +596,7 @@ fn supersession_lock() -> PlayStep {
         for field in fields {
             rules.push(json!({
                 "name": format!("lock-superseded-{node_type}-{field}"),
+                "description": format!("Refuse a change to a superseded {node_type}'s {field}"),
                 "class": "invariant",
                 "trigger": {
                     "type": "graph_event",
@@ -557,9 +604,15 @@ fn supersession_lock() -> PlayStep {
                     "select": { "target_type": node_type },
                     "property_key": format!("{node_type}.{field}"),
                 },
-                "conditions": [format!("node.{status_field} == 'superseded'")],
+                "conditions": [{
+                    "expr": format!("node.{status_field} == 'superseded'"),
+                    "description": format!("The {node_type} is superseded"),
+                }],
                 "actions": [{
                     "action_type": "reject",
+                    "description": format!(
+                        "Refuse the change and say a superseded {node_type}'s {field} is locked"
+                    ),
                     "params": {
                         // Names the field, which also keeps each rule's
                         // action list distinct: byte-identical actions in one
@@ -575,6 +628,7 @@ fn supersession_lock() -> PlayStep {
         }
         rules.push(json!({
             "name": format!("lock-superseded-{node_type}-status"),
+            "description": format!("Refuse to move a superseded {node_type} to another status"),
             "class": "invariant",
             "trigger": {
                 "type": "graph_event",
@@ -583,11 +637,20 @@ fn supersession_lock() -> PlayStep {
                 "property_key": format!("{node_type}.{status_field}"),
             },
             "conditions": [
-                "trigger.property.old_value == 'superseded'",
-                format!("node.{status_field} != 'superseded'"),
+                {
+                    "expr": "trigger.property.old_value == 'superseded'",
+                    "description": format!("The {node_type} was superseded before this change"),
+                },
+                {
+                    "expr": format!("node.{status_field} != 'superseded'"),
+                    "description": "The change gives it another status",
+                },
             ],
             "actions": [{
                 "action_type": "reject",
+                "description": format!(
+                    "Refuse the change and say a superseded {node_type} cannot be reinstated"
+                ),
                 "params": {
                     "message": format!(
                         "A superseded {node_type} cannot be reinstated. Create a new \
@@ -749,7 +812,7 @@ mod tests {
                         .as_array()
                         .unwrap()
                         .iter()
-                        .any(|c| c.as_str().unwrap().contains("old_value")),
+                        .any(|c| c["expr"].as_str().unwrap().contains("old_value")),
                     "{key}: a post-write-only check would reject superseding itself"
                 );
             }

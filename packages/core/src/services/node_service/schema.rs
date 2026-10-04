@@ -2173,14 +2173,16 @@ mod typed_update_tests {
             "description": "Close a task's parent",
             "rules": [{
                 "name": "close-parent",
+                "description": "Test rule",
                 "trigger": {
                     "type": "graph_event",
                     "on": "property_changed",
                     "select": { "target_type": "task" },
                     "property_key": "task.status"
                 },
-                "conditions": ["node.status == 'done'"],
+                "conditions": [{ "expr": "node.status == 'done'", "description": "Test condition" }],
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.child_of.id}", "properties": { "status": "done" } }
                 }]
@@ -2225,8 +2227,10 @@ mod typed_update_tests {
             "description": null,
             "rules": [{
                 "name": "greet",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "content": "hello" }
                 }]
@@ -2310,6 +2314,7 @@ mod typed_update_tests {
         let update: PlayNodeUpdate = serde_json::from_value(json!({
             "rules": [{
                 "name": "ghost",
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "no_such_type" } }
             }]
         }))
@@ -2319,6 +2324,115 @@ mod typed_update_tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no_such_type"), "{err}");
+    }
+
+    /// The rules of [`play_properties`], with one change made to the rule.
+    fn changed_rules(change: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
+        let mut rules = play_properties()["rules"].clone();
+        change(&mut rules[0]);
+        rules
+    }
+
+    #[tokio::test]
+    async fn a_blank_description_is_rejected_on_create_and_on_update() {
+        let (service, _t) = create_test_service().await;
+        let blank = changed_rules(|rule| rule["actions"][0]["description"] = json!("  "));
+
+        let err = service
+            .create_node(Node::new(
+                "play".to_string(),
+                "Blank".to_string(),
+                json!({ "rules": blank }),
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("rule `close-parent`, action 1: its description is blank"),
+            "{err}"
+        );
+
+        let play = create(&service, "play", play_properties()).await;
+        let update: PlayNodeUpdate = serde_json::from_value(json!({ "rules": blank })).unwrap();
+        let err = service
+            .update_play_node(&play.id, play.version, update)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, NodeServiceError::PlayValidationFailed { .. }),
+            "{err:?}"
+        );
+    }
+
+    /// A component whose content changed must not keep the description it was
+    /// stored with (ADR-090 §1), through the typed update and the flat one.
+    #[tokio::test]
+    async fn a_stale_description_is_rejected_until_it_is_rewritten() {
+        let (service, _t) = create_test_service().await;
+        let play = create(&service, "play", play_properties()).await;
+
+        let stale = changed_rules(|rule| {
+            rule["conditions"][0]["expr"] = json!("node.status == 'cancelled'");
+        });
+        let expected = "rule `close-parent`, condition 1: its expression changed and its \
+                        description didn't";
+
+        let typed: PlayNodeUpdate = serde_json::from_value(json!({ "rules": stale })).unwrap();
+        let err = service
+            .update_play_node(&play.id, play.version, typed)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(expected), "{err}");
+
+        let flat = crate::models::NodeUpdate::default().with_properties(json!({ "rules": stale }));
+        let err = service
+            .update_node(&play.id, play.version, flat)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(expected), "{err}");
+
+        let rewritten = changed_rules(|rule| {
+            rule["conditions"][0] = json!({
+                "expr": "node.status == 'cancelled'",
+                "description": "The task is cancelled"
+            });
+        });
+        let update: PlayNodeUpdate = serde_json::from_value(json!({ "rules": rewritten })).unwrap();
+        service
+            .update_play_node(&play.id, play.version, update)
+            .await
+            .expect("a changed condition with a new description saves");
+    }
+
+    /// The description checks run only on a write that changes the rules, so
+    /// a play whose stored rules would not pass them can still be switched
+    /// off or renamed.
+    #[tokio::test]
+    async fn a_write_that_leaves_the_rules_alone_skips_the_description_checks() {
+        let (service, _t) = create_test_service().await;
+        let play = create(&service, "play", play_properties()).await;
+
+        // Stored without the save-time gate, as a synced or imported play is.
+        let blank = changed_rules(|rule| rule["description"] = json!(""));
+        service
+            .update_node_unchecked(
+                &play.id,
+                crate::models::NodeUpdate::default().with_properties(json!({ "rules": blank })),
+            )
+            .await
+            .unwrap();
+        let play = service.get_node(&play.id).await.unwrap().unwrap();
+
+        let update: PlayNodeUpdate = serde_json::from_value(json!({
+            "enabled": false,
+            "description": "Switched off"
+        }))
+        .unwrap();
+        let updated = service
+            .update_play_node(&play.id, play.version, update)
+            .await
+            .expect("a write that leaves the rules alone succeeds");
+        assert!(!crate::models::PlayFields::enabled_in(&updated.properties));
     }
 
     /// One case per action: a play whose action names a param the engine
@@ -2366,8 +2480,9 @@ mod typed_update_tests {
             let rules = json!([{
                 "name": "typo",
                 "class": if action_type == "reject" { "invariant" } else { "reactive" },
+                "description": "Test rule",
                 "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "task" } },
-                "actions": [{ "action_type": action_type, "params": params }]
+                "actions": [{ "description": "Test action", "action_type": action_type, "params": params }]
             }]);
 
             let err = service

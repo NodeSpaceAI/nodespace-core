@@ -3983,8 +3983,9 @@ mod tests {
                 "ac2ab371-c058-5784-80fb-d3ba0e2ebb68",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi_task" } },
-                    "conditions": ["node.status == 'open'"],
+                    "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                     "actions": []
                 }]),
             )
@@ -4031,8 +4032,9 @@ mod tests {
                 "a7d0f4c6-f08e-5bb7-b51e-aabd45cc9d5c",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi_order" } },
-                    "conditions": ["node.status == 'open'"],
+                    "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                     "actions": []
                 }]),
             )
@@ -4078,8 +4080,9 @@ mod tests {
                 "6b693b96-4fad-5846-bca3-545b1a7e53a7",
                 json!([{
                     "name": "r1",
+                    "description": "Test rule",
                     "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi_story" } },
-                    "conditions": ["node.vi_epic.status == 'active'"],
+                    "conditions": [{ "expr": "node.vi_epic.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
             )
@@ -4261,6 +4264,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
+                        "description": "Test rule",
                         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "nonexistent_type" } },
                         "conditions": [],
                         "actions": []
@@ -4296,8 +4300,9 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
+                        "description": "Test rule",
                         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg_widget" } },
-                        "conditions": ["node.status == 'open'"],
+                        "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                         "actions": []
                     }]
                 }),
@@ -4323,8 +4328,9 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
+                        "description": "Test rule",
                         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg_item" } },
-                        "conditions": ["1 + + 2"],
+                        "conditions": [{ "expr": "1 + + 2", "description": "Test condition" }],
                         "actions": []
                     }]
                 }),
@@ -4352,6 +4358,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
+                        "description": "Test rule",
                         "trigger": { "type": "scheduled", "cron": "not a cron expression", "select": { "target_type": "vg_cron_item" } },
                         "conditions": [],
                         "actions": []
@@ -4385,6 +4392,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
+                        "description": "Test rule",
                         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg_part" } },
                         "conditions": [],
                         "actions": []
@@ -4398,6 +4406,7 @@ mod tests {
                 properties: Some(json!({
                     "rules": [{
                         "name": "r1_updated",
+                        "description": "Test rule",
                         "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vanished_type" } },
                         "conditions": [],
                         "actions": []
@@ -4433,6 +4442,7 @@ mod tests {
                 json!({
                     "rules": [{
                         "name": "r1",
+                        "description": "Test rule",
                         "trigger": { "type": "bad_trigger_type", "on": "node_created", "select": { "target_type": "task" } },
                         "conditions": [],
                         "actions": []
@@ -5644,8 +5654,9 @@ mod tests {
         fn scheduled(select: serde_json::Value, condition: &str) -> Arc<ParsedRule> {
             let definition: RuleDefinition = serde_json::from_value(json!({
                 "name": "scan",
+                "description": "Test rule",
                 "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": select },
-                "conditions": [condition]
+                "conditions": [{ "expr": condition, "description": "Test condition" }]
             }))
             .expect("the rule must decode");
             Arc::new(parse_rule(&definition).expect("the rule must compile"))
@@ -5819,7 +5830,7 @@ mod tests {
                     id.to_string(),
                     "play".to_string(),
                     "Selector play".to_string(),
-                    json!({ "rules": [{ "name": "r", "trigger": trigger }] }),
+                    json!({ "rules": [{ "name": "r", "description": "Test rule", "trigger": trigger }] }),
                 )
             };
 

@@ -51,7 +51,9 @@ macro_rules! skill_md_form {
 }
 
 /// A schema-authoring convention (field naming, enums, relationships,
-/// title templates, request-scoping).
+/// title templates, request-scoping), or a play-authoring one
+/// ([`PLAY_RULES`]): a rule each surface states in its own words, held
+/// together by its anchors and its JSON examples.
 pub struct SchemaRule {
     /// Names the rule's fragments, and is what an include marker cites.
     pub id: &'static str,
@@ -482,6 +484,53 @@ pub const SCHEMA_RULES: &[SchemaRule] = &[
     UNIQUE_FIELD_FLAGS,
 ];
 
+/// The shape a play's rules are written in (ADR-090 §1). The example is a
+/// whole rule, so both surfaces copy the same payload: a described rule, a
+/// condition object and a described action.
+pub const PLAY_RULE_DESCRIPTIONS: SchemaRule = SchemaRule {
+    id: "play-rule-descriptions",
+    imperative: agent_form!("play-rule-descriptions"),
+    prose: skill_md_form!("play-rule-descriptions"),
+    anchors: &[
+        "required `description`",
+        "in the same write",
+        "an object with `expr` and `description`",
+        "never a bare expression",
+        "beside `action_type`, `params` and `for_each`",
+        "trigger takes no description",
+        "missing or blank",
+    ],
+};
+
+/// What a rejected rules write means and how to repair it. The quoted error
+/// is the text `playbook::descriptions` renders, so an agent recognizes the
+/// rejection when it meets one.
+pub const PLAY_STALE_DESCRIPTION: SchemaRule = SchemaRule {
+    id: "play-stale-description",
+    imperative: agent_form!("play-stale-description"),
+    prose: skill_md_form!("play-stale-description"),
+    anchors: &[
+        "in the same write",
+        "condition `expr`",
+        "`action_type`, `params` or `for_each`",
+        "`trigger` or `class`",
+        "keeps its stored description is rejected",
+        "same `name`",
+        "by position",
+        "a renamed rule is a new rule",
+        "its expression changed and its description didn't",
+        "corrected payload",
+    ],
+};
+
+/// The play-authoring rules, in the order they should be rendered.
+pub const PLAY_RULES: &[SchemaRule] = &[PLAY_RULE_DESCRIPTIONS, PLAY_STALE_DESCRIPTION];
+
+/// Every rule whose two forms are tied by anchors and shared JSON examples.
+fn anchored_rules() -> impl Iterator<Item = &'static SchemaRule> {
+    SCHEMA_RULES.iter().chain(PLAY_RULES)
+}
+
 pub const FIND_THEN_ACT: InteractionRule = InteractionRule {
     id: "find-then-act",
     imperative: agent_form!("find-then-act"),
@@ -643,8 +692,7 @@ pub fn rule_text(id: &str, form: RuleForm) -> Option<&'static str> {
         RuleForm::Agent => imperative,
         RuleForm::SkillMd => prose,
     };
-    SCHEMA_RULES
-        .iter()
+    anchored_rules()
         .find(|r| r.id == id)
         .map(|r| pick(r.imperative, r.prose))
         .or_else(|| {
@@ -696,6 +744,15 @@ pub fn skill_md_schema_rules() -> String {
     )
 }
 
+/// The play-rules region of the shipped skill: the play-authoring rules in
+/// their prose form, as `seeds/skill-md/play-rules.md` lays them out.
+pub fn skill_md_play_rules() -> String {
+    resolve_includes(
+        include_str!("seeds/skill-md/play-rules.md").trim_ascii_end(),
+        RuleForm::SkillMd,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,8 +785,7 @@ mod tests {
     /// include of another fragment.
     #[test]
     fn rule_fragments_are_plain_markdown() {
-        let texts = SCHEMA_RULES
-            .iter()
+        let texts = anchored_rules()
             .flat_map(|r| [(r.id, r.imperative), (r.id, r.prose)])
             .chain(
                 INTERACTION_RULES
@@ -765,12 +821,78 @@ mod tests {
         assert!(!rendered.contains(INCLUDE_OPEN), "{rendered}");
     }
 
+    /// Every play rule reaches the shipped skill through its own template,
+    /// exactly once.
+    #[test]
+    fn the_skill_md_region_includes_every_play_rule_once() {
+        let template = include_str!("seeds/skill-md/play-rules.md");
+        for r in PLAY_RULES {
+            assert_eq!(
+                template
+                    .matches(&format!("{INCLUDE_OPEN}{}{INCLUDE_CLOSE}", r.id))
+                    .count(),
+                1,
+                "{} must be included once in seeds/skill-md/play-rules.md",
+                r.id
+            );
+        }
+        let rendered = skill_md_play_rules();
+        assert!(!rendered.contains(INCLUDE_OPEN), "{rendered}");
+    }
+
     #[test]
     fn all_schema_rule_ids_are_unique() {
-        let mut ids: Vec<&str> = SCHEMA_RULES.iter().map(|r| r.id).collect();
+        let mut ids: Vec<&str> = anchored_rules().map(|r| r.id).collect();
+        let count = ids.len();
         ids.sort_unstable();
         ids.dedup();
-        assert_eq!(ids.len(), SCHEMA_RULES.len(), "duplicate SchemaRule id");
+        assert_eq!(ids.len(), count, "duplicate SchemaRule id");
+    }
+
+    /// The rule example both surfaces copy is a rule the play types decode,
+    /// and one the description checks accept.
+    #[test]
+    fn the_play_rule_example_is_a_valid_described_rule() {
+        use nodespace_core::playbook::types::RuleDefinition;
+        for text in [
+            PLAY_RULE_DESCRIPTIONS.imperative,
+            PLAY_RULE_DESCRIPTIONS.prose,
+        ] {
+            let example = json_examples(text)
+                .into_iter()
+                .find(|example| example.get("trigger").is_some())
+                .unwrap_or_else(|| panic!("no rule example in: {text}"));
+            let rule: RuleDefinition = serde_json::from_value(example)
+                .unwrap_or_else(|e| panic!("the rule example does not decode: {e}"));
+            assert_eq!(rule.conditions.len(), 1);
+            assert_eq!(rule.actions.len(), 1);
+            nodespace_core::playbook::descriptions::check_descriptions(&[rule], None)
+                .expect("the example's descriptions pass");
+        }
+    }
+
+    /// The stale rule quotes the rejection an agent will meet, so it has to
+    /// quote what the check actually renders.
+    #[test]
+    fn the_stale_rule_quotes_the_rejection_the_check_renders() {
+        use nodespace_core::playbook::descriptions::{
+            DescribedComponent, DescriptionError, DescriptionProblem,
+        };
+        let rendered = DescriptionError {
+            rule: "complete parent".to_string(),
+            component: DescribedComponent::Condition(1),
+            problem: DescriptionProblem::Stale,
+        }
+        .to_string();
+        let quoted = "rule `complete parent`, condition 2: its expression changed and its \
+                      description didn't";
+        assert!(rendered.starts_with(quoted), "{rendered}");
+        for text in [
+            PLAY_STALE_DESCRIPTION.imperative,
+            PLAY_STALE_DESCRIPTION.prose,
+        ] {
+            assert!(text.contains(quoted), "{text}");
+        }
     }
 
     /// The rule tells the model what the truncation note means, so it has to
@@ -801,7 +923,7 @@ mod tests {
 
     #[test]
     fn no_rule_text_is_empty() {
-        for r in SCHEMA_RULES {
+        for r in anchored_rules() {
             assert!(!r.imperative.is_empty(), "{} imperative is empty", r.id);
             assert!(!r.prose.is_empty(), "{} prose is empty", r.id);
         }
@@ -823,7 +945,7 @@ mod tests {
     #[test]
     fn schema_rule_forms_share_their_anchors() {
         let mut drift = Vec::new();
-        for r in SCHEMA_RULES {
+        for r in anchored_rules() {
             assert!(!r.anchors.is_empty(), "{} declares no anchors", r.id);
             let imperative = r.imperative.to_lowercase();
             let prose = r.prose.to_lowercase();
@@ -880,7 +1002,7 @@ mod tests {
     #[test]
     fn schema_rule_forms_share_their_json_examples() {
         let mut drift = Vec::new();
-        for r in SCHEMA_RULES {
+        for r in anchored_rules() {
             let prose_only_allowed = PROSE_ONLY_EXAMPLES.contains(&r.id);
             let imperative = json_examples(r.imperative);
             let prose = json_examples(r.prose);

@@ -779,7 +779,7 @@ mod tests {
     use serde_json::json;
 
     fn rule(trigger: Value, actions: Value) -> Value {
-        json!({ "name": "r", "trigger": trigger, "actions": actions })
+        json!({ "name": "r", "description": "Test rule", "trigger": trigger, "actions": actions })
     }
 
     fn graph_event() -> Value {
@@ -795,6 +795,7 @@ mod tests {
         let stored = json!({
             "name": "roll over",
             "class": "reactive",
+            "description": "Test rule",
             "trigger": {
                 "type": "scheduled",
                 "cron": "0 5 0 * * * *",
@@ -805,9 +806,10 @@ mod tests {
                     ]
                 }
             },
-            "conditions": ["node.end_date == today()"],
+            "conditions": [{ "expr": "node.end_date == today()", "description": "Test condition" }],
             "actions": [
                 {
+                    "description": "Test action",
                     "action_type": "create_node",
                     "params": {
                         "node_type": "cycle",
@@ -817,6 +819,7 @@ mod tests {
                     }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "add_relationship",
                     "for_each": "trigger.node.tasks.where(status != 'done')",
                     "params": {
@@ -848,7 +851,7 @@ mod tests {
 
     #[test]
     fn class_conditions_and_actions_take_their_defaults() {
-        let rule = decode(json!({ "name": "r", "trigger": graph_event() })).unwrap();
+        let rule = decode(json!({ "name": "r", "description": "Test rule", "trigger": graph_event() })).unwrap();
         assert_eq!(rule.class, RuleClass::Reactive);
         assert!(rule.conditions.is_empty());
         assert!(rule.actions.is_empty());
@@ -919,7 +922,7 @@ mod tests {
     fn an_unknown_action_is_rejected() {
         let err = decode(rule(
             graph_event(),
-            json!([{ "action_type": "spawn_agent", "params": {} }]),
+            json!([{ "description": "Test action", "action_type": "spawn_agent", "params": {} }]),
         ))
         .unwrap_err();
         assert!(err.contains("spawn_agent"), "{err}");
@@ -959,7 +962,7 @@ mod tests {
         for (action_type, params, unknown) in cases {
             let err = decode(rule(
                 graph_event(),
-                json!([{ "action_type": action_type, "params": params }]),
+                json!([{ "description": "Test action", "action_type": action_type, "params": params }]),
             ))
             .unwrap_err();
             assert!(
@@ -987,7 +990,7 @@ mod tests {
             assert!(
                 decode(rule(
                     graph_event(),
-                    json!([{ "action_type": action_type, "params": params }]),
+                    json!([{ "description": "Test action", "action_type": action_type, "params": params }]),
                 ))
                 .is_err(),
                 "{action_type} must require its params"
@@ -1001,10 +1004,12 @@ mod tests {
             graph_event(),
             json!([
                 {
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "n", "properties": { "anything": { "nested": [1, 2] } } }
                 },
                 {
+                    "description": "Test action",
                     "action_type": "add_relationship",
                     "params": {
                         "source_id": "a", "relationship_type": "t", "target_id": "b",
@@ -1026,7 +1031,7 @@ mod tests {
         // The open leaves are objects, not arbitrary JSON.
         assert!(decode(rule(
             graph_event(),
-            json!([{ "action_type": "update_node", "params": { "node_id": "n", "properties": "x" } }]),
+            json!([{ "description": "Test action", "action_type": "update_node", "params": { "node_id": "n", "properties": "x" } }]),
         ))
         .is_err());
     }
@@ -1035,7 +1040,7 @@ mod tests {
     fn a_reject_action_takes_no_for_each() {
         let err = decode(rule(
             graph_event(),
-            json!([{ "action_type": "reject", "params": { "message": "no" }, "for_each": "trigger.node.tasks" }]),
+            json!([{ "description": "Test action", "action_type": "reject", "params": { "message": "no" }, "for_each": "trigger.node.tasks" }]),
         ))
         .unwrap_err();
         assert!(err.contains("for_each"), "{err}");
@@ -1063,7 +1068,7 @@ mod tests {
         let err = PlayFields::from_properties(&json!({
             "rules": [
                 rule(graph_event(), json!([])),
-                { "name": "broken", "trigger": { "type": "nope" } }
+                { "name": "broken", "description": "Test rule", "trigger": { "type": "nope" } }
             ]
         }))
         .unwrap_err()
@@ -1074,6 +1079,82 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("'rules'"), "{err}");
+    }
+
+    /// A rule, each condition and each action must carry a description, and a
+    /// condition is an object: the error names the rule and the field.
+    #[test]
+    fn a_missing_description_or_a_bare_condition_names_the_rule_and_the_field() {
+        let described = json!({
+            "name": "close parent",
+            "description": "Close the parent",
+            "class": "reactive",
+            "trigger": graph_event(),
+            "conditions": [
+                { "expr": "node.status == 'done'", "description": "The task is done" }
+            ],
+            "actions": [{
+                "action_type": "reject",
+                "description": "Refuse the write",
+                "params": { "message": "no" }
+            }]
+        });
+        let decoded = PlayFields::from_properties(&json!({ "rules": [described] })).unwrap();
+        assert_eq!(decoded.rules[0].description, "Close the parent");
+        assert_eq!(decoded.rules[0].conditions[0].expr, "node.status == 'done'");
+        assert_eq!(decoded.rules[0].actions[0].description(), "Refuse the write");
+        assert_eq!(serde_json::to_value(&decoded.rules[0]).unwrap(), described);
+
+        let without = |pointer: &str| {
+            let mut rule = described.clone();
+            let (parent, key) = pointer.rsplit_once('/').unwrap();
+            rule.pointer_mut(parent)
+                .and_then(Value::as_object_mut)
+                .unwrap()
+                .remove(key);
+            rule
+        };
+        let mut bare = described.clone();
+        bare["conditions"][0] = json!("node.status == 'done'");
+
+        for (rule, expected) in [
+            (without("/description"), "missing field `description`"),
+            (
+                without("/conditions/0/description"),
+                "conditions[0]: missing field `description`",
+            ),
+            (
+                without("/conditions/0/expr"),
+                "conditions[0]: missing field `expr`",
+            ),
+            (
+                without("/actions/0/description"),
+                "actions[0]: missing field `description`",
+            ),
+            (bare.clone(), "conditions[0]: invalid type: string"),
+        ] {
+            let stored = PlayFields::from_properties(&json!({ "rules": [rule] }))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                stored.contains(&format!("rule[0] ('close parent'): {expected}")),
+                "{stored}"
+            );
+
+            // The typed update reports the same thing.
+            let update = serde_json::from_value::<PlayNodeUpdate>(json!({ "rules": [rule] }))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                update.contains(&format!("rule[0] ('close parent'): {expected}")),
+                "{update}"
+            );
+        }
+
+        let bare = PlayFields::from_properties(&json!({ "rules": [bare] }))
+            .unwrap_err()
+            .to_string();
+        assert!(bare.contains(r#"expected an object { "expr""#), "{bare}");
     }
 
     #[test]
@@ -1160,7 +1241,7 @@ mod tests {
     #[test]
     fn a_play_with_broken_rules_keeps_its_readable_fields() {
         let properties = json!({ "play": {
-            "rules": [{ "name": "r", "trigger": { "type": "nope" } }],
+            "rules": [{ "name": "r", "description": "Test rule", "trigger": { "type": "nope" } }],
             "description": "d",
             "enabled": false,
             "suspended_reason": "validation_failed",

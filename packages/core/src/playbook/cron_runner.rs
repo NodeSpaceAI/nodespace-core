@@ -500,6 +500,7 @@ mod tests {
                     "play": {
                         "rules": [{
                             "name": "cron-rule-1",
+                            "description": "Test rule",
                             "trigger": {
                                 "type": "scheduled",
                                 "cron": cron_expr,
@@ -507,6 +508,7 @@ mod tests {
                             },
                             "conditions": [],
                             "actions": [{
+                                "description": "Test action",
                                 "action_type": "update_node",
                                 "params": {"node_id": "{trigger.node.id}"}
                             }]
@@ -823,9 +825,11 @@ mod tests {
         ) -> serde_json::Value {
             json!([{
                 "name": "scan",
+                "description": "Test rule",
                 "trigger": { "type": "scheduled", "cron": EVERY_MINUTE, "select": select },
                 "conditions": conditions,
                 "actions": [{
+                    "description": "Test action",
                     "action_type": "update_node",
                     "params": { "node_id": "{trigger.node.id}", "properties": { "seen": true } }
                 }]
@@ -1022,7 +1026,7 @@ mod tests {
             }
             let lifecycle = lifecycle_with_rules(scheduled_rule(
                 json!({ "target_type": "sel_ticket", "filters": open_filter() }),
-                json!(["node.child_of.content != ''"]),
+                json!([{ "expr": "node.child_of.content != ''", "description": "Test condition" }]),
             ));
 
             let items = scan(&svc, &lifecycle).await;

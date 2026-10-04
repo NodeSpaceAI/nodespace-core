@@ -294,6 +294,26 @@ mod tests {
         }
     }
 
+    /// Every bundled play ships a description on each rule, condition and
+    /// action (ADR-090 §1), in its live rules and so in its reset target. The
+    /// install tests take each playbook through the rest of save-time
+    /// validation.
+    #[test]
+    fn every_bundled_play_describes_its_rules_conditions_and_actions() {
+        for playbook in all_playbooks() {
+            for play in &playbook.plays {
+                let rules =
+                    crate::playbook::types::parse_rules_from_properties(&play.properties())
+                        .unwrap_or_else(|e| panic!("{}: {e}", play.play_id));
+                assert!(!rules.is_empty(), "{} has no rules", play.play_id);
+                if let Err(errors) = crate::playbook::descriptions::check_descriptions(&rules, None)
+                {
+                    panic!("{}: {errors:?}", play.play_id);
+                }
+            }
+        }
+    }
+
     /// A seeded view must be a query the backend will execute and a view
     /// config the viewer will honour. Both are plain JSON here, so a typo in
     /// either is otherwise invisible until someone opens the board.
