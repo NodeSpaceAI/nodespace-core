@@ -299,6 +299,83 @@ async fn a_flat_update_lands_each_field_in_its_declaring_bucket() {
     );
 }
 
+/// A native tool's CLI command is its subtype's field: optional, stored in
+/// the subtype's bucket beside the handler, set and cleared by a flat update,
+/// and carried in `properties` on the wire like the rest of the chain's
+/// fields.
+#[tokio::test]
+async fn a_native_tools_cli_command_is_an_optional_field_of_its_own_bucket() {
+    let (svc, _tmp) = test_service().await;
+
+    // Unset unless stated: the schema gives it no default.
+    let plain = native_tool(&svc).await;
+    assert!(get(&svc, &plain).await.properties[NATIVE]
+        .get("cli_command")
+        .is_none());
+
+    let id = create(
+        &svc,
+        NATIVE,
+        "get_node",
+        json!({ "handler": "get_node", "cli_command": "nodespace node get" }),
+    )
+    .await
+    .expect("a native tool with a command is created");
+    let node = get(&svc, &id).await;
+    assert_eq!(
+        node.properties[NATIVE],
+        json!({ "handler": "get_node", "cli_command": "nodespace node get" })
+    );
+    assert!(node.properties["tool"].get("cli_command").is_none());
+
+    let collapsed = svc
+        .collapse_chain_for_wire(vec![node.clone()])
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    let wire = node_to_typed_value(collapsed).unwrap();
+    assert_eq!(wire["properties"]["cli_command"], "nodespace node get");
+
+    svc.update_node(
+        &id,
+        node.version,
+        NodeUpdate::new().with_properties(json!({ "cli_command": "nodespace node export" })),
+    )
+    .await
+    .expect("a flat update sets the command");
+    let node = get(&svc, &id).await;
+    assert_eq!(
+        node.properties[NATIVE]["cli_command"],
+        "nodespace node export"
+    );
+
+    svc.update_node(
+        &id,
+        node.version,
+        NodeUpdate::new().with_properties(json!({ "cli_command": null })),
+    )
+    .await
+    .expect("a flat update clears the command");
+    let node = get(&svc, &id).await;
+    assert!(node.properties[NATIVE]
+        .get("cli_command")
+        .is_none_or(serde_json::Value::is_null));
+    assert_eq!(node.properties[NATIVE]["handler"], "get_node");
+
+    // Text, like the schema says.
+    let error = message(
+        create(
+            &svc,
+            NATIVE,
+            "lookup",
+            json!({ "handler": "lookup", "cli_command": 7 }),
+        )
+        .await,
+    );
+    assert!(error.contains("cli_command"), "{error}");
+}
+
 // ---------------------------------------------------------------------------
 // The base's rules reach every subtype
 // ---------------------------------------------------------------------------

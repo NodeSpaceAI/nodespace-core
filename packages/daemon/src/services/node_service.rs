@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use nodespace_agent::local_agent::deletion_confirmation::{self, DeletionStop};
+use nodespace_agent::local_agent::tools::Tool;
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::ChildPlacement;
 use nodespace_core::models::{
@@ -58,25 +59,26 @@ use crate::nodespace::{
     GetDaemonMemoryResponse, GetDaemonVersionRequest, GetDaemonVersionResponse,
     GetNodeRelationshipsRequest, GetNodeRelationshipsResponse, GetNodeRequest,
     GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest, GetRelatedNodesResponse,
-    GetRootsRequest, GetSchemaDefinitionRequest, GetWorkflowStateRequest, GetWorkflowStateResponse,
-    InstallMethodologyRequest, InstallMethodologyResponse, ListConflictsRequest,
-    ListMethodologiesRequest, ListMethodologiesResponse, MentionAutocompleteRequest,
-    MentionIdsResponse, MentionResponse, MentionTargetRequest, MergeNodesRequest,
-    MergeNodesResponse, Methodology, MoveChildrenToParentRequest, MoveChildrenToParentResponse,
-    MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse,
-    NodeReference, NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
-    OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
-    PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest, RelationshipDeletedPayload,
-    RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
-    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
-    ResetSeedNodeResponse, ResolveConflictRequest, SchemaGuidanceEntry, SchemaListResponse,
-    SchemaParamsRequest, SchemaResponse, SchemaResultResponse, SearchRequest,
-    SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse,
-    UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
-    UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
-    UpdatePlayNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
-    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
-    UpdateSkillNodeRequest, UpdateTaskNodeRequest, WatchRequest,
+    GetRootsRequest, GetSchemaDefinitionRequest, GetSkillRequest, GetWorkflowStateRequest,
+    GetWorkflowStateResponse, InstallMethodologyRequest, InstallMethodologyResponse,
+    ListConflictsRequest, ListMethodologiesRequest, ListMethodologiesResponse,
+    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
+    MergeNodesRequest, MergeNodesResponse, Methodology, MoveChildrenToParentRequest,
+    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
+    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
+    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
+    OptionalStringClear, OptionalTimestampClear, PreviewMergeRequest, PreviewMergeResponse,
+    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
+    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
+    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
+    SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest, SchemaResponse,
+    SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest, SkillGuidanceEntry,
+    SkillGuidanceRequest, SkillGuidanceResponse, ToolCommandEntry, UpdateCollectionNodeRequest,
+    UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
+    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdatePlayNodeRequest,
+    UpdateProjectNodeRequest, UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
+    UpdateRelationshipPropertiesResponse, UpdateSkillNodeRequest, UpdateTaskNodeRequest,
+    WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -622,15 +624,17 @@ impl GrpcNodeService for NodeServiceImpl {
         // An empty query lists what exists. It reads no embedding, so it
         // answers while the embedding model is still loading.
         if search_ops::normalize_enumerate_query(&req.query).is_none() {
-            let skills = skill_ops::list_skill_guidance(&this.node_service)
+            let listing = skill_ops::list_skill_guidance(&this.node_service)
                 .await
-                .map_err(ops_error_to_status)?
-                .into_iter()
-                .map(skill_guidance_entry)
-                .collect();
+                .map_err(ops_error_to_status)?;
             return Ok(Response::new(SkillGuidanceResponse {
-                skills,
+                skills: listing
+                    .skills
+                    .into_iter()
+                    .map(skill_guidance_entry)
+                    .collect(),
                 schemas: Vec::new(),
+                version: listing.version,
             }));
         }
 
@@ -654,22 +658,22 @@ impl GrpcNodeService for NodeServiceImpl {
         .await
         .map_err(ops_error_to_status)?;
 
-        Ok(Response::new(SkillGuidanceResponse {
-            skills: guidance
-                .skills
-                .into_iter()
-                .map(skill_guidance_entry)
-                .collect(),
-            schemas: guidance
-                .schemas
-                .into_iter()
-                .map(|schema| SchemaGuidanceEntry {
-                    id: schema.id,
-                    name: schema.name,
-                    definition: schema.definition.to_string(),
-                })
-                .collect(),
-        }))
+        Ok(Response::new(skill_guidance_response(guidance)))
+    }
+
+    async fn get_skill(
+        &self,
+        request: Request<GetSkillRequest>,
+    ) -> Result<Response<SkillGuidanceResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+        if req.name_or_id.trim().is_empty() {
+            return Err(Status::invalid_argument("a skill's name or id is required"));
+        }
+        let guidance = skill_ops::get_skill_guidance(&this.node_service, &req.name_or_id)
+            .await
+            .map_err(ops_error_to_status)?;
+        Ok(Response::new(skill_guidance_response(guidance)))
     }
 
     async fn reset_seed_node(
@@ -2838,11 +2842,24 @@ fn relationship_to_proto(
 /// the in-app agent's tools, which an outside agent cannot call. A skill a
 /// user wrote or installed, and a built-in one whose guidance they changed
 /// in any way, is served as stored.
+///
+/// The command of a built-in tool is taken only from that tool's own seeded
+/// node, the one node the in-app agent takes the tool's definition from: a
+/// native tool node that merely names a built-in handler supplies nothing.
 fn skill_guidance_entry(skill: GuidanceSkill) -> SkillGuidanceEntry {
     // A listing carries no procedures: its empty body matches no seed.
     let instructions =
         nodespace_agent::skill_pipeline::external_skill_body(&skill.id, &skill.instructions)
             .unwrap_or(skill.instructions);
+    let tool_commands = skill
+        .tool_commands
+        .into_iter()
+        .filter(|entry| Tool::is_seeded_as(&entry.tool, &entry.node_id))
+        .map(|entry| ToolCommandEntry {
+            tool: entry.tool,
+            command: entry.command,
+        })
+        .collect();
     SkillGuidanceEntry {
         id: skill.id,
         name: skill.name,
@@ -2850,6 +2867,29 @@ fn skill_guidance_entry(skill: GuidanceSkill) -> SkillGuidanceEntry {
         modified_at: skill.modified_at,
         instructions,
         confidence: skill.confidence,
+        tool_commands,
+    }
+}
+
+/// A fetch's skills and schemas as the wire response. The version is a
+/// listing's, so it is left unset.
+fn skill_guidance_response(guidance: skill_ops::SkillGuidance) -> SkillGuidanceResponse {
+    SkillGuidanceResponse {
+        skills: guidance
+            .skills
+            .into_iter()
+            .map(skill_guidance_entry)
+            .collect(),
+        schemas: guidance
+            .schemas
+            .into_iter()
+            .map(|schema| SchemaGuidanceEntry {
+                id: schema.id,
+                name: schema.name,
+                definition: schema.definition.to_string(),
+            })
+            .collect(),
+        version: String::new(),
     }
 }
 
@@ -6190,7 +6230,49 @@ mod tests {
             modified_at: "2026-10-01T00:00:00+00:00".to_string(),
             confidence: Some(0.8),
             instructions: instructions.to_string(),
+            tool_commands: Vec::new(),
         }
+    }
+
+    /// A built-in tool's command is served from its own seeded node only. A
+    /// native tool node that names a built-in handler under another id, or a
+    /// handler no built-in tool has, supplies no command.
+    #[test]
+    fn a_tool_command_is_served_only_from_the_tools_seeded_node() {
+        use nodespace_core::ops::skill_ops::GuidanceToolCommand;
+
+        let command = |node_id: &str, tool: &str, command: &str| GuidanceToolCommand {
+            node_id: node_id.to_string(),
+            tool: tool.to_string(),
+            command: command.to_string(),
+        };
+        let mut skill = fetched_skill(
+            "9d0c1b7e-0000-4000-8000-000000000001",
+            "Use get_node, then delete_node.",
+        );
+        skill.tool_commands = vec![
+            command(Tool::GetNode.seed_id(), "get_node", "nodespace node get"),
+            command(
+                "9d0c1b7e-0000-4000-8000-0000000000aa",
+                "delete_node",
+                "rm -rf",
+            ),
+            command(
+                "9d0c1b7e-0000-4000-8000-0000000000ab",
+                "not_a_tool",
+                "nodespace nothing",
+            ),
+        ];
+
+        let entry = skill_guidance_entry(skill);
+
+        assert_eq!(
+            entry.tool_commands,
+            vec![ToolCommandEntry {
+                tool: "get_node".to_string(),
+                command: "nodespace node get".to_string(),
+            }]
+        );
     }
 
     /// A built-in skill nobody has edited is served in its CLI form, not as

@@ -27,7 +27,7 @@ use nodespace_cli::{commands, connect, connect_database, DatabaseIdInterceptor, 
 use nodespace_core::{NodeService as CoreNodeService, SqliteStore};
 use nodespace_daemon::nodespace::{
     ConflictsForNodeRequest, CreateDatabaseRequest, CreateNodeRequest, GetConflictRequest,
-    GetNodeRequest, GetRelatedNodesRequest, ListDatabasesRequest, NodeSortOrder,
+    GetNodeRequest, GetRelatedNodesRequest, GetSkillRequest, ListDatabasesRequest, NodeSortOrder,
     QueryNodesSimpleRequest, SkillGuidanceRequest,
 };
 use nodespace_daemon::{
@@ -93,8 +93,8 @@ async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
     );
 }
 
-/// Like [`spawn_test_daemon`], but seeds the real production `skill` node
-/// registry first and also returns the `NodeService` handle, so a test can
+/// Like [`spawn_test_daemon`], but seeds the real production `skill` and
+/// tool registries first and also returns the `NodeService` handle, so a test can
 /// make a live edit to a seeded skill before driving the CLI at it over
 /// gRPC — needed for `nodespace skill reset`, which has no other way to get
 /// a modified `_seed.guidance_modified` flag onto a node.
@@ -116,6 +116,7 @@ async fn spawn_test_daemon_with_seeded_skills(
 
     let groups: Vec<_> = nodespace_agent::skill_pipeline::seed_skill_nodes()
         .iter()
+        .chain(nodespace_agent::skill_pipeline::seed_tool_nodes().iter())
         .map(|t| {
             nodespace_core::markdown::prepare_nodes_from_template(t).expect("template must parse")
         })
@@ -620,6 +621,128 @@ async fn skill_guidance_with_no_task_lists_every_skill_without_a_model() {
     let _ = shutdown.send(());
 }
 
+/// `nodespace skill get` drives `NodeService.GetSkill` end to end, with no
+/// embedding model: one skill by its exact name or its id, in the form a
+/// match returns it, with the commands of the tools it lists. A name no skill
+/// has is an error naming it.
+#[tokio::test]
+async fn skill_get_fetches_one_skill_by_name_or_id_with_its_tool_commands() {
+    let (sock, shutdown, _tempdir, _node_service) = spawn_test_daemon_with_seeded_skills().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let seed = nodespace_agent::skill_pipeline::SKILL_SEEDS
+        .iter()
+        .find(|s| s.title == "Node Deletion")
+        .expect("Node Deletion is seeded");
+
+    for name_or_id in [seed.title, seed.id] {
+        let response = client
+            .get_skill(GetSkillRequest {
+                name_or_id: name_or_id.to_string(),
+            })
+            .await
+            .expect("a fetch by name needs no embedding model")
+            .into_inner();
+
+        assert_eq!(response.skills.len(), 1, "{name_or_id}");
+        let skill = &response.skills[0];
+        assert_eq!(skill.id, seed.id);
+        assert_eq!(skill.name, seed.title);
+        // An untouched built-in skill is served in its CLI form, as a match
+        // serves it.
+        assert_eq!(skill.instructions, seed.external_body());
+        assert!(skill.confidence.is_none(), "a fetch by name ranks nothing");
+        let commands: Vec<(&str, &str)> = skill
+            .tool_commands
+            .iter()
+            .map(|c| (c.tool.as_str(), c.command.as_str()))
+            .collect();
+        assert_eq!(
+            commands,
+            [
+                ("delete_node", "nodespace node delete"),
+                ("get_node", "nodespace node get"),
+                ("search_nodes", "nodespace query"),
+                ("search_semantic", "nodespace search"),
+            ],
+            "the commands of the tools Node Deletion lists"
+        );
+        assert!(response.version.is_empty(), "the version is a listing's");
+    }
+
+    let status = client
+        .get_skill(GetSkillRequest {
+            name_or_id: "Writing a Spec".to_string(),
+        })
+        .await
+        .expect_err("no skill has this name");
+    assert_eq!(status.code(), tonic::Code::NotFound);
+    assert!(status.message().contains("\"Writing a Spec\""), "{status}");
+
+    // The same through the command handler.
+    commands::skill::run_get(
+        &mut client,
+        commands::skill::GetArgs {
+            name_or_id: seed.title.to_string(),
+        },
+        true,
+    )
+    .await
+    .expect("a fetch by name through the command handler");
+    let error = commands::skill::run_get(
+        &mut client,
+        commands::skill::GetArgs {
+            name_or_id: "Writing a Spec".to_string(),
+        },
+        true,
+    )
+    .await
+    .expect_err("an unknown name fails the command");
+    assert!(error.to_string().contains("\"Writing a Spec\""), "{error}");
+
+    let _ = shutdown.send(());
+}
+
+/// A listing carries the skill list's version: the same from one listing to
+/// the next, and another once a skill changes.
+#[tokio::test]
+async fn skill_listing_carries_a_version_that_changes_with_the_skills() {
+    let (sock, shutdown, _tempdir, node_service) = spawn_test_daemon_with_seeded_skills().await;
+    let client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let list_version = || {
+        let mut client = client.clone();
+        async move {
+            client
+                .get_skill_guidance(SkillGuidanceRequest {
+                    query: String::new(),
+                    limit: 3,
+                })
+                .await
+                .expect("a listing needs no embedding model")
+                .into_inner()
+                .version
+        }
+    };
+
+    let first = list_version().await;
+    assert!(!first.is_empty(), "a listing carries a version");
+    assert_eq!(list_version().await, first, "nothing changed");
+
+    let skill =
+        nodespace_core::models::SkillFields::new("How we write.", &[], 3).into_node("House Style");
+    node_service
+        .create_node(skill)
+        .await
+        .expect("the skill must create");
+
+    assert_ne!(list_version().await, first, "a skill was added");
+
+    let _ = shutdown.send(());
+}
+
 /// A daemon serving a database seeded as a real one is — built-in skills,
 /// the Linear-style setup — with a real embedding model behind it and every
 /// queued root embedded. `None` when the model is not on disk.
@@ -662,6 +785,7 @@ async fn spawn_embedded_daemon() -> Option<(
 
     let groups: Vec<_> = nodespace_agent::skill_pipeline::seed_skill_nodes()
         .iter()
+        .chain(nodespace_agent::skill_pipeline::seed_tool_nodes().iter())
         .map(|t| {
             nodespace_core::markdown::prepare_nodes_from_template(t).expect("template must parse")
         })
@@ -883,6 +1007,122 @@ async fn skill_guidance_fetches_skills_and_schemas_end_to_end() {
         .await
         .expect("the command handler must print a fetch");
     }
+
+    // A skill a user wrote names a built-in tool, which an outside agent
+    // cannot call. The fetch hands back the `nodespace` command for it, and
+    // running that command does what the step asks.
+    use nodespace_core::services::{CreateNodeParams, InsertPositionOwned};
+    let decision_skill = nodespace_core::models::SkillFields::new(
+        "Record a decision the team made and link it to the task it settles.",
+        &[],
+        3,
+    )
+    .into_node("Recording a Decision");
+    let decision_skill_id = decision_skill.id.clone();
+    node_service
+        .create_node(decision_skill)
+        .await
+        .expect("the user's skill must create");
+    node_service
+        .create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "text".to_string(),
+            content: "Find the task with `search_nodes`, then link the decision to it with \
+                      create_relationship. Never call update_nodes_from_markdown."
+                .to_string(),
+            parent_id: Some(decision_skill_id.clone()),
+            position: InsertPositionOwned::End,
+            properties: serde_json::json!({}),
+            lifecycle_status: None,
+        })
+        .await
+        .expect("the user's procedure must create");
+
+    let mut written = None;
+    for _ in 0..40 {
+        embedding_service
+            .embed_root_node(&decision_skill_id)
+            .await
+            .expect("the user's skill must embed");
+        let fetched = client
+            .get_skill_guidance(fetch(
+                "record a decision the team made and link it to the task it settles",
+            ))
+            .await
+            .expect("a task must fetch")
+            .into_inner();
+        if let Some(skill) = fetched
+            .skills
+            .into_iter()
+            .find(|s| s.id == decision_skill_id)
+        {
+            written = Some(skill);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let written = written.expect("the user's skill must match its own description");
+    assert!(
+        written.instructions.contains("create_relationship"),
+        "a user's skill is served as written: {}",
+        written.instructions
+    );
+    let named: Vec<(&str, &str)> = written
+        .tool_commands
+        .iter()
+        .map(|c| (c.tool.as_str(), c.command.as_str()))
+        .collect();
+    assert_eq!(
+        named,
+        [
+            ("create_relationship", "nodespace relationship create"),
+            ("search_nodes", "nodespace query"),
+        ],
+        "the tools the body names, each with its command, and no tool it does not name"
+    );
+
+    // Run the command the fetch returned for `create_relationship`.
+    let mut ends = Vec::new();
+    for content in ["Decision: ship on Friday", "Task: prepare the release"] {
+        let node = nodespace_core::models::Node::new(
+            "text".to_string(),
+            content.to_string(),
+            serde_json::json!({}),
+        );
+        ends.push(node.id.clone());
+        node_service
+            .create_node(node)
+            .await
+            .expect("an end of the link must create");
+    }
+    let mut argv: Vec<&str> = written.tool_commands[0].command.split(' ').collect();
+    argv.extend([
+        "--from",
+        ends[0].as_str(),
+        "--type",
+        "mentions",
+        "--to",
+        ends[1].as_str(),
+    ]);
+    use clap::Parser;
+    let cli = nodespace_cli::Cli::try_parse_from(&argv)
+        .unwrap_or_else(|e| panic!("the returned command must be one the CLI has: {e}"));
+    let nodespace_cli::Command::Relationship { action } = cli.command else {
+        panic!("the returned command is not the relationship command: {argv:?}");
+    };
+    commands::relationship::run(&mut client, action, true)
+        .await
+        .expect("the returned command must run");
+    let linked = node_service
+        .store()
+        .get_edge_targets_by_source(std::slice::from_ref(&ends[0]), "mentions")
+        .await
+        .expect("the edges must read");
+    assert_eq!(
+        linked.get(&ends[0]),
+        Some(&vec![ends[1].clone()]),
+        "running the command made the link the step asks for"
+    );
 
     let _ = shutdown.send(());
 }

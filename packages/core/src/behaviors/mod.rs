@@ -2003,7 +2003,8 @@ impl NodeBehavior for ToolNodeBehavior {
 /// Behavior for `tool-native` nodes: one of NodeSpace's built-in tools.
 ///
 /// Adds the `handler` key to [`ToolNodeBehavior`]'s rules: the stable key of
-/// the Rust function the call dispatches to. The node never holds logic.
+/// the Rust function the call dispatches to. The node never holds logic. Its
+/// optional `cli_command` is the `nodespace` command that does the same thing.
 pub struct ToolNativeNodeBehavior;
 
 impl NodeBehavior for ToolNativeNodeBehavior {
@@ -2016,6 +2017,14 @@ impl NodeBehavior for ToolNativeNodeBehavior {
         if handler.is_none_or(|key| key.trim().is_empty()) {
             return Err(NodeValidationError::MissingField(
                 "tool handler key is required".to_string(),
+            ));
+        }
+        // Optional: a tool with no CLI equivalent has none. A cleared field
+        // is stored as null.
+        let cli_command = get_namespaced_prop(&node.properties, self.type_name(), "cli_command");
+        if cli_command.is_some_and(|command| !command.is_null() && !command.is_string()) {
+            return Err(NodeValidationError::InvalidProperties(
+                "tool cli_command must be text".to_string(),
             ));
         }
         Ok(())

@@ -36,3 +36,4 @@ mod search_nodes_excludes_conversations;
 mod search_skills_latency;
 mod seed_tables;
 mod skill_guidance_fetch_mechanism;
+mod skill_guidance_tool_commands;

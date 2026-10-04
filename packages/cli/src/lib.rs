@@ -659,17 +659,23 @@ async fn dispatch(cli: Cli) -> Result<()> {
         }
         Command::Uninstall(args) => commands::uninstall::run(args),
         // `install`/`uninstall`/`status` never touch the daemon -- they shell
-        // out to the bundled/compiled skill installer directly. `guidance`
-        // and `reset` are the two `skill` subcommands that do: `guidance`
+        // out to the bundled/compiled skill installer directly. `guidance`,
+        // `get` and `reset` are the `skill` subcommands that do: `guidance`
         // fetches skills and schemas from the graph through
-        // `NodeService.GetSkillGuidance`, and `reset` calls
-        // `NodeService.ResetSeedNode` -- both need a routed `NodeClient`
+        // `NodeService.GetSkillGuidance`, `get` fetches one skill through
+        // `NodeService.GetSkill`, and `reset` calls
+        // `NodeService.ResetSeedNode` -- each needs a routed `NodeClient`
         // here.
         Command::Skill { action } => match action {
             commands::skill::SkillAction::Guidance(args) => {
                 let (interceptor, _) = resolve_routing(&sock, selection).await?;
                 let mut client = connect(&sock, interceptor).await?;
                 commands::skill::run_guidance(&mut client, args, json).await
+            }
+            commands::skill::SkillAction::Get(args) => {
+                let (interceptor, _) = resolve_routing(&sock, selection).await?;
+                let mut client = connect(&sock, interceptor).await?;
+                commands::skill::run_get(&mut client, args, json).await
             }
             commands::skill::SkillAction::Reset(args) => {
                 let (interceptor, _) = resolve_routing(&sock, selection).await?;
