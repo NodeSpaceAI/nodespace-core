@@ -102,6 +102,8 @@ describe("GitHubClient project-board membership", () => {
   const ISSUE_NUMBER = 2390;
   const ISSUE_NODE_ID = "I_kwDOtestnode";
   const NEW_ITEM_ID = "PVTI_lADOnewitem";
+  // The board's single-select option id for "Backlog".
+  const BACKLOG_OPTION_ID = "230488b9";
 
   function makeClientWithStubbedOctokit(options: { alreadyOnBoard: boolean }) {
     const graphqlCalls: Array<{ query: string; vars: Record<string, unknown> }> = [];
@@ -205,6 +207,65 @@ describe("GitHubClient project-board membership", () => {
 
       expect(issue.addedToProject).toBe(true);
       expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  // A project item with no Status sits on the board in no column, and reads
+  // back with a blank status that looks like the issue is not on the board.
+  test("creating an issue sets its board status to Backlog on the item the add returned", async () => {
+    const { client, graphqlCalls } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
+
+    await client.createIssue("Title", "Body");
+
+    const updates = graphqlCalls.filter((c) => c.query.includes("updateProjectV2ItemFieldValue"));
+    expect(updates).toHaveLength(1);
+    expect(updates[0].vars.itemId).toBe(NEW_ITEM_ID);
+    expect(updates[0].vars.value).toEqual({ singleSelectOptionId: BACKLOG_OPTION_ID });
+
+    // The item id comes from the add: the board is never listed to find it.
+    expect(graphqlCalls.find((c) => c.query.includes("GetProjectItems"))).toBeUndefined();
+  });
+
+  test("a failed status write still returns the created issue and warns", async () => {
+    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
+    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async (query: string) => {
+      if (query.includes("addProjectV2ItemById")) {
+        return { addProjectV2ItemById: { item: { id: NEW_ITEM_ID } } };
+      }
+      throw new Error("status field unreachable");
+    });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const issue = await client.createIssue("Title", "Body");
+
+      expect(issue.number).toBe(ISSUE_NUMBER);
+      expect(issue.addedToProject).toBe(true);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`#${ISSUE_NUMBER}`));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("status could not be set"));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("a failed board add attempts no status write", async () => {
+    const { client } = makeClientWithStubbedOctokit({ alreadyOnBoard: false });
+    const queries: string[] = [];
+    (client as unknown as { octokit: { graphql: unknown } }).octokit.graphql = mock(async (query: string) => {
+      queries.push(query);
+      throw new Error("board unreachable");
+    });
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      await client.createIssue("Title", "Body");
+
+      expect(queries).toHaveLength(1);
+      expect(queries[0]).toContain("addProjectV2ItemById");
+      expect(warnSpy).toHaveBeenCalledTimes(1);
     } finally {
       warnSpy.mockRestore();
     }
