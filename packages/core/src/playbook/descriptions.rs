@@ -100,7 +100,10 @@ pub fn check_descriptions(
 ) -> Result<(), Vec<DescriptionError>> {
     let mut errors = Vec::new();
     for (index, rule) in rules.iter().enumerate() {
-        if rules[..index].iter().any(|earlier| earlier.name == rule.name) {
+        if rules[..index]
+            .iter()
+            .any(|earlier| earlier.name == rule.name)
+        {
             errors.push(DescriptionError {
                 rule: rule.name.clone(),
                 component: DescribedComponent::Rule,
@@ -298,8 +301,8 @@ mod tests {
     fn two_rules_with_one_name_are_rejected() {
         let twice = json!([stored()[0], stored()[0]]);
         for stored_rules in [None, Some(rules(stored()))] {
-            let errors = check_descriptions(&rules(twice.clone()), stored_rules.as_deref())
-                .unwrap_err();
+            let errors =
+                check_descriptions(&rules(twice.clone()), stored_rules.as_deref()).unwrap_err();
             assert_eq!(errors.len(), 1, "{errors:?}");
             assert_eq!(errors[0].problem, DescriptionProblem::DuplicateName);
             assert_eq!(
