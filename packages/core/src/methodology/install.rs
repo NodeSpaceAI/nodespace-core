@@ -644,7 +644,8 @@ fn rewrite_selector_ids(select: &mut Selector, renames: &HashMap<String, String>
 /// its `value` is vocabulary (an enum value like `in_review` may spell
 /// anything); `content` filters match body text; `relationship` filters name
 /// a built-in edge kind and a literal node id; sort fields are field names;
-/// the view config's `kanban.groupBy` is a field name. None of those is a
+/// the view config's `kanban.groupBy` is a field name, and its
+/// `kanban.columnOrder` maps field names to enum values. None of those is a
 /// schema id.
 ///
 /// A `metadata` filter on `node_type` is the exception: its value *is* a type

@@ -85,6 +85,29 @@ describe('enumColumns', () => {
     expect(enumColumns(null)).toEqual([]);
     expect(enumColumns(field('x', 'enum'))).toEqual([]);
   });
+
+  const values = (order?: string[]) => enumColumns(statusField, order).map((c) => c.value);
+
+  it('keeps enum order when no order is stored', () => {
+    expect(values()).toEqual(['open', 'closed', 'archived']);
+    expect(values([])).toEqual(['open', 'closed', 'archived']);
+  });
+
+  it('follows a stored order that names every value', () => {
+    expect(values(['archived', 'open', 'closed'])).toEqual(['archived', 'open', 'closed']);
+  });
+
+  it('puts values a partial order omits after the listed ones, in enum order', () => {
+    expect(values(['archived'])).toEqual(['archived', 'open', 'closed']);
+  });
+
+  it('ignores stored values the enum does not have, and repeats', () => {
+    expect(values(['gone', 'closed', 'closed', 'open'])).toEqual(['closed', 'open', 'archived']);
+  });
+
+  it('keeps each column label', () => {
+    expect(enumColumns(statusField, ['closed'])[0]).toEqual({ value: 'closed', label: 'Closed' });
+  });
 });
 
 describe('readGroupValue', () => {

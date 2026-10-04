@@ -126,7 +126,7 @@ A saved view is a node of type `query`. Its properties carry both the query (`ta
 
 ```bash
 nodespace node create --type query --content 'Issues by Status' \
-  --properties '{"filters":[],"generated_by":"user","target_type":"issue","view_config":{"kanban":{"groupBy":"status"},"lastView":"kanban"}}'
+  --properties '{"filters":[],"generated_by":"user","target_type":"issue","view_config":{"kanban":{"columnOrder":{"status":["triage","backlog","open","in_progress","in_review","done","cancelled"]},"groupBy":"status"},"lastView":"kanban"}}'
 ```
 
 **Cycles**

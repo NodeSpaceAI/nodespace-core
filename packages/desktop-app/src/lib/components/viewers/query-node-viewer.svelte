@@ -131,6 +131,9 @@
   // viewConfig; on the DEFAULT branch from per-type stored preferences.
   let activeView = $state<QueryViewKind>('table');
   let kanbanGroupBy = $state<string | undefined>(undefined);
+  // The stored column order per group-by field. Nothing here edits it; it is
+  // held so the board can apply it and every view-config write carries it.
+  let kanbanColumnOrder = $state<Record<string, string[]> | undefined>(undefined);
 
   // Title editing state: while the title input is focused it shows the draft;
   // otherwise it shows the derived display title.
@@ -166,7 +169,14 @@
   /** The view config reflecting the current in-memory selection. */
   const currentViewConfig = $derived.by((): QueryViewConfigState => ({
     lastView: activeView,
-    ...(kanbanGroupBy ? { kanban: { groupBy: kanbanGroupBy } } : {})
+    ...(kanbanGroupBy || kanbanColumnOrder
+      ? {
+          kanban: {
+            ...(kanbanGroupBy ? { groupBy: kanbanGroupBy } : {}),
+            ...(kanbanColumnOrder ? { columnOrder: kanbanColumnOrder } : {})
+          }
+        }
+      : {})
   }));
 
   /**
@@ -267,6 +277,7 @@
         targetType = definition.targetType;
         const viewConfig = parseViewConfig(saved);
         kanbanGroupBy = viewConfig.kanban?.groupBy;
+        kanbanColumnOrder = viewConfig.kanban?.columnOrder;
 
         // Load the target type's schema for column / Kanban derivation. Tolerate
         // a missing schema (e.g. an AI query with targetType '*') — columns then
@@ -312,6 +323,7 @@
       const prefs = loadDefaultViewPrefs(schema.id);
       activeView = resolveEffectiveView(prefs.lastView, eligibleGroupByFields(schema).length > 0);
       kanbanGroupBy = prefs.kanban?.groupBy;
+      kanbanColumnOrder = prefs.kanban?.columnOrder;
       log.debug('Loaded schema node (default view)', { schemaId: id, content: schema.content });
 
       const nodes = await backendAdapter.queryNodes({ nodeType: schema.id, limit: FETCH_LIMIT });
@@ -687,6 +699,7 @@
         nodeIds={loadedNodeIds}
         schema={schemaNode}
         groupBy={kanbanGroupBy}
+        columnOrder={kanbanColumnOrder}
         onGroupByChange={handleKanbanGroupByChange}
         onRowClick={handleRowClick}
       />

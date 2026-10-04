@@ -149,7 +149,10 @@ pub struct ViewStep {
     /// What the view selects.
     pub definition: QueryDefinition,
     /// The view configuration: `lastView` (`list` | `table` | `kanban`), plus
-    /// `kanban.groupBy` naming the field whose values become columns.
+    /// `kanban.groupBy` naming the field whose values become columns and,
+    /// where the board's columns should not follow the enum's own order,
+    /// `kanban.columnOrder`: that field's values in column order, keyed by
+    /// the field name.
     pub view_config: serde_json::Value,
 }
 
@@ -337,6 +340,22 @@ mod tests {
                         "{}: a kanban view needs a groupBy to derive its columns",
                         view.view_id
                     );
+                }
+                let column_order = &view.view_config["kanban"]["columnOrder"];
+                if !column_order.is_null() {
+                    let per_field = column_order.as_object().unwrap_or_else(|| {
+                        panic!("{}: columnOrder must be keyed by field", view.view_id)
+                    });
+                    for (field, values) in per_field {
+                        let all_strings = values
+                            .as_array()
+                            .is_some_and(|vs| vs.iter().all(|v| v.is_string()));
+                        assert!(
+                            all_strings,
+                            "{}: columnOrder.{field} must be a list of enum values",
+                            view.view_id
+                        );
+                    }
                 }
 
                 // A misspelt target is a valid identifier and an empty board.

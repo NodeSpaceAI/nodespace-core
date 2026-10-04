@@ -4,15 +4,20 @@
   Groups results into columns by the values of a selected enum field (the only
   eligible group-by kind — enum values give both the column set and their labels).
   Cards show the node title and read from sharedNodeStore, so a change made in
-  another pane (or by a drag here) moves the card reactively. Dragging a card to
-  another column — or choosing a column from the card's keyboard-accessible
-  "Move to" control — writes that column's value onto the node. Nodes with no
-  value land in an "Unassigned" column.
+  another pane (or by a drag here) moves the card reactively. A card carries no
+  status control: its column is its value. Dragging a card to another column —
+  or choosing one from the card's "Move to" menu — writes that column's value
+  onto the node. The menu opens on demand, from the card's context menu or
+  with M on the focused card, so a card can be moved without a mouse. Nodes
+  with no value land in an "Unassigned" column.
+
+  Columns follow the query's stored order for the group-by field
+  (`viewConfig.kanban.columnOrder`), then the enum's own order.
 
   Each column renders at most a capped batch of cards (matching List/Table's
   PAGE_SIZE) rather than every matching node — a column with thousands of
-  cards would otherwise render thousands of card-plus-full-options-<select>
-  pairs regardless of scroll position. A "+N more" control grows that
+  cards would otherwise render thousands of cards regardless of scroll
+  position. A "+N more" control grows that
   column's *set* of revealed cards by one more batch; revealing is tracked by
   node id, not by position, so a card already on screen can't vanish because
   some other card's bucket membership changed elsewhere in the result order
@@ -26,7 +31,7 @@
 -->
 
 <script lang="ts">
-  import { untrack } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { SvelteMap } from 'svelte/reactivity';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
@@ -55,6 +60,7 @@
     nodeIds,
     schema,
     groupBy,
+    columnOrder,
     onGroupByChange,
     onRowClick
   }: {
@@ -66,6 +72,12 @@
      * yet — fall back to the first eligible enum field".
      */
     groupBy: string | undefined;
+    /**
+     * The query's stored column order, per group-by field
+     * (`viewConfig.kanban.columnOrder`). A field with no entry keeps the
+     * enum's own order.
+     */
+    columnOrder?: Record<string, string[]>;
     /**
      * Persist a group-by choice. For a saved query this writes the query node's
      * view config; for the default type view it materializes a query node. The
@@ -81,6 +93,9 @@
   let picked = $state<string | null>(null);
   let draggingId = $state<string | null>(null);
   let dragOverColumn = $state<string | null>(null);
+  // The card whose "Move to" menu is open, if any.
+  let moveMenuFor = $state<string | null>(null);
+  let boardEl = $state<HTMLElement | null>(null);
 
   const eligible = $derived(eligibleGroupByFields(schema));
   const noEnumField = $derived(eligible.length === 0);
@@ -95,7 +110,9 @@
   // node, so its board would never naturally bucket anything into
   // Unassigned; offering it as a drop target would just silently no-op the
   // write instead of clearing the field (there is nothing to clear it TO).
-  const columns = $derived(enumColumns(activeField));
+  const columns = $derived(
+    enumColumns(activeField, activeGroupBy ? columnOrder?.[activeGroupBy] : undefined)
+  );
   const displayColumns = $derived(
     activeField?.required ? columns : [...columns, { value: UNASSIGNED, label: 'Unassigned' }]
   );
@@ -191,7 +208,7 @@
     return pluginRegistry.resolveDisplayTitle(node) || 'Untitled';
   }
 
-  /** The column a node currently belongs to (for the move control's value). */
+  /** The column a node currently belongs to (the one its move menu leaves out). */
   function currentColumn(node: Node): string {
     const v = activeGroupBy ? readGroupValue(node, activeGroupBy) : null;
     return v !== null && columns.some((c) => c.value === v) ? v : UNASSIGNED;
@@ -234,7 +251,7 @@
    * that set is onDrop's dataTransfer fallback (kanban-view is the only
    * component that sets node-id drag data, so a split view with two boards on
    * screen can hand this instance a foreign id via the shared DataTransfer);
-   * the keyboard "Move to" select's id is already sourced from a loop over
+   * the "Move to" menu's id is already sourced from a loop over
    * this board's own rendered cards, so it can never actually trigger this,
    * but a defense-in-depth check at the point that reads and writes the node
    * is worth more than trusting every caller to have filtered correctly —
@@ -320,7 +337,7 @@
 
     // Reveal the card in its destination column immediately, regardless of
     // that column's current cap — the user just explicitly placed it there
-    // (by drag or the "Move to" select), so it must be visible right where
+    // (by drag or the "Move to" menu), so it must be visible right where
     // they put it, cap or no cap. Without this, a card dropped into an
     // already-capped (or even empty-but-unseeded) column would silently land
     // behind a "+N more" control instead of where the user just dropped it.
@@ -333,6 +350,78 @@
       next.add(id);
       return next;
     });
+  }
+
+  /** The columns a card can move to: every column but its own. */
+  function moveTargets(node: Node): typeof displayColumns {
+    const own = currentColumn(node);
+    return displayColumns.filter((col) => col.value !== own);
+  }
+
+  function focusCard(id: string): void {
+    const card = Array.from(boardEl?.querySelectorAll<HTMLElement>('.kanban-card') ?? []).find(
+      (el) => el.dataset.cardId === id
+    );
+    card?.querySelector<HTMLElement>('.kanban-card-title')?.focus();
+  }
+
+  function openMoveMenu(node: Node): void {
+    if (moveTargets(node).length > 0) moveMenuFor = node.id;
+  }
+
+  /** Close the menu and hand focus back to its card. */
+  async function closeMoveMenu(id: string): Promise<void> {
+    moveMenuFor = null;
+    await tick();
+    focusCard(id);
+  }
+
+  function onCardKeydown(e: KeyboardEvent, node: Node): void {
+    if (e.key.toLowerCase() !== 'm' || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    openMoveMenu(node);
+  }
+
+  /** Move the card, then return focus to it in its new column. */
+  async function chooseColumn(id: string, toColumn: string): Promise<void> {
+    moveCard(id, toColumn);
+    await closeMoveMenu(id);
+  }
+
+  function focusFirstItem(menu: HTMLElement): void {
+    menu.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }
+
+  function onMenuKeydown(e: KeyboardEvent, id: string): void {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      void closeMoveMenu(id);
+      return;
+    }
+    const items = Array.from(
+      (e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="menuitem"]')
+    );
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const next =
+      e.key === 'ArrowDown'
+        ? items[(at + 1) % items.length]
+        : e.key === 'ArrowUp'
+          ? items[(at - 1 + items.length) % items.length]
+          : e.key === 'Home'
+            ? items[0]
+            : e.key === 'End'
+              ? items[items.length - 1]
+              : null;
+    if (!next) return;
+    e.preventDefault();
+    next.focus();
+  }
+
+  /** Focus leaving the menu (Tab, a click elsewhere) closes it. */
+  function onMenuFocusOut(e: FocusEvent): void {
+    const menu = e.currentTarget as HTMLElement;
+    if (e.relatedTarget instanceof globalThis.Node && menu.contains(e.relatedTarget)) return;
+    moveMenuFor = null;
   }
 
   function onDragStart(e: DragEvent, id: string): void {
@@ -399,7 +488,7 @@
       <p>Choose a field to group this board by.</p>
     </div>
   {:else}
-    <div class="kanban-board">
+    <div class="kanban-board" bind:this={boardEl}>
       {#each displayColumns as col (col.value)}
         {@const ids = buckets.get(col.value) ?? []}
         {@const visibleIds = visibleIdsFor(col.value, ids)}
@@ -425,23 +514,44 @@
                 <article
                   class="kanban-card"
                   class:dragging={draggingId === id}
+                  data-card-id={id}
                   draggable="true"
                   ondragstart={(e) => onDragStart(e, id)}
                   ondragend={onDragEnd}
+                  oncontextmenu={(e) => {
+                    e.preventDefault();
+                    openMoveMenu(node);
+                  }}
                 >
-                  <button class="kanban-card-title" onclick={() => onRowClick(id)} title={`Open ${title}`}>
+                  <button
+                    class="kanban-card-title"
+                    onclick={() => onRowClick(id)}
+                    onkeydown={(e) => onCardKeydown(e, node)}
+                    aria-keyshortcuts="M"
+                    title={`Open ${title}`}
+                  >
                     {title}
                   </button>
-                  <select
-                    class="kanban-card-move"
-                    aria-label={`Move ${title} to another column`}
-                    value={currentColumn(node)}
-                    onchange={(e) => moveCard(id, e.currentTarget.value)}
-                  >
-                    {#each displayColumns as target (target.value)}
-                      <option value={target.value}>{target.label}</option>
-                    {/each}
-                  </select>
+                  {#if moveMenuFor === id}
+                    <div
+                      class="kanban-move-menu"
+                      role="menu"
+                      tabindex="-1"
+                      aria-label={`Move ${title} to`}
+                      onkeydown={(e) => onMenuKeydown(e, id)}
+                      onfocusout={onMenuFocusOut}
+                      use:focusFirstItem
+                    >
+                      {#each moveTargets(node) as target (target.value)}
+                        <button
+                          class="kanban-move-item"
+                          role="menuitem"
+                          tabindex="-1"
+                          onclick={() => chooseColumn(id, target.value)}
+                        >{target.label}</button>
+                      {/each}
+                    </div>
+                  {/if}
                 </article>
               {/if}
             {/each}
@@ -557,6 +667,7 @@
   }
 
   .kanban-card {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 0.375rem;
@@ -590,13 +701,37 @@
     text-decoration: underline;
   }
 
-  .kanban-card-move {
-    font-size: 0.75rem;
-    padding: 0.125rem 0.25rem;
+  .kanban-move-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    min-width: 10rem;
+    padding: 0.25rem;
+    background: hsl(var(--popover));
+    color: hsl(var(--popover-foreground));
     border: 1px solid hsl(var(--border));
+    border-radius: 0.375rem;
+    box-shadow: 0 4px 12px hsl(var(--border) / 0.6);
+  }
+
+  .kanban-move-item {
+    text-align: left;
+    background: transparent;
+    border: none;
     border-radius: 0.25rem;
-    background: hsl(var(--background));
-    color: hsl(var(--muted-foreground));
+    padding: 0.25rem 0.5rem;
+    font-size: 0.8125rem;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .kanban-move-item:hover,
+  .kanban-move-item:focus-visible {
+    background: hsl(var(--muted));
+    outline: none;
   }
 
   .kanban-show-more {

@@ -3,7 +3,7 @@
  *
  * `kanban-grouping.test.ts` unit-tests the extracted grouping/write-shape
  * logic, but the drag/drop → store-write → reactive-regroup → rollback flow,
- * and the keyboard move-select, need a real browser: Happy-DOM cannot
+ * and the keyboard move menu, need a real browser: Happy-DOM cannot
  * originate real `DragEvent`s with a working `DataTransfer`. This exercises
  * the actual component against a real Chromium DOM: a real
  * `dragstart`/`dragover`/`drop` sequence, dispatched with a real
@@ -151,6 +151,24 @@ function cardsIn(column: HTMLElement): string[] {
   );
 }
 
+/** Open a card's "Move to" menu without a mouse (M on the focused card) and
+ *  return the columns it offers, by label. */
+async function openMoveMenu(container: HTMLElement, title: string): Promise<HTMLElement[]> {
+  const card = cardFor(container, title).querySelector('.kanban-card-title') as HTMLElement;
+  card.focus();
+  await fireEvent.keyDown(card, { key: 'm' });
+  return Array.from(container.querySelectorAll<HTMLElement>('[role="menuitem"]'));
+}
+
+/** Move a card to the column labelled `column` through its "Move to" menu. */
+async function moveViaMenu(container: HTMLElement, title: string, column: string): Promise<void> {
+  const item = (await openMoveMenu(container, title)).find(
+    (el) => el.textContent?.trim() === column
+  );
+  if (!item) throw new Error(`No "${column}" item in the move menu of "${title}"`);
+  await fireEvent.click(item);
+}
+
 /** Drive a real HTML5 drag-and-drop sequence with a real DataTransfer. */
 async function dragAndDrop(source: HTMLElement, target: HTMLElement): Promise<void> {
   const dataTransfer = new DataTransfer();
@@ -294,7 +312,7 @@ describe('KanbanView — drag-and-drop (browser mode)', () => {
       .mockImplementationOnce(() => firstWrite)
       .mockResolvedValueOnce({ ...ticket('t1', '', 'Fix the bug'), version: 2 });
 
-    const { container, getByRole } = render(KanbanView, {
+    const { container } = render(KanbanView, {
       props: {
         nodeIds: ['t1'],
         schema: schema(),
@@ -311,14 +329,11 @@ describe('KanbanView — drag-and-drop (browser mode)', () => {
     });
 
     // Second move, before the first write is known to have failed: Closed ->
-    // Unassigned, via the keyboard select. The persistence coordinator
+    // Unassigned, via the keyboard menu. The persistence coordinator
     // collapses this behind the still-executing first write, but the
     // optimistic apply — and this view's reveal bookkeeping — land
     // immediately regardless of when its own RPC actually runs.
-    const moveSelect = getByRole('combobox', {
-      name: 'Move Fix the bug to another column'
-    }) as HTMLSelectElement;
-    await fireEvent.change(moveSelect, { target: { value: '__unassigned__' } });
+    await moveViaMenu(container, 'Fix the bug', 'Unassigned');
     await waitFor(() => {
       expect(cardsIn(columnFor(container, 'Unassigned'))).toEqual(['Fix the bug']);
     });
@@ -356,7 +371,7 @@ describe('KanbanView — drag-and-drop (browser mode)', () => {
       .mockImplementationOnce(() => firstWrite)
       .mockImplementationOnce(() => secondWrite);
 
-    const { container, getByRole } = render(KanbanView, {
+    const { container } = render(KanbanView, {
       props: {
         nodeIds: ['t1'],
         schema: schema(),
@@ -375,10 +390,7 @@ describe('KanbanView — drag-and-drop (browser mode)', () => {
     // Second move, before the first write's outcome is known: Closed ->
     // Unassigned. Its own `from` reads "Closed" — a value the first move
     // set optimistically but hasn't actually been confirmed by anyone.
-    const moveSelect = getByRole('combobox', {
-      name: 'Move Fix the bug to another column'
-    }) as HTMLSelectElement;
-    await fireEvent.change(moveSelect, { target: { value: '__unassigned__' } });
+    await moveViaMenu(container, 'Fix the bug', 'Unassigned');
     await waitFor(() => {
       expect(cardsIn(columnFor(container, 'Unassigned'))).toEqual(['Fix the bug']);
     });
@@ -423,7 +435,7 @@ describe('KanbanView — drag-and-drop (browser mode)', () => {
       .mockImplementationOnce(() => firstWrite)
       .mockImplementationOnce(() => secondWrite);
 
-    const { container, getByRole } = render(KanbanView, {
+    const { container } = render(KanbanView, {
       props: {
         nodeIds: ['t1'],
         schema: schema(),
@@ -442,10 +454,7 @@ describe('KanbanView — drag-and-drop (browser mode)', () => {
     });
 
     // Second move, before the first write's outcome is known: Open -> Closed.
-    const moveSelect = getByRole('combobox', {
-      name: 'Move Fix the bug to another column'
-    }) as HTMLSelectElement;
-    await fireEvent.change(moveSelect, { target: { value: 'closed' } });
+    await moveViaMenu(container, 'Fix the bug', 'Closed');
     await waitFor(() => {
       expect(cardsIn(columnFor(container, 'Closed'))).toEqual(['Fix the bug']);
     });
@@ -605,7 +614,7 @@ describe('KanbanView — keyboard-accessible move (browser mode)', () => {
     conflictNotifications.dismissAll();
   });
 
-  it('moves a card to another column via the per-card "Move to" select and persists it', async () => {
+  it('moves a card to another column via its "Move to" menu and persists it', async () => {
     seed(ticket('t1', 'open', 'Fix the bug'));
 
     const updateSpy = vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
@@ -613,7 +622,7 @@ describe('KanbanView — keyboard-accessible move (browser mode)', () => {
       version: 2
     });
 
-    const { container, getByRole } = render(KanbanView, {
+    const { container } = render(KanbanView, {
       props: {
         nodeIds: ['t1'],
         schema: schema(),
@@ -623,17 +632,20 @@ describe('KanbanView — keyboard-accessible move (browser mode)', () => {
       }
     });
 
-    const moveSelect = getByRole('combobox', {
-      name: 'Move Fix the bug to another column'
-    }) as HTMLSelectElement;
-    expect(moveSelect.value).toBe('open');
-
-    await fireEvent.change(moveSelect, { target: { value: 'closed' } });
+    await moveViaMenu(container, 'Fix the bug', 'Closed');
 
     await waitFor(() => {
       expect(cardsIn(columnFor(container, 'Closed'))).toEqual(['Fix the bug']);
     });
     expect(cardsIn(columnFor(container, 'Open'))).toEqual([]);
+    // The menu closes and focus follows the card into its new column, so the
+    // next keystroke still lands on it.
+    expect(container.querySelector('[role="menu"]')).toBeNull();
+    await waitFor(() => {
+      expect(document.activeElement).toBe(
+        cardFor(container, 'Fix the bug').querySelector('.kanban-card-title')
+      );
+    });
     expect(updateSpy).toHaveBeenCalledWith(
       't1',
       1,
@@ -641,7 +653,7 @@ describe('KanbanView — keyboard-accessible move (browser mode)', () => {
     );
   });
 
-  it('moving a card to Unassigned via the select clears the field and no-ops on re-selecting it', async () => {
+  it('moving a card to Unassigned via the menu clears the field, and the menu never offers the column the card is in', async () => {
     seed(ticket('t1', 'open', 'Fix the bug'));
 
     const updateSpy = vi.spyOn(backendAdapter, 'updateNode').mockResolvedValue({
@@ -649,7 +661,7 @@ describe('KanbanView — keyboard-accessible move (browser mode)', () => {
       version: 2
     });
 
-    const { container, getByRole } = render(KanbanView, {
+    const { container } = render(KanbanView, {
       props: {
         nodeIds: ['t1'],
         schema: schema(),
@@ -659,11 +671,7 @@ describe('KanbanView — keyboard-accessible move (browser mode)', () => {
       }
     });
 
-    const moveSelect = getByRole('combobox', {
-      name: 'Move Fix the bug to another column'
-    }) as HTMLSelectElement;
-
-    await fireEvent.change(moveSelect, { target: { value: '__unassigned__' } });
+    await moveViaMenu(container, 'Fix the bug', 'Unassigned');
 
     await waitFor(() => {
       expect(cardsIn(columnFor(container, 'Unassigned'))).toEqual(['Fix the bug']);
@@ -678,12 +686,8 @@ describe('KanbanView — keyboard-accessible move (browser mode)', () => {
       expect.objectContaining({ properties: expect.objectContaining({ status: null }) })
     );
 
-    // Re-selecting the column the card is already in is a no-op — no second write.
-    const settledSelect = getByRole('combobox', {
-      name: 'Move Fix the bug to another column'
-    }) as HTMLSelectElement;
-    await fireEvent.change(settledSelect, { target: { value: '__unassigned__' } });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(updateSpy).toHaveBeenCalledTimes(1);
+    // The card's own column is not a target, so there is no no-op move to make.
+    const offered = await openMoveMenu(container, 'Fix the bug');
+    expect(offered.map((el) => el.textContent?.trim())).toEqual(['Open', 'Closed']);
   });
 });

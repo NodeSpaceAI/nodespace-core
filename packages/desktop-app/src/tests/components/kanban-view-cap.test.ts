@@ -1,9 +1,8 @@
 /**
  * KanbanView — per-column render cap.
  *
- * kanban-view.svelte buckets and rendered ALL matching nodes per column (a
- * card plus a full-options <select> each) with no bound, while List/Table
- * paginate at PAGE_SIZE = 25. These tests cover the fix: each column renders
+ * kanban-view.svelte buckets and rendered ALL matching nodes per column with
+ * no bound, while List/Table paginate at PAGE_SIZE = 25. These tests cover the fix: each column renders
  * at most a batch of cards, with a "+N more" control that grows the *set* of
  * revealed cards (tracked by id, not position) — a card already on screen
  * can't disappear because a different card's bucket membership shifted
@@ -237,7 +236,7 @@ describe('KanbanView — per-column cap', () => {
     expect(container.querySelectorAll('.kanban-card').length).toBe(25);
   });
 
-  it('reveals a card moved (via the keyboard select) into an already-oversized column immediately', async () => {
+  it('reveals a card moved (via the keyboard menu) into an already-oversized column immediately', async () => {
     const schemaWithTwoColumns: SchemaNode = {
       nodeType: 'schema' as const,
       lifecycleStatus: 'active' as const,
@@ -293,10 +292,8 @@ describe('KanbanView — per-column cap', () => {
 
     expect(getByText('+5 more')).toBeTruthy(); // Open: 30 total, 25 shown
 
-    const moveSelect = getByRole('combobox', {
-      name: 'Move Mover to another column'
-    }) as HTMLSelectElement;
-    await fireEvent.change(moveSelect, { target: { value: 'open' } });
+    await fireEvent.keyDown(getByRole('button', { name: 'Mover' }), { key: 'm' });
+    await fireEvent.click(getByRole('menuitem', { name: 'Open' }));
 
     // The card the user just placed into Open is visible immediately — not
     // waiting behind a "+6 more" nobody clicked.
