@@ -40,11 +40,10 @@ const MAX_SKILL_LIMIT: usize = 10;
 ///
 /// A penalty only ever lowers a skill, so it can promote a skill that ranked
 /// below `limit` on raw similarity. The promotion is exact when the pool holds
-/// every skill: that needs a registry of at most this many skills, all of them
-/// surviving the typed search's KNN window (which ranks every embedding before
-/// filtering by type — see `search_embeddings_by_node_type`). Past that, a
-/// skill ranked below the pool on raw similarity cannot be promoted. Twice
-/// [`MAX_SKILL_LIMIT`] covers the registry sizes that cap is sized for.
+/// every skill, which needs a registry of at most this many skills (the typed
+/// search scores every skill, see `search_embeddings_by_node_type`). Past
+/// that, a skill ranked below the pool on raw similarity cannot be promoted.
+/// Twice [`MAX_SKILL_LIMIT`] covers the registry sizes that cap is sized for.
 const SKILL_RERANK_POOL: usize = 2 * MAX_SKILL_LIMIT;
 
 /// Weight on a skill's exclusion margin in [`exclusion_penalized_score`].
@@ -65,6 +64,30 @@ const EXCLUSION_PENALTY_WEIGHT: f64 = 1.0;
 /// the scale for the same reason `context_ops::append_schemas_named_in_query`
 /// unconditionally injects its own recoveries rather than scoring them.
 const LEXICAL_SCHEMA_MATCH_CONFIDENCE: f64 = 1.0;
+
+/// The score a schema-search match needs before a guidance fetch returns it.
+///
+/// The schema search has no floor and always returns its nearest types, so
+/// on its own it hands back a type for every request, related or not.
+/// Measured on the locked embedding model, fifteen requests against a
+/// workspace with four custom types (two with a skill linked, two without):
+///
+/// - a type the request was about scored 0.855 to 1.000: "bill the client
+///   for the March work" put `invoice` at 0.908, "how many people does the
+///   hall hold" put `venue` at 0.855;
+/// - a type it was not about scored 0.633 to 0.829: "delete a node" put
+///   `cycle` at 0.757, and the highest, "link the rebuild task to the
+///   decision it depends on", put `cycle` at 0.829.
+///
+/// One request about a type fell among the unrelated ones and is not
+/// returned: "record what Acme owes us for the redesign" put `invoice` at
+/// 0.789, with `cycle` at 0.763 beside it. No bar separates those two.
+///
+/// The margin is thin (0.855 over 0.829), and it is specific to this model
+/// and to the document prefix queries are embedded with: re-measure when
+/// either changes. A match below the bar still reaches the reader when a
+/// returned skill is linked to the type or the request names it.
+const GUIDANCE_SCHEMA_SCORE_BAR: f64 = 0.85;
 
 /// Input for find_skills operation.
 #[derive(Debug)]
@@ -550,24 +573,8 @@ pub async fn find_skills(
         .map_err(|e| OpsError::Internal(format!("Skill search failed: {}", e)))?;
     let skill_results = rerank_with_exclusions(embedding_service, &query_vector, skill_pool, limit);
 
-    // Schema discovery, independent of any hand-authored skill matching the
-    // query — see this function's own doc comment. Same primitive
-    // (`semantic_search_nodes_of_type`), same node type ("schema"), same
-    // threshold as the skill search above; the two are deliberately
-    // separate calls rather than a combined query because they populate two
-    // differently-shaped result kinds below.
-    let schema_search_results = embedding_service
-        .semantic_search_nodes_of_type_with_vector(
-            &query_vector,
-            "schema",
-            limit,
-            SKILL_SEARCH_THRESHOLD,
-        )
-        .await
-        .map_err(|e| OpsError::Internal(format!("Schema search failed: {}", e)))?;
-
     // Fetch all schemas once; used to attach metadata to each matched skill
-    // AND (below) to resolve and lexically backstop the schema search above.
+    // AND (below) to resolve and lexically backstop the schema search.
     let all_schemas = node_service
         .get_all_schemas()
         .await
@@ -576,11 +583,29 @@ pub async fn find_skills(
         })
         .unwrap_or_default();
 
-    let schema_candidates = append_named_schema_candidates(
-        non_core_schema_hits_with_scores(schema_search_results, &all_schemas),
-        &all_schemas,
-        &input.query,
-    );
+    // Schema discovery, independent of any hand-authored skill matching the
+    // query — see this function's own doc comment. Same primitive
+    // (`semantic_search_nodes_of_type`), same node type ("schema"), same
+    // threshold as the skill search above; the two are deliberately
+    // separate calls rather than a combined query because they populate two
+    // differently-shaped result kinds below.
+    //
+    // Every schema is ranked, and `limit` applies after core types are
+    // dropped: core schemas are embedded too, so a limit on the search itself
+    // would let them take the places of the custom types this is for.
+    let schema_search_results = embedding_service
+        .semantic_search_nodes_of_type_with_vector(
+            &query_vector,
+            "schema",
+            all_schemas.len().max(limit),
+            SKILL_SEARCH_THRESHOLD,
+        )
+        .await
+        .map_err(|e| OpsError::Internal(format!("Schema search failed: {}", e)))?;
+    let mut schema_hits = non_core_schema_hits_with_scores(schema_search_results, &all_schemas);
+    schema_hits.truncate(limit);
+
+    let schema_candidates = append_named_schema_candidates(schema_hits, &all_schemas, &input.query);
 
     let mut skills = Vec::with_capacity(skill_results.len() + schema_candidates.len());
 
@@ -764,6 +789,11 @@ pub async fn find_skills(
 
     let total_results = skills.len();
     let all_scores = format_all_scores(&skill_results);
+    let schema_scores = schema_candidates
+        .iter()
+        .map(|(schema, score)| format!("{}={:.3}", schema.envelope.id, score))
+        .collect::<Vec<_>>()
+        .join(", ");
     let top_score = skills.first().map(confidence_of).unwrap_or(0.0);
 
     tracing::info!(
@@ -772,6 +802,7 @@ pub async fn find_skills(
         top_score = top_score,
         all_scores = %all_scores,
         schema_candidates_found = schema_candidates.len(),
+        schema_scores = %schema_scores,
         "find_skills executed"
     );
 
@@ -780,6 +811,198 @@ pub async fn find_skills(
         query: input.query,
         total_results,
     })
+}
+
+/// One skill in a guidance fetch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GuidanceSkill {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// RFC 3339.
+    pub modified_at: String,
+    /// The retrieval score the skill search gave it. `None` in a listing,
+    /// which ranks nothing.
+    pub confidence: Option<f64>,
+    /// The skill's stored procedure, as markdown. Empty in a listing.
+    pub instructions: String,
+}
+
+/// One schema in a guidance fetch: the shape of a type the request touches.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GuidanceSchema {
+    pub id: String,
+    pub name: String,
+    /// The type's definition in the `schema_metadata` form: `type_id`,
+    /// `fields` (each with its type, description and enum values),
+    /// `relationships`, and the schema's own `description` where it has one.
+    pub definition: Value,
+}
+
+/// What a guidance fetch returns: the skills matching a request, and the
+/// schemas relevant to it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SkillGuidance {
+    pub skills: Vec<GuidanceSkill>,
+    pub schemas: Vec<GuidanceSchema>,
+}
+
+fn guidance_skill(node: &crate::models::Node, confidence: Option<f64>) -> Option<GuidanceSkill> {
+    let description = match SkillFields::from_node(node) {
+        Ok(skill) => skill.description,
+        Err(e) => {
+            tracing::warn!(skill_id = %node.id, error = %e, "skill guidance: skipping malformed skill node");
+            return None;
+        }
+    };
+    Some(GuidanceSkill {
+        id: node.id.clone(),
+        name: node.content.clone(),
+        description,
+        modified_at: node.modified_at.to_rfc3339(),
+        confidence,
+        instructions: String::new(),
+    })
+}
+
+/// Every skill in the graph, by name, with its description and no procedure:
+/// what an agent browses to learn which skills exist.
+///
+/// Reads no embedding, so it answers while the embedding model is loading.
+pub async fn list_skill_guidance(
+    node_service: &NodeService,
+) -> Result<Vec<GuidanceSkill>, OpsError> {
+    let mut skills: Vec<GuidanceSkill> = node_service
+        .query_nodes_by_type(crate::models::CoreNodeType::Skill.as_str(), false)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to list skills: {}", e)))?
+        .iter()
+        .filter_map(|node| guidance_skill(node, None))
+        .collect();
+    skills.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(skills)
+}
+
+/// The skills matching `query`, each with its procedure, and the schemas
+/// relevant to the same query: what an agent outside the app fetches before
+/// an operation.
+///
+/// Ranked by [`find_skills`], so a request gets the skills the in-app agent
+/// would get for it, in the same order.
+///
+/// A schema is returned when the request is about its type, by one of three
+/// signs:
+///
+/// - a returned skill is linked to it through `applies_to`;
+/// - the request names it (see [`mentions_phrase`]);
+/// - the schema search matched it at or above
+///   [`GUIDANCE_SCHEMA_SCORE_BAR`].
+///
+/// A skill's unlinked fallback (the first few custom types) is left out: it
+/// is a guess, and the in-app agent holds it against a tool surface an
+/// outside agent does not have. The in-app agent is given every schema match
+/// with its score, and its routing judges them; this is the judgment for a
+/// reader that has no routing step.
+pub async fn find_skill_guidance(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    input: FindSkillsInput,
+) -> Result<SkillGuidance, OpsError> {
+    let query = input.query.clone();
+    let found = find_skills(embedding_service, node_service, input).await?;
+    let mut guidance = SkillGuidance {
+        skills: Vec::new(),
+        schemas: guidance_schemas(&found.skills, &query),
+    };
+
+    for entry in found.skills.iter().filter(|entry| !is_schema_entry(entry)) {
+        let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let node = match node_service.get_node(id).await {
+            Ok(Some(node)) => node,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(skill_id = %id, error = %e, "skill guidance: failed to read a matched skill");
+                continue;
+            }
+        };
+        let confidence = entry.get("confidence").and_then(Value::as_f64);
+        let Some(mut skill) = guidance_skill(&node, confidence) else {
+            continue;
+        };
+        skill.instructions = entry
+            .get("instructions")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        guidance.skills.push(skill);
+    }
+
+    Ok(guidance)
+}
+
+fn is_schema_entry(entry: &Value) -> bool {
+    entry.get("kind").and_then(Value::as_str) == Some("schema")
+}
+
+/// The schemas a guidance fetch returns, chosen from [`find_skills`]' entries
+/// for `query` by the three signs [`find_skill_guidance`] documents. Each
+/// type appears once, in the order first met.
+fn guidance_schemas(found: &[Value], query: &str) -> Vec<GuidanceSchema> {
+    let query_lower = query.to_lowercase();
+    let named = |definition: &Value| {
+        ["type_id", "name"].iter().any(|key| {
+            definition
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|text| mentions_phrase(&query_lower, &text.to_lowercase()))
+        })
+    };
+
+    let mut schemas: Vec<GuidanceSchema> = Vec::new();
+    let mut add = |definition: &Value| {
+        let Some(id) = definition.get("type_id").and_then(Value::as_str) else {
+            return;
+        };
+        if schemas.iter().any(|s| s.id == id) {
+            return;
+        }
+        let name = definition
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or(id)
+            .to_string();
+        schemas.push(GuidanceSchema {
+            id: id.to_string(),
+            name,
+            definition: definition.clone(),
+        });
+    };
+
+    for entry in found {
+        let definitions = entry
+            .get("schema_metadata")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if is_schema_entry(entry) {
+            let clears_the_bar = entry
+                .get("confidence")
+                .and_then(Value::as_f64)
+                .is_some_and(|score| score >= GUIDANCE_SCHEMA_SCORE_BAR);
+            for definition in definitions {
+                if clears_the_bar || named(definition) {
+                    add(definition);
+                }
+            }
+        } else if entry.get("schemas_linked").and_then(Value::as_bool) == Some(true) {
+            for definition in definitions {
+                add(definition);
+            }
+        }
+    }
+    schemas
 }
 
 #[cfg(test)]
@@ -1219,6 +1442,86 @@ mod tests {
         let true_positive = schema_named_in_query("add a log for today's workout", &schemas);
         assert_eq!(false_positive.map(|s| s.envelope.id.as_str()), Some("log"));
         assert_eq!(true_positive.map(|s| s.envelope.id.as_str()), Some("log"));
+    }
+
+    fn schema_entry(type_id: &str, name: &str, confidence: f64) -> Value {
+        json!({
+            "id": type_id, "name": name, "kind": "schema", "confidence": confidence,
+            "schemas_linked": false,
+            "schema_metadata": [{ "type_id": type_id, "name": name, "fields": [] }],
+        })
+    }
+
+    fn skill_entry(name: &str, linked: bool, types: &[&str]) -> Value {
+        let metadata: Vec<Value> = types
+            .iter()
+            .map(|t| json!({ "type_id": t, "name": t, "fields": [] }))
+            .collect();
+        json!({
+            "id": name, "name": name, "kind": "skill", "confidence": 0.9,
+            "schemas_linked": linked, "schema_metadata": metadata,
+        })
+    }
+
+    fn guidance_schema_ids(found: &[Value], query: &str) -> Vec<String> {
+        guidance_schemas(found, query)
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    #[test]
+    fn a_schema_match_is_returned_at_the_bar_and_not_below_it() {
+        let found = vec![
+            schema_entry("invoice", "Invoice", GUIDANCE_SCHEMA_SCORE_BAR),
+            schema_entry("venue", "Venue", GUIDANCE_SCHEMA_SCORE_BAR - 0.01),
+        ];
+        assert_eq!(guidance_schema_ids(&found, "bill the client"), ["invoice"]);
+    }
+
+    #[test]
+    fn a_schema_below_the_bar_is_returned_when_the_request_names_it() {
+        let found = vec![schema_entry("release_plan", "Release Plan", 0.4)];
+        assert_eq!(
+            guidance_schema_ids(&found, "delete the release plan for Q3"),
+            ["release_plan"]
+        );
+        assert!(guidance_schema_ids(&found, "delete a node").is_empty());
+    }
+
+    #[test]
+    fn a_skills_linked_schemas_are_returned_and_its_fallback_is_not() {
+        let found = vec![
+            skill_entry("Sprints and Cycles", true, &["cycle", "issue"]),
+            skill_entry("Node Creation", false, &["venue"]),
+        ];
+        assert_eq!(
+            guidance_schema_ids(&found, "plan the week"),
+            ["cycle", "issue"]
+        );
+    }
+
+    #[test]
+    fn a_type_reached_twice_is_returned_once() {
+        let found = vec![
+            skill_entry("Creating an Issue", true, &["issue"]),
+            skill_entry("Sprints and Cycles", true, &["cycle", "issue"]),
+            schema_entry("issue", "Issue", 0.95),
+        ];
+        assert_eq!(
+            guidance_schema_ids(&found, "file a bug"),
+            ["issue", "cycle"]
+        );
+    }
+
+    /// An entry that lacks the keys read here contributes nothing, and does
+    /// not fail the fetch. These fixtures are written by hand, so this does
+    /// not notice `find_skills` renaming a key: that is caught by the live
+    /// fetch tests, which read its real output.
+    #[test]
+    fn an_entry_without_the_expected_keys_contributes_nothing() {
+        let found = vec![json!({ "kind": "schema", "score": 0.99, "metadata": [] })];
+        assert!(guidance_schema_ids(&found, "anything").is_empty());
     }
 
     fn make_node(id: &str, content: &str) -> Node {

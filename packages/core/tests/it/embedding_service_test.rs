@@ -317,7 +317,7 @@ async fn test_queue_for_embedding_root_node() -> Result<()> {
     embedding_service.queue_for_embedding(&root.id).await?;
 
     // Check that stale marker was created
-    let stale_ids = store.get_stale_embedding_root_ids(Some(10), 0, 3).await?;
+    let stale_ids = store.get_stale_embedding_root_ids(None, 0, 3).await?;
     assert!(stale_ids.contains(&root.id));
     Ok(())
 }
@@ -333,7 +333,7 @@ async fn test_queue_for_embedding_child_node() -> Result<()> {
     embedding_service.queue_for_embedding(&child.id).await?;
 
     // Should have queued the root, not the child
-    let stale_ids = store.get_stale_embedding_root_ids(Some(10), 0, 3).await?;
+    let stale_ids = store.get_stale_embedding_root_ids(None, 0, 3).await?;
     assert!(stale_ids.contains(&root.id));
     Ok(())
 }
@@ -347,7 +347,7 @@ async fn test_queue_for_embedding_non_embeddable() -> Result<()> {
     embedding_service.queue_for_embedding(&task.id).await?;
 
     // Should not have queued non-embeddable type
-    let stale_ids = store.get_stale_embedding_root_ids(Some(10), 0, 3).await?;
+    let stale_ids = store.get_stale_embedding_root_ids(None, 0, 3).await?;
     assert!(!stale_ids.contains(&task.id));
     Ok(())
 }
@@ -366,14 +366,18 @@ async fn test_queue_nodes_for_embedding_deduplicates_roots() -> Result<()> {
         .queue_nodes_for_embedding(&node_ids)
         .await?;
 
-    // Should only queue root once
-    let stale_ids = store.get_stale_embedding_root_ids(Some(10), 0, 3).await?;
+    // Should only queue root once. The queue also holds the core schemas a
+    // fresh database seeds, so the count is of this tree's entries.
+    let stale_ids = store.get_stale_embedding_root_ids(None, 0, 3).await?;
     assert_eq!(
-        stale_ids.len(),
+        stale_ids.iter().filter(|id| **id == root.id).count(),
         1,
         "Should deduplicate to single root queue entry"
     );
-    assert!(stale_ids.contains(&root.id));
+    assert!(
+        !stale_ids.contains(&child1.id) && !stale_ids.contains(&child2.id),
+        "a child is never queued in its own right"
+    );
     Ok(())
 }
 

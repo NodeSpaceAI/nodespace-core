@@ -275,3 +275,104 @@ async fn unembedded_schema_not_named_in_the_query_is_not_recovered() {
         output.skills
     );
 }
+
+/// The schema half of `find_skills` works on a database nobody embedded by
+/// hand: every schema is embedded once the queue is drained, and a request
+/// in the user's words finds the type whose name it never uses.
+///
+/// The tests above embed a schema with `embed_root_node`, which is how no
+/// test noticed that nothing ever queued one. This embeds only what the
+/// write paths queued, as the processor does.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn queued_schemas_embed_and_are_found_by_meaning() {
+    let Some((embedding_service, node_service, _temp_dir)) = test_env().await else {
+        return;
+    };
+
+    for params in [
+        json!({
+            "name": "Invoice",
+            "description": "A bill sent to a client for work done",
+            "fields": [
+                { "name": "amount", "type": "number", "description": "What the client owes" },
+                { "name": "paid_on", "type": "date" }
+            ]
+        }),
+        json!({
+            "name": "Venue",
+            "description": "A place an event can be held",
+            "fields": [{ "name": "capacity", "type": "number" }]
+        }),
+        json!({
+            "name": "Recipe",
+            "description": "A dish and how to cook it",
+            "fields": [{ "name": "servings", "type": "number" }]
+        }),
+        json!({
+            "name": "Workout",
+            "description": "One training session",
+            "fields": [{ "name": "duration_minutes", "type": "number" }]
+        }),
+    ] {
+        handle_create_schema(&node_service, params)
+            .await
+            .expect("schema must create");
+    }
+
+    let queued = node_service
+        .store()
+        .get_stale_embedding_root_ids(None, 0, 3)
+        .await
+        .expect("the queue must read");
+    for id in &queued {
+        embedding_service
+            .embed_root_node(id)
+            .await
+            .unwrap_or_else(|e| panic!("queued root {id} must embed: {e}"));
+    }
+
+    // Every schema, core ones included, now has a built embedding.
+    for schema in node_service
+        .get_all_schemas()
+        .await
+        .expect("schemas must read")
+    {
+        let embeddings = node_service
+            .store()
+            .get_embeddings(&schema.envelope.id)
+            .await
+            .expect("embeddings must read");
+        assert!(
+            !embeddings.is_empty() && embeddings.iter().all(|e| !e.stale),
+            "schema `{}` has no built embedding after the queue was drained",
+            schema.envelope.id
+        );
+    }
+
+    // A limit of one: the match has to outrank the other custom types, and
+    // the core types embedded beside them must not take its place.
+    let output = find_skills(
+        &embedding_service,
+        &node_service,
+        FindSkillsInput {
+            query: "billing a customer for last month".to_string(),
+            limit: Some(1),
+        },
+    )
+    .await
+    .expect("find_skills must succeed");
+
+    let schema_hits: Vec<&str> = output
+        .skills
+        .iter()
+        .filter(|s| s["kind"] == "schema")
+        .filter_map(|s| s["id"].as_str())
+        .collect();
+    assert_eq!(
+        schema_hits,
+        vec!["invoice"],
+        "a billing request must find the Invoice type first: {:?}",
+        output.skills
+    );
+}

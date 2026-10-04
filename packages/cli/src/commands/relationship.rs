@@ -37,13 +37,15 @@ pub enum RelationshipAction {
 
 #[derive(Args, Debug)]
 pub struct CreateArgs {
-    /// Source node ID.
+    /// Source node ID: the record that acts ("A supersedes B" is `--from A
+    /// --to B`).
     #[arg(long)]
     pub from: String,
-    /// Relationship name (as defined on the source node's schema).
+    /// Relationship name: one declared on the source node's schema, or a
+    /// built-in one (`member_of`, `has_child`, `mentions`, `has_role`).
     #[arg(long = "type")]
     pub relationship_name: String,
-    /// Target node ID.
+    /// Target node ID: the record acted upon.
     #[arg(long)]
     pub to: String,
     /// Optional JSON-encoded edge properties.
@@ -55,7 +57,8 @@ pub struct CreateArgs {
 pub struct GetArgs {
     /// Node ID to query relationships for.
     pub id: String,
-    /// Relationship name (as defined on the node's schema).
+    /// Relationship name: one declared on the node's schema, its declared
+    /// reverse name, or a built-in one.
     #[arg(long = "type")]
     pub relationship_name: String,
     /// Direction to traverse.

@@ -1,0 +1,1 @@
+NOT ALWAYS A MERGE: If the user wants to dismiss a conflict as acceptable, or continue with an existing node without touching the other one, run `nodespace conflicts dismiss <conflict-id>` or `nodespace conflicts adopt <conflict-id> --keep <node-id>` instead of a merge — neither changes or removes any node.

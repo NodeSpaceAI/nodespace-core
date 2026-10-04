@@ -785,17 +785,22 @@ pub async fn build_workspace_context(
     // are all present.
     let retrieved_hits = match (embedding_service, lexical_query, &all_schemas) {
         (Some(emb), Some(q), Some(corpus)) => {
+            // Every schema is ranked, and the cap applies after core types
+            // are dropped. Core schemas are embedded too, so a cap on the
+            // search itself would let them take the places of the custom
+            // types this block is for.
             match emb
                 .semantic_search_nodes_of_type(
                     q,
                     "schema",
-                    MAX_SEMANTIC_SCHEMAS,
+                    corpus.len().max(MAX_SEMANTIC_SCHEMAS),
                     SCHEMA_SIMILARITY_THRESHOLD,
                 )
                 .await
             {
                 Ok(results) => {
-                    let schemas = non_core_schema_hits(results, corpus);
+                    let mut schemas = non_core_schema_hits(results, corpus);
+                    schemas.truncate(MAX_SEMANTIC_SCHEMAS);
                     tracing::debug!(
                         count = schemas.len(),
                         query = q,

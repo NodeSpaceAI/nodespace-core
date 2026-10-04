@@ -1,0 +1,1 @@
+NOT ALWAYS A MERGE: dismiss_conflict and adopt_existing_conflict are also available here. If the user wants to dismiss a conflict as acceptable, or continue with an existing node without touching the other one, use one of those instead of merge_conflict — neither changes or removes any node.

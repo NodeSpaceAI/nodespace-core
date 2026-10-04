@@ -4,14 +4,11 @@
 //! and without an embedding model -- headless, no daemon, no gRPC -- so it
 //! runs in every normal `cargo test`.
 //!
-//! `nodespace skill guidance` (packages/cli) is a thin formatting layer over
-//! exactly the reads this test performs directly on `NodeService`
-//! (`query_nodes_by_type("skill")` + `get_children`, the same structural
-//! walk `search_ops::search_semantic`'s `include_markdown` path uses to
-//! build a result's aggregated subtree markdown); that CLI layer additionally
-//! requires a live embedding model for its semantic-search RPC, which this
-//! environment doesn't have, so the two mechanisms it depends on are proven
-//! here instead, at the layer the CLI itself reads from.
+//! `nodespace skill guidance` (packages/cli) reads the same `skill` nodes
+//! this test reads directly on `NodeService`. Matching a task to a skill
+//! needs a live embedding model, which a normal test run doesn't have (that
+//! path is covered by `live_skill_guidance_fetch`), so the two mechanisms the
+//! fetch depends on are proven here, at the layer it reads from.
 //!
 //! 1. [`a_users_graph_edit_to_seeded_guidance_is_immediately_visible_to_a_fetch`] --
 //!    the runtime half of the mechanism: a user/team edit to a seeded
@@ -31,19 +28,19 @@
 //!    it.
 //!
 //! Both tests read the whole subtree via [`NodeService::get_subtree_data`] --
-//! the same structural walk `search_ops::search_semantic`'s `include_markdown`
-//! path recurses (a seeded skill's markdown parses into a nested hierarchy,
-//! e.g. an H1 heading node with the guidance paragraph nested under it, not
-//! a flat list of root children) -- rather than `get_children`, so these
-//! assertions don't depend on assuming a particular nesting depth.
+//! the walk skill search renders a skill's procedure from (a seeded skill's
+//! markdown can parse into a nested hierarchy, e.g. a list under its
+//! paragraph, not a flat list of root children) -- rather than
+//! `get_children`, so these assertions don't depend on assuming a particular
+//! nesting depth.
 
 use std::sync::Arc;
 
-use nodespace_agent::skill_pipeline::seed_skill_nodes;
+use nodespace_agent::skill_pipeline::{external_skill_body, seed_skill_nodes, SKILL_SEEDS};
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::prepare_nodes_from_template;
 use nodespace_core::models::NodeUpdate;
-use nodespace_core::services::NodeService;
+use nodespace_core::services::{render_subtree_markdown, NodeService};
 use tempfile::TempDir;
 
 const RESEARCH_AND_SEARCH: &str = "Research & Search";
@@ -66,6 +63,41 @@ async fn seeded_service() -> (NodeService, TempDir) {
         .expect("initial seed must succeed");
 
     (node_service, temp_dir)
+}
+
+/// Every built-in skill, read back from a real database, is still recognised
+/// as untouched and served to an outside agent in its CLI form.
+///
+/// A fetch renders a built-in skill in CLI commands only while the guidance
+/// the graph holds equals what the seed installs. That comparison fails soft:
+/// if storing and rendering a body changed one line of it, the fetch would
+/// serve the stored body, which names tools an outside agent cannot call, and
+/// nothing would report it. So this runs the comparison on what the store
+/// returns, for every seed.
+#[tokio::test]
+async fn an_untouched_built_in_skill_read_from_the_store_is_served_in_its_cli_form() {
+    let (node_service, _temp) = seeded_service().await;
+
+    for seed in SKILL_SEEDS {
+        let (_root, node_map, adjacency) = node_service
+            .get_subtree_data(seed.id)
+            .await
+            .unwrap_or_else(|e| panic!("{}: subtree must read: {e}", seed.title));
+        let stored = render_subtree_markdown(seed.id, &node_map, &adjacency);
+        assert!(
+            !stored.is_empty(),
+            "{} was seeded with no guidance",
+            seed.title
+        );
+
+        assert_eq!(
+            external_skill_body(seed.id, &stored),
+            Some(seed.external_body()),
+            "{}: its stored guidance no longer matches its seed, so a fetch would serve the \
+             in-app body:\n{stored}",
+            seed.title
+        );
+    }
 }
 
 #[tokio::test]

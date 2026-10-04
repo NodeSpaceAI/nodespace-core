@@ -1,0 +1,1 @@
+ADD AN EXISTING NODE: Call update_node with the node ID and the collection path. Fall back to create_relationship with relationship_type="member_of" only when you hold a collection ID rather than a path.

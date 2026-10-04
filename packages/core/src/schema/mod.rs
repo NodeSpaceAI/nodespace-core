@@ -2249,6 +2249,18 @@ pub async fn create_schema(
             )),
         })?;
 
+    // A schema is found by meaning (skill search and the workspace context
+    // both search schemas semantically), so the committed schema is queued
+    // for embedding. The create ran in a caller-held transaction, which
+    // queues nothing itself.
+    node_service
+        .queue_created_root_for_embedding(
+            &created_schema_id,
+            crate::models::CoreNodeType::Schema.as_str(),
+            false,
+        )
+        .await;
+
     // Build the result from the COMMITTED row, not from the request.
     //
     // Everything above this point describes what the caller asked for. Echoing
@@ -3275,7 +3287,7 @@ pub async fn update_schema(
         }
     }
     let node_service_for_tx = Arc::clone(node_service);
-    node_service
+    let committed = node_service
         .with_transaction(move |tx| {
             let node_service = Arc::clone(&node_service_for_tx);
             let schema_id = schema_id_for_tx.clone();
@@ -3399,34 +3411,50 @@ pub async fn update_schema(
                 Ok(())
             })
         })
-        .await
-        .map_err(|e| match e {
-            NodeServiceError::InvalidUpdate(_) => MarkdownError::invalid_params(e.to_string()),
-            NodeServiceError::VersionConflict { ref node_id, .. } => {
-                // Phase 1 renames commit on their own, ahead of this group,
-                // so a caller retrying the whole call must not resend them.
-                let renames_note = if fields_renamed > 0 {
-                    " The field renames in this call WERE applied before the conflict was \
+        .await;
+
+    // The schema's embedding is built from its name, fields and description,
+    // so a change to any of them leaves it stale. A Phase 1 rename is
+    // persisted whether or not the group above committed, so it queues too.
+    // A rejected call queues nothing: a stale embedding is out of the index
+    // until it is rebuilt. A committed call queues whatever it changed, a
+    // relationship-only change included, though relationships are not part
+    // of the embedded text. The transaction runs in a caller-held
+    // boundary, which queues nothing itself (ADR-069 §5).
+    #[cfg(feature = "nlp")]
+    if committed.is_ok() || fields_renamed > 0 {
+        node_service
+            .queue_root_for_embedding(&params.schema_id)
+            .await;
+    }
+
+    committed.map_err(|e| match e {
+        NodeServiceError::InvalidUpdate(_) => MarkdownError::invalid_params(e.to_string()),
+        NodeServiceError::VersionConflict { ref node_id, .. } => {
+            // Phase 1 renames commit on their own, ahead of this group,
+            // so a caller retrying the whole call must not resend them.
+            let renames_note = if fields_renamed > 0 {
+                " The field renames in this call WERE applied before the conflict was \
                      detected — omit rename_fields when retrying."
-                } else {
-                    ""
-                };
-                let changed = if *node_id == params.schema_id {
-                    format!("Schema '{}' changed concurrently", node_id)
-                } else {
-                    format!(
-                        "Schema '{}', on the new extends chain of '{}', changed concurrently",
-                        node_id, params.schema_id
-                    )
-                };
-                MarkdownError::invalid_params(format!(
-                    "{} while this update was being applied; none of its field, relationship or \
+            } else {
+                ""
+            };
+            let changed = if *node_id == params.schema_id {
+                format!("Schema '{}' changed concurrently", node_id)
+            } else {
+                format!(
+                    "Schema '{}', on the new extends chain of '{}', changed concurrently",
+                    node_id, params.schema_id
+                )
+            };
+            MarkdownError::invalid_params(format!(
+                "{} while this update was being applied; none of its field, relationship or \
                      description changes were written.{} Re-read the schema and retry.",
-                    changed, renames_note
-                ))
-            }
-            other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),
-        })?;
+                changed, renames_note
+            ))
+        }
+        other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),
+    })?;
 
     Ok(SchemaUpdateOutput {
         schema_id: params.schema_id,

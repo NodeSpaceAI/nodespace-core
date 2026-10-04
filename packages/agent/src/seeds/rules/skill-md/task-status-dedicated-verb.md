@@ -1,1 +1,1 @@
-task status changes must go through the dedicated status-update verb, not a generic property update.
+TASK STATUS: To change a task's status, run `nodespace node set-status <task-id> <status>`, not `nodespace node update`. The status must be one the `task` schema's `status` field declares, which can be more than the built-in values: `nodespace schema get task` lists them, and an invalid value is rejected with the current list.

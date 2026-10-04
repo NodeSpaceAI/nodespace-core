@@ -30,6 +30,7 @@ use nodespace_core::ops::{
     },
     node_ops, query_ops, rel_ops,
     search_ops::{self, SearchSemanticInput},
+    skill_ops::{self, FindSkillsInput, GuidanceSkill},
     OpsError,
 };
 use nodespace_core::services::{
@@ -68,8 +69,9 @@ use crate::nodespace::{
     PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest, RelationshipDeletedPayload,
     RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
     RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
-    ResetSeedNodeResponse, ResolveConflictRequest, SchemaListResponse, SchemaParamsRequest,
-    SchemaResponse, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
+    ResetSeedNodeResponse, ResolveConflictRequest, SchemaGuidanceEntry, SchemaListResponse,
+    SchemaParamsRequest, SchemaResponse, SchemaResultResponse, SearchRequest,
+    SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse,
     UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
     UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
     UpdatePlayNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
@@ -607,6 +609,66 @@ impl GrpcNodeService for NodeServiceImpl {
             existed: output.existed,
             deleted_count: output.deleted_count,
             ..Default::default()
+        }))
+    }
+
+    async fn get_skill_guidance(
+        &self,
+        request: Request<SkillGuidanceRequest>,
+    ) -> Result<Response<SkillGuidanceResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        // An empty query lists what exists. It reads no embedding, so it
+        // answers while the embedding model is still loading.
+        if search_ops::normalize_enumerate_query(&req.query).is_none() {
+            let skills = skill_ops::list_skill_guidance(&this.node_service)
+                .await
+                .map_err(ops_error_to_status)?
+                .into_iter()
+                .map(skill_guidance_entry)
+                .collect();
+            return Ok(Response::new(SkillGuidanceResponse {
+                skills,
+                schemas: Vec::new(),
+            }));
+        }
+
+        // Cloned out of the guard, as in `search_nodes`.
+        let embedding_service = {
+            let guard = this.embedding_state.read().await;
+            guard
+                .as_ref()
+                .map(|r| Arc::clone(&r.embedding_service))
+                .ok_or_else(|| Status::unavailable("embedding model loading, please retry"))?
+        };
+
+        let guidance = skill_ops::find_skill_guidance(
+            &embedding_service,
+            &this.node_service,
+            FindSkillsInput {
+                query: req.query,
+                limit: (req.limit > 0).then_some(req.limit as usize),
+            },
+        )
+        .await
+        .map_err(ops_error_to_status)?;
+
+        Ok(Response::new(SkillGuidanceResponse {
+            skills: guidance
+                .skills
+                .into_iter()
+                .map(skill_guidance_entry)
+                .collect(),
+            schemas: guidance
+                .schemas
+                .into_iter()
+                .map(|schema| SchemaGuidanceEntry {
+                    id: schema.id,
+                    name: schema.name,
+                    definition: schema.definition.to_string(),
+                })
+                .collect(),
         }))
     }
 
@@ -2765,6 +2827,29 @@ fn relationship_to_proto(
         to_id: rel.to_id.clone(),
         relationship_type: rel.relationship_type.clone(),
         properties: rel.properties.to_string(),
+    }
+}
+
+/// One skill of a guidance fetch, as the wire entry an agent outside the app
+/// reads.
+///
+/// A built-in skill whose stored guidance is still the seed's is rendered
+/// from its seed in the form that names CLI commands: the stored body names
+/// the in-app agent's tools, which an outside agent cannot call. A skill a
+/// user wrote or installed, and a built-in one whose guidance they changed
+/// in any way, is served as stored.
+fn skill_guidance_entry(skill: GuidanceSkill) -> SkillGuidanceEntry {
+    // A listing carries no procedures: its empty body matches no seed.
+    let instructions =
+        nodespace_agent::skill_pipeline::external_skill_body(&skill.id, &skill.instructions)
+            .unwrap_or(skill.instructions);
+    SkillGuidanceEntry {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        modified_at: skill.modified_at,
+        instructions,
+        confidence: skill.confidence,
     }
 }
 
@@ -6095,6 +6180,87 @@ mod tests {
         assert!(find_unique_seed_template(vec![], "skill", "A")
             .unwrap()
             .is_none());
+    }
+
+    fn fetched_skill(id: &str, instructions: &str) -> GuidanceSkill {
+        GuidanceSkill {
+            id: id.to_string(),
+            name: "A skill".to_string(),
+            description: "What it is for".to_string(),
+            modified_at: "2026-10-01T00:00:00+00:00".to_string(),
+            confidence: Some(0.8),
+            instructions: instructions.to_string(),
+        }
+    }
+
+    /// A built-in skill nobody has edited is served in its CLI form, not as
+    /// the stored body, which names the in-app agent's tools.
+    #[test]
+    fn an_unmodified_built_in_skill_is_served_in_its_cli_form() {
+        let seed = nodespace_agent::skill_pipeline::SKILL_SEEDS
+            .iter()
+            .find(|s| s.title == "Node Deletion")
+            .expect("Node Deletion is seeded");
+        let stored = seed.template().markdown_content;
+        assert!(stored.contains("delete_node"), "{stored}");
+
+        let entry = skill_guidance_entry(fetched_skill(seed.id, &stored));
+
+        assert_eq!(entry.instructions, seed.external_body());
+        assert!(
+            entry.instructions.contains("`nodespace node delete <id>`"),
+            "{}",
+            entry.instructions
+        );
+        assert!(
+            !entry.instructions.contains("delete_node"),
+            "{}",
+            entry.instructions
+        );
+        assert_eq!(entry.confidence, Some(0.8));
+    }
+
+    /// A built-in skill a user has changed is theirs: it is served as stored
+    /// (ADR-072), never replaced by the seed's text. That holds for a
+    /// rewrite and for a paragraph added beneath the seed's own.
+    #[test]
+    fn a_user_changed_built_in_skill_is_served_as_stored() {
+        let seed = &nodespace_agent::skill_pipeline::SKILL_SEEDS[0];
+        let entry = skill_guidance_entry(fetched_skill(seed.id, "Our own procedure."));
+        assert_eq!(entry.instructions, "Our own procedure.");
+
+        let extended = format!(
+            "{}\n\nFile every decision under the decisions collection.",
+            seed.template().markdown_content
+        );
+        let entry = skill_guidance_entry(fetched_skill(seed.id, &extended));
+        assert_eq!(entry.instructions, extended);
+    }
+
+    /// A skill a user wrote, or an installed workflow added, has no seed to
+    /// render from and is served as stored.
+    #[test]
+    fn a_skill_that_is_not_built_in_is_served_as_stored() {
+        let entry = skill_guidance_entry(fetched_skill(
+            "9d0c1b7e-0000-4000-8000-000000000001",
+            "File ADRs under the decisions collection.",
+        ));
+        assert_eq!(
+            entry.instructions,
+            "File ADRs under the decisions collection."
+        );
+    }
+
+    /// A listing carries names and descriptions only, built-in skills
+    /// included.
+    #[test]
+    fn a_listed_skill_carries_no_instructions() {
+        let seed = &nodespace_agent::skill_pipeline::SKILL_SEEDS[0];
+        let mut listed = fetched_skill(seed.id, "");
+        listed.confidence = None;
+        let entry = skill_guidance_entry(listed);
+        assert_eq!(entry.instructions, "");
+        assert_eq!(entry.confidence, None);
     }
 
     /// Every compiled seed template must be addressable by `(node_type, title)`

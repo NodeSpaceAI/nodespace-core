@@ -2359,19 +2359,89 @@ mod tests {
         // Duplicate the first id to verify OR IGNORE dedupes rather than erroring.
         node_ids.push(node_ids[0].clone());
 
+        // A fresh database already holds a marker for each core schema.
+        async fn stale_markers(store: &SqliteStore) -> Result<i64> {
+            let mut rows = store
+                .read()
+                .await?
+                .query("SELECT COUNT(*) FROM embedding WHERE stale = 1", ())
+                .await?;
+            Ok(rows.next().await?.unwrap().get(0)?)
+        }
+        let before = stale_markers(&store).await?;
+
         let created = store.create_stale_embedding_markers_bulk(&node_ids).await?;
         assert_eq!(created, node_ids.len());
 
-        let mut rows = store
-            .read()
-            .await?
-            .query("SELECT COUNT(*) FROM embedding WHERE stale = 1", ())
-            .await?;
-        let count: i64 = rows.next().await?.unwrap().get(0)?;
         assert_eq!(
-            count, 200,
+            stale_markers(&store).await? - before,
+            200,
             "one marker per distinct node, duplicate ignored by unique index"
         );
+        Ok(())
+    }
+
+    /// A typed search scores every node of the type, however many nodes of
+    /// other types sit nearer the query.
+    ///
+    /// It used to take a KNN window over all embeddings (`limit × 50` rows)
+    /// and filter by type afterwards. In a graph with more documents near a
+    /// query than that window holds, a type with few nodes fell outside it
+    /// and the search returned nothing: skill search found no skill.
+    #[tokio::test]
+    async fn typed_search_finds_a_rare_type_behind_many_nearer_nodes() -> Result<()> {
+        let (store, _tmp) = create_test_store().await?;
+
+        // 200 documents identical to the query: more than the 150 rows the
+        // old window held for a limit of 3, and every one nearer than a skill.
+        for i in 0..200 {
+            let node = store
+                .create_node(
+                    Node::new("text".to_string(), format!("doc {i}"), json!({})),
+                    None,
+                    None,
+                )
+                .await?;
+            store
+                .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 0)])
+                .await?;
+        }
+
+        // Three skills, each further from the query than every document.
+        let mut skill_ids = Vec::new();
+        for i in 0..3 {
+            let node = store
+                .create_node(
+                    Node::new("skill".to_string(), format!("skill {i}"), json!({})),
+                    None,
+                    None,
+                )
+                .await?;
+            let mut embedding = unit_embedding(&node.id, 0);
+            embedding.vector[1 + i] = 1.0;
+            store.upsert_embeddings(&node.id, vec![embedding]).await?;
+            skill_ids.push(node.id);
+        }
+
+        let results = store
+            .search_embeddings_by_node_type(&unit_query(0), "skill", 3, Some(0.0))
+            .await?;
+
+        let mut found: Vec<String> = results.iter().map(|r| r.node_id.clone()).collect();
+        found.sort();
+        skill_ids.sort();
+        assert_eq!(
+            found, skill_ids,
+            "every skill is scored, not only those inside a window over all embeddings"
+        );
+        for result in &results {
+            // cos(45°) for the similarity, then the full-density composite.
+            assert!(
+                (result.max_similarity - std::f64::consts::FRAC_1_SQRT_2).abs() < 1e-6,
+                "similarity {} is not the exact cosine",
+                result.max_similarity
+            );
+        }
         Ok(())
     }
 

@@ -83,6 +83,14 @@ fn regions() -> Vec<GeneratedRegion> {
             render: nodespace_agent::skill_rules::skill_md_play_rules,
         },
         GeneratedRegion {
+            id: "relationship-rules",
+            file: "references/cli.md",
+            source_note:
+                "packages/agent/src/seeds/rules/skill-md/relationship-direction.md, \
+                          packages/agent/src/seeds/rules/skill-md/relationship-reverse-traversal.md",
+            render: nodespace_agent::skill_rules::skill_md_relationship_rules,
+        },
+        GeneratedRegion {
             id: "cli-surface",
             file: "references/cli.md",
             source_note:
@@ -142,7 +150,9 @@ fn end_marker(r: &GeneratedRegion) -> String {
 // restates a rule.
 //
 // The `play-rules` region is rendered the same way, by
-// `skill_md_play_rules` from `seeds/skill-md/play-rules.md`.
+// `skill_md_play_rules` from `seeds/skill-md/play-rules.md`, and the
+// `relationship-rules` region by `skill_md_relationship_rules` from the two
+// relationship rules the Relationship Management skill includes.
 
 // ---------------------------------------------------------------------------
 // Region: cli-surface

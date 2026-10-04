@@ -1,1 +1,1 @@
-act on one node per call; confirm each individually before moving to the next.
+ONE NODE PER CALL: Delete one node per call, and confirm each deletion with the user before moving to the next.

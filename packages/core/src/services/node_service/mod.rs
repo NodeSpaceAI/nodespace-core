@@ -1903,6 +1903,20 @@ impl NodeService {
                         schema.envelope.id, e
                     ))
                 })?;
+
+                // A schema is found by meaning, a core one included, so it is
+                // queued for embedding like any other created root. Derived
+                // state: a failure to queue does not fail the seed.
+                if let Err(e) = store
+                    .create_stale_embedding_marker(&schema.envelope.id)
+                    .await
+                {
+                    tracing::warn!(
+                        "Failed to queue core schema '{}' for embedding: {}",
+                        schema.envelope.id,
+                        e
+                    );
+                }
             }
 
             for schema in &missing_schemas {

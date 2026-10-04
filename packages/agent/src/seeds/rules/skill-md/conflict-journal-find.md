@@ -1,0 +1,1 @@
+FIND THEN ACT: Run `nodespace conflicts list` (optionally with `--status`, `--kind` or `--node <node-id>`) or `nodespace conflicts show <conflict-id>` to find and confirm the exact conflict record and its participants before resolving anything.

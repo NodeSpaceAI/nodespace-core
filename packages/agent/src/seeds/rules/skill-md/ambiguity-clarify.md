@@ -1,1 +1,1 @@
-if the search comes back with zero matches or several equally plausible matches, ask the user one specific clarifying question rather than retrying.
+AMBIGUITY: If the lookup comes back with zero matches or several equally plausible ones, ask the user one specific clarifying question rather than retrying — for example "I found 3 tickets in review — which one did you mean: the auth one, the CI one, or the audit-log one?"

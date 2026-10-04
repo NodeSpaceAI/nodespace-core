@@ -1382,6 +1382,40 @@ impl NodeBehavior for SchemaNodeBehavior {
         false // Schemas are structured data
     }
 
+    /// A schema is embedded as its name and its fields, each with its
+    /// description.
+    ///
+    /// The name alone matches only a request that uses the type's own word.
+    /// The fields are what the type is about, in the words a request for it
+    /// uses: "what did the client pay" finds a type whose fields are an amount
+    /// and a paid date. The description subtree is added by
+    /// [`Self::get_aggregated_content`].
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        if node.content.trim().is_empty() {
+            return None;
+        }
+        let mut text = node.content.clone();
+        let Ok(schema) = crate::models::schema_node::from_storage(node.clone(), Vec::new()) else {
+            return Some(text);
+        };
+        for field in &schema.fields {
+            let label = if field.friendly_name.trim().is_empty() {
+                &field.name
+            } else {
+                &field.friendly_name
+            };
+            text.push('\n');
+            text.push_str(label);
+            if let Some(description) = field.description.as_deref().map(str::trim) {
+                if !description.is_empty() {
+                    text.push_str(": ");
+                    text.push_str(description);
+                }
+            }
+        }
+        Some(text)
+    }
+
     /// Schema nodes aggregate their description child subtree for embedding.
     ///
     /// The description is stored as a markdown node subtree under the schema node.
