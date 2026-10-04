@@ -1351,7 +1351,10 @@ async fn adds_to_an_existing_list_keep_a_skill_that_can_create() {
 /// misses cannot write the play at all.
 ///
 /// Covers the user's own words and the capability phrasings Stage 1 produces
-/// for them.
+/// for them, including requests worded with "fire" and "run": the verbs a
+/// question about why a rule has not fired uses too, and so the ones the
+/// skill's exclusion must not cost it. The closest is "stop that rule firing
+/// for low priority tasks", 0.868 to Play Workflow State's 0.860.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn play_change_requests_route_play_authoring() {
@@ -1364,6 +1367,9 @@ async fn play_change_requests_route_play_authoring() {
         &[
             "change the roll-up play so it also runs when a task is cancelled",
             "make that rule fire only for high priority tasks",
+            "stop that rule firing for low priority tasks",
+            "make the rule not run on weekends",
+            "have the play run when a story is closed too",
             "add a rule to the sprint close-out play",
             "remove the second rule from this automation",
             "edit the conditions of an automation rule",
@@ -1416,7 +1422,8 @@ async fn play_change_requests_route_play_authoring() {
 /// change is not answered with a write skill first.
 ///
 /// Play Authoring's `exclusion` is what holds this. Without it "why didn't the
-/// play trigger for that story?" led with Play Authoring, 0.887 to 0.863.
+/// play trigger for that story?" led with Play Authoring, 0.887 to 0.863; with
+/// it Play Workflow State leads, 0.863 to 0.846.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn control_why_a_rule_has_not_fired_still_routes_play_workflow_state() {

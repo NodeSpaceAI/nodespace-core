@@ -521,9 +521,14 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // play trigger for that story?" led with this skill, 0.887 to Play
         // Workflow State's 0.863, putting a write skill first on a question
         // that asks for no change. With it Play Workflow State leads every
-        // such question, and each request to change or switch a play still
-        // leads here; the one measured cost is "make that rule fire only for
-        // high priority tasks", 0.883 to 0.838, still first. Guarded in
+        // such question (that one 0.863 to 0.846), and each request to change
+        // or switch a play scores exactly what it did without one.
+        //
+        // Worded as the diagnosis, not the verb. A first draft, "Why a rule
+        // has not fired, or what is still missing before it runs.", also
+        // lowered "make that rule fire only for high priority tasks" from
+        // 0.883 to 0.838, 0.006 above Play Workflow State: "fire" and "runs"
+        // are how a user asks to change a rule too. Guarded in
         // `tests/it/live_skill_retrieval_stability.rs` by
         // `play_change_requests_route_play_authoring` and
         // `control_why_a_rule_has_not_fired_still_routes_play_workflow_state`.
@@ -534,7 +539,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["get_play", "update_play", "search_nodes", "route_clarify"],
         // Read, write, and two repairs of a rejected write.
         max_iterations: 5,
-        exclusion: Some("Why a rule has not fired, or what is still missing before it runs."),
+        exclusion: Some("Diagnose why nothing happened for a node: which conditions are still unmet."),
         applies_to: &[nodespace_core::models::PLAY_NODE_TYPE],
         body: include_str!("seeds/skills/play-authoring.md"),
     },

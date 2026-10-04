@@ -2143,7 +2143,8 @@ fn def_get_play() -> ToolDefinition {
         name: "get_play".into(),
         description: "Read a Play automation: its rules with their descriptions, whether it is \
             switched on, and any suspension the engine recorded, together with the fields and \
-            relationships of every type its rules reference. Read-only."
+            relationships of every type its rules reference. Rules that no longer decode come back \
+            as stored, under `stored_rules`, with `decode_error` saying what is wrong. Read-only."
             .into(),
         parameters_schema: json!({
             "type": "object",
