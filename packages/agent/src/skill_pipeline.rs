@@ -773,6 +773,33 @@ mod tests {
         );
     }
 
+    /// A skill's description is served beside its body, and is not rendered
+    /// per audience: it is the stored, embedded text retrieval is tuned on, so
+    /// rewording one moves that skill's score on every request. Graph
+    /// Editing's names `update_task_status`, and an agent outside the app
+    /// reads that name in the fetch's `description` line. Its body gives the
+    /// CLI command for the same step.
+    ///
+    /// Pinned so the exception stays at one: a description added or reworded
+    /// to name a tool fails here.
+    #[test]
+    fn only_graph_editings_description_names_an_in_app_tool() {
+        let tools: Vec<&str> = crate::local_agent::tools::Tool::ALL
+            .iter()
+            .map(|t| t.name())
+            .collect();
+        let naming_a_tool: Vec<&str> = SKILL_SEEDS
+            .iter()
+            .filter(|seed| {
+                seed.description
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .any(|token| tools.contains(&token))
+            })
+            .map(|seed| seed.title)
+            .collect();
+        assert_eq!(naming_a_tool, vec!["Graph Editing"]);
+    }
+
     /// A built-in skill is looked up for an external fetch by its node id.
     #[test]
     fn external_skill_body_is_found_by_the_seeds_fixed_id() {

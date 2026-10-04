@@ -817,6 +817,16 @@ pub fn skill_md_schema_rules() -> String {
     )
 }
 
+/// The relationship-rules region of the shipped command reference: which end
+/// of an edge is which, and how to read one from its other end, in the same
+/// words the Relationship Management skill serves an agent outside the app.
+pub fn skill_md_relationship_rules() -> String {
+    format!(
+        "{}\n\n{}",
+        RELATIONSHIP_DIRECTION.prose, RELATIONSHIP_REVERSE_TRAVERSAL.prose
+    )
+}
+
 /// The play-rules region of the shipped skill: the play-authoring rules in
 /// their prose form, as `seeds/skill-md/play-rules.md` lays them out.
 pub fn skill_md_play_rules() -> String {

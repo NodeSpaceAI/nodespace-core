@@ -21,6 +21,7 @@ mod live_openai_compat_routing;
 mod live_openai_compat_smoke;
 mod live_resolve_query_decomposition_shapes;
 mod live_routing_probe;
+mod live_skill_guidance_fetch;
 mod live_skill_retrieval_stability;
 mod live_stage1_compound_intent;
 mod live_stage1_golden_prompts;

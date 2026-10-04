@@ -175,7 +175,8 @@ pub use router::{build_base_router, BaseServices};
 pub use services::{
     build_database_services, build_shared_services, shared_model_load_in_flight,
     unrouted_services_if_default_refused, AgentSessionHandler, DatabaseManager,
-    DatabaseRequiresExtensions, DatabaseServiceImpl, DatabaseServices, EmbeddingsServiceImpl,
+    DatabaseRequiresExtensions, DatabaseServiceImpl, DatabaseServices, EmbeddingReady,
+    EmbeddingsServiceImpl,
     ImportServiceImpl, LocalAgentServiceImpl, McpConfig, NodeServiceImpl,
     RequiredExtensionsUnreadable, SettingsServiceImpl, SharedContext, SharedLocalAgent,
     SharedServices, SubtreeGateFactory,

@@ -310,7 +310,7 @@ Mentions are inline references captured from markdown content — distinct from 
 ### Typed relationships
 
 ```bash
-# Create a relationship edge (relationship name must exist on the source node's schema)
+# Create a relationship edge (a name declared on the source node's schema, or a built-in one)
 nodespace relationship create --from <source-id> --type has_task --to <target-id>
 nodespace relationship create --from <source-id> --type billed_to --to <target-id> --edge-data '{"note":"..."}'
 
@@ -327,7 +327,7 @@ nodespace relationship get <person-id> --type decisions --direction in    # also
 
 **Options (`create`):**
 - `--from <id>` — source node ID
-- `--type <name>` — relationship name, as defined on the source node's schema (e.g. `has_task`, `billed_to`) — not an arbitrary label
+- `--type <name>` — relationship name: one declared on the source node's schema (e.g. `has_task`, `billed_to`), or one of the built-in names below — not an arbitrary label
 - `--to <id>` — target node ID
 - `--edge-data <json>` — optional JSON-encoded edge properties
 
@@ -336,9 +336,13 @@ nodespace relationship get <person-id> --type decisions --direction in    # also
 - `--type <name>` — relationship name to traverse: the forward `name` from the source's end, or the declared `reverseName` from the target's end
 - `--direction <out|in>` — traversal direction (default: `out`), relative to the name given. **Ignored when `--type` is a `reverseName`** (or a built-in's fixed inverse, e.g. `child_of`) — see below
 
+<!-- BEGIN GENERATED: relationship-rules (see packages/agent/src/seeds/rules/skill-md/relationship-direction.md, packages/agent/src/seeds/rules/skill-md/relationship-reverse-traversal.md) -->
+**Direction.** `--from` is the record that ACTS, `--to` is the record acted upon. "A supersedes B" is `--from <A> --to <B>`. Reversing them records the opposite fact and still reports success.
+
 **Traversing the reverse direction.** A relationship is declared once, on the source type, but reads from both ends. Given `{"name":"decided_by","targetType":"person","direction":"out","cardinality":"one","reverseName":"decisions","reverseCardinality":"many"}` on `adr`: from the ADR, `nodespace relationship get <adr-id> --type decided_by --direction out`; from the person, use the declared `reverseName` — `nodespace relationship get <person-id> --type decisions` — or the equivalent `--type decided_by --direction in`. Both spellings return the same ADRs, and the output line's arrow shows the direction actually traversed (`<--decided_by--` for an inbound resolution). An empty result means no edges exist, not that reverse traversal is unsupported. A name declared in neither direction is rejected with an error naming the spellings that do work — read it and retry rather than concluding the capability is missing.
 
 A `reverseName` (or a built-in's fixed inverse, like `child_of`) names exactly one traversal — the forward relationship, read from the target end — so `--direction` has nothing to select once `--type` already resolved to one: `--type decisions --direction in` runs the identical query as `--type decisions` with no flag at all, not a second, further-reversed one. Pairing `--direction` with the forward name is where direction still does something (`--type decided_by --direction in` vs. `--direction out`, from the person and the ADR respectively).
+<!-- END GENERATED: relationship-rules -->
 
 Reverse names are for *traversal*, not for `relationship create`: an edge is always created under its forward name, from the source node. A `relationship` or `related` filter's `path` in `query --filters` takes them like any other relationship name.
 
@@ -433,6 +437,8 @@ nodespace relationship create --from <skill-id> --type applies_to --to venue
 Skill search then returns that skill together with exactly those types' fields and relationships, and those of every type that extends them, rather than a guess taken from the wording of the request. A core type can be linked the same way (`--to task`). Leave a general skill, one that applies whatever the type, unlinked. Only a schema can be the target: a link to any other node is rejected.
 
 The same edges read from the schema's end as `skills`: `nodespace relationship get venue --type skills` lists every skill about that type.
+
+A skill you write is read exactly as stored by both audiences: the in-app agent, and any agent that fetches it with `nodespace skill guidance`. Write its procedure in words both can follow, and name `nodespace` commands where an outside agent has to run something. `tool_whitelist` lists the in-app agent's tools and has no effect on an outside agent.
 
 ### Schema inspection and management
 
@@ -875,15 +881,15 @@ Manage typed relationship edges between nodes (distinct from mentions)
 
 **`nodespace relationship create`** — Create a typed relationship edge from one node to another
 
-- `--from <FROM>` — Source node ID (required)
-- `--type <RELATIONSHIP_NAME>` — Relationship name (as defined on the source node's schema) (required)
-- `--to <TO>` — Target node ID (required)
+- `--from <FROM>` — Source node ID: the record that acts ("A supersedes B" is `--from A --to B`) (required)
+- `--type <RELATIONSHIP_NAME>` — Relationship name: one declared on the source node's schema, or a built-in one (`member_of`, `has_child`, `mentions`, `has_role`) (required)
+- `--to <TO>` — Target node ID: the record acted upon (required)
 - `--edge-data <EDGE_DATA>` — Optional JSON-encoded edge properties
 
 **`nodespace relationship get`** — List nodes related to a given node via a named relationship
 
 - `<ID>` — Node ID to query relationships for (required)
-- `--type <RELATIONSHIP_NAME>` — Relationship name (as defined on the node's schema) (required)
+- `--type <RELATIONSHIP_NAME>` — Relationship name: one declared on the node's schema, its declared reverse name, or a built-in one (required)
 - `--direction <DIRECTION>` — Direction to traverse
 
 ### `nodespace conflicts`
@@ -981,10 +987,10 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 
 **`nodespace skill status`** — Report which harnesses currently have the skill installed
 
-**`nodespace skill guidance`** — Fetch procedural guidance from the graph's seeded `skill` nodes — the fetch half of the fetch-at-activation model SKILL.md's body instructs an activated agent to use. Output is always provenance- marked (a banner in human mode, a `"provenance": "graph-fetched"` envelope in `--json` mode) so fetched content is never indistinguishable from the skill's own static instructions
+**`nodespace skill guidance`** — Fetch the skills that match a task, each with its instructions, and the schemas of the types the task touches. With no task, list every skill by name and description. Covers the built-in skills, skills a user wrote and skills an installed workflow added. Output is always provenance-marked (a banner in human mode, a `"provenance": "graph-fetched"` envelope in `--json` mode), because it is read from the graph and anyone with write access can edit it
 
-- `<QUERY>` — Free-text description of the task at hand (e.g. "write an ADR and save it"). Matched semantically against seeded skill guidance so results are scoped to what's relevant right now rather than the whole registry. Pass an empty string (the default) to list every seeded skill's guidance
-- `--limit <LIMIT>` — Maximum number of guidance entries to return, capped at 5 regardless of a higher value. A guidance entry's whole value is its fetched markdown content, and the server never attaches markdown past the 5th result (matching `search --include-content`'s own cap) -- so unlike a plain node search, where a markdown-less result still carries a useful title/snippet, requesting more than 5 here would only return empty-content entries dressed in a full provenance banner. The cap is applied to the request itself, not just the markdown-attachment count, so that can't happen
+- `<QUERY>` — The task at hand, in your own words (e.g. "add an issue to the current cycle", "define a new type with an enum field"). Matched by meaning against every skill's name and description, ranked the way the in-app agent ranks skills. Omit it, or pass an empty string, to list every skill by name and description without its instructions
+- `--limit <LIMIT>` — Maximum number of skills to return for a task. The daemon returns at most 10 whatever is asked for. Ignored when listing
 
 **`nodespace skill reset`** — Discard a user's customization of a seeded skill node's config (description/exclusion/tool_whitelist/max_iterations) and/or guidance (procedural markdown), restoring it to the currently-compiled template. The one path in NodeSpace allowed to override a `_seed.config_modified` / `_seed.guidance_modified` durability guard (ADR-072) — reconciliation on daemon startup never discards a user-modified aspect on its own. Requires confirmation unless `--yes` is passed
 

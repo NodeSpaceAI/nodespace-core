@@ -6185,6 +6185,81 @@ mod tests {
             .is_none());
     }
 
+    fn fetched_skill(id: &str, instructions: &str, guidance_modified: bool) -> GuidanceSkill {
+        GuidanceSkill {
+            id: id.to_string(),
+            name: "A skill".to_string(),
+            description: "What it is for".to_string(),
+            modified_at: "2026-10-01T00:00:00+00:00".to_string(),
+            confidence: Some(0.8),
+            instructions: instructions.to_string(),
+            guidance_modified,
+        }
+    }
+
+    /// A built-in skill nobody has edited is served in its CLI form, not as
+    /// the stored body, which names the in-app agent's tools.
+    #[test]
+    fn an_unmodified_built_in_skill_is_served_in_its_cli_form() {
+        let seed = nodespace_agent::skill_pipeline::SKILL_SEEDS
+            .iter()
+            .find(|s| s.title == "Node Deletion")
+            .expect("Node Deletion is seeded");
+        let stored = seed.template().markdown_content;
+        assert!(stored.contains("delete_node"), "{stored}");
+
+        let entry = skill_guidance_entry(fetched_skill(seed.id, &stored, false));
+
+        assert_eq!(entry.instructions, seed.external_body());
+        assert!(
+            entry.instructions.contains("`nodespace node delete <id>`"),
+            "{}",
+            entry.instructions
+        );
+        assert!(
+            !entry.instructions.contains("delete_node"),
+            "{}",
+            entry.instructions
+        );
+        assert_eq!(entry.confidence, Some(0.8));
+    }
+
+    /// A built-in skill a user has edited is theirs: it is served as stored
+    /// (ADR-072), never replaced by the seed's text.
+    #[test]
+    fn a_user_edited_built_in_skill_is_served_as_stored() {
+        let seed = &nodespace_agent::skill_pipeline::SKILL_SEEDS[0];
+        let entry = skill_guidance_entry(fetched_skill(seed.id, "Our own procedure.", true));
+        assert_eq!(entry.instructions, "Our own procedure.");
+    }
+
+    /// A skill a user wrote, or an installed workflow added, has no seed to
+    /// render from and is served as stored.
+    #[test]
+    fn a_skill_that_is_not_built_in_is_served_as_stored() {
+        let entry = skill_guidance_entry(fetched_skill(
+            "9d0c1b7e-0000-4000-8000-000000000001",
+            "File ADRs under the decisions collection.",
+            false,
+        ));
+        assert_eq!(
+            entry.instructions,
+            "File ADRs under the decisions collection."
+        );
+    }
+
+    /// A listing carries names and descriptions only, built-in skills
+    /// included.
+    #[test]
+    fn a_listed_skill_carries_no_instructions() {
+        let seed = &nodespace_agent::skill_pipeline::SKILL_SEEDS[0];
+        let mut listed = fetched_skill(seed.id, "", false);
+        listed.confidence = None;
+        let entry = skill_guidance_entry(listed);
+        assert_eq!(entry.instructions, "");
+        assert_eq!(entry.confidence, None);
+    }
+
     /// Every compiled seed template must be addressable by `(node_type, title)`
     /// — a duplicate would make `reset_seed_node` fail for that key.
     #[test]

@@ -4,14 +4,11 @@
 //! and without an embedding model -- headless, no daemon, no gRPC -- so it
 //! runs in every normal `cargo test`.
 //!
-//! `nodespace skill guidance` (packages/cli) is a thin formatting layer over
-//! exactly the reads this test performs directly on `NodeService`
-//! (`query_nodes_by_type("skill")` + `get_children`, the same structural
-//! walk `search_ops::search_semantic`'s `include_markdown` path uses to
-//! build a result's aggregated subtree markdown); that CLI layer additionally
-//! requires a live embedding model for its semantic-search RPC, which this
-//! environment doesn't have, so the two mechanisms it depends on are proven
-//! here instead, at the layer the CLI itself reads from.
+//! `nodespace skill guidance` (packages/cli) reads the same `skill` nodes
+//! this test reads directly on `NodeService`. Matching a task to a skill
+//! needs a live embedding model, which a normal test run doesn't have (that
+//! path is covered by `live_skill_guidance_fetch`), so the two mechanisms the
+//! fetch depends on are proven here, at the layer it reads from.
 //!
 //! 1. [`a_users_graph_edit_to_seeded_guidance_is_immediately_visible_to_a_fetch`] --
 //!    the runtime half of the mechanism: a user/team edit to a seeded
@@ -31,11 +28,11 @@
 //!    it.
 //!
 //! Both tests read the whole subtree via [`NodeService::get_subtree_data`] --
-//! the same structural walk `search_ops::search_semantic`'s `include_markdown`
-//! path recurses (a seeded skill's markdown parses into a nested hierarchy,
-//! e.g. an H1 heading node with the guidance paragraph nested under it, not
-//! a flat list of root children) -- rather than `get_children`, so these
-//! assertions don't depend on assuming a particular nesting depth.
+//! the walk skill search renders a skill's procedure from (a seeded skill's
+//! markdown can parse into a nested hierarchy, e.g. a list under its
+//! paragraph, not a flat list of root children) -- rather than
+//! `get_children`, so these assertions don't depend on assuming a particular
+//! nesting depth.
 
 use std::sync::Arc;
 

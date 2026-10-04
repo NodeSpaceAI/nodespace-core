@@ -17,11 +17,19 @@
 //!
 //! ## Why enumeration is dynamic
 //!
-//! Coverage is computed by walking `Cli::command()` and `seed_skill_nodes()`
-//! at test time, not by comparing against a hand-maintained list of names. A
+//! Coverage is computed by walking `Cli::command()` and `SKILL_SEEDS` at test
+//! time, not by comparing against a hand-maintained list of names. A
 //! checked-in list is itself a second representation that drifts, and it fails
 //! in the worst direction — silently, by omission. This mirrors the existing
 //! precedent in `agent_guidance.rs`'s `guidance_corpus()`.
+//!
+//! ## What the body carries
+//!
+//! `SKILL.md` says what NodeSpace is and how to fetch its instructions. The
+//! procedures themselves are the skill nodes, which an agent fetches with
+//! `nodespace skill guidance` and which come back written in CLI commands. So
+//! the guards here are that the body teaches the fetch, and that what a fetch
+//! serves names commands the CLI has.
 
 use clap::{Command as ClapCommand, CommandFactory};
 use nodespace_cli::Cli;
@@ -65,51 +73,6 @@ fn skill_md() -> String {
     }
 
     combined
-}
-
-/// The shipped skill with every generated region stripped out — i.e. only the
-/// prose a human wrote.
-///
-/// Some assertions are about whether a *human* explained something, and those
-/// must not be satisfiable by generated content. The generated CLI surface
-/// contains every command string by construction, so any needle shaped like a
-/// command is trivially present in it: an assertion checking the full corpus
-/// for `nodespace node delete` passes even if every word of hand-written
-/// guidance were deleted. That is the same "cannot fail" defect as searching
-/// the whole corpus for a colliding flag name — and it lands on the one test
-/// whose subject is precisely the judgment prose this file's one-way contract
-/// exists to protect.
-fn skill_prose_only() -> String {
-    let full = skill_md();
-    let mut out = String::new();
-    let mut rest = full.as_str();
-
-    // Regions are delimited by `<!-- BEGIN GENERATED: ... -->` / `<!-- END
-    // GENERATED: ... -->`. Drop everything between each pair, keeping the prose
-    // around them.
-    while let Some(begin) = rest.find("<!-- BEGIN GENERATED:") {
-        out.push_str(&rest[..begin]);
-        let after = &rest[begin..];
-        match after.find("<!-- END GENERATED:") {
-            Some(end_start) => {
-                let tail = &after[end_start..];
-                let end_len = tail
-                    .find("-->")
-                    .map(|i| i + "-->".len())
-                    .unwrap_or(tail.len());
-                rest = &tail[end_len..];
-            }
-            // An unterminated begin marker means the file is malformed; the
-            // generator's own splice would have rejected it. Stop here rather
-            // than silently keeping generated content.
-            None => {
-                rest = "";
-                break;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Subcommands a user can actually invoke — clap's generated `help` and
@@ -282,83 +245,151 @@ fn every_global_cli_flag_is_documented() {
     );
 }
 
-/// Every seeded skill is represented in SKILL.md.
-///
-/// `seed_skill_nodes()` defines **eight** skills, not
-/// the six built from named `*_guidance()` functions: **Research & Search** and
-/// **Node Creation** are inline raw strings with no builder function. Any check
-/// keyed on function names would silently skip both — and Research & Search is
-/// the largest body of the set, and the un-generated source of SKILL.md's own
-/// Tool Decision Guide.
-///
-/// Enumerating `seed_skill_nodes()` directly is what makes that impossible: a
-/// skill defined any way at all is a `NodeTemplate` in the returned vector.
-#[test]
-fn every_seeded_skill_is_represented() {
-    // Prose only. The generated CLI surface contains every command string by
-    // construction, so checking the full corpus would pass even if all the
-    // hand-written guidance were deleted — this test would be measuring the
-    // generator instead of the thing it is named for.
-    let skill = skill_prose_only().to_lowercase();
-    let mut missing = Vec::new();
+/// The `nodespace …` invocations a piece of guidance shows in code spans,
+/// each as the words that follow `nodespace` up to its first flag or
+/// placeholder: `nodespace node update <id> --content …` is `["node",
+/// "update"]`.
+fn cited_commands(text: &str) -> Vec<Vec<String>> {
+    text.split('`')
+        // Every second segment sits between a pair of backticks.
+        .skip(1)
+        .step_by(2)
+        .filter_map(|span| span.strip_prefix("nodespace "))
+        .map(|rest| {
+            rest.split_whitespace()
+                .take_while(|word| {
+                    word.chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '-')
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|words| !words.is_empty())
+        .collect()
+}
 
-    for template in nodespace_agent::skill_pipeline::seed_skill_nodes() {
-        // The mapping below is hand-written, and unavoidably so: the two sides
-        // share no identifier. A seeded skill's `tool_whitelist` names internal
-        // tools (`create_node`, `search_semantic`) that appear nowhere in the
-        // skill, because the CLI is the external surface — so there is nothing
-        // to derive a needle from. What is NOT hand-maintained is the *list of
-        // skills*, which comes from `seed_skill_nodes()`; a skill added later
-        // hits the fallback arm and fails, rather than being silently omitted.
-        //
-        // Needles are full CLI invocations rather than bare nouns. A needle
-        // like "search" matches dozens of unrelated places and would pass for a
-        // skill whose commands were entirely absent, which is the failure mode
-        // this test exists to prevent.
-        let covered = match template.title.as_str() {
-            "Research & Search" => {
-                skill.contains("nodespace search") && skill.contains("nodespace node query")
+/// Every built-in skill, as an agent outside the app is served it, tells
+/// that agent what to run, and every command it names is one the CLI has.
+///
+/// `SKILL.md` no longer restates the built-in skills' procedures: an outside
+/// agent fetches each skill, rendered in CLI commands. So what has to hold is
+/// that the rendering is real. A command the CLI does not have is the one
+/// mistake the fetched text cannot recover from, and nothing else ties a rule
+/// fragment's wording to the parser.
+///
+/// The list of skills comes from the seed table, so a skill added later is
+/// checked with no change here.
+#[test]
+fn every_seeded_skill_is_served_in_real_cli_commands() {
+    let cli = Cli::command();
+    let mut problems = Vec::new();
+
+    for seed in nodespace_agent::skill_pipeline::SKILL_SEEDS {
+        let commands = cited_commands(&seed.external_body());
+        if commands.is_empty() {
+            problems.push(format!("{}: names no `nodespace` command", seed.title));
+        }
+        for words in commands {
+            let shown = format!("nodespace {}", words.join(" "));
+            let Some(group) = visible(&cli)
+                .into_iter()
+                .find(|c| c.get_name() == words[0])
+            else {
+                problems.push(format!("{}: `{shown}` is not a command", seed.title));
+                continue;
+            };
+            let leaves = visible(group);
+            if leaves.is_empty() {
+                continue;
             }
-            "Node Creation" => skill.contains("nodespace node create"),
-            "Schema Creation" => {
-                skill.contains("nodespace schema create") && skill.contains("nodespace schema list")
+            // A group is cited either by a leaf (`node update`) or, rarely,
+            // bare. A second word that is not one of its leaves is a command
+            // that does not exist.
+            if let Some(leaf) = words.get(1) {
+                if !leaves.iter().any(|c| c.get_name() == leaf) {
+                    problems.push(format!("{}: `{shown}` is not a command", seed.title));
+                }
             }
-            "Graph Editing" => {
-                skill.contains("nodespace node update")
-                    && skill.contains("nodespace node set-status")
-            }
-            "Relationship Management" => {
-                skill.contains("nodespace relationship create")
-                    && skill.contains("nodespace relationship get")
-            }
-            "Node Deletion" => skill.contains("nodespace node delete"),
-            "Conflict Journal" => {
-                skill.contains("nodespace conflicts list")
-                    && skill.contains("nodespace conflicts dismiss")
-            }
-            "Node Merge" => skill.contains("nodespace conflicts merge"),
-            "Bulk Import" => skill.contains("nodespace import"),
-            "Organization" => skill.contains("member_of"),
-            "Play Workflow State" => skill.contains("nodespace playbook get-workflow-state"),
-            // A skill added later has no arm here and fails loudly, which is
-            // the intent: someone must decide how it surfaces to an external
-            // agent rather than have it silently omitted.
-            other => {
-                missing.push(format!("{other} (no coverage rule defined)"));
-                true
-            }
-        };
-        if !covered {
-            missing.push(template.title.clone());
         }
     }
 
     assert!(
-        missing.is_empty(),
-        "these seeded skills have no counterpart in SKILL.md: {missing:#?}\n\
-         Every skill the local agent is taught should be reachable by an \
-         external agent too, or explicitly justified as internal-only."
+        problems.is_empty(),
+        "built-in skills served to an external agent must name real CLI commands: \
+         {problems:#?}\nFix the `skill-md` form of the rule fragment that names it \
+         (packages/agent/src/seeds/rules/skill-md/)."
     );
+}
+
+/// `SKILL.md` teaches the fetch and carries no procedure a skill owns.
+///
+/// The body is loaded whole on activation, so everything in it is paid for on
+/// every task. Procedure lives in the skill nodes, fetched when a task needs
+/// it. This pins the three things the body has to say for that to work, and
+/// the sections that used to restate procedure and must not come back.
+#[test]
+fn skill_md_teaches_the_fetch_and_restates_no_procedure() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skill");
+    let body = std::fs::read_to_string(dir.join("SKILL.md")).expect("failed to read SKILL.md");
+
+    // How to fetch: by task, and listing everything.
+    assert!(
+        body.contains("nodespace skill guidance \"<the task, in your own words>\""),
+        "SKILL.md must show how to fetch the skills for a task"
+    );
+    assert!(
+        body.contains("every skill, by name and description"),
+        "SKILL.md must show how to list every skill"
+    );
+    // What comes back, and how to treat it.
+    assert!(
+        body.contains("What comes back is your instructions for the operation."),
+        "SKILL.md must tell the agent to treat fetched skills as its instructions"
+    );
+    // That more instructions live in NodeSpace than this file carries, of
+    // both kinds.
+    for needle in [
+        "More instructions live there than this file carries",
+        "How to operate NodeSpace itself",
+        "How this workspace works",
+        "Issues and Cycles",
+        "fetch them before you work in one of its domains",
+    ] {
+        assert!(body.contains(needle), "SKILL.md must say: {needle:?}");
+    }
+    // The trust boundary stays in front of the first fetch.
+    assert!(body.contains("references/graph-authored-guidance.md"));
+
+    // An installed setup is described as types and workflows. The one place
+    // the word survives is a reference file's name.
+    let prose: String = body
+        .lines()
+        .map(|line| line.replace("-playbook.md", ""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !prose.to_lowercase().contains("playbook"),
+        "SKILL.md describes an installed setup as its types and workflows, not as a Playbook"
+    );
+
+    for heading in ["## Tool Decision Guide", "## Common Agent Tasks"] {
+        assert!(
+            !body.contains(heading),
+            "SKILL.md restates procedure a skill owns: {heading:?} is back"
+        );
+    }
+    // The relationship claim that contradicted the command reference: four
+    // names need no declaration.
+    assert!(
+        !body.contains("Relationships must be defined on a schema"),
+        "SKILL.md must not say every relationship needs a schema declaration"
+    );
+    for name in nodespace_core::models::schema::BUILTIN_RELATIONSHIP_NAMES {
+        assert!(
+            body.contains(&format!("`{name}`")),
+            "SKILL.md's mental model must name the built-in relationship `{name}`"
+        );
+    }
 }
 
 /// Every built-in structural relationship name is documented.

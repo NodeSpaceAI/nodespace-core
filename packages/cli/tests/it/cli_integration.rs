@@ -28,7 +28,7 @@ use nodespace_core::{NodeService as CoreNodeService, SqliteStore};
 use nodespace_daemon::nodespace::{
     ConflictsForNodeRequest, CreateDatabaseRequest, CreateNodeRequest, GetConflictRequest,
     GetNodeRequest, GetRelatedNodesRequest, ListDatabasesRequest, NodeSortOrder,
-    QueryNodesSimpleRequest,
+    QueryNodesSimpleRequest, SkillGuidanceRequest,
 };
 use nodespace_daemon::{
     DatabaseManager, DatabaseServiceImpl, DatabaseServiceServer, DbManagerLayer, NodeServiceImpl,
@@ -528,14 +528,10 @@ async fn search_without_embedding_service_reports_unavailable() {
 /// `nodespace skill guidance` is dispatched specially in `lib.rs::run` (the
 /// one `skill` subcommand that opens a `NodeClient`, unlike
 /// install/uninstall/status). This proves that wiring reaches the real
-/// `NodeService.SearchNodes` RPC end to end -- same embedding-gated failure
-/// mode as plain `search`, since `skill guidance` deliberately reuses that
-/// RPC rather than adding a parallel code path. The success path (a real
-/// seeded skill's guidance coming back with a provenance envelope) is
-/// covered without an embedding model in `packages/agent`'s
-/// `skill_guidance_fetch_mechanism` test, which reads the same seeded
-/// `skill` nodes directly off `NodeService` instead of through this
-/// semantic-search-gated RPC.
+/// `NodeService.GetSkillGuidance` RPC end to end: a task is matched by
+/// meaning, so without an embedding model the fetch reports unavailable
+/// rather than an empty result. The success path is covered with the real
+/// model by `skill_guidance_fetches_skills_and_schemas_end_to_end` below.
 #[tokio::test]
 async fn skill_guidance_without_embedding_service_reports_unavailable() {
     let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
@@ -559,6 +555,334 @@ async fn skill_guidance_without_embedding_service_reports_unavailable() {
         .find_map(|e| e.downcast_ref::<tonic::Status>())
         .expect("expected tonic::Status in error chain");
     assert_eq!(status.code(), Code::Unavailable);
+
+    let _ = shutdown.send(());
+}
+
+/// `nodespace skill guidance` with no task lists every skill by name and
+/// description, with no instructions and no schemas. It ranks nothing, so it
+/// answers with no embedding model: the fallback an agent has when a fetch
+/// by task is unavailable.
+#[tokio::test]
+async fn skill_guidance_with_no_task_lists_every_skill_without_a_model() {
+    let (sock, shutdown, _tempdir, _node_service) = spawn_test_daemon_with_seeded_skills().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    for query in ["", "*"] {
+        let response = client
+            .get_skill_guidance(SkillGuidanceRequest {
+                query: query.to_string(),
+                limit: 3,
+            })
+            .await
+            .expect("a listing needs no embedding model")
+            .into_inner();
+
+        let mut expected: Vec<(&str, &str)> = nodespace_agent::skill_pipeline::SKILL_SEEDS
+            .iter()
+            .map(|seed| (seed.title, seed.description))
+            .collect();
+        expected.sort();
+        let listed: Vec<(&str, &str)> = response
+            .skills
+            .iter()
+            .map(|s| (s.name.as_str(), s.description.as_str()))
+            .collect();
+        assert_eq!(
+            listed, expected,
+            "every skill, by name, whatever `limit` says"
+        );
+        assert!(
+            response.skills.iter().all(|s| s.instructions.is_empty()),
+            "a listing carries no instructions"
+        );
+        assert!(
+            response.skills.iter().all(|s| s.confidence.is_none()),
+            "a listing ranks nothing"
+        );
+        assert!(response.schemas.is_empty(), "a listing carries no schemas");
+    }
+
+    // The same through the command handler, which must not fail either.
+    commands::skill::run_guidance(
+        &mut client,
+        commands::skill::GuidanceArgs {
+            query: String::new(),
+            limit: 3,
+        },
+        true,
+    )
+    .await
+    .expect("listing through the command handler");
+
+    let _ = shutdown.send(());
+}
+
+/// A daemon serving a database seeded as a real one is — built-in skills,
+/// the Linear-style setup — with a real embedding model behind it and every
+/// queued root embedded. `None` when the model is not on disk.
+async fn spawn_embedded_daemon() -> Option<(
+    PathBuf,
+    oneshot::Sender<()>,
+    TempDir,
+    Arc<CoreNodeService>,
+    Arc<nodespace_core::services::NodeEmbeddingService>,
+)> {
+    use nodespace_core::services::{EmbeddingProcessor, NodeAccessor, NodeEmbeddingService};
+    use nodespace_daemon::EmbeddingReady;
+
+    let tempdir = TempDir::new().expect("failed to create tempdir");
+    let sock_path = tempdir.path().join("test-daemon.sock");
+    let mut store = Arc::new(
+        SqliteStore::new(tempdir.path().join("daemon-db"))
+            .await
+            .expect("failed to open SqliteStore"),
+    );
+    let node_service = Arc::new(
+        CoreNodeService::new(&mut store)
+            .await
+            .expect("failed to build NodeService"),
+    );
+
+    let mut nlp = EmbeddingService::new(nodespace_nlp_engine::EmbeddingConfig::default())
+        .expect("config must validate");
+    if nlp.initialize().is_err() || !nlp.is_initialized() {
+        eprintln!("SKIP: nomic-embed-text-v1.5 model not found on disk");
+        return None;
+    }
+    let node_accessor: Arc<dyn NodeAccessor> = node_service.clone();
+    let embedding_service = Arc::new(NodeEmbeddingService::new(
+        Arc::new(nlp),
+        store.clone(),
+        node_accessor,
+        node_service.behaviors().clone(),
+    ));
+
+    let groups: Vec<_> = nodespace_agent::skill_pipeline::seed_skill_nodes()
+        .iter()
+        .map(|t| {
+            nodespace_core::markdown::prepare_nodes_from_template(t).expect("template must parse")
+        })
+        .collect();
+    node_service
+        .seed_nodes_from_templates(groups)
+        .await
+        .expect("initial seed must succeed");
+    let playbook =
+        nodespace_core::methodology::playbook_by_id("linear").expect("the linear playbook ships");
+    let report = nodespace_core::methodology::install_playbook(&node_service, &playbook).await;
+    assert!(report.success, "the linear playbook must install");
+
+    // Embed what the write paths queued, as the processor would.
+    for id in store
+        .get_stale_embedding_root_ids(None, 0, 3)
+        .await
+        .expect("the queue must read")
+    {
+        embedding_service
+            .embed_root_node(&id)
+            .await
+            .unwrap_or_else(|e| panic!("queued root {id} must embed: {e}"));
+    }
+
+    let scheduler = Arc::new(nodespace_core::services::EmbeddingScheduler::new());
+    let processor = Arc::new(
+        EmbeddingProcessor::new(
+            embedding_service.clone(),
+            scheduler.clone(),
+            "test-db".to_string(),
+        )
+        .expect("processor must build"),
+    );
+    let service = NodeServiceImpl::new(
+        node_service.clone(),
+        Arc::new(tokio::sync::RwLock::new(Some(EmbeddingReady {
+            embedding_service: embedding_service.clone(),
+            processor,
+        }))),
+        scheduler,
+    );
+
+    let listener = UnixListener::bind(&sock_path).expect("failed to bind test UDS socket");
+    let incoming = UnixListenerStream::new(listener);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(NodeServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("server crashed");
+    });
+
+    for _ in 0..50 {
+        if connect(&sock_path, DatabaseIdInterceptor::none())
+            .await
+            .is_ok()
+        {
+            return Some((
+                sock_path,
+                shutdown_tx,
+                tempdir,
+                node_service,
+                embedding_service,
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "daemon did not start accepting connections on {}",
+        sock_path.display()
+    );
+}
+
+/// The regression test for the fetch itself: `nodespace skill guidance
+/// "<task>"`, over the real transport, against embedded skill nodes.
+///
+/// Before the fix this returned nothing for any task. The command rode the
+/// generic node search, whose default scope drops every `skill` node.
+///
+/// Ignored by default — loads a real embedding model from the standard
+/// NodeSpace catalog path. Run explicitly:
+///
+/// ```text
+/// .tools/bin/cargo-nextest nextest run -p nodespace-cli --test it cli_integration::skill_guidance_fetches --run-ignored all
+/// ```
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn skill_guidance_fetches_skills_and_schemas_end_to_end() {
+    let Some((sock, shutdown, _tempdir, node_service, embedding_service)) =
+        spawn_embedded_daemon().await
+    else {
+        return;
+    };
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let fetch = |query: &str| SkillGuidanceRequest {
+        query: query.to_string(),
+        limit: 3,
+    };
+
+    // A task worded as a built-in skill describes itself returns that skill
+    // first, with its procedure written in CLI commands.
+    let deletion = client
+        .get_skill_guidance(fetch(
+            "Delete, remove, erase, purge, discard, trash, drop, or get rid of stored content.",
+        ))
+        .await
+        .expect("a task must fetch")
+        .into_inner();
+    let first = deletion.skills.first().expect("a skill must match");
+    assert_eq!(first.name, "Node Deletion");
+    assert!(
+        first.instructions.contains("`nodespace node delete <id>`"),
+        "a built-in skill is served in CLI commands: {}",
+        first.instructions
+    );
+    assert!(
+        !first.instructions.contains("delete_node"),
+        "a built-in skill served to an outside agent names no in-app tool: {}",
+        first.instructions
+    );
+    assert!(first.confidence.is_some());
+
+    // A task in an installed domain returns that domain's skills and the
+    // schemas of the types it touches.
+    let domain = client
+        .get_skill_guidance(fetch("add an issue to the current cycle"))
+        .await
+        .expect("a task must fetch")
+        .into_inner();
+    let skills: Vec<&str> = domain.skills.iter().map(|s| s.name.as_str()).collect();
+    for expected in ["Creating an Issue", "Sprints and Cycles"] {
+        assert!(skills.contains(&expected), "{expected:?} not in {skills:?}");
+    }
+    let schemas: Vec<&str> = domain.schemas.iter().map(|s| s.id.as_str()).collect();
+    for expected in ["issue", "cycle"] {
+        assert!(
+            schemas.contains(&expected),
+            "{expected:?} not in {schemas:?}"
+        );
+    }
+    let issue: serde_json::Value = serde_json::from_str(
+        &domain
+            .schemas
+            .iter()
+            .find(|s| s.id == "issue")
+            .expect("issue schema")
+            .definition,
+    )
+    .expect("a schema's definition is JSON");
+    assert!(issue["fields"].as_array().is_some_and(|f| !f.is_empty()));
+    assert!(issue["relationships"]
+        .as_array()
+        .is_some_and(|r| !r.is_empty()));
+
+    // A built-in skill a user has edited is served as they left it.
+    let deletion_id = first.id.clone();
+    let child = node_service
+        .get_children(&deletion_id)
+        .await
+        .expect("children")
+        .into_iter()
+        .next()
+        .expect("seeded guidance must have a child");
+    node_service
+        .update_node(
+            &child.id,
+            child.version,
+            nodespace_core::models::NodeUpdate::new()
+                .with_content("Our team archives instead of deleting.".to_string()),
+        )
+        .await
+        .expect("a user's edit to seeded guidance must be allowed");
+    // The edit leaves the skill's embedding stale, and a stale embedding is
+    // out of the index until it is rebuilt. The write marks it stale from a
+    // spawned task, so rebuild and look again until that has landed.
+    let mut edited_instructions = None;
+    for _ in 0..40 {
+        embedding_service
+            .embed_root_node(&deletion_id)
+            .await
+            .expect("the edited skill must re-embed");
+        let edited = client
+            .get_skill_guidance(fetch("delete a node"))
+            .await
+            .expect("a task must fetch")
+            .into_inner();
+        if let Some(skill) = edited.skills.into_iter().find(|s| s.id == deletion_id) {
+            edited_instructions = Some(skill.instructions);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let edited_instructions = edited_instructions.expect("Node Deletion must still match");
+    assert!(
+        edited_instructions.contains("Our team archives instead of deleting."),
+        "an edited skill is served as stored: {edited_instructions}"
+    );
+    assert!(
+        !edited_instructions.contains("`nodespace node delete <id>`"),
+        "an edited skill is not replaced by the seed's text: {edited_instructions}"
+    );
+
+    // And the command handler prints all of it, in both modes.
+    for json in [false, true] {
+        commands::skill::run_guidance(
+            &mut client,
+            commands::skill::GuidanceArgs {
+                query: "add an issue to the current cycle".into(),
+                limit: 3,
+            },
+            json,
+        )
+        .await
+        .expect("the command handler must print a fetch");
+    }
 
     let _ = shutdown.send(());
 }
