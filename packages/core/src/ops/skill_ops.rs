@@ -142,11 +142,32 @@ async fn render_node_subtree(node_service: &NodeService, root_id: &str) -> Strin
 /// Render a skill node's child subtree as markdown — the actual
 /// procedure the model must follow.
 ///
-/// One `get_subtree_data` query per skill. Acceptable under
-/// `MAX_SKILL_LIMIT = 10`; a batch API would eliminate serial round trips if
-/// the limit grows.
+/// One `get_subtree_data` query per skill. Acceptable for a search, which
+/// renders at most `MAX_SKILL_LIMIT = 10`; a batch API would eliminate serial
+/// round trips if the limit grows. A failed read renders as no procedure.
 async fn render_skill_instructions(node_service: &NodeService, skill_id: &str) -> String {
     render_node_subtree(node_service, skill_id).await
+}
+
+/// A skill's procedure for the list's version, where a failed read is an
+/// error: an empty body in its place would give a version that says the
+/// skill changed.
+///
+/// One query per skill, for every skill, each time the list is read. Skill
+/// libraries are tens of nodes; a batch read is the fix if they grow.
+async fn read_skill_instructions(
+    node_service: &NodeService,
+    skill_id: &str,
+) -> Result<String, OpsError> {
+    let (_, node_map, adjacency_list) = node_service
+        .get_subtree_data(skill_id)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to read the skill {skill_id}: {e}")))?;
+    Ok(render_subtree_markdown(
+        skill_id,
+        &node_map,
+        &adjacency_list,
+    ))
 }
 
 /// Render a schema node's own description subtree as markdown.
@@ -1063,7 +1084,7 @@ pub async fn list_skill_guidance(node_service: &NodeService) -> Result<SkillList
         let Some(fields) = skill_fields(node) else {
             continue;
         };
-        let body = render_skill_instructions(node_service, &node.id).await;
+        let body = read_skill_instructions(node_service, &node.id).await?;
         read.push((node, fields, body));
     }
 
@@ -1104,7 +1125,7 @@ pub async fn get_skill_guidance(
                 [node] => *node,
                 [] => {
                     return Err(OpsError::NotFound {
-                        id: format!("no skill has the name or id \"{key}\""),
+                        id: format!("skill \"{key}\""),
                     })
                 }
                 several => {

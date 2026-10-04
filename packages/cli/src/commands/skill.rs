@@ -355,13 +355,17 @@ pub async fn run_get(client: &mut NodeClient, args: GetArgs, json: bool) -> Resu
             name_or_id: args.name_or_id.clone(),
         })
         .await
-        .map_err(|status| {
-            anyhow::anyhow!(
-                "Fetching the skill \"{}\" failed: {}. `nodespace skill guidance` with no \
-                 task lists every skill by its exact name.",
-                args.name_or_id,
+        .map_err(|status| match status.code() {
+            // The daemon's message names the skill asked for.
+            tonic::Code::NotFound => anyhow::anyhow!(
+                "{}. `nodespace skill guidance` with no task lists every skill by its exact \
+                 name.",
                 status.message()
-            )
+            ),
+            _ => anyhow::Error::new(status).context(format!(
+                "Fetching the skill \"{}\" failed (GetSkill RPC)",
+                args.name_or_id
+            )),
         })?
         .into_inner();
 

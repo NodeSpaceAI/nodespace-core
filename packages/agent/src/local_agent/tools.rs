@@ -4762,10 +4762,9 @@ impl AgentToolExecutor for GraphToolExecutor {
             // that is not the seed of the handler it names is refused, and so
             // is any other subtype that takes a built-in tool's name: neither
             // can put its own description and schema in that tool's place.
-            let is_the_seed = Tool::from_name(&name).map(|tool| tool.seed_id() == node_id);
             let admitted = match origin {
-                ToolOrigin::Native => is_the_seed == Some(true),
-                ToolOrigin::External => is_the_seed.is_none(),
+                ToolOrigin::Native => Tool::is_seeded_as(&name, node_id),
+                ToolOrigin::External => Tool::from_name(&name).is_none(),
             };
             if !admitted {
                 tracing::warn!(

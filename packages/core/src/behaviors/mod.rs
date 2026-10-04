@@ -2021,13 +2021,15 @@ impl NodeBehavior for ToolNativeNodeBehavior {
         }
         // Optional: a tool with no CLI equivalent has none. A cleared field
         // is stored as null.
-        let cli_command = get_namespaced_prop(&node.properties, self.type_name(), "cli_command");
-        if cli_command.is_some_and(|command| !command.is_null() && !command.is_string()) {
-            return Err(NodeValidationError::InvalidProperties(
-                "tool cli_command must be text".to_string(),
-            ));
+        match get_namespaced_prop(&node.properties, self.type_name(), "cli_command") {
+            None | Some(Value::Null) => Ok(()),
+            Some(Value::String(command)) if is_cli_command(command) => Ok(()),
+            Some(_) => Err(NodeValidationError::InvalidProperties(
+                "tool cli_command must be a `nodespace` command and its subcommand, \
+                 with no arguments (for example `nodespace node get`)"
+                    .to_string(),
+            )),
         }
-        Ok(())
     }
 
     // `NodeBehaviorRegistry::resolve` answers these from the nearest
@@ -2043,6 +2045,28 @@ impl NodeBehavior for ToolNativeNodeBehavior {
     fn get_parent_contribution(&self, node: &Node) -> Option<String> {
         ToolNodeBehavior.get_parent_contribution(node)
     }
+}
+
+/// Whether `command` has the shape a tool's `cli_command` holds: `nodespace`,
+/// then one or two subcommand words, single-spaced on one line, with no flag
+/// and no argument.
+///
+/// An agent outside the app is handed this text as the command to run for a
+/// tool, so the field takes a command's name and nothing else: no flag that
+/// would skip a confirmation, no second line, no shell syntax.
+fn is_cli_command(command: &str) -> bool {
+    let mut words = command.split(' ');
+    let is_subcommand = |word: &str| {
+        word.starts_with(|c: char| c.is_ascii_lowercase())
+            && word
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    let subcommands: Vec<&str> = match words.next() {
+        Some("nodespace") => words.collect(),
+        _ => return false,
+    };
+    (1..=2).contains(&subcommands.len()) && subcommands.iter().all(|word| is_subcommand(word))
 }
 
 /// Where a tool comes from, which its subtype says (ADR-086 §12). Every
@@ -5135,6 +5159,47 @@ mod tests {
             "tool-native": { "handler": "search_nodes" },
         }));
         assert!(validate_native_tool(&node).is_ok());
+    }
+
+    #[test]
+    fn tool_node_takes_a_cli_command_that_is_a_command_name_and_nothing_else() {
+        let with_command = |command: Value| {
+            tool_node_with_props(json!({
+                "tool-native": { "handler": "search_nodes", "cli_command": command },
+            }))
+        };
+        for accepted in [
+            json!("nodespace query"),
+            json!("nodespace node get"),
+            json!("nodespace playbook get-workflow-state"),
+            Value::Null,
+        ] {
+            let node = with_command(accepted.clone());
+            assert!(
+                ToolNativeNodeBehavior.validate(&node).is_ok(),
+                "{accepted} must be accepted"
+            );
+        }
+        for refused in [
+            json!("nodespace node delete --yes"),
+            json!("nodespace node delete <id>"),
+            json!("nodespace node get\nnodespace node delete"),
+            json!("nodespace node get; rm -rf /"),
+            json!("nodespace  node get"),
+            json!("nodespace node get "),
+            json!("nodespace a b c"),
+            json!("nodespace"),
+            json!("rm -rf /"),
+            json!("Nodespace node get"),
+            json!(""),
+            json!(7),
+        ] {
+            let node = with_command(refused.clone());
+            let error = ToolNativeNodeBehavior
+                .validate(&node)
+                .expect_err(&format!("{refused} must be refused"));
+            assert!(format!("{error}").contains("cli_command"), "{error}");
+        }
     }
 
     #[test]
