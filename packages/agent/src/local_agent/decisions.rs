@@ -69,8 +69,8 @@ pub struct DecisionRecord {
     /// True only for the schema decision of a turn with an offered set
     /// (`routing::offered_types`), where `candidates` is that set, and only
     /// when the selection came from a call dispatch holds: a type read off
-    /// `update_node` or `create_schema` ran whatever it named. It is what
-    /// separates an off-menu selection that was refused from one that ran.
+    /// `create_schema` ran whatever it named. It is what separates an
+    /// off-menu selection that was refused from one that ran.
     pub enforced: bool,
 }
 
@@ -292,6 +292,11 @@ pub fn schema_candidates(candidates: &[SkillCandidate]) -> Vec<String> {
 /// the offered set. Otherwise reads `node_type` and falls back to `type` for
 /// `create_schema`, whose argument is the type being defined rather than one
 /// being referenced.
+///
+/// `update_node` names a node and no type. On a turn with an offered set the
+/// turn loop records that node's stored type instead of calling this, since
+/// that is the type dispatch holds the call by
+/// ([`Tool::held_node_id_parameter`]).
 ///
 /// Returns `None` for a tool that is not schema-scoped at all — `get_node` by
 /// id, say — because such a turn made no schema decision. Recording one would

@@ -1777,14 +1777,74 @@ fn off_menu_type_refused_result(
     })
 }
 
+/// Build the tool result returned in place of a call that would change a node
+/// whose type is outside the turn's offered set (`routing::offered_types`).
+///
+/// The call names a node and no type (`Tool::held_node_id_parameter`), so
+/// there is no tool-schema channel for this limit: the model learns it here.
+/// ADR-064 assigns an error like this to the tool-results channel.
+///
+/// Carries the same error code and `allowed_types` as
+/// [`off_menu_type_refused_result`], and the node's own type. It offers no
+/// re-send: a node's type is not the call's to choose. The way on is
+/// `route_clarify` when that is on this turn's surface, and a plain reply
+/// when it is not.
+///
+/// Flagged as an error: nothing ran.
+fn off_menu_node_refused_result(
+    node_type: &str,
+    offered: &[String],
+    clarify_offered: bool,
+) -> serde_json::Value {
+    let way_on = if clarify_offered {
+        "call route_clarify and ask"
+    } else {
+        "say so in your reply"
+    };
+    serde_json::json!({
+        "error": OFF_MENU_TYPE_ERROR,
+        "allowed_types": offered,
+        "node_type": node_type,
+        "message": format!(
+            "Not executed, and nothing was changed: this node is a \"{node_type}\", and this \
+             request covers only these types: {}. Do not change it another way: {way_on}.",
+            offered.join(", ")
+        ),
+    })
+}
+
+/// Build the tool result returned in place of a call that would change a node
+/// whose type could not be read, on a turn with an offered set.
+///
+/// The call is not run: the node could not be checked against the set, and a
+/// check that lets through what it cannot read holds nothing. A node that
+/// does not exist is a different case, and goes to the tool's own error.
+///
+/// The message asks for no re-send. A re-send would be this same call, which
+/// the per-turn duplicate guard stops before it is looked up again, so the
+/// way on is to tell the user.
+///
+/// Flagged as an error: nothing ran. It is not a `type_not_offered` refusal,
+/// since the node's type is not known to be off the menu.
+fn node_type_unread_result(reason: &crate::agent_types::ToolError) -> serde_json::Value {
+    serde_json::json!({
+        "error": "node_type_unread",
+        "message": format!(
+            "Not executed, and nothing was changed: this node's type could not be read, so the \
+             call could not be checked against the types this request covers ({reason}). \
+             Do not re-send it: tell the user the change was not made because the record could not be read, and that they can ask again."
+        ),
+    })
+}
+
 /// Whether `result` is the refusal of a call that named a type outside the
-/// turn's offered set.
+/// turn's offered set, or a node of one.
 fn is_off_menu_type_refusal(result: &serde_json::Value) -> bool {
     result.get("error").and_then(|v| v.as_str()) == Some(OFF_MENU_TYPE_ERROR)
 }
 
 /// `error` code on the result of a call refused for naming a type outside
-/// the turn's offered set.
+/// the turn's offered set, or a node of such a type.
 const OFF_MENU_TYPE_ERROR: &str = "type_not_offered";
 
 /// Maximum tokens any single inference round may generate.
@@ -3531,24 +3591,38 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     .unwrap_or_else(|| decisions::schema_candidates(&routed.candidates));
                 // Only the first call's type is scored, matching the operation
                 // record: one round is one decision about where to start.
-                let selected_type = tool_calls
-                    .first()
-                    .and_then(|tc| {
-                        serde_json::from_str::<serde_json::Value>(&tc.arguments_json)
-                            .ok()
-                            .map(|args| (tc.function_name.clone(), args))
-                    })
-                    .and_then(|(name, args)| decisions::selected_schema(&name, &args));
+                let first_call = tool_calls.first().and_then(|tc| {
+                    serde_json::from_str::<serde_json::Value>(&tc.arguments_json)
+                        .ok()
+                        .map(|args| (tc.function_name.as_str(), args))
+                });
+                // On a turn with an offered set, a call that names the node it
+                // changes selects that node's type: the type dispatch holds
+                // the call by. One read, for the round's first call only.
+                let held_node = first_call
+                    .as_ref()
+                    .filter(|_| offered_types.is_some())
+                    .and_then(|(name, args)| super::tools::held_node_id(name, args));
+                let selected_type = match held_node {
+                    // A read that fails records no selection. Dispatch
+                    // makes its own read and does not run the call on a
+                    // failure.
+                    Some(id) => self.tool_executor.node_type(id).await.ok().flatten(),
+                    None => first_call
+                        .as_ref()
+                        .and_then(|(name, args)| decisions::selected_schema(name, args)),
+                };
                 // A turn with neither candidates nor a selection made no schema
                 // decision at all; recording one would put a null in the
                 // denominator of every accuracy figure computed from this.
                 if !schema_candidates.is_empty() || selected_type.is_some() {
                     // A selection read from a tool dispatch does not hold
-                    // (`update_node`, `create_schema`) ran whatever it named,
-                    // so that record is not an enforced one.
+                    // (`create_schema`) ran whatever it named, so that record
+                    // is not an enforced one.
                     let selection_held = selected_type.is_none()
-                        || tool_calls.first().is_some_and(|tc| {
-                            super::tools::existing_type_parameter_tool(&tc.function_name).is_some()
+                        || first_call.as_ref().is_some_and(|(name, _)| {
+                            super::tools::existing_type_parameter_tool(name).is_some()
+                                || super::tools::held_node_id_parameter_tool(name).is_some()
                         });
                     let sc = decisions::record_schema(
                         &schema_candidates,
@@ -4245,6 +4319,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // Whether this call reached the executor, as opposed to being
                 // answered by one of the guards below.
                 let mut dispatched = false;
+                // The type of the node this call would change, looked up on a
+                // turn with an offered set for a tool held by that type. Kept
+                // for the `Tool executed` line, which reports whether a call
+                // on an off-menu node ran.
+                let mut target_node_type: Option<String> = None;
+                // Set when that lookup failed. The call is then not run.
+                let mut target_node_unread: Option<crate::agent_types::ToolError> = None;
                 let (args, tool_result) = match parsed_args {
                     Ok(mut args) => {
                         consecutive_malformed_calls = 0;
@@ -4339,6 +4420,21 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                             } else {
                                 None
                             };
+                            // Looked up only for a call the guard above lets
+                            // past, and only on a turn with an offered set. A
+                            // node that cannot be found has no type here, and
+                            // the call goes on to the executor's own error. A
+                            // read that fails is kept, and stops the call.
+                            if already_written.is_none() && offered_types.is_some() {
+                                if let Some(id) =
+                                    super::tools::held_node_id(&tc.function_name, &args)
+                                {
+                                    match self.tool_executor.node_type(id).await {
+                                        Ok(node_type) => target_node_type = node_type,
+                                        Err(e) => target_node_unread = Some(e),
+                                    }
+                                }
+                            }
                             if let Some(prior) = already_written {
                                 tracing::warn!(
                                     session_id = %session.id,
@@ -4395,6 +4491,57 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                     &named,
                                     offered,
                                     may_omit,
+                                    tools.iter().any(|t| t.name == routing::ROUTE_CLARIFY_TOOL),
+                                );
+                                (
+                                    args,
+                                    Ok(crate::agent_types::ToolResult {
+                                        tool_call_id: tc.id.clone(),
+                                        name: tc.function_name.clone(),
+                                        result: refused,
+                                        is_error: true,
+                                    }),
+                                )
+                            } else if let Some(reason) = &target_node_unread {
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    tool = %tc.function_name,
+                                    iteration = iteration,
+                                    error = %reason,
+                                    "Tool call not run — its node's type could not be read on a turn with an offered set"
+                                );
+                                let unread = node_type_unread_result(reason);
+                                (
+                                    args,
+                                    Ok(crate::agent_types::ToolResult {
+                                        tool_call_id: tc.id.clone(),
+                                        name: tc.function_name.clone(),
+                                        result: unread,
+                                        is_error: true,
+                                    }),
+                                )
+                            } else if let Some((node_type, offered)) =
+                                offered_types.as_deref().and_then(|offered| {
+                                    super::tools::off_menu_node_type(
+                                        target_node_type.as_deref(),
+                                        offered,
+                                    )
+                                    .map(|node_type| (node_type, offered))
+                                })
+                            {
+                                // The call names a node and no type, so no
+                                // `enum` states this limit. The node's own
+                                // type is what the set binds here.
+                                tracing::warn!(
+                                    session_id = %session.id,
+                                    tool = %tc.function_name,
+                                    iteration = iteration,
+                                    node_type = %node_type,
+                                    "Tool call refused — its node's type is outside this turn's offered set"
+                                );
+                                let refused = off_menu_node_refused_result(
+                                    node_type,
+                                    offered,
                                     tools.iter().any(|t| t.name == routing::ROUTE_CLARIFY_TOOL),
                                 );
                                 (
@@ -4554,14 +4701,20 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // `result_preview`: the preview is cut at 300 characters, and a
                 // long list of allowed ids would push the error code past it.
                 let type_refused = is_error && is_off_menu_type_refusal(&result_value);
-                // Whether a call naming a type outside the turn's offered set
-                // reached the executor. The refusal above makes this false; it
-                // is worked out here from the arguments and from what dispatch
-                // did, not from which branch ran, so that it reports the
-                // property rather than restating the guard.
+                // Whether a call naming a type outside the turn's offered set,
+                // or a node of one, reached the executor. The refusals above
+                // make this false; it is worked out here from the arguments,
+                // the node's looked-up type and what dispatch did, not from
+                // which branch ran, so that it reports the property rather
+                // than restating the guard.
                 let off_menu_ran = dispatched
                     && offered_types.as_deref().is_some_and(|offered| {
                         super::tools::off_menu_type(&tc.function_name, &args, offered).is_some()
+                            || super::tools::off_menu_node_type(
+                                target_node_type.as_deref(),
+                                offered,
+                            )
+                            .is_some()
                     });
                 tracing::info!(
                     tool = %tc.function_name,
@@ -14019,6 +14172,11 @@ mod tests {
         executed: Arc<std::sync::Mutex<Vec<String>>>,
         /// The types the user has defined.
         user_types: Vec<String>,
+        /// The stored type of each node this executor knows, by bare id.
+        node_types: HashMap<String, String>,
+        /// Ids whose type was asked for, so a test can tell a turn that
+        /// looked a node up from one that did not.
+        type_lookups: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl RoutingToolExecutor {
@@ -14029,7 +14187,21 @@ mod tests {
                 queries: Arc::new(std::sync::Mutex::new(Vec::new())),
                 executed: Arc::new(std::sync::Mutex::new(Vec::new())),
                 user_types: Vec::new(),
+                node_types: HashMap::new(),
+                type_lookups: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
+        }
+
+        fn with_node_types(mut self, node_types: &[(&str, &str)]) -> Self {
+            self.node_types = node_types
+                .iter()
+                .map(|(id, node_type)| (id.to_string(), node_type.to_string()))
+                .collect();
+            self
+        }
+
+        fn type_lookups_handle(&self) -> Arc<std::sync::Mutex<Vec<String>>> {
+            self.type_lookups.clone()
         }
 
         fn with_user_types(mut self, user_types: &[&str]) -> Self {
@@ -14078,7 +14250,17 @@ mod tests {
         async fn user_type_names(&self) -> Vec<String> {
             self.user_types.clone()
         }
+        async fn node_type(&self, id: &str) -> Result<Option<String>, ToolError> {
+            self.type_lookups.lock().unwrap().push(id.to_string());
+            if id == UNREADABLE_NODE {
+                return Err(ToolError::ExecutionFailed("the store is locked".into()));
+            }
+            Ok(self.node_types.get(id).cloned())
+        }
     }
+
+    /// A node id whose type [`RoutingToolExecutor`] fails to read.
+    const UNREADABLE_NODE: &str = "unreadable";
 
     fn skill_candidate(name: &str, score: f32, tools: &[&str]) -> SkillCandidate {
         SkillCandidate {
@@ -15323,7 +15505,17 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// The type ids the linked candidate in these tests carries.
+    /// `retainer_invoice` stands for a subtype of the linked `invoice`: the
+    /// offered set carries a linked type's subtypes beside it.
     const OFFERED: [&str; 2] = ["invoice", "retainer_invoice"];
+
+    /// The nodes these tests' executor knows, by bare id, and their types.
+    /// `c-1` is the one outside [`OFFERED`].
+    const STORED_NODES: [(&str, &str); 3] = [
+        ("n-1", "invoice"),
+        ("n-2", "retainer_invoice"),
+        ("c-1", "company"),
+    ];
 
     /// The tools that take a type, under their real parameter schemas, so the
     /// parameters these tests exercise are the ones production declares.
@@ -15450,10 +15642,29 @@ mod tests {
         routing_disabled: bool,
         rounds: &[&[(&str, serde_json::Value)]],
     ) -> (Vec<ToolDefinition>, Vec<String>, AgentTurnResult) {
+        let (tools, executed, _, result) =
+            run_scripted_turn_with_lookups(registry, candidates, routing_disabled, rounds).await;
+        (tools, executed, result)
+    }
+
+    /// [`run_scripted_turn`], and the ids whose type the turn asked the
+    /// executor for. The executor knows [`STORED_NODES`].
+    async fn run_scripted_turn_with_lookups(
+        registry: MockToolExecutor,
+        candidates: Vec<SkillCandidate>,
+        routing_disabled: bool,
+        rounds: &[&[(&str, serde_json::Value)]],
+    ) -> (
+        Vec<ToolDefinition>,
+        Vec<String>,
+        Vec<String>,
+        AgentTurnResult,
+    ) {
         let engine = RecordingEngine::new(scripted_engine(rounds));
         let tools = engine.tools_handle();
-        let exec = RoutingToolExecutor::new(registry, candidates);
+        let exec = RoutingToolExecutor::new(registry, candidates).with_node_types(&STORED_NODES);
         let executed = exec.executed_handle();
+        let lookups = exec.type_lookups_handle();
         let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
         let mut session = new_session();
         session.routing_disabled = routing_disabled;
@@ -15471,7 +15682,8 @@ mod tests {
 
         let stage2_tools = tools.lock().unwrap()[1].clone();
         let executed = executed.lock().unwrap().clone();
-        (stage2_tools, executed, result)
+        let lookups = lookups.lock().unwrap().clone();
+        (stage2_tools, executed, lookups, result)
     }
 
     /// The `enum` a Stage-2 tool definition declares on `parameter`, if any.
@@ -15512,7 +15724,8 @@ mod tests {
         }
 
         // `create_schema` names a type that does not exist yet and
-        // `update_node` names none, so neither changes.
+        // `update_node` names a node, held at dispatch by its type: there is
+        // no parameter to put an `enum` on, so neither changes.
         for tool in [
             crate::local_agent::tools::Tool::CreateSchema,
             crate::local_agent::tools::Tool::UpdateNode,
@@ -15581,10 +15794,15 @@ mod tests {
             ("search_nodes", json!({"query": "March"})),
             // A new type is not an existing one, and is never held to the set.
             ("create_schema", json!({"name": "Album", "fields": []})),
-            // A node id names no type.
+            // A node of an offered type.
             (
                 "update_node",
                 json!({"id": "nodespace://n-1", "content": "April"}),
+            ),
+            // A node of a subtype of a linked type.
+            (
+                "update_node",
+                json!({"id": "nodespace://n-2", "content": "April"}),
             ),
         ] {
             let (_, executed, result) =
@@ -15908,21 +16126,318 @@ mod tests {
         assert_eq!(unlinked["enforced"], json!(false));
     }
 
-    /// `update_node` names no type, so dispatch does not hold it. A stray
-    /// `node_type` on it is still recorded as the selection, and that call
-    /// ran: the record must not say it was enforced.
+    /// `create_schema` names a type being defined, so dispatch does not hold
+    /// it. A stray `node_type` on it is still recorded as the selection, and
+    /// that call ran: the record must not say it was enforced.
     #[tokio::test]
     async fn a_selection_dispatch_does_not_hold_is_not_recorded_as_enforced() {
         let decision = schema_decision(
             vec![billing_candidate(true)],
-            "update_node",
-            json!({"id": "nodespace://n-1", "content": "April", "node_type": "album"}),
+            "create_schema",
+            json!({"name": "Album", "fields": [], "node_type": "album"}),
         )
         .await;
 
         assert_eq!(decision["selected"], json!("album"));
         assert_eq!(decision["off_menu"], json!(true));
         assert_eq!(decision["enforced"], json!(false));
+    }
+
+    // -- `update_node`, held by the type of the node it names --
+
+    /// Every form in which the executor accepts `update_node`'s node id, for
+    /// the node whose bare id is `id`.
+    fn update_node_id_forms(id: &str) -> [serde_json::Value; 4] {
+        [
+            json!({"id": id, "content": "April"}),
+            json!({"node_id": id, "content": "April"}),
+            json!({"id": format!("nodespace://{id}"), "content": "April"}),
+            json!({"node_id": format!("nodespace://{id}"), "content": "April"}),
+        ]
+    }
+
+    /// [`run_scripted_turn_with_lookups`] for a held turn that makes one
+    /// `update_node` call.
+    async fn run_held_update(
+        args: serde_json::Value,
+    ) -> (Vec<String>, Vec<String>, AgentTurnResult) {
+        let (_, executed, lookups, result) = run_scripted_turn_with_lookups(
+            type_naming_tools(),
+            vec![billing_candidate(true)],
+            false,
+            &[&[("update_node", args)]],
+        )
+        .await;
+        (executed, lookups, result)
+    }
+
+    #[tokio::test]
+    async fn update_node_on_a_node_outside_the_offered_types_is_refused() {
+        for args in update_node_id_forms("c-1") {
+            let (executed, lookups, result) = run_held_update(args.clone()).await;
+
+            assert!(
+                executed.is_empty(),
+                "{args}: the node is a company and must not be changed: {executed:?}"
+            );
+            assert!(
+                lookups.iter().all(|id| id == "c-1") && !lookups.is_empty(),
+                "{args}: the node looked up must be the node the executor would change: \
+                 {lookups:?}"
+            );
+            let refused = &result.tool_calls_made[0];
+            assert_eq!(refused.name, "update_node");
+            assert!(refused.is_error, "{args}: nothing ran, so it is an error");
+            assert_eq!(refused.result["error"], json!("type_not_offered"));
+            assert_eq!(refused.result["allowed_types"], json!(OFFERED));
+            assert_eq!(refused.result["node_type"], json!("company"));
+        }
+    }
+
+    #[tokio::test]
+    async fn update_node_on_a_node_of_an_offered_type_runs_in_every_id_form() {
+        // `n-2` is a node of a subtype of the linked type.
+        for id in ["n-1", "n-2"] {
+            for args in update_node_id_forms(id) {
+                let (executed, lookups, result) = run_held_update(args.clone()).await;
+
+                assert_eq!(executed, ["update_node"], "{args} should have run");
+                assert!(lookups.iter().all(|looked_up| looked_up == id), "{args}");
+                assert!(!result.tool_calls_made[0].is_error, "{args}");
+            }
+        }
+    }
+
+    /// A node that cannot be found is not refused for its type: the call goes
+    /// to the executor, whose result is the one returned.
+    #[tokio::test]
+    async fn update_node_on_a_node_that_cannot_be_found_is_left_to_the_executor() {
+        let (executed, lookups, result) =
+            run_held_update(json!({"id": "nodespace://no-such-node", "content": "April"})).await;
+
+        assert!(lookups.contains(&"no-such-node".to_string()), "{lookups:?}");
+        assert_eq!(executed, ["update_node"]);
+        let call = &result.tool_calls_made[0];
+        assert_ne!(call.result["error"], json!("type_not_offered"));
+        assert_eq!(
+            call.result,
+            json!({"id": "nodespace://n-1", "property_count": 1}),
+            "the executor's own result is returned"
+        );
+    }
+
+    /// A node whose type cannot be read was not checked against the set, so
+    /// the call is not run. That is not a refusal for its type, and the round's
+    /// schema decision records no selection.
+    #[tokio::test]
+    async fn update_node_on_a_node_whose_type_cannot_be_read_is_not_run() {
+        // The stray `node_type` is there for the decision record below: a
+        // failed read must not fall back to it.
+        let args = json!({"id": UNREADABLE_NODE, "content": "April", "node_type": "album"});
+        let (executed, lookups, result) = run_held_update(args.clone()).await;
+
+        assert!(
+            lookups.contains(&UNREADABLE_NODE.to_string()),
+            "{lookups:?}"
+        );
+        assert!(executed.is_empty(), "an unchecked call ran: {executed:?}");
+        let call = &result.tool_calls_made[0];
+        assert!(call.is_error);
+        assert_eq!(call.result["error"], json!("node_type_unread"));
+        assert_eq!(
+            call.result["message"],
+            json!(
+                "Not executed, and nothing was changed: this node's type could not be read, so \
+                 the call could not be checked against the types this request covers (tool \
+                 execution failed: the store is locked). Do not re-send it: tell the user the change was not made because the record could not be read, and that they can ask again."
+            )
+        );
+
+        let decision = schema_decision(vec![billing_candidate(true)], "update_node", args).await;
+        assert_eq!(decision["selected"], json!(null));
+    }
+
+    /// No offered set: no node's type is looked up, and `update_node` runs on
+    /// a node of any type, as it did before.
+    #[tokio::test]
+    async fn a_turn_without_an_offered_set_looks_up_no_node_type() {
+        let mut stranded = billing_candidate(true);
+        stranded.tools = vec!["not_a_registered_tool".to_string()];
+
+        for (case, candidates, routing_disabled) in [
+            ("unlinked", vec![billing_candidate(false)], false),
+            (
+                "mixed",
+                vec![
+                    billing_candidate(true),
+                    skill_candidate("Node Creation", 0.8, &["create_node"]),
+                ],
+                false,
+            ),
+            ("unrouted", Vec::new(), false),
+            ("fail-open", vec![stranded], false),
+            ("routing disabled", vec![billing_candidate(true)], true),
+        ] {
+            let (_, executed, lookups, result) = run_scripted_turn_with_lookups(
+                type_naming_tools(),
+                candidates,
+                routing_disabled,
+                &[&[(
+                    "update_node",
+                    json!({"id": "nodespace://c-1", "content": "April"}),
+                )]],
+            )
+            .await;
+
+            assert!(
+                lookups.is_empty(),
+                "{case}: no offered set, so no lookup: {lookups:?}"
+            );
+            assert_eq!(executed, ["update_node"], "{case}: the call should run");
+            assert!(!result.tool_calls_made[0].is_error, "{case}");
+        }
+    }
+
+    /// The refusal is per call: a held call in the same round still runs, and
+    /// an `update_node` that is not the round's first call is still held.
+    #[tokio::test]
+    async fn one_round_refuses_only_the_update_whose_node_is_off_the_menu() {
+        let (_, executed, result) = run_scripted_turn(
+            type_naming_tools(),
+            vec![billing_candidate(true)],
+            false,
+            &[&[
+                ("update_node", json!({"id": "n-1", "content": "April"})),
+                ("update_node", json!({"id": "c-1", "content": "April"})),
+            ]],
+        )
+        .await;
+
+        assert_eq!(executed, ["update_node"]);
+        assert!(!result.tool_calls_made[0].is_error);
+        assert_eq!(
+            result.tool_calls_made[1].result["error"],
+            json!("type_not_offered")
+        );
+    }
+
+    /// The whole message is pinned: it is model-facing. A node's type is not
+    /// the call's to choose, so it offers no re-send with another type, and
+    /// it offers only what the turn can do.
+    #[tokio::test]
+    async fn the_node_refusal_offers_no_re_send_and_only_what_the_turn_can_do() {
+        const REFUSED: &str = "Not executed, and nothing was changed: this node is a \
+                               \"company\", and this request covers only these types: invoice, \
+                               retainer_invoice. Do not change it another way: ";
+        let message = |registry: MockToolExecutor| async {
+            let (_, _, result) = run_scripted_turn(
+                registry,
+                vec![billing_candidate(true)],
+                false,
+                &[&[("update_node", json!({"id": "c-1", "content": "April"}))]],
+            )
+            .await;
+            result.tool_calls_made[0].result["message"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+
+        // No `route_clarify` in this registry.
+        let plain = message(type_naming_tools()).await;
+        assert_eq!(plain, format!("{REFUSED}say so in your reply."));
+
+        // With `route_clarify` on the surface.
+        let clarify = crate::local_agent::tools::Tool::RouteClarify.definition();
+        let with_clarify = type_naming_tools().with_tool(
+            &clarify.name,
+            clarify.parameters_schema,
+            json!({"acknowledged": true}),
+        );
+        let asked = message(with_clarify).await;
+        assert_eq!(asked, format!("{REFUSED}call route_clarify and ask."));
+
+        for message in [plain, asked] {
+            assert!(!message.contains("re-send"), "{message}");
+        }
+    }
+
+    /// The `Tool executed` line reports the hold on `update_node` in the same
+    /// two fields as the hold on a type argument.
+    #[tokio::test]
+    async fn the_tool_executed_line_reports_what_dispatch_did_with_the_nodes_type() {
+        let off_menu = json!({"id": "c-1", "content": "April"});
+        let on_menu = json!({"id": "n-1", "content": "April"});
+        let fields = |log: String| {
+            let line = log
+                .lines()
+                .find(|l| l.contains("Tool executed"))
+                .unwrap_or_else(|| panic!("no tool call was logged:\n{log}"))
+                .to_string();
+            line.split_once(" args_preview=")
+                .unwrap_or_else(|| panic!("no argument preview on: {line}"))
+                .0
+                .to_string()
+        };
+
+        // Held, a node off the menu: refused, and nothing off-menu ran.
+        let refused = fields(
+            turn_log(
+                vec![billing_candidate(true)],
+                "update_node",
+                off_menu.clone(),
+            )
+            .await,
+        );
+        assert!(refused.contains("type_refused=true"), "{refused}");
+        assert!(refused.contains("off_menu_ran=false"), "{refused}");
+
+        // Held, a node on the menu: neither.
+        let ran = fields(turn_log(vec![billing_candidate(true)], "update_node", on_menu).await);
+        assert!(ran.contains("type_refused=false"), "{ran}");
+        assert!(ran.contains("off_menu_ran=false"), "{ran}");
+
+        // Not held: there is no menu for the node to be off.
+        let open = fields(turn_log(vec![billing_candidate(false)], "update_node", off_menu).await);
+        assert!(open.contains("type_refused=false"), "{open}");
+        assert!(open.contains("off_menu_ran=false"), "{open}");
+    }
+
+    /// On a held turn, a round opening with `update_node` selects the node's
+    /// type, and the record is enforced like any other held call's.
+    #[tokio::test]
+    async fn a_held_update_nodes_schema_decision_is_the_nodes_type_and_enforced() {
+        let off_menu = schema_decision(
+            vec![billing_candidate(true)],
+            "update_node",
+            json!({"id": "nodespace://c-1", "content": "April"}),
+        )
+        .await;
+        assert_eq!(off_menu["candidates"], json!(OFFERED));
+        assert_eq!(off_menu["selected"], json!("company"));
+        assert_eq!(off_menu["off_menu"], json!(true));
+        assert_eq!(off_menu["enforced"], json!(true));
+
+        // A stray `node_type` argument is not the selection: the node is.
+        let on_menu = schema_decision(
+            vec![billing_candidate(true)],
+            "update_node",
+            json!({"id": "n-2", "content": "April", "node_type": "album"}),
+        )
+        .await;
+        assert_eq!(on_menu["selected"], json!("retainer_invoice"));
+        assert_eq!(on_menu["off_menu"], json!(false));
+        assert_eq!(on_menu["enforced"], json!(true));
+
+        // Not held: no lookup, so no type is selected and nothing is enforced.
+        let open = schema_decision(
+            vec![billing_candidate(false)],
+            "update_node",
+            json!({"id": "c-1", "content": "April"}),
+        )
+        .await;
+        assert_eq!(open["selected"], json!(null));
+        assert_eq!(open["enforced"], json!(false));
     }
 
     #[tokio::test]
