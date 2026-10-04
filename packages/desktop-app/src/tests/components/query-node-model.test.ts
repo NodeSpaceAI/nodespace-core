@@ -33,6 +33,7 @@ import {
   buildMaterializedProperties,
   isResultTruncated,
   matchesFilter,
+  resolveRelativeDate,
   shouldShowCreatedNode,
   type QueryViewConfigState,
 } from '$lib/components/query/query-node-model';
@@ -245,6 +246,33 @@ describe('matchesFilter', () => {
         filter: { type: 'property', operator: 'equals', property: 'status', value: 'active' }
       })
     ).toBe(false);
+  });
+
+  it('compares a relative date against the local day, offset included', () => {
+    expect(resolveRelativeDate({ anchor: 'today' }, new Date(2026, 2, 30, 23, 59))).toBe(
+      '2026-03-30'
+    );
+    expect(
+      resolveRelativeDate({ anchor: 'today', offset_days: 7 }, new Date(2026, 2, 30))
+    ).toBe('2026-04-06');
+    expect(
+      resolveRelativeDate({ anchor: 'today', offset_days: -30 }, new Date(2026, 2, 30))
+    ).toBe('2026-02-28');
+
+    const due = (offsetDays: number) =>
+      node('t', {
+        properties: { due_date: resolveRelativeDate({ anchor: 'today', offset_days: offsetDays }) }
+      });
+    const fromToday: QueryFilter = {
+      type: 'property',
+      operator: 'gte',
+      property: 'due_date',
+      relative_date: { anchor: 'today' }
+    };
+    expect(matchesFilter(due(2), fromToday)).toBe(true);
+    expect(matchesFilter(due(0), fromToday)).toBe(true);
+    expect(matchesFilter(due(-2), fromToday)).toBe(false);
+    expect(matchesFilter(due(0), { ...fromToday, operator: 'equals' })).toBe(true);
   });
 
   it('matches property equals exactly, as the backend does', () => {

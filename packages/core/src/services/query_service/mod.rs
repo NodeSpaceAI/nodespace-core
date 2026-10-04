@@ -50,8 +50,8 @@ use std::sync::Arc;
 // (`nodespace_types::QueryFields`), so a saved query's filters decode straight
 // into the types executed here.
 pub use nodespace_types::{
-    FilterOperator, FilterType, QueryFilter, RelationshipHop, RelationshipPath, ResolvedPath,
-    SortConfig, SortDirection,
+    FilterOperator, FilterType, QueryFilter, RelationshipHop, RelationshipPath, RelativeDate,
+    RelativeDateAnchor, ResolvedPath, SortConfig, SortDirection,
 };
 
 /// Structured query definition: what a query selects, for execution
@@ -146,6 +146,24 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
             validate_identifier(&hop.name, "filter path relationship")?;
         }
     }
+    if filter.relative_date.is_some() {
+        if filter.value.is_some() {
+            anyhow::bail!("a filter takes 'value' or 'relative_date', not both");
+        }
+        if filter.filter_type != FilterType::Property {
+            anyhow::bail!("'relative_date' applies only to a property filter on a date field");
+        }
+        if !matches!(
+            filter.operator,
+            FilterOperator::Equals
+                | FilterOperator::GreaterThan
+                | FilterOperator::LessThan
+                | FilterOperator::GreaterThanOrEqual
+                | FilterOperator::LessThanOrEqual
+        ) {
+            anyhow::bail!("'relative_date' needs one of the operators equals, gt, lt, gte, lte");
+        }
+    }
     match filter.filter_type {
         FilterType::Relationship => {
             if filter.path.is_none() {
@@ -176,6 +194,27 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
         FilterType::Property | FilterType::Content | FilterType::Metadata => {}
     }
     Ok(())
+}
+
+/// `filter` with every relative date, its own and a nested filter's, replaced
+/// by the fixed date it names when `today` is the day the query runs
+/// (ADR-091). The result is compiled and dropped: a stored filter keeps its
+/// relative date.
+fn resolve_relative_dates(filter: &QueryFilter, today: chrono::NaiveDate) -> Result<QueryFilter> {
+    let mut resolved = filter.clone();
+    if let Some(relative) = resolved.relative_date.take() {
+        let date = relative.resolve(today).ok_or_else(|| {
+            anyhow::anyhow!(
+                "relative_date offset_days {} is out of range",
+                relative.offset_days.unwrap_or(0)
+            )
+        })?;
+        resolved.value = Some(serde_json::Value::String(date));
+    }
+    if let Some(nested) = &filter.filter {
+        resolved.filter = Some(Box::new(resolve_relative_dates(nested, today)?));
+    }
+    Ok(resolved)
 }
 
 /// Reject an identifier that is unsafe to format into SQL text
@@ -463,7 +502,20 @@ impl QueryService {
     ///
     /// The returned placeholders are numbered from `?1`, so a caller must not
     /// bind anything of its own ahead of this clause.
+    ///
+    /// A filter's relative date resolves against the local date at this
+    /// moment: the day the query runs, on the device running it (ADR-091).
     fn build_where_clause(&self, query: &QueryDefinition) -> Result<BoundSql> {
+        self.build_where_clause_on(query, chrono::Local::now().date_naive())
+    }
+
+    /// [`Self::build_where_clause`] with the day the query runs given, so a
+    /// test can name it.
+    fn build_where_clause_on(
+        &self,
+        query: &QueryDefinition,
+        today: chrono::NaiveDate,
+    ) -> Result<BoundSql> {
         query.validate_identifiers()?;
 
         let mut built = BoundSql::default();
@@ -481,6 +533,7 @@ impl QueryService {
 
         // Build filter conditions (pass target_type for namespaced property access)
         for filter in &query.filters {
+            let filter = &resolve_relative_dates(filter, today)?;
             let condition = match filter.filter_type {
                 FilterType::Property => {
                     self.build_property_filter(filter, &query.target_type, &mut built)?

@@ -28,9 +28,9 @@
 
 use crate::methodology::skills::{PlaybookSkill, DEFAULT_TOOLS};
 use crate::methodology::{
-    FieldValueExtension, MethodologyPlaybook, PlayStep, SchemaStep, ViewStep,
+    view_filters, FieldValueExtension, MethodologyPlaybook, PlayStep, SchemaStep, ViewStep,
 };
-use crate::services::{QueryDefinition, SortConfig, SortDirection};
+use crate::services::QueryDefinition;
 use serde_json::json;
 
 /// Days a cycle spans unless the user edits `cycle.duration_days`.
@@ -61,8 +61,8 @@ pub const SUB_ISSUE_GATE_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c02";
 pub const BLOCKER_GATE_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c03";
 /// The `linear-issues-by-status` saved view.
 pub const ISSUES_BY_STATUS_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c04";
-/// The `linear-cycles` saved view.
-pub const CYCLES_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c05";
+/// The `linear-current-cycle-issues` saved view.
+pub const CURRENT_CYCLE_ISSUES_ID: &str = "c0e62d2e-3f5b-4f0a-9d36-1b7f1e6a4c05";
 
 /// The guidance skills, in install order.
 const SKILLS: &[PlaybookSkill] = &[
@@ -138,7 +138,7 @@ pub fn playbook() -> MethodologyPlaybook {
         ],
         skills: SKILLS,
         overview: OVERVIEW,
-        views: vec![issues_by_status_view(), cycles_view()],
+        views: vec![issues_by_status_view(), current_cycle_issues_view()],
     }
 }
 
@@ -573,7 +573,7 @@ fn issues_by_status_view() -> ViewStep {
     }
 }
 
-/// The Issues by Status board's columns, in workflow order.
+/// The issue boards' columns, in workflow order.
 const ISSUE_STATUS_COLUMN_ORDER: [&str; 7] = [
     "triage",
     "backlog",
@@ -584,25 +584,44 @@ const ISSUE_STATUS_COLUMN_ORDER: [&str; 7] = [
     "cancelled",
 ];
 
-/// Cycles, most recent first.
+/// Current Cycle Issues — the work in the cycle that spans today, as a board.
 ///
-/// A table rather than a board: a cycle has no stored status to group by
-/// (see [`cycle_schema`]), and its dates are what distinguishes one from the
-/// next.
-fn cycles_view() -> ViewStep {
+/// A cycle has no stored status (see [`cycle_schema`]), so "current" is said
+/// with dates relative to the day the board is opened (ADR-091): the issue's
+/// cycle started on or before today and ends on or after it. An issue is in
+/// at most one cycle, so both filters constrain the same one.
+fn current_cycle_issues_view() -> ViewStep {
     ViewStep {
-        view_id: CYCLES_ID,
-        name: "Cycles",
+        view_id: CURRENT_CYCLE_ISSUES_ID,
+        name: "Current Cycle Issues",
         definition: QueryDefinition {
-            target_type: "cycle".to_string(),
-            filters: vec![],
-            sorting: Some(vec![SortConfig {
-                field: "start_date".to_string(),
-                direction: SortDirection::Descending,
-            }]),
+            target_type: "issue".to_string(),
+            filters: view_filters(json!([
+                {
+                    "type": "related", "operator": "exists", "path": ["cycle"],
+                    "filter": {
+                        "type": "property", "operator": "lte", "property": "start_date",
+                        "relative_date": { "anchor": "today" },
+                    },
+                },
+                {
+                    "type": "related", "operator": "exists", "path": ["cycle"],
+                    "filter": {
+                        "type": "property", "operator": "gte", "property": "end_date",
+                        "relative_date": { "anchor": "today" },
+                    },
+                },
+            ])),
+            sorting: None,
             limit: None,
         },
-        view_config: json!({ "lastView": "table" }),
+        view_config: json!({
+            "lastView": "kanban",
+            "kanban": {
+                "groupBy": "status",
+                "columnOrder": { "status": ISSUE_STATUS_COLUMN_ORDER },
+            },
+        }),
     }
 }
 

@@ -28,6 +28,8 @@
     clearSavedQueryRefreshTimer
   } from '$lib/utils/collection-refresh';
   import { aiChatDisplayTitle } from '$lib/utils/ai-chat-title';
+  import QueryIcon from '$lib/design/icons/components/query-icon.svelte';
+  import type { SchemaNode } from '$lib/types/schema-node';
 
   // Read reactive store state directly (ADR-049)
   let isCollapsed = $derived(layoutStore.state.sidebarCollapsed);
@@ -565,10 +567,7 @@
               <span class="schema-type-empty">No types available</span>
             {:else}
               {#each builtInSchemas as schema (schema.id)}
-                <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
-                  <span class="schema-type-name">{schema.content}</span>
-                </button>
-                {@render savedQueries(schema.id)}
+                {@render typeRow(schema)}
               {/each}
 
               {#if customSchemas.length > 0}
@@ -576,10 +575,7 @@
                   <div class="schema-type-separator"></div>
                 {/if}
                 {#each customSchemas as schema (schema.id)}
-                  <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
-                    <span class="schema-type-name">{schema.content}</span>
-                  </button>
-                  {@render savedQueries(schema.id)}
+                  {@render typeRow(schema)}
                 {/each}
               {/if}
             {/if}
@@ -753,16 +749,48 @@
 
 </nav>
 
-{#snippet savedQueries(typeId: string)}
-  {#each savedQueriesData.forType(typeId) as query (query.id)}
-    <button
-      class="schema-type-item saved-query-item"
-      data-testid="saved-query-item"
-      onclick={() => handleSavedQueryClick(query.id)}
-    >
-      <span class="schema-type-name">{query.name}</span>
+{#snippet typeRow(schema: SchemaNode)}
+  {@const views = savedQueriesData.forType(schema.id)}
+  {@const viewsExpanded = layoutStore.isTypeViewsExpanded(schema.id)}
+  <div class="schema-type-row">
+    <div class="expand-area">
+      {#if views.length > 0}
+        <button
+          class="expand-btn"
+          data-testid="type-views-toggle"
+          onclick={() => layoutStore.toggleTypeViewsExpanded(schema.id)}
+          aria-expanded={viewsExpanded}
+          aria-label={`${viewsExpanded ? 'Collapse' : 'Expand'} ${schema.content} views`}
+        >
+          <svg
+            class="expand-chevron"
+            class:rotate-90={viewsExpanded}
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </button>
+      {/if}
+    </div>
+    <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
+      <span class="schema-type-name">{schema.content}</span>
     </button>
-  {/each}
+  </div>
+  {#if viewsExpanded}
+    {#each views as query (query.id)}
+      <button
+        class="schema-type-item saved-query-item"
+        data-testid="saved-query-item"
+        onclick={() => handleSavedQueryClick(query.id)}
+      >
+        <QueryIcon size={14} />
+        <span class="schema-type-name">{query.name}</span>
+      </button>
+    {/each}
+  {/if}
 {/snippet}
 
 <style>
@@ -1116,9 +1144,40 @@
     white-space: nowrap;
   }
 
-  /* Saved query nested under its type: indented one step past the type name. */
+  /* A type and the chevron that collapses its saved views: the same row a
+     collection is, so the two sections line up. */
+  .schema-type-row {
+    display: flex;
+    align-items: center;
+    padding-left: 2.25rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .schema-type-row:hover {
+    background: hsl(var(--border));
+    color: hsl(var(--foreground));
+  }
+
+  .schema-type-row .schema-type-item {
+    flex: 1;
+    min-width: 0;
+    padding-left: 0;
+    color: inherit;
+  }
+
+  .schema-type-row .schema-type-item:hover {
+    background: none;
+  }
+
+  /* Saved view nested under its type: indented one step past the type name,
+     behind the icon that marks it as a query. */
   .saved-query-item {
+    gap: 0.375rem;
     padding-left: 4.75rem;
+  }
+
+  .saved-query-item :global(.query-icon) {
+    color: inherit;
   }
 
   .schema-type-separator {

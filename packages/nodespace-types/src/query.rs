@@ -70,6 +70,48 @@ pub enum SortDirection {
     Descending,
 }
 
+/// What a [`RelativeDate`] is measured from.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "lowercase")]
+pub enum RelativeDateAnchor {
+    /// The local calendar date on the device running the query.
+    #[default]
+    Today,
+}
+
+/// A date named relative to the day the query runs, in place of a fixed
+/// [`QueryFilter::value`]: `{"anchor": "today"}` is today, and
+/// `{"anchor": "today", "offset_days": -7}` a week ago (ADR-091).
+///
+/// It is stored as written and resolved each time the query runs, so a saved
+/// "due this week" stays true next week.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct RelativeDate {
+    pub anchor: RelativeDateAnchor,
+    /// Days after the anchor; negative for days before it. Absent is the
+    /// anchor day itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub offset_days: Option<i32>,
+}
+
+impl RelativeDate {
+    /// The `YYYY-MM-DD` date this names when `today` is the anchor date, the
+    /// form a `date` field is stored in. `None` if the offset leaves the
+    /// calendar's range.
+    pub fn resolve(&self, today: chrono::NaiveDate) -> Option<String> {
+        let RelativeDateAnchor::Today = self.anchor;
+        today
+            .checked_add_signed(chrono::Duration::days(i64::from(
+                self.offset_days.unwrap_or(0),
+            )))
+            .map(|date| date.format("%Y-%m-%d").to_string())
+    }
+}
+
 /// Individual filter condition
 ///
 /// A nested stored value: its keys are these field names, snake_case, in the
@@ -91,6 +133,11 @@ pub struct QueryFilter {
     /// Expected value
     #[cfg_attr(feature = "ts", ts(optional, type = "unknown"))]
     pub value: Option<serde_json::Value>,
+    /// A date relative to the day the query runs, compared in place of
+    /// [`Self::value`] by a [`FilterType::Property`] filter on a date field.
+    /// A filter carries one or the other, never both.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_date: Option<RelativeDate>,
     /// Case sensitivity for text comparisons
     pub case_sensitive: Option<bool>,
     /// The node a [`FilterType::Relationship`] filter's path must reach.
@@ -115,6 +162,18 @@ pub struct QueryFilter {
     /// populate it without a `NodeService` in hand.
     #[serde(skip)]
     pub resolved_path: Option<ResolvedPath>,
+}
+
+impl QueryFilter {
+    /// Whether this filter, or the filter nested in it, compares against a
+    /// [`RelativeDate`].
+    pub fn has_relative_date(&self) -> bool {
+        self.relative_date.is_some()
+            || self
+                .filter
+                .as_ref()
+                .is_some_and(|nested| nested.has_relative_date())
+    }
 }
 
 /// Sorting configuration
@@ -447,6 +506,44 @@ mod tests {
         assert_eq!(wire["node_id"], "n1");
         assert_eq!(wire["case_sensitive"], false);
         assert!(wire.get("nodeId").is_none() && wire.get("caseSensitive").is_none());
+    }
+
+    /// A relative date is stored as written, with a zero offset left out, and
+    /// names a date only once a day is given.
+    #[test]
+    fn a_relative_date_is_stored_as_written_and_resolved_against_a_day() {
+        let stored = json!({
+            "type": "property", "operator": "gte", "property": "end_date",
+            "relative_date": { "anchor": "today" }
+        });
+        let fields = QueryFields::from_properties(&json!({ "filters": [stored.clone()] })).unwrap();
+        let filter = &fields.filters[0];
+        assert!(filter.has_relative_date());
+        assert_eq!(filter.value, None);
+        assert_eq!(
+            serde_json::to_value(filter).unwrap()["relative_date"],
+            stored["relative_date"]
+        );
+
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 12, 30).unwrap();
+        let relative = filter.relative_date.unwrap();
+        assert_eq!(relative.resolve(day).as_deref(), Some("2026-12-30"));
+        let next_week = RelativeDate {
+            offset_days: Some(7),
+            ..relative
+        };
+        assert_eq!(next_week.resolve(day).as_deref(), Some("2027-01-06"));
+        assert_eq!(
+            serde_json::to_value(next_week).unwrap(),
+            json!({ "anchor": "today", "offset_days": 7 })
+        );
+
+        let err = QueryFields::from_properties(&json!({ "filters": [{
+            "type": "property", "operator": "gte", "property": "end_date",
+            "relative_date": { "anchor": "tomorrow" }
+        }] }))
+        .unwrap_err();
+        assert!(err.to_string().contains("'filters'"), "{err}");
     }
 
     /// A sort item is held to the same strictness as a filter.

@@ -38,7 +38,8 @@ describe('Layout Store - Layout State Management', () => {
       activePane: 'today',
       collectionsExpanded: false,
       nodeTypesExpanded: false,
-      aiChatsExpanded: false
+      aiChatsExpanded: false,
+      collapsedTypeViews: []
     };
   });
 
@@ -107,7 +108,8 @@ describe('Layout Store - Layout State Management', () => {
         activePane: 'today',
         collectionsExpanded: false,
         nodeTypesExpanded: false,
-        aiChatsExpanded: false
+        aiChatsExpanded: false,
+        collapsedTypeViews: []
       };
 
       toggleSidebar();
@@ -121,7 +123,8 @@ describe('Layout Store - Layout State Management', () => {
         activePane: 'today',
         collectionsExpanded: false,
         nodeTypesExpanded: false,
-        aiChatsExpanded: false
+        aiChatsExpanded: false,
+        collapsedTypeViews: []
       };
 
       toggleSidebar();
@@ -135,7 +138,8 @@ describe('Layout Store - Layout State Management', () => {
         activePane: 'custom-pane',
         collectionsExpanded: false,
         nodeTypesExpanded: false,
-        aiChatsExpanded: false
+        aiChatsExpanded: false,
+        collapsedTypeViews: []
       };
 
       toggleSidebar();
@@ -170,7 +174,8 @@ describe('Layout Store - Layout State Management', () => {
         activePane: 'today',
         collectionsExpanded: false,
         nodeTypesExpanded: false,
-        aiChatsExpanded: false
+        aiChatsExpanded: false,
+        collapsedTypeViews: []
       };
 
       setActivePane('search');
@@ -584,6 +589,39 @@ describe('Layout Store - Persistence Integration', () => {
 
       expect(LayoutPersistenceService.save).toHaveBeenCalledWith(
         expect.objectContaining({ aiChatsExpanded: true })
+      );
+    });
+  });
+
+  describe('type views expansion', () => {
+    it('shows a type\'s views until they are collapsed, per type', async () => {
+      const { layoutStore } = await import('$lib/stores/layout.svelte');
+      layoutStore.state = { ...layoutStore.state, collapsedTypeViews: [] };
+      expect(layoutStore.isTypeViewsExpanded('issue')).toBe(true);
+
+      layoutStore.toggleTypeViewsExpanded('issue');
+      expect(layoutStore.isTypeViewsExpanded('issue')).toBe(false);
+      expect(layoutStore.isTypeViewsExpanded('cycle')).toBe(true);
+
+      layoutStore.toggleTypeViewsExpanded('issue');
+      expect(layoutStore.isTypeViewsExpanded('issue')).toBe(true);
+    });
+
+    it('persists the collapsed types and restores them', async () => {
+      vi.mocked(LayoutPersistenceService.load).mockReturnValue({
+        version: 4,
+        sidebarCollapsed: false,
+        collapsedTypeViews: ['issue']
+      });
+      const { loadPersistedLayoutState, layoutStore } = await import('$lib/stores/layout.svelte');
+
+      loadPersistedLayoutState();
+      expect(layoutStore.isTypeViewsExpanded('issue')).toBe(false);
+      vi.clearAllMocks();
+
+      layoutStore.toggleTypeViewsExpanded('cycle');
+      expect(LayoutPersistenceService.save).toHaveBeenCalledWith(
+        expect.objectContaining({ collapsedTypeViews: ['issue', 'cycle'] })
       );
     });
   });

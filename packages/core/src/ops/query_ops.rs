@@ -10,7 +10,7 @@ use crate::ops::OpsError;
 use crate::services::node_service::NodeService;
 use crate::services::query_service::{
     FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipPath,
-    SortConfig, SortDirection,
+    RelativeDate, SortConfig, SortDirection,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -49,6 +49,11 @@ pub struct AgentFilterItem {
     /// Value to compare against.
     #[serde(default)]
     pub value: Option<Value>,
+    /// A date relative to the day the query runs, in place of `value`, for a
+    /// property filter on a date field: `{"anchor": "today"}`, optionally
+    /// with `"offset_days": N`.
+    #[serde(default)]
+    pub relative_date: Option<RelativeDate>,
     /// Case sensitivity for text comparisons (default: true).
     #[serde(default)]
     pub case_sensitive: Option<bool>,
@@ -253,6 +258,7 @@ fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
         operator,
         property: item.property,
         value: item.value,
+        relative_date: item.relative_date,
         case_sensitive: item.case_sensitive,
         node_id: item.node_id,
         path: item.path.filter(|_| walks),
@@ -680,6 +686,7 @@ mod tests {
                 operator: FilterOperator::Exists,
                 property: None,
                 value: None,
+                relative_date: None,
                 case_sensitive: None,
                 node_id: None,
                 path: Some(
@@ -693,6 +700,7 @@ mod tests {
                     operator: FilterOperator::Contains,
                     property: Some("status".to_string()),
                     value: Some(json!("act")),
+                    relative_date: None,
                     case_sensitive: Some(false),
                     node_id: None,
                     path: None,
@@ -706,11 +714,22 @@ mod tests {
                 operator: FilterOperator::Equals,
                 property: None,
                 value: None,
+                relative_date: None,
                 case_sensitive: None,
                 node_id: Some("n1".to_string()),
                 path: Some(serde_json::from_value(json!(["mentions"])).unwrap()),
                 filter: None,
                 resolved_path: None,
+            },
+            QueryFilter {
+                filter_type: FilterType::Property,
+                operator: FilterOperator::LessThanOrEqual,
+                property: Some("due_date".to_string()),
+                relative_date: Some(RelativeDate {
+                    offset_days: Some(7),
+                    ..Default::default()
+                }),
+                ..Default::default()
             },
         ];
         for filter in stored {

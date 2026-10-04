@@ -129,11 +129,11 @@ nodespace node create --type query --content 'Issues by Status' \
   --properties '{"filters":[],"generated_by":"user","target_type":"issue","view_config":{"kanban":{"columnOrder":{"status":["triage","backlog","open","in_progress","in_review","done","cancelled"]},"groupBy":"status"},"lastView":"kanban"}}'
 ```
 
-**Cycles**
+**Current Cycle Issues**
 
 ```bash
-nodespace node create --type query --content 'Cycles' \
-  --properties '{"filters":[],"generated_by":"user","sorting":[{"direction":"desc","field":"start_date"}],"target_type":"cycle","view_config":{"lastView":"table"}}'
+nodespace node create --type query --content 'Current Cycle Issues' \
+  --properties '{"filters":[{"case_sensitive":null,"filter":{"case_sensitive":null,"node_id":null,"operator":"lte","property":"start_date","relative_date":{"anchor":"today"},"type":"property","value":null},"node_id":null,"operator":"exists","path":["cycle"],"property":null,"type":"related","value":null},{"case_sensitive":null,"filter":{"case_sensitive":null,"node_id":null,"operator":"gte","property":"end_date","relative_date":{"anchor":"today"},"type":"property","value":null},"node_id":null,"operator":"exists","path":["cycle"],"property":null,"type":"related","value":null}],"generated_by":"user","target_type":"issue","view_config":{"kanban":{"columnOrder":{"status":["triage","backlog","open","in_progress","in_review","done","cancelled"]},"groupBy":"status"},"lastView":"kanban"}}'
 ```
 
 ### 6. Workspace skill

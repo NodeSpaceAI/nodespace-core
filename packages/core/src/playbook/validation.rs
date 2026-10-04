@@ -5724,6 +5724,38 @@ mod tests {
             assert!(has_genuine_failure(&errors));
         }
 
+        /// A selector cannot compare against a date relative to today,
+        /// inline or through a saved query: the local day differs between
+        /// devices, and a rule selects the same nodes on each (ADR-091).
+        #[tokio::test]
+        async fn a_selector_filtering_by_a_relative_date_is_rejected() {
+            let (svc, _dir) = service().await;
+            let due_today = json!({
+                "type": "property", "operator": "lte", "property": "due_date",
+                "relative_date": { "anchor": "today" }
+            });
+            saved_query(
+                &svc,
+                QUERY_ID,
+                json!({ "target_type": "task", "filters": [due_today.clone()] }),
+            )
+            .await;
+
+            for select in [
+                json!({ "target_type": "task", "filters": [due_today] }),
+                json!({ "query_id": QUERY_ID }),
+            ] {
+                let rule = scheduled(select, "node.status == 'open'");
+                let errors = validate_play(&[rule], &svc).await.unwrap_err();
+                assert!(
+                    errors.iter().any(|e| matches!(e,
+                        PlayValidationError::InvalidSelector { message, .. }
+                            if message.contains("relative to today"))),
+                    "{errors:?}"
+                );
+            }
+        }
+
         /// A saved-query selector takes its type from the query: the rule's
         /// conditions are validated against that type, exactly as if the rule
         /// had named it.

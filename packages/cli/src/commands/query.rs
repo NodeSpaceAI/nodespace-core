@@ -30,6 +30,9 @@ pub struct QueryArgs {
     /// `node_id` it must reach, e.g.
     /// `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`.
     /// Supported operators: equals, contains, gt, lt, gte, lte, in, exists.
+    /// A property filter on a date field takes `relative_date` in place of
+    /// `value` for a date relative to the day the query runs, e.g.
+    /// `[{"type":"property","operator":"lte","property":"due_date","relative_date":{"anchor":"today","offset_days":7}}]`.
     #[arg(long)]
     pub filters: Option<String>,
     /// JSON array of sort configs, e.g. `[{"field":"due_date","direction":"desc"}]`.

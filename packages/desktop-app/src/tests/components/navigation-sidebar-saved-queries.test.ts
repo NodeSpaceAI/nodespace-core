@@ -55,7 +55,8 @@ function expandNodeTypes() {
   layoutStore.state = {
     ...layoutStore.state,
     sidebarCollapsed: false,
-    nodeTypesExpanded: true
+    nodeTypesExpanded: true,
+    collapsedTypeViews: []
   };
 }
 
@@ -118,6 +119,41 @@ describe('NavigationSidebar — saved queries under Node Types', () => {
 
     await waitFor(() => expect(rows(container)).toHaveLength(3));
     expect(rows(container)).toEqual(['Spec', 'Specs by Status', 'Plan']);
+  });
+
+  it('collapses and expands a type\'s views from its chevron, and remembers it', async () => {
+    setBackendQueries([
+      ['q-spec', 'Specs by Status', 'spec'],
+      ['q-plan', 'Plans by Status', 'plan']
+    ]);
+    const { container, getByLabelText } = render(NavigationSidebar);
+    await waitFor(() => expect(rows(container)).toHaveLength(4));
+
+    await fireEvent.click(getByLabelText('Collapse Spec views'));
+    expect(rows(container)).toEqual(['Spec', 'Plan', 'Plans by Status']);
+    expect(layoutStore.state.collapsedTypeViews).toEqual(['spec']);
+
+    const toggle = getByLabelText('Expand Spec views');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    await fireEvent.click(toggle);
+    expect(rows(container)).toEqual(['Spec', 'Specs by Status', 'Plan', 'Plans by Status']);
+    expect(layoutStore.state.collapsedTypeViews).toEqual([]);
+  });
+
+  it('gives only a type with views a chevron, and only a view a query icon', async () => {
+    setBackendQueries([['q-spec', 'Specs by Status', 'spec']]);
+    const { container } = render(NavigationSidebar);
+    await waitFor(() => expect(rows(container)).toHaveLength(3));
+
+    const toggles = container.querySelectorAll('[data-testid="type-views-toggle"]');
+    expect(Array.from(toggles).map((el) => el.getAttribute('aria-label'))).toEqual([
+      'Collapse Spec views'
+    ]);
+
+    const withIcon = Array.from(container.querySelectorAll('.schema-type-item'))
+      .filter((el) => el.querySelector('.query-icon'))
+      .map((el) => el.textContent?.trim());
+    expect(withIcon).toEqual(['Specs by Status']);
   });
 
   it('does not list queries whose target type has no entry in the list', async () => {

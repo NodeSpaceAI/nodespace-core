@@ -11,7 +11,7 @@ mod tests {
     use crate::services::node_service::{CreateNodeParams, NodeService};
     use crate::services::query_service::{
         BoundSql, FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
-        RelationshipPath, ResolvedPath, SortConfig, SortDirection,
+        RelationshipPath, RelativeDate, ResolvedPath, SortConfig, SortDirection,
     };
     use nodespace_types::{HopDirection, ResolvedHop};
     use serde_json::json;
@@ -2060,6 +2060,139 @@ mod tests {
                 libsql::Value::Text("tasks".to_string()),
             ]
         );
+    }
+
+    // ========== relative dates ==========
+
+    /// A property filter comparing against a date `offset_days` from today.
+    fn relative(property: &str, operator: FilterOperator, offset_days: i32) -> QueryFilter {
+        QueryFilter {
+            filter_type: FilterType::Property,
+            operator,
+            property: Some(property.to_string()),
+            relative_date: Some(RelativeDate {
+                offset_days: (offset_days != 0).then_some(offset_days),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn tasks_where(filters: Vec<QueryFilter>) -> QueryDefinition {
+        QueryDefinition {
+            target_type: "task".to_string(),
+            filters,
+            sorting: None,
+            limit: None,
+        }
+    }
+
+    /// A relative date binds the date it names on the day the query runs,
+    /// offset included, across a month boundary; a nested filter's resolves
+    /// the same way.
+    #[tokio::test]
+    async fn test_relative_date_binds_the_date_it_names_on_the_day_the_query_runs() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 3, 30).unwrap();
+
+        let (path, resolved_path) =
+            walk("project", "tasks", HopDirection::Inbound, Some("project"));
+        let query = tasks_where(vec![
+            relative("due_date", FilterOperator::GreaterThanOrEqual, 0),
+            relative("due_date", FilterOperator::LessThan, 7),
+            QueryFilter {
+                filter_type: FilterType::Related,
+                operator: FilterOperator::Exists,
+                path,
+                resolved_path,
+                filter: Some(Box::new(relative(
+                    "due_date",
+                    FilterOperator::LessThanOrEqual,
+                    -30,
+                ))),
+                ..Default::default()
+            },
+        ]);
+
+        let built = query_service.build_where_clause_on(&query, today).unwrap();
+        let dates: Vec<&str> = built
+            .params
+            .iter()
+            .filter_map(|p| match p {
+                libsql::Value::Text(text) if text.starts_with("2026-") => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dates, ["2026-03-30", "2026-04-06", "2026-02-28"]);
+        assert!(
+            built
+                .sql
+                .contains("json_extract(properties, '$.task.due_date') >= ?"),
+            "{}",
+            built.sql
+        );
+    }
+
+    /// End to end against the clock: "due today or later" selects by the
+    /// local date when the query runs.
+    #[tokio::test]
+    async fn test_relative_date_filter_selects_against_todays_local_date() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+        let today = chrono::Local::now().date_naive();
+        // Two days either side, so the result holds across midnight.
+        for (content, offset) in [("Overdue", -2), ("Upcoming", 2)] {
+            let due = (today + chrono::Duration::days(offset))
+                .format("%Y-%m-%d")
+                .to_string();
+            node_service
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "task".to_string(),
+                    content: content.to_string(),
+                    parent_id: None,
+                    position: crate::services::InsertPositionOwned::End,
+                    properties: json!({"task": {"status": "open", "due_date": due}}),
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let upcoming = tasks_where(vec![relative(
+            "due_date",
+            FilterOperator::GreaterThanOrEqual,
+            0,
+        )]);
+        let results = query_service.execute(&upcoming).await.unwrap();
+        let names: Vec<&str> = results.iter().map(|n| n.content.as_str()).collect();
+        assert_eq!(names, ["Upcoming"]);
+        assert_eq!(query_service.count(&upcoming).await.unwrap(), 1);
+    }
+
+    /// A relative date stands in for a fixed value on a property comparison,
+    /// and nowhere else.
+    #[test]
+    fn test_relative_date_is_rejected_where_it_cannot_apply() {
+        let mut with_value = relative("due_date", FilterOperator::Equals, 0);
+        with_value.value = Some(json!("2026-01-01"));
+        let mut on_metadata = relative("created_at", FilterOperator::GreaterThan, 0);
+        on_metadata.filter_type = FilterType::Metadata;
+
+        for (filter, expected) in [
+            (with_value, "not both"),
+            (on_metadata, "property filter"),
+            (
+                relative("due_date", FilterOperator::Contains, 0),
+                "operators",
+            ),
+            (relative("due_date", FilterOperator::In, 0), "operators"),
+        ] {
+            let err = tasks_where(vec![filter])
+                .validate_identifiers()
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(expected), "{err}");
+        }
     }
 
     // ========== count ==========

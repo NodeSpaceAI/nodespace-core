@@ -130,11 +130,11 @@ nodespace node create --type query --content 'Epics by Status' \
   --properties '{"filters":[],"generated_by":"user","target_type":"epic","view_config":{"kanban":{"groupBy":"status"},"lastView":"kanban"}}'
 ```
 
-**Sprints**
+**Active Sprint Issues**
 
 ```bash
-nodespace node create --type query --content 'Sprints' \
-  --properties '{"filters":[],"generated_by":"user","target_type":"sprint","view_config":{"kanban":{"groupBy":"sprint_status"},"lastView":"kanban"}}'
+nodespace node create --type query --content 'Active Sprint Issues' \
+  --properties '{"filters":[{"case_sensitive":null,"filter":{"case_sensitive":null,"node_id":null,"operator":"equals","property":"sprint_status","type":"property","value":"active"},"node_id":null,"operator":"exists","path":["sprint"],"property":null,"type":"related","value":null}],"generated_by":"user","target_type":"task","view_config":{"kanban":{"groupBy":"status"},"lastView":"kanban"}}'
 ```
 
 ### 6. Workspace skill

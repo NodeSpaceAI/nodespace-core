@@ -23,6 +23,8 @@
 import { isExactly } from '$lib/types/core-node-types';
 import type { Node } from '$lib/types';
 import type { QueryDefinition, QueryFilter, QueryNode } from '$lib/types/query';
+import type { RelativeDate } from '$lib/types/generated';
+import { formatDateISO } from '$lib/utils/date-formatting';
 import { resolveFieldValue } from '$lib/components/schema/schema-field-resolution';
 
 /** Header title shown for the (unpersisted) default type view. */
@@ -222,6 +224,16 @@ const METADATA_FIELDS: Readonly<Record<string, (node: Node) => unknown>> = {
   title: (node) => node.title,
 };
 
+/**
+ * The `YYYY-MM-DD` date a relative date names on `today`, by this device's
+ * calendar: the day the backend resolves it against when the query runs.
+ */
+export function resolveRelativeDate(relative: RelativeDate, today: Date = new Date()): string {
+  return formatDateISO(
+    new Date(today.getFullYear(), today.getMonth(), today.getDate() + (relative.offset_days ?? 0))
+  );
+}
+
 /** The value a non-relationship filter compares against. */
 function filterSubject(node: Node, filter: QueryFilter): unknown {
   if (filter.type === 'content') return node.content;
@@ -276,26 +288,25 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
 
   const actual = filterSubject(node, filter);
   const sameTypeOnly = filter.type === 'property';
+  const expected = filter.relative_date ? resolveRelativeDate(filter.relative_date) : filter.value;
 
   switch (filter.operator) {
     case 'exists':
       return !isEmpty(actual);
     case 'equals':
-      return equals(actual, filter.value, sameTypeOnly);
+      return equals(actual, expected, sameTypeOnly);
     case 'contains':
-      return contains(actual, filter.value, caseSensitive);
+      return contains(actual, expected, caseSensitive);
     case 'in':
-      return (
-        Array.isArray(filter.value) && filter.value.some((v) => equals(actual, v, sameTypeOnly))
-      );
+      return Array.isArray(expected) && expected.some((v) => equals(actual, v, sameTypeOnly));
     case 'gt':
-      return !isEmpty(actual) && ordered(actual, filter.value) > 0;
+      return !isEmpty(actual) && ordered(actual, expected) > 0;
     case 'gte':
-      return !isEmpty(actual) && ordered(actual, filter.value) >= 0;
+      return !isEmpty(actual) && ordered(actual, expected) >= 0;
     case 'lt':
-      return !isEmpty(actual) && ordered(actual, filter.value) < 0;
+      return !isEmpty(actual) && ordered(actual, expected) < 0;
     case 'lte':
-      return !isEmpty(actual) && ordered(actual, filter.value) <= 0;
+      return !isEmpty(actual) && ordered(actual, expected) <= 0;
     default:
       return true;
   }

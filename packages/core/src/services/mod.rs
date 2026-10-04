@@ -338,7 +338,7 @@ pub use node_service::{
 };
 pub use query_service::{
     FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipHop,
-    RelationshipPath, SortConfig, SortDirection,
+    RelationshipPath, RelativeDate, RelativeDateAnchor, SortConfig, SortDirection,
 };
 
 #[cfg(test)]

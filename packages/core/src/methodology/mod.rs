@@ -175,6 +175,17 @@ impl ViewStep {
     }
 }
 
+/// A seeded view's filters, written as the JSON a saved query stores.
+///
+/// # Panics
+///
+/// If `filters` is not a list of query filters: the playbooks are fixed
+/// content, and `every_view_is_an_executable_query_with_a_renderable_view_config`
+/// builds each one.
+pub(crate) fn view_filters(filters: serde_json::Value) -> Vec<crate::services::QueryFilter> {
+    serde_json::from_value(filters).expect("a seeded view's filters are valid query filters")
+}
+
 /// What one step did, reported so the caller can disclose it.
 ///
 /// Collision handling is disclosed rather than silent: a step whose target id

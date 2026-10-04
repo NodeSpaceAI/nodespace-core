@@ -599,3 +599,55 @@ async fn a_cardinality_eviction_dispatches_its_removal() -> Result<()> {
     h.stop().await;
     Ok(())
 }
+
+/// The active-sprint board shows the work in a started sprint, of any issue
+/// type, and none of the work planned into a sprint that has not started.
+#[tokio::test]
+async fn the_active_sprint_board_shows_the_issues_of_the_active_sprint() -> Result<()> {
+    use nodespace_core::models::QueryFields;
+    use nodespace_core::services::{QueryDefinition, QueryService};
+
+    let h = Harness::start().await?;
+
+    let dates = json!({ "start_date": "2026-03-02", "end_date": "2026-03-15" });
+    let active = h.create("sprint", dates.clone()).await?;
+    let future = h.create("sprint", dates).await?;
+    assert!(h.set(&active, json!({ "sprint_status": "active" })).await?);
+
+    let story = h
+        .create("story", json!({ "status": "in_progress" }))
+        .await?;
+    let bug = h.create("bug", json!({ "status": "open" })).await?;
+    let planned = h.create("story", json!({ "status": "open" })).await?;
+    h.create("task", json!({ "status": "open" })).await?;
+    assert!(h.link(&active, "issues", &story).await);
+    assert!(h.link(&active, "issues", &bug).await);
+    assert!(h.link(&future, "issues", &planned).await);
+
+    let view = h
+        .service
+        .get_node(nodespace_core::methodology::jira::ACTIVE_SPRINT_ISSUES_ID)
+        .await?
+        .expect("the active-sprint board should be seeded");
+    assert_eq!(view.content, "Active Sprint Issues");
+    let mut definition = QueryDefinition::from_fields(&QueryFields::from_node(&view)?);
+    definition.filters = nodespace_core::ops::query_ops::resolve_filters(
+        &h.service,
+        &definition.target_type,
+        definition.filters,
+    )
+    .await?;
+    let mut ids: Vec<String> = QueryService::new(h.service.store().clone())
+        .execute(&definition)
+        .await?
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    ids.sort();
+    let mut expected = vec![story, bug];
+    expected.sort();
+    assert_eq!(ids, expected);
+
+    h.stop().await;
+    Ok(())
+}

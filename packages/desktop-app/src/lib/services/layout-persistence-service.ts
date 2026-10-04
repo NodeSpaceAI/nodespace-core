@@ -19,6 +19,8 @@ export interface PersistedLayoutState {
   collectionsExpanded?: boolean; // Added in version 2
   nodeTypesExpanded?: boolean; // Added in version 3
   aiChatsExpanded?: boolean; // Added in version 4
+  /** Node types whose saved views are collapsed in the sidebar; absent means none. */
+  collapsedTypeViews?: string[];
 }
 
 /**
@@ -62,7 +64,8 @@ export class LayoutPersistenceService {
         sidebarCollapsed: state.sidebarCollapsed,
         collectionsExpanded: state.collectionsExpanded,
         nodeTypesExpanded: state.nodeTypesExpanded,
-        aiChatsExpanded: state.aiChatsExpanded
+        aiChatsExpanded: state.aiChatsExpanded,
+        collapsedTypeViews: state.collapsedTypeViews
       };
 
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(persisted));
@@ -129,6 +132,14 @@ export class LayoutPersistenceService {
 
     // Basic structure validation
     if (typeof s.version !== 'number' || typeof s.sidebarCollapsed !== 'boolean') {
+      return false;
+    }
+
+    const collapsed = s.collapsedTypeViews;
+    if (
+      collapsed !== undefined &&
+      !(Array.isArray(collapsed) && collapsed.every((id) => typeof id === 'string'))
+    ) {
       return false;
     }
 

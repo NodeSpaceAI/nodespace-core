@@ -65,6 +65,17 @@ pub async fn selector_query(
         }
     };
 
+    // A rule selects the same nodes on every device, and a relative date is
+    // the local day of whichever device asks (ADR-091).
+    if filters.iter().any(|filter| filter.has_relative_date()) {
+        return Err(SelectorError::Invalid(
+            "a play's selector cannot filter by a date relative to today: the local day \
+             differs between devices, and a rule must select the same nodes on each. Compare \
+             the date in a rule condition instead, with today()."
+                .to_string(),
+        ));
+    }
+
     let filters = resolve_filters(node_service, &target_type, filters)
         .await
         .map_err(|e| match e {
