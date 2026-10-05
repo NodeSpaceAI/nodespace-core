@@ -723,6 +723,74 @@ async fn finished_tasks_under_a_node_that_is_not_a_task_are_left_alone() -> Resu
     Ok(())
 }
 
+/// A project has a `status` of its own, in its own vocabulary, and tasks are
+/// outlined under one. It is not a task: the roll-up writes it nothing, and
+/// is not suspended by a write a project would refuse.
+#[tokio::test]
+async fn finished_tasks_under_a_project_leave_the_project_alone() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let project = service
+        .create_node(Node::new(
+            "project".to_string(),
+            "A project".to_string(),
+            json!({ "status": "active" }),
+        ))
+        .await?;
+    let task = task_node(&service, "open").await?;
+    service
+        .create_relationship(&project, "has_child", &task, json!({}))
+        .await?;
+    child_node(&service, &project, "text", "A note beside the task").await?;
+    let before = service.get_node(&project).await?.expect("the project");
+    set_status(&service, &task, "done").await?;
+
+    let (control_parent, control_sub_task) = parent_with_sub_task(&service).await?;
+    set_status(&service, &control_sub_task, "done").await?;
+    assert!(
+        wait_for_status(&service, &control_parent, "done").await,
+        "the roll-up must still be running after tasks under a project finish"
+    );
+
+    let after = service.get_node(&project).await?.expect("the project");
+    assert_eq!(after.properties, before.properties);
+    assert_eq!(after.version, before.version);
+    assert!(roll_up_is_running(&service).await?);
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// A child of another type that has a `status` of its own is not a sub-task:
+/// a project under a task neither finishes the parent nor holds it open.
+#[tokio::test]
+async fn a_child_of_another_type_with_its_own_status_is_not_a_sub_task() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let (parent, sub_task) = parent_with_sub_task(&service).await?;
+    let project = service
+        .create_node(Node::new(
+            "project".to_string(),
+            "A project".to_string(),
+            json!({ "status": "active" }),
+        ))
+        .await?;
+    service
+        .create_relationship(&parent, "has_child", &project, json!({}))
+        .await?;
+
+    set_status(&service, &sub_task, "done").await?;
+    assert!(
+        wait_for_status(&service, &parent, "done").await,
+        "an active project under the parent must not hold it open"
+    );
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
 /// A subtype of `task` is a task on both sides of the roll-up: as the parent
 /// that is completed, and as a sub-task counted beside checkboxes and notes.
 #[tokio::test]
