@@ -71,6 +71,13 @@ pub trait NodeAccessor: Send + Sync {
     /// `node_type`'s `extends` chain, nearest scope first, so a behaviour can
     /// treat a subtype as the type it extends (ADR-086 §5).
     async fn type_chain(&self, node_type: &str) -> Result<Vec<String>, error::NodeServiceError>;
+
+    /// The behaviour registry the database's node service validates with:
+    /// core's behaviours and those another build added for its subtypes of
+    /// core types (ADR-082 §2.1). Aggregation resolves each descendant's
+    /// contribution through it, so a subtype's behaviour decides what its node
+    /// adds to an aggregating parent.
+    fn behavior_registry(&self) -> &crate::behaviors::NodeBehaviorRegistry;
 }
 
 /// Scope for semantic search queries
