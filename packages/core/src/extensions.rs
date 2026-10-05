@@ -6,8 +6,9 @@
 //!
 //! [`DataExtensions`] is what another build adds to a database's node
 //! service: a [`NodeBehavior`] for each `extends` subtype of a core type it
-//! defines (ADR-082 §2.1). [`crate::NodeService::new_with_extensions`] builds
-//! a database's node service with it; [`crate::NodeService::new`] adds
+//! defines (ADR-082 §2.1), and fields on core relationships (ADR-082 §2.2,
+//! [`EdgeFieldDeclaration`]). [`crate::NodeService::new_with_extensions`]
+//! builds a database's node service with it; [`crate::NodeService::new`] adds
 //! nothing.
 
 use std::sync::Arc;
@@ -16,8 +17,12 @@ use thiserror::Error;
 
 use crate::behaviors::{BehaviorRegistrationError, NodeBehavior, NodeBehaviorRegistry};
 
+mod edge_fields;
 #[cfg(test)]
 mod fixture_tests;
+
+pub(crate) use edge_fields::EdgeFieldRegistry;
+pub use edge_fields::{EdgeFieldDeclaration, EDGE_FIELD_RELATIONSHIPS};
 
 /// Whether `id` has the form of an extension id: a lowercase ASCII letter,
 /// then lowercase ASCII letters, digits, `-` or `_`.
@@ -35,11 +40,12 @@ pub fn is_extension_id(id: &str) -> bool {
 }
 
 /// What another build adds to core's data model (ADR-082 §2): the behaviours
-/// of the `extends` subtypes of core types it defines.
+/// of the `extends` subtypes of core types it defines, and the fields it adds
+/// to core relationships.
 ///
 /// Built once and shared by every database: each database's node service
-/// registers the same behaviours in its own [`NodeBehaviorRegistry`].
-/// [`DataExtensions::none`] adds nothing.
+/// registers the same behaviours in its own [`NodeBehaviorRegistry`] and
+/// validates the same edge fields. [`DataExtensions::none`] adds nothing.
 ///
 /// ```
 /// use std::sync::Arc;
@@ -57,6 +63,7 @@ pub fn is_extension_id(id: &str) -> bool {
 #[derive(Clone, Default)]
 pub struct DataExtensions {
     behaviors: Vec<Arc<dyn NodeBehavior>>,
+    edge_fields: Vec<EdgeFieldDeclaration>,
 }
 
 impl DataExtensions {
@@ -85,6 +92,25 @@ impl DataExtensions {
         self
     }
 
+    /// Adds fields to a core relationship (ADR-082 §2.2), stored in the
+    /// declaring extension's bucket of each edge's properties,
+    /// `properties.<extension id>`. A database's node service validates that
+    /// bucket on every edge write it is handed: through `create_relationship`,
+    /// the transactional relationship writes and `update_relationship_properties`.
+    /// Another bucket on the edge, registered by nobody, is left as it is.
+    ///
+    /// Rejected by [`Self::check`]: a relationship other than those in
+    /// [`EDGE_FIELD_RELATIONSHIPS`], an extension id that is not one or names
+    /// a key core stores on its edges (`order`), a second declaration for one
+    /// relationship and id, and a declaration without fields or with a field
+    /// that is unnamed, repeated, not a scalar type, an enum without values or
+    /// with a value listed twice, a non-enum with values, or one that carries a
+    /// default, an index or a target type.
+    pub fn edge_fields(mut self, declaration: EdgeFieldDeclaration) -> Self {
+        self.edge_fields.push(declaration);
+        self
+    }
+
     /// The behaviour registry a database's node service validates with:
     /// core's behaviours and every behaviour added here.
     ///
@@ -107,13 +133,35 @@ impl DataExtensions {
         Ok(registry)
     }
 
+    /// The edge-field declarations a database's node service validates with.
+    pub(crate) fn edge_field_registry(&self) -> Result<EdgeFieldRegistry, DataExtensionsError> {
+        for (i, declaration) in self.edge_fields.iter().enumerate() {
+            let refused = |reason: String| DataExtensionsError::EdgeFields {
+                relationship: declaration.relationship().to_string(),
+                extension_id: declaration.extension_id().to_string(),
+                reason,
+            };
+            if let Some(problem) = declaration.problem() {
+                return Err(refused(problem));
+            }
+            if self.edge_fields[..i].iter().any(|earlier| {
+                earlier.relationship() == declaration.relationship()
+                    && earlier.extension_id() == declaration.extension_id()
+            }) {
+                return Err(refused("they are declared twice".to_string()));
+            }
+        }
+        Ok(EdgeFieldRegistry::new(self.edge_fields.clone()))
+    }
+
     /// Checks everything this value adds, as a daemon does at startup.
     ///
     /// # Errors
     ///
     /// The first problem found; see [`DataExtensionsError`].
     pub fn check(&self) -> Result<(), DataExtensionsError> {
-        self.behavior_registry().map(|_| ())
+        self.behavior_registry()?;
+        self.edge_field_registry().map(|_| ())
     }
 }
 
@@ -128,6 +176,7 @@ impl std::fmt::Debug for DataExtensions {
                     .map(|b| b.type_name())
                     .collect::<Vec<_>>(),
             )
+            .field("edge_fields", &self.edge_fields)
             .finish()
     }
 }
@@ -149,12 +198,21 @@ pub enum DataExtensionsError {
          with words joined by '_'"
     )]
     NotASchemaId(String),
+    /// An edge-field declaration was refused (see
+    /// [`DataExtensions::edge_fields`]).
+    #[error("the fields '{extension_id}' adds to '{relationship}' edges: {reason}")]
+    EdgeFields {
+        relationship: String,
+        extension_id: String,
+        reason: String,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::behaviors::CustomNodeBehavior;
+    use crate::models::schema::{EdgeField, EnumValue, SchemaFieldType};
     use crate::models::CoreNodeType;
 
     #[test]
@@ -208,6 +266,140 @@ mod tests {
                 BehaviorRegistrationError::AlreadyRegistered("team".to_string())
             ))
         );
+    }
+
+    fn field(name: &str, field_type: SchemaFieldType) -> EdgeField {
+        EdgeField {
+            name: name.to_string(),
+            field_type,
+            core_values: (field_type == SchemaFieldType::Enum)
+                .then(|| vec![EnumValue::new("a", "A")]),
+            indexed: None,
+            required: None,
+            default: None,
+            target_type: None,
+            description: None,
+        }
+    }
+
+    fn refusal(declaration: EdgeFieldDeclaration) -> Option<String> {
+        match DataExtensions::none().edge_fields(declaration).check() {
+            Ok(()) => None,
+            Err(DataExtensionsError::EdgeFields { reason, .. }) => Some(reason),
+            Err(other) => panic!("not an edge-field refusal: {other}"),
+        }
+    }
+
+    #[test]
+    fn an_edge_field_declaration_on_member_of_or_has_role_is_accepted() {
+        for &relationship in EDGE_FIELD_RELATIONSHIPS {
+            let fields = SchemaFieldType::ALL
+                .into_iter()
+                .filter(|t| {
+                    !matches!(
+                        t,
+                        SchemaFieldType::Array | SchemaFieldType::Object | SchemaFieldType::Link
+                    )
+                })
+                .map(|t| field(t.as_str(), t))
+                .collect();
+            assert_eq!(
+                refusal(EdgeFieldDeclaration::new(relationship, "fixture", fields)),
+                None,
+                "{relationship}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_edge_field_declaration_is_rejected() {
+        let ok = || vec![field("note", SchemaFieldType::Text)];
+        let with = |change: fn(&mut EdgeField)| {
+            let mut f = field("note", SchemaFieldType::Text);
+            change(&mut f);
+            EdgeFieldDeclaration::new("member_of", "fixture", vec![f])
+        };
+        let cases: Vec<(EdgeFieldDeclaration, &str)> = vec![
+            (
+                EdgeFieldDeclaration::new("has_child", "fixture", ok()),
+                "only to member_of and has_role",
+            ),
+            (
+                EdgeFieldDeclaration::new("mentions", "fixture", ok()),
+                "only to member_of and has_role",
+            ),
+            (
+                EdgeFieldDeclaration::new("member_of", "Fixture", ok()),
+                "must be a lowercase letter",
+            ),
+            (
+                EdgeFieldDeclaration::new("member_of", "order", ok()),
+                "a key core stores on its edges",
+            ),
+            (
+                EdgeFieldDeclaration::new("member_of", "fixture", vec![]),
+                "no fields are declared",
+            ),
+            (
+                EdgeFieldDeclaration::new(
+                    "member_of",
+                    "fixture",
+                    vec![
+                        field("note", SchemaFieldType::Text),
+                        field("note", SchemaFieldType::Number),
+                    ],
+                ),
+                "declared twice",
+            ),
+            (with(|f| f.name.clear()), "a field needs a name"),
+            (
+                with(|f| f.field_type = SchemaFieldType::Object),
+                "cannot be of type 'object'",
+            ),
+            (
+                with(|f| f.field_type = SchemaFieldType::Enum),
+                "an enum field needs its values",
+            ),
+            (
+                with(|f| {
+                    f.field_type = SchemaFieldType::Enum;
+                    f.core_values =
+                        Some(vec![EnumValue::new("a", "A"), EnumValue::new("a", "Again")]);
+                }),
+                "the value 'a' is listed twice",
+            ),
+            (
+                with(|f| f.core_values = Some(vec![EnumValue::new("a", "A")])),
+                "only an enum field takes values",
+            ),
+            (
+                with(|f| f.default = Some(serde_json::json!("x"))),
+                "takes no default",
+            ),
+            (with(|f| f.indexed = Some(true)), "not indexed"),
+            (
+                with(|f| f.target_type = Some("person".to_string())),
+                "takes no target type",
+            ),
+        ];
+        for (declaration, expected) in cases {
+            let described = format!("{declaration:?}");
+            let reason = refusal(declaration).unwrap_or_else(|| panic!("accepted: {described}"));
+            assert!(reason.contains(expected), "{described}: {reason}");
+        }
+
+        let twice = DataExtensions::none()
+            .edge_fields(EdgeFieldDeclaration::new("member_of", "fixture", ok()))
+            .edge_fields(EdgeFieldDeclaration::new("member_of", "fixture", ok()));
+        assert!(matches!(
+            twice.check(),
+            Err(DataExtensionsError::EdgeFields { ref reason, .. }) if reason.contains("declared twice")
+        ));
+        let elsewhere = DataExtensions::none()
+            .edge_fields(EdgeFieldDeclaration::new("member_of", "fixture", ok()))
+            .edge_fields(EdgeFieldDeclaration::new("has_role", "fixture", ok()))
+            .edge_fields(EdgeFieldDeclaration::new("member_of", "other", ok()));
+        assert_eq!(elsewhere.check(), Ok(()));
     }
 
     #[test]
