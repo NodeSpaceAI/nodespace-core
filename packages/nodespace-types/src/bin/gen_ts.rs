@@ -146,6 +146,7 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         EnumValue,
         SchemaProtectionLevel,
         SchemaFieldType,
+        LinkValue,
         SchemaField,
         EdgeField,
         RelationshipDirection,

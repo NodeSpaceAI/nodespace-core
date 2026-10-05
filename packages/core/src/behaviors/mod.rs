@@ -1168,6 +1168,19 @@ fn validate_schema_field(field: &SchemaField) -> Result<(), NodeValidationError>
         }
     }
 
+    // A link is a title and a URL, not one comparable value: it has no
+    // uniqueness to hint at. The same holds for a list of links.
+    let holds_links = field.field_type == crate::models::SchemaFieldType::Link
+        || field.item_type == Some(crate::models::SchemaFieldType::Link);
+    if holds_links
+        && (field.unique.unwrap_or(false) || field.unique_case_insensitive.unwrap_or(false))
+    {
+        return Err(NodeValidationError::InvalidProperties(format!(
+            "Link field '{}' cannot be marked unique",
+            field.name
+        )));
+    }
+
     // Recursively validate nested fields
     if let Some(ref nested_fields) = field.fields {
         for nested_field in nested_fields {

@@ -164,11 +164,13 @@ pub enum SchemaFieldType {
     Enum,
     Array,
     Object,
+    /// A web link: a [`LinkValue`], a title and an absolute URL.
+    Link,
 }
 
 impl SchemaFieldType {
     /// Every field type, in the order they are listed to a user.
-    pub const ALL: [SchemaFieldType; 8] = [
+    pub const ALL: [SchemaFieldType; 9] = [
         SchemaFieldType::Text,
         SchemaFieldType::Number,
         SchemaFieldType::Boolean,
@@ -177,6 +179,7 @@ impl SchemaFieldType {
         SchemaFieldType::Enum,
         SchemaFieldType::Array,
         SchemaFieldType::Object,
+        SchemaFieldType::Link,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -189,6 +192,76 @@ impl SchemaFieldType {
             SchemaFieldType::Enum => "enum",
             SchemaFieldType::Array => "array",
             SchemaFieldType::Object => "object",
+            SchemaFieldType::Link => "link",
+        }
+    }
+}
+
+/// The value of a `link` field: a title and the URL it opens.
+///
+/// A nested stored value, so its keys are snake_case and an unknown key is
+/// refused (ADR-086 §7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(deny_unknown_fields)]
+pub struct LinkValue {
+    pub title: String,
+    /// An absolute URL: one with a scheme and a host. Any scheme is stored;
+    /// a client decides which schemes it opens.
+    pub url: String,
+}
+
+impl LinkValue {
+    /// Read a link from a stored or submitted value. The error says what is
+    /// wrong with the value and does not name the field holding it.
+    pub fn from_json(value: &serde_json::Value) -> Result<Self, String> {
+        const SHAPE: &str = "an object with exactly the keys 'title' and 'url'";
+        let Some(object) = value.as_object() else {
+            return Err(match value.as_str() {
+                Some(s) => format!("must be {SHAPE}, but received the string '{s}'"),
+                None => format!("must be {SHAPE}"),
+            });
+        };
+        if let Some(extra) = object.keys().find(|k| *k != "title" && *k != "url") {
+            return Err(format!("has an unknown key '{extra}'; a link is {SHAPE}"));
+        }
+        let part = |key: &str| match object.get(key) {
+            None => Err(format!("is missing '{key}'; a link is {SHAPE}")),
+            Some(serde_json::Value::String(s)) => Ok(s.clone()),
+            Some(_) => Err(format!("has a '{key}' that is not a string")),
+        };
+        let link = LinkValue {
+            title: part("title")?,
+            url: part("url")?,
+        };
+        // Parsing trims and drops whitespace, and the URL is stored as
+        // written: one carrying any would not be the URL that was checked.
+        if link
+            .url
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err(format!(
+                "has a 'url' that contains whitespace: '{}'",
+                link.url
+            ));
+        }
+        match url::Url::parse(&link.url) {
+            Ok(parsed) if parsed.has_host() => Ok(link),
+            _ => Err(format!(
+                "has a 'url' that is not an absolute URL (a scheme and a host, e.g. \
+                 https://example.com/page): '{}'",
+                link.url
+            )),
+        }
+    }
+
+    /// What the link shows as plain text: its title, or its URL when it has
+    /// none.
+    pub fn label(&self) -> &str {
+        match self.title.trim() {
+            "" => &self.url,
+            title => title,
         }
     }
 }
@@ -923,6 +996,54 @@ mod tests {
             .to_string();
         assert!(error.contains("use 'text'"), "{error}");
         assert!(serde_json::from_value::<SchemaFieldType>(json!("varchar")).is_err());
+    }
+
+    #[test]
+    fn test_link_value_shape_is_closed() {
+        let link =
+            LinkValue::from_json(&json!({ "title": "Core", "url": "https://github.com/a/b" }))
+                .unwrap();
+        assert_eq!(link.title, "Core");
+        assert_eq!(link.label(), "Core");
+        // The scheme is not restricted where a link is stored.
+        let untitled =
+            LinkValue::from_json(&json!({ "title": " ", "url": "ssh://git@host/a.git" })).unwrap();
+        assert_eq!(untitled.label(), "ssh://git@host/a.git");
+
+        let refused = |value: serde_json::Value| LinkValue::from_json(&value).unwrap_err();
+        assert!(refused(json!("https://example.com")).contains("received the string"));
+        assert!(refused(json!({ "url": "https://example.com" })).contains("missing 'title'"));
+        assert!(refused(json!({ "title": "t" })).contains("missing 'url'"));
+        assert!(
+            refused(json!({ "title": "t", "url": "https://example.com", "label": "x" }))
+                .contains("unknown key 'label'")
+        );
+        assert!(refused(json!({ "title": 1, "url": "https://example.com" }))
+            .contains("'title' that is not a string"));
+        for relative in ["example.com/page", "/page", "mailto:a@example.com", ""] {
+            assert!(
+                refused(json!({ "title": "t", "url": relative })).contains("not an absolute URL"),
+                "{relative}"
+            );
+        }
+
+        for spaced in [
+            " https://example.com",
+            "https://example.com/a\n",
+            "https://example.com/a b",
+            "https://exa\tmple.com",
+        ] {
+            assert!(
+                refused(json!({ "title": "t", "url": spaced })).contains("contains whitespace"),
+                "{spaced:?}"
+            );
+        }
+
+        // The serde shape is the same closed one.
+        assert!(serde_json::from_value::<LinkValue>(
+            json!({ "title": "t", "url": "https://example.com", "label": "x" })
+        )
+        .is_err());
     }
 
     fn create_test_field() -> SchemaField {

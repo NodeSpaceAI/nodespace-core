@@ -36,6 +36,8 @@ export function edgeInputKind(field: RawEdgeField): EdgeInputKind {
     case 'text':
     case 'array':
     case 'object':
+    case 'link':
+      // A link is never declared on an edge: the schema write refuses it.
       return 'text';
   }
 }

@@ -26,6 +26,7 @@ serde_path_to_error = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
+url = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

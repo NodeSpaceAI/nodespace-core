@@ -249,3 +249,33 @@ describe('evaluateSummaryTemplate', () => {
     ).toBe('On Hold');
   });
 });
+
+describe('link fields in templates', () => {
+  const linkField: SchemaField = {
+    name: 'target',
+    friendlyName: 'Target',
+    type: 'link',
+    protection: 'user',
+    indexed: false
+  };
+  const values = { target: { title: 'Docs', url: 'https://example.com/docs' } };
+
+  it('names a link by its title in a title, as the backend does', () => {
+    expect(evaluateTitleTemplate('{target}', values, [linkField])).toBe('Docs');
+  });
+
+  it('names an untitled link by its URL, and a list of links by each', () => {
+    const untitled = { title: ' ', url: 'https://example.com/raw' };
+    expect(evaluateTitleTemplate('{target}', { target: untitled }, [linkField])).toBe(
+      'https://example.com/raw'
+    );
+    const listField: SchemaField = { ...linkField, name: 'refs', type: 'array', itemType: 'link' };
+    expect(evaluateTitleTemplate('{refs}', { refs: [values.target, untitled] }, [listField])).toBe(
+      'Docs, https://example.com/raw'
+    );
+  });
+
+  it('shows a link as its title in a summary', () => {
+    expect(evaluateSummaryTemplate('{target}', values, [linkField])).toBe('Docs');
+  });
+});

@@ -3527,6 +3527,14 @@ impl NodeService {
                         ));
                     }
                 }
+                // Each link in a list is checked as a link field's value is.
+                Some(SchemaFieldType::Link) => {
+                    for (index, item) in items.iter().enumerate() {
+                        crate::models::LinkValue::from_json(item).map_err(|problem| {
+                            format!("Link field '{}' item {} {}", field.name, index, problem)
+                        })?;
+                    }
+                }
                 // A null element is not a cleared field, so it is checked
                 // like any other value.
                 Some(item_type) => {
@@ -3546,6 +3554,12 @@ impl NodeService {
                 }
                 None => {}
             }
+        }
+
+        // A `link` holds a title and an absolute URL.
+        if field.field_type == SchemaFieldType::Link {
+            crate::models::LinkValue::from_json(value)
+                .map_err(|problem| format!("Link field '{}' {}", field.name, problem))?;
         }
 
         if let Some(expected) = Self::scalar_mismatch(field.field_type, value) {
@@ -3593,7 +3607,7 @@ impl NodeService {
     /// date functions all trust the declared type, so a value that doesn't
     /// match it is rejected on write rather than misread later.
     ///
-    /// Enum, object and array values have their own checks in
+    /// Enum, object, array and link values have their own checks in
     /// [`Self::check_field_value`], as a field's value and as an array's
     /// element, and a text value is not type-checked, so those never mismatch
     /// here.
@@ -3621,7 +3635,8 @@ impl NodeService {
             SchemaFieldType::Text
             | SchemaFieldType::Enum
             | SchemaFieldType::Array
-            | SchemaFieldType::Object => return None,
+            | SchemaFieldType::Object
+            | SchemaFieldType::Link => return None,
         };
         (!matches).then_some(expected)
     }

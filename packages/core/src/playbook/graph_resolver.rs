@@ -2530,6 +2530,62 @@ mod tests {
             }
         }
 
+        /// A link's parts are read off the node's own value: the resolver
+        /// finds no relationship to walk and leaves the link where it is.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_link_fields_parts_read_through_the_resolver() {
+            use crate::playbook::cel::{evaluate_conditions, CompiledCondition, ConditionResult};
+
+            let (svc, _tmp) = create_test_service().await;
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "gr_linked",
+                    "fields": [{ "name": "repository", "type": "link" }]
+                }),
+            )
+            .await
+            .unwrap();
+
+            let event = crate::db::events::DomainEvent::NodeCreated {
+                node_type: "gr_linked".to_string(),
+                node_id: "unused".to_string(),
+            };
+            let cases = [
+                (
+                    "5d0e3b1c-0c57-4f0e-8a41-2f1f3c7a0001",
+                    json!({"repository": {"title": "Core", "url": "https://example.com/core"}}),
+                    true,
+                ),
+                ("5d0e3b1c-0c57-4f0e-8a41-2f1f3c7a0002", json!({}), false),
+            ];
+            for (id, props, is_set) in cases {
+                let node = make_node(id, "gr_linked", props);
+                svc.create_node(node.clone()).await.unwrap();
+                for (expr, when_set, when_unset) in [
+                    (
+                        "node.repository.url == 'https://example.com/core'",
+                        true,
+                        false,
+                    ),
+                    ("node.repository.title == 'Core'", true, false),
+                    ("has(node.repository)", true, false),
+                    ("!has(node.repository)", false, true),
+                ] {
+                    let conditions = vec![CompiledCondition::compile(expr).unwrap()];
+                    let mut resolver = GraphResolver::new(Arc::clone(&svc));
+                    let result =
+                        evaluate_conditions(&conditions, &node, &event, Some(&mut resolver)).await;
+                    let passes = if is_set { when_set } else { when_unset };
+                    assert_eq!(
+                        result == ConditionResult::Pass,
+                        passes,
+                        "`{expr}` with the link set: {is_set} gave {result:?}"
+                    );
+                }
+            }
+        }
+
         #[tokio::test(flavor = "multi_thread")]
         async fn enrich_context_multi_hop_path_excludes_internal_key() {
             // A multi-hop CEL path (node.related_node._internalKey, segment

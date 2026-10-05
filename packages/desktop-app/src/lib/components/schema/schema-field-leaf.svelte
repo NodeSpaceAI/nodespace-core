@@ -17,6 +17,7 @@
   - number  → number Input
   - boolean → checkbox
   - string/text → text Input
+  - link    → LinkFieldControl (title that opens the URL, with an editor)
   - anything else → "Unknown field type" fallback
 -->
 <script lang="ts">
@@ -24,6 +25,7 @@
   import * as Popover from '$lib/components/ui/popover';
   import { Calendar } from '$lib/components/ui/calendar';
   import { Input } from '$lib/components/ui/input';
+  import LinkFieldControl from './link-field-control.svelte';
   import type { SchemaField } from '$lib/types/schema-node';
   import type { DateValue } from '@internationalized/date';
   import { labelForField } from '$lib/utils/schema-field-label';
@@ -123,6 +125,8 @@
     onblur={(e) => onCommit?.(e.currentTarget.value)}
     placeholder={field.default ? String(field.default) : ''}
   />
+{:else if field.type === 'link'}
+  <LinkFieldControl {value} {fieldId} {onChange} />
 {:else}
   <div class="text-sm text-muted-foreground">Unknown field type: {field.type}</div>
 {/if}

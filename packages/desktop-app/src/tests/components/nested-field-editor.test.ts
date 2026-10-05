@@ -145,3 +145,40 @@ describe('NestedFieldEditor — array of scalars', () => {
     expect(onChange).toHaveBeenCalledWith(['x', '']);
   });
 });
+
+describe('NestedFieldEditor — array of links', () => {
+  const linksField = field({ name: 'commits', type: 'array', itemType: 'link' });
+  const a = { title: 'a1b2', url: 'https://example.com/c/a1b2' };
+  const b = { title: 'c3d4', url: 'https://example.com/c/c3d4' };
+
+  it('shows each link by its title', () => {
+    const { getByText } = render(NestedFieldEditor, {
+      props: { field: linksField, value: [a, b], onChange: vi.fn() }
+    });
+    expect(getByText('a1b2')).toBeTruthy();
+    expect(getByText('c3d4')).toBeTruthy();
+  });
+
+  it('appends a link only once it is complete', async () => {
+    const onChange = vi.fn();
+    const { getByText, getByLabelText } = render(NestedFieldEditor, {
+      props: { field: linksField, value: [a], onChange }
+    });
+    await fireEvent.click(getByText('Add link'));
+    // Opening the editor adds nothing: a list holds no empty link.
+    expect(onChange).not.toHaveBeenCalled();
+    await fireEvent.input(getByLabelText('Link title'), { target: { value: 'c3d4' } });
+    await fireEvent.input(getByLabelText('Link URL'), { target: { value: b.url } });
+    await fireEvent.click(getByText('Save'));
+    expect(onChange).toHaveBeenCalledWith([a, b]);
+  });
+
+  it('removes a link from the list', async () => {
+    const onChange = vi.fn();
+    const { getByLabelText } = render(NestedFieldEditor, {
+      props: { field: linksField, value: [a, b], onChange }
+    });
+    await fireEvent.click(getByLabelText('Remove item 1'));
+    expect(onChange).toHaveBeenCalledWith([b]);
+  });
+});

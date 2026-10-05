@@ -36,6 +36,7 @@ export type { FilterType } from './filter-type';
 export type { GraphEventType } from './graph-event-type';
 export type { IncompatibleDatabase } from './incompatible-database';
 export type { InlineSelector } from './inline-selector';
+export type { LinkValue } from './link-value';
 export type { NodeEnvelope } from './node-envelope';
 export type { NodeQuery } from './node-query';
 export type { NodeReference } from './node-reference';

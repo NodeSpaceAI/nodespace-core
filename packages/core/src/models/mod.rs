@@ -34,7 +34,9 @@ pub use nodespace_types::{
     AiChatTurnStatus, AiChatWrite, AiChatWroteEdge, AI_CHAT_PENDING_DELETE, AI_CHAT_PINS,
     AI_CHAT_RESOLVED, AI_CHAT_WROTE, NODESPACE_AGENT,
 };
-pub use schema::{RelationshipDirection, SchemaField, SchemaFieldType, SchemaProtectionLevel};
+pub use schema::{
+    LinkValue, RelationshipDirection, SchemaField, SchemaFieldType, SchemaProtectionLevel,
+};
 pub use seed_update::{PendingSeedUpdate, PendingSeedUpdateRow, SeedAspect};
 pub use time::{SystemTimeProvider, TimeProvider};
 

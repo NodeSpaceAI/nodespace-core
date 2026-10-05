@@ -2169,7 +2169,8 @@ mod tests {
                     T::Number => S::Number,
                     T::Boolean => S::Boolean,
                     T::Array => S::Array,
-                    T::Object => S::Object,
+                    // A link travels as its `{title, url}` object.
+                    T::Object | T::Link => S::Object,
                 };
                 assert_eq!(promoted.shape, shape, "{core}.{}: shape", field.name);
                 // `read_only` says what a typed update may set, so it follows

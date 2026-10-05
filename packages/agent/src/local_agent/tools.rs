@@ -1423,7 +1423,8 @@ fn json_schema_type_for_field(field_type: &str) -> &'static str {
         "number" => "number",
         "boolean" => "boolean",
         "array" => "array",
-        "object" => "object",
+        // A link is written as `{"title": ..., "url": ...}`.
+        "object" | "link" => "object",
         _ => "string", // text, date, enum, and any future scalar default to string
     }
 }
@@ -1503,6 +1504,14 @@ fn declared_field_values_properties(
                 }
             }
             entry.insert("enum".to_string(), json!(merged));
+        }
+        // A link has one shape, so it is declared whole.
+        if fields.iter().all(|f| f.field_type == "link") {
+            entry.insert(
+                "properties".to_string(),
+                json!({ "title": { "type": "string" }, "url": { "type": "string" } }),
+            );
+            entry.insert("required".to_string(), json!(["title", "url"]));
         }
         properties.insert(name.to_string(), Value::Object(entry));
     }
@@ -1899,7 +1908,7 @@ fn def_create_schema() -> ToolDefinition {
                         "properties": {
                             "name": { "type": "string", "description": "Field name, lowercase snake_case (e.g. 'status', 'due_date') — the storage key. Not shown to the user; see 'friendlyName' for that." },
                             "friendlyName": { "type": "string", "description": "The display label shown to the user. Optional — omit it and one is derived from 'name' automatically (e.g. 'due_date' -> 'Due Date'). Set it explicitly only when the derived label would read wrong, e.g. an abbreviation ('poc' -> 'Point of Contact')." },
-                            "type": { "type": "string", "description": "Field type: text, number, date, enum, array, object, boolean" },
+                            "type": { "type": "string", "description": "Field type: text, number, date, enum, array, object, boolean, link (a web link: a title and a URL)" },
                             "required": { "type": "boolean", "description": "Whether every record of this type must carry a value" },
                             "indexed": { "type": "boolean", "description": "Whether to index for search/filter" },
                             "description": { "type": "string", "description": "What this field means and how it's used — real semantic content (purpose, expected values, an example), not a short label (that's 'friendlyName'). Prefer more detail over less." },
@@ -1992,7 +2001,7 @@ fn def_update_schema() -> ToolDefinition {
                         "properties": {
                             "name": { "type": "string", "description": "Field name, lowercase snake_case — the storage key. Not shown to the user; see 'friendlyName' for that." },
                             "friendlyName": { "type": "string", "description": "The display label shown to the user. Optional — omit it and one is derived from 'name' automatically. Set it explicitly only when the derived label would read wrong." },
-                            "type": { "type": "string", "description": "text, number, date, enum, boolean" },
+                            "type": { "type": "string", "description": "text, number, date, enum, boolean, link (a web link: a title and a URL)" },
                             "description": { "type": "string", "description": "What this field means and how it's used — real semantic content (purpose, expected values, an example), not a short label (that's 'friendlyName'). Prefer more detail over less." },
                             "unique": { "type": "boolean", "description": "Set true when each instance should have a distinct value for this field (e.g. an email or SKU). ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides." },
                             "uniqueCaseInsensitive": { "type": "boolean", "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'uniqueCaseInsensitive' on the same field." },
@@ -10880,6 +10889,27 @@ mod tests {
             json!(["ready_for_dev", "in_dev", "done"])
         );
         assert_eq!(props["assignee"]["type"], "string");
+    }
+
+    /// A link field is declared as the object it is written as.
+    #[test]
+    fn with_declared_field_values_declares_a_link_as_its_title_and_url() {
+        let descriptor = EntityTypeDescriptor {
+            fields: vec![EntityFieldDescriptor {
+                name: "website".to_string(),
+                field_type: "link".to_string(),
+                enum_values: vec![],
+                required: false,
+                description: None,
+            }],
+            ..ticket_descriptor()
+        };
+        let tool = with_declared_field_values(Tool::CreateNode.definition(), &[descriptor]);
+        let website =
+            &tool.parameters_schema["properties"]["field_values"]["properties"]["website"];
+        assert_eq!(website["type"], "object");
+        assert_eq!(website["required"], json!(["title", "url"]));
+        assert_eq!(website["properties"]["url"]["type"], "string");
     }
 
     /// `dev-unseen-schema.toml` (packages/agent/goldens/) is the case built

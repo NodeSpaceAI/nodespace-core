@@ -166,4 +166,38 @@ describe('TableRow — field columns are read by their stored name', () => {
 
     expect(cellTexts(container)).toEqual(['Jane', 'Doe']);
   });
+
+  it('shows a link field as its title, and a list of links as their titles', () => {
+    const link = { title: 'Core', url: 'https://example.com/core' };
+    const node = baseNode({
+      nodeType: 'repo',
+      properties: { repository: link, commits: [link, { title: '', url: 'https://example.com/c/1' }] }
+    });
+    sharedNodeStore.setNode(node, { type: 'database', reason: 'seed' });
+    const linkField = (name: string, extra: Partial<SchemaField> = {}): SchemaField => ({
+      name,
+      friendlyName: name,
+      type: 'link',
+      protection: 'user',
+      indexed: false,
+      ...extra
+    });
+
+    const { container } = render(TableRow, {
+      props: {
+        id: node.id,
+        columns: [
+          { field: 'repository', label: 'Repository' },
+          { field: 'commits', label: 'Commits' }
+        ],
+        fieldSchemaMap: new Map([
+          ['repository', linkField('repository')],
+          ['commits', linkField('commits', { type: 'array', itemType: 'link' })]
+        ]),
+        onRowClick: () => {}
+      }
+    });
+
+    expect(cellTexts(container)).toEqual(['Core', 'Core, https://example.com/c/1']);
+  });
 });

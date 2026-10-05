@@ -281,7 +281,8 @@ fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
 /// undeclared one matches nothing.
 ///
 /// Every segment but the last must be an object field, and each must be
-/// declared in the one before it. A wildcard query has no schema to check
+/// declared in the one before it. A link field is followed by one of its two
+/// parts, `title` or `url`, which ends the path. A wildcard query has no schema to check
 /// against, so a path is refused there.
 ///
 /// Returns where the rows of a query for `target_type` keep the field: an
@@ -329,6 +330,20 @@ async fn resolve_property(
         }
         declared = match (&field.field_type, field.fields.as_deref()) {
             (crate::models::SchemaFieldType::Object, Some(nested)) => nested,
+            // A link declares no fields: its two parts are its shape, and one
+            // of them ends the path.
+            (crate::models::SchemaFieldType::Link, _) => {
+                return match &segments[index + 1..] {
+                    [part] if *part == "title" || *part == "url" => Ok(PropertyScope {
+                        bucket,
+                        subtypes: Vec::new(),
+                    }),
+                    _ => Err(OpsError::InvalidParams(format!(
+                        "{label} '{name}': '{reached}' is a link field of '{target_type}', and \
+                         only its 'title' and 'url' can be read"
+                    ))),
+                };
+            }
             _ => {
                 return Err(OpsError::InvalidParams(format!(
                     "{label} '{name}': '{reached}' is a {} field of '{target_type}' with no \
@@ -3421,6 +3436,75 @@ mod tests {
                 .map(|n| n.id)
                 .collect();
             assert_eq!(sorted, [REPO_B, REPO_A]);
+        }
+
+        /// A filter and a sort reach a link field's two parts, `title` and
+        /// `url`, and nothing else under it.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_filter_and_a_sort_reach_into_a_link_field() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({
+                    "name": "op_checkout",
+                    "fields": [{ "name": "repository", "type": "link" }]
+                }),
+            )
+            .await;
+            for (id, title, url) in [
+                (REPO_A, "zeta", "https://example.com/a.git"),
+                (REPO_B, "alpha", "https://example.com/b.git"),
+            ] {
+                svc.create_node(node(
+                    id,
+                    "op_checkout",
+                    json!({ "repository": { "title": title, "url": url } }),
+                ))
+                .await
+                .unwrap();
+            }
+            svc.create_node(node(NO_REPO, "op_checkout", json!({})))
+                .await
+                .unwrap();
+
+            let by_url = matching_ids(
+                &svc,
+                json!({ "target_type": "op_checkout", "filters": [{
+                    "type": "property", "operator": "equals",
+                    "property": "repository.url", "value": "https://example.com/b.git"
+                }] }),
+            )
+            .await;
+            assert_eq!(by_url, [REPO_B]);
+
+            let input: ExecuteQueryInput = serde_json::from_value(json!({
+                "target_type": "op_checkout",
+                "filters": [{
+                    "type": "property", "operator": "exists", "property": "repository.title"
+                }],
+                "sorting": [{ "field": "repository.title", "direction": "asc" }]
+            }))
+            .unwrap();
+            let sorted: Vec<String> = execute_query_nodes(&svc, input)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            assert_eq!(sorted, [REPO_B, REPO_A]);
+
+            for property in ["repository.host", "repository.url.scheme"] {
+                let input: ExecuteQueryInput = serde_json::from_value(json!({
+                    "target_type": "op_checkout",
+                    "filters": [{ "type": "property", "operator": "exists", "property": property }]
+                }))
+                .unwrap();
+                let refused = execute_query(&svc, input).await.unwrap_err().to_string();
+                assert!(
+                    refused.contains("only its 'title' and 'url' can be read"),
+                    "{property}: {refused}"
+                );
+            }
         }
 
         /// A path the schema does not declare is refused when the query is
