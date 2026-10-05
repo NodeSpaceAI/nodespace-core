@@ -46,12 +46,12 @@ function update(overrides: Partial<PendingSeedUpdate> = {}): PendingSeedUpdate {
 /** Commands the page or store issued, without their arguments. */
 const commands = () => mockInvoke.mock.calls.map((call) => call[0] as string);
 
-function button(container: HTMLElement, label: string): HTMLButtonElement {
+function button(container: HTMLElement, label: string) {
   const found = Array.from(container.ownerDocument.querySelectorAll('button')).find(
     (b) => b.textContent?.trim() === label
   );
   if (!found) throw new Error(`No "${label}" button rendered`);
-  return found as HTMLButtonElement;
+  return found;
 }
 
 beforeEach(() => {

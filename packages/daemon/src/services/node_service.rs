@@ -62,21 +62,21 @@ use crate::nodespace::{
     GetRootsRequest, GetSchemaDefinitionRequest, GetSkillRequest, GetWorkflowStateRequest,
     GetWorkflowStateResponse, InstallMethodologyRequest, InstallMethodologyResponse,
     ListConflictsRequest, ListMethodologiesRequest, ListMethodologiesResponse,
-    ListPendingSeedUpdatesRequest, PendingSeedUpdate, PendingSeedUpdateDetail,
-    PendingSeedUpdateListResponse, PendingSeedUpdateRef, ResolvePendingSeedUpdateRequest,
-    ResolvePendingSeedUpdateResponse, SeedUpdateChoice,
-    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
-    MergeNodesRequest, MergeNodesResponse, Methodology, MoveChildrenToParentRequest,
-    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
-    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
-    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
-    OptionalStringClear, OptionalTimestampClear, PreviewMergeRequest, PreviewMergeResponse,
-    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
+    ListPendingSeedUpdatesRequest, MentionAutocompleteRequest, MentionIdsResponse, MentionResponse,
+    MentionTargetRequest, MergeNodesRequest, MergeNodesResponse, Methodology,
+    MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
+    NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse, NodeReference,
+    NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
+    OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
+    PendingSeedUpdate, PendingSeedUpdateDetail, PendingSeedUpdateListResponse,
+    PendingSeedUpdateRef, PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest,
+    RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
     RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
     ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
-    SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest, SchemaResponse,
-    SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest, SkillGuidanceEntry,
-    SkillGuidanceRequest, SkillGuidanceResponse, ToolCommandEntry, UpdateCollectionNodeRequest,
+    ResolvePendingSeedUpdateRequest, ResolvePendingSeedUpdateResponse, SchemaGuidanceEntry,
+    SchemaListResponse, SchemaParamsRequest, SchemaResponse, SchemaResultResponse, SearchRequest,
+    SeedUpdateChoice, SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest,
+    SkillGuidanceResponse, ToolCommandEntry, UpdateCollectionNodeRequest,
     UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
     UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdatePlayNodeRequest,
     UpdateProjectNodeRequest, UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
@@ -802,7 +802,7 @@ impl GrpcNodeService for NodeServiceImpl {
     ) -> Result<Response<PendingSeedUpdateDetail>, Status> {
         let this = self.route(&request).await?;
         let req = request.into_inner();
-        let aspect = parse_seed_aspect(&req.aspect)?;
+        let aspect = parse_seed_aspect(&req.aspect).map_err(|status| *status)?;
 
         // Checked before the template is resolved, so "nothing pending" is
         // told apart from "pending, but this build ships no such seed".
@@ -815,7 +815,7 @@ impl GrpcNodeService for NodeServiceImpl {
         {
             return Err(no_pending_seed_update(&req.node_id, aspect));
         }
-        let template = prepared_seed_template(&req.node_id)?;
+        let template = prepared_seed_template(&req.node_id).map_err(|status| *status)?;
         let comparison = this
             .node_service
             .compare_pending_seed_update(&template, aspect)
@@ -836,7 +836,7 @@ impl GrpcNodeService for NodeServiceImpl {
     ) -> Result<Response<ResolvePendingSeedUpdateResponse>, Status> {
         let this = self.route(&request).await?;
         let req = request.into_inner();
-        let aspect = parse_seed_aspect(&req.aspect)?;
+        let aspect = parse_seed_aspect(&req.aspect).map_err(|status| *status)?;
         let choice = SeedUpdateChoice::try_from(req.choice)
             .ok()
             .filter(|choice| *choice != SeedUpdateChoice::Unspecified)
@@ -851,7 +851,7 @@ impl GrpcNodeService for NodeServiceImpl {
 
         let settled = match choice {
             SeedUpdateChoice::TakeShipped => {
-                let template = prepared_seed_template(&req.node_id)?;
+                let template = prepared_seed_template(&req.node_id).map_err(|status| *status)?;
                 this.node_service
                     .take_seed_update(&template, aspect)
                     .await
@@ -3021,27 +3021,32 @@ fn compiled_seed_templates() -> impl Iterator<Item = nodespace_core::markdown::N
 /// `FAILED_PRECONDITION` when no compiled table holds that id: the shipped
 /// version of such a seed cannot be shown or taken by this build. Keeping the
 /// user's version needs no template and is still possible.
+///
+/// The error is boxed for `clippy::result_large_err`, as in
+/// [`client_id_header`].
 fn prepared_seed_template(
     node_id: &str,
-) -> Result<Vec<nodespace_core::markdown::PreparedNode>, Status> {
+) -> Result<Vec<nodespace_core::markdown::PreparedNode>, Box<Status>> {
     let template = compiled_seed_templates()
         .find(|template| template.id == node_id)
         .ok_or_else(|| {
-            Status::failed_precondition(format!(
+            Box::new(Status::failed_precondition(format!(
                 "this build ships no seed for node '{node_id}', so its shipped version cannot \
                  be shown or taken"
-            ))
+            )))
         })?;
     nodespace_core::markdown::prepare_nodes_from_template(&template).map_err(|e| {
-        Status::internal(format!(
+        Box::new(Status::internal(format!(
             "Failed to expand seed template '{}': {e}",
             template.title
-        ))
+        )))
     })
 }
 
-fn parse_seed_aspect(aspect: &str) -> Result<nodespace_core::models::SeedAspect, Status> {
-    aspect.parse().map_err(Status::invalid_argument)
+fn parse_seed_aspect(aspect: &str) -> Result<nodespace_core::models::SeedAspect, Box<Status>> {
+    aspect
+        .parse()
+        .map_err(|e: String| Box::new(Status::invalid_argument(e)))
 }
 
 fn no_pending_seed_update(node_id: &str, aspect: nodespace_core::models::SeedAspect) -> Status {

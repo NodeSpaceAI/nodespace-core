@@ -29,9 +29,9 @@ service NodeService {
   rpc UpdateNode(UpdateNodeRequest) returns (NodeResponse);
   rpc DeleteNode(DeleteNodeRequest) returns (DeleteNodeResponse);
   // Explicitly discard a seeded node's user-modified config and/or guidance
-  // aspect, restoring it to the currently-compiled template (ADR-072). The
-  // only path allowed to override `_seed.config_modified` /
-  // `_seed.guidance_modified` — normal reconciliation on daemon startup
+  // aspect, restoring it to the currently-compiled template (ADR-072). It
+  // overrides `_seed.config_modified` / `_seed.guidance_modified` whether or
+  // not a shipped update is pending — normal reconciliation on daemon startup
   // never does this. `dry_run` returns the before-state summary without
   // changing anything, for a CLI confirmation prompt.
   rpc ResetSeedNode(ResetSeedNodeRequest) returns (ResetSeedNodeResponse);

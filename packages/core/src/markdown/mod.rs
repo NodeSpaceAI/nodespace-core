@@ -1308,8 +1308,9 @@ pub async fn handle_create_nodes_from_markdown(
 /// durability-guarded per aspect (config vs. guidance — see
 /// `_seed.config_modified` / `_seed.guidance_modified` in
 /// `seed_nodes_from_templates`'s doc comment). An aspect a user has touched
-/// is never auto-replaced by a template-hash change; only an explicit reset
-/// discards it.
+/// is never auto-replaced by a template-hash change: the change is recorded
+/// as pending, and only the user taking it, or an explicit reset, discards
+/// the edit.
 ///
 /// - `System`: an engineering artifact stored as a node (skill descriptions,
 ///   tool definitions, prompt sections). Most seeded content today.

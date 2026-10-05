@@ -128,13 +128,20 @@ async fn body(service: &NodeService, id: &str) -> Result<Vec<String>> {
 #[tokio::test]
 async fn an_edited_skill_body_is_kept_and_its_shipped_change_recorded() -> Result<()> {
     let (service, _temp) = create_test_service().await?;
-    seed(&service, &skill("File a note.", "Shipped body, first version.")).await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
     edit_body(&service, SKILL_ID, "The body the user wrote.").await?;
 
     let v2 = skill("File a note.", "Shipped body, second version.");
     seed(&service, &v2).await?;
 
-    assert_eq!(body(&service, SKILL_ID).await?, ["The body the user wrote."]);
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["The body the user wrote."]
+    );
     let pending = service.list_pending_seed_updates().await?;
     assert_eq!(pending.len(), 1, "{pending:?}");
     assert_eq!(pending[0].node_id, SKILL_ID);
@@ -159,7 +166,11 @@ async fn an_edited_skill_body_is_kept_and_its_shipped_change_recorded() -> Resul
 #[tokio::test]
 async fn keeping_theirs_stays_settled_until_the_shipped_version_changes_again() -> Result<()> {
     let (service, _temp) = create_test_service().await?;
-    seed(&service, &skill("File a note.", "Shipped body, first version.")).await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
     edit_body(&service, SKILL_ID, "The body the user wrote.").await?;
     let v2 = skill("File a note.", "Shipped body, second version.");
     seed(&service, &v2).await?;
@@ -170,13 +181,19 @@ async fn keeping_theirs_stays_settled_until_the_shipped_version_changes_again() 
             .await?
     );
     assert!(service.list_pending_seed_updates().await?.is_empty());
-    assert_eq!(body(&service, SKILL_ID).await?, ["The body the user wrote."]);
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["The body the user wrote."]
+    );
 
     // The next opens ship the same version: nothing comes back.
     seed(&service, &v2).await?;
     seed(&service, &v2).await?;
     assert!(service.list_pending_seed_updates().await?.is_empty());
-    assert_eq!(body(&service, SKILL_ID).await?, ["The body the user wrote."]);
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["The body the user wrote."]
+    );
 
     // A newer shipped version is put to the user again.
     let v3 = skill("File a note.", "Shipped body, third version.");
@@ -187,7 +204,10 @@ async fn keeping_theirs_stays_settled_until_the_shipped_version_changes_again() 
         pending[0].shipped_version,
         shipped_version(&v3, SeedAspect::Guidance)
     );
-    assert_eq!(body(&service, SKILL_ID).await?, ["The body the user wrote."]);
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["The body the user wrote."]
+    );
 
     // Nothing to keep twice.
     assert!(
@@ -257,14 +277,21 @@ async fn taking_the_shipped_settings_of_a_skill_replaces_only_that_aspect() -> R
     assert_eq!(stored.properties["_seed"]["config_modified"], false);
     assert!(service.list_pending_seed_updates().await?.is_empty());
     // The body is the user's still, and still theirs to keep.
-    assert_eq!(body(&service, SKILL_ID).await?, ["The body the user wrote."]);
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["The body the user wrote."]
+    );
     assert_eq!(stored.properties["_seed"]["guidance_modified"], true);
 
     // Settled: the same release leaves it alone, and the next one replaces
     // the settings without asking, since they are no longer the user's.
     seed(&service, &v2).await?;
     assert!(service.list_pending_seed_updates().await?.is_empty());
-    seed(&service, &skill("File a note, third wording.", "Shipped body.")).await?;
+    seed(
+        &service,
+        &skill("File a note, third wording.", "Shipped body."),
+    )
+    .await?;
     let stored = service.get_node(SKILL_ID).await?.unwrap();
     assert_eq!(
         stored.properties["skill"]["description"],
@@ -321,7 +348,11 @@ async fn an_edited_saved_query_is_kept_and_its_shipped_change_recorded() -> Resu
     assert_eq!(pending[0].title, "Open tasks");
     assert_eq!(pending[0].aspect, SeedAspect::Config);
 
-    assert!(service.keep_seed_update(QUERY_ID, SeedAspect::Config).await?);
+    assert!(
+        service
+            .keep_seed_update(QUERY_ID, SeedAspect::Config)
+            .await?
+    );
     seed(&service, &v2).await?;
     assert!(service.list_pending_seed_updates().await?.is_empty());
     let stored = service.get_node(QUERY_ID).await?.unwrap();
@@ -332,7 +363,11 @@ async fn an_edited_saved_query_is_kept_and_its_shipped_change_recorded() -> Resu
 #[tokio::test]
 async fn a_seed_nobody_edited_is_replaced_without_asking() -> Result<()> {
     let (service, _temp) = create_test_service().await?;
-    seed(&service, &skill("File a note.", "Shipped body, first version.")).await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
 
     seed(
         &service,
@@ -356,7 +391,11 @@ async fn a_seed_nobody_edited_is_replaced_without_asking() -> Result<()> {
 #[tokio::test]
 async fn a_reset_clears_the_pending_state_of_what_it_resets() -> Result<()> {
     let (service, _temp) = create_test_service().await?;
-    seed(&service, &skill("File a note.", "Shipped body, first version.")).await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
     edit_root(
         &service,
         SKILL_ID,
@@ -402,8 +441,15 @@ async fn taking_changes_nothing_when_nothing_is_pending() -> Result<()> {
     seed(&service, &v1).await?;
     assert!(service.list_pending_seed_updates().await?.is_empty());
     let group = prepare_nodes_from_template(&v1)?;
-    assert!(!service.take_seed_update(&group, SeedAspect::Guidance).await?);
-    assert_eq!(body(&service, SKILL_ID).await?, ["The body the user wrote."]);
+    assert!(
+        !service
+            .take_seed_update(&group, SeedAspect::Guidance)
+            .await?
+    );
+    assert_eq!(
+        body(&service, SKILL_ID).await?,
+        ["The body the user wrote."]
+    );
     assert!(service
         .compare_pending_seed_update(&group, SeedAspect::Guidance)
         .await?
@@ -416,7 +462,11 @@ async fn taking_changes_nothing_when_nothing_is_pending() -> Result<()> {
 #[tokio::test]
 async fn pending_state_is_not_node_content() -> Result<()> {
     let (service, _temp) = create_test_service().await?;
-    seed(&service, &skill("File a note.", "Shipped body, first version.")).await?;
+    seed(
+        &service,
+        &skill("File a note.", "Shipped body, first version."),
+    )
+    .await?;
     edit_body(&service, SKILL_ID, "The body the user wrote.").await?;
     seed(
         &service,

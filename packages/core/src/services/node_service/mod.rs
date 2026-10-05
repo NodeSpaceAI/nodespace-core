@@ -39,7 +39,6 @@ use tokio::sync::broadcast;
 pub mod access_gate;
 pub(crate) mod bulk;
 pub mod conflicts;
-pub mod seed_updates;
 pub(crate) mod crud;
 pub(crate) mod embedding;
 pub(crate) mod hierarchy;
@@ -47,14 +46,15 @@ pub(crate) mod invariants;
 pub(crate) mod query;
 pub(crate) mod relationship;
 pub(crate) mod schema;
+pub mod seed_updates;
 
 #[cfg(test)]
 mod inherited_behavior_rule_tests;
 
 pub use conflicts::deterministic_conflict_id;
-pub use seed_updates::{shipped_seed_aspect_text, SeedUpdateComparison};
 pub use hierarchy::render_subtree_markdown;
 pub use relationship::{CreatedRelationship, NewRelationship, StoredEdge};
+pub use seed_updates::{shipped_seed_aspect_text, SeedUpdateComparison};
 
 /// Reserved ID for the DatabaseSettingsNode singleton instance.
 ///
@@ -2292,11 +2292,12 @@ impl NodeService {
     }
 
     /// Explicitly discard a seeded node's user-modified aspect(s), restoring
-    /// them to the given template — the one path in the system allowed to
-    /// override `_seed.config_modified` / `_seed.guidance_modified`
-    /// (ADR-072). Everywhere else (`seed_nodes_from_templates`) treats those
-    /// flags as a hard stop; this ignores them on purpose, since discarding a
-    /// user edit here is exactly what the caller asked for by invoking reset.
+    /// them to the given template — the path that overrides
+    /// `_seed.config_modified` / `_seed.guidance_modified` (ADR-072).
+    /// Reconciliation (`seed_nodes_from_templates`) treats those flags as a
+    /// hard stop; this ignores them on purpose, since discarding a user edit
+    /// here is exactly what the caller asked for, by invoking reset or by
+    /// taking a pending update ([`Self::take_seed_update`]).
     ///
     /// `template_group` is the seed's current compiled template, already
     /// expanded by [`crate::markdown::prepare_nodes_from_template`]; its

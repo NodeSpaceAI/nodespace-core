@@ -72,7 +72,8 @@ pub enum SkillAction {
     /// Discard a user's customization of a seeded skill node's config
     /// (description/exclusion/tool_whitelist/max_iterations) and/or guidance
     /// (procedural markdown), restoring it to the currently-compiled
-    /// template. The one path in NodeSpace allowed to override a
+    /// template, whether or not a newer shipped version is pending
+    /// (`nodespace seed pending`). It overrides the
     /// `_seed.config_modified` / `_seed.guidance_modified` durability guard
     /// (ADR-072) — reconciliation on daemon startup never discards a
     /// user-modified aspect on its own. Requires confirmation unless `--yes`

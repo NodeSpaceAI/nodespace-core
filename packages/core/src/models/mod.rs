@@ -24,7 +24,6 @@ pub(crate) mod schema_node;
 
 // The AI-chat family (ADR-088) is defined once, in nodespace-types.
 pub use conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};
-pub use seed_update::{PendingSeedUpdate, PendingSeedUpdateRow, SeedAspect};
 pub use node::{
     DeleteResult, FilterOperator, Node, NodeEnvelope, NodeFilter, NodeQuery, NodeReference,
     NodeRelationship, NodeUpdate, OrderBy, PropertyFilter, TraversalDirection, ValidationError,
@@ -36,6 +35,7 @@ pub use nodespace_types::{
     AI_CHAT_WROTE, NODESPACE_AGENT,
 };
 pub use schema::{RelationshipDirection, SchemaField, SchemaFieldType, SchemaProtectionLevel};
+pub use seed_update::{PendingSeedUpdate, PendingSeedUpdateRow, SeedAspect};
 pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers

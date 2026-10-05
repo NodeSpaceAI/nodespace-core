@@ -241,7 +241,11 @@ fn print_pending(w: &mut impl Write, updates: &[PendingSeedUpdate], json_out: bo
     )?;
     for update in updates {
         writeln!(w)?;
-        writeln!(w, "kind:        {}", sanitize_for_terminal(&update.node_type))?;
+        writeln!(
+            w,
+            "kind:        {}",
+            sanitize_for_terminal(&update.node_type)
+        )?;
         writeln!(w, "title:       {}", sanitize_for_terminal(&update.title))?;
         writeln!(w, "aspect:      {}", update.aspect)?;
         writeln!(w, "last edited: {}", update.last_edited_at)?;
@@ -256,7 +260,11 @@ fn print_pending(w: &mut impl Write, updates: &[PendingSeedUpdate], json_out: bo
     Ok(())
 }
 
-fn print_detail(w: &mut impl Write, detail: &PendingSeedUpdateDetail, json_out: bool) -> Result<()> {
+fn print_detail(
+    w: &mut impl Write,
+    detail: &PendingSeedUpdateDetail,
+    json_out: bool,
+) -> Result<()> {
     let update = detail
         .update
         .as_ref()
