@@ -93,8 +93,10 @@ pub fn strip_terminal_sequences(raw: &str) -> String {
                 // erasing, modes) leaves nothing.
                 '\u{40}'..='\u{7e}' => {
                     match c {
-                        'A' | 'B' | 'E' | 'F' | 'H' | 'd' | 'f' if !lines.current.is_empty() => {
-                            lines.end_line();
+                        'A' | 'B' | 'E' | 'F' | 'H' | 'd' | 'f' => {
+                            if !lines.current.is_empty() {
+                                lines.end_line();
+                            }
                         }
                         'C' | 'G' => lines.gap(),
                         _ => {}
