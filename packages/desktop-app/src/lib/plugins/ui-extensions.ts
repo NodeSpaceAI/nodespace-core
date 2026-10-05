@@ -65,7 +65,7 @@ import type { PluginDefinition } from './types';
 const log = createLogger('UiExtensionRegistry');
 
 /** The extension API version this build implements. */
-export const EXTENSION_API_VERSION = { major: 2, minor: 1 } as const;
+export const EXTENSION_API_VERSION = { major: 2, minor: 2 } as const;
 
 // --- Lifecycle hooks (ADR-082 §3.5) ---------------------------------------------
 
