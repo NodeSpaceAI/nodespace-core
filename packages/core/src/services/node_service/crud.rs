@@ -2530,8 +2530,14 @@ impl NodeService {
     /// as a bare shell: no schema means nothing to validate supplied
     /// properties against, so every one of them is silently dropped and the
     /// caller is told the write succeeded.
+    ///
+    /// A behaviour another build registered does not make its type known: a
+    /// subtype is defined by its schema, which places it under the core type
+    /// it extends. Until that schema exists in this database, a node of the
+    /// type would be neither validated as its base nor found by a query for
+    /// it.
     async fn ensure_known_node_type(&self, node_type: &str) -> Result<(), NodeServiceError> {
-        if self.behaviors.get(node_type).is_some() {
+        if crate::models::CoreNodeType::from_id(node_type).is_some() {
             return Ok(());
         }
         let schema_exists = self

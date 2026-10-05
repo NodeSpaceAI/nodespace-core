@@ -82,6 +82,7 @@ describe("WATCHED_PATHS", () => {
         RUST_FIXTURE,
         "packages/desktop-app/app-lib/tests/it/extension_hooks_test.rs",
         "packages/daemon/tests/it/extension_points_fixture.rs",
+        "packages/core/src/extensions/fixture_tests.rs",
         "scripts/fixtures/skill-extension/",
       ])
     );

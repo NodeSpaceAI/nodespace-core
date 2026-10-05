@@ -1486,8 +1486,8 @@ impl Clone for NodeService {
 impl NodeService {
     /// Create a new NodeService
     ///
-    /// Initializes the service with SqliteStore and creates a default
-    /// NodeBehaviorRegistry with Text, Task, and Date behaviors.
+    /// Initializes the service with SqliteStore and the behaviour registry of
+    /// core's types. [`Self::new_with_extensions`] adds another build's.
     ///
     /// # Arguments
     ///
@@ -1510,6 +1510,26 @@ impl NodeService {
     /// Takes `&mut Arc<SqliteStore>` so it can install the store notifier via
     /// `Arc::get_mut()`, which requires being the store's only owner.
     pub async fn new(store: &mut Arc<SqliteStore>) -> Result<Self, NodeServiceError> {
+        Self::new_with_extensions(store, &crate::extensions::DataExtensions::none()).await
+    }
+
+    /// [`Self::new`] for a database another build adds to (ADR-082 §2): the
+    /// node service validates with core's behaviours and the behaviours
+    /// `extensions` adds for its subtypes of core types.
+    ///
+    /// # Errors
+    ///
+    /// An initialization error when `extensions` is refused (see
+    /// [`crate::extensions::DataExtensions::check`]), before anything is
+    /// written, and every error [`Self::new`] returns.
+    pub async fn new_with_extensions(
+        store: &mut Arc<SqliteStore>,
+        extensions: &crate::extensions::DataExtensions,
+    ) -> Result<Self, NodeServiceError> {
+        let behaviors = extensions
+            .behavior_registry()
+            .map_err(|e| NodeServiceError::initialization_error(e.to_string()))?;
+
         // Initialize broadcast channel for domain events (EventEnvelope)
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
 
@@ -1602,7 +1622,7 @@ impl NodeService {
 
         let service = Self {
             store: Arc::clone(store),
-            behaviors: Arc::new(NodeBehaviorRegistry::new()),
+            behaviors: Arc::new(behaviors),
             event_tx,
             origin_filtered_event_tx,
             excluded_event_origin,

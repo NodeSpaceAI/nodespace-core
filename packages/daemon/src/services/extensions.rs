@@ -5,7 +5,10 @@
 //! as core's own does. The hooks are part of the extension API, versioned
 //! with `EXTENSION_API_VERSION` (ADR-082 §8).
 
-use nodespace_core::extensions::is_extension_id;
+use std::sync::Arc;
+
+use nodespace_core::behaviors::NodeBehavior;
+use nodespace_core::extensions::{is_extension_id, DataExtensions, DataExtensionsError};
 
 /// What a build composing the daemon adds to it. Built once and handed to
 /// [`super::build_shared_services`], which checks it before it builds
@@ -21,6 +24,7 @@ use nodespace_core::extensions::is_extension_id;
 #[derive(Clone, Debug, Default)]
 pub struct DaemonExtensions {
     supported_extensions: Vec<String>,
+    data: DataExtensions,
 }
 
 impl DaemonExtensions {
@@ -51,6 +55,22 @@ impl DaemonExtensions {
         &self.supported_extensions
     }
 
+    /// Adds the behaviour of an `extends` subtype of a core type (ADR-082
+    /// §2.1). Every database the daemon opens registers it in its own
+    /// behaviour registry, so the daemon validates the subtype on every write
+    /// through its node API. See [`DataExtensions::behavior`] for what a
+    /// behaviour decides and what is rejected at startup.
+    pub fn behavior(mut self, behavior: Arc<dyn NodeBehavior>) -> Self {
+        self.data = self.data.behavior(behavior);
+        self
+    }
+
+    /// What this value adds to each database's data model: the subtype
+    /// behaviours.
+    pub fn data(&self) -> &DataExtensions {
+        &self.data
+    }
+
     /// Checks everything this value adds, as the daemon does at startup.
     ///
     /// # Errors
@@ -64,7 +84,7 @@ impl DaemonExtensions {
         {
             return Err(DaemonExtensionsError::InvalidExtensionId(id.clone()));
         }
-        Ok(())
+        self.data.check().map_err(DaemonExtensionsError::Data)
     }
 }
 
@@ -78,6 +98,8 @@ pub enum DaemonExtensionsError {
     /// A declared extension id does not have the form
     /// [`DaemonExtensions::supported_extension`] requires.
     InvalidExtensionId(String),
+    /// A behaviour was refused (see [`DataExtensions::check`]).
+    Data(DataExtensionsError),
 }
 
 impl std::fmt::Display for DaemonExtensionsError {
@@ -88,11 +110,19 @@ impl std::fmt::Display for DaemonExtensionsError {
                 "'{id}' is not a valid extension id: use a lowercase letter followed by \
                  lowercase letters, digits, '-' or '_'"
             ),
+            Self::Data(err) => write!(f, "{err}"),
         }
     }
 }
 
-impl std::error::Error for DaemonExtensionsError {}
+impl std::error::Error for DaemonExtensionsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidExtensionId(_) => None,
+            Self::Data(err) => err.source(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -127,6 +157,26 @@ mod tests {
                 .supported_extension("")
                 .check(),
             Err(DaemonExtensionsError::InvalidExtensionId("Bad".to_string()))
+        );
+    }
+
+    #[test]
+    fn check_rejects_a_refused_behaviour() {
+        use nodespace_core::behaviors::{BehaviorRegistrationError, CustomNodeBehavior};
+
+        assert_eq!(
+            DaemonExtensions::none()
+                .behavior(Arc::new(CustomNodeBehavior::new("team")))
+                .check(),
+            Ok(())
+        );
+        assert_eq!(
+            DaemonExtensions::none()
+                .behavior(Arc::new(CustomNodeBehavior::new("collection")))
+                .check(),
+            Err(DaemonExtensionsError::Data(DataExtensionsError::Behavior(
+                BehaviorRegistrationError::CoreType("collection".to_string())
+            )))
         );
     }
 }
