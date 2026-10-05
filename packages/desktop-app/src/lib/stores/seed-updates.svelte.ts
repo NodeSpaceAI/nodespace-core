@@ -79,7 +79,9 @@ class SeedUpdatesStore {
 
   /**
    * Load what is pending. Resolves `true` when the result was applied, `false`
-   * when a database switch landed while it was in flight.
+   * when the read failed or a database switch landed while it was in flight.
+   * A failed read leaves the store as it was: "could not ask" is not "nothing
+   * to review".
    */
   async load(): Promise<boolean> {
     const generation = this.#generation;
@@ -88,7 +90,7 @@ class SeedUpdatesStore {
       updates = (await invoke<PendingSeedUpdate[]>('list_pending_seed_updates')) ?? [];
     } catch (e) {
       log.warn('Failed to load pending seed updates', { error: e });
-      updates = [];
+      return false;
     }
     if (generation !== this.#generation) return false;
     this.updates = updates;

@@ -77,13 +77,15 @@ describe('seed updates store', () => {
     expect(seedUpdatesStore.hadUpdates).toBe(true);
   });
 
-  it('loads as empty when the daemon cannot be asked', async () => {
+  it('leaves the store as it was when the daemon cannot be asked', async () => {
+    seedUpdatesStore.updates = [update()];
     mockInvoke.mockRejectedValueOnce(new Error('no daemon'));
 
-    expect(await seedUpdatesStore.load()).toBe(true);
+    expect(await seedUpdatesStore.load()).toBe(false);
 
-    expect(seedUpdatesStore.updates).toEqual([]);
-    expect(seedUpdatesStore.hadUpdates).toBe(false);
+    // Not "nothing to review": the read never answered.
+    expect(seedUpdatesStore.updates).toEqual([update()]);
+    expect(seedUpdatesStore.loaded).toBe(false);
   });
 
   it('drops a load that resolves after a database switch', async () => {
@@ -115,11 +117,28 @@ describe('seed updates store', () => {
 
   it('keeps an update listed when settling it fails', async () => {
     seedUpdatesStore.updates = [update()];
-    mockInvoke.mockRejectedValueOnce(new Error('refused'));
+    mockInvoke.mockImplementation((command: string) =>
+      command === 'list_pending_seed_updates'
+        ? Promise.resolve([update()])
+        : Promise.reject(new Error('refused'))
+    );
 
     await expect(seedUpdatesStore.takeShipped(update())).rejects.toThrow('refused');
 
     expect(seedUpdatesStore.updates).toEqual([update()]);
+  });
+
+  it('re-reads the list after a failed choice, dropping what was settled elsewhere', async () => {
+    seedUpdatesStore.updates = [update()];
+    mockInvoke.mockImplementation((command: string) =>
+      command === 'list_pending_seed_updates'
+        ? Promise.resolve([])
+        : Promise.reject(new Error('nothing pending'))
+    );
+
+    await expect(seedUpdatesStore.keepMine(update())).rejects.toThrow('nothing pending');
+
+    await vi.waitFor(() => expect(seedUpdatesStore.updates).toEqual([]));
   });
 
   it('names each seeded kind, and falls back to the type id', () => {
