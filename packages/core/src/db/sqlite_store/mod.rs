@@ -2210,7 +2210,8 @@ mod tests {
     }
 
     /// A large limit is held to sqlite-vec's largest `k` instead of failing
-    /// the query.
+    /// the query. The limit is past the cap itself, so `k` must be capped after
+    /// it is raised to the limit, not before.
     #[tokio::test]
     async fn test_search_embeddings_large_limit_is_held_to_the_knn_cap() -> Result<()> {
         let (store, _tmp) = create_test_store().await?;
@@ -2226,7 +2227,7 @@ mod tests {
             .await?;
 
         let results = store
-            .search_embeddings(&unit_query(0), 1000, Some(0.5))
+            .search_embeddings(&unit_query(0), 5000, Some(0.5))
             .await?;
 
         assert_eq!(

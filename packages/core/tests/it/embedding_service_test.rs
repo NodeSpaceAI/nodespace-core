@@ -2274,7 +2274,7 @@ async fn test_search_semantic_small_limit_reaches_past_the_built_in_schemas() ->
     assert_eq!(
         ids(&small),
         expected,
-        "a limit-{limit} search that names no type must return the first results, not stop at the built-in schemas"
+        "a limit-{limit} search that names no type must return the first results, not stop at rows the scope drops (built-in schemas or system types)"
     );
 
     Ok(())
