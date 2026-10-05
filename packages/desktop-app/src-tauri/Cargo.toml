@@ -29,10 +29,19 @@ nodespace-app-lib = { path = "../app-lib" }
 # `tauri_build`'s manifest check and `generate_context!` need `tauri` as a
 # direct dependency of the crate that owns tauri.conf.json.
 tauri = { version = "2", features = [] }
-# Direct dependencies only for their permission files: `tauri_build` grants
-# `capabilities/default.json`'s `opener:default` and `dialog:default` from the
-# app crate's own direct dependencies, so dropping either fails
-# `validate_capabilities`. The plugins themselves are initialised in
-# nodespace-app-lib's `run()`.
+# Direct dependencies only for their permission files. Core's window
+# capability, which nodespace-app-lib adds at startup, grants `opener:default`
+# and `dialog:default`, and Tauri resolves it against the ACL `tauri_build`
+# builds from this crate's direct dependencies only. Dropping either panics at
+# startup; `window_capability_tests` catches it first. The plugins themselves
+# are initialised in nodespace-app-lib's `run()`.
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+
+[dev-dependencies]
+# `tauri::test::MockRuntime`, to build this crate's real context and ACL in
+# `window_capability_tests`. Cargo enables a dev-dependency's features only for
+# test builds, so the app binary is unaffected.
+tauri = { version = "2", features = ["test"] }
+serde_json = { workspace = true }
+toml = "0.8"

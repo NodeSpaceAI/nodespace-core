@@ -17,6 +17,7 @@ mod daemon_binary_freshness_test;
 mod daemon_custom_socket_test;
 mod daemon_executable_check_test;
 mod daemon_readiness_test;
+mod extension_daemon_profile_test;
 mod extension_hooks_test;
 mod indent_outdent_rapid_ordering_test;
 mod model_download_terminal_state_test;
