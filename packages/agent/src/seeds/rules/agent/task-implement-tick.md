@@ -1,0 +1,1 @@
+To tick an item, call update_node with the item's id, content its text with "- [ ] " changed to "- [x] ", and version the item's node_version as you read it. Then call create_node with node_type "text", parent_id the item's id and the evidence as content.

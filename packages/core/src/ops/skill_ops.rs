@@ -4,7 +4,7 @@
 //! tool and the MCP `find_skills` handler exposed to external agents.
 
 use crate::behaviors::ToolOrigin;
-use crate::models::{CoreNodeType, Node, SchemaNode, SkillFields, SKILL_APPLIES_TO};
+use crate::models::{CoreNodeType, Node, SchemaNode, SkillFields, SkillRole, SKILL_APPLIES_TO};
 use crate::services::{render_subtree_markdown, NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -46,8 +46,9 @@ const MAX_SKILL_LIMIT: usize = 10;
 /// every skill, which needs a registry of at most this many skills (the typed
 /// search scores every skill, see `search_embeddings_by_node_type`). Past
 /// that, a skill ranked below the pool on raw similarity cannot be promoted.
-/// Twice [`MAX_SKILL_LIMIT`] covers the registry sizes that cap is sized for.
-const SKILL_RERANK_POOL: usize = 2 * MAX_SKILL_LIMIT;
+/// Four times [`MAX_SKILL_LIMIT`] covers the built-in registry (twenty
+/// skills) with room for the skills a user writes.
+const SKILL_RERANK_POOL: usize = 4 * MAX_SKILL_LIMIT;
 
 /// Weight on a skill's `not_for` margin in [`not_for_penalized_score`].
 ///
@@ -552,8 +553,30 @@ fn rerank_with_not_for(
         .filter(|(_, score)| *score > f64::from(SKILL_SEARCH_THRESHOLD))
         .collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(limit);
-    scored
+    in_lanes(scored, limit)
+}
+
+/// Whether a skill is ranked in the procedure lane. A skill whose fields do
+/// not decode is not: `find_skills` skips it later.
+fn is_procedure(node: &crate::models::Node) -> bool {
+    SkillFields::from_node(node)
+        .map(|skill| skill.role == SkillRole::Procedure)
+        .unwrap_or(false)
+}
+
+/// Fill the result from the two lanes (ADR-038): the best `limit` `tool`
+/// skills, then the single best `procedure` skill, each lane in the order it
+/// arrived. A registry of procedures therefore never changes which tool
+/// skills come back or where.
+fn in_lanes(
+    ranked: Vec<(crate::models::Node, f64)>,
+    limit: usize,
+) -> Vec<(crate::models::Node, f64)> {
+    let (procedures, mut tools): (Vec<_>, Vec<_>) =
+        ranked.into_iter().partition(|(node, _)| is_procedure(node));
+    tools.truncate(limit);
+    tools.extend(procedures.into_iter().take(1));
+    tools
 }
 
 /// Search for skill nodes via semantic search and return flat results with
@@ -692,11 +715,7 @@ pub async fn find_skills(
     for (node, confidence) in &skill_results {
         // `not_for` was spent on ranking in `rerank_with_not_for`; it is
         // retrieval-only and never reaches the model.
-        let SkillFields {
-            use_for,
-            tool_whitelist,
-            ..
-        } = match SkillFields::from_node(node) {
+        let fields = match SkillFields::from_node(node) {
             Ok(skill) => skill,
             Err(e) => {
                 // `SkillNodeBehavior::validate` rejects this shape on write,
@@ -758,8 +777,7 @@ pub async fn find_skills(
 
         skills.push(skill_entry(
             node,
-            &use_for,
-            &tool_whitelist,
+            &fields,
             *confidence,
             schema_metadata,
             schemas_linked,
@@ -847,8 +865,7 @@ pub async fn find_skills(
 /// A skill as [`find_skills`] and [`skills_by_id`] return it.
 fn skill_entry(
     node: &Node,
-    use_for: &str,
-    tool_whitelist: &[String],
+    fields: &SkillFields,
     confidence: f64,
     schema_metadata: Vec<Value>,
     schemas_linked: bool,
@@ -858,9 +875,10 @@ fn skill_entry(
         "id": node.id,
         "name": node.content,
         "kind": "skill",
-        "use_for": use_for,
+        "use_for": fields.use_for,
         "confidence": confidence,
-        "tools": tool_whitelist,
+        "role": fields.role,
+        "tools": fields.tool_whitelist,
         "schema_metadata": schema_metadata,
         "schemas_linked": schemas_linked,
         "instructions": instructions,
@@ -923,8 +941,7 @@ pub async fn skills_by_id(
         let instructions = render_skill_instructions(node_service, &node.id).await;
         skills.push(skill_entry(
             node,
-            &fields.use_for,
-            &fields.tool_whitelist,
+            &fields,
             0.0,
             schema_metadata,
             schemas_linked,
@@ -1426,6 +1443,61 @@ mod tests {
     use crate::models::{Node, SchemaNode};
     use serde_json::json;
     use std::collections::HashMap;
+
+    fn ranked_skill(name: &str, role: SkillRole, score: f64) -> (Node, f64) {
+        let skill = SkillFields::new("use", &[], 1).with_role(role);
+        (skill.into_node(name), score)
+    }
+
+    fn lane_names(ranked: Vec<(Node, f64)>, limit: usize) -> Vec<String> {
+        in_lanes(ranked, limit)
+            .into_iter()
+            .map(|(node, _)| node.content)
+            .collect()
+    }
+
+    #[test]
+    fn procedures_fill_one_place_after_the_tool_skills() {
+        let ranked = vec![
+            ranked_skill("Completing a Task", SkillRole::Procedure, 0.95),
+            ranked_skill("Node Deletion", SkillRole::Tool, 0.9),
+            ranked_skill("Writing a Plan", SkillRole::Procedure, 0.85),
+            ranked_skill("Graph Editing", SkillRole::Tool, 0.8),
+            ranked_skill("Organization", SkillRole::Tool, 0.7),
+        ];
+        assert_eq!(
+            lane_names(ranked, 2),
+            ["Node Deletion", "Graph Editing", "Completing a Task"]
+        );
+    }
+
+    #[test]
+    fn the_tool_lane_is_the_same_with_or_without_procedures() {
+        let tools = |with_procedures: bool| {
+            let mut ranked = vec![
+                ranked_skill("Node Deletion", SkillRole::Tool, 0.9),
+                ranked_skill("Graph Editing", SkillRole::Tool, 0.8),
+                ranked_skill("Organization", SkillRole::Tool, 0.7),
+            ];
+            if with_procedures {
+                ranked.insert(
+                    0,
+                    ranked_skill("Writing a Spec", SkillRole::Procedure, 0.99),
+                );
+            }
+            lane_names(ranked, 3)
+                .into_iter()
+                .filter(|name| name != "Writing a Spec")
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(tools(true), tools(false));
+    }
+
+    #[test]
+    fn no_procedure_adds_nothing() {
+        let ranked = vec![ranked_skill("Graph Editing", SkillRole::Tool, 0.8)];
+        assert_eq!(lane_names(ranked, 3), ["Graph Editing"]);
+    }
 
     fn make_schema(id: &str, content: &str, is_core: bool) -> SchemaNode {
         crate::models::schema_node::from_storage(

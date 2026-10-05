@@ -40,6 +40,8 @@
 //! # }
 //! ```
 
+pub mod core_queries;
+
 use crate::db::SqliteStore;
 use crate::models::Node;
 use anyhow::{Context, Result};

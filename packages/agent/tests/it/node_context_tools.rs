@@ -80,6 +80,27 @@ async fn seed(ns: &Arc<NodeService>) -> Fixture {
     }
 }
 
+/// The entry of a context read for the path `names`. A task's read starts
+/// with the context paths its type ships with, so an entry is found by path.
+fn path_entry<'a>(context: &'a Value, names: &[&str]) -> &'a Value {
+    context["paths"]
+        .as_array()
+        .expect("paths")
+        .iter()
+        .find(|entry| entry["path"] == json!(names))
+        .unwrap_or_else(|| panic!("the read followed no path {names:?}: {context}"))
+}
+
+/// The paths a context read followed, each as its names.
+fn paths_followed(context: &Value) -> Vec<Value> {
+    context["paths"]
+        .as_array()
+        .expect("paths")
+        .iter()
+        .map(|entry| entry["path"].clone())
+        .collect()
+}
+
 #[tokio::test]
 async fn get_node_context_returns_the_node_what_its_paths_reach_and_the_attached_skills() {
     let (executor, ns, _tmp) = make_executor().await;
@@ -95,11 +116,16 @@ async fn get_node_context_returns_the_node_what_its_paths_reach_and_the_attached
     let context = &result.result;
 
     assert_eq!(context["node"]["title"], "Write the spec");
-    assert_eq!(context["node"]["checkboxes"], json!(["- [ ] Draft it"]));
-    assert_eq!(context["paths"][0]["path"], json!(["project"]));
-    assert_eq!(context["paths"][0]["count"], 1);
+    let task_version = ns.get_node(&fixture.task).await.unwrap().unwrap().version;
+    assert_eq!(context["node"]["node_version"], task_version);
+    let checkboxes = context["node"]["checkboxes"].as_array().expect("items");
+    assert_eq!(checkboxes.len(), 1);
+    assert_eq!(checkboxes[0]["content"], "- [ ] Draft it");
+
+    let to_project = path_entry(context, &["project"]);
+    assert_eq!(to_project["count"], 1);
     assert_eq!(
-        context["paths"][0]["nodes"][0]["id"],
+        to_project["nodes"][0]["id"],
         format!("nodespace://{}", fixture.project)
     );
 
@@ -114,10 +140,53 @@ async fn get_node_context_returns_the_node_what_its_paths_reach_and_the_attached
         .as_str()
         .is_some_and(|body| body.contains("Name things plainly.")));
 
-    // With no path the task comes back alone, and it has no skill of its own.
-    let alone = call(&executor, "get_node_context", json!({ "id": fixture.task })).await;
+    // The path asked for is one `task` ships with as a context path, so it
+    // is followed once, and a read given no path is the same read.
+    let shipped = [
+        json!(["spec"]),
+        json!(["plan"]),
+        json!(["decisions"]),
+        json!(["spec", "decisions"]),
+        json!(["project"]),
+    ];
+    assert_eq!(paths_followed(context), shipped);
+    let unasked = call(&executor, "get_node_context", json!({ "id": fixture.task })).await;
+    assert_eq!(paths_followed(&unasked.result), shipped);
+    assert_eq!(unasked.result["skills"], context["skills"]);
+    assert_eq!(unasked.result["version"], context["version"]);
+
+    // A node of a type with no context paths comes back alone.
+    let note = ns
+        .create_node(Node::new(
+            "text".to_string(),
+            "A note".to_string(),
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    let alone = call(&executor, "get_node_context", json!({ "id": note })).await;
     assert_eq!(alone.result["paths"], json!([]));
     assert_eq!(alone.result["skills"], json!([]));
+
+    // An item is ticked by the id and version the read gave for it, and the
+    // version it gave is refused once the item has changed.
+    let tick = json!({
+        "id": checkboxes[0]["id"],
+        "content": "- [x] Draft it",
+        "version": checkboxes[0]["node_version"],
+    });
+    let ticked = call(&executor, "update_node", tick.clone()).await;
+    assert!(!ticked.is_error, "{}", ticked.result);
+    let mut untick = tick;
+    untick["content"] = json!("- [ ] Draft it");
+    let stale = executor
+        .execute("update_node", untick)
+        .await
+        .expect_err("a version the item has moved past is refused");
+    assert!(
+        stale.to_string().contains("has changed since it was read"),
+        "{stale}"
+    );
 }
 
 #[tokio::test]
@@ -233,10 +302,18 @@ async fn get_node_context_follows_the_types_context_paths_and_returns_a_version(
         "{}",
         refused.result
     );
-    let declared = call(
+    // One `task` ships with is already declared.
+    let already = call(
         &executor,
         "update_schema",
         json!({ "schema_id": "task", "add_context_paths": ["project"] }),
+    )
+    .await;
+    assert!(already.is_error, "{}", already.result);
+    let declared = call(
+        &executor,
+        "update_schema",
+        json!({ "schema_id": "task", "add_context_paths": ["project.tasks"] }),
     )
     .await;
     assert!(!declared.is_error, "{}", declared.result);
@@ -244,7 +321,12 @@ async fn get_node_context_follows_the_types_context_paths_and_returns_a_version(
 
     let read = call(&executor, "get_node_context", json!({ "id": fixture.task })).await;
     assert!(!read.is_error, "{}", read.result);
-    assert_eq!(read.result["paths"][0]["path"], json!(["project"]));
+    // The paths it ships with, then the one declared here.
+    assert_eq!(paths_followed(&read.result).len(), 6);
+    assert_eq!(
+        path_entry(&read.result, &["project", "tasks"])["nodes"][0]["id"],
+        format!("nodespace://{}", fixture.task)
+    );
     assert_eq!(read.result["skills"][0]["name"], "Standards");
     let version = read.result["version"].as_str().expect("a version");
     assert!(!version.is_empty());
@@ -312,14 +394,8 @@ async fn run_query_with_context_returns_each_item_with_its_skills() {
     ns.create_relationship(&procedure, SKILL_ATTACHED_TO, &queue, json!({}))
         .await
         .unwrap();
-    let declared = call(
-        &executor,
-        "update_schema",
-        json!({ "schema_id": "task", "add_context_paths": ["project"] }),
-    )
-    .await;
-    assert!(!declared.is_error, "{}", declared.result);
 
+    // `task` ships with the path to its project as a context path.
     let run = call(
         &executor,
         "run_query",
@@ -333,11 +409,12 @@ async fn run_query_with_context_returns_each_item_with_its_skills() {
 
     let items = run.result["items"].as_array().expect("items");
     assert_eq!(items[0]["title"], "Write the spec");
-    assert_eq!(items[0]["checkboxes"], json!(["- [ ] Draft it"]));
+    assert_eq!(items[0]["checkboxes"][0]["content"], "- [ ] Draft it");
+    assert!(items[0]["node_version"].is_i64(), "{}", items[0]);
     assert_eq!(items[1]["title"], "Review the spec");
     for item in items {
         assert_eq!(
-            item["paths"][0]["nodes"][0]["id"],
+            path_entry(item, &["project"])["nodes"][0]["id"],
             format!("nodespace://{}", fixture.project)
         );
         assert!(item["version"].as_str().is_some_and(|v| !v.is_empty()));

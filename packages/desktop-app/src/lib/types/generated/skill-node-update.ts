@@ -1,4 +1,5 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
+import type { SkillRole } from './skill-role';
 
 /**
  * Partial update for a skill's core fields, received from the frontend.
@@ -15,4 +16,5 @@ export type SkillNodeUpdate = {
   notFor?: string | null;
   toolWhitelist?: Array<string>;
   maxIterations?: number | null;
+  role?: SkillRole;
 };

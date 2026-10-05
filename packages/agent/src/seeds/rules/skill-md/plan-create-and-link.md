@@ -1,0 +1,1 @@
+Run `nodespace node create --type plan --content "<title>" --property approach="<approach>" --property risks="<risks>"`, leaving `plan_status` out. Then run `nodespace relationship create --from <plan-id> --type spec --to <spec-id>`.

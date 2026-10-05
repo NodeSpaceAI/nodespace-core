@@ -1,0 +1,1 @@
+Run `nodespace node create --type skill --content '<name>' --properties '{"use_for":"<when it applies>","tool_whitelist":["<tool>"]}'`, adding `not_for` only where one is needed. Then add the body beneath it, one `nodespace node create --type text --parent <skill-id> --content "<paragraph>"` per paragraph.

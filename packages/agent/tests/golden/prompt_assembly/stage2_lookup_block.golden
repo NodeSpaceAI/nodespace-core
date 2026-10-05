@@ -1,4 +1,4 @@
-YOUR SKILLS: Bulk Import, Conflict Journal, Graph Editing, Node Creation, Node Deletion, Node Merge, Organization, Play Authoring, Play Workflow State, Relationship Management, Research & Search, Schema Creation.
+YOUR SKILLS: Authoring a Skill, Breaking a Plan into Tasks, Bulk Import, Completing a Task, Conflict Journal, Graph Editing, Implementing a Task, Node Creation, Node Deletion, Node Merge, Organization, Play Authoring, Play Workflow State, Recording a Decision, Relationship Management, Research & Search, Reviewing a Task, Schema Creation, Writing a Plan, Writing a Spec.
 A question about your own skills, or about what you can do, is answered from this list and from any procedure shown below, including when the user asks you to find one. Skills are not stored in the user's notes, so a search does not return them.
 
 REFERENCE — procedures relevant to this request. Use whichever applies and IGNORE the rest. Do not describe, quote, or summarise any of it. Your reply must be the tool call itself. If none applies, answer the user normally.

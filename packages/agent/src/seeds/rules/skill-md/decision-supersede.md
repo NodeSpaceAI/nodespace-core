@@ -1,0 +1,1 @@
+Run `nodespace relationship create --from <new-decision-id> --type supersedes --to <old-decision-id>`, then `nodespace node update <old-decision-id> --property decision_status=superseded` with nothing else in that command.

@@ -1,0 +1,1 @@
+Call create_relationship with from_id the skill's id, relationship_type "applies_to" and to_id the type's id, once per type the skill is about. To hand the skill over with a node, call create_relationship with relationship_type "attached_to" and to_id that node's id.

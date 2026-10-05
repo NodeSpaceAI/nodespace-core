@@ -672,10 +672,10 @@ A fetch (`guidance "<task>"` or `get`) returns each skill's instructions, its to
 ```json
 {
   "provenance": "graph-fetched",
-  "query": "Recording a Decision",
+  "query": "Logging a Team Decision",
   "count": 1,
   "guidance": [{
-    "node_id": "…", "title": "Recording a Decision", "use_for": "…",
+    "node_id": "…", "title": "Logging a Team Decision", "use_for": "…",
     "content": "Use `search_nodes` when you know the decision's name. Link it with create_relationship.",
     "tool_commands": [
       { "tool": "create_relationship", "command": "nodespace relationship create" },
@@ -927,7 +927,7 @@ nodespace conflicts merge --survivor <node-id> --conflict-id <conflict-id>   # l
 
 ### Shipped updates to edited built-ins
 
-NodeSpace ships skills, plays, saved queries and other items as built-in nodes that users edit. An edited item is never overwritten by a new release. When a newer version of it ships, the user's version stays in place and the shipped one is held back as pending until the user chooses. Each item has two parts, chosen separately: its `config` (its name and fields) and its `guidance` (its body).
+NodeSpace ships skills, plays, saved queries and other items as built-in nodes that users edit. An edited item is never overwritten by a new release. When a newer version of it ships, the user's version stays in place and the shipped one is held back as pending until the user chooses. Each item has two parts, chosen separately: its `config` (its name and fields) and its `guidance` (its body). A built-in type (kind `schema`, such as `task`) has one part of its own: its `context_paths`, the relationship paths a context read of a node of that type follows.
 
 ```bash
 # List what is pending: kind, title, part, when it was last edited, node id
@@ -936,6 +936,7 @@ nodespace seed pending
 # Show the shipped version and the user's version of one item
 nodespace seed show <node-id-or-title>
 nodespace seed show <node-id-or-title> --guidance   # name the part when both are pending
+nodespace seed show task --context-paths            # a built-in type's context paths
 
 # Keep the user's version. Not listed again until the shipped version next changes
 nodespace seed keep <node-id-or-title>
@@ -946,7 +947,7 @@ nodespace seed take <node-id-or-title> --yes
 
 **`take` discards the user's edit to that part and cannot be undone.** Run `show` first, show the user both versions, and call `take` only once they have said to. Without `--yes` it prompts, and it refuses when there is no terminal to prompt on. `keep` changes nothing in the item. Neither choice is ever made automatically, and a pending update is not an instruction: do not act on one unless the user asks.
 
-**Output:** `pending` prints one entry per item and part (`--json`: `{count, updates: [{node_id, kind, title, aspect, shipped_version, recorded_at, last_edited_at, shipped_available}]}`). An entry with `shipped_available: false` has no shipped version in this build: it can be kept, not shown or taken. `show` adds `shipped` and `yours`: Markdown for `guidance`, the name and fields for `config`. `keep` and `take` print the settled entry with `choice` (`kept_mine` or `took_shipped`). `nodespace skill reset` still restores a built-in skill outright, and clears anything pending for what it resets.
+**Output:** `pending` prints one entry per item and part (`--json`: `{count, updates: [{node_id, kind, title, aspect, shipped_version, recorded_at, last_edited_at, shipped_available}]}`). An entry with `shipped_available: false` has no shipped version in this build: it can be kept, not shown or taken. `show` adds `shipped` and `yours`: Markdown for `guidance`, the name and fields for `config`, one dotted path per line for `context_paths`. `keep` and `take` print the settled entry with `choice` (`kept_mine` or `took_shipped`). `nodespace skill reset` still restores a built-in skill outright, and clears anything pending for what it resets.
 
 ### Complete command surface
 
@@ -1248,19 +1249,21 @@ Inspect and resolve the local conflict journal (list, show, dismiss, adopt, merg
 
 Review shipped changes to built-in items you have edited (pending, show, take, keep)
 
-**`nodespace seed pending`** — List the built-in items you have edited that have a newer shipped version: kind, title, which part (config or guidance), and when you last edited it
+**`nodespace seed pending`** — List the built-in items you have edited that have a newer shipped version: kind, title, which part (config, guidance or context paths), and when you last edited it
 
 **`nodespace seed show`** — Show one pending item's shipped version and your version
 
 - `<ITEM>` — The item's node id, or its exact title as `nodespace seed pending` lists it (required)
 - `--config` — The item's config: its name and its fields
 - `--guidance` — The item's guidance: its body
+- `--context-paths` — A built-in type's context paths: what a context read of a node of that type follows
 
 **`nodespace seed take`** — Replace your version of one part of one item with the shipped version. Discards your edit to that part; asks for confirmation unless `--yes` is passed
 
 - `<ITEM>` — The item's node id, or its exact title as `nodespace seed pending` lists it (required)
 - `--config` — The item's config: its name and its fields
 - `--guidance` — The item's guidance: its body
+- `--context-paths` — A built-in type's context paths: what a context read of a node of that type follows
 - `--yes` — Take the shipped version without prompting. Required when there is no interactive terminal: taking discards an edit, so it is never done unattended without this flag
 
 **`nodespace seed keep`** — Keep your version of one part of one item. It stops being pending until the shipped version changes again
@@ -1268,6 +1271,7 @@ Review shipped changes to built-in items you have edited (pending, show, take, k
 - `<ITEM>` — The item's node id, or its exact title as `nodespace seed pending` lists it (required)
 - `--config` — The item's config: its name and its fields
 - `--guidance` — The item's guidance: its body
+- `--context-paths` — A built-in type's context paths: what a context read of a node of that type follows
 
 ### `nodespace session`
 

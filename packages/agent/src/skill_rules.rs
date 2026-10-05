@@ -686,9 +686,57 @@ pub const BULK_IMPORT_NO_FOLLOWUP_SEARCH: InteractionRule = InteractionRule {
     prose: skill_md_form!("bulk-import-no-followup-search"),
 };
 
+/// A rejected write is resolved at its cause (ADR-092 §6): the rules are
+/// Plays, a rejection names what is missing, and the same write made another
+/// way meets the same rule. Every skill that changes a status the rules guard
+/// carries it.
+pub const REJECTED_WRITE: InteractionRule = InteractionRule {
+    id: "rejected-write",
+    imperative: agent_form!("rejected-write"),
+    prose: skill_md_form!("rejected-write"),
+};
+
+/// What a refused write that named a version means (ADR-094 §6): read again,
+/// and stop if the task is no longer the reader's to work on. Shared by the
+/// procedures that claim a task by the version they read.
+pub const VERSION_CONFLICT: InteractionRule = InteractionRule {
+    id: "version-conflict",
+    imperative: agent_form!("version-conflict"),
+    prose: skill_md_form!("version-conflict"),
+};
+
+/// A criterion or a checklist item is a checkbox directly under its spec or
+/// task (ADR-092 §2), written unchecked.
+pub const CHECKBOX_ITEM_CREATE: InteractionRule = InteractionRule {
+    id: "checkbox-item-create",
+    imperative: agent_form!("checkbox-item-create"),
+    prose: skill_md_form!("checkbox-item-create"),
+};
+
+/// Approval is the user's (ADR-092 §6). The local form asks through
+/// route_clarify for the reason [`AMBIGUITY_CLARIFY`] does.
+pub const APPROVAL_ASK_FIRST: InteractionRule = InteractionRule {
+    id: "approval-ask-first",
+    imperative: agent_form!("approval-ask-first"),
+    prose: skill_md_form!("approval-ask-first"),
+};
+
+/// Reading one task with what governs it, for a procedure that is given a
+/// task by name instead of taking the next one from its queue.
+pub const TASK_CONTEXT_READ: InteractionRule = InteractionRule {
+    id: "task-context-read",
+    imperative: agent_form!("task-context-read"),
+    prose: skill_md_form!("task-context-read"),
+};
+
 /// All generic interaction-pattern rules, in no particular required order —
 /// each is consumed independently by whichever skill needs it.
 pub const INTERACTION_RULES: &[InteractionRule] = &[
+    REJECTED_WRITE,
+    VERSION_CONFLICT,
+    CHECKBOX_ITEM_CREATE,
+    APPROVAL_ASK_FIRST,
+    TASK_CONTEXT_READ,
     FIND_THEN_ACT,
     NAMED_RECORD_RESOLUTION,
     AMBIGUITY_CLARIFY,
@@ -747,6 +795,48 @@ pub const PROCEDURE_RULES: &[ProcedureRule] = &[
     // Organization
     procedure_rule!("organization-existing-only"),
     procedure_rule!("organization-add-existing"),
+    // Writing a Spec
+    procedure_rule!("spec-find-first"),
+    procedure_rule!("spec-create"),
+    procedure_rule!("spec-approve"),
+    // Writing a Plan
+    procedure_rule!("plan-read-spec"),
+    procedure_rule!("plan-existing-plans"),
+    procedure_rule!("plan-create-and-link"),
+    procedure_rule!("plan-approve"),
+    // Breaking a Plan into Tasks
+    procedure_rule!("task-breakdown-read"),
+    procedure_rule!("task-breakdown-existing"),
+    procedure_rule!("task-breakdown-create"),
+    procedure_rule!("task-breakdown-link"),
+    procedure_rule!("task-breakdown-blocks"),
+    // Implementing a Task
+    procedure_rule!("task-implement-take"),
+    procedure_rule!("task-implement-start"),
+    procedure_rule!("task-implement-tick"),
+    procedure_rule!("task-implement-links"),
+    procedure_rule!("task-implement-review"),
+    // Reviewing a Task
+    procedure_rule!("task-review-take"),
+    procedure_rule!("task-review-read"),
+    procedure_rule!("task-review-note"),
+    procedure_rule!("task-review-pass"),
+    procedure_rule!("task-review-return"),
+    // Completing a Task
+    procedure_rule!("task-complete-read"),
+    procedure_rule!("task-complete-done"),
+    // Recording a Decision
+    procedure_rule!("decision-find-first"),
+    procedure_rule!("decision-create"),
+    procedure_rule!("decision-accept"),
+    procedure_rule!("decision-link"),
+    procedure_rule!("decision-supersede"),
+    // Authoring a Skill
+    procedure_rule!("skill-authoring-find-first"),
+    procedure_rule!("skill-authoring-tools"),
+    procedure_rule!("skill-authoring-create"),
+    procedure_rule!("skill-authoring-link"),
+    procedure_rule!("skill-authoring-edit"),
 ];
 
 /// Which audience a body is being built for, and so which form of a rule an

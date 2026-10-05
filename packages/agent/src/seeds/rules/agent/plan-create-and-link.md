@@ -1,0 +1,1 @@
+Call create_node with node_type "plan", the plan's title as content, and approach and risks in field_values, leaving plan_status out. Then call create_relationship with from_id the plan's id, relationship_type "spec" and to_id the spec's id.

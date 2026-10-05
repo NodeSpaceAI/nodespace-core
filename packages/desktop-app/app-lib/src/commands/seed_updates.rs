@@ -25,7 +25,7 @@ pub struct PendingSeedUpdate {
     /// The seeded node's type: the kind of item.
     pub node_type: String,
     pub title: String,
-    /// `config` or `guidance`.
+    /// `config`, `guidance` or `context_paths`.
     pub aspect: String,
     pub shipped_version: String,
     pub recorded_at: String,

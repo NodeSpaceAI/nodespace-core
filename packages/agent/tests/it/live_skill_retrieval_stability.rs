@@ -37,6 +37,7 @@ use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate};
 use nodespace_core::models::SkillFields;
+use nodespace_core::models::SkillRole;
 use nodespace_core::ops::skill_ops::{find_skills, FindSkillsInput};
 use nodespace_core::services::node_service::CreateNodeParams;
 use nodespace_core::services::{
@@ -193,6 +194,17 @@ async fn seed_and_embed_exactly(
     Some((embedding_service, node_service, temp_dir))
 }
 
+/// `find_skills`' results in the order a turn reads them: the tool skills by
+/// score, then the procedure lane's one result. `find_skills` sorts all of
+/// them by confidence, and a procedure never leads (ADR-038), so a request's
+/// leader is the first of the tool lane.
+pub(crate) fn in_lane_order(skills: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    let is_procedure =
+        |s: &&serde_json::Value| s.get("role").and_then(|r| r.as_str()) == Some("procedure");
+    let (procedures, tools): (Vec<_>, Vec<_>) = skills.iter().partition(is_procedure);
+    tools.into_iter().chain(procedures).collect()
+}
+
 /// Run `find_skills` `REPS` times for `query` and return, for each rep, the
 /// ranked candidate names (score-descending, as `find_skills`/`semantic_search_nodes`
 /// already returns them).
@@ -214,9 +226,8 @@ pub(crate) async fn repeated_rankings(
         .await
         .expect("find_skills must succeed");
 
-        let names: Vec<String> = output
-            .skills
-            .iter()
+        let names: Vec<String> = in_lane_order(&output.skills)
+            .into_iter()
             .map(|s| {
                 s.get("name")
                     .and_then(|v| v.as_str())
@@ -289,8 +300,7 @@ async fn find_skills_ranks_by_knn_score_alone() {
     .await
     .expect("find_skills must succeed");
 
-    let top_name = output
-        .skills
+    let top_name = in_lane_order(&output.skills)
         .first()
         .and_then(|s| s.get("name"))
         .and_then(|v| v.as_str())
@@ -465,9 +475,8 @@ async fn scored_ranking(
     )
     .await
     .expect("find_skills must succeed");
-    output
-        .skills
-        .iter()
+    in_lane_order(&output.skills)
+        .into_iter()
         .map(|s| {
             format!(
                 "{}={:.3}",
@@ -1080,6 +1089,10 @@ async fn retrieved_candidates(
                     .to_string()
             };
             SkillCandidate {
+                role: s
+                    .get("role")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default(),
                 id: text("id"),
                 name: text("name"),
                 use_for: text("use_for"),
@@ -1155,9 +1168,10 @@ async fn a_lookup_placing_on_a_tracking_request_does_not_cost_schema_creation_it
         judged.iter().any(|n| n == "Research & Search"),
         "the lookup keeps its place too; judged: {judged:?}"
     );
+    // The procedure lane's one result comes after the bound (ADR-038).
     assert!(
-        judged.len() <= RETRIEVAL_FETCH,
-        "never more than one past the bound; judged: {judged:?}"
+        judged.len() <= RETRIEVAL_FETCH + 1,
+        "never more than one past the bound, and a procedure; judged: {judged:?}"
     );
 }
 
@@ -1784,6 +1798,10 @@ async fn organization_not_for_leaves_filing_scores_unchanged() {
 /// measured to behave very differently. So each one is a measured decision,
 /// and adding one means adding its guards and naming them here.
 const NOT_FOR_GUARDS: &[(&str, &[&str])] = &[
+    // The two procedures whose `not_for` separates them from a neighbour in
+    // their own lane; the matrix ranks every procedure request.
+    ("Writing a Spec", &["skills_win_their_requests"]),
+    ("Reviewing a Task", &["skills_win_their_requests"]),
     (
         "Schema Creation",
         &[
@@ -1929,6 +1947,7 @@ async fn adds_naming_another_skills_subject_reach_a_skill_that_can_create() {
         );
         let can_create = judged
             .iter()
+            .filter(|c| c.role != SkillRole::Procedure)
             .take(RETRIEVAL_TOP_K)
             .any(skill_can_create_a_record);
         let destructive = judged.iter().any(skill_is_destructive);
@@ -1962,7 +1981,9 @@ async fn without_the_add_rule_those_adds_lead_with_a_skill_that_removes() {
         );
         assert!(
             leading_tool_bearing_candidate(&judged).is_some_and(skill_is_destructive)
-                && !judged.iter().any(skill_can_create_a_record),
+                && !judged
+                    .iter()
+                    .any(|c| c.role != SkillRole::Procedure && skill_can_create_a_record(c)),
             "retrieval alone now serves {query:?}; judged: {:?}",
             judged.iter().map(|c| &c.name).collect::<Vec<_>>()
         );

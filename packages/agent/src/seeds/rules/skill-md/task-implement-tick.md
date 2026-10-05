@@ -1,0 +1,1 @@
+To tick an item, run `nodespace node update <checkbox-id> --content "- [x] <the item's text>" --version <n>`, where `<n>` is the item's `version` as you read it. Then run `nodespace node create --type text --parent <checkbox-id> --content "<evidence>"`.

@@ -470,16 +470,18 @@ async fn the_play_authoring_skill_is_seeded_and_linked_to_the_play_schema() {
         .unwrap();
     assert_eq!(links.get(seed.id), Some(&vec!["play".to_string()]));
 
-    // No other built-in links to a schema.
-    let others: Vec<String> = SKILL_SEEDS
-        .iter()
-        .filter(|s| s.id != seed.id)
-        .map(|s| s.id.to_string())
-        .collect();
-    let other_links = ns
+    // Every built-in links to the schemas its row names, and to no other.
+    let all: Vec<String> = SKILL_SEEDS.iter().map(|s| s.id.to_string()).collect();
+    let all_links = ns
         .store()
-        .get_edge_targets_by_source(&others, SKILL_APPLIES_TO)
+        .get_edge_targets_by_source(&all, SKILL_APPLIES_TO)
         .await
         .unwrap();
-    assert!(other_links.is_empty(), "{other_links:?}");
+    for row in SKILL_SEEDS {
+        let mut linked = all_links.get(row.id).cloned().unwrap_or_default();
+        linked.sort();
+        let mut named: Vec<String> = row.applies_to.iter().map(|id| id.to_string()).collect();
+        named.sort();
+        assert_eq!(linked, named, "{}", row.title);
+    }
 }

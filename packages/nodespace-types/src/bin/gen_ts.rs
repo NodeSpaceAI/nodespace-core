@@ -116,6 +116,7 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         SkillFields,
         SkillNode,
         SkillNodeUpdate,
+        SkillRole,
         DatabaseSettingsNode,
         DatabaseSettingsNodeUpdate,
         // query

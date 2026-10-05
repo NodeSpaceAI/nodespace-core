@@ -1,0 +1,1 @@
+Run `nodespace node update <task-id> --properties '{"pull_request":{"title":"<title>","url":"<url>"},"commits":[{"title":"<subject>","url":"<url>"}]}'`. Each url is absolute. `commits` is written whole: include the ones already recorded.

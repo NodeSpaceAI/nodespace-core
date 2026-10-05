@@ -132,6 +132,7 @@ impl AgentToolExecutor for BenchExecutor {
     ) -> Result<SkillRetrieval, ToolError> {
         let mut candidates = vec![
             SkillCandidate {
+                role: Default::default(),
                 id: "skill-node-creation".into(),
                 name: "Node Creation".into(),
                 use_for: "Create new records, entries, or instances of a type".into(),
@@ -156,6 +157,7 @@ impl AgentToolExecutor for BenchExecutor {
                 pinned: false,
             },
             SkillCandidate {
+                role: Default::default(),
                 id: "skill-research".into(),
                 name: "Research & Search".into(),
                 use_for: "Search and explore the knowledge graph".into(),

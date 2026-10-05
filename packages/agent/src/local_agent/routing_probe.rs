@@ -72,6 +72,7 @@ fn probe_candidate() -> SkillCandidate {
         instructions: String::new(),
         schema_metadata: serde_json::json!([]),
         schemas_linked: false,
+        role: Default::default(),
         pinned: false,
     }
 }

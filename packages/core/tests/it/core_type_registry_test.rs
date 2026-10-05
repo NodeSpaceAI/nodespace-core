@@ -236,7 +236,7 @@ async fn a_subtype_of_collection_is_root_only_and_keeps_the_collections_rules() 
     // Unmentionable, like any collection; a page is offered.
     let offered: Vec<String> = svc
         .store()
-        .mention_autocomplete("", None)
+        .mention_autocomplete("", Some(100))
         .await
         .unwrap()
         .into_iter()

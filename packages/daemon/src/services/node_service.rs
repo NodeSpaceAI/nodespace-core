@@ -35,6 +35,7 @@ use nodespace_core::ops::{
     skill_ops::{self, FindSkillsInput, GuidanceSkill},
     OpsError,
 };
+use nodespace_core::services::node_service::shipped_core_schema;
 use nodespace_core::services::{
     EmbeddingScheduler, InsertPosition, InsertPositionOwned, NodeAccessor,
     NodeService as CoreNodeService, NodeServiceError,
@@ -904,7 +905,12 @@ impl GrpcNodeService for NodeServiceImpl {
             updates: updates
                 .into_iter()
                 .map(|update| {
-                    let shipped_available = compiled.contains(&update.node_id);
+                    let shipped_available = match update.aspect {
+                        nodespace_core::models::SeedAspect::ContextPaths => {
+                            shipped_core_schema(&update.node_id).is_some()
+                        }
+                        _ => compiled.contains(&update.node_id),
+                    };
                     pending_seed_update_to_proto(update, shipped_available)
                 })
                 .collect(),
@@ -930,13 +936,24 @@ impl GrpcNodeService for NodeServiceImpl {
         {
             return Err(no_pending_seed_update(&req.node_id, aspect));
         }
-        let template = prepared_seed_template(&req.node_id).map_err(|status| *status)?;
-        let comparison = this
-            .node_service
-            .compare_pending_seed_update(&template, aspect)
-            .await
-            .map_err(service_error_to_status)?
-            .ok_or_else(|| no_pending_seed_update(&req.node_id, aspect))?;
+        // A core schema's context paths ship with its definition, not with
+        // a seed template.
+        let comparison = match aspect {
+            nodespace_core::models::SeedAspect::ContextPaths => {
+                let schema = shipped_context_paths_schema(&req.node_id).map_err(|s| *s)?;
+                this.node_service
+                    .compare_pending_context_paths_update(&schema)
+                    .await
+            }
+            _ => {
+                let template = prepared_seed_template(&req.node_id).map_err(|status| *status)?;
+                this.node_service
+                    .compare_pending_seed_update(&template, aspect)
+                    .await
+            }
+        }
+        .map_err(service_error_to_status)?
+        .ok_or_else(|| no_pending_seed_update(&req.node_id, aspect))?;
 
         Ok(Response::new(PendingSeedUpdateDetail {
             update: Some(pending_seed_update_to_proto(comparison.update, true)),
@@ -964,8 +981,15 @@ impl GrpcNodeService for NodeServiceImpl {
             .map_err(service_error_to_status)?
             .ok_or_else(|| no_pending_seed_update(&req.node_id, aspect))?;
 
-        let settled = match choice {
-            SeedUpdateChoice::TakeShipped => {
+        let settled = match (choice, aspect) {
+            (SeedUpdateChoice::TakeShipped, nodespace_core::models::SeedAspect::ContextPaths) => {
+                let schema = shipped_context_paths_schema(&req.node_id).map_err(|s| *s)?;
+                this.node_service
+                    .take_context_paths_update(&schema)
+                    .await
+                    .map_err(service_error_to_status)?
+            }
+            (SeedUpdateChoice::TakeShipped, _) => {
                 let template = prepared_seed_template(&req.node_id).map_err(|status| *status)?;
                 this.node_service
                     .take_seed_update(&template, aspect)
@@ -982,7 +1006,12 @@ impl GrpcNodeService for NodeServiceImpl {
             return Err(no_pending_seed_update(&req.node_id, aspect));
         }
 
-        let shipped_available = compiled_seed_templates().any(|t| t.id == req.node_id);
+        let shipped_available = match aspect {
+            nodespace_core::models::SeedAspect::ContextPaths => {
+                shipped_core_schema(&req.node_id).is_some()
+            }
+            _ => compiled_seed_templates().any(|t| t.id == req.node_id),
+        };
         Ok(Response::new(ResolvePendingSeedUpdateResponse {
             update: Some(pending_seed_update_to_proto(update, shipped_available)),
         }))
@@ -3330,13 +3359,14 @@ fn resolve_seed_template(
 }
 
 /// Every compiled seed template: the tables `seed_agent_nodes` seeds, in its
-/// order, then the core plays `NodeService::new` seeds.
+/// order, then the core plays and saved queries `NodeService::new` seeds.
 fn compiled_seed_templates() -> impl Iterator<Item = nodespace_core::markdown::NodeTemplate> {
     nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
         .into_iter()
         .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
         .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
         .chain(nodespace_core::playbook::core_plays::core_play_templates())
+        .chain(nodespace_core::services::query_service::core_queries::core_query_templates())
 }
 
 /// The compiled seed template whose node is `node_id`, expanded. A seeded
@@ -3364,6 +3394,22 @@ fn prepared_seed_template(
         Box::new(Status::internal(format!(
             "Failed to expand seed template '{}': {e}",
             template.title
+        )))
+    })
+}
+
+/// This build's definition of the core schema `schema_id`, whose context
+/// paths are the shipped ones a pending update to them is compared with.
+///
+/// `FAILED_PRECONDITION` when this build ships no core schema of that id, as
+/// [`prepared_seed_template`] answers for a seed in no compiled table.
+fn shipped_context_paths_schema(
+    schema_id: &str,
+) -> Result<nodespace_core::models::SchemaNode, Box<Status>> {
+    shipped_core_schema(schema_id).ok_or_else(|| {
+        Box::new(Status::failed_precondition(format!(
+            "this build ships no core type '{schema_id}', so its shipped context paths cannot \
+             be shown or taken"
         )))
     })
 }
@@ -4159,7 +4205,7 @@ mod tests {
         svc.node_service
             .create_node(nodespace_core::models::Node::new(
                 "query".to_string(),
-                "Ready tasks".to_string(),
+                "Startable tasks".to_string(),
                 serde_json::json!({ "target_type": "task", "filters": filters }),
             ))
             .await
@@ -4167,7 +4213,7 @@ mod tests {
 
         let run = svc
             .run_saved_query(Request::new(crate::nodespace::RunSavedQueryRequest {
-                query: "Ready tasks".to_string(),
+                query: "Startable tasks".to_string(),
                 filters_json: None,
                 limit: 0,
                 with_context: false,
@@ -4476,6 +4522,120 @@ mod tests {
         }))
         .await
         .unwrap();
+    }
+
+    /// A pending update to a core schema's context paths is listed, shown
+    /// with the shipped paths beside the user's, and settled either way,
+    /// through the same three RPCs as any seed's.
+    #[tokio::test]
+    async fn a_pending_context_paths_update_is_listed_shown_kept_and_taken() {
+        use nodespace_core::models::core_schemas::get_core_schemas;
+        use nodespace_core::models::SeedAspect;
+
+        let (svc, _tmp) = make_service().await;
+        let shipped = ["spec", "plan", "decisions", "spec.decisions", "project"];
+        let theirs = ["spec", "decisions", "spec.decisions", "project"];
+        nodespace_core::schema::handle_update_schema(
+            &svc.node_service,
+            serde_json::json!({ "schema_id": "task", "remove_context_paths": ["plan"] }),
+        )
+        .await
+        .unwrap();
+        let stored = || async {
+            svc.node_service
+                .get_schema_node("task")
+                .await
+                .unwrap()
+                .unwrap()
+                .context_paths
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+        let pending = || async {
+            svc.list_pending_seed_updates(Request::new(ListPendingSeedUpdatesRequest {}))
+                .await
+                .unwrap()
+                .into_inner()
+                .updates
+        };
+        let task_ref = || PendingSeedUpdateRef {
+            node_id: "task".to_string(),
+            aspect: "context_paths".to_string(),
+        };
+        let resolve = |choice: SeedUpdateChoice| {
+            svc.resolve_pending_seed_update(Request::new(ResolvePendingSeedUpdateRequest {
+                node_id: "task".to_string(),
+                aspect: "context_paths".to_string(),
+                choice: choice as i32,
+            }))
+        };
+
+        // Nothing is pending while what ships is what they edited.
+        assert!(pending().await.is_empty());
+        let none = svc
+            .get_pending_seed_update(Request::new(task_ref()))
+            .await
+            .unwrap_err();
+        assert_eq!(none.code(), tonic::Code::NotFound);
+
+        // A build that shipped other paths held its change back.
+        let mut other_build = get_core_schemas();
+        other_build
+            .iter_mut()
+            .find(|schema| schema.envelope.id == "task")
+            .unwrap()
+            .context_paths = vec!["project".parse().unwrap()];
+        svc.node_service
+            .reconcile_core_context_paths(&other_build)
+            .await
+            .unwrap();
+
+        let listed = pending().await;
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].node_id, "task");
+        assert_eq!(listed[0].node_type, "schema");
+        assert_eq!(listed[0].aspect, "context_paths");
+        assert!(listed[0].shipped_available);
+
+        // Shown against what this build ships.
+        let detail = svc
+            .get_pending_seed_update(Request::new(task_ref()))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(detail.shipped, shipped.join("\n"));
+        assert_eq!(detail.yours, theirs.join("\n"));
+
+        // Kept: settled, and their paths untouched.
+        let kept = resolve(SeedUpdateChoice::KeepMine)
+            .await
+            .unwrap()
+            .into_inner()
+            .update
+            .unwrap();
+        assert_eq!(kept.aspect, "context_paths");
+        assert!(kept.shipped_available);
+        assert!(pending().await.is_empty());
+        assert_eq!(stored().await, theirs);
+        let again = resolve(SeedUpdateChoice::KeepMine).await.unwrap_err();
+        assert_eq!(again.code(), tonic::Code::NotFound);
+
+        // Taken: this build's paths replace theirs.
+        svc.node_service
+            .reconcile_core_context_paths(&get_core_schemas())
+            .await
+            .unwrap();
+        assert_eq!(pending().await.len(), 1);
+        resolve(SeedUpdateChoice::TakeShipped).await.unwrap();
+        assert!(pending().await.is_empty());
+        assert_eq!(stored().await, shipped);
+        assert!(svc
+            .node_service
+            .get_pending_seed_update("task", SeedAspect::ContextPaths)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

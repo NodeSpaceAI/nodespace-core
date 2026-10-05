@@ -1,0 +1,1 @@
+A REJECTED WRITE: a command that is rejected changed nothing, and its message says which rule refused it and what is missing. Fix that cause, then run the command again. Never rerun it unchanged, and never get the same result by another route, such as setting a task's status with `nodespace node update`.

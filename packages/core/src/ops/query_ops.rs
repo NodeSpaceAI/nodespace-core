@@ -3798,7 +3798,7 @@ mod tests {
             save_query(
                 &svc,
                 READY_QUERY,
-                "Ready tasks",
+                "Startable tasks",
                 json!({
                     "target_type": "task",
                     "filters": [
@@ -3813,17 +3813,17 @@ mod tests {
             let ready = [FREE, UNBLOCKED, PLANNED, OPEN];
             assert_eq!(run_ids(&svc, json!({ "query": READY_QUERY })).await, ready);
             assert_eq!(
-                run_ids(&svc, json!({ "query": "Ready tasks" })).await,
+                run_ids(&svc, json!({ "query": "Startable tasks" })).await,
                 ready
             );
             assert_eq!(
-                run_ids(&svc, json!({ "query": "  ready TASKS " })).await,
+                run_ids(&svc, json!({ "query": "  startable TASKS " })).await,
                 ready
             );
 
             let run = run_saved_query_nodes(
                 &svc,
-                serde_json::from_value(json!({ "query": "Ready tasks" })).unwrap(),
+                serde_json::from_value(json!({ "query": "Startable tasks" })).unwrap(),
             )
             .await
             .unwrap();

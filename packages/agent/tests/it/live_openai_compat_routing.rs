@@ -188,6 +188,7 @@ impl Arm {
 /// block, not about whether the gate admits it.
 fn research_candidate() -> SkillCandidate {
     SkillCandidate {
+        role: Default::default(),
         id: "skill-research".to_string(),
         name: "Research".to_string(),
         use_for: "Find existing nodes and answer questions about their content.".to_string(),
@@ -643,6 +644,7 @@ mod tests {
         // trivially pass by construction; comparing the rendered output is
         // the part that actually verifies the two stay conservative.
         let probe_block = routing::render_candidates_for_prompt(&[SkillCandidate {
+            role: Default::default(),
             id: "skill-research".to_string(),
             name: "Research".to_string(),
             use_for: String::new(),

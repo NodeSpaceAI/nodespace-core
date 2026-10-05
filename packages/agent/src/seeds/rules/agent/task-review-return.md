@@ -1,0 +1,1 @@
+For each item that is not met, call update_node with the item's id and content its text with "- [x] " changed back to "- [ ] ", then call create_node with node_type "text", parent_id the item's id and what is missing as content. Then call update_task_status with the task's id, status "in_progress" and version the task's node_version as you read it.

@@ -384,6 +384,7 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::text("not_for", "notFor"),
                     F::new("tool_whitelist", "toolWhitelist", Array),
                     F::new("max_iterations", "maxIterations", Number),
+                    F::text("role", "role"),
                 ]
             }
         }
@@ -946,6 +947,7 @@ mod wire_contract {
             serde_json::json!(["update_node", "get_node"])
         );
         assert_eq!(out["maxIterations"], 3);
+        assert_eq!(out["role"], "tool");
         assert_eq!(
             out["properties"],
             serde_json::json!({ "custom:team": "Agents" })
@@ -957,6 +959,7 @@ mod wire_contract {
                 "not_for": "Delete records",
                 "tool_whitelist": ["update_node", "get_node"],
                 "max_iterations": 3,
+                "role": "tool",
                 "custom:team": "Agents"
             })
         );

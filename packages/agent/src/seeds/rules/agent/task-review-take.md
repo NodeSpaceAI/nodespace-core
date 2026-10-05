@@ -1,0 +1,1 @@
+Call run_query with query "Awaiting review", with_context true and limit 1. The task comes back under items: its checklist under checkboxes, what governs it under paths, its node_version, and under skills the procedures and standards that apply to it. No item means nothing is waiting for review: say so and stop.

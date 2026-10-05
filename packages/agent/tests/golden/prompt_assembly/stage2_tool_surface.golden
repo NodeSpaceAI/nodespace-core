@@ -320,7 +320,7 @@ parameters_schema:
       "type": "string"
     },
     "version": {
-      "description": "Optional. The node's \"version\" as you last read it. The write is refused if the node has changed since; read it again before deciding what to do.",
+      "description": "Optional. The node's \"node_version\" as get_node_context, or run_query with with_context, last returned it. The write is refused if the node has changed since; read it again before deciding what to do.",
       "type": "integer"
     }
   },
@@ -775,7 +775,7 @@ parameters_schema:
       "type": "string"
     },
     "version": {
-      "description": "Optional. The node's \"version\" as you last read it. The write is refused if the node has changed since; read it again before deciding what to do.",
+      "description": "Optional. The node's \"node_version\" as get_node_context, or run_query with with_context, last returned it. The write is refused if the node has changed since; read it again before deciding what to do.",
       "type": "integer"
     }
   },

@@ -1,0 +1,1 @@
+Call create_node with node_type "skill", the skill's name as content, and field_values {"use_for": "<when it applies>", "tool_whitelist": ["<tool>"]}, adding "not_for" only where one is needed. Then call create_node once per paragraph of the body, with node_type "text" and parent_id the skill's id.
