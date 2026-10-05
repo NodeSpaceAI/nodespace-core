@@ -38,8 +38,10 @@ pub fn normalize_enumerate_query(query: &str) -> Option<String> {
 }
 
 /// Whether an explicit `node_types` filter replaces the default `Knowledge`
-/// scope's allowlist (text/header/code-block/schema/table, plus user-defined
-/// types).
+/// scope's allowlist (`KNOWLEDGE_CORE_TYPES`, plus user-defined types).
+///
+/// This is how a search for `node_types: ["schema"]` finds schemas, which the
+/// default scope leaves out.
 ///
 /// Naming the types is a more specific statement of intent than the default
 /// scope: a search for `node_types: ["skill"]` asks for skills, and dropping

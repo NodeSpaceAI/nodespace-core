@@ -40,11 +40,17 @@ use std::sync::Arc;
 /// Built-in types the default `Knowledge` search scope returns: the user's own
 /// documents and records. User-defined types are admitted too, but are not
 /// known statically — see [`NodeEmbeddingService::matches_scope`].
+///
+/// `schema` is not on the list. A schema defines a type rather than holding
+/// the user's knowledge, and every schema is embedded (its name and fields)
+/// so skill and schema retrieval can find types by meaning. In the default
+/// scope those vectors would answer an ordinary query with type definitions
+/// ahead of the user's notes. A search that names `schema` still returns
+/// them, and skill/schema retrieval searches the `schema` type directly.
 pub const KNOWLEDGE_CORE_TYPES: &[crate::models::CoreNodeType] = &[
     crate::models::CoreNodeType::Text,
     crate::models::CoreNodeType::Header,
     crate::models::CoreNodeType::CodeBlock,
-    crate::models::CoreNodeType::Schema,
     crate::models::CoreNodeType::Table,
     crate::models::CoreNodeType::Task,
     crate::models::CoreNodeType::Date,
@@ -1162,7 +1168,7 @@ mod tests {
 
     /// The default scope returns the user's documents and records — including
     /// tasks, date pages and user-defined types, which the keyword half finds
-    /// by title — and never system content.
+    /// by title — and never system content or type definitions.
     #[test]
     fn test_knowledge_scope_admits_user_knowledge_and_excludes_system_types() {
         let user_types: HashSet<String> = ["company".to_string()].into();
@@ -1170,11 +1176,12 @@ mod tests {
             |t: &str| NodeEmbeddingService::matches_scope(t, &SearchScope::Knowledge, &user_types);
 
         for t in [
-            "text", "header", "schema", "task", "date", "project", "person", "company",
+            "text", "header", "task", "date", "project", "person", "company",
         ] {
             assert!(knowledge(t), "{t} must be in the default scope");
         }
         for t in [
+            "schema",
             "agent-guidance",
             "skill",
             "tool",
