@@ -53,6 +53,26 @@ pub const CORE_PLAY_IDS: &[&str] = &[
     SUPERSEDED_LOCK_PLAY_ID,
 ];
 
+/// When a task's parent is finished by its sub-tasks (ADR-079 §8). Two
+/// clauses, and each asks what a node is through its `type_chain`, so a
+/// subtype of `task` is a task here without being named:
+///
+/// - The parent is a task. Tasks are also outlined under a page, a date or a
+///   project. A project has a `status` of its own, so a field's presence does
+///   not tell it from a task, and writing `done` to any of them would either
+///   fail and suspend the Play or finish something that is not a task.
+/// - Every sub-task is done or cancelled. A child that is not a task (a
+///   checkbox, a note, a project) is passed over: it neither finishes the
+///   parent nor holds it open. A sub-task whose status cannot be read at
+///   `task` scope fails the condition, which holds the parent open.
+///
+/// The parent always has a sub-task when this is evaluated: the rule fires on
+/// a task, and that task is one of its parent's children. A task with no
+/// sub-task is therefore never completed, whatever else is under it.
+const ROLL_UP_CONDITION: &str = "'task' in node.child_of.type_chain \
+     && node.child_of.has_child.all(c, !('task' in c.type_chain) \
+     || c.status == 'done' || c.status == 'cancelled')";
+
 /// The rollup rule, as shipped (ADR-079).
 ///
 /// Trigger, condition and action in one rule:
@@ -63,19 +83,17 @@ pub const CORE_PLAY_IDS: &[&str] = &[
 ///   vocabulary resolves through `maps_to` before comparison, and its own
 ///   fields are not visible. A Play written here keeps working when an `issue`
 ///   type appears, without knowing `issue` exists.
-/// - **Condition** — walk `child_of` to the parent, then back down its
-///   `has_child` children, and require every one to be finished. `cancelled`
-///   counts as finished alongside `done`: the question is whether any work
-///   remains under the parent, not whether everything succeeded. A parent with
-///   no children never completes, because an empty collection evaluates to
-///   `false` here — including under `.all()` — so no explicit count guard is
-///   needed.
+/// - **Condition** — [`ROLL_UP_CONDITION`]: the parent is a task, and every
+///   sub-task under it is finished. `cancelled` counts as finished alongside
+///   `done`: the question is whether any work remains under the parent, not
+///   whether everything succeeded.
 ///
 /// **Single-parent assumption.** `child_of` is the outline's parent edge, and
 /// the whole hierarchy is single-parent by construction: `SqliteStore::get_parent`
 /// and `get_parent_id` both resolve it with `LIMIT 1`, so no read path has ever
 /// contemplated a second one. A node holding two `has_child` parents is already
-/// malformed with respect to that model — nothing in the product creates one —
+/// malformed with respect to that model — `create_relationship` refuses the
+/// second edge (ADR-079 §3) —
 /// and this Play no-ops there rather than picking a parent arbitrarily: the
 /// resolver yields a `Collection` for a multi-row walk, `.has_child` cannot
 /// continue from it, and the condition is simply false. That is the desired
@@ -91,6 +109,13 @@ pub const CORE_PLAY_IDS: &[&str] = &[
 /// to the parent is itself a `task` status change, which re-fires the rule with
 /// the parent now in the child position. That is how the rollup reaches a
 /// grandparent, and it is bounded by the engine's chain-depth cap.
+///
+/// The parent's own checklist is not part of the condition. The roll-up's
+/// write is held to the criteria rule ([`task_criteria_rules`]) like any
+/// other, so a parent with an unchecked item is left open by the rule that
+/// says why. Checking the last item afterwards is not a task status change
+/// and re-evaluates nothing: a checklist gates completion and never causes
+/// it, so that parent is finished by hand (ADR-079 §8).
 pub fn parent_task_completion_rules() -> serde_json::Value {
     json!([{
         "name": "complete-parent-when-all-children-done",
@@ -103,8 +128,8 @@ pub fn parent_task_completion_rules() -> serde_json::Value {
             "property_key": "task.status"
         },
         "conditions": [{
-            "expr": "node.child_of.has_child.all(c, c.status == 'done' || c.status == 'cancelled')",
-            "description": "Every sub-task of the task's parent is done or cancelled"
+            "expr": ROLL_UP_CONDITION,
+            "description": "The task's parent is a task, and every sub-task it has is done or cancelled"
         }],
         "actions": [{
             "action_type": "update_node",
@@ -141,9 +166,11 @@ fn seeded_play(id: &str, title: &str, description: &str, rules: serde_json::Valu
 fn parent_task_completion_play() -> NodeTemplate {
     seeded_play(
         PARENT_TASK_COMPLETION_PLAY_ID,
-        "Complete a parent task when all its children are done",
-        "When every sub-task of a task is done or cancelled, mark the parent done. Reactive \
-         rules currently fire only for changes made on this device.",
+        "Complete a parent task when all its sub-tasks are done",
+        "When every sub-task of a task is done or cancelled, mark the parent done. Checkboxes \
+         and notes under the parent are not sub-tasks. A parent whose own checklist has an \
+         unchecked item is left open, and is finished by hand once the checklist is complete. \
+         Reactive rules currently fire only for changes made on this device.",
         parent_task_completion_rules(),
     )
 }

@@ -1975,6 +1975,45 @@ mod scope_tests {
         }
     }
 
+    /// `type_chain` is the node's own chain at whatever scope it is read, so
+    /// a base-scoped Play can ask whether a node is the base or a subtype.
+    #[tokio::test]
+    async fn type_chain_reads_the_nodes_own_chain_at_every_scope() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let bug = make_bug(&svc, json!({ "state": "open", "severity": "high" })).await;
+        let ticket = make_ticket(&svc).await;
+
+        for scope in ["ticket", "bug"] {
+            for condition in [
+                "'bug' in node.type_chain",
+                "'ticket' in node.type_chain",
+                "node.type_chain[0] == 'bug'",
+            ] {
+                assert!(
+                    eval(&svc, &rule_on(scope, condition), &bug).await,
+                    "{condition} at {scope} scope"
+                );
+            }
+        }
+        assert!(
+            eval(
+                &svc,
+                &rule_on("ticket", "node.type_chain == ['ticket']"),
+                &ticket
+            )
+            .await
+        );
+        assert!(
+            !eval(
+                &svc,
+                &rule_on("ticket", "'bug' in node.type_chain"),
+                &ticket
+            )
+            .await
+        );
+    }
+
     #[tokio::test]
     async fn an_unextended_type_gets_no_scope_at_all() {
         let (svc, _tmp) = test_service().await;

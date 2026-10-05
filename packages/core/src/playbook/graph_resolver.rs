@@ -244,6 +244,12 @@ impl GraphResolver {
         if let Some(core) = core_field_value(node, segment) {
             return Ok(Some(core));
         }
+        // The one core key that is not a struct field: the node's type and
+        // every type it extends, from the schemas.
+        if segment == crate::playbook::cel::TYPE_CHAIN_KEY {
+            let chain = self.chain_of(&node.node_type).await?;
+            return Ok(Some(serde_json::json!(chain)));
+        }
         // A derived attribute of the node's type is computed from its
         // content, ahead of any property: nothing stored can stand in for it.
         let chain = self.chain_of(&node.node_type).await?;
@@ -910,7 +916,8 @@ fn absent_derived_read_as_null(items: &mut [Value], names: &[&str]) {
 /// own struct fields rather than in any type bucket, so no property lookup can
 /// reach them. The same set `cel.rs` exposes on a CEL `node` map (`is_core_key`)
 /// — the two must agree, or a name resolves in a condition but not in the
-/// action binding that acts on it.
+/// action binding that acts on it. `type_chain` is the exception: it comes
+/// from the schemas, so `GraphResolver::own_value` reads it.
 fn core_field_value(node: &Node, name: &str) -> Option<serde_json::Value> {
     match name {
         "id" => Some(serde_json::Value::String(node.id.clone())),
@@ -2960,6 +2967,16 @@ mod tests {
                     ),
                     other => panic!("expected a Scalar for child_of.{segment}, got {other:?}"),
                 }
+            }
+
+            // `type_chain` comes from the schemas, not from a struct field,
+            // and resolves on a related node like the others.
+            match resolver
+                .resolve_path(&child, &["child_of".to_string(), "type_chain".to_string()])
+                .await
+            {
+                ResolvedValue::Scalar(v) => assert_eq!(v, json!(["gr_core_task"])),
+                other => panic!("expected a Scalar for child_of.type_chain, got {other:?}"),
             }
 
             // A core field on the root node itself resolves the same way, with

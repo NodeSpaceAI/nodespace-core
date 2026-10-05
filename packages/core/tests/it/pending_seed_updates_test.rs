@@ -9,7 +9,10 @@ use anyhow::Result;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
 use nodespace_core::models::{NodeUpdate, SeedAspect, SkillFields};
-use nodespace_core::playbook::core_plays::parent_task_completion_rules;
+use nodespace_core::playbook::core_plays::{
+    core_play_templates, parent_task_completion_rules, seed_core_plays,
+    PARENT_TASK_COMPLETION_PLAY_ID,
+};
 use nodespace_core::services::NodeService;
 use serde_json::json;
 use std::sync::Arc;
@@ -383,6 +386,100 @@ async fn a_shipped_rules_change_replaces_an_unedited_play() -> Result<()> {
     assert_eq!(stored.properties["play"]["rules"], rules);
     assert_eq!(stored.properties["_seed"]["default_rules"], rules);
     assert_eq!(stored.properties["play"]["enabled"], true);
+    assert!(service.list_pending_seed_updates().await?.is_empty());
+    Ok(())
+}
+
+/// The roll-up Play as the release before ADR-079 §8 shipped it, under its
+/// real id: every child of the parent was asked for a status.
+fn roll_up_play_of_the_previous_release() -> NodeTemplate {
+    let mut template = core_play_templates()
+        .into_iter()
+        .find(|play| play.id == PARENT_TASK_COMPLETION_PLAY_ID)
+        .expect("the roll-up is a core play");
+    let mut rules = parent_task_completion_rules();
+    rules[0]["conditions"][0]["expr"] =
+        json!("node.child_of.has_child.all(c, c.status == 'done' || c.status == 'cancelled')");
+    template.root_properties["rules"] = rules.clone();
+    template.root_properties["_seed"]["default_rules"] = rules;
+    template
+}
+
+/// A database opened by this release after the previous one: the roll-up
+/// nobody edited takes the shipped condition, live and as its reset target.
+#[tokio::test]
+async fn the_changed_roll_up_replaces_one_nobody_edited() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    let previous = roll_up_play_of_the_previous_release();
+    seed(&service, &previous).await?;
+    let stored = service
+        .get_node(PARENT_TASK_COMPLETION_PLAY_ID)
+        .await?
+        .unwrap();
+    assert_eq!(
+        stored.properties["play"]["rules"],
+        previous.root_properties["rules"]
+    );
+
+    seed_core_plays(&service).await?;
+
+    let shipped = parent_task_completion_rules();
+    let stored = service
+        .get_node(PARENT_TASK_COMPLETION_PLAY_ID)
+        .await?
+        .unwrap();
+    assert_eq!(stored.properties["play"]["rules"], shipped);
+    assert_eq!(stored.properties["_seed"]["default_rules"], shipped);
+    assert!(service.list_pending_seed_updates().await?.is_empty());
+    Ok(())
+}
+
+/// The same open where the user had edited the roll-up: their Play is kept,
+/// and the shipped condition is put to them to take (ADR-072).
+#[tokio::test]
+async fn the_changed_roll_up_is_put_to_a_user_who_edited_theirs() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    let previous = roll_up_play_of_the_previous_release();
+    seed(&service, &previous).await?;
+    edit_root(
+        &service,
+        PARENT_TASK_COMPLETION_PLAY_ID,
+        json!({ "description": "A description the user wrote." }),
+    )
+    .await?;
+
+    seed_core_plays(&service).await?;
+
+    let stored = service
+        .get_node(PARENT_TASK_COMPLETION_PLAY_ID)
+        .await?
+        .unwrap();
+    assert_eq!(
+        stored.properties["play"]["description"],
+        "A description the user wrote."
+    );
+    assert_eq!(
+        stored.properties["play"]["rules"],
+        previous.root_properties["rules"]
+    );
+    let pending = service.list_pending_seed_updates().await?;
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].aspect, SeedAspect::Config);
+
+    let shipped = core_play_templates()
+        .into_iter()
+        .find(|play| play.id == PARENT_TASK_COMPLETION_PLAY_ID)
+        .expect("the roll-up is a core play");
+    let group = prepare_nodes_from_template(&shipped)?;
+    assert!(service.take_seed_update(&group, SeedAspect::Config).await?);
+    let stored = service
+        .get_node(PARENT_TASK_COMPLETION_PLAY_ID)
+        .await?
+        .unwrap();
+    assert_eq!(
+        stored.properties["play"]["rules"],
+        parent_task_completion_rules()
+    );
     assert!(service.list_pending_seed_updates().await?.is_empty());
     Ok(())
 }

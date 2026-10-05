@@ -322,7 +322,33 @@ fn node_own_chain(scope: &CelScope) -> Vec<&str> {
 /// it (ADR-087 §5). The engine's only use of lifecycle is the participation
 /// check, which decides whether a rule runs at all.
 pub(crate) fn is_core_key(key: &str) -> bool {
-    matches!(key, "id" | "node_type" | "content" | "version")
+    matches!(
+        key,
+        "id" | "node_type" | "content" | "version" | TYPE_CHAIN_KEY
+    )
+}
+
+/// The core key that reads as a node's type and every type it extends,
+/// nearest first (`["bug", "task"]`).
+///
+/// It is how a condition asks what a node is: `'task' in c.type_chain` is
+/// true of a task and of every subtype of one, where a comparison of
+/// `node_type` would miss the subtypes. A collection reached through a
+/// built-in relationship holds nodes of any type, and a field's presence
+/// does not tell them apart: a project has a `status` too.
+///
+/// The chain is the node's own, whatever scope it is read at. A node read at
+/// a base type is still the subtype it is.
+pub(crate) const TYPE_CHAIN_KEY: &str = "type_chain";
+
+/// `chain` as the CEL list [`TYPE_CHAIN_KEY`] reads as.
+pub(crate) fn type_chain_value<S: AsRef<str>>(chain: &[S]) -> Value {
+    Value::List(Arc::new(
+        chain
+            .iter()
+            .map(|t| Value::String(Arc::new(t.as_ref().to_string())))
+            .collect(),
+    ))
 }
 
 /// A node's CEL value, projected and value-resolved at `scope`.
@@ -339,6 +365,26 @@ pub(crate) fn is_core_key(key: &str) -> bool {
 /// resolution function rather than per-consumer logic — a second
 /// implementation for related nodes is how the two surfaces drift apart.
 pub(crate) fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value {
+    let fields = scoped_fields(node, scope);
+    let Value::Map(map) = &fields else {
+        return fields;
+    };
+    // `CelScope::resolve` gives no scope only for a node read at its own
+    // type when that type extends nothing: its chain is its type alone. A
+    // caller with no schema access also passes none, and reads the type
+    // alone for want of anything better.
+    let chain = match scope {
+        Some(scope) => type_chain_value(&scope.node_chain),
+        None => type_chain_value(&[&node.node_type]),
+    };
+    let mut out = (*map.map).clone();
+    out.insert(key(TYPE_CHAIN_KEY), chain);
+    Value::Map(cel_interpreter::objects::Map { map: Arc::new(out) })
+}
+
+/// [`scoped_node_value`] before the type chain is added: the node's core
+/// fields and the fields the scope declares.
+fn scoped_fields(node: &Node, scope: Option<&CelScope>) -> Value {
     let Some(scope) = scope else {
         return node_to_cel_value(node);
     };
