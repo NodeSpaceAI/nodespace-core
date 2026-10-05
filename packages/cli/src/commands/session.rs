@@ -4,9 +4,11 @@ use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
 use clap::{Args, Subcommand};
 use crossterm::terminal;
+use nodespace_agent::agent_types::AgentType;
+use nodespace_agent::pty::SESSION_ENV_VAR;
 use nodespace_daemon::nodespace::{
-    LaunchSessionRequest, ListSessionsRequest, StreamOutputRequest, TerminateSessionRequest,
-    WriteInputRequest,
+    LaunchSessionRequest, ListSessionsRequest, ReportHarnessSessionRequest, StreamOutputRequest,
+    TerminateSessionRequest, WriteInputRequest,
 };
 use tokio::io::AsyncReadExt;
 use tonic::Request;
@@ -25,16 +27,43 @@ pub enum SessionAction {
     List(ListArgs),
     /// Terminate a running session.
     Kill(KillArgs),
+    /// Tell NodeSpace the agent's own id for the conversation running in a
+    /// launched session. An agent's plugin runs this when the session starts.
+    #[command(name = "report-harness-session")]
+    ReportHarnessSession(ReportHarnessSessionArgs),
+}
+
+/// The ids `session launch` takes: the agents the daemon can launch.
+fn agent_ids() -> Vec<&'static str> {
+    AgentType::ALL.map(AgentType::id).to_vec()
 }
 
 #[derive(Args, Debug)]
 pub struct LaunchArgs {
     /// Agent to launch: claude-code, codex, antigravity, pi, opencode
+    #[arg(value_parser = clap::builder::PossibleValuesParser::new(agent_ids()))]
     pub agent: String,
 
     /// Initial prompt passed to the agent at launch time.
     #[arg(long)]
     pub prompt: Option<String>,
+
+    /// Id of the project to launch the session for. The session runs in that
+    /// project's folder on this machine. Without it the session runs in a
+    /// private folder of its own.
+    #[arg(long)]
+    pub project: Option<String>,
+
+    /// The project's folder on this machine: the absolute path of its
+    /// checkout. Needed the first time a session is launched for a project,
+    /// and remembered on this machine from then on.
+    #[arg(long, requires = "project")]
+    pub folder: Option<String>,
+
+    /// Id of the task to launch the session for. The agent's plugin opens
+    /// with that task's context.
+    #[arg(long)]
+    pub task: Option<String>,
 
     /// Terminal width in columns (defaults to current terminal width).
     #[arg(long)]
@@ -60,12 +89,26 @@ pub struct KillArgs {
     pub session_id: String,
 }
 
-pub async fn run(client: &mut SessionClient, action: SessionAction, _json: bool) -> Result<()> {
+#[derive(Args, Debug)]
+pub struct ReportHarnessSessionArgs {
+    /// The agent's own id for the conversation: the one its resume flag takes.
+    pub harness_session_id: String,
+
+    /// The launched session to report for. A launched session's environment
+    /// names it in `NODESPACE_SESSION`.
+    #[arg(long, env = SESSION_ENV_VAR)]
+    pub session: String,
+}
+
+pub async fn run(client: &mut SessionClient, action: SessionAction, json: bool) -> Result<()> {
     match action {
         SessionAction::Launch(args) => launch(client, args).await,
         SessionAction::Attach(args) => attach(client, args).await,
         SessionAction::List(_) => list(client).await,
         SessionAction::Kill(args) => kill(client, args).await,
+        SessionAction::ReportHarnessSession(args) => {
+            report_harness_session(client, args, json).await
+        }
     }
 }
 
@@ -81,6 +124,9 @@ async fn launch(client: &mut SessionClient, args: LaunchArgs) -> Result<()> {
             // CLI-launched sessions are not tied to an ai-chat-pty node, so
             // nothing is written when the session ends.
             node_id: None,
+            project_id: args.project,
+            project_folder: args.folder,
+            task_id: args.task,
         }))
         .await
         .context("LaunchSession RPC failed")?
@@ -90,6 +136,31 @@ async fn launch(client: &mut SessionClient, args: LaunchArgs) -> Result<()> {
     eprintln!("session: {}", resp.session_id);
 
     stream_bridge(client, resp.session_id).await
+}
+
+async fn report_harness_session(
+    client: &mut SessionClient,
+    args: ReportHarnessSessionArgs,
+    json: bool,
+) -> Result<()> {
+    let resp = client
+        .report_harness_session(Request::new(ReportHarnessSessionRequest {
+            session_id: args.session.clone(),
+            harness_session_id: args.harness_session_id,
+        }))
+        .await
+        .context("ReportHarnessSession RPC failed")?
+        .into_inner();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({ "session_id": args.session, "node_id": resp.node_id })
+        );
+    } else {
+        println!("Recorded for session {}.", args.session);
+    }
+    Ok(())
 }
 
 async fn attach(client: &mut SessionClient, args: AttachArgs) -> Result<()> {
@@ -247,6 +318,69 @@ fn format_unix_time(unix_secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::dropped_notice;
+    use super::{LaunchArgs, ReportHarnessSessionArgs, SESSION_ENV_VAR};
+    use clap::{CommandFactory, Parser};
+    use nodespace_agent::agent_types::AgentType;
+
+    #[derive(Parser)]
+    struct Launch {
+        #[command(flatten)]
+        args: LaunchArgs,
+    }
+
+    #[derive(Parser)]
+    struct Report {
+        #[command(flatten)]
+        args: ReportHarnessSessionArgs,
+    }
+
+    /// `session launch` lists and takes exactly the ids the daemon accepts.
+    #[test]
+    fn launch_takes_the_daemons_agent_ids_and_no_others() {
+        let help = Launch::command().render_long_help().to_string();
+        for agent in AgentType::ALL {
+            assert!(help.contains(agent.id()), "help omits {}", agent.id());
+            assert!(Launch::try_parse_from(["launch", agent.id()]).is_ok());
+        }
+        for other in ["open-code", "antigravity-cli", "gemini-cli"] {
+            assert!(!help.contains(other), "help lists {other}");
+            assert!(Launch::try_parse_from(["launch", other]).is_err());
+        }
+    }
+
+    #[test]
+    fn launch_takes_a_project_a_folder_and_a_task() {
+        let launch = Launch::try_parse_from([
+            "launch",
+            "claude-code",
+            "--project",
+            "p1",
+            "--folder",
+            "/work/core",
+            "--task",
+            "t1",
+        ])
+        .unwrap()
+        .args;
+        assert_eq!(launch.project.as_deref(), Some("p1"));
+        assert_eq!(launch.folder.as_deref(), Some("/work/core"));
+        assert_eq!(launch.task.as_deref(), Some("t1"));
+
+        // A folder belongs to a project.
+        assert!(Launch::try_parse_from(["launch", "codex", "--folder", "/work/core"]).is_err());
+    }
+
+    /// The session is named by flag here: the variable a launch sets is
+    /// process-global, and other tests share the process.
+    #[test]
+    fn a_report_names_its_session() {
+        let report = Report::try_parse_from(["report", "h-1", "--session", "s-1"])
+            .unwrap()
+            .args;
+        assert_eq!(report.harness_session_id, "h-1");
+        assert_eq!(report.session, "s-1");
+        assert_eq!(SESSION_ENV_VAR, "NODESPACE_SESSION");
+    }
 
     #[test]
     fn dropped_notice_starts_on_a_fresh_line_and_pluralises() {

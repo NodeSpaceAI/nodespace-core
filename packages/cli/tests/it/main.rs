@@ -14,6 +14,7 @@ mod cli_integration;
 mod cli_reference_examples;
 mod home_isolation;
 mod import_dir_multi;
+mod launched_session;
 mod mcp_integration;
 mod requires_extension;
 mod skill_md_generation;

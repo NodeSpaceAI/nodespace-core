@@ -1981,6 +1981,7 @@ impl GrpcNodeService for NodeServiceImpl {
                 .map_err(Status::invalid_argument)?,
             repository: optional_json_clear(req.repository, "repository")
                 .map_err(Status::invalid_argument)?,
+            checkout_path: optional_string_clear(req.checkout_path),
         };
 
         match this
@@ -5788,6 +5789,7 @@ mod tests {
                 }),
                 end_date: None,
                 repository: None,
+                checkout_path: None,
             }))
             .await
             .expect_err("malformed date must be rejected");
@@ -5992,6 +5994,7 @@ mod tests {
                     start_date: None,
                     end_date: None,
                     repository,
+                    checkout_path: None,
                 })
             };
         let typed = |id: &'static str| {
@@ -6353,6 +6356,7 @@ mod tests {
                 start_date: None,
                 end_date: None,
                 repository: None,
+                checkout_path: None,
             }))
             .await
             .expect_err("stale version must conflict");

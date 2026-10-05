@@ -2,8 +2,6 @@
 //!
 //! A [`PtySession`] owns:
 //!
-//! * a persistent per-session directory at `~/.nodespace/agent-sessions/<uuid>/`
-//!   (the agent's working directory — survives session end),
 //! * the master end of a PTY pair (`portable-pty`),
 //! * a writer into the PTY's stdin,
 //! * a [`portable_pty::ChildKiller`] handle for the spawned process,
@@ -12,9 +10,14 @@
 //! * a watcher task (which owns the actual `Child`) that broadcasts the
 //!   process exit status through `broadcast::Sender<ExitStatus>`.
 //!
-//! The session directory is **not** deleted on session end. It persists under
-//! `~/.nodespace/agent-sessions/<session-uuid>/` so artifacts, context files,
-//! and agent output survive across restarts.
+//! The agent runs in the working directory the launch names: a project's
+//! folder on this machine (ADR-093 §8). A launch that names none runs in a
+//! private folder the launch says where to create (the daemon's
+//! `agent-sessions/<session-uuid>/`), which is not deleted when the session
+//! ends. Nothing is written into either at
+//! launch: the session gets NodeSpace's context through its harness plugin
+//! and the `nodespace` CLI, which the environment set here points at the
+//! right database.
 //!
 //! ## Concurrency
 //!
@@ -24,6 +27,7 @@
 //! [`portable_pty::ChildKiller`], avoiding the obvious deadlock of a kill
 //! call waiting on a mutex the wait-loop already holds.
 
+use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,10 +39,20 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, watch, Mutex};
 use uuid::Uuid;
 
-use crate::agent_catalog::context_assembly::GraphContextAssembler;
 use crate::agent_catalog::registry::SystemAgentRegistry;
-use crate::agent_types::{AgentType, ContextError};
+use crate::agent_types::AgentType;
 use crate::pty::capture::SessionCapture;
+use crate::pty::detection::resolve_binary;
+
+/// Names this session to the `nodespace` commands run inside it: the PTY
+/// session's id. A harness plugin reports the harness's own session id
+/// against it.
+pub const SESSION_ENV_VAR: &str = "NODESPACE_SESSION";
+
+/// Names what the session was launched for: the task when the launch named
+/// one, otherwise the chat node the session is a view onto. A harness plugin
+/// opens with that work's context.
+pub const LAUNCHED_FOR_ENV_VAR: &str = "NODESPACE_LAUNCHED_FOR";
 
 /// Number of buffered chunks per output subscriber. Slow consumers that fall
 /// behind by more than this many chunks will see `RecvError::Lagged`; that is
@@ -59,13 +73,13 @@ const DEFAULT_PTY_COLS: u16 = 80;
 /// Environment variables every PTY child gets regardless of which agent is
 /// spawned — the minimum a POSIX CLI needs to resolve binaries, find the
 /// user's home, and render correctly in a terminal. Everything else is
-/// dropped via `env_clear()`; auth vars are layered in per agent via
-/// [`AgentDefinition::auth_env_vars`].
+/// dropped via `env_clear()`; an agent's own variables are layered in via
+/// [`crate::agent_catalog::registry::AgentDefinition::env_vars`].
 const BASE_ENV_ALLOWLIST: &[&str] = &["HOME", "PATH", "TERM", "SHELL", "LANG", "USER", "TMPDIR"];
 
 /// Clear the command's inherited environment and repopulate it from
 /// `std::env::var` using `BASE_ENV_ALLOWLIST` plus `extra_vars` (typically an
-/// agent's `auth_env_vars`). Only variables actually present in the daemon's
+/// agent's `env_vars`). Only variables actually present in the daemon's
 /// environment are forwarded — a missing var is silently skipped rather than
 /// passed through empty.
 fn apply_env_allowlist(cmd: &mut CommandBuilder, extra_vars: &[&str]) {
@@ -73,6 +87,42 @@ fn apply_env_allowlist(cmd: &mut CommandBuilder, extra_vars: &[&str]) {
     for key in BASE_ENV_ALLOWLIST.iter().chain(extra_vars) {
         if let Ok(value) = std::env::var(key) {
             cmd.env(key, value);
+        }
+    }
+}
+
+/// What a launch asks for.
+#[derive(Debug, Clone)]
+pub struct SessionLaunch {
+    /// Which agent to start.
+    pub agent_type: AgentType,
+    /// Passed to the agent as its first argument, when given.
+    pub initial_prompt: Option<String>,
+    /// The `ai-chat-pty` node the session is a view onto, when there is one.
+    pub node_id: Option<String>,
+    /// The folder the agent runs in: the project's, on this machine. `None`
+    /// runs it in a private folder created under `session_folders`.
+    pub working_dir: Option<PathBuf>,
+    /// Where a session with no working directory of its own gets a private
+    /// folder, named by its id. The caller decides it, so it follows wherever
+    /// the caller keeps NodeSpace's state.
+    pub session_folders: Option<PathBuf>,
+    /// What NodeSpace sets in the session's environment on top of the
+    /// allowlist: the database, the daemon socket and what the session was
+    /// launched for. [`SESSION_ENV_VAR`] is added by the launch itself.
+    pub env: Vec<(String, String)>,
+}
+
+impl SessionLaunch {
+    /// A launch of `agent_type` with nothing else named.
+    pub fn new(agent_type: AgentType) -> Self {
+        Self {
+            agent_type,
+            initial_prompt: None,
+            node_id: None,
+            working_dir: None,
+            session_folders: None,
+            env: Vec::new(),
         }
     }
 }
@@ -138,101 +188,130 @@ pub struct PtySession {
     /// reader task so all chunks land here without extra subscriptions.
     capture: Arc<Mutex<SessionCapture>>,
 
-    /// Persistent working directory for this session. Lives at
-    /// `~/.nodespace/agent-sessions/<uuid>/` and is never deleted on session
-    /// end — artifacts survive across restarts.
-    pub session_dir: PathBuf,
+    /// The harness's own id for the conversation, once its plugin has
+    /// reported one. The latest report stands: a harness that starts a new
+    /// conversation mid-session reports again.
+    harness_session_id: std::sync::Mutex<Option<String>>,
+
+    /// The folder the agent runs in: the project's, or the session's private
+    /// folder.
+    pub working_dir: PathBuf,
+}
+
+/// What [`PtySession::spawn_in_pty`] starts: a resolved binary, where it runs
+/// and the environment it gets.
+struct Spawn<'a> {
+    id: Uuid,
+    agent_type: AgentType,
+    binary_path: PathBuf,
+    args: Vec<String>,
+    working_dir: PathBuf,
+    /// Variables forwarded from the daemon's environment when set there, on
+    /// top of the base allowlist.
+    forwarded_vars: &'a [&'a str],
+    /// The child's `PATH`, when it is not the daemon's own.
+    search_path: Option<OsString>,
+    /// Variables set to the given values.
+    env: Vec<(String, String)>,
 }
 
 impl PtySession {
-    /// Spawn the agent binary for `agent_type` in a fresh PTY.
+    /// Spawn the agent binary a launch names in a fresh PTY.
     ///
     /// Steps, in order:
     ///
-    /// 1. Generate a session UUID and create a persistent directory at
-    ///    `~/.nodespace/agent-sessions/<uuid>/`.
-    /// 2. Have `assembler` write the context file (`CLAUDE.md` / `AGENTS.md`) and
-    ///    `SKILL.md` into the session directory.
-    /// 3. Resolve the agent binary on `PATH` via [`which::which`].
-    /// 4. Open a PTY pair and spawn the binary with `cwd` set to the session dir.
+    /// 1. Generate a session UUID.
+    /// 2. Take the launch's working directory, or create the session's
+    ///    private folder, `<session_folders>/<uuid>/`.
+    /// 3. Resolve the agent binary on `search_path`, the one detection used.
+    /// 4. Open a PTY pair and spawn the binary there, with the allowlisted
+    ///    environment plus what the launch sets, and `search_path` as its
+    ///    `PATH`.
     /// 5. Start the reader and exit-watcher tasks.
-    pub async fn launch(
-        agent_type: AgentType,
-        initial_prompt: Option<String>,
-        node_id: Option<String>,
-        assembler: &GraphContextAssembler,
-    ) -> anyhow::Result<Self> {
+    pub fn launch(launch: SessionLaunch, search_path: OsString) -> anyhow::Result<Self> {
+        let SessionLaunch {
+            agent_type,
+            initial_prompt,
+            node_id,
+            working_dir,
+            session_folders,
+            mut env,
+        } = launch;
         let session_id = Uuid::new_v4();
-        let sessions_base = dirs::home_dir()
-            .context("HOME not set")?
-            .join(".nodespace")
-            .join("agent-sessions");
-        let session_dir = sessions_base.join(session_id.to_string());
-        std::fs::create_dir_all(&session_dir)
-            .with_context(|| format!("create session dir {}", session_dir.display()))?;
-
-        assembler
-            .write_context_file(&session_dir, agent_type)
-            .await
-            .map_err(|e| match e {
-                ContextError::Other(err) => err,
-                other => anyhow::Error::new(other),
-            })?;
 
         let definition = SystemAgentRegistry::new()
             .get(agent_type)
             .ok_or_else(|| anyhow::anyhow!("agent {:?} missing from catalog", agent_type))?;
 
-        let binary_path = which::which(definition.binary).map_err(|e| {
+        let binary_path = resolve_binary(definition.binary, &search_path).ok_or_else(|| {
             anyhow::anyhow!(
-                "agent binary '{}' not found on PATH: {}",
-                definition.binary,
-                e
+                "agent binary '{}' not found on the search path",
+                definition.binary
             )
         })?;
 
-        let mut session = Self::spawn_in_pty(
-            session_id,
+        let working_dir = match working_dir {
+            Some(dir) => dir,
+            None => {
+                let dir = session_folders
+                    .context(
+                        "the launch names neither a working directory nor where to create one",
+                    )?
+                    .join(session_id.to_string());
+                std::fs::create_dir_all(&dir)
+                    .with_context(|| format!("create session dir {}", dir.display()))?;
+                dir
+            }
+        };
+
+        env.push((SESSION_ENV_VAR.to_string(), session_id.to_string()));
+
+        let mut session = Self::spawn_in_pty(Spawn {
+            id: session_id,
             agent_type,
             binary_path,
-            initial_prompt,
-            session_dir,
-            DEFAULT_PTY_ROWS,
-            DEFAULT_PTY_COLS,
-            definition.auth_env_vars,
-        )?;
+            args: initial_prompt.into_iter().collect(),
+            working_dir,
+            forwarded_vars: definition.env_vars,
+            search_path: Some(search_path),
+            env,
+        })?;
         session.node_id = node_id;
         Ok(session)
     }
 
-    /// Inner helper that opens the PTY, spawns the process, and wires up
-    /// reader / exit-watcher tasks. Split out from [`launch`](Self::launch)
-    /// so tests can construct sessions without going through
-    /// [`GraphContextAssembler`].
-    #[allow(clippy::too_many_arguments)]
-    fn spawn_in_pty(
-        id: Uuid,
-        agent_type: AgentType,
-        binary_path: std::path::PathBuf,
-        initial_prompt: Option<String>,
-        session_dir: PathBuf,
-        rows: u16,
-        cols: u16,
-        auth_env_vars: &[&str],
-    ) -> anyhow::Result<Self> {
+    /// Opens the PTY, spawns the process, and wires up the reader and
+    /// exit-watcher tasks.
+    fn spawn_in_pty(spawn: Spawn<'_>) -> anyhow::Result<Self> {
+        let Spawn {
+            id,
+            agent_type,
+            binary_path,
+            args,
+            working_dir,
+            forwarded_vars,
+            search_path,
+            env,
+        } = spawn;
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
-            rows,
-            cols,
+            rows: DEFAULT_PTY_ROWS,
+            cols: DEFAULT_PTY_COLS,
             pixel_width: 0,
             pixel_height: 0,
         })?;
 
         let mut cmd = CommandBuilder::new(binary_path);
-        cmd.cwd(&session_dir);
-        apply_env_allowlist(&mut cmd, auth_env_vars);
-        if let Some(prompt) = initial_prompt {
-            cmd.arg(prompt);
+        cmd.cwd(&working_dir);
+        apply_env_allowlist(&mut cmd, forwarded_vars);
+        if let Some(path) = search_path {
+            cmd.env("PATH", path);
+        }
+        for (key, value) in env {
+            cmd.env(key, value);
+        }
+        for arg in args {
+            cmd.arg(arg);
         }
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -268,8 +347,26 @@ impl PtySession {
             output_tx,
             exit_tx,
             capture,
-            session_dir,
+            harness_session_id: std::sync::Mutex::new(None),
+            working_dir,
         })
+    }
+
+    /// Record the id the harness gave its own conversation, as its plugin
+    /// reported it. A later report replaces an earlier one.
+    pub fn report_harness_session_id(&self, id: String) {
+        *self
+            .harness_session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(id);
+    }
+
+    /// The harness's own id for the conversation, when one was reported.
+    pub fn harness_session_id(&self) -> Option<String> {
+        self.harness_session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Subscribe to the PTY's output byte stream.
@@ -331,9 +428,8 @@ impl PtySession {
     ///
     /// Takes `&self` rather than consuming the session, because typical
     /// callers hold the session behind an `Arc` (the manager hands out
-    /// `Arc<PtySession>` from `get()`). The session directory at
-    /// `~/.nodespace/agent-sessions/<uuid>/` is NOT deleted on session end —
-    /// it persists so artifacts survive across daemon restarts.
+    /// `Arc<PtySession>` from `get()`). The working directory is left as it
+    /// is.
     ///
     /// Safe to call when the child has already exited: returns immediately
     /// without erroring.
@@ -425,9 +521,9 @@ fn spawn_reader_task(
 
 #[cfg(any(test, feature = "testing"))]
 impl PtySession {
-    /// Test-only constructor: spawn an arbitrary binary in a PTY without
-    /// going through [`GraphContextAssembler`]. Lets tests use shell utilities
-    /// (`cat`, `sh -c '...'`) instead of depending on a real agent binary.
+    /// Test-only constructor: spawn an arbitrary binary in a PTY, so tests
+    /// can use shell utilities (`cat`, `sh -c '...'`) instead of depending on
+    /// a real agent binary.
     ///
     /// Creates a temporary directory under `std::env::temp_dir()` for the
     /// session. The directory persists until the OS cleans up the temp dir.
@@ -436,67 +532,53 @@ impl PtySession {
     /// tests in sibling crates (e.g. `nodespace-daemon`) without being part
     /// of the production surface.
     pub fn launch_for_test(binary: &str, args: Vec<String>) -> anyhow::Result<Self> {
+        Self::launch_for_test_as(binary, args, SessionLaunch::new(AgentType::ClaudeCode))
+    }
+
+    /// Test-only constructor: spawn an arbitrary binary the way
+    /// [`launch`](Self::launch) spawns an agent's, with `launch`'s working
+    /// directory, environment and node. The agent's own variables are
+    /// forwarded as they are for a real launch.
+    pub fn launch_for_test_as(
+        binary: &str,
+        args: Vec<String>,
+        launch: SessionLaunch,
+    ) -> anyhow::Result<Self> {
         let id = Uuid::new_v4();
-        let session_dir = std::env::temp_dir()
-            .join("nodespace-agent-test-sessions")
-            .join(id.to_string());
-        std::fs::create_dir_all(&session_dir)
-            .with_context(|| format!("create test session dir {}", session_dir.display()))?;
+        let working_dir = match launch.working_dir {
+            Some(dir) => dir,
+            None => {
+                let dir = std::env::temp_dir()
+                    .join("nodespace-agent-test-sessions")
+                    .join(id.to_string());
+                std::fs::create_dir_all(&dir)
+                    .with_context(|| format!("create test session dir {}", dir.display()))?;
+                dir
+            }
+        };
 
         let binary_path = which::which(binary)
             .map_err(|e| anyhow::anyhow!("test binary '{}' not on PATH: {}", binary, e))?;
+        let forwarded_vars = SystemAgentRegistry::new()
+            .get(launch.agent_type)
+            .map(|definition| definition.env_vars)
+            .unwrap_or_default();
 
-        let pty_system = native_pty_system();
-        let pair = pty_system.openpty(PtySize {
-            rows: DEFAULT_PTY_ROWS,
-            cols: DEFAULT_PTY_COLS,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
-        let mut cmd = CommandBuilder::new(binary_path);
-        cmd.cwd(&session_dir);
-        apply_env_allowlist(&mut cmd, &[]);
-        for a in &args {
-            cmd.arg(a);
-        }
-        let child = pair.slave.spawn_command(cmd)?;
-        drop(pair.slave);
+        let mut env = launch.env;
+        env.push((SESSION_ENV_VAR.to_string(), id.to_string()));
 
-        let reader = pair.master.try_clone_reader()?;
-        let writer = pair.master.take_writer()?;
-        let child_killer = child.clone_killer();
-
-        let (output_tx, _) = broadcast::channel::<OutputChunk>(OUTPUT_CHANNEL_CAPACITY);
-        let (exit_tx, _) = watch::channel::<Option<ExitStatus>>(None);
-
-        let started_at = Utc::now();
-
-        let master = Arc::new(Mutex::new(pair.master));
-        let writer = Arc::new(Mutex::new(writer));
-        let child_killer = Arc::new(Mutex::new(child_killer));
-        let capture = Arc::new(Mutex::new(SessionCapture::new()));
-
-        spawn_reader_task(reader, output_tx.clone(), capture.clone());
-        spawn_exit_watcher_task(child, exit_tx.clone());
-
-        Ok(Self {
+        let mut session = Self::spawn_in_pty(Spawn {
             id,
-            agent_type: AgentType::ClaudeCode,
-            started_at,
-            node_id: None,
-            master,
-            writer,
-            child_killer,
-            output_tx,
-            exit_tx,
-            capture,
-            session_dir,
-        })
-    }
-
-    /// Test-only accessor: the session's working directory path.
-    pub fn session_dir_path(&self) -> &std::path::Path {
-        self.session_dir.as_path()
+            agent_type: launch.agent_type,
+            binary_path,
+            args,
+            working_dir,
+            forwarded_vars,
+            search_path: None,
+            env,
+        })?;
+        session.node_id = launch.node_id;
+        Ok(session)
     }
 }
 
@@ -601,7 +683,7 @@ mod tests {
                 .expect("launch test session");
 
         assert_eq!(session.agent_type, AgentType::ClaudeCode);
-        assert!(session.session_dir_path().exists());
+        assert!(session.working_dir.exists());
 
         let mut rx = session.subscribe_output();
         let mut exit_rx = session.subscribe_exit();
@@ -671,11 +753,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_dir_persists_after_process_exit_and_session_drop() {
+    async fn the_working_directory_outlives_the_process_and_the_session() {
         let session = PtySession::launch_for_test("sh", vec!["-c".into(), "echo done".into()])
             .expect("launch echo session");
 
-        let dir_path = session.session_dir_path().to_path_buf();
+        let dir_path = session.working_dir.clone();
         assert!(
             dir_path.exists(),
             "session dir should exist immediately after launch"
@@ -866,5 +948,92 @@ mod tests {
             unset_var.is_none(),
             "extra var absent from process env should not appear"
         );
+    }
+
+    // ---- What a launch sets ------------------------------------------------
+
+    /// Run `script` under `sh` the way a launch spawns an agent, and return
+    /// what it printed.
+    async fn run_as_launched(launch: SessionLaunch, script: &str) -> (PtySession, String) {
+        let session =
+            PtySession::launch_for_test_as("sh", vec!["-c".into(), script.into()], launch)
+                .expect("launch session");
+        let mut rx = session.subscribe_output();
+        let mut exit_rx = session.subscribe_exit();
+        let output = collect_output(&mut rx, Duration::from_secs(2), 64).await;
+        await_exit(&mut exit_rx, Duration::from_secs(2)).await;
+        (session, String::from_utf8_lossy(&output).into_owned())
+    }
+
+    #[tokio::test]
+    async fn a_session_runs_in_the_folder_the_launch_names() {
+        let project = tempfile::TempDir::new().unwrap();
+        let folder = project.path().canonicalize().unwrap();
+        let launch = SessionLaunch {
+            working_dir: Some(folder.clone()),
+            ..SessionLaunch::new(AgentType::ClaudeCode)
+        };
+
+        let (session, text) = run_as_launched(launch, "pwd -P").await;
+
+        assert_eq!(session.working_dir, folder);
+        assert!(
+            text.contains(&*folder.to_string_lossy()),
+            "the agent should run in the named folder, got: {text:?}"
+        );
+        // Nothing is written there at launch: no context file, no skill copy.
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_environment_carries_what_the_launch_sets_and_the_session_id() {
+        let launch = SessionLaunch {
+            env: vec![
+                ("NODESPACE_DATABASE".to_string(), "db-two".to_string()),
+                (LAUNCHED_FOR_ENV_VAR.to_string(), "task-1".to_string()),
+            ],
+            ..SessionLaunch::new(AgentType::ClaudeCode)
+        };
+
+        let (session, text) = run_as_launched(launch, "env").await;
+
+        assert!(text.contains("NODESPACE_DATABASE=db-two"), "{text:?}");
+        assert!(
+            text.contains(&format!("{LAUNCHED_FOR_ENV_VAR}=task-1")),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(&format!("{SESSION_ENV_VAR}={}", session.id)),
+            "{text:?}"
+        );
+    }
+
+    /// An agent's own variables reach it when the daemon has them, and no
+    /// other agent's do: the allowlist stays an allowlist.
+    #[tokio::test]
+    async fn an_agents_own_variables_are_forwarded_and_no_others() {
+        let _config = EnvVarGuard::set("CLAUDE_CONFIG_DIR", "/profiles/work");
+        let _other = EnvVarGuard::set("NODESPACE_TEST_NOT_LISTED", "should-not-leak");
+
+        let (_, claude) = run_as_launched(SessionLaunch::new(AgentType::ClaudeCode), "env").await;
+        assert!(
+            claude.contains("CLAUDE_CONFIG_DIR=/profiles/work"),
+            "{claude:?}"
+        );
+        assert!(!claude.contains("NODESPACE_TEST_NOT_LISTED"), "{claude:?}");
+
+        let (_, codex) = run_as_launched(SessionLaunch::new(AgentType::Codex), "env").await;
+        assert!(!codex.contains("CLAUDE_CONFIG_DIR"), "{codex:?}");
+    }
+
+    #[tokio::test]
+    async fn the_latest_reported_harness_session_id_stands() {
+        let session = PtySession::launch_for_test("true", vec![]).expect("launch session");
+        assert_eq!(session.harness_session_id(), None);
+
+        session.report_harness_session_id("first".to_string());
+        session.report_harness_session_id("second".to_string());
+
+        assert_eq!(session.harness_session_id().as_deref(), Some("second"));
     }
 }

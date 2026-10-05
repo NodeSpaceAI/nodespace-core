@@ -51,9 +51,9 @@ use tempfile::TempDir;
 /// `MAX_SEMANTIC_SCHEMAS`.
 const SCHEMA_THRESHOLD: f64 = 0.2;
 const MAX_SEMANTIC_SCHEMAS: usize = 5;
-/// `SEMANTIC_THRESHOLD` in `local_agent/tools.rs` and `context_assembly.rs`.
+/// `SEMANTIC_THRESHOLD` in `local_agent/tools.rs`.
 const SEMANTIC_THRESHOLD: f32 = 0.3;
-/// `context_assembly::NEIGHBORS_PER_SEED`.
+/// How many neighbours of a seed node the measurement reads.
 const NEIGHBORS_PER_SEED: usize = 5;
 
 // ---------------------------------------------------------------------------

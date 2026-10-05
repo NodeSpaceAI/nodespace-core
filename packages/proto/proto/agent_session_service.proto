@@ -4,8 +4,8 @@ package nodespace;
 
 // AgentSessionService manages PTY/terminal-style agent sessions.
 //
-// A session represents an external agent CLI (Claude Code, Codex, Gemini CLI,
-// Pi, OpenCode) running inside a pseudo-terminal. Clients can launch sessions,
+// A session represents an external agent CLI (Claude Code, Codex, Antigravity
+// CLI, Pi, OpenCode) running inside a pseudo-terminal. Clients can launch sessions,
 // stream output, write input, resize the terminal, list active sessions, and
 // terminate sessions.
 service AgentSessionService {
@@ -16,6 +16,7 @@ service AgentSessionService {
   rpc TerminateSession(TerminateSessionRequest) returns (TerminateSessionResponse);
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
   rpc CheckAgentAvailability(CheckAvailabilityRequest) returns (CheckAvailabilityResponse);
+  rpc ReportHarnessSession(ReportHarnessSessionRequest) returns (ReportHarnessSessionResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -23,9 +24,9 @@ service AgentSessionService {
 // ---------------------------------------------------------------------------
 
 message LaunchSessionRequest {
-  // Catalogued agent identifier (kebab-case): "claude-code" | "codex" |
-  // "gemini-cli" | "pi" | "open-code". Matches the AgentType enum's serde
-  // form in packages/agent/src/agent_types.rs.
+  // Catalogued agent identifier: "claude-code" | "codex" | "antigravity" |
+  // "pi" | "opencode". The AgentType enum's serde form in
+  // packages/agent/src/agent_types.rs, which the skill installer shares.
   string agent_type = 1;
   // Initial prompt passed as a CLI argument when the agent supports it
   // (e.g. `claude "<prompt>"`). Omit to launch the agent in its default
@@ -44,6 +45,19 @@ message LaunchSessionRequest {
   // before launch); other callers (e.g. the CLI) launch a session not bound to
   // a node and omit it, in which case nothing is written.
   optional string node_id = 5;
+  // ID of the project the session is launched for (ADR-093 §8). The session
+  // runs in that project's folder on this machine: its `checkout_path`.
+  // Omitted, the session runs in a private session folder.
+  optional string project_id = 6;
+  // The project's folder on this machine, for a project that has none set
+  // yet or whose folder is being changed. An absolute path to an existing
+  // directory: it is stored as the project's `checkout_path` before the
+  // session starts. Requires `project_id`.
+  optional string project_folder = 7;
+  // ID of the task (or other item) the session is launched to work on. The
+  // session's environment names it, and a harness plugin opens with its
+  // context. Omitted, the environment names `node_id`.
+  optional string task_id = 8;
 }
 
 message LaunchSessionResponse {
@@ -51,6 +65,26 @@ message LaunchSessionResponse {
   string session_id = 1;
   // Unix timestamp (seconds) when the session was created.
   int64 created_at = 2;
+  // The directory the session runs in.
+  string working_dir = 3;
+}
+
+// ---------------------------------------------------------------------------
+// ReportHarnessSession — a harness plugin names the harness's own session
+// ---------------------------------------------------------------------------
+
+message ReportHarnessSessionRequest {
+  // The PTY session's id, as the launch put it in the session's environment.
+  string session_id = 1;
+  // The id the harness gave its own conversation: the one its resume flag
+  // takes. It is stored on the session's `ai-chat-pty` node when the session
+  // ends. A later report replaces an earlier one.
+  string harness_session_id = 2;
+}
+
+message ReportHarnessSessionResponse {
+  // The `ai-chat-pty` node the session is a view onto, when it has one.
+  optional string node_id = 1;
 }
 
 // ---------------------------------------------------------------------------

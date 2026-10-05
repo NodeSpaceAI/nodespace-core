@@ -1277,6 +1277,9 @@ Manage PTY agent sessions (launch, attach, list, kill)
 
 - `<AGENT>` — Agent to launch: claude-code, codex, antigravity, pi, opencode (required)
 - `--prompt <PROMPT>` — Initial prompt passed to the agent at launch time
+- `--project <PROJECT>` — Id of the project to launch the session for. The session runs in that project's folder on this machine. Without it the session runs in a private folder of its own
+- `--folder <FOLDER>` — The project's folder on this machine: the absolute path of its checkout. Needed the first time a session is launched for a project, and remembered on this machine from then on
+- `--task <TASK>` — Id of the task to launch the session for. The agent's plugin opens with that task's context
 - `--cols <COLS>` — Terminal width in columns (defaults to current terminal width)
 - `--rows <ROWS>` — Terminal height in rows (defaults to current terminal height)
 
@@ -1289,6 +1292,11 @@ Manage PTY agent sessions (launch, attach, list, kill)
 **`nodespace session kill`** — Terminate a running session
 
 - `<SESSION_ID>` — Session ID to terminate (required)
+
+**`nodespace session report-harness-session`** — Tell NodeSpace the agent's own id for the conversation running in a launched session. An agent's plugin runs this when the session starts
+
+- `<HARNESS_SESSION_ID>` — The agent's own id for the conversation: the one its resume flag takes (required)
+- `--session <SESSION>` — The launched session to report for. A launched session's environment names it in `NODESPACE_SESSION` (required, env: `NODESPACE_SESSION`)
 
 ### `nodespace database`
 

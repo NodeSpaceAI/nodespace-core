@@ -8,16 +8,18 @@
 //! the underlying agent process exits on its own.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use crate::agent_catalog::context_assembly::GraphContextAssembler;
 use crate::agent_types::AgentType;
-use crate::pty::session::PtySession;
+use crate::pty::detection::{agent_search_path, detect_all_agents_on, AgentAvailability};
+use crate::pty::session::{PtySession, SessionLaunch};
 
 /// Lightweight snapshot of a session suitable for listing in a UI / RPC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +46,13 @@ impl SessionMetadata {
 #[derive(Default, Clone)]
 pub struct PtySessionManager {
     sessions: Arc<Mutex<HashMap<Uuid, Arc<PtySession>>>>,
+    /// The socket the daemon holding this manager serves on, once it is
+    /// serving. A launched session is told it, so the `nodespace` commands
+    /// run inside reach the daemon that launched them.
+    daemon_socket: Arc<OnceLock<PathBuf>>,
+    /// The search path agent binaries are found on, when it is not the
+    /// machine's own ([`agent_search_path`]).
+    search_path: Arc<OnceLock<OsString>>,
 }
 
 impl PtySessionManager {
@@ -51,23 +60,66 @@ impl PtySessionManager {
         Self::default()
     }
 
+    /// Record the socket the daemon serves on. The first call stands.
+    pub fn set_daemon_socket(&self, socket: PathBuf) {
+        let _ = self.daemon_socket.set(socket);
+    }
+
+    /// The socket the daemon serves on, when it has said.
+    pub fn daemon_socket(&self) -> Option<&Path> {
+        self.daemon_socket.get().map(PathBuf::as_path)
+    }
+
+    /// Use `path` as the search path agent binaries are found on, in place of
+    /// the machine's own. The first call stands.
+    pub fn set_agent_search_path(&self, path: OsString) {
+        let _ = self.search_path.set(path);
+    }
+
+    /// The search path agent binaries are found on. Detection and launch both
+    /// read it here, so a binary detection reports is the one launch starts.
+    ///
+    /// Building the machine's own spawns a process on macOS: call this off
+    /// the async executor.
+    pub fn agent_search_path(&self) -> OsString {
+        self.search_path
+            .get()
+            .cloned()
+            .unwrap_or_else(agent_search_path)
+    }
+
+    /// Which agents are ready to launch, on [`Self::agent_search_path`]. Call
+    /// it off the async executor.
+    pub fn detect_agents(&self) -> Vec<AgentAvailability> {
+        detect_all_agents_on(&self.agent_search_path())
+    }
+
+    /// [`Self::detect_agents`], with the search path it looked on: the one to
+    /// launch with.
+    pub fn detect_agents_with_path(&self) -> (Vec<AgentAvailability>, OsString) {
+        let path = self.agent_search_path();
+        (detect_all_agents_on(&path), path)
+    }
+
     /// Launch a new agent session and register it. Returns the session id.
     ///
-    /// `node_id` is the `ai-chat-pty` node the session is a view onto, when
-    /// there is one.
+    /// `search_path` is the path the caller found the agent ready on
+    /// ([`Self::agent_search_path`]): the binary is resolved on that same
+    /// value, not on one built again.
     pub async fn launch(
         &self,
-        agent_type: AgentType,
-        initial_prompt: Option<String>,
-        node_id: Option<String>,
-        assembler: &GraphContextAssembler,
+        launch: SessionLaunch,
+        search_path: OsString,
     ) -> anyhow::Result<Uuid> {
-        let session = PtySession::launch(agent_type, initial_prompt, node_id, assembler).await?;
+        // Resolving the binary, creating the folder and forking all block.
+        let session = tokio::task::spawn_blocking(move || PtySession::launch(launch, search_path))
+            .await
+            .map_err(|e| anyhow::anyhow!("launch task panicked: {e}"))??;
         Ok(self.insert(session).await)
     }
 
     /// Register an already-launched session. Split out so tests can build
-    /// sessions without a real [`GraphContextAssembler`].
+    /// sessions without a real agent binary.
     pub async fn insert(&self, session: PtySession) -> Uuid {
         let id = session.id;
         let mut exit_rx = session.subscribe_exit();
@@ -79,11 +131,9 @@ impl PtySessionManager {
         }
 
         // Auto-cleanup: when the child process exits, remove the session entry
-        // from the map. The session directory at
-        // `~/.nodespace/agent-sessions/<uuid>/` is NOT deleted — it persists
-        // on disk so artifacts survive restarts. `watch` latches the final
-        // value, so this works whether the child exits before or after the
-        // receiver was constructed.
+        // from the map. Its working directory is left as it is. `watch`
+        // latches the final value, so this works whether the child exits
+        // before or after the receiver was constructed.
         let sessions = self.sessions.clone();
         tokio::spawn(async move {
             // Fast path: exit already happened before insert returned.
@@ -112,8 +162,8 @@ impl PtySessionManager {
     /// was not in the map (already cleaned up by the natural-exit watcher).
     ///
     /// Removing the session from the map drops the `Arc<PtySession>` when no
-    /// other caller holds a reference. The session directory on disk is NOT
-    /// deleted — it persists at `~/.nodespace/agent-sessions/<uuid>/`.
+    /// other caller holds a reference. The session's working directory is
+    /// left as it is.
     pub async fn terminate(&self, id: &Uuid) -> anyhow::Result<bool> {
         let session = {
             let mut sessions = self.sessions.lock().await;

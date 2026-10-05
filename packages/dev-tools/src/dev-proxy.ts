@@ -594,7 +594,8 @@ async function handleRequest(req: Request): Promise<Response> {
         priority: patch.priority ?? null,
         startDate: patch.startDate ?? null,
         endDate: patch.endDate ?? null,
-        repository: patch.repository ?? null
+        repository: patch.repository ?? null,
+        checkoutPath: patch.checkoutPath ?? null
       };
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateProjectNode,

@@ -353,6 +353,7 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::date("start_date", "startDate"),
                     F::date("end_date", "endDate"),
                     F::new("repository", "repository", Object),
+                    F::text("checkout_path", "checkoutPath"),
                 ]
             }
         }
@@ -692,6 +693,10 @@ fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         .map(normalize_date_field);
 
     let repository = link_prop(props, "repository");
+    let checkout_path = props
+        .get("checkout_path")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
 
     let project = ProjectNode {
         envelope: extension_envelope(node, CoreNodeType::Project),
@@ -700,6 +705,7 @@ fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         start_date,
         end_date,
         repository,
+        checkout_path,
     };
 
     serde_json::to_value(&project).map_err(|e| format!("Failed to serialize project node: {}", e))

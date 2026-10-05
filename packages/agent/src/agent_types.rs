@@ -95,22 +95,6 @@ pub enum ToolError {
     Other(#[from] anyhow::Error),
 }
 
-/// Errors returned when writing a context file for a PTY agent session (ADR-032).
-#[derive(Debug, Error)]
-pub enum ContextError {
-    /// The requested node could not be found.
-    #[error("node not found: {0}")]
-    NodeNotFound(String),
-
-    /// Writing the context file to disk failed.
-    #[error("context file write failed: {0}")]
-    WriteFailed(#[from] std::io::Error),
-
-    /// Catch-all for unexpected errors.
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
-}
-
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
@@ -193,32 +177,45 @@ pub enum ModelStatus {
 }
 
 /// External agent CLI catalogued for PTY spawning (ADR-032).
+///
+/// The serde form is the agent's id everywhere one is written or typed: the
+/// launch request, a chat node's `agent` field, the CLI and the skill
+/// installer all use it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AgentType {
     ClaudeCode,
     Codex,
-    AntigravityCli,
+    Antigravity,
     Pi,
+    #[serde(rename = "opencode")]
     OpenCode,
 }
 
-/// Context file convention an external agent expects on launch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ContextFile {
-    /// Claude Code reads `CLAUDE.md` from its working directory.
-    ClaudeMd,
-    /// All other supported agents read `AGENTS.md`.
-    AgentsMd,
-}
+impl AgentType {
+    /// Every catalogued agent, in catalog order.
+    pub const ALL: [Self; 5] = [
+        Self::ClaudeCode,
+        Self::Codex,
+        Self::Antigravity,
+        Self::Pi,
+        Self::OpenCode,
+    ];
 
-impl ContextFile {
-    /// Filename written to the session directory.
-    pub fn filename(self) -> &'static str {
+    /// The agent's id: its serde form.
+    pub const fn id(self) -> &'static str {
         match self {
-            ContextFile::ClaudeMd => "CLAUDE.md",
-            ContextFile::AgentsMd => "AGENTS.md",
+            Self::ClaudeCode => "claude-code",
+            Self::Codex => "codex",
+            Self::Antigravity => "antigravity",
+            Self::Pi => "pi",
+            Self::OpenCode => "opencode",
         }
+    }
+
+    /// The agent an id names, or `None` for an id no agent has.
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|agent| agent.id() == id)
     }
 }
 

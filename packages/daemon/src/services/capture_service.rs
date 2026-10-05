@@ -71,9 +71,9 @@ pub struct CompletedSession {
     pub node_id: Option<String>,
     pub ended_at: DateTime<Utc>,
     pub exit_status: ExitStatus,
-    /// The id the harness recorded for its own conversation, which its resume
-    /// flag takes. `None` for a harness that records none, or one that exited
-    /// before starting a conversation.
+    /// The id the harness gave its own conversation, which its resume flag
+    /// takes, as its plugin reported it. `None` for a harness with no plugin,
+    /// or one that exited before its plugin reported.
     pub harness_session_id: Option<String>,
 }
 
@@ -712,82 +712,10 @@ mod tests {
         }
     }
 
-    /// The stored session id is the one the harness recorded in its own
-    /// session store, for each harness that has one.
-    #[tokio::test]
-    async fn the_harnesss_own_session_id_is_stored_for_claude_code_and_codex() {
-        use nodespace_agent::agent_types::AgentType;
-        use nodespace_agent::pty::find_harness_session_id;
-
-        const CODEX_SESSION_ID: &str = "7b1e2a44-3c9d-4f6a-8e21-5a0c9d3e7b02";
-
-        let tmp = tempfile::TempDir::new().unwrap();
-        let node_service = test_node_service(&tmp).await;
-
-        // A home directory holding each harness's session store, with one
-        // conversation recorded for the session's working directory.
-        let home = tmp.path().canonicalize().unwrap().join("home");
-        let session_dir = home.join(".nodespace").join("agent-sessions").join("s1");
-        std::fs::create_dir_all(&session_dir).unwrap();
-        let claude_project: String = session_dir
-            .to_string_lossy()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-        let claude_dir = home.join(".claude").join("projects").join(claude_project);
-        std::fs::create_dir_all(&claude_dir).unwrap();
-        std::fs::write(
-            claude_dir.join(format!("{HARNESS_SESSION_ID}.jsonl")),
-            "{}\n",
-        )
-        .unwrap();
-        let codex_dir = home
-            .join(".codex")
-            .join("sessions")
-            .join("2026")
-            .join("01")
-            .join("01");
-        std::fs::create_dir_all(&codex_dir).unwrap();
-        std::fs::write(
-            codex_dir.join(format!(
-                "rollout-2026-01-01T11-00-00-{CODEX_SESSION_ID}.jsonl"
-            )),
-            format!(
-                "{}\n",
-                json!({
-                    "type": "session_meta",
-                    "payload": { "id": CODEX_SESSION_ID, "cwd": session_dir }
-                })
-            ),
-        )
-        .unwrap();
-        let started_at = Utc::now() - chrono::Duration::minutes(5);
-
-        for (agent_type, agent, expected) in [
-            (AgentType::ClaudeCode, "claude-code", HARNESS_SESSION_ID),
-            (AgentType::Codex, "codex", CODEX_SESSION_ID),
-        ] {
-            let node_id = create_chat(&node_service, "ai-chat-pty", agent).await;
-            let mut session = make_session();
-            session.node_id = Some(node_id.clone());
-            session.harness_session_id =
-                find_harness_session_id(agent_type, &home, &session_dir, started_at);
-
-            finalize_capture(
-                &session,
-                &SessionCapture::new(),
-                &node_service,
-                &not_capturing(),
-                &RecordingSummarizer::unavailable(),
-            )
-            .await
-            .unwrap();
-
-            let node = node_service.get_node(&node_id).await.unwrap().unwrap();
-            assert_eq!(node.properties["ai-chat-pty"]["session_id"], expected);
-        }
-
-        // The field the id is stored in never leaves the machine.
+    /// The field the harness's session id is stored in never leaves the
+    /// machine: the id names state on it.
+    #[test]
+    fn the_session_id_field_is_machine_bound() {
         let session_id_field = nodespace_core::models::core_schemas::get_core_schemas()
             .into_iter()
             .find(|schema| schema.envelope.id == CoreNodeType::AiChatPty.as_str())

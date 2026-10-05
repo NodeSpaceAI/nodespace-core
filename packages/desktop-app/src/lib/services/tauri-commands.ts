@@ -202,11 +202,27 @@ export interface PtyLaunchInput {
    * Omit to launch a session not bound to a node (nothing is then written).
    */
   nodeId?: string | null;
+  /**
+   * ID of the project the session is launched for (ADR-093 §8). The session
+   * runs in that project's folder on this machine. Omit to run it in a private
+   * session folder.
+   */
+  projectId?: string | null;
+  /**
+   * The project's folder on this machine, when it is being set or changed: an
+   * absolute path to an existing directory. The daemon checks it and stores it
+   * on the project before the session starts.
+   */
+  projectFolder?: string | null;
+  /** ID of the task the session is launched to work on. */
+  taskId?: string | null;
 }
 
 export interface PtyLaunchResult {
   sessionId: string;
   createdAt: number;
+  /** The directory the session runs in. */
+  workingDir: string;
 }
 
 export interface PtySessionInfo {

@@ -1,7 +1,7 @@
 //! Binary and auth detection for PTY agent CLIs.
 //!
 //! `detect_all_agents()` iterates the static AGENT_CATALOG and checks two
-//! things per agent: (1) the binary is reachable on an augmented PATH, and
+//! things per agent: (1) the binary is reachable on [`agent_search_path`], and
 //! (2) the user has configured an auth credential.
 //!
 //! PATH augmentation runs `/usr/libexec/path_helper` on macOS first so that
@@ -38,12 +38,18 @@ pub struct AgentAvailability {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Run binary and auth checks for every agent in the catalog.
+/// Run binary and auth checks for every agent in the catalog, looking for
+/// each binary on [`agent_search_path`].
 pub fn detect_all_agents() -> Vec<AgentAvailability> {
-    let path = augmented_path();
+    detect_all_agents_on(&agent_search_path())
+}
+
+/// [`detect_all_agents`] on a given search path: the one a launch will then
+/// resolve the binary on.
+pub fn detect_all_agents_on(path: &OsString) -> Vec<AgentAvailability> {
     AGENT_CATALOG
         .iter()
-        .map(|def| detect_one(def.agent_type, def.binary, &path))
+        .map(|def| detect_one(def.agent_type, def.binary, path))
         .collect()
 }
 
@@ -51,9 +57,14 @@ pub fn detect_all_agents() -> Vec<AgentAvailability> {
 // Per-agent detection
 // ---------------------------------------------------------------------------
 
-fn detect_one(agent_type: AgentType, binary: &'static str, path: &OsString) -> AgentAvailability {
+/// Resolve `binary` on `path`, the one way detection and launch both do.
+pub fn resolve_binary(binary: &str, path: &OsString) -> Option<PathBuf> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let binary_path = which::which_in(binary, Some(path), &cwd).ok();
+    which::which_in(binary, Some(path), &cwd).ok()
+}
+
+fn detect_one(agent_type: AgentType, binary: &'static str, path: &OsString) -> AgentAvailability {
+    let binary_path = resolve_binary(binary, path);
     let binary_found = binary_path.is_some();
     let install_hint = if binary_found {
         None
@@ -81,7 +92,7 @@ fn install_hint_for(agent_type: AgentType) -> &'static str {
             "npm install -g @anthropic-ai/claude-code — https://claude.ai/code"
         }
         AgentType::Codex => "npm install -g @openai/codex — https://openai.com/codex",
-        AgentType::AntigravityCli => "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+        AgentType::Antigravity => "curl -fsSL https://antigravity.google/cli/install.sh | bash",
         AgentType::Pi => "https://pi.dev",
         AgentType::OpenCode => "https://opencode.ai",
     }
@@ -91,9 +102,16 @@ fn install_hint_for(agent_type: AgentType) -> &'static str {
 // PATH augmentation
 // ---------------------------------------------------------------------------
 
-/// Build an augmented PATH that includes common user-level install locations
-/// and, on macOS, the system-managed entries from `/usr/libexec/path_helper`.
-fn augmented_path() -> OsString {
+/// The search path agent binaries are found on: common user-level install
+/// locations and, on macOS, the system-managed entries from
+/// `/usr/libexec/path_helper`, ahead of the daemon's own `PATH`.
+///
+/// Detection and launch both resolve on it, and a launched session gets it as
+/// its `PATH`, so a binary detection found is one launch can start and one
+/// the session itself can run.
+///
+/// Spawns a process on macOS: call it off the async executor.
+pub fn agent_search_path() -> OsString {
     let mut extra: Vec<PathBuf> = Vec::new();
 
     // macOS: ask path_helper for the shell-configured PATH.
@@ -194,8 +212,8 @@ mod tests {
     }
 
     #[test]
-    fn augmented_path_is_non_empty() {
-        let p = augmented_path();
+    fn the_search_path_is_non_empty() {
+        let p = agent_search_path();
         assert!(!p.is_empty());
     }
 
@@ -205,7 +223,7 @@ mod tests {
         let expected = [
             AgentType::ClaudeCode,
             AgentType::Codex,
-            AgentType::AntigravityCli,
+            AgentType::Antigravity,
             AgentType::Pi,
             AgentType::OpenCode,
         ];

@@ -121,7 +121,7 @@ describe('AiChatModelSelector — PTY agent list derivation', () => {
       available: true,
     },
     {
-      id: 'antigravity-cli',
+      id: 'antigravity',
       name: 'Antigravity CLI',
       binary: 'agy',
       args: [],
@@ -132,12 +132,12 @@ describe('AiChatModelSelector — PTY agent list derivation', () => {
 
   it('excludes local model agents from the PTY Agents section', () => {
     const result = ptyAgents(agents);
-    expect(result.map((a) => a.id)).toEqual(['claude-code', 'antigravity-cli']);
+    expect(result.map((a) => a.id)).toEqual(['claude-code', 'antigravity']);
   });
 
   it('keeps unavailable PTY agents in the list (rendered disabled, not hidden)', () => {
     const result = ptyAgents(agents);
-    const antigravity = result.find((a) => a.id === 'antigravity-cli');
+    const antigravity = result.find((a) => a.id === 'antigravity');
     expect(antigravity?.available).toBe(false);
   });
 });

@@ -535,6 +535,18 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     "The project's source repository: its title and URL. A checkout of that \
                      repository belongs to this project.",
                 ),
+                // Where that checkout is on this machine (ADR-093 §8): an
+                // absolute path, so it means nothing on another one.
+                SchemaField {
+                    local_only: true,
+                    ..text_field(
+                        "checkout_path",
+                        "Checkout folder",
+                        "The folder on this machine that holds the project's checkout. An \
+                         agent session launched for the project runs there. It is set on \
+                         each machine and stays on it.",
+                    )
+                },
             ],
             // A project has many tasks; the inverse (a task's single project) is
             // derived from this declaration, so `task` needs no entry of its own.

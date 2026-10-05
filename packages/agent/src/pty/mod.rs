@@ -6,25 +6,28 @@
 //!
 //! The session lifecycle is:
 //!
-//! 1. Create a persistent session directory at `~/.nodespace/agent-sessions/<uuid>/`.
-//! 2. Write the context file ([`GraphContextAssembler::write_context_file`]) so the
-//!    agent picks up its `CLAUDE.md` / `AGENTS.md` on launch, and copy `SKILL.md`
-//!    into the same directory so the agent drives NodeSpace via the `nodespace` CLI.
-//! 3. Spawn the agent binary inside a freshly opened PTY rooted at the session dir.
-//! 4. Stream stdout/stderr bytes through a `broadcast::Sender<OutputChunk>`.
-//! 5. Accept stdin via [`PtySession::write_input`] and resize via [`PtySession::resize`].
-//! 6. On [`PtySession::terminate`] (or when the child exits naturally), the session
-//!    directory is **not** deleted — artifacts survive across restarts.
+//! 1. Take the working directory the launch names (a project's folder on this
+//!    machine, ADR-093 §8), or create a private one at
+//!    `~/.nodespace/agent-sessions/<uuid>/`. Nothing is written into it.
+//! 2. Spawn the agent binary inside a freshly opened PTY rooted there, with an
+//!    allowlisted environment that names the database, the daemon socket, the
+//!    session and what it was launched for.
+//! 3. Stream stdout/stderr bytes through a `broadcast::Sender<OutputChunk>`.
+//! 4. Accept stdin via [`PtySession::write_input`] and resize via [`PtySession::resize`].
+//! 5. Take the harness's own session id when its plugin reports it
+//!    ([`PtySession::report_harness_session_id`]).
 
 pub mod capture;
 pub mod detection;
-pub mod harness_session;
 pub mod manager;
 pub mod plain_text;
 pub mod session;
 
 pub use capture::SessionCapture;
-pub use detection::{detect_all_agents, AgentAvailability};
-pub use harness_session::find_harness_session_id;
+pub use detection::{
+    agent_search_path, detect_all_agents, detect_all_agents_on, resolve_binary, AgentAvailability,
+};
 pub use manager::{PtySessionManager, SessionMetadata};
-pub use session::{ExitStatus, OutputChunk, PtySession};
+pub use session::{
+    ExitStatus, OutputChunk, PtySession, SessionLaunch, LAUNCHED_FOR_ENV_VAR, SESSION_ENV_VAR,
+};

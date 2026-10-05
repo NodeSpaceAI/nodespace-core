@@ -90,6 +90,8 @@ impl StreamingTaskRegistry {
 pub struct LaunchSessionResult {
     pub session_id: String,
     pub created_at: i64,
+    /// The directory the session runs in.
+    pub working_dir: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -155,6 +157,13 @@ pub struct LaunchSessionInput {
     /// ID of the `ai-chat-pty` node this PTY session is a view onto. Capture
     /// backfills this node at session end. See ADR-088.
     pub node_id: Option<String>,
+    /// ID of the project the session is launched for: it runs in that
+    /// project's folder on this machine (ADR-093 §8).
+    pub project_id: Option<String>,
+    /// The project's folder on this machine, when it is being set or changed.
+    pub project_folder: Option<String>,
+    /// ID of the task the session is launched to work on.
+    pub task_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +246,9 @@ pub async fn launch_session(
             cols: input.cols,
             rows: input.rows,
             node_id: input.node_id,
+            project_id: input.project_id,
+            project_folder: input.project_folder,
+            task_id: input.task_id,
         }))
         .await
         .map_err(status_to_command_error)?;
@@ -244,6 +256,7 @@ pub async fn launch_session(
     let inner = resp.into_inner();
     let session_id = inner.session_id.clone();
     let created_at = inner.created_at;
+    let working_dir = inner.working_dir.clone();
 
     // Obtain the client before spawning (State<'_> has a non-'static lifetime).
     let stream_client = client.agent_session_client().await;
@@ -264,6 +277,7 @@ pub async fn launch_session(
     Ok(LaunchSessionResult {
         session_id,
         created_at,
+        working_dir,
     })
 }
 

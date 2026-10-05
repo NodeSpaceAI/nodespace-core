@@ -65,6 +65,12 @@ macro_rules! with_message_limits {
 /// daemon reference one canonical key.
 pub const DATABASE_ID_HEADER: &str = "x-ns-database-id";
 
+/// The environment variable the CLI reads its database selection from when
+/// `--database` is absent. The daemon sets it, to the database's id, in the
+/// environment of an agent session it launches, so commands run inside reach
+/// the database the session was launched from.
+pub const DATABASE_ENV_VAR: &str = "NODESPACE_DATABASE";
+
 /// The gRPC metadata/header key a client sets to identify itself for
 /// same-origin write-echo suppression on the `WatchNodes` stream.
 ///
@@ -103,7 +109,7 @@ pub use nodespace::{
     GetCaptureSettingsRequest, LaunchSessionRequest, LaunchSessionResponse, ListDatabasesRequest,
     ListDatabasesResponse, ListSessionsRequest, ListSessionsResponse, NodeData,
     RegisterDatabaseRequest, RemoveDatabaseRequest, RemoveDatabaseResponse, RenameDatabaseRequest,
-    ResizeRequest, ResizeResponse, SessionInfo, SetDefaultDatabaseRequest, StreamOutputRequest,
-    TerminateSessionRequest, TerminateSessionResponse, UpdateCaptureSettingsRequest,
-    WriteInputRequest, WriteInputResponse,
+    ReportHarnessSessionRequest, ReportHarnessSessionResponse, ResizeRequest, ResizeResponse,
+    SessionInfo, SetDefaultDatabaseRequest, StreamOutputRequest, TerminateSessionRequest,
+    TerminateSessionResponse, UpdateCaptureSettingsRequest, WriteInputRequest, WriteInputResponse,
 };

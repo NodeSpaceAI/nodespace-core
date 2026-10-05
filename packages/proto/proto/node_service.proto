@@ -1330,6 +1330,8 @@ message UpdateProjectNodeRequest {
   optional OptionalTimestampClear end_date = 6;
   // A JSON-encoded link: {"title": "...", "url": "..."}.
   optional OptionalJsonClear repository = 7;
+  // The folder on this machine that holds the project's checkout.
+  optional OptionalStringClear checkout_path = 8;
 }
 
 // The JSON-encoded SpecNodeUpdate (camelCase keys), like

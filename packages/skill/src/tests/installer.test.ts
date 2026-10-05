@@ -248,9 +248,9 @@ describe('install', () => {
     }
   });
 
-  // Four separate places enumerate what the skill is made of: this package's
-  // `files` array (npm), scripts/build-skill.ts (Tauri bundle), the per-agent
-  // file lists (install), and context_assembly.rs (PTY). A path present in
+  // Three separate places enumerate what the skill is made of: this package's
+  // `files` array (npm), scripts/build-skill.ts (Tauri bundle), and the per-agent
+  // file lists (install). A path present in
   // one and missing from another ships a body linking to a file that isn't
   // there — silently, because nothing errors.
   it('publishes every directory the agents install from', () => {

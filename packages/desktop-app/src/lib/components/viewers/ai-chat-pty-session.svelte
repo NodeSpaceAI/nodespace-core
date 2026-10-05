@@ -4,18 +4,26 @@
   named like ChatMessage/ChatInput), so it carries no *Node/*Viewer/*View suffix.
 
   A PTY agent session IS an `ai-chat-pty` node (ADR-088). This helper renders a
-  launch config (harness picker + Launch) when no session is running, the
-  embedded xterm terminal (via pty-terminal.svelte) while it runs, and a
+  launch config (harness picker, project, Launch) when no session is running,
+  the embedded xterm terminal (via pty-terminal.svelte) while it runs, and a
   read-only summary once it ends. The node already exists; capture backfills
   it at session end via the node_id passed to launch.
+
+  A session launched for a project runs in that project's folder on this
+  machine (ADR-093 §8). The folder is asked for here the first time and stored
+  on the project as its machine-bound `checkout_path`; the daemon checks that
+  it exists before it stores it.
 -->
 
 <script lang="ts">
   import { onMount } from 'svelte';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import PtyTerminal from '$lib/components/agent/pty-terminal.svelte';
+  import { backendAdapter } from '$lib/services/backend-adapter';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import type { AiChatPtyNode } from '$lib/types/ai-chat-node';
+  import { isProjectNode, type ProjectNode } from '$lib/types/project-node';
   import {
     getCaptureSettings,
     updateCaptureSettings,
@@ -35,9 +43,9 @@
   const AGENT_OPTIONS = [
     { id: 'claude-code', label: 'Claude Code' },
     { id: 'codex', label: 'Codex' },
-    { id: 'antigravity-cli', label: 'Antigravity CLI' },
+    { id: 'antigravity', label: 'Antigravity CLI' },
     { id: 'pi', label: 'Pi' },
-    { id: 'open-code', label: 'Open Code' },
+    { id: 'opencode', label: 'OpenCode' },
   ];
 
   const CONTENT_LEVELS: { value: CaptureContentLevel; label: string }[] = [
@@ -128,6 +136,20 @@
   let availability = $state<Record<string, AgentAvailabilityInfo>>({});
   let availabilityLoading = $state(true);
 
+  // The project the session is launched for; '' launches it for none, in a
+  // private session folder.
+  let projects = $state<ProjectNode[]>([]);
+  let selectedProjectId = $state('');
+  // The project's folder on this machine, as the form shows it. It starts as
+  // the folder the project already has, and is sent only when it differs.
+  let projectFolder = $state('');
+
+  const selectedProject = $derived(
+    projects.find((project) => project.id === selectedProjectId) ?? null
+  );
+  const storedFolder = $derived(selectedProject?.checkoutPath ?? '');
+  const isFolderMissing = $derived(selectedProject !== null && projectFolder.trim() === '');
+
   onMount(async () => {
     // Pre-select the harness the node already names (chosen in the header
     // AiChatModelSelector before the chat became a PTY chat); otherwise keep
@@ -136,8 +158,39 @@
       selectedAgent = node.agent;
     }
 
-    await Promise.all([attachToRunningSession(), loadLaunchSettings()]);
+    await Promise.all([attachToRunningSession(), loadLaunchSettings(), loadProjects()]);
   });
+
+  async function loadProjects(): Promise<void> {
+    try {
+      const nodes = await backendAdapter.queryNodes({ nodeType: 'project' });
+      projects = Array.isArray(nodes) ? nodes.filter(isProjectNode) : [];
+    } catch (e) {
+      log.warn('Failed to load projects', e);
+    }
+  }
+
+  function selectProject(id: string): void {
+    selectedProjectId = id;
+    projectFolder = projects.find((project) => project.id === id)?.checkoutPath ?? '';
+    error = null;
+  }
+
+  async function browseForFolder(): Promise<void> {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: 'Choose the project folder',
+        defaultPath: projectFolder.trim() || undefined,
+      });
+      if (typeof picked === 'string') {
+        projectFolder = picked;
+      }
+    } catch (e) {
+      log.warn('Failed to choose a project folder', e);
+    }
+  }
 
   async function loadLaunchSettings(): Promise<void> {
     try {
@@ -209,18 +262,30 @@
   }
 
   async function launch() {
+    if (isFolderMissing) return;
     launching = true;
     error = null;
     try {
+      const folder = projectFolder.trim();
       const result = await ptyLaunchSession({
         agentType: selectedAgent,
         prompt: null,
         cols: 80,
         rows: 24,
         nodeId,
+        projectId: selectedProject?.id ?? null,
+        // Named only when it is new or changed: the daemon then checks it and
+        // stores it on the project for this machine.
+        projectFolder: selectedProject && folder !== storedFolder ? folder : null,
       });
       activeSessionId = result.sessionId;
       configuring = false;
+      if (selectedProject) {
+        // The daemon stored the folder; show it without waiting for a reload.
+        projects = projects.map((project) =>
+          project.id === selectedProject.id ? { ...project, checkoutPath: folder } : project
+        );
+      }
 
       // Record the chosen agent on the node up front so the node reflects its
       // mode immediately. The daemon records the session's end (status, exit
@@ -347,6 +412,57 @@
         {/if}
       {/if}
 
+      <div class="field">
+        <label class="field-label" for="project-select">Project</label>
+        <select
+          id="project-select"
+          class="field-select"
+          value={selectedProjectId}
+          onchange={(event) => selectProject(event.currentTarget.value)}
+          disabled={launching}
+        >
+          <option value="">No project</option>
+          {#each projects as project (project.id)}
+            <option value={project.id}>{project.title ?? project.content}</option>
+          {/each}
+        </select>
+        <p class="field-hint">
+          {#if selectedProject}
+            The session runs in the project's folder on this machine.
+          {:else}
+            Without a project the session runs in a private folder of its own.
+          {/if}
+        </p>
+      </div>
+
+      {#if selectedProject}
+        <div class="field">
+          <label class="field-label" for="project-folder">Folder on this machine</label>
+          <div class="folder-row">
+            <input
+              id="project-folder"
+              class="field-select folder-input"
+              type="text"
+              placeholder="/path/to/checkout"
+              autocomplete="off"
+              spellcheck="false"
+              bind:value={projectFolder}
+              disabled={launching}
+            />
+            <button class="browse-button" type="button" onclick={browseForFolder} disabled={launching}>
+              Browse…
+            </button>
+          </div>
+          <p class="field-hint">
+            {#if storedFolder}
+              Remembered for this machine only. Change it here or in the project's properties.
+            {:else}
+              Where this project's checkout is. It is remembered for this machine only.
+            {/if}
+          </p>
+        </div>
+      {/if}
+
       <details class="capture-section">
         <summary class="capture-summary">Session capture</summary>
         <div class="capture-body">
@@ -383,7 +499,12 @@
         <div class="error-banner" role="alert">{error}</div>
       {/if}
 
-      <button class="launch-button" onclick={launch} onkeydown={handleKeydown} disabled={launching}>
+      <button
+        class="launch-button"
+        onclick={launch}
+        onkeydown={handleKeydown}
+        disabled={launching || isFolderMissing}
+      >
         {#if launching}
           <span class="spinner" aria-hidden="true"></span>
           Launching…
@@ -558,6 +679,44 @@
   }
 
   .field-select:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .field-hint {
+    margin: 0;
+    font-size: 0.75rem;
+    color: hsl(var(--muted-foreground));
+  }
+
+  .folder-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .folder-input {
+    flex: 1;
+    min-width: 0;
+    font-family: ui-monospace, monospace;
+  }
+
+  .browse-button {
+    flex-shrink: 0;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.375rem;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-size: 0.8125rem;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .browse-button:hover:not(:disabled) {
+    background: hsl(var(--muted) / 0.5);
+  }
+
+  .browse-button:disabled {
     opacity: 0.6;
     cursor: not-allowed;
   }

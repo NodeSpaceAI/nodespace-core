@@ -1676,6 +1676,9 @@ async fn serve_headless() -> Result<()> {
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    // A launched agent session is told where this daemon serves, so the
+    // `nodespace` commands run inside it reach this daemon.
+    shared.context.pty_manager.set_daemon_socket(sock.clone());
     let (manager, bundle) = open_default_database(
         DatabaseManager::default_registry_path()?,
         &incompatible_database::marker_path()?,
@@ -1756,6 +1759,9 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    // A launched agent session is told where this daemon serves, so the
+    // `nodespace` commands run inside it reach this daemon.
+    shared.context.pty_manager.set_daemon_socket(sock.clone());
     let (manager, bundle) = open_default_database(
         DatabaseManager::default_registry_path()?,
         &incompatible_database::marker_path()?,
@@ -1894,6 +1900,12 @@ async fn serve_headless() -> Result<()> {
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    // A launched agent session is told where this daemon serves, so the
+    // `nodespace` commands run inside it reach this daemon.
+    shared
+        .context
+        .pty_manager
+        .set_daemon_socket(std::path::PathBuf::from(&name));
     let (manager, bundle) = open_default_database(
         DatabaseManager::default_registry_path()?,
         &incompatible_database::marker_path()?,
@@ -2006,6 +2018,12 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
     let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
+    // A launched agent session is told where this daemon serves, so the
+    // `nodespace` commands run inside it reach this daemon.
+    shared
+        .context
+        .pty_manager
+        .set_daemon_socket(std::path::PathBuf::from(&name));
     let (manager, bundle) = open_default_database(
         DatabaseManager::default_registry_path()?,
         &incompatible_database::marker_path()?,

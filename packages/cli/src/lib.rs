@@ -113,7 +113,7 @@ pub struct Cli {
     /// Target a specific local database by name or id (ADR-053).
     /// When omitted, requests route to the daemon's default database.
     /// Honors the `NODESPACE_DATABASE` environment variable when this flag is absent.
-    #[arg(long, global = true, env = "NODESPACE_DATABASE")]
+    #[arg(long, global = true, env = nodespace_proto::DATABASE_ENV_VAR)]
     pub database: Option<String>,
 
     #[command(subcommand)]

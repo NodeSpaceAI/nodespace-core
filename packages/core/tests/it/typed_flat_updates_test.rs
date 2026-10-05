@@ -473,6 +473,61 @@ fn link(title: &str, url: &str) -> LinkValue {
     }
 }
 
+/// `checkout_path` is the project's folder on this machine: set, read back
+/// typed, cleared, and declared machine-bound.
+#[tokio::test]
+async fn a_project_update_writes_and_clears_its_checkout_path() {
+    let (svc, _tmp) = test_service().await;
+    let project = create(&svc, "project", "Apollo", json!({})).await;
+    assert!(typed(&svc, &project.id).await.get("checkoutPath").is_none());
+
+    let updated = svc
+        .update_project_node(
+            &project.id,
+            project.version,
+            ProjectNodeUpdate {
+                checkout_path: Some(Some("/work/apollo".to_string())),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("setting the checkout path succeeds");
+    assert_eq!(
+        updated.properties["project"]["checkout_path"],
+        json!("/work/apollo")
+    );
+    let wire = typed(&svc, &project.id).await;
+    assert_eq!(wire["checkoutPath"], json!("/work/apollo"));
+    assert!(wire["properties"].get("checkout_path").is_none());
+
+    let cleared = svc
+        .update_project_node(
+            &project.id,
+            updated.version,
+            ProjectNodeUpdate {
+                checkout_path: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("clearing the checkout path succeeds");
+    assert!(cleared.properties["project"]["checkout_path"].is_null());
+    assert!(typed(&svc, &project.id).await.get("checkoutPath").is_none());
+
+    // An absolute path means nothing on another machine: the field stays here.
+    let field = nodespace_core::models::core_schemas::get_core_schemas()
+        .into_iter()
+        .find(|schema| schema.envelope.id == "project")
+        .and_then(|schema| {
+            schema
+                .fields
+                .into_iter()
+                .find(|field| field.name == "checkout_path")
+        })
+        .expect("project declares checkout_path");
+    assert!(field.local_only);
+}
+
 /// `repository` is a link: set, read back typed, and cleared.
 #[tokio::test]
 async fn a_project_update_writes_and_clears_its_repository() {

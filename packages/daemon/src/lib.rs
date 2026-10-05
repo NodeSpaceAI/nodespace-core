@@ -182,8 +182,9 @@ pub use nodespace_proto::{
     DatabaseServiceClient, DatabaseServiceServer, EmbeddingsServiceClient, EmbeddingsServiceServer,
     GetCaptureSettingsRequest, ImportServiceClient, ImportServiceServer, LaunchSessionRequest,
     LaunchSessionResponse, ListSessionsRequest, ListSessionsResponse, LocalAgentServiceClient,
-    LocalAgentServiceServer, NodeData, NodeServiceClient, NodeServiceServer, ResizeRequest,
-    ResizeResponse, SessionInfo, SettingsServiceClient, SettingsServiceServer, StreamOutputRequest,
+    LocalAgentServiceServer, NodeData, NodeServiceClient, NodeServiceServer,
+    ReportHarnessSessionRequest, ReportHarnessSessionResponse, ResizeRequest, ResizeResponse,
+    SessionInfo, SettingsServiceClient, SettingsServiceServer, StreamOutputRequest,
     TerminateSessionRequest, TerminateSessionResponse, UpdateCaptureSettingsRequest,
     WriteInputRequest, WriteInputResponse,
 };

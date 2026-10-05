@@ -12,6 +12,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type {
   NodespaceContextPart,
   NodespaceItem,
+  NodespaceLaunch,
   NodespaceSession,
   NodespaceSkill,
   NodespaceWatch,
@@ -33,6 +34,8 @@ const MAX_LISTED_SKILLS = 50
 const MAX_LISTED_CHARS = 240
 const MAX_NOTE_ENTRIES = 20
 const MAX_VALUE_CHARS = 80
+/** An item's context is capped so one large item cannot crowd the first turn. */
+const MAX_OPENING_CHARS = 16_000
 const GRAPH_MARKER = 'nodespace-graph-data'
 const GRAPH_MARKER_ANYWHERE = new RegExp(GRAPH_MARKER, 'gi')
 
@@ -210,19 +213,127 @@ function buildSection(project: { title: string }, skills: readonly NodespaceSkil
 }
 
 /**
+ * What NodeSpace's launch named: from the environment while it still names
+ * it, and from the session's state once the variables have been removed
+ * (`dropLaunchVariables`). The environment comes first, so state carried
+ * into another process never outranks what that process was launched with.
+ */
+async function readLaunch($: Engine, held: NodespaceSession | null): Promise<NodespaceLaunch | null> {
+  const launchedSession = (await $.env.get('NODESPACE_SESSION')) || ''
+
+  if (launchedSession === '') {
+    return held?.launch ?? null
+  }
+
+  return { session: launchedSession, launchedFor: (await $.env.get('NODESPACE_LAUNCHED_FOR')) || '' }
+}
+
+/**
+ * Removes the launch's variables from the environment, once the session's
+ * state holds the launch. Left in place they would reach every process the
+ * agent starts, and a second Claude Code started from the shell tool would
+ * report itself as this session and open with its work. A variable that
+ * cannot be unset is left: the launch is still this one's.
+ */
+async function dropLaunchVariables($: Engine, loaded: NodespaceSession): Promise<void> {
+  if (loaded.launch) {
+    await quietly(undefined, () => $.env.set('NODESPACE_SESSION', undefined))
+    await quietly(undefined, () => $.env.set('NODESPACE_LAUNCHED_FOR', undefined))
+  }
+}
+
+/**
+ * Tells NodeSpace the id Claude Code gave this conversation, the one
+ * `--resume` takes. Sessions in one project share a working directory, so
+ * NodeSpace cannot find the id by looking. Answers the chat node the session
+ * is a view onto (`''` for none), or `null` when NodeSpace did not answer.
+ */
+async function reportSession(
+  $: Engine,
+  database: string | null,
+  launch: NodespaceLaunch,
+): Promise<string | null> {
+  const ran = await nodespace($, database, [
+    'session',
+    'report-harness-session',
+    await $.session.id(),
+    '--session',
+    launch.session,
+  ])
+  const parsed = ran.ok ? parse(ran.stdout) : undefined
+
+  return isRecord(parsed) ? text(parsed.node_id) : null
+}
+
+/**
+ * The item a launched session was started for, when that is work and not the
+ * session's own chat node: its context as a note for the first prompt, and
+ * the item for the watch. `null` when nothing was named or it cannot be read.
+ *
+ * `chatNode` is what the report answered. With no answer nothing is opened:
+ * what was named may be the session's own chat node, which the app writes to
+ * as the session runs, and watching it would stop the session over that.
+ */
+async function launchedItem(
+  $: Engine,
+  database: string | null,
+  launch: NodespaceLaunch,
+  chatNode: string | null,
+): Promise<{ note: string; item: NodespaceItem | null } | null> {
+  const id = launch.launchedFor
+
+  if (id === '' || chatNode === null || id === chatNode) {
+    return null
+  }
+
+  const target = { id, paths: [] }
+  const args = contextArgs(target)
+  const ran = await run($, ['nodespace', ...(database ? ['--database', database] : []), ...args])
+
+  if (!ran.ok || ran.stdout.trim() === '') {
+    return null
+  }
+
+  const body = ran.stdout.replace(GRAPH_MARKER_ANYWHERE, 'nodespace graph data').trim()
+  const shown = body.length > MAX_OPENING_CHARS ? `${body.slice(0, MAX_OPENING_CHARS)}\n… (cut short)` : body
+
+  return {
+    note: [
+      '[NodeSpace] This session was launched to work on the item below. This is its context as NodeSpace holds it now: the item, what governs it, and the skills that apply to it.',
+      `<${GRAPH_MARKER}>`,
+      shown,
+      `</${GRAPH_MARKER}>`,
+      `Read it again with \`nodespace ${args.join(' ')}\` when you need it current.`,
+    ].join('\n'),
+    item: await readItem($, database, target),
+  }
+}
+
+/**
  * The session-start read: the CLI's version, the daemon's diagnostics, the
  * project whose repository is this checkout's remote, and the skill list.
  * Each is one command. It stops at the first that says there is nothing more
  * to add: no CLI, no daemon, or no project.
+ *
+ * In a session NodeSpace launched it also reports the conversation's id, and
+ * with `isOpening` reads the item the session was launched for.
  */
-async function load($: Engine, cwd: string): Promise<NodespaceSession> {
+async function load(
+  $: Engine,
+  cwd: string,
+  held: NodespaceSession | null,
+  isOpening: boolean,
+): Promise<NodespaceSession> {
   const database = (await $.env.get('NODESPACE_DATABASE')) || null
+  const launch = await readLaunch($, held)
   const empty: NodespaceSession = {
     database,
     project: null,
     section: null,
     skills: [],
     listVersion: '',
+    launch,
+    opening: null,
     stale: null,
   }
 
@@ -242,12 +353,23 @@ async function load($: Engine, cwd: string): Promise<NodespaceSession> {
     return empty
   }
 
+  const chatNode = launch ? await reportSession($, database, launch) : null
+  const launched = launch && isOpening ? await launchedItem($, database, launch, chatNode) : null
+  const reached: NodespaceSession = { ...empty, opening: launched?.note ?? null }
+
+  if (launched?.item) {
+    const item = launched.item
+    const now = await $.clock.now()
+
+    await update($, watch, kept => (kept.item ? kept : { ...kept, item, lastCheckedAt: now }))
+  }
+
   const project = await findProject($, database, cwd)
 
   if (!project) {
     $.ui.status('NodeSpace: reachable, no project for this checkout')
 
-    return empty
+    return reached
   }
 
   $.ui.status(`NodeSpace: ${clean(project.title, 60)}`)
@@ -257,7 +379,7 @@ async function load($: Engine, cwd: string): Promise<NodespaceSession> {
   const skills = skillsOf(listed)
 
   return {
-    ...empty,
+    ...reached,
     project,
     skills,
     listVersion: isRecord(listed) ? text(listed.version) : '',
@@ -317,16 +439,32 @@ async function current($: Engine): Promise<NodespaceSession> {
     return held
   }
 
-  const loaded = await load($, await $.session.cwd())
+  // A new conversation starts with nothing watched and, in a launched
+  // session, opens with the item again. A compacted one keeps what it had.
+  const isNew = !held || held.stale === 'clear'
 
-  await update($, session, () => loaded)
-  await update($, fetched, () => [])
-
-  if (!held || held.stale === 'clear') {
+  if (isNew) {
     await update($, watch, () => ({ item: null, lastCheckedAt: 0, blocked: null }))
   }
 
+  const loaded = await load($, await $.session.cwd(), held, isNew)
+
+  await update($, session, () => loaded)
+  await dropLaunchVariables($, loaded)
+  await update($, fetched, () => [])
+
   return loaded
+}
+
+/** The launched item's context, handed over once: with the next prompt. */
+async function takeOpening($: Engine): Promise<string | null> {
+  const opening = (await read($, session))?.opening ?? null
+
+  if (opening !== null) {
+    await update($, session, held => (held ? { ...held, opening: null } : held))
+  }
+
+  return opening
 }
 
 function markStale($: Engine, reason: 'compact' | 'clear'): Promise<unknown> {
@@ -878,9 +1016,10 @@ export const register: Register = (on, options) => {
     // what the conversation has fetched.
     await quietly(undefined, async () => {
       if ((await read($, session)) === null) {
-        const loaded = await load($, e.cwd)
+        const loaded = await load($, e.cwd, null, true)
 
         await update($, session, () => loaded)
+        await dropLaunchVariables($, loaded)
         await update($, fetched, () => [])
       }
     })
@@ -931,15 +1070,20 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     const isUser = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
-    const note = await quietly(null, async () => {
+    const notes = await quietly([], async () => {
       if (isUser) {
         await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
       }
 
-      return listChange($)
+      // The list first: it reads the session again when it is stale, and that
+      // read is what brings the opening back after a `/clear`.
+      const change = await listChange($)
+      const opening = await takeOpening($)
+
+      return [opening, change].filter((note): note is string => note !== null)
     })
 
-    return note === null ? next(e) : next({ ...e, context: [...(e.context ?? []), note] })
+    return notes.length === 0 ? next(e) : next({ ...e, context: [...(e.context ?? []), ...notes] })
   })
 
   on('tool.call', async ($, e, next) => {

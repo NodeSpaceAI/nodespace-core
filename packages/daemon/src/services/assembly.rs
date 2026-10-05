@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
-use nodespace_agent::agent_catalog::context_assembly::GraphContextAssembler;
 use nodespace_agent::prompt_assembler::PromptAssembler;
 use nodespace_agent::pty::PtySessionManager;
 use nodespace_agent::skill_pipeline::{link_seeded_skills, seed_skill_nodes, seed_tool_nodes};
@@ -487,10 +486,6 @@ pub async fn build_database_services(
         )
     });
 
-    let assembler = Arc::new(GraphContextAssembler::new(
-        node_service.clone(),
-        embedding_svc_state.clone(),
-    ));
     // Resolved through `nodespace_dir` so it follows NODESPACE_HOME, exactly as
     // the database and the ADR-053 registry do. Reading it from the real home
     // instead left an isolated daemon serving a temp database while taking its
@@ -498,7 +493,6 @@ pub async fn build_database_services(
     let capture_config_path = crate::nodespace_dir()?.join("daemon.toml");
     let agent_session = AgentSessionHandler::new(
         shared.pty_manager.clone(),
-        assembler,
         node_service.clone(),
         capture_config_path,
         Arc::new(LocalModelSummarizer::new(shared.local_agent.clone())),
@@ -636,13 +630,8 @@ async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServi
             shared.model_load_failed.clone(),
         )
     });
-    let assembler = Arc::new(GraphContextAssembler::new(
-        node_service.clone(),
-        embedding_svc_state.clone(),
-    ));
     let agent_session = AgentSessionHandler::new(
         shared.pty_manager.clone(),
-        assembler,
         node_service.clone(),
         crate::nodespace_dir()?.join("daemon.toml"),
         Arc::new(LocalModelSummarizer::new(shared.local_agent.clone())),

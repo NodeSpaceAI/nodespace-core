@@ -165,7 +165,7 @@ pub(crate) async fn spawn_test_daemon_with_seeded_skills(
 
 /// A model-less build context — with `has_model = false` no embedding wiring
 /// runs, so the dropped watch sender is harmless (it is never read).
-fn routing_test_context() -> SharedContext {
+pub(crate) fn routing_test_context() -> SharedContext {
     let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
     SharedContext {
         pty_manager: Arc::new(PtySessionManager::new()),
