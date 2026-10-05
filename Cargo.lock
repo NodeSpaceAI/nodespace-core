@@ -3440,10 +3440,12 @@ version = "0.3.4"
 dependencies = [
  "nodespace-app-build",
  "nodespace-app-lib",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "toml 0.8.2",
 ]
 
 [[package]]

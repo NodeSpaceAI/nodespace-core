@@ -17,7 +17,10 @@
 //! core owns, so an extension never dials the daemon socket itself.
 //!
 //! An extension can also decide where the app's update check looks and what
-//! the update banner's Download button opens ([`AppExtensions::update_source`]).
+//! the update banner's Download button opens ([`AppExtensions::update_source`]),
+//! and which daemon the app installs and starts
+//! ([`AppExtensions::daemon_profile`]). `run` installs that profile before it
+//! builds the app, so it is the one part of an extension `assemble` ignores.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -33,6 +36,7 @@ use tauri::{AppHandle, Builder, Manager, Runtime};
 use crate::services::GrpcClient;
 use crate::update_check::{builtin_update_source, UpdateSourceState};
 
+pub use crate::daemon_profile::DaemonProfile;
 pub use crate::update_check::{LatestVersionSource, UpdateSource};
 pub use tokio_util::sync::CancellationToken;
 pub use tonic::transport::Channel;
@@ -45,7 +49,7 @@ mod fixture_tests;
 /// A breaking change to the API bumps the major number and an additive change
 /// bumps the minor number. The TypeScript host API carries the same value, and
 /// the two must stay equal.
-pub const EXTENSION_API_VERSION: (u32, u32) = (2, 0);
+pub const EXTENSION_API_VERSION: (u32, u32) = (2, 1);
 
 /// Core's own Tauri plugins, in the order they are registered.
 ///
@@ -117,6 +121,7 @@ pub struct AppExtensions<R: Runtime = tauri::Wry> {
     daemon_ready: Vec<DaemonReadyTask<R>>,
     channel_rebuilt: Vec<ChannelRebuiltHook<R>>,
     update_source: Option<UpdateSource>,
+    daemon_profile: Option<DaemonProfile>,
 }
 
 /// What a daemon-ready task receives when core starts it.
@@ -152,6 +157,7 @@ impl<R: Runtime> AppExtensions<R> {
             daemon_ready: Vec::new(),
             channel_rebuilt: Vec::new(),
             update_source: None,
+            daemon_profile: None,
         }
     }
 
@@ -273,6 +279,60 @@ impl<R: Runtime> AppExtensions<R> {
     pub fn update_source(mut self, source: UpdateSource) -> Self {
         self.update_source = Some(source);
         self
+    }
+
+    /// Names the daemon this app installs, registers and starts, in place of
+    /// the build's default profile, [`DaemonProfile::community`]. If it is
+    /// called more than once, the last call wins.
+    ///
+    /// `run` installs the profile before it creates the app, and the profile
+    /// then stays fixed for the life of the process. [`assemble`] ignores it.
+    ///
+    /// What each field controls:
+    ///
+    /// * **`binary_name`**: the daemon binary the app installs, registers and
+    ///   starts, and the image name it kills on Windows. At startup the app
+    ///   also asks the daemon answering on the socket which executable it runs,
+    ///   and boots out the registration when that is not this binary.
+    /// * **`service_env`**: extra environment in the daemon's launchd
+    ///   registration, after core's own variables. The systemd unit and the
+    ///   Windows spawn do not carry it.
+    ///
+    /// # What a profile cannot change
+    ///
+    /// The launchd label, the socket, the single-instance lock, the UI pid
+    /// file and the incompatible-database marker are core's shared service
+    /// identity (ADR-084 §4). Every app built on core uses the same ones, and
+    /// no profile configures them.
+    ///
+    /// The daemon `binary_name` names must therefore honour the registration
+    /// contract of ADR-084 §4.2: it accepts the arguments and environment
+    /// core's launcher passes, uses core's default names for the socket, lock,
+    /// UI pid file and marker, gives its exit status the meanings the contract
+    /// defines, takes core's single-instance lock, and shows core's tray when
+    /// passed `--tray`.
+    ///
+    /// # Panics
+    ///
+    /// If a `service_env` key is one of the variables core's launcher sets
+    /// itself, `NODESPACED_SOCKET` or `NODESPACE_UI_BINARY`. launchd accepts
+    /// the repeated key, and the profile's value, which comes later, would
+    /// silently replace core's.
+    #[must_use]
+    pub fn daemon_profile(mut self, profile: DaemonProfile) -> Self {
+        if let Some(key) = profile.reserved_service_env_key() {
+            panic!(
+                "DaemonProfile::service_env sets `{key}`, which core's launcher sets itself; \
+                 a profile may only add variables of its own"
+            );
+        }
+        self.daemon_profile = Some(profile);
+        self
+    }
+
+    /// Takes the daemon profile for `run` to install, leaving none.
+    pub(crate) fn take_daemon_profile(&mut self) -> Option<DaemonProfile> {
+        self.daemon_profile.take()
     }
 }
 
