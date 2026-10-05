@@ -506,7 +506,7 @@ impl ModelManager for GgufModelManager {
 // Download implementation
 // ---------------------------------------------------------------------------
 
-/// How often a download in flight reports its progress.
+/// A download in flight reports its progress at most once per this interval.
 const PROGRESS_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Parameters for performing a model download.
@@ -521,8 +521,9 @@ struct DownloadParams {
     cancel_token: CancellationToken,
     statuses: Arc<RwLock<HashMap<String, ModelStatus>>>,
     on_progress: ProgressCallback,
-    /// The least time between two progress reports. A chunk that arrives
-    /// sooner after the last report is written and not reported.
+    /// The least time between two progress reports, and between the start of
+    /// reading the body and the first. A chunk that arrives sooner is written
+    /// and not reported.
     progress_interval: std::time::Duration,
 }
 
@@ -1023,13 +1024,14 @@ mod tests {
     #[tokio::test]
     async fn perform_download_reports_progress_events() {
         let tmp = TempDir::new().unwrap();
-        // Reports are throttled, so the test asks for one on every chunk. It
-        // used to send two chunks 260ms apart against the 250ms interval, and
-        // failed whenever the reader started more than 10ms late: the second
-        // chunk then arrived inside the interval and nothing was reported.
-        let body = vec![0xABu8; 32];
+        // Reports are throttled, so the test passes a zero interval: every
+        // chunk is then due a report, however the chunks arrive. The server
+        // sends the body 16 bytes at a time; the client may still read several
+        // of them as one chunk, so the count of reports is not asserted.
+        let body = vec![0xABu8; 64];
         let expected_hash = format!("{:x}", Sha256::digest(&body));
-        let url = spawn_fake_model_server(body.clone()).await;
+        let url =
+            spawn_slow_fake_model_server(body.clone(), std::time::Duration::from_millis(1)).await;
 
         let partial_path = tmp.path().join("model.gguf.partial");
         let final_path = tmp.path().join("model.gguf");
@@ -1063,14 +1065,62 @@ mod tests {
         let captured = events.lock().unwrap();
         assert!(
             !captured.is_empty(),
-            "every chunk is due a report at a zero interval, and none was made"
+            "a chunk is due a report at a zero interval, and none was made"
+        );
+        let reported: Vec<u64> = captured.iter().map(|e| e.bytes_downloaded).collect();
+        assert!(
+            reported.windows(2).all(|pair| pair[0] < pair[1]),
+            "each report counts more bytes than the one before: {reported:?}"
         );
         assert_eq!(
-            captured.last().map(|event| event.bytes_downloaded),
-            Some(body.len() as u64),
+            reported.last(),
+            Some(&(body.len() as u64)),
             "the last report covers the whole body"
         );
         assert_eq!(captured[0].bytes_total, body.len() as u64);
+    }
+
+    /// The other side of the throttle: inside the interval nothing is
+    /// reported. The body arrives in milliseconds and the interval is an
+    /// hour, so no report is due.
+    #[tokio::test]
+    async fn perform_download_reports_nothing_inside_the_interval() {
+        let tmp = TempDir::new().unwrap();
+        let body = vec![0xABu8; 64];
+        let expected_hash = format!("{:x}", Sha256::digest(&body));
+        let url =
+            spawn_slow_fake_model_server(body.clone(), std::time::Duration::from_millis(1)).await;
+
+        let events: Arc<std::sync::Mutex<Vec<DownloadEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events_cb = events.clone();
+        let on_progress: ProgressCallback = Arc::new(RwLock::new(HashMap::new()));
+        on_progress.write().await.insert(
+            "fake-test-model".to_string(),
+            Box::new(move |evt: DownloadEvent| {
+                events_cb.lock().unwrap().push(evt);
+            }),
+        );
+
+        let result = perform_download(DownloadParams {
+            progress_interval: std::time::Duration::from_secs(3600),
+            ..test_download_params(
+                format!("{url}/model.gguf"),
+                tmp.path().join("model.gguf.partial"),
+                tmp.path().join("model.gguf"),
+                body.len() as u64,
+                expected_hash,
+                CancellationToken::new(),
+                on_progress,
+            )
+        })
+        .await;
+
+        assert!(result.is_ok(), "download should succeed: {:?}", result);
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "no report is due inside the interval"
+        );
     }
 
     #[tokio::test]

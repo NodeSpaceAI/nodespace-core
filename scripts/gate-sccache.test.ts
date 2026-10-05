@@ -41,9 +41,9 @@ describe("sccacheServerUds", () => {
 });
 
 // Each of these writes a shell script and runs it. On a machine in the middle
-// of a cold build, starting a script that was written a moment ago has stalled
-// for several seconds, and four of them timed out together at Bun's default
-// 5 seconds in a merge gate. The limit here is sized to catch a hang.
+// of a cold build, starting a script that was written a moment ago has stalled:
+// four of them timed out together at Bun's default 5 seconds in a merge gate,
+// about 20 seconds in all. The limit here is sized to catch a hang.
 const SPAWN_TIMEOUT_MS = 60_000;
 
 describe("the development builds' wrapper", () => {
@@ -59,7 +59,15 @@ describe("the development builds' wrapper", () => {
   function runWrapper(script: string, args: string[], env: Record<string, string> = {}): string {
     const path = join(dir, "rustc-wrapper");
     writeFileSync(path, script, { mode: 0o755 });
-    return Bun.spawnSync([path, ...args], { env: { PATH: process.env.PATH ?? "", ...env } }).stdout.toString().trim();
+    const run = Bun.spawnSync([path, ...args], { env: { PATH: process.env.PATH ?? "", ...env } });
+    // Says how the script ended. Killed at a test's time limit it printed
+    // nothing, and an empty string alone reads as wrong output.
+    if (run.exitCode !== 0) {
+      throw new Error(
+        `the wrapper exited ${run.exitCode} (signal ${run.signalCode ?? "none"}): ${run.stderr.toString().trim()}`
+      );
+    }
+    return run.stdout.toString().trim();
   }
 
   /** A stand-in sccache that reports the settings and arguments it was given. */
