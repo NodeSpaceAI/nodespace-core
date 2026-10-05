@@ -348,6 +348,7 @@ impl ModelManager for GgufModelManager {
             cancel_token,
             statuses: statuses.clone(),
             on_progress,
+            progress_interval: PROGRESS_REPORT_INTERVAL,
         })
         .await;
 
@@ -505,6 +506,9 @@ impl ModelManager for GgufModelManager {
 // Download implementation
 // ---------------------------------------------------------------------------
 
+/// How often a download in flight reports its progress.
+const PROGRESS_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Parameters for performing a model download.
 struct DownloadParams {
     client: reqwest::Client,
@@ -517,6 +521,9 @@ struct DownloadParams {
     cancel_token: CancellationToken,
     statuses: Arc<RwLock<HashMap<String, ModelStatus>>>,
     on_progress: ProgressCallback,
+    /// The least time between two progress reports. A chunk that arrives
+    /// sooner after the last report is written and not reported.
+    progress_interval: std::time::Duration,
 }
 
 /// Perform the HTTP download with resume support, then verify SHA-256.
@@ -532,6 +539,7 @@ async fn perform_download(params: DownloadParams) -> Result<(), ModelError> {
         cancel_token,
         statuses,
         on_progress,
+        progress_interval,
     } = params;
     use futures::StreamExt;
 
@@ -615,7 +623,6 @@ async fn perform_download(params: DownloadParams) -> Result<(), ModelError> {
     let mut stream = std::pin::pin!(response.bytes_stream());
     let mut last_progress_report = std::time::Instant::now();
     let mut last_progress_bytes = effective_offset;
-    let progress_interval = std::time::Duration::from_millis(250);
 
     loop {
         tokio::select! {
@@ -980,6 +987,7 @@ mod tests {
             cancel_token,
             statuses: Arc::new(RwLock::new(HashMap::new())),
             on_progress,
+            progress_interval: PROGRESS_REPORT_INTERVAL,
         }
     }
 
@@ -1015,14 +1023,13 @@ mod tests {
     #[tokio::test]
     async fn perform_download_reports_progress_events() {
         let tmp = TempDir::new().unwrap();
-        // `perform_download` throttles progress reports to once per 250ms, so
-        // only the delay between the first and second chunk needs to exceed
-        // that — two small chunks is enough to observe >=1 event without a
-        // slow test. (16 bytes/chunk in `spawn_slow_fake_model_server`.)
+        // Reports are throttled, so the test asks for one on every chunk. It
+        // used to send two chunks 260ms apart against the 250ms interval, and
+        // failed whenever the reader started more than 10ms late: the second
+        // chunk then arrived inside the interval and nothing was reported.
         let body = vec![0xABu8; 32];
         let expected_hash = format!("{:x}", Sha256::digest(&body));
-        let url =
-            spawn_slow_fake_model_server(body.clone(), std::time::Duration::from_millis(260)).await;
+        let url = spawn_fake_model_server(body.clone()).await;
 
         let partial_path = tmp.path().join("model.gguf.partial");
         let final_path = tmp.path().join("model.gguf");
@@ -1038,22 +1045,30 @@ mod tests {
             }),
         );
 
-        let result = perform_download(test_download_params(
-            format!("{url}/model.gguf"),
-            partial_path,
-            final_path,
-            body.len() as u64,
-            expected_hash,
-            CancellationToken::new(),
-            on_progress,
-        ))
+        let result = perform_download(DownloadParams {
+            progress_interval: std::time::Duration::ZERO,
+            ..test_download_params(
+                format!("{url}/model.gguf"),
+                partial_path,
+                final_path,
+                body.len() as u64,
+                expected_hash,
+                CancellationToken::new(),
+                on_progress,
+            )
+        })
         .await;
 
         assert!(result.is_ok(), "download should succeed: {:?}", result);
         let captured = events.lock().unwrap();
         assert!(
             !captured.is_empty(),
-            "at least one progress event must be reported for a multi-chunk download"
+            "every chunk is due a report at a zero interval, and none was made"
+        );
+        assert_eq!(
+            captured.last().map(|event| event.bytes_downloaded),
+            Some(body.len() as u64),
+            "the last report covers the whole body"
         );
         assert_eq!(captured[0].bytes_total, body.len() as u64);
     }

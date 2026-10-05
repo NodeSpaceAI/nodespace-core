@@ -40,6 +40,12 @@ describe("sccacheServerUds", () => {
   });
 });
 
+// Each of these writes a shell script and runs it. On a machine in the middle
+// of a cold build, starting a script that was written a moment ago has stalled
+// for several seconds, and four of them timed out together at Bun's default
+// 5 seconds in a merge gate. The limit here is sized to catch a hang.
+const SPAWN_TIMEOUT_MS = 60_000;
+
 describe("the development builds' wrapper", () => {
   let dir: string;
   beforeEach(() => {
@@ -78,14 +84,14 @@ describe("the development builds' wrapper", () => {
     expect(dirname(socket)).toBe(dirname(join("/private/var/folders/ab/T", basename(sccacheServerUds(0)))));
     expect(ignoreIoErrors).toBe("1");
     expect(args).toBe("rustc --crate-name x");
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   test("each checkout gets its own server, and keeps it", () => {
     const tools = fakeTools();
     const socketOf = (checkout: string) => runWrapper(devRustcWrapper(tools, checkout), ["rustc"]).split("|")[1];
     expect(socketOf("/repo/wt-a")).not.toBe(socketOf("/repo/wt-b"));
     expect(socketOf("/repo/wt-a")).toBe(socketOf("/repo/wt-a"));
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   test("with a TMPDIR too deep for a unix socket, it compiles uncached rather than failing the build", () => {
     const tools = fakeTools();
@@ -93,12 +99,12 @@ describe("the development builds' wrapper", () => {
     expect(runWrapper(devRustcWrapper(tools, "/repo/wt-a"), ["echo", "compiled", "directly"], { TMPDIR: deep })).toBe(
       "compiled directly"
     );
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   test("with sccache gone, it runs the compiler itself rather than failing the build", () => {
     const script = devRustcWrapper(join(dir, "no-such-tools"), "/repo/wt-a");
     expect(runWrapper(script, ["echo", "compiled", "directly"])).toBe("compiled directly");
-  });
+  }, SPAWN_TIMEOUT_MS);
 
   test("the cargo config routes rustc and CMake through the wrapper, and is marked as generated", () => {
     const config = devCargoConfig("/repo/wt-a/.cargo/rustc-wrapper");
