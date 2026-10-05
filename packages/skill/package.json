@@ -29,11 +29,13 @@
     "test": "bunx vitest run",
     "test:watch": "bunx vitest",
     "test:plugin": "claude plugin validate plugins/claude-code && claude plugin test plugins/claude-code",
-    "quality:check": "bunx tsc --noEmit",
-    "quality:fix": "bunx tsc --noEmit"
+    "quality:check": "bunx tsc --noEmit && bunx tsc -p tsconfig.plugins.json",
+    "quality:fix": "bunx tsc --noEmit && bunx tsc -p tsconfig.plugins.json"
   },
   "dependencies": {},
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.0.3",
+    "@opencode-ai/plugin": "1.18.34",
     "@types/node": "^24.6.0",
     "typescript": "~5.9.3",
     "vitest": "^3.2.7"

@@ -11,6 +11,21 @@ import {
   PLUGIN_MANAGED_STATUS_TEXT,
 } from '../install.js';
 
+/**
+ * The environment without the variables that move a harness's home, so a
+ * spawned installer touches only the `HOME` a test gives it.
+ */
+function envWithoutHarnessHomes(): NodeJS.ProcessEnv {
+  const {
+    CLAUDE_CONFIG_DIR: _claude,
+    CODEX_HOME: _codex,
+    PI_CODING_AGENT_DIR: _pi,
+    XDG_CONFIG_HOME: _xdg,
+    ...inherited
+  } = process.env;
+  return inherited;
+}
+
 describe('extractResourceRoot', () => {
   it('returns no resourceRoot and all args unchanged when the flag is absent', () => {
     const { rest, resourceRoot } = extractResourceRoot(['install', 'claude-code']);
@@ -100,7 +115,7 @@ describe('uninstall --resource-root', () => {
       writeFileSync(join(root, 'references', 'only-in-this-skill.md'), 'reference', 'utf8');
     }
 
-    const { CLAUDE_CONFIG_DIR: _ignored, ...inherited } = process.env;
+    const inherited = envWithoutHarnessHomes();
     const result = spawnSync(
       'bun',
       [join(import.meta.dirname, '..', 'install.ts'), 'uninstall', 'codex', '--resource-root', resourceRoot],
@@ -120,7 +135,7 @@ describe('the lines the CLI prints', () => {
   const resourceRoot = join(home, 'resources');
 
   function run(...args: string[]): string {
-    const { CLAUDE_CONFIG_DIR: _ignored, ...inherited } = process.env;
+    const inherited = envWithoutHarnessHomes();
     const result = spawnSync(
       'bun',
       [join(import.meta.dirname, '..', 'install.ts'), ...args, '--resource-root', resourceRoot],
@@ -139,8 +154,33 @@ describe('the lines the CLI prints', () => {
     mkdirSync(resourceRoot, { recursive: true });
     writeFileSync(join(resourceRoot, 'SKILL.md'), 'skill', 'utf8');
 
-    expect(run('install', 'codex')).toContain('✓ codex: installed 1 file(s)');
-    expect(run('install', 'codex')).toContain(`✓ codex: ${UP_TO_DATE_TEXT} (1 file(s))`);
+    // The skill, and the instructions file the block went into.
+    expect(run('install', 'codex')).toContain('✓ codex: installed 2 file(s)');
+    expect(run('install', 'codex')).toContain(`✓ codex: ${UP_TO_DATE_TEXT} (2 file(s))`);
+  });
+
+  // `nodespace skill status` prints what follows the agent's name as it is.
+  it('reports in status whether the plugin or the instructions block is installed', () => {
+    for (const dir of ['.codex', join('.pi', 'agent'), join('.config', 'opencode')]) {
+      mkdirSync(join(home, dir), { recursive: true });
+    }
+    mkdirSync(resourceRoot, { recursive: true });
+    writeFileSync(join(resourceRoot, 'SKILL.md'), 'skill', 'utf8');
+    for (const file of ['pi/index.ts', 'opencode/nodespace.ts', 'shared/nodespace-session.ts']) {
+      mkdirSync(join(resourceRoot, 'plugins', file, '..'), { recursive: true });
+      writeFileSync(join(resourceRoot, 'plugins', file), '// plugin', 'utf8');
+    }
+    run('install');
+
+    expect(run('status')).toContain('✓ codex: present, instructions block installed');
+    expect(run('status')).toContain('✓ pi: present, plugin installed');
+    expect(run('status')).toContain('✓ opencode: present, plugin installed');
+
+    rmSync(join(home, '.pi', 'agent', 'extensions'), { recursive: true });
+    writeFileSync(join(home, '.codex', 'AGENTS.md'), '# only mine\n', 'utf8');
+
+    expect(run('status')).toContain('✓ pi: present, plugin not installed');
+    expect(run('status')).toContain('✓ codex: present, instructions block not installed');
   });
 
   it('reports a marketplace-managed Claude Code in status as installed that way, not as absent', () => {

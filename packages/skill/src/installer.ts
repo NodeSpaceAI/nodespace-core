@@ -12,8 +12,15 @@ import {
 import { join, dirname, relative, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { AGENTS } from './agents.js';
-import type { AgentName, InstallResult, UninstallResult } from './types.js';
+import { AGENTS, SHARED_PLUGIN_DIR } from './agents.js';
+import { hasBlock, removeBlock, upsertBlock } from './instructions-block.js';
+import type {
+  AgentConfig,
+  AgentName,
+  InstallResult,
+  IntegrationStatus,
+  UninstallResult,
+} from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Walk up past dist/ if running from compiled output; src/ stays at package root.
@@ -23,11 +30,17 @@ const PACKAGE_ROOT = join(__dirname, '..');
 const REFERENCES_DIR = 'references';
 
 /**
- * Written into each agent's install directory by `install`: the exact list of
- * files that install put there, as `{ "files": [<paths relative to the install
- * directory>] }`. Uninstall removes what it names, and a later install removes
- * any file it names that the new skill no longer ships, so neither has to guess
- * from a hand-kept list which files are ours.
+ * Written into each agent's install directory by `install`: exactly what that
+ * install put on this machine for the agent.
+ *
+ * - `files`: paths relative to the install directory.
+ * - `plugin_files`: the harness plugin's files, relative to the folder the
+ *   harness loads it from, when that is not the install directory.
+ * - `instructions_file`: the file the instructions block was written into.
+ *
+ * Uninstall removes what it names, and a later install removes any file it
+ * names that the new skill no longer ships, so neither has to guess from a
+ * hand-kept list which files are ours.
  *
  * Agent harnesses discover a skill by its `SKILL.md`, so this dotfile is inert
  * to them.
@@ -144,8 +157,9 @@ export function claudeCodePluginManagedSkillExists(claudeConfigDir: string): boo
 
 /**
  * Installs the skill at `packageRoot` into `targetAgents` (or every detected
- * agent): `SKILL.md`, the agent's harness plugin where it has one, and every
- * `references/*.md` the package root ships.
+ * agent): `SKILL.md`, every `references/*.md` the package root ships, the
+ * agent's harness plugin where it has one (ADR-093 §5), and otherwise the
+ * instructions block in the harness's instructions file (§6).
  *
  * Each agent's install directory gets a record (`INSTALL_RECORD`) of exactly
  * what was written, and a file an earlier install put there that this skill no
@@ -186,19 +200,19 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
       continue;
     }
 
-    // What the skill is made of: `SKILL.md`, the agent's harness plugin, and
-    // every reference file the package root ships. Each entry is
-    // `[source path, path inside the install directory]`.
+    // What the skill is made of: `SKILL.md`, the agent's harness plugin where
+    // the harness loads one from its skill folder, and every reference file
+    // the package root ships. Each entry is `[source path, path inside the
+    // install directory]`.
     const root = resolve(config.installDir);
     // A plugin is installed whole or not at all: a manifest without the
     // module its hooks file names is a plugin the harness cannot load.
-    const pluginDir = config.plugin?.dir ?? '';
-    const pluginFiles = (config.plugin?.files ?? []).map(
-      (file): [string, string] => [join(packageRoot, pluginDir, file), file],
-    );
+    const pluginRoot = pluginRootOf(config);
+    const pluginEntries = pluginEntriesOf(config, packageRoot);
+    const plugin = pluginEntries.every(([src]) => existsSync(src)) ? pluginEntries : [];
     const present = [
       [join(packageRoot, SKILL_FILE), SKILL_FILE] as [string, string],
-      ...(pluginFiles.every(([src]) => existsSync(src)) ? pluginFiles : []),
+      ...(pluginRoot === undefined ? plugin : []),
       ...listReferenceFiles(packageRoot).map((ref): [string, string] => [join(packageRoot, ref), ref]),
     ].filter(([src]) => existsSync(src));
 
@@ -210,53 +224,211 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
       continue;
     }
 
-    const installed: string[] = [];
-    const wrote: string[] = [];
-    // Whether this run altered anything on disk. A file whose content is
-    // already what this skill ships is left alone, so a re-run over a current
-    // install changes nothing and is reported as such.
-    let changed = false;
-    for (const [src, rel] of present) {
-      const dest = join(root, rel);
-      mkdirSync(dirname(dest), { recursive: true });
-      // SKILL.md gets the agent's frontmatter prepended — a skill is
-      // discovered by its YAML `name` + `description` under the Agent Skills
-      // standard; everything else is copied verbatim.
-      const content = config.skillFrontmatter && rel === SKILL_FILE
-        ? Buffer.from(config.skillFrontmatter + '\n' + readFileSync(src, 'utf8'), 'utf8')
-        : readFileSync(src);
-      if (writeIfDifferent(dest, content)) changed = true;
-      installed.push(dest);
-      wrote.push(rel);
+    const previous = readInstallRecord(root);
+    // SKILL.md gets the agent's frontmatter prepended — a skill is discovered
+    // by its YAML `name` + `description` under the Agent Skills standard;
+    // everything else is copied verbatim.
+    const skill = syncFiles(root, present, previous?.files ?? PRE_RECORD_FILES, (rel, content) =>
+      config.skillFrontmatter && rel === SKILL_FILE
+        ? Buffer.from(config.skillFrontmatter + '\n' + content.toString('utf8'), 'utf8')
+        : content,
+    );
+    // The plugin of a harness that loads it from a folder of its own. That
+    // folder may be one the user keeps plugins of their own in, so a file
+    // already there that no install of ours recorded is not ours to replace.
+    const recordedPlugin = previous?.pluginFiles ?? [];
+    const foreign = pluginRoot === undefined ? [] : foreignFiles(pluginRoot, plugin, recordedPlugin);
+    for (const file of foreign) {
+      process.stderr.write(
+        `WARNING: ${file} exists and was not installed by NodeSpace; the ${agentName} plugin was not installed. ` +
+        'Move the file away and install again.\n',
+      );
     }
+    const loaded = pluginRoot === undefined
+      ? undefined
+      : foreign.length > 0
+        ? { installed: [], recorded: recordedPlugin, changed: false }
+        : syncFiles(pluginRoot, plugin, recordedPlugin);
+    const block = syncInstructionsBlock(config.instructionsFile, previous?.instructionsFile);
 
-    // Files an earlier install put here that this skill no longer ships. They
-    // are compared by resolved path, so an oddly spelled entry naming a file
-    // just written (`./SKILL.md`) is never mistaken for a stale one.
-    const previous = readInstallRecord(root) ?? PRE_RECORD_FILES;
-    const keep = new Set(wrote.map(rel => resolve(root, rel)));
-    const undeleted: string[] = [];
-    for (const rel of previous) {
-      if (keep.has(resolve(root, rel))) continue;
-      try {
-        if (removeRecordedFile(root, rel) !== undefined) changed = true;
-      } catch (err) {
-        // Read-only directory, locked file. Keep it in the record so the next
-        // install (or an uninstall) still knows it is ours, and carry on: one
-        // stubborn file must not abort this agent's install or the others'.
-        undeleted.push(rel);
-        const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
-        process.stderr.write(
-          `WARNING: could not remove ${resolve(root, rel)} (${reason}); it stays in the install record.\n`,
-        );
-      }
-    }
-    writeInstallRecord(root, [...wrote, ...undeleted]);
+    writeInstallRecord(root, {
+      files: skill.recorded,
+      pluginFiles: loaded?.recorded ?? [],
+      instructionsFile: block.file,
+    });
 
-    results.push({ agent: agentName, installed, changed });
+    results.push({
+      agent: agentName,
+      installed: [...skill.installed, ...(loaded?.installed ?? []), ...(block.file ? [block.file] : [])],
+      changed: skill.changed || (loaded?.changed ?? false) || block.changed,
+    });
   }
 
   return results;
+}
+
+/** The folder a harness loads its plugin from, when that is not the skill folder. */
+function pluginRootOf(config: AgentConfig): string | undefined {
+  return config.plugin?.installDir === undefined ? undefined : resolve(config.plugin.installDir);
+}
+
+/** A harness plugin's files, each as `[source path, path inside the folder it installs into]`. */
+function pluginEntriesOf(config: AgentConfig, packageRoot: string): Array<[string, string]> {
+  const plugin = config.plugin;
+  if (!plugin) return [];
+  return [
+    ...plugin.files.map((file): [string, string] => [join(packageRoot, plugin.dir, file), file]),
+    ...(plugin.shared ?? []).map(([file, rel]): [string, string] => [join(packageRoot, SHARED_PLUGIN_DIR, file), rel]),
+  ];
+}
+
+/**
+ * The files among `entries` (`[source path, path inside root]`) that already
+ * exist in `root` without an earlier install having recorded them (`recorded`)
+ * and without holding what this skill ships: someone else's.
+ */
+function foreignFiles(root: string, entries: Array<[string, string]>, recorded: readonly string[]): string[] {
+  const ours = new Set(recorded.map(rel => resolve(root, rel)));
+  return entries
+    .map(([src, rel]): [string, string] => [src, resolve(root, rel)])
+    .filter(([src, dest]) => !ours.has(dest) && existsSync(dest) && !sameBytes(src, dest))
+    .map(([, dest]) => dest);
+}
+
+function sameBytes(a: string, b: string): boolean {
+  try {
+    return readFileSync(a).equals(readFileSync(b));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A file's text, when the file is UTF-8 that reads and writes back to the same
+ * bytes; `''` for a file that does not exist. Throws for any other: rewriting
+ * such a file would alter the user's own text along with the block.
+ */
+function readRoundTrippable(file: string): string {
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(file);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
+    throw err;
+  }
+  const text = bytes.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(bytes)) throw new Error('it is not UTF-8 text');
+  return text;
+}
+
+/**
+ * Makes `root` hold `entries` (`[source path, path inside root]`), and removes
+ * each of `previous`, the files an earlier install recorded there, that is not
+ * among them. `recorded` is what the next record names: the files written,
+ * and any stale one that could not be removed.
+ *
+ * A file whose content is already what this skill ships is left alone, so a
+ * re-run over a current install changes nothing and is reported as such.
+ */
+function syncFiles(
+  root: string,
+  entries: Array<[string, string]>,
+  previous: readonly string[],
+  transform: (rel: string, content: Buffer) => Buffer = (_rel, content) => content,
+): { installed: string[]; recorded: string[]; changed: boolean } {
+  const installed: string[] = [];
+  const wrote: string[] = [];
+  let changed = false;
+  for (const [src, rel] of entries) {
+    const dest = join(root, rel);
+    mkdirSync(dirname(dest), { recursive: true });
+    if (writeIfDifferent(dest, transform(rel, readFileSync(src)))) changed = true;
+    installed.push(dest);
+    wrote.push(rel);
+  }
+
+  // Files an earlier install put here that this skill no longer ships. They
+  // are compared by resolved path, so an oddly spelled entry naming a file
+  // just written (`./SKILL.md`) is never mistaken for a stale one.
+  const keep = new Set(wrote.map(rel => resolve(root, rel)));
+  const undeleted: string[] = [];
+  for (const rel of previous) {
+    if (keep.has(resolve(root, rel))) continue;
+    try {
+      if (removeRecordedFile(root, rel) !== undefined) changed = true;
+    } catch (err) {
+      // Read-only directory, locked file. Keep it in the record so the next
+      // install (or an uninstall) still knows it is ours, and carry on: one
+      // stubborn file must not abort this agent's install or the others'.
+      undeleted.push(rel);
+      const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
+      process.stderr.write(
+        `WARNING: could not remove ${resolve(root, rel)} (${reason}); it stays in the install record.\n`,
+      );
+    }
+  }
+  return { installed, recorded: [...wrote, ...undeleted], changed };
+}
+
+/**
+ * Puts the instructions block into `file` (ADR-093 §6): replaced where it
+ * already is, appended otherwise, in a file created when absent. A block an
+ * earlier install wrote into a different file (`previous`) is taken out of
+ * that one. `file` in the result is the file that now holds the block.
+ *
+ * A file that cannot be read or written, or that is not UTF-8 text, is left
+ * alone with a warning: the skill itself is installed either way. The file is
+ * written in place, not replaced, so one that is a link stays a link.
+ */
+function syncInstructionsBlock(
+  file: string | undefined,
+  previous: string | undefined,
+): { file: string | undefined; changed: boolean } {
+  let changed = false;
+  if (previous !== undefined && (file === undefined || resolve(previous) !== resolve(file))) {
+    changed = removeInstructionsBlock(previous);
+  }
+  if (file === undefined) return { file: undefined, changed };
+  try {
+    const content = readRoundTrippable(file);
+    mkdirSync(dirname(file), { recursive: true });
+    if (writeIfDifferent(file, Buffer.from(upsertBlock(content), 'utf8'))) changed = true;
+    return { file, changed };
+  } catch (err) {
+    const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
+    process.stderr.write(`WARNING: could not write the NodeSpace instructions into ${file} (${reason}).\n`);
+    // Still recorded when it already holds a block from an earlier install.
+    return { file: fileHasBlock(file) ? file : undefined, changed };
+  }
+}
+
+function fileHasBlock(file: string): boolean {
+  try {
+    return hasBlock(readFileSync(file, 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Takes the instructions block out of `file`, leaving every other byte, and
+ * returns whether it did. A file the block was the whole of is deleted: the
+ * installer made it.
+ */
+function removeInstructionsBlock(file: string): boolean {
+  try {
+    if (!existsSync(file)) return false;
+    const content = readRoundTrippable(file);
+    if (!hasBlock(content)) return false;
+    const rest = removeBlock(content);
+    if (rest === '') rmSync(file);
+    else writeFileSync(file, rest, 'utf8');
+    return true;
+  } catch (err) {
+    const reason = (err as NodeJS.ErrnoException).code ?? (err as Error).message;
+    process.stderr.write(`WARNING: could not remove the NodeSpace instructions from ${file} (${reason}).\n`);
+    return false;
+  }
 }
 
 /**
@@ -275,28 +447,42 @@ function writeIfDifferent(dest: string, content: Buffer): boolean {
   return true;
 }
 
+/** An install record as read: see `INSTALL_RECORD`. */
+type InstallRecord = { files: string[]; pluginFiles: string[]; instructionsFile: string | undefined };
+
 /**
- * What the installer put in `installDir`, as recorded by the install that put
- * it there, or `undefined` when there is no usable record: none written (an
- * install from before the record existed), or one that is unreadable or not
- * the `{ "files": [...] }` shape. Entries that are not strings are dropped.
+ * What the installer put on this machine for the agent whose install
+ * directory is `installDir`, as recorded by the install that put it there, or
+ * `undefined` when there is no usable record: none written (an install from
+ * before the record existed), or one that is unreadable or not the
+ * `{ "files": [...] }` shape. Entries that are not strings are dropped.
  */
-function readInstallRecord(installDir: string): string[] | undefined {
+function readInstallRecord(installDir: string): InstallRecord | undefined {
   try {
     const parsed: unknown = JSON.parse(readFileSync(join(installDir, INSTALL_RECORD), 'utf8'));
-    const files = (parsed as { files?: unknown } | null)?.files;
-    if (!Array.isArray(files)) return undefined;
-    return files.filter((file): file is string => typeof file === 'string');
+    const record = parsed as { files?: unknown; plugin_files?: unknown; instructions_file?: unknown } | null;
+    if (!Array.isArray(record?.files)) return undefined;
+    const strings = (value: unknown): string[] =>
+      Array.isArray(value) ? value.filter((file): file is string => typeof file === 'string') : [];
+    return {
+      files: strings(record.files),
+      pluginFiles: strings(record.plugin_files),
+      instructionsFile: typeof record.instructions_file === 'string' ? record.instructions_file : undefined,
+    };
   } catch {
     return undefined;
   }
 }
 
-function writeInstallRecord(installDir: string, files: string[]): void {
-  const record = { files: [...files].sort() };
+function writeInstallRecord(installDir: string, record: InstallRecord): void {
+  const written = {
+    files: [...record.files].sort(),
+    ...(record.pluginFiles.length > 0 ? { plugin_files: [...record.pluginFiles].sort() } : {}),
+    ...(record.instructionsFile === undefined ? {} : { instructions_file: record.instructionsFile }),
+  };
   writeIfDifferent(
     join(installDir, INSTALL_RECORD),
-    Buffer.from(JSON.stringify(record, null, 2) + '\n', 'utf8'),
+    Buffer.from(JSON.stringify(written, null, 2) + '\n', 'utf8'),
   );
 }
 
@@ -416,13 +602,36 @@ export function checkInstalled(targetAgents?: AgentName[]): AgentName[] {
 }
 
 /**
- * Removes the skill from `targetAgents` (or every configured agent).
+ * What the agent has beyond the static skill, and whether it is in place: its
+ * harness plugin (every file of it, where the harness loads it from), or the
+ * instructions block in its instructions file. `undefined` for an agent that
+ * gets neither. A pure filesystem check.
+ */
+export function integrationStatus(agentName: AgentName, packageRoot = PACKAGE_ROOT): IntegrationStatus | undefined {
+  const config = AGENTS.find(a => a.name === agentName);
+  if (config?.plugin) {
+    const root = pluginRootOf(config) ?? resolve(config.installDir);
+    const files = pluginEntriesOf(config, packageRoot).map(([, rel]) => join(root, rel));
+    return { kind: 'plugin', installed: files.every(file => existsSync(file)) };
+  }
+  if (config?.instructionsFile !== undefined) {
+    return { kind: 'instructions-block', installed: fileHasBlock(config.instructionsFile) };
+  }
+  return undefined;
+}
+
+/**
+ * Removes the skill from `targetAgents` (or every configured agent): its
+ * files, the harness plugin where that sits in a folder of its own, and the
+ * instructions block.
  *
  * With a record, removes exactly the files it names and the record itself.
  * Without one, the install predates the record: it removes `SKILL.md`, every
- * reference file `packageRoot` ships and `PRE_RECORD_REFERENCES`. Either
- * way it then prunes only the directories those files leave empty, and the
- * install directory itself once nothing is left in it.
+ * reference file `packageRoot` ships and `PRE_RECORD_REFERENCES`, and each
+ * plugin file that holds exactly what this skill ships. Either way it then prunes only the
+ * directories those files leave empty, and the install directory itself once
+ * nothing is left in it. Of an instructions file it removes the marked block
+ * alone.
  *
  * `packageRoot` is where the skill being uninstalled came from (the staged
  * resource root when the app runs a compiled installer). It matters only for an
@@ -434,36 +643,93 @@ export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT
 
   for (const agentName of agents) {
     const config = AGENTS.find(a => a.name === agentName);
-    if (!config || !existsSync(config.installDir)) continue;
+    if (!config) continue;
 
     const root = resolve(config.installDir);
-    const files = readInstallRecord(root) ?? filesWithoutRecord(packageRoot);
-
+    const hasInstallDir = existsSync(root);
+    const record = hasInstallDir ? readInstallRecord(root) : undefined;
     const removed: string[] = [];
-    for (const rel of files) {
-      const path = removeRecordedFile(root, rel);
-      if (path !== undefined) removed.push(path);
-    }
-    // Last, so an uninstall interrupted part-way can be run again.
-    removeInstalledFile(root, INSTALL_RECORD);
 
-    if (readdirSync(root).length === 0) {
-      try {
-        rmdirSync(root);
-        // Install makes any missing directory between the harness's own and
-        // the install directory (`skills/`). One this leaves empty goes too,
-        // whoever made it: nothing records which were ours, and an empty one
-        // holds nothing to lose. The harness's own directory is never touched.
-        pruneEmptyParents(resolve(config.detectionDir), root);
-      } catch {
-        // A symlinked install directory (a dotfile manager's link) cannot be
-        // rmdir'd. Leaving the empty directory is the smaller failure than
-        // aborting the agents after this one.
+    if (hasInstallDir) {
+      for (const rel of record?.files ?? filesWithoutRecord(packageRoot)) {
+        const path = removeRecordedFile(root, rel);
+        if (path !== undefined) removed.push(path);
       }
     }
+
+    // The plugin, where the harness loads it from a folder of its own. It is
+    // removed even when the skill folder is already gone: a plugin left behind
+    // would go on running in every session.
+    const pluginRoot = pluginRootOf(config);
+    if (pluginRoot !== undefined && existsSync(pluginRoot)) {
+      // With no record there is no list of what was installed. A file is then
+      // ours only when it holds exactly what this skill ships: the folder may
+      // be one the user keeps plugins of their own in, under any name.
+      const shipped = pluginEntriesOf(config, packageRoot);
+      const files = record?.pluginFiles ??
+        shipped.filter(([src, rel]) => sameBytes(src, resolve(pluginRoot, rel))).map(([, rel]) => rel);
+      if (!record) {
+        // Said, not passed over: a plugin left in place runs in every session.
+        for (const [, rel] of shipped) {
+          const left = resolve(pluginRoot, rel);
+          if (!files.includes(rel) && existsSync(left)) {
+            process.stderr.write(
+              `WARNING: ${left} was left in place: nothing records that NodeSpace installed it, ` +
+              'and it is not the file this version ships. Remove it by hand if it is not yours.\n',
+            );
+          }
+        }
+      }
+      for (const rel of files) {
+        const path = removeRecordedFile(pluginRoot, rel);
+        if (path !== undefined) removed.push(path);
+      }
+      removeIfEmpty(pluginRoot, config.detectionDir);
+    }
+
+    // The block, in the file the record names and the one the harness reads
+    // now: they differ when the harness's home was moved since the install.
+    const instructionsFiles = new Set(
+      [record?.instructionsFile, config.instructionsFile]
+        .filter((file): file is string => file !== undefined)
+        .map(file => resolve(file)),
+    );
+    for (const file of instructionsFiles) {
+      if (removeInstructionsBlock(file)) removed.push(file);
+    }
+
+    if (!hasInstallDir) {
+      if (removed.length > 0) results.push({ agent: agentName, removed });
+      continue;
+    }
+
+    // Last, so an uninstall interrupted part-way can be run again.
+    removeInstalledFile(root, INSTALL_RECORD);
+    removeIfEmpty(root, config.detectionDir);
 
     results.push({ agent: agentName, removed });
   }
 
   return results;
+}
+
+/**
+ * Removes `dir` once nothing is left in it, and then the directories between
+ * it and the harness's own (`detectionDir`) that this leaves empty.
+ *
+ * Install makes any missing directory on the way (`skills/`,
+ * `extensions/`). One left empty goes too, whoever made it: nothing records
+ * which were ours, and an empty one holds nothing to lose. The harness's own
+ * directory is never touched.
+ */
+function removeIfEmpty(dir: string, detectionDir: string): void {
+  try {
+    if (readdirSync(dir).length > 0) return;
+    rmdirSync(dir);
+    pruneEmptyParents(resolve(detectionDir), dir);
+  } catch {
+    // A symlinked directory (a dotfile manager's link) cannot be rmdir'd.
+    // Leaving the empty directory is the smaller failure than aborting the
+    // agents after this one.
+  }
 }

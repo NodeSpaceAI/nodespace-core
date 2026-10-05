@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["plugins/pi/**/*", "plugins/opencode/**/*", "plugins/shared/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

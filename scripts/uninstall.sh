@@ -1,6 +1,7 @@
 #!/bin/sh
 # NodeSpace uninstaller — POSIX sh
-# Stops the daemon, removes binaries and service files.
+# Stops the daemon, removes the skill from agent harnesses, then removes
+# binaries and service files.
 # User data at ~/.nodespace/database/ is PRESERVED.
 set -e
 
@@ -11,15 +12,6 @@ LOCK_PATH="$HOME/.nodespace/daemon.lock"
 PLIST_PATH="$HOME/Library/LaunchAgents/app.nodespace.daemon.plist"
 SYSTEMD_SERVICE="$HOME/.config/systemd/user/nodespace.service"
 LAUNCHD_LABEL="app.nodespace.daemon"
-
-# Skill install dirs for every harness the installer supports (kept in sync
-# by hand with the AGENTS table in packages/skill/src/agents.ts).
-SKILL_DIRS="
-Claude Code:$HOME/.claude/skills/nodespace
-Codex:$HOME/.codex/skills/nodespace
-Gemini:$HOME/.gemini/skills/nodespace
-OpenCode:$HOME/.opencode/skills/nodespace
-"
 
 OS=$(uname -s)
 
@@ -52,9 +44,28 @@ case "$OS" in
         ;;
 esac
 
+# ── Remove the skill from agent harnesses ─────────────────────────────────────
+# The skill installer knows what it put where: the skill, a harness's plugin,
+# and the marked block in a harness's own instructions file. It sits beside the
+# CLI, so this runs before the binaries are removed, and no list of harness
+# folders is kept here.
+NODESPACE_CLI="$INSTALL_DIR/nodespace"
+if [ ! -x "$NODESPACE_CLI" ]; then
+    # Installed some other way: whichever `nodespace` is on the path.
+    NODESPACE_CLI=$(command -v nodespace 2>/dev/null || true)
+fi
+if [ -n "$NODESPACE_CLI" ]; then
+    "$NODESPACE_CLI" skill uninstall ||
+        printf 'Warning: the skill was not removed from every agent harness\n' >&2
+else
+    printf 'Warning: no nodespace command found; the skill was not removed from any agent harness\n' >&2
+fi
+
 # ── Remove binaries ───────────────────────────────────────────────────────────
 if [ -d "$INSTALL_DIR" ]; then
-    rm -f "$INSTALL_DIR/nodespaced" "$INSTALL_DIR/nodespace"
+    rm -f "$INSTALL_DIR/nodespaced" "$INSTALL_DIR/nodespace" \
+        "$INSTALL_DIR/nodespace-skill-installer"
+    rm -rf "$INSTALL_DIR/skill"
     # Remove the bin dir only if empty
     rmdir "$INSTALL_DIR" 2>/dev/null || true
     printf 'Removed binaries from %s\n' "$INSTALL_DIR"
@@ -69,23 +80,6 @@ if [ -e "$LOCK_PATH" ]; then
     rm -f "$LOCK_PATH"
     printf 'Removed lock file %s\n' "$LOCK_PATH"
 fi
-
-# ── Remove installed skills ───────────────────────────────────────────────────
-IFS='
-'
-for entry in $SKILL_DIRS; do
-    [ -z "$entry" ] && continue
-    name=${entry%%:*}
-    dir=${entry#*:}
-    if [ -d "$dir" ]; then
-        if rm -rf "$dir"; then
-            printf 'Removed %s skill at %s\n' "$name" "$dir"
-        else
-            printf 'Warning: failed to remove %s skill at %s\n' "$name" "$dir" >&2
-        fi
-    fi
-done
-unset IFS
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 printf '\nNodeSpace uninstalled. Your data at ~/.nodespace/database/ has been preserved.\n'

@@ -892,6 +892,63 @@ describe('the item being worked on', () => {
     expect(before + after).not.toContain('approved')
   })
 
+  test('a second write of the session\'s own, checked while the first is still running, does not stop it', async ($, on) => {
+    const w = world()
+    const { clock, seen } = host(on, w)
+
+    await $.session.start(START)
+    await $.tool.call(bash('nodespace node context t1'))
+
+    // The first write lands while it runs, and the second is dispatched then:
+    // it is checked after the item moved and before the first reported back.
+    let second: Promise<{ deny?: string }> | null = null
+
+    seen.onTool = () => {
+      const version = (w.item?.version ?? 0) + 1
+
+      w.item = { id: 't1', version, title: 'Add the gauge', properties: { status: 'done' } }
+      w.contextVersion = `c${version}`
+      second ??= $.tool.call(bash('nodespace node update t1 --content "and a note"'))
+    }
+
+    const first = await $.tool.call(bash('nodespace node set-status t1 done --version 3'))
+
+    expect(first.deny).toBeUndefined()
+    expect((await second)?.deny).toBeUndefined()
+
+    seen.onTool = () => {}
+    await clock.advance(60_000)
+    expect((await $.tool.call(bash('ls'))).deny).toBeUndefined()
+
+    // With both reported back, a change is someone else's again.
+    w.item = { id: 't1', version: 9, title: 'Add the gauge', properties: { status: 'cancelled' } }
+    w.contextVersion = 'c9'
+    await clock.advance(60_000)
+    expect((await $.tool.call(bash('ls'))).deny).toContain('changed under it')
+  })
+
+  // This checks the outcome only. The engine here runs the two calls' checks
+  // one after the other, so the second is refused by the standing refusal, not
+  // by the lines that handle two checks reading at once: it does not pin those.
+  test("two writes dispatched together over someone else's change are both refused", async ($, on) => {
+    const w = world()
+
+    host(on, w)
+    await $.session.start(START)
+    await $.tool.call(bash('nodespace node context t1'))
+
+    w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'cancelled' } }
+    w.contextVersion = 'c2'
+
+    const ran = await Promise.all([
+      $.tool.call(bash('nodespace node set-status t1 done --version 3')),
+      $.tool.call(bash('nodespace node update t1 --content x')),
+    ])
+
+    expect(ran[0]?.deny).toContain('changed under it')
+    expect(ran[1]?.deny).toContain('changed under it')
+  })
+
   test('two tool calls dispatched together run one check', async ($, on) => {
     const w = world()
     const { clock } = host(on, w)

@@ -28,6 +28,10 @@ vi.mock('node:os', async (importOriginal) => {
 // AGENTS at a real dir and break the mocked-home assumptions below. The dedicated
 // CLAUDE_CONFIG_DIR describe sets it explicitly where it needs to.
 delete process.env.CLAUDE_CONFIG_DIR;
+// The same for the other harnesses' homes, each of which the environment moves.
+delete process.env.CODEX_HOME;
+delete process.env.PI_CODING_AGENT_DIR;
+delete process.env.XDG_CONFIG_HOME;
 
 const {
   install,
@@ -40,7 +44,7 @@ const {
   INSTALL_RECORD,
   PRE_RECORD_REFERENCES,
 } = await import('../installer.js');
-const { AGENTS, SHARED_SKILL_FRONTMATTER } = await import('../agents.js');
+const { AGENTS, SHARED_PLUGIN_DIR, SHARED_SKILL_FRONTMATTER } = await import('../agents.js');
 
 const SKILL_MD_CONTENT = '# NodeSpace Skill\nTest content';
 const PLUGIN_FILE_CONTENT = '// plugin file content';
@@ -55,21 +59,46 @@ const SEEDED_REFERENCES = [
   'references/graph-authored-guidance.md',
 ];
 
-/**
- * What an agent installs besides the references, as `[path under the package
- * root, path inside the install directory]`: `SKILL.md`, and its harness
- * plugin's files where it has one.
- */
-function agentFiles(agent: typeof AGENTS[number]): Array<[string, string]> {
+/** A harness plugin's files, as `[path under the package root, path inside the folder it installs into]`. */
+function pluginFiles(agent: typeof AGENTS[number]): Array<[string, string]> {
   const plugin = agent.plugin;
+  if (!plugin) return [];
   return [
-    ['SKILL.md', 'SKILL.md'],
-    ...(plugin ? plugin.files.map((file): [string, string] => [`${plugin.dir}/${file}`, file]) : []),
+    ...plugin.files.map((file): [string, string] => [`${plugin.dir}/${file}`, file]),
+    ...(plugin.shared ?? []).map(([file, rel]): [string, string] => [`${SHARED_PLUGIN_DIR}/${file}`, rel]),
   ];
 }
 
+/**
+ * What an agent installs into its skill folder besides the references, as
+ * `[path under the package root, path inside the install directory]`:
+ * `SKILL.md`, and its harness plugin's files where the harness loads the
+ * plugin from there.
+ */
+function agentFiles(agent: typeof AGENTS[number]): Array<[string, string]> {
+  return [
+    ['SKILL.md', 'SKILL.md'],
+    ...(agent.plugin?.installDir === undefined ? pluginFiles(agent) : []),
+  ];
+}
+
+/** The plugin of a harness that loads it from a folder of its own, in the same form. */
+function loadedPluginFiles(agent: typeof AGENTS[number]): Array<[string, string]> {
+  return agent.plugin?.installDir === undefined ? [] : pluginFiles(agent);
+}
+
+/** How many files `install()` reports for an agent from a `seedPkgRoot` package root. */
+function seededInstallCount(agent: typeof AGENTS[number]): number {
+  return (
+    agentFiles(agent).length +
+    SEEDED_REFERENCES.length +
+    loadedPluginFiles(agent).length +
+    (agent.instructionsFile === undefined ? 0 : 1)
+  );
+}
+
 function seedPkgRoot(root: string, agent: typeof AGENTS[number]): void {
-  for (const [src] of agentFiles(agent)) {
+  for (const [src] of [...agentFiles(agent), ...loadedPluginFiles(agent)]) {
     mkdirSync(dirname(join(root, src)), { recursive: true });
     const content = src.endsWith('.md')
       ? `${SKILL_MD_CONTENT}\n<!-- ${src} -->`
@@ -161,21 +190,72 @@ describe('AGENTS config', () => {
     }
   });
 
-  // Claude Code loads a plugin from its skill folder (ADR-093 §5). The other
-  // harnesses get `SKILL.md` and the references alone.
-  it('only claude-code installs a harness plugin, and every file it lists exists', () => {
+  // Claude Code, Pi and OpenCode each load a plugin (ADR-093 §5). A harness
+  // with none gets the instructions block (§6), and no harness gets both.
+  it('gives each harness a plugin or the instructions block, and every plugin file it lists exists', () => {
+    const delivery = Object.fromEntries(
+      AGENTS.map(agent => [agent.name, agent.plugin ? 'plugin' : agent.instructionsFile ? 'block' : 'none'])
+    );
+    expect(delivery).toEqual({
+      'claude-code': 'plugin',
+      codex: 'block',
+      antigravity: 'block',
+      opencode: 'plugin',
+      pi: 'plugin',
+    });
     for (const agent of AGENTS) {
-      if (agent.name !== 'claude-code') {
-        expect(agent.plugin, `${agent.name} has a plugin`).toBeUndefined();
-        continue;
-      }
-      expect(agent.plugin?.files).toContain('.claude-plugin/plugin.json');
-      expect(agent.plugin?.files).toContain('hooks/hooks.json');
-      for (const [src] of agentFiles(agent)) {
+      expect(agent.plugin && agent.instructionsFile, `${agent.name} has both`).toBeFalsy();
+      for (const [src] of pluginFiles(agent)) {
         expect(
           existsSync(join(import.meta.dirname, '../..', src)),
           `${src} is listed but not in the package`
         ).toBe(true);
+      }
+    }
+    const claude = AGENTS.find(a => a.name === 'claude-code')!;
+    expect(claude.plugin?.files).toContain('.claude-plugin/plugin.json');
+    expect(claude.plugin?.files).toContain('hooks/hooks.json');
+  });
+
+  // Each harness loads code from one place only, and it is not the skill
+  // folder: a plugin placed beside `SKILL.md` there is never run.
+  it('installs the Pi and OpenCode plugins where each harness loads code from', () => {
+    const pi = AGENTS.find(a => a.name === 'pi')!;
+    const opencode = AGENTS.find(a => a.name === 'opencode')!;
+    expect(pi.plugin?.installDir).toBe(join(TMP, '.pi', 'agent', 'extensions', 'nodespace'));
+    expect(pluginFiles(pi).map(([, rel]) => rel)).toContain('index.ts');
+    expect(opencode.detectionDir).toBe(join(TMP, '.config', 'opencode'));
+    expect(opencode.installDir).toBe(join(TMP, '.config', 'opencode', 'skills', 'nodespace'));
+    expect(opencode.plugin?.installDir).toBe(join(TMP, '.config', 'opencode', 'plugins'));
+    // OpenCode calls every export of a file directly in `plugins/` as a
+    // plugin, so exactly one file of ours may sit there.
+    expect(pluginFiles(opencode).map(([, rel]) => rel).filter(rel => !rel.includes('/'))).toEqual([
+      'nodespace.ts',
+    ]);
+  });
+
+  it('writes the instructions block into the file each harness without a plugin reads', () => {
+    expect(AGENTS.find(a => a.name === 'codex')!.instructionsFile).toBe(join(TMP, '.codex', 'AGENTS.md'));
+    expect(AGENTS.find(a => a.name === 'antigravity')!.instructionsFile).toBe(
+      join(TMP, '.gemini', 'config', 'AGENTS.md')
+    );
+  });
+
+  // In the repository each plugin imports the shared module through a
+  // re-export beside it. An install must put the module itself there: the
+  // re-export points at a folder that is not installed.
+  it('installs the shared module itself wherever a plugin imports it from', () => {
+    const pkg = join(import.meta.dirname, '../..');
+    for (const agent of AGENTS) {
+      if (agent.plugin?.installDir === undefined) continue;
+      const installed = new Map(pluginFiles(agent).map(([src, rel]) => [rel, src]));
+      for (const [rel, src] of installed) {
+        const source = readFileSync(join(pkg, src), 'utf8');
+        expect(source, `${src} imports from outside its install folder`).not.toMatch(/from '\.\.\//);
+        for (const [, specifier] of source.matchAll(/from '(\.\/[^']+)'/g)) {
+          const target = join(dirname(rel), `${specifier}.ts`);
+          expect([...installed.keys()], `${agent.name}: ${rel} imports ${specifier}`).toContain(target);
+        }
       }
     }
   });
@@ -201,7 +281,7 @@ describe('AGENTS config', () => {
       'claude-code': '.claude',
       codex: '.codex',
       antigravity: '.gemini',
-      opencode: '.opencode',
+      opencode: join('.config', 'opencode'),
       pi: '.pi',
     };
     for (const agent of AGENTS) {
@@ -545,7 +625,7 @@ describe('uninstall', () => {
       mkdirSync(config.detectionDir, { recursive: true });
       seedPkgRoot(FAKE_PKG_ROOT, config);
       const installed = install([config.name], FAKE_PKG_ROOT)[0].installed;
-      expect(installed.length).toBe(agentFiles(config).length + SEEDED_REFERENCES.length);
+      expect(installed.length).toBe(seededInstallCount(config));
 
       const removed = uninstall([config.name])[0].removed;
       expect(removed.length, `${config.name}: not everything was removed`).toBe(installed.length);
@@ -557,6 +637,13 @@ describe('uninstall', () => {
         existsSync(config.installDir),
         `${config.name}: install dir survived a full uninstall`
       ).toBe(false);
+      if (config.plugin?.installDir !== undefined) {
+        expect(
+          existsSync(config.plugin.installDir),
+          `${config.name}: the plugin folder survived a full uninstall`
+        ).toBe(false);
+      }
+      expect(existsSync(config.detectionDir), `${config.name}: the harness's own directory was removed`).toBe(true);
     }
   });
 
@@ -1490,7 +1577,7 @@ describe('install — Claude Code plugin-managed reconciliation', () => {
 
     const results = install(['claude-code', 'antigravity'], FAKE_PKG_ROOT);
     const antigravityResult = results.find(r => r.agent === 'antigravity')!;
-    expect(antigravityResult.installed.length).toBe(agentFiles(antigravity).length + SEEDED_REFERENCES.length);
+    expect(antigravityResult.installed.length).toBe(seededInstallCount(antigravity));
     expect(antigravityResult.skipReason).toBeUndefined();
   });
 });
