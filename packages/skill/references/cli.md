@@ -363,14 +363,14 @@ Worked examples:
 - "tasks that are not done" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"status","value":"done","negate":true}]'`
 - "tasks that can be started now" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"status","value":"open"},{"type":"permitted","operator":"equals","property":"status","value":"in_progress"}]'`
 - "tasks with no unfinished blocker" → `nodespace query --type task --filters '[{"type":"related","operator":"exists","path":["blocked_by"],"negate":true,"filter":{"type":"property","operator":"in","property":"status","value":["done","cancelled"],"negate":true}}]'`
-- "the project for this repository" → `nodespace query --type project --filters '[{"type":"property","operator":"equals","property":"repository.url","value":"<remote url>"}]'` (`repository` is a `link` field on `project`, read by `repository.url` and `repository.title`)
+- "the project for this repository" → `nodespace query --type project --filters '[{"type":"property","operator":"in","property":"repository.url","value":["https://<host>/<path>","https://<host>/<path>.git","git@<host>:<path>.git"]}]'` (`repository` is a `link` field on `project`, read by `repository.url` and `repository.title`. The value is compared exactly, and a project holds whichever spelling of the remote its author pasted, so pass each spelling: the HTTPS and SSH forms, with and without `.git`)
 - "tasks with an unchecked item" → `nodespace query --type task --filters '[{"type":"related","operator":"equals","path":["has_child"],"filter":{"type":"property","operator":"equals","property":"checked","value":false}}]'`. `checked` is a checkbox's derived attribute: computed from its content, named in a `property` filter like a field, and never matched by a node that is not a checkbox.
 
 Date format for all date properties: **YYYY-MM-DD**.
 
 This is the CLI counterpart of the property-filtering path of the local agent's `search_nodes` tool.
 
-**Output:** JSON array of matching nodes
+**Output:** `{count, collection_id, nodes}`: the matching nodes under `nodes`
 
 ### Run a saved query
 
