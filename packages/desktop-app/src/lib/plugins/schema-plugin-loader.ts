@@ -24,6 +24,10 @@
  *
  * The plugin registry already supports runtime registration without restart.
  *
+ * A type a registered extension added (`NodespaceExtension.nodeTypes`) keeps the
+ * extension's plugin: this module neither replaces nor removes it, whatever
+ * schema events arrive or databases are switched.
+ *
  * ## Usage
  *
  * ```typescript
@@ -40,6 +44,7 @@
 
 import type { PluginDefinition } from './types';
 import { pluginRegistry } from './plugin-registry';
+import { uiExtensionRegistry } from './ui-extensions';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { type SchemaNode, isSchemaNode } from '$lib/types/schema-node';
 import { createLogger } from '$lib/utils/logger';
@@ -179,6 +184,10 @@ export function createPluginFromSchema(schema: SchemaNode): PluginDefinition {
  * ```
  */
 export async function registerSchemaPlugin(schemaId: string): Promise<void> {
+  if (uiExtensionRegistry.hasNodeType(schemaId)) {
+    log.debug(`Skipping schema plugin for a type an extension registered: ${schemaId}`);
+    return;
+  }
   try {
     const node = await backendAdapter.getSchema(schemaId);
 
@@ -226,6 +235,11 @@ export function unregisterSchemaPlugin(schemaId: string): void {
   // never grows unboundedly stale entries that a later resync would have to
   // reason about.
   registeredSchemaIds.delete(schemaId);
+
+  if (uiExtensionRegistry.hasNodeType(schemaId)) {
+    log.debug(`Leaving the plugin of a type an extension registered: ${schemaId}`);
+    return;
+  }
 
   if (!pluginRegistry.hasPlugin(schemaId)) {
     log.debug(`Skipping unregister, plugin not found: ${schemaId}`);

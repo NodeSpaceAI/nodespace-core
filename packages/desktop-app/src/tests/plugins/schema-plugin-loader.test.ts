@@ -17,7 +17,14 @@ import {
 } from '$lib/plugins/schema-plugin-loader';
 import type { SchemaNode } from '$lib/types/schema-node';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
+import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
 import { backendAdapter } from '$lib/services/backend-adapter';
+import {
+  TEST_EXTENSION_ID,
+  TEST_NODE_TYPE,
+  createTestExtension,
+  resetTestExtension
+} from '../fixtures/test-extension';
 
 // Mock backend adapter
 vi.mock('$lib/services/backend-adapter', () => ({
@@ -443,5 +450,83 @@ describe('Schema Plugin Loader - resyncSchemaPluginsForDatabaseSwitch()', () => 
     await resyncSchemaPluginsForDatabaseSwitch();
 
     expect(pluginRegistry.hasPlugin('task')).toBe(true);
+  });
+});
+
+describe('Schema Plugin Loader - a type an extension registered', () => {
+  beforeEach(() => {
+    pluginRegistry.clear();
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+    resetTestExtension();
+    pluginRegistry.clear();
+  });
+
+  /** The plugin the fixture extension registered for its type. */
+  function registerFixture() {
+    uiExtensionRegistry.register(createTestExtension());
+    const plugin = pluginRegistry.getPlugin(TEST_NODE_TYPE);
+    expect(plugin?.node?.lazyLoad).toBeTypeOf('function');
+    return plugin;
+  }
+
+  it("keeps the extension's plugin when the type's schema is registered", async () => {
+    const extensionPlugin = registerFixture();
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(createMockSchemaNode(TEST_NODE_TYPE));
+
+    await registerSchemaPlugin(TEST_NODE_TYPE);
+
+    expect(pluginRegistry.getPlugin(TEST_NODE_TYPE)).toBe(extensionPlugin);
+    expect(backendAdapter.getSchema).not.toHaveBeenCalled();
+  });
+
+  it("keeps the extension's plugin when the type's schema is deleted", () => {
+    const extensionPlugin = registerFixture();
+
+    unregisterSchemaPlugin(TEST_NODE_TYPE);
+
+    expect(pluginRegistry.getPlugin(TEST_NODE_TYPE)).toBe(extensionPlugin);
+  });
+
+  it("keeps the extension's plugin across a switch to a database without the type", async () => {
+    // The schema plugin was registered before the extension took the type over,
+    // so this module still tracks the id when the switch drops it.
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(createMockSchemaNode(TEST_NODE_TYPE));
+    await registerSchemaPlugin(TEST_NODE_TYPE);
+    const extensionPlugin = registerFixture();
+    vi.mocked(backendAdapter.getAllSchemas).mockResolvedValue([]);
+
+    await resyncSchemaPluginsForDatabaseSwitch();
+
+    expect(pluginRegistry.getPlugin(TEST_NODE_TYPE)).toBe(extensionPlugin);
+  });
+
+  it("keeps the extension's plugin across a switch to a database with the type", async () => {
+    const extensionPlugin = registerFixture();
+    const schemas = [createMockSchemaNode(TEST_NODE_TYPE), createMockSchemaNode('invoice')];
+    vi.mocked(backendAdapter.getAllSchemas).mockResolvedValue(schemas);
+    vi.mocked(backendAdapter.getSchema).mockImplementation(
+      async (id) => schemas.find((schema) => schema.id === id)!
+    );
+
+    await resyncSchemaPluginsForDatabaseSwitch();
+
+    expect(pluginRegistry.getPlugin(TEST_NODE_TYPE)).toBe(extensionPlugin);
+    // Other custom types still register as usual.
+    expect(pluginRegistry.hasPlugin('invoice')).toBe(true);
+  });
+
+  it('registers the type from its schema again once the extension is unregistered', async () => {
+    registerFixture();
+    uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(createMockSchemaNode(TEST_NODE_TYPE));
+
+    await registerSchemaPlugin(TEST_NODE_TYPE);
+
+    expect(pluginRegistry.getPlugin(TEST_NODE_TYPE)?.node).toBeUndefined();
+    expect(pluginRegistry.hasPlugin(TEST_NODE_TYPE)).toBe(true);
   });
 });

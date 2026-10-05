@@ -28,13 +28,16 @@ import {
 } from '../fixtures/test-extension';
 
 // Convert mock data to CollectionInfo format for testing
-function createTestCollectionInfo(item: CollectionItem, parentId?: string): CollectionInfo {
+function createTestCollectionInfo(
+  item: Omit<CollectionItem, 'nodeType'> & { nodeType?: string },
+  parentId?: string
+): CollectionInfo {
   return {
     lifecycleStatus: 'active',
     id: item.id,
     content: item.name,
     memberCount: item.memberCount,
-    nodeType: 'collection',
+    nodeType: item.nodeType ?? 'collection',
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
     version: 1,
@@ -678,6 +681,30 @@ describe('Collections Store', () => {
     });
   });
 
+  describe('buildCollectionsTree node types', () => {
+    it("carries each collection's node type, a subtype's included, at every level", () => {
+      const tree = buildCollectionsTree([
+        { ...createTestCollectionInfo({ id: 'top', name: 'Top', nodeType: 'collection', memberCount: 1 }) },
+        {
+          ...createTestCollectionInfo(
+            { id: 'mid', name: 'Mid', nodeType: 'team-collection', memberCount: 1 },
+            'top'
+          )
+        },
+        {
+          ...createTestCollectionInfo(
+            { id: 'leaf', name: 'Leaf', nodeType: 'collection', memberCount: 1 },
+            'mid'
+          )
+        }
+      ]);
+
+      expect(tree[0].nodeType).toBe('collection');
+      expect(tree[0].children?.[0].nodeType).toBe('team-collection');
+      expect(tree[0].children?.[0].children?.[0].nodeType).toBe('collection');
+    });
+  });
+
   describe('buildCollectionsTree root filtering', () => {
     // A root collection: a container the tree does not show. Collections whose
     // only parent is a root show at the top level instead of nesting under it.
@@ -963,12 +990,14 @@ describe('Collections Store', () => {
       const item: CollectionItem = {
         id: 'test-id',
         name: 'Test Name',
+        nodeType: 'collection',
         memberCount: 5,
-        children: [{ id: 'child-id', name: 'Child Name', memberCount: 2 }]
+        children: [{ id: 'child-id', name: 'Child Name', nodeType: 'collection', memberCount: 2 }]
       };
 
       expect(item.id).toBe('test-id');
       expect(item.name).toBe('Test Name');
+      expect(item.nodeType).toBe('collection');
       expect(item.memberCount).toBe(5);
       expect(item.children).toHaveLength(1);
     });

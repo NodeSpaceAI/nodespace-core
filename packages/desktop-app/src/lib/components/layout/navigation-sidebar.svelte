@@ -11,10 +11,15 @@
   } from '$lib/stores/layout.svelte';
   import { navigationStore, setActiveTab, addTab } from '$lib/stores/navigation.svelte';
   import { openSettings } from '$lib/utils/open-settings';
-  import { collectionsState, collectionsData } from '$lib/stores/collections.svelte';
+  import {
+    collectionsState,
+    collectionsData,
+    type CollectionItem
+  } from '$lib/stores/collections.svelte';
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { getNavigationService } from '$lib/services/navigation-service';
   import CollectionSubPanel from './collection-sub-panel.svelte';
+  import TreeItemActionsOutlet from '$lib/plugins/tree-item-actions-outlet.svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { databaseStore } from '$lib/stores/database.svelte';
   import { seedUpdatesStore } from '$lib/stores/seed-updates.svelte';
@@ -448,6 +453,7 @@
                 >
                   {collection.name}
                 </button>
+                {@render treeItemActions(collection)}
               </div>
 
               <!-- Level 2 -->
@@ -482,6 +488,7 @@
                     >
                       {child.name}
                     </button>
+                    {@render treeItemActions(child)}
                   </div>
 
                   <!-- Level 3 -->
@@ -495,6 +502,7 @@
                         >
                           {grandchild.name}
                         </button>
+                        {@render treeItemActions(grandchild)}
                       </div>
                     {/each}
                   {/if}
@@ -827,6 +835,14 @@
   </div>
 
 </nav>
+
+<!-- Extension actions on a collection-tree item (ADR-082 §3.2). An optimistic
+     item has a temporary id, so it gets none until the database confirms it. -->
+{#snippet treeItemActions(item: CollectionItem)}
+  {#if !item.pending}
+    <TreeItemActionsOutlet nodeId={item.id} nodeType={item.nodeType} />
+  {/if}
+{/snippet}
 
 {#snippet playsIcon()}
   <svg
@@ -1189,6 +1205,18 @@
   /* Optimistically-inserted collection awaiting backend confirmation */
   .collection-item.pending .collection-name-btn {
     opacity: 0.6;
+  }
+
+  /* Extension actions on a tree item show while the row is hovered or holds
+     focus. Opacity, not visibility, keeps them in the tab order, so tabbing onto
+     one reveals it. */
+  .collection-item :global(.tree-item-actions) {
+    opacity: 0;
+  }
+
+  .collection-item:hover :global(.tree-item-actions),
+  .collection-item:focus-within :global(.tree-item-actions) {
+    opacity: 1;
   }
 
   /* Expand chevron inside collection item */

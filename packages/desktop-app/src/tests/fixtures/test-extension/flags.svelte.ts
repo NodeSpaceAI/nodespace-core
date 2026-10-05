@@ -2,6 +2,8 @@
  * Reactive switches for the test extension, read by its `when()` predicates.
  * Flipping one inside a test re-runs whatever host is rendering the registry.
  */
+import type { TreeItemActionProps } from '@nodespace/extension-api';
+
 export const testExtensionFlags = $state({
   overlay: false,
   modal: false,
@@ -33,7 +35,24 @@ export const testExtensionFlags = $state({
   /** Shows a `collaboration.entry` contribution whose component throws while rendering. */
   collaborationEntryThrowing: false,
   /** The collection ids the fixture's `collectionTreeRoots` returns. */
-  collectionTreeRoots: [] as string[]
+  collectionTreeRoots: [] as string[],
+  /** Shows the tree-item action on every item not in `treeActionHiddenFor`. */
+  treeAction: false,
+  /** Node ids the tree-item action's `when(item)` hides it on. */
+  treeActionHiddenFor: [] as string[],
+  /** Shows the second tree-item action (higher priority than the first). */
+  treeActionSecondary: false,
+  /** Node ids a tree-item action's `when(item)` throws for. */
+  treeActionThrowingFor: [] as string[],
+  /** Shows a tree-item action whose `load()` rejects. */
+  treeActionFailingLoad: false,
+  /** Shows a tree-item action whose component throws while rendering. */
+  treeActionThrowing: false,
+  /**
+   * The item the tree-item action last opened, which shows the fixture's
+   * `app-shell-modal` contribution; `null` hides it.
+   */
+  openedTreeItem: null as TreeItemActionProps | null
 });
 
 /** How many times each fixture component has mounted, by component name. */
@@ -62,5 +81,12 @@ export function resetTestExtension(): void {
   testExtensionFlags.collaborationEntryFailingLoad = false;
   testExtensionFlags.collaborationEntryThrowing = false;
   testExtensionFlags.collectionTreeRoots = [];
+  testExtensionFlags.treeAction = false;
+  testExtensionFlags.treeActionHiddenFor = [];
+  testExtensionFlags.treeActionSecondary = false;
+  testExtensionFlags.treeActionThrowingFor = [];
+  testExtensionFlags.treeActionFailingLoad = false;
+  testExtensionFlags.treeActionThrowing = false;
+  testExtensionFlags.openedTreeItem = null;
   for (const name of Object.keys(testExtensionMounts)) delete testExtensionMounts[name];
 }

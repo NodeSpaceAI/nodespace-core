@@ -19,6 +19,8 @@
  *   - the `virtual:nodespace-extensions` contract and the `NODESPACE_EXTENSIONS`
  *     variable;
  *   - slot ids, their host props and mount semantics;
+ *   - node-type registration through `nodeTypes`, and the `PluginDefinition`
+ *     and node-component types it takes;
  *   - contribution failure behaviour (ADR-082 §3.4);
  *   - hook timing, as `plugins/extension-lifecycle.ts` documents it.
  *
@@ -60,6 +62,7 @@ export type {
   CollectionTreeRootsContribution,
   Contribution,
   ExtensionLifecycle,
+  NodeTypeContribution,
   NodespaceExtension,
   ReplaceableSlot,
   ReplaceableSlotContribution,
@@ -67,8 +70,20 @@ export type {
   SettingsSlot,
   SettingsSlotContribution,
   SettingsSlotContributionFor,
+  TreeItemActionContribution,
+  TreeItemActionProps,
   ViewerTabContribution
 } from '$lib/plugins/ui-extensions';
+
+// --- Node types -----------------------------------------------------------------
+
+/**
+ * What a `nodeTypes` entry registers with core's plugin registry (ADR-082
+ * §2.1): the type's `PluginDefinition`, and the component types and props its
+ * node component takes.
+ */
+export type { NodeComponent, PluginDefinition } from '$lib/plugins/types';
+export type { NodeComponentProps } from '$lib/types/node-viewers';
 
 // --- Databases ------------------------------------------------------------------
 

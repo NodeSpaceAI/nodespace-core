@@ -8,39 +8,43 @@ export const mockCollections: CollectionItem[] = [
   {
     id: 'col-1',
     name: 'Project Ideas',
+    nodeType: 'collection',
     memberCount: 3,
     children: [
       {
         id: 'col-1-1',
         name: 'AI Features and Machine Learning Integration',
+        nodeType: 'collection',
         memberCount: 2,
         children: [
-          { id: 'col-1-1-1', name: 'Natural Language Processing Research', memberCount: 1 },
-          { id: 'col-1-1-2', name: 'Vector Embeddings and Semantic Search', memberCount: 1 }
+          { id: 'col-1-1-1', name: 'Natural Language Processing Research', nodeType: 'collection', memberCount: 1 },
+          { id: 'col-1-1-2', name: 'Vector Embeddings and Semantic Search', nodeType: 'collection', memberCount: 1 }
         ]
       },
-      { id: 'col-1-2', name: 'UI Improvements', memberCount: 1 }
+      { id: 'col-1-2', name: 'UI Improvements', nodeType: 'collection', memberCount: 1 }
     ]
   },
   {
     id: 'col-2',
     name: 'Meeting Notes',
+    nodeType: 'collection',
     memberCount: 2,
     children: [
-      { id: 'col-2-1', name: '2025 Q1', memberCount: 1 },
+      { id: 'col-2-1', name: '2025 Q1', nodeType: 'collection', memberCount: 1 },
       {
         id: 'col-2-2',
         name: '2024 Q4',
+        nodeType: 'collection',
         memberCount: 1,
         children: [
-          { id: 'col-2-2-1', name: 'Sprint Reviews', memberCount: 1 },
-          { id: 'col-2-2-2', name: 'Retrospectives', memberCount: 1 }
+          { id: 'col-2-2-1', name: 'Sprint Reviews', nodeType: 'collection', memberCount: 1 },
+          { id: 'col-2-2-2', name: 'Retrospectives', nodeType: 'collection', memberCount: 1 }
         ]
       }
     ]
   },
-  { id: 'col-3', name: 'Research Papers', memberCount: 0 },
-  { id: 'col-4', name: 'Reading List', memberCount: 4 }
+  { id: 'col-3', name: 'Research Papers', nodeType: 'collection', memberCount: 0 },
+  { id: 'col-4', name: 'Reading List', nodeType: 'collection', memberCount: 4 }
 ];
 
 export const mockMembers: Record<string, CollectionMember[]> = {

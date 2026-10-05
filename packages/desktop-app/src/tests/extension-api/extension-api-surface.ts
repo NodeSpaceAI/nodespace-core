@@ -23,8 +23,17 @@ export const SNAPSHOT_FILE = path.join(
 export const RERECORD_COMMAND =
   'UPDATE_EXTENSION_API_SURFACE=1 bun run --cwd packages/desktop-app test src/tests/extension-api';
 
-/** The registry module whose types the API re-exports. */
-export const REGISTRY_FILE = path.join(LIB_ROOT, 'plugins/ui-extensions.ts');
+/**
+ * The core modules whose types the API re-exports, and whose declarations the
+ * hash follows: the extension registry, and the plugin-registry and
+ * node-component types a node-type contribution takes. A name declared in more
+ * than one resolves to the earliest file listed.
+ */
+export const REGISTRY_FILES = [
+  path.join(LIB_ROOT, 'plugins/ui-extensions.ts'),
+  path.join(LIB_ROOT, 'plugins/types.ts'),
+  path.join(LIB_ROOT, 'types/node-viewers.ts')
+];
 
 /**
  * Each entry of the host API, by name, and the file that implements it. The
@@ -72,9 +81,9 @@ export interface SurfaceSnapshot extends Surface {
  * The type declarations the hash covers:
  *   - every one in the host API's own files, exported or not, since they exist
  *     only to type the API (the shape of the `nodes` facade, for one);
- *   - each registry declaration the API reaches: one an entry exports, or one
- *     that a covered declaration mentions, transitively. A registry type only the
- *     hosts use is left out.
+ *   - each declaration of the {@link REGISTRY_FILES} the API reaches: one an
+ *     entry exports, or one that a covered declaration mentions, transitively.
+ *     A registry type only the hosts use is left out.
  * Types the API re-exports from other core modules, such as `DatabaseInfo`, are
  * not covered.
  */
@@ -90,7 +99,12 @@ export function apiTypeDeclarations(): Map<string, TypeDeclaration> {
     }
   }
 
-  const registry = typeDeclarations(REGISTRY_FILE);
+  const registry = new Map<string, TypeDeclaration>();
+  for (const file of REGISTRY_FILES) {
+    for (const [name, declaration] of typeDeclarations(file)) {
+      if (!registry.has(name)) registry.set(name, declaration);
+    }
+  }
   const pending = [...reachable];
   while (pending.length > 0) {
     const name = pending.pop() as string;

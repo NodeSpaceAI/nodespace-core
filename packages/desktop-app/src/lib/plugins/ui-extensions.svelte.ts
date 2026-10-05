@@ -12,7 +12,9 @@
  *
  * A throwing `when()` counts as false and is logged once per contribution key
  * (ADR-082 §3.4); it is logged again only after it has returned normally in
- * between.
+ * between. A tree-item action's `when(item)` is asked once per item, and the
+ * same rule holds across items: a throw is logged when the contribution last
+ * returned normally, on whichever item.
  */
 
 import {
@@ -26,6 +28,8 @@ import {
   type SettingsSectionContribution,
   type SettingsSlot,
   type SettingsSlotContributionFor,
+  type TreeItemActionContribution,
+  type TreeItemActionProps,
   type ViewerTabContribution
 } from './ui-extensions';
 import { createLogger } from '$lib/utils/logger';
@@ -35,20 +39,25 @@ const log = createLogger('UiExtensions');
 /** Keys whose `when()` threw and has not returned normally since. */
 const warnedKeys = new Set<string>();
 
-/** Whether a contribution should be shown now: no `when` means always. */
-export function isContributionActive(c: Pick<Keyed<Contribution>, 'key' | 'when'>): boolean {
-  if (!c.when) return true;
+/** Runs the `when()` of the contribution keyed `key`; a throw counts as false. */
+function holds(key: string, when: () => unknown): boolean {
   try {
-    const active = Boolean(c.when());
-    warnedKeys.delete(c.key);
+    const active = Boolean(when());
+    warnedKeys.delete(key);
     return active;
   } catch (error) {
-    if (!warnedKeys.has(c.key)) {
-      warnedKeys.add(c.key);
-      log.warn('Contribution when() threw; treating it as false', { key: c.key, error });
+    if (!warnedKeys.has(key)) {
+      warnedKeys.add(key);
+      log.warn('Contribution when() threw; treating it as false', { key, error });
     }
     return false;
   }
+}
+
+/** Whether a contribution should be shown now: no `when` means always. */
+export function isContributionActive(c: Pick<Keyed<Contribution>, 'key' | 'when'>): boolean {
+  if (!c.when) return true;
+  return holds(c.key, () => c.when?.());
 }
 
 /** Chrome contributions for `slot` whose `when()` currently holds. */
@@ -71,6 +80,15 @@ export function getActiveSettingsSlot<S extends SettingsSlot>(
   slot: S
 ): Keyed<SettingsSlotContributionFor<S>>[] {
   return uiExtensionRegistry.settingsSlotFor(slot).filter(isContributionActive);
+}
+
+/** Tree-item actions whose `when(item)` currently holds for `item`, in priority order. */
+export function getActiveTreeItemActions(
+  item: TreeItemActionProps
+): Keyed<TreeItemActionContribution>[] {
+  return uiExtensionRegistry
+    .treeItemActions()
+    .filter((c) => !c.when || holds(c.key, () => c.when?.(item)));
 }
 
 /** What a replaceable-slot host renders; see {@link getReplaceableSlot}. */

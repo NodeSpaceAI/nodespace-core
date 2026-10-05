@@ -28,18 +28,23 @@ import {
   type ReplaceableSlotContribution,
   type SettingsSectionContribution,
   type SettingsSlotContribution,
+  type TreeItemActionContribution,
   type ViewerTabContribution
 } from '$lib/plugins/ui-extensions';
+import { PluginRegistry, pluginRegistry } from '$lib/plugins/plugin-registry';
+import type { PluginDefinition } from '$lib/plugins/types';
 import {
   getActiveChromeContributions,
   getActiveSettingsSections,
   getActiveSettingsSlot,
+  getActiveTreeItemActions,
   getActiveViewerTabs,
   getReplaceableSlot,
   isContributionActive
 } from '$lib/plugins/ui-extensions.svelte';
 import {
   TEST_EXTENSION_ID,
+  TEST_NODE_TYPE,
   createTestExtension,
   resetTestExtension,
   testExtensionFlags
@@ -78,6 +83,17 @@ function entry(
   extra: Partial<ReplaceableSlotContribution> = {}
 ): ReplaceableSlotContribution {
   return { id, slot: 'collaboration.entry', load: noComponent, ...extra };
+}
+
+function action(
+  id: string,
+  extra: Partial<TreeItemActionContribution> = {}
+): TreeItemActionContribution {
+  return { id, load: noComponent, ...extra };
+}
+
+function plugin(id: string): PluginDefinition {
+  return { id, name: id, description: id, version: '1.0.0', config: { slashCommands: [] } };
 }
 
 function ext(id: string, rest: Partial<NodespaceExtension> = {}): NodespaceExtension {
@@ -1123,5 +1139,335 @@ describe('UiExtensionRegistry collection-tree roots', () => {
 
       expect([...uiExtensionRegistry.collectionTreeRoots()]).toEqual(['custom']);
     });
+  });
+});
+
+describe('UiExtensionRegistry node types', () => {
+  let plugins: PluginRegistry;
+  let registry: UiExtensionRegistry;
+
+  beforeEach(() => {
+    plugins = new PluginRegistry();
+    registry = new UiExtensionRegistry(plugins);
+  });
+
+  it('registers each plugin with the plugin registry it was given', () => {
+    const note = plugin('ext-note');
+    const card = plugin('ext-card');
+    registry.register(ext('a', { nodeTypes: [{ plugin: note }, { plugin: card }] }));
+
+    expect(plugins.getPlugin('ext-note')).toBe(note);
+    expect(plugins.getPlugin('ext-card')).toBe(card);
+    expect(registry.hasNodeType('ext-note')).toBe(true);
+    expect(registry.hasNodeType('ext-card')).toBe(true);
+    expect(registry.hasNodeType('other')).toBe(false);
+  });
+
+  it.each(['collection', 'database-settings'])(
+    'drops a plugin for the core type %s, keeps the rest, and logs',
+    (coreType) => {
+      registry.register(
+        ext('a', { nodeTypes: [{ plugin: plugin(coreType) }, { plugin: plugin('ext-note') }] })
+      );
+
+      expect(plugins.hasPlugin(coreType)).toBe(false);
+      expect(registry.hasNodeType(coreType)).toBe(false);
+      expect(plugins.hasPlugin('ext-note')).toBe(true);
+      expect(log.error).toHaveBeenCalledWith(
+        expect.stringContaining('core type'),
+        expect.objectContaining({ extensionId: 'a', nodeType: coreType })
+      );
+    }
+  );
+
+  it('keeps the first extension’s plugin for a type two extensions add, and logs', () => {
+    const first = plugin('ext-note');
+    registry.register(ext('a', { nodeTypes: [{ plugin: first }] }));
+    registry.register(ext('b', { nodeTypes: [{ plugin: plugin('ext-note') }] }));
+
+    expect(plugins.getPlugin('ext-note')).toBe(first);
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining('already registered by an extension'),
+      expect.objectContaining({ extensionId: 'b', nodeType: 'ext-note' })
+    );
+
+    // Unregistering the extension that lost leaves the winner's plugin in place.
+    registry.unregister('b');
+    expect(plugins.getPlugin('ext-note')).toBe(first);
+  });
+
+  it('keeps the first of a type repeated within one extension', () => {
+    const first = plugin('ext-note');
+    registry.register(ext('a', { nodeTypes: [{ plugin: first }, { plugin: plugin('ext-note') }] }));
+
+    expect(plugins.getPlugin('ext-note')).toBe(first);
+    expect(log.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops malformed entries and a non-array list without throwing', () => {
+    const bad = {
+      id: 'bad',
+      apiVersion: 2,
+      nodeTypes: [null, {}, { plugin: { name: 'no id' } }, { plugin: plugin('') }, { plugin: plugin('fine') }]
+    } as unknown as NodespaceExtension;
+    const notArray = { id: 'not-array', apiVersion: 2, nodeTypes: 'nope' } as unknown as NodespaceExtension;
+
+    expect(() => {
+      registry.register(bad);
+      registry.register(notArray);
+    }).not.toThrow();
+    expect(plugins.getAllPlugins().map((p) => p.id)).toEqual(['fine']);
+    expect(registry.has('not-array')).toBe(true);
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining('not an array'),
+      expect.objectContaining({ extensionId: 'not-array', list: 'nodeTypes' })
+    );
+  });
+
+  it('registers no type for an extension that is itself refused', () => {
+    registry.register(ext('a', { nodeTypes: [{ plugin: plugin('ext-a') }] }));
+    // Same id, different object: refused, so its type must not reach the plugin registry.
+    registry.register(ext('a', { nodeTypes: [{ plugin: plugin('ext-duplicate') }] }));
+    registry.register({
+      id: 'old',
+      apiVersion: 1,
+      nodeTypes: [{ plugin: plugin('ext-old') }]
+    } as unknown as NodespaceExtension);
+
+    expect(plugins.getAllPlugins().map((p) => p.id)).toEqual(['ext-a']);
+  });
+
+  it('registers no type when reading another contribution list throws', () => {
+    const throwing = {
+      id: 'throwing',
+      apiVersion: 2,
+      nodeTypes: [{ plugin: plugin('ext-note') }],
+      get chrome(): never {
+        throw new Error('getter failed');
+      }
+    } as unknown as NodespaceExtension;
+
+    registry.register(throwing);
+
+    expect(registry.has('throwing')).toBe(false);
+    expect(plugins.hasPlugin('ext-note')).toBe(false);
+  });
+
+  it('drops a plugin the plugin registry fails to register, and keeps the rest', () => {
+    const failing = plugin('ext-failing');
+    const register = plugins.register.bind(plugins);
+    vi.spyOn(plugins, 'register').mockImplementation((p) => {
+      if (p === failing) throw new Error('register failed');
+      register(p);
+    });
+
+    registry.register(ext('a', { nodeTypes: [{ plugin: failing }, { plugin: plugin('ext-note') }] }));
+
+    expect(registry.has('a')).toBe(true);
+    expect(registry.hasNodeType('ext-failing')).toBe(false);
+    expect(registry.hasNodeType('ext-note')).toBe(true);
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining('failed to register'),
+      expect.objectContaining({ extensionId: 'a', nodeType: 'ext-failing' })
+    );
+  });
+
+  it('removes the extension’s types from the plugin registry when it is unregistered', () => {
+    registry.register(ext('a', { nodeTypes: [{ plugin: plugin('ext-note') }] }));
+    registry.unregister('a');
+
+    expect(plugins.hasPlugin('ext-note')).toBe(false);
+    expect(registry.hasNodeType('ext-note')).toBe(false);
+  });
+
+  it('leaves a type whose plugin was replaced since to its new owner', () => {
+    registry.register(ext('a', { nodeTypes: [{ plugin: plugin('ext-note') }] }));
+    const replacement = plugin('ext-note');
+    plugins.register(replacement);
+
+    registry.unregister('a');
+
+    expect(plugins.getPlugin('ext-note')).toBe(replacement);
+  });
+
+  it('uses the process-wide plugin registry by default', () => {
+    const shared = new UiExtensionRegistry();
+    const note = plugin('ext-default-registry');
+    try {
+      shared.register(ext('a', { nodeTypes: [{ plugin: note }] }));
+      expect(pluginRegistry.getPlugin('ext-default-registry')).toBe(note);
+    } finally {
+      shared.unregister('a');
+    }
+    expect(pluginRegistry.hasPlugin('ext-default-registry')).toBe(false);
+  });
+});
+
+describe('UiExtensionRegistry tree-item actions', () => {
+  let registry: UiExtensionRegistry;
+
+  beforeEach(() => {
+    registry = new UiExtensionRegistry(new PluginRegistry());
+  });
+
+  it('is empty with no action registered', () => {
+    registry.register(ext('a', { chrome: [chrome('one')] }));
+
+    expect(registry.treeItemActions()).toEqual([]);
+  });
+
+  it('keys an action as <extension id>/<contribution id> and carries the extension id', () => {
+    registry.register(ext('ext', { treeItemActions: [action('lock')] }));
+
+    expect(registry.treeItemActions()[0]).toMatchObject({
+      id: 'lock',
+      key: 'ext/lock',
+      extensionId: 'ext'
+    });
+  });
+
+  it('orders by descending priority, ties in registration order', () => {
+    registry.register(
+      ext('a', { treeItemActions: [action('a-plain'), action('a-boosted', { priority: 3 })] })
+    );
+    registry.register(
+      ext('b', { treeItemActions: [action('b-boosted', { priority: 3 }), action('b-plain')] })
+    );
+
+    expect(keysOf(registry.treeItemActions())).toEqual([
+      'a/a-boosted',
+      'b/b-boosted',
+      'a/a-plain',
+      'b/b-plain'
+    ]);
+  });
+
+  it('treats a contribution id as unique across the extension’s lists', () => {
+    registry.register(
+      ext('a', { chrome: [chrome('shared')], treeItemActions: [action('shared'), action('own')] })
+    );
+
+    expect(keysOf(registry.treeItemActions())).toEqual(['a/own']);
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining('Duplicate contribution id'),
+      expect.objectContaining({ extensionId: 'a', contributionId: 'shared' })
+    );
+  });
+
+  it('drops an action whose key another extension already holds', () => {
+    registry.register(ext('a', { treeItemActions: [action('b/x')] }));
+    registry.register(ext('a/b', { treeItemActions: [action('x'), action('y')] }));
+
+    expect(keysOf(registry.treeItemActions())).toEqual(['a/b/x', 'a/b/y']);
+    expect(registry.treeItemActions()[0].extensionId).toBe('a');
+  });
+
+  it('drops malformed entries and a non-array list without throwing', () => {
+    const bad = {
+      id: 'bad',
+      apiVersion: 2,
+      treeItemActions: [{ id: 'no-load' }, action('fine')]
+    } as unknown as NodespaceExtension;
+    const notArray = { id: 'not-array', apiVersion: 2, treeItemActions: 'nope' } as unknown as NodespaceExtension;
+
+    expect(() => {
+      registry.register(bad);
+      registry.register(notArray);
+    }).not.toThrow();
+    expect(keysOf(registry.treeItemActions())).toEqual(['bad/fine']);
+  });
+
+  it('forgets an extension’s actions when it is unregistered', () => {
+    registry.register(ext('a', { treeItemActions: [action('one')] }));
+    registry.unregister('a');
+
+    expect(registry.treeItemActions()).toEqual([]);
+  });
+
+  it('never evaluates when()', () => {
+    const when = vi.fn(() => false);
+    registry.register(ext('a', { treeItemActions: [action('one', { when })] }));
+
+    expect(keysOf(registry.treeItemActions())).toEqual(['a/one']);
+    expect(when).not.toHaveBeenCalled();
+  });
+});
+
+describe('getActiveTreeItemActions', () => {
+  const item = { nodeId: 'engineering', nodeType: 'collection' };
+
+  afterEach(() => {
+    uiExtensionRegistry.unregister('tree-actions');
+    uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+    resetTestExtension();
+  });
+
+  it('is empty with no extension registered', () => {
+    expect(getActiveTreeItemActions(item)).toEqual([]);
+  });
+
+  it('asks when() about the item, and keeps an action without one', () => {
+    const when = vi.fn(() => true);
+    uiExtensionRegistry.register(
+      ext('tree-actions', { treeItemActions: [action('asks', { when }), action('always')] })
+    );
+
+    expect(keysOf(getActiveTreeItemActions(item))).toEqual([
+      'tree-actions/asks',
+      'tree-actions/always'
+    ]);
+    expect(when).toHaveBeenCalledWith(item);
+  });
+
+  it('shows an action on the items its when(item) holds for, and hides it on the others', () => {
+    uiExtensionRegistry.register(createTestExtension());
+    testExtensionFlags.treeAction = true;
+    testExtensionFlags.treeActionHiddenFor = ['design'];
+
+    expect(keysOf(getActiveTreeItemActions(item))).toEqual([`${TEST_EXTENSION_ID}/tree-action`]);
+    expect(getActiveTreeItemActions({ nodeId: 'design', nodeType: 'collection' })).toEqual([]);
+
+    testExtensionFlags.treeAction = false;
+    expect(getActiveTreeItemActions(item)).toEqual([]);
+  });
+
+  it('orders the visible actions by priority', () => {
+    uiExtensionRegistry.register(createTestExtension());
+    testExtensionFlags.treeAction = true;
+    testExtensionFlags.treeActionSecondary = true;
+
+    expect(keysOf(getActiveTreeItemActions(item))).toEqual([
+      `${TEST_EXTENSION_ID}/tree-action-secondary`,
+      `${TEST_EXTENSION_ID}/tree-action`
+    ]);
+  });
+
+  it('hides an action whose when(item) throws, keeps its siblings, and warns once', () => {
+    uiExtensionRegistry.register(createTestExtension());
+    testExtensionFlags.treeAction = true;
+    testExtensionFlags.treeActionThrowingFor = ['engineering'];
+
+    expect(keysOf(getActiveTreeItemActions(item))).toEqual([`${TEST_EXTENSION_ID}/tree-action`]);
+    getActiveTreeItemActions(item);
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('when() threw'),
+      expect.objectContaining({ key: `${TEST_EXTENSION_ID}/tree-action-throwing-when` })
+    );
+
+    // Returning normally, on any item, re-arms the warning.
+    getActiveTreeItemActions({ nodeId: 'design', nodeType: 'collection' });
+    getActiveTreeItemActions(item);
+    expect(log.warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('lists the fixture’s node type while the fixture is registered', () => {
+    uiExtensionRegistry.register(createTestExtension());
+
+    expect(uiExtensionRegistry.hasNodeType(TEST_NODE_TYPE)).toBe(true);
+    expect(pluginRegistry.hasPlugin(TEST_NODE_TYPE)).toBe(true);
+
+    uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
+    expect(pluginRegistry.hasPlugin(TEST_NODE_TYPE)).toBe(false);
   });
 });
