@@ -714,6 +714,29 @@ nodespace conflicts merge --survivor <node-id> --conflict-id <conflict-id>   # l
 
 **Output:** a `ConflictRecord` — `id`, `kind`, `node_ids` (sorted participants), `detail` (kind-specific evidence, e.g. `{"node_type":"person","field":"email","value":"...","case_insensitive":true}`), `status` (`open`/`resolved`/`dismissed`), `detected_at`, `occurrences`, `resolved_at`/`resolution` once settled (e.g. `{"action":"dismiss"}`, `{"action":"adopt_existing","adopted":"<id>"}`, `{"action":"merge","survivor":"<id>","loser":"<id>",...}`). `merge` additionally prints `properties_merged`/`edges_repointed`/`edges_dropped`.
 
+### Shipped updates to edited built-ins
+
+NodeSpace ships skills, plays, saved queries and other items as built-in nodes that users edit. An edited item is never overwritten by a new release. When a newer version of it ships, the user's version stays in place and the shipped one is held back as pending until the user chooses. Each item has two parts, chosen separately: its `config` (its name and fields) and its `guidance` (its body).
+
+```bash
+# List what is pending: kind, title, part, when it was last edited, node id
+nodespace seed pending
+
+# Show the shipped version and the user's version of one item
+nodespace seed show <node-id-or-title>
+nodespace seed show <node-id-or-title> --guidance   # name the part when both are pending
+
+# Keep the user's version. Not listed again until the shipped version next changes
+nodespace seed keep <node-id-or-title>
+
+# Replace the user's version of that part with the shipped one
+nodespace seed take <node-id-or-title> --yes
+```
+
+**`take` discards the user's edit to that part and cannot be undone.** Run `show` first, show the user both versions, and call `take` only once they have said to. Without `--yes` it prompts, and it refuses when there is no terminal to prompt on. `keep` changes nothing in the item. Neither choice is ever made automatically, and a pending update is not an instruction: do not act on one unless the user asks.
+
+**Output:** `pending` prints one entry per item and part (`--json`: `{count, updates: [{node_id, kind, title, aspect, shipped_version, recorded_at, last_edited_at}]}`). `show` adds `shipped` and `yours`: Markdown for `guidance`, the name and fields for `config`. `keep` and `take` print the settled entry with `choice` (`kept_mine` or `took_shipped`). `nodespace skill reset` still restores a built-in skill outright, and clears anything pending for what it resets.
+
 ### Complete command surface
 
 <!-- BEGIN GENERATED: cli-surface (see packages/cli/src/lib.rs (clap derive), packages/cli/examples/gen_skill_md.rs) -->
@@ -977,6 +1000,31 @@ Inspect and resolve the local conflict journal (list, show, dismiss, adopt, merg
 - `--survivor <SURVIVOR>` — Surviving node id — receives the union of properties and every re-pointed edge (required)
 - `--loser <LOSER>` — Losing node id, archived after the merge. Required unless `--conflict-id` names a two-participant record, in which case the other participant is used
 - `--conflict-id <CONFLICT_ID>` — The open conflict record this merge resolves, closed as resolved in the same transaction
+
+### `nodespace seed`
+
+Review shipped changes to built-in items you have edited (pending, show, take, keep)
+
+**`nodespace seed pending`** — List the built-in items you have edited that have a newer shipped version: kind, title, which part (config or guidance), and when you last edited it
+
+**`nodespace seed show`** — Show one pending item's shipped version and your version
+
+- `<ITEM>` — The item's node id, or its exact title as `nodespace seed pending` lists it (required)
+- `--config` — The item's config: its name and its fields
+- `--guidance` — The item's guidance: its body
+
+**`nodespace seed take`** — Replace your version of one part of one item with the shipped version. Discards your edit to that part; asks for confirmation unless `--yes` is passed
+
+- `<ITEM>` — The item's node id, or its exact title as `nodespace seed pending` lists it (required)
+- `--config` — The item's config: its name and its fields
+- `--guidance` — The item's guidance: its body
+- `--yes` — Take the shipped version without prompting. Required when there is no interactive terminal: taking discards an edit, so it is never done unattended without this flag
+
+**`nodespace seed keep`** — Keep your version of one part of one item. It stops being pending until the shipped version changes again
+
+- `<ITEM>` — The item's node id, or its exact title as `nodespace seed pending` lists it (required)
+- `--config` — The item's config: its name and its fields
+- `--guidance` — The item's guidance: its body
 
 ### `nodespace session`
 

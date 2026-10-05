@@ -62,6 +62,9 @@ use crate::nodespace::{
     GetRootsRequest, GetSchemaDefinitionRequest, GetSkillRequest, GetWorkflowStateRequest,
     GetWorkflowStateResponse, InstallMethodologyRequest, InstallMethodologyResponse,
     ListConflictsRequest, ListMethodologiesRequest, ListMethodologiesResponse,
+    ListPendingSeedUpdatesRequest, PendingSeedUpdate, PendingSeedUpdateDetail,
+    PendingSeedUpdateListResponse, PendingSeedUpdateRef, ResolvePendingSeedUpdateRequest,
+    ResolvePendingSeedUpdateResponse, SeedUpdateChoice,
     MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
     MergeNodesRequest, MergeNodesResponse, Methodology, MoveChildrenToParentRequest,
     MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
@@ -772,6 +775,100 @@ impl GrpcNodeService for NodeServiceImpl {
             guidance_reset,
             config_summary,
             guidance_summary,
+        }))
+    }
+
+    async fn list_pending_seed_updates(
+        &self,
+        request: Request<ListPendingSeedUpdatesRequest>,
+    ) -> Result<Response<PendingSeedUpdateListResponse>, Status> {
+        let this = self.route(&request).await?;
+        let updates = this
+            .node_service
+            .list_pending_seed_updates()
+            .await
+            .map_err(service_error_to_status)?;
+        Ok(Response::new(PendingSeedUpdateListResponse {
+            updates: updates
+                .into_iter()
+                .map(pending_seed_update_to_proto)
+                .collect(),
+        }))
+    }
+
+    async fn get_pending_seed_update(
+        &self,
+        request: Request<PendingSeedUpdateRef>,
+    ) -> Result<Response<PendingSeedUpdateDetail>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+        let aspect = parse_seed_aspect(&req.aspect)?;
+
+        // Checked before the template is resolved, so "nothing pending" is
+        // told apart from "pending, but this build ships no such seed".
+        if this
+            .node_service
+            .get_pending_seed_update(&req.node_id, aspect)
+            .await
+            .map_err(service_error_to_status)?
+            .is_none()
+        {
+            return Err(no_pending_seed_update(&req.node_id, aspect));
+        }
+        let template = prepared_seed_template(&req.node_id)?;
+        let comparison = this
+            .node_service
+            .compare_pending_seed_update(&template, aspect)
+            .await
+            .map_err(service_error_to_status)?
+            .ok_or_else(|| no_pending_seed_update(&req.node_id, aspect))?;
+
+        Ok(Response::new(PendingSeedUpdateDetail {
+            update: Some(pending_seed_update_to_proto(comparison.update)),
+            shipped: comparison.shipped,
+            yours: comparison.yours,
+        }))
+    }
+
+    async fn resolve_pending_seed_update(
+        &self,
+        request: Request<ResolvePendingSeedUpdateRequest>,
+    ) -> Result<Response<ResolvePendingSeedUpdateResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+        let aspect = parse_seed_aspect(&req.aspect)?;
+        let choice = SeedUpdateChoice::try_from(req.choice)
+            .ok()
+            .filter(|choice| *choice != SeedUpdateChoice::Unspecified)
+            .ok_or_else(|| Status::invalid_argument("choice must be KEEP_MINE or TAKE_SHIPPED"))?;
+
+        let update = this
+            .node_service
+            .get_pending_seed_update(&req.node_id, aspect)
+            .await
+            .map_err(service_error_to_status)?
+            .ok_or_else(|| no_pending_seed_update(&req.node_id, aspect))?;
+
+        let settled = match choice {
+            SeedUpdateChoice::TakeShipped => {
+                let template = prepared_seed_template(&req.node_id)?;
+                this.node_service
+                    .take_seed_update(&template, aspect)
+                    .await
+                    .map_err(service_error_to_status)?
+            }
+            _ => this
+                .node_service
+                .keep_seed_update(&req.node_id, aspect)
+                .await
+                .map_err(service_error_to_status)?,
+        };
+        if !settled {
+            return Err(no_pending_seed_update(&req.node_id, aspect));
+        }
+
+        Ok(Response::new(ResolvePendingSeedUpdateResponse {
+            update: Some(pending_seed_update_to_proto(update)),
         }))
     }
 
@@ -2907,12 +3004,64 @@ fn resolve_seed_template(
     find_unique_seed_template(compiled_seed_templates(), node_type, seed_key)
 }
 
-/// Every compiled seed template, in the order `seed_agent_nodes` seeds them.
+/// Every compiled seed template: the tables `seed_agent_nodes` seeds, in its
+/// order, then the core plays `NodeService::new` seeds.
 fn compiled_seed_templates() -> impl Iterator<Item = nodespace_core::markdown::NodeTemplate> {
     nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
         .into_iter()
         .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
         .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
+        .chain(nodespace_core::playbook::core_plays::core_play_templates())
+}
+
+/// The compiled seed template whose node is `node_id`, expanded. A seeded
+/// node's identity is its fixed id (ADR-086 §10), so the id names its
+/// template.
+///
+/// `FAILED_PRECONDITION` when no compiled table holds that id: the shipped
+/// version of such a seed cannot be shown or taken by this build. Keeping the
+/// user's version needs no template and is still possible.
+fn prepared_seed_template(
+    node_id: &str,
+) -> Result<Vec<nodespace_core::markdown::PreparedNode>, Status> {
+    let template = compiled_seed_templates()
+        .find(|template| template.id == node_id)
+        .ok_or_else(|| {
+            Status::failed_precondition(format!(
+                "this build ships no seed for node '{node_id}', so its shipped version cannot \
+                 be shown or taken"
+            ))
+        })?;
+    nodespace_core::markdown::prepare_nodes_from_template(&template).map_err(|e| {
+        Status::internal(format!(
+            "Failed to expand seed template '{}': {e}",
+            template.title
+        ))
+    })
+}
+
+fn parse_seed_aspect(aspect: &str) -> Result<nodespace_core::models::SeedAspect, Status> {
+    aspect.parse().map_err(Status::invalid_argument)
+}
+
+fn no_pending_seed_update(node_id: &str, aspect: nodespace_core::models::SeedAspect) -> Status {
+    Status::not_found(format!(
+        "no shipped update is pending for the {aspect} of node '{node_id}'"
+    ))
+}
+
+fn pending_seed_update_to_proto(
+    update: nodespace_core::models::PendingSeedUpdate,
+) -> PendingSeedUpdate {
+    PendingSeedUpdate {
+        node_id: update.node_id,
+        node_type: update.node_type,
+        title: update.title,
+        aspect: update.aspect.as_str().to_string(),
+        shipped_version: update.shipped_version,
+        recorded_at: update.recorded_at.to_rfc3339(),
+        last_edited_at: update.last_edited_at.to_rfc3339(),
+    }
 }
 
 /// Pick the single template matching `(node_type, seed_key)`. More than one

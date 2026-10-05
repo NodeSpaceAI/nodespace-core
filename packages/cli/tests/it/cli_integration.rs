@@ -4261,6 +4261,140 @@ async fn skill_reset_discards_modified_guidance_end_to_end() {
     let _ = shutdown.send(());
 }
 
+/// End-to-end: a shipped change to a skill the user edited is listed by
+/// `nodespace seed pending`'s RPC, kept by `seed keep`, and replaced only by
+/// `seed take` (ADR-094 §8). The daemon resolves the node to the real
+/// compiled seed table, so `take` restores the production body.
+#[tokio::test]
+async fn seed_pending_update_is_listed_kept_and_taken_end_to_end() {
+    const RESEARCH_AND_SEARCH: &str = "Research & Search";
+    const USER_BODY: &str = "User's own guidance override.";
+
+    let (sock, shutdown, _tempdir, node_service) = spawn_test_daemon_with_seeded_skills().await;
+    let template = nodespace_agent::skill_pipeline::seed_skill_nodes()
+        .into_iter()
+        .find(|t| t.title == RESEARCH_AND_SEARCH)
+        .expect("Research & Search is a seeded skill");
+    let skill_id = template.id.clone();
+
+    // The user rewrites the first line of the body.
+    let children = node_service.get_children(&skill_id).await.expect("body");
+    let target = children.first().expect("seeded guidance must have a child");
+    node_service
+        .update_node(
+            &target.id,
+            target.version,
+            nodespace_core::models::NodeUpdate::new().with_content(USER_BODY.to_string()),
+        )
+        .await
+        .expect("user edit must succeed");
+
+    // A release ships a different body: what the next open reconciles.
+    let reseed = |suffix: &str| {
+        let mut changed = template.clone();
+        changed.markdown_content.push_str(suffix);
+        nodespace_core::markdown::prepare_nodes_from_template(&changed).expect("template expands")
+    };
+    node_service
+        .seed_nodes_from_templates(vec![reseed("\n\nA line a later release added.")])
+        .await
+        .expect("reseed");
+
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let pending = client
+        .list_pending_seed_updates(nodespace_daemon::nodespace::ListPendingSeedUpdatesRequest {})
+        .await
+        .expect("list")
+        .into_inner()
+        .updates;
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].node_id, skill_id);
+    assert_eq!(pending[0].node_type, "skill");
+    assert_eq!(pending[0].title, RESEARCH_AND_SEARCH);
+    assert_eq!(pending[0].aspect, "guidance");
+
+    let detail = client
+        .get_pending_seed_update(nodespace_daemon::nodespace::PendingSeedUpdateRef {
+            node_id: skill_id.clone(),
+            aspect: "guidance".to_string(),
+        })
+        .await
+        .expect("show")
+        .into_inner();
+    assert!(detail.yours.contains(USER_BODY), "{}", detail.yours);
+    assert!(!detail.shipped.contains(USER_BODY), "{}", detail.shipped);
+    assert!(!detail.shipped.is_empty());
+
+    let item = |aspect: commands::seed::AspectArgs| commands::seed::ItemArgs {
+        item: RESEARCH_AND_SEARCH.to_string(),
+        aspect,
+    };
+
+    // Keep: the edit stays and nothing is pending.
+    commands::seed::run(
+        &mut client,
+        commands::seed::SeedAction::Keep(item(commands::seed::AspectArgs::default())),
+        true,
+    )
+    .await
+    .expect("keep must succeed");
+    let body = |nodes: Vec<nodespace_core::models::Node>| -> Vec<String> {
+        nodes.into_iter().map(|n| n.content).collect()
+    };
+    let after_keep = body(node_service.get_children(&skill_id).await.expect("body"));
+    assert!(after_keep.iter().any(|line| line == USER_BODY));
+    assert!(node_service
+        .list_pending_seed_updates()
+        .await
+        .expect("list")
+        .is_empty());
+    // With nothing pending there is nothing to take.
+    let err = commands::seed::run(
+        &mut client,
+        commands::seed::SeedAction::Take(commands::seed::TakeArgs {
+            item: item(commands::seed::AspectArgs::default()),
+            yes: true,
+        }),
+        true,
+    )
+    .await
+    .expect_err("take with nothing pending must fail");
+    assert!(err.to_string().contains("No shipped update is pending"));
+
+    // The shipped body changes again; this time the user takes it.
+    node_service
+        .seed_nodes_from_templates(vec![reseed("\n\nA line a still later release added.")])
+        .await
+        .expect("reseed");
+    commands::seed::run(
+        &mut client,
+        commands::seed::SeedAction::Take(commands::seed::TakeArgs {
+            item: item(commands::seed::AspectArgs {
+                config: false,
+                guidance: true,
+            }),
+            yes: true,
+        }),
+        true,
+    )
+    .await
+    .expect("take must succeed");
+    let after_take = body(node_service.get_children(&skill_id).await.expect("body"));
+    assert!(
+        after_take.iter().all(|line| line != USER_BODY),
+        "take must replace the user's body"
+    );
+    assert!(node_service
+        .list_pending_seed_updates()
+        .await
+        .expect("list")
+        .is_empty());
+
+    let _ = shutdown.send(());
+}
+
 /// A reset scope flag against a seed key that doesn't exist must report
 /// "not found" rather than erroring or silently succeeding.
 #[tokio::test]

@@ -476,7 +476,7 @@ fn is_bidi_or_invisible_control(c: char) -> bool {
 /// `--json` output is a data structure, not rendered to a screen here, and
 /// mangling raw bytes inside it would make the JSON a lossy copy of what
 /// the graph actually holds.
-fn sanitize_for_terminal(s: &str) -> String {
+pub(crate) fn sanitize_for_terminal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
