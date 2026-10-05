@@ -213,30 +213,33 @@ function buildSection(project: { title: string }, skills: readonly NodespaceSkil
 }
 
 /**
- * What NodeSpace's launch named, taken out of the environment: read once,
- * kept in the session's state, and unset. Left in place the variables would
- * reach every process the agent starts, and a second Claude Code started
- * from the shell tool would report itself as this session and open with its
- * work.
+ * What NodeSpace's launch named: from the environment while it still names
+ * it, and from the session's state once the variables have been removed
+ * (`dropLaunchVariables`). The environment comes first, so state carried
+ * into another process never outranks what that process was launched with.
  */
-async function takeLaunch($: Engine, held: NodespaceSession | null): Promise<NodespaceLaunch | null> {
-  if (held?.launch) {
-    return held.launch
-  }
-
+async function readLaunch($: Engine, held: NodespaceSession | null): Promise<NodespaceLaunch | null> {
   const launchedSession = (await $.env.get('NODESPACE_SESSION')) || ''
 
   if (launchedSession === '') {
-    return null
+    return held?.launch ?? null
   }
 
-  const launchedFor = (await $.env.get('NODESPACE_LAUNCHED_FOR')) || ''
+  return { session: launchedSession, launchedFor: (await $.env.get('NODESPACE_LAUNCHED_FOR')) || '' }
+}
 
-  // A variable that cannot be unset is left: the launch is still this one's.
-  await quietly(undefined, () => $.env.set('NODESPACE_SESSION', undefined))
-  await quietly(undefined, () => $.env.set('NODESPACE_LAUNCHED_FOR', undefined))
-
-  return { session: launchedSession, launchedFor }
+/**
+ * Removes the launch's variables from the environment, once the session's
+ * state holds the launch. Left in place they would reach every process the
+ * agent starts, and a second Claude Code started from the shell tool would
+ * report itself as this session and open with its work. A variable that
+ * cannot be unset is left: the launch is still this one's.
+ */
+async function dropLaunchVariables($: Engine, loaded: NodespaceSession): Promise<void> {
+  if (loaded.launch) {
+    await quietly(undefined, () => $.env.set('NODESPACE_SESSION', undefined))
+    await quietly(undefined, () => $.env.set('NODESPACE_LAUNCHED_FOR', undefined))
+  }
 }
 
 /**
@@ -322,7 +325,7 @@ async function load(
   isOpening: boolean,
 ): Promise<NodespaceSession> {
   const database = (await $.env.get('NODESPACE_DATABASE')) || null
-  const launch = await takeLaunch($, held)
+  const launch = await readLaunch($, held)
   const empty: NodespaceSession = {
     database,
     project: null,
@@ -447,6 +450,7 @@ async function current($: Engine): Promise<NodespaceSession> {
   const loaded = await load($, await $.session.cwd(), held, isNew)
 
   await update($, session, () => loaded)
+  await dropLaunchVariables($, loaded)
   await update($, fetched, () => [])
 
   return loaded
@@ -1015,6 +1019,7 @@ export const register: Register = (on, options) => {
         const loaded = await load($, e.cwd, null, true)
 
         await update($, session, () => loaded)
+        await dropLaunchVariables($, loaded)
         await update($, fetched, () => [])
       }
     })

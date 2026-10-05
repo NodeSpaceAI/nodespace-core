@@ -156,11 +156,17 @@ function host(on: On, w: World, env: Record<string, string> = {}, toolText = '')
     unset: [],
   }
 
-  mock.env(on, env)
+  // The environment as the plugin leaves it: an unset variable is gone for
+  // every later read.
+  const variables: Record<string, string | undefined> = { ...env }
+
+  on('env.get', (_, e) => ({ value: variables[e.name] }))
   on('env.set', (_, e) => {
     if (e.value === undefined) {
       seen.unset.push(e.name)
     }
+
+    variables[e.name] = e.value
 
     return { value: undefined }
   })
@@ -373,6 +379,20 @@ describe('a session NodeSpace launched', () => {
     await $.session.start(START)
 
     expect([...seen.unset].sort()).toEqual(['NODESPACE_LAUNCHED_FOR', 'NODESPACE_SESSION'])
+  })
+
+  test('a compaction reports again from what the session kept, and does not open again', async ($, on) => {
+    const w = world()
+    const { seen } = host(on, w, { ...LAUNCHED, NODESPACE_LAUNCHED_FOR: 't1' })
+
+    await $.session.start(START)
+    await $.prompt.submit(prompt('go'))
+    await $.session.compact({ trigger: 'manual', messages: MESSAGES })
+    await $.prompt.submit(prompt('carry on'))
+
+    expect(reports(w)).toHaveLength(2)
+    expect(reports(w)[1]).toContain('pty-1')
+    expect(seen.context[1]).toBeUndefined()
   })
 
   test('when the report is not answered nothing is opened: what was named may be the chat node', async ($, on) => {

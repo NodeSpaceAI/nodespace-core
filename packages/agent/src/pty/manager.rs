@@ -111,7 +111,10 @@ impl PtySessionManager {
         launch: SessionLaunch,
         search_path: OsString,
     ) -> anyhow::Result<Uuid> {
-        let session = PtySession::launch(launch, search_path)?;
+        // Resolving the binary, creating the folder and forking all block.
+        let session = tokio::task::spawn_blocking(move || PtySession::launch(launch, search_path))
+            .await
+            .map_err(|e| anyhow::anyhow!("launch task panicked: {e}"))??;
         Ok(self.insert(session).await)
     }
 
