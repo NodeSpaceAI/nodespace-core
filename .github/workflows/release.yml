@@ -104,6 +104,7 @@ jobs:
           gh release download models-v2 --pattern "nomic-embed-text-v1.5.Q8_0.gguf" --dir packages/desktop-app/src-tauri/resources/models/
           echo "Model downloaded:"
           ls -la packages/desktop-app/src-tauri/resources/models/
+          bun run scripts/download-models.ts --bundle --verify-only
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -347,6 +348,7 @@ jobs:
           gh release download models-v2 --pattern "nomic-embed-text-v1.5.Q8_0.gguf" --dir packages/desktop-app/src-tauri/resources/models/
           echo "Model downloaded:"
           ls -la packages/desktop-app/src-tauri/resources/models/
+          bun run scripts/download-models.ts --bundle --verify-only
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

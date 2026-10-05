@@ -5,6 +5,10 @@
  * Usage:
  *   bun run download:models          # Download to ~/.nodespace/models/ (development)
  *   bun run download:models --bundle # Download to resources/ (CI/CD build)
+ *   bun run scripts/download-models.ts --bundle --verify-only
+ *                                    # Verify an already-staged model (release.yml
+ *                                    # stages it from the models-v2 release); never
+ *                                    # downloads, fails on a missing file or mismatch
  */
 
 import { $ } from "bun";
@@ -24,7 +28,7 @@ const MODEL_FILE = "nomic-embed-text-v1.5.Q8_0.gguf";
 // `packages/desktop-app/app-lib/src/bundled_model.rs` (the app's copy of its
 // bundled model).
 const MODEL_HF_COMMIT = "0188c9bf409793f810680a5a431e7b899c46104c";
-const MODEL_SHA256 =
+export const MODEL_SHA256 =
   "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7";
 const MODEL_URL = `https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/${MODEL_HF_COMMIT}/${MODEL_FILE}`;
 
@@ -32,7 +36,7 @@ const MODEL_URL = `https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/re
  * Compute the SHA-256 of a file, streaming it through the hasher so a ~146 MB
  * GGUF doesn't get buffered whole in memory. Returns the lowercase-hex digest.
  */
-async function sha256File(path: string): Promise<string> {
+export async function sha256File(path: string): Promise<string> {
   const hasher = new Bun.CryptoHasher("sha256");
   const stream = Bun.file(path).stream();
   for await (const chunk of stream) {
@@ -43,10 +47,30 @@ async function sha256File(path: string): Promise<string> {
 
 // Determine target directory based on --bundle flag
 const isBundleMode = process.argv.includes("--bundle");
+const isVerifyOnly = process.argv.includes("--verify-only");
 const MODELS_DIR = isBundleMode
   ? "packages/desktop-app/src-tauri/resources/models"
   : join(homedir(), ".nodespace", "models");
 const MODEL_PATH = join(MODELS_DIR, MODEL_FILE);
+
+/**
+ * Verify a model staged by something other than this script (the release
+ * workflow's `gh release download`). Throws, never repairs: a mismatch must
+ * fail the build rather than silently re-fetch from elsewhere.
+ */
+export async function verifyStagedModel(path: string): Promise<void> {
+  if (!existsSync(path)) {
+    throw new Error(`❌ Model integrity check FAILED: ${path} does not exist.`);
+  }
+  const digest = await sha256File(path);
+  if (digest !== MODEL_SHA256) {
+    throw new Error(
+      `❌ Model integrity check FAILED: expected SHA-256 ${MODEL_SHA256}, got ${digest} for ${path}. ` +
+        `Refusing to bundle an unverified model.`,
+    );
+  }
+  console.log(`✅ Model verified (SHA-256 ${digest}): ${path}`);
+}
 
 async function downloadModels() {
   const modeLabel = isBundleMode ? "bundling" : "development";
@@ -92,5 +116,9 @@ async function downloadModels() {
 
 // Run if called directly
 if (import.meta.main) {
-  await downloadModels();
+  if (isVerifyOnly) {
+    await verifyStagedModel(MODEL_PATH);
+  } else {
+    await downloadModels();
+  }
 }
