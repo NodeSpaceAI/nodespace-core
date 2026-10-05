@@ -23,7 +23,7 @@ use super::database_manager::{DatabaseManager, DatabaseStatus};
 const SETTINGS_ID: &str = "database-settings-singleton";
 
 /// A model-less context supporting `supported`.
-fn context(supported: &[&str]) -> SharedContext {
+pub(crate) fn context(supported: &[&str]) -> SharedContext {
     let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
     SharedContext {
         pty_manager: Arc::new(PtySessionManager::new()),

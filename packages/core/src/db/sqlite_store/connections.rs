@@ -251,10 +251,19 @@ fn lock_pool(
 /// reliably hit this before the reorder and is clean after it. Setting
 /// `busy_timeout` first gives every subsequent statement on this
 /// connection, including the mode switch itself, the full retry window.
+///
+/// Between `busy_timeout` and the journal-mode switch it refuses a database of
+/// another shape ([`crate::db::schema::check_shape`]). The switch is this
+/// connection's first write, and it rewrites the header of a file in any other
+/// journal mode, so a refused file is only left byte-identical if the check
+/// comes before it.
 async fn apply_writer_pragmas(conn: &libsql::Connection) -> Result<()> {
     conn.query(&format!("PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}"), ())
         .await
         .context("Failed to set busy_timeout")?;
+    crate::db::schema::check_shape(conn)
+        .await
+        .context("Failed to check the database's shape")?;
     conn.query("PRAGMA journal_mode = WAL", ())
         .await
         .context("Failed to set journal_mode")?;

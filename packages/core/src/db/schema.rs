@@ -11,17 +11,22 @@
 //! opening a database this build already created is a no-op.
 //!
 //! That same `IF NOT EXISTS` is also why a database some *other* build created
-//! is refused rather than opened: an existing table is never altered, so a
+//! is refused rather than opened. An existing table is never altered, so a
 //! column this build's DDL adds never appears in it, and the first index or
-//! query naming that column fails. Before any DDL runs, [`create_schema`]
-//! compares the columns of every table that already exists against the columns
-//! this build's DDL defines, and returns a [`SchemaMismatch`] when they differ.
-//! That is a shape check, not a version check — nothing on disk records a
-//! version — and it carries nothing forward: the only resolution it offers is
-//! moving the database aside and starting fresh. It compares column *names*
-//! only: a change to a column's type or constraints, or to an index or trigger
-//! body, is not detected, since `IF NOT EXISTS` leaves an existing index or
-//! trigger as it was.
+//! query naming that column fails. A table this build adds would be created in
+//! the old file, rewriting it, and the open would then fail on rows and rules
+//! the old build never wrote. So before any DDL runs, [`create_schema`]
+//! compares the database against what this build's DDL creates: a database
+//! holding any schema object must hold exactly the expected set of tables
+//! (virtual tables included, though not the shadow tables their modules keep
+//! their data in), and each of its ordinary tables exactly the expected
+//! columns. Any difference returns a [`SchemaMismatch`]
+//! and writes nothing. That is a shape check, not a version check — nothing on
+//! disk records a version — and it carries nothing forward: the only resolution
+//! it offers is moving the database aside and starting fresh. It compares
+//! table and column *names* only: a change to a column's type or constraints,
+//! or to an index or trigger body, is not detected, since `IF NOT EXISTS`
+//! leaves an existing index or trigger as it was.
 //!
 //! Connection-level PRAGMAs (`journal_mode`, `foreign_keys`, `synchronous`,
 //! `busy_timeout`) are deliberately absent: they are per-connection session
@@ -395,14 +400,15 @@ fn sql_type_list(types: &[crate::models::CoreNodeType]) -> String {
 ///   whole sequence means every other connection sees either none of this
 ///   schema or all of it — never a table with some of its indexes (or, on
 ///   a from-scratch table, some of its columns) missing.
-async fn create_schema_body(conn: &libsql::Connection, expected: &[ExpectedTable]) -> Result<()> {
-    // Refuse a database whose existing tables have a different shape before
-    // touching it: the DDL below would otherwise fail part-way on the first
-    // index or trigger naming a column the old table lacks, with an error that
-    // says nothing about why.
-    let mismatches = find_shape_mismatches(conn, expected).await?;
-    if !mismatches.is_empty() {
-        return Err(anyhow::Error::new(SchemaMismatch { tables: mismatches }));
+async fn create_schema_body(conn: &libsql::Connection, expected: &ExpectedShape) -> Result<()> {
+    // Refuse a database of a different shape before touching it. A table whose
+    // columns differ would make the DDL below fail part-way, on the first index
+    // or trigger naming a column the old table lacks, with an error that says
+    // nothing about why. A missing table would not fail here at all: the DDL
+    // would add it to the old file, and the failure would come later, from
+    // seeding or a query, after the file had already been rewritten.
+    if let Some(mismatch) = find_shape_mismatch(conn, expected).await? {
+        return Err(anyhow::Error::new(mismatch));
     }
 
     execute_schema_sql(conn).await?;
@@ -892,9 +898,10 @@ async fn create_structural_rule_objects(conn: &libsql::Connection) -> Result<()>
 /// life.
 ///
 /// Returns an error whose root cause is a [`SchemaMismatch`] when the database
-/// already holds tables whose columns differ from this build's DDL; nothing is
-/// written in that case. Callers that need to tell that apart from any other
-/// failure use [`SchemaMismatch::find_in`].
+/// already holds tables that are not exactly the tables, with exactly the
+/// columns, this build's DDL creates; nothing is written in that case. Callers
+/// that need to tell that apart from any other failure use
+/// [`SchemaMismatch::find_in`].
 pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
     // Derived before the transaction opens: it is served from a process-wide
     // cache after the first call, and the first call opens a separate
@@ -931,6 +938,35 @@ pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
     Ok(())
 }
 
+/// The tables a database this build creates holds.
+#[derive(Debug)]
+struct ExpectedShape {
+    /// Every table, by name: the ordinary tables and the FTS5 and vec0 virtual
+    /// tables, without the shadow tables those keep their data in. Derived
+    /// from the other two fields by [`ExpectedShape::new`].
+    table_names: BTreeSet<String>,
+    /// The virtual tables, whose shadow tables a database may hold in whatever
+    /// set its linked module creates.
+    virtual_tables: BTreeSet<String>,
+    /// The ordinary tables, with their columns.
+    tables: Vec<ExpectedTable>,
+}
+
+impl ExpectedShape {
+    fn new(virtual_tables: BTreeSet<String>, tables: Vec<ExpectedTable>) -> Self {
+        let table_names = virtual_tables
+            .iter()
+            .cloned()
+            .chain(tables.iter().map(|t| t.name.clone()))
+            .collect();
+        Self {
+            table_names,
+            virtual_tables,
+            tables,
+        }
+    }
+}
+
 /// One table this build's DDL defines, with its columns in declaration order.
 #[derive(Debug)]
 struct ExpectedTable {
@@ -938,17 +974,24 @@ struct ExpectedTable {
     columns: Vec<String>,
 }
 
-/// The tables and columns [`SCHEMA_SQL`] defines, derived by running it on a
-/// throwaway in-memory database and reading the result back — so the check
-/// can never drift from the DDL, as a hand-kept column list would. Computed
-/// once per process.
+/// The shape a database this build creates has, derived by creating the whole
+/// schema on a throwaway in-memory database and reading the result back, so the
+/// check can never drift from the DDL as a hand-kept list would. Computed once
+/// per process.
 ///
-/// Only [`SCHEMA_SQL`]'s ordinary tables are covered, not the FTS5 and vec0
-/// virtual tables `create_schema_objects` adds.
-async fn expected_shape() -> Result<&'static [ExpectedTable]> {
-    static EXPECTED: tokio::sync::OnceCell<Vec<ExpectedTable>> = tokio::sync::OnceCell::const_new();
-    let tables = EXPECTED
+/// Which shadow tables a virtual table keeps is a detail of the linked module's
+/// version (FTS5 in libsql, sqlite-vec), not of this build's DDL, so they are
+/// left out: an update of either must not make every database fail the check.
+/// A shadow table is one named `<virtual table>_…` that [`SCHEMA_SQL`] did not
+/// create. SQLite's own shadow-table flag is not used because sqlite-vec does
+/// not report all of its shadow tables as such.
+async fn expected_shape() -> Result<&'static ExpectedShape> {
+    static EXPECTED: tokio::sync::OnceCell<ExpectedShape> = tokio::sync::OnceCell::const_new();
+    EXPECTED
         .get_or_try_init(|| async {
+            // The schema includes a vec0 table, and a connection only has the
+            // module when it was registered before the connection opened.
+            crate::db::ensure_sqlite_vec_registered().await;
             let db = libsql::Builder::new_local(":memory:")
                 .build()
                 .await
@@ -957,34 +1000,82 @@ async fn expected_shape() -> Result<&'static [ExpectedTable]> {
                 .connect()
                 .context("Failed to connect to in-memory database for the schema shape")?;
             execute_schema_sql(&conn).await?;
+            let ddl_tables = read_schema(&conn).await?.tables;
+            create_schema_objects(&conn).await?;
+            let built = read_schema(&conn).await?;
+
             let mut tables = Vec::new();
-            for name in ordinary_tables(&conn).await? {
-                let columns = table_columns(&conn, &name).await?;
-                tables.push(ExpectedTable { name, columns });
+            for name in &built.tables {
+                let ordinary = !built.virtual_tables.contains(name)
+                    && (ddl_tables.contains(name) || !is_shadow_table(name, &built.virtual_tables));
+                if ordinary {
+                    let columns = table_columns(&conn, name).await?;
+                    tables.push(ExpectedTable {
+                        name: name.clone(),
+                        columns,
+                    });
+                }
             }
-            Ok::<_, anyhow::Error>(tables)
+            Ok::<_, anyhow::Error>(ExpectedShape::new(built.virtual_tables, tables))
         })
-        .await?;
-    Ok(tables)
+        .await
 }
 
-/// Every table on `conn` other than SQLite's own internal ones.
-async fn ordinary_tables(conn: &libsql::Connection) -> Result<Vec<String>> {
+/// The schema objects on a connection, other than SQLite's own internal ones.
+struct SchemaObjects {
+    /// Whether there is any object at all: a table, index, view or trigger.
+    any: bool,
+    /// Every table, virtual and shadow tables included.
+    tables: BTreeSet<String>,
+    /// The virtual tables among them.
+    virtual_tables: BTreeSet<String>,
+}
+
+async fn read_schema(conn: &libsql::Connection) -> Result<SchemaObjects> {
     let mut rows = conn
         .query(
-            "SELECT name FROM sqlite_master \
-             WHERE type = 'table' \
-               AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' \
-             ORDER BY name",
+            "SELECT type, name, rootpage FROM sqlite_master \
+             WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'",
             (),
         )
         .await
-        .context("Failed to list tables")?;
-    let mut names = Vec::new();
-    while let Some(row) = rows.next().await.context("Failed to read table list")? {
-        names.push(row.get::<String>(0).context("Failed to read table name")?);
+        .context("Failed to read the schema")?;
+    let mut objects = SchemaObjects {
+        any: false,
+        tables: BTreeSet::new(),
+        virtual_tables: BTreeSet::new(),
+    };
+    while let Some(row) = rows.next().await.context("Failed to read the schema")? {
+        objects.any = true;
+        if row
+            .get::<String>(0)
+            .context("Failed to read an object's type")?
+            != "table"
+        {
+            continue;
+        }
+        let name = row
+            .get::<String>(1)
+            .context("Failed to read a table's name")?;
+        // A virtual table has no b-tree of its own, so no root page.
+        if row
+            .get::<i64>(2)
+            .context("Failed to read a table's root page")?
+            == 0
+        {
+            objects.virtual_tables.insert(name.clone());
+        }
+        objects.tables.insert(name);
     }
-    Ok(names)
+    Ok(objects)
+}
+
+/// Whether `name` is named as a shadow table of one of `virtual_tables`:
+/// `<virtual table>_<suffix>`, the way SQLite names them.
+fn is_shadow_table(name: &str, virtual_tables: &BTreeSet<String>) -> bool {
+    virtual_tables.iter().any(|v| {
+        name.len() > v.len() + 1 && name.starts_with(v.as_str()) && name.as_bytes()[v.len()] == b'_'
+    })
 }
 
 /// The columns of `table`, in declaration order. Empty when the table does not
@@ -1008,19 +1099,77 @@ async fn table_columns(conn: &libsql::Connection, table: &str) -> Result<Vec<Str
     Ok(columns)
 }
 
-/// Compare each table [`SCHEMA_SQL`] defines that already exists on `conn`
-/// against its expected columns. A table that does not exist yet is not a
-/// mismatch — the DDL creates it.
-async fn find_shape_mismatches(
+/// How the database on `conn` differs from `expected`, or `None` when it
+/// matches.
+///
+/// A database that holds no schema objects at all (no table, index, view or
+/// trigger) is new, and the DDL creates every one. Any other database must
+/// hold exactly the expected tables: a table this build adds is missing from
+/// every database an earlier build created, and creating it would rewrite that
+/// file only for the open to fail later, on rows or rules the earlier build
+/// never wrote. Each expected ordinary table it holds must also have exactly
+/// the expected columns.
+///
+/// A table the database holds that this build does not expect is left out
+/// only when it is named as a shadow table of one of the expected virtual
+/// tables the database also holds (see [`expected_shape`]). So a newer build's
+/// ordinary table named that way would go unnoticed; any other unknown table is
+/// reported.
+async fn find_shape_mismatch(
+    conn: &libsql::Connection,
+    expected: &ExpectedShape,
+) -> Result<Option<SchemaMismatch>> {
+    let found = read_schema(conn).await?;
+    if !found.any {
+        return Ok(None);
+    }
+    let shadow_owners: BTreeSet<String> = expected
+        .virtual_tables
+        .intersection(&found.virtual_tables)
+        .cloned()
+        .collect();
+    let actual: BTreeSet<String> = found
+        .tables
+        .into_iter()
+        .filter(|t| expected.table_names.contains(t) || !is_shadow_table(t, &shadow_owners))
+        .collect();
+    let missing_tables: Vec<String> = expected.table_names.difference(&actual).cloned().collect();
+    let unexpected_tables: Vec<String> =
+        actual.difference(&expected.table_names).cloned().collect();
+    let tables = find_column_mismatches(conn, &expected.tables, &actual).await?;
+    if missing_tables.is_empty() && unexpected_tables.is_empty() && tables.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(SchemaMismatch {
+        missing_tables,
+        unexpected_tables,
+        tables,
+    }))
+}
+
+/// Refuse the database on `conn` when its shape differs from this build's,
+/// reading only. The store's writer runs this before its first write: the
+/// switch to WAL, which rewrites the header of a file in any other journal
+/// mode. [`create_schema`] makes the same check again inside its transaction.
+pub async fn check_shape(conn: &libsql::Connection) -> Result<()> {
+    let expected = expected_shape().await?;
+    match find_shape_mismatch(conn, expected).await? {
+        Some(mismatch) => Err(anyhow::Error::new(mismatch)),
+        None => Ok(()),
+    }
+}
+
+/// Compare each expected ordinary table among `present` against its expected
+/// columns. One that is absent, or present only as a view, is left to the
+/// table-set comparison.
+async fn find_column_mismatches(
     conn: &libsql::Connection,
     expected: &[ExpectedTable],
+    present: &BTreeSet<String>,
 ) -> Result<Vec<TableShapeMismatch>> {
     let mut mismatches = Vec::new();
-    for table in expected {
+    for table in expected.iter().filter(|t| present.contains(&t.name)) {
         let actual = table_columns(conn, &table.name).await?;
-        if actual.is_empty() {
-            continue;
-        }
         let actual_set: BTreeSet<&str> = actual.iter().map(String::as_str).collect();
         let expected_set: BTreeSet<&str> = table.columns.iter().map(String::as_str).collect();
         let missing_columns: Vec<String> = table
@@ -1055,16 +1204,21 @@ pub struct TableShapeMismatch {
     pub unexpected_columns: Vec<String>,
 }
 
-/// The database was created by a different build of NodeSpace: at least one
-/// of its existing tables has columns other than the ones this build's DDL
-/// defines.
+/// The database was created by a different build of NodeSpace: it lacks a
+/// table this build's DDL creates, holds one it does not, or has a table whose
+/// columns differ.
 ///
 /// There is no migration path by design (see the module docs). The database
 /// can only be moved aside and replaced with a fresh one, so callers treat
 /// this as a stop condition rather than a transient failure worth retrying.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaMismatch {
-    /// Every mismatched table, in [`SCHEMA_SQL`]'s table-name order.
+    /// Tables this build creates that the database lacks, by name.
+    pub missing_tables: Vec<String>,
+    /// Tables the database holds that this build does not create, by name.
+    pub unexpected_tables: Vec<String>,
+    /// Every existing table whose columns differ, in [`SCHEMA_SQL`]'s
+    /// table-name order.
     pub tables: Vec<TableShapeMismatch>,
 }
 
@@ -1086,6 +1240,15 @@ impl fmt::Display for SchemaMismatch {
              do not match this version's schema"
         )?;
         let mut details = Vec::new();
+        if !self.missing_tables.is_empty() {
+            details.push(format!("missing tables {}", self.missing_tables.join(", ")));
+        }
+        if !self.unexpected_tables.is_empty() {
+            details.push(format!(
+                "unexpected tables {}",
+                self.unexpected_tables.join(", ")
+            ));
+        }
         for table in &self.tables {
             let mut parts = Vec::new();
             if !table.missing_columns.is_empty() {
@@ -1171,12 +1334,16 @@ mod tests {
         let mismatch = SchemaMismatch::find_in(&err)
             .unwrap_or_else(|| panic!("expected a SchemaMismatch, got: {err:#}"));
         assert_eq!(
-            mismatch.tables,
-            vec![TableShapeMismatch {
-                table: "relationship".to_string(),
-                missing_columns: vec!["reverse_relationship_type".to_string()],
-                unexpected_columns: vec![],
-            }]
+            mismatch,
+            &SchemaMismatch {
+                missing_tables: vec![],
+                unexpected_tables: vec![],
+                tables: vec![TableShapeMismatch {
+                    table: "relationship".to_string(),
+                    missing_columns: vec!["reverse_relationship_type".to_string()],
+                    unexpected_columns: vec![],
+                }],
+            }
         );
         let message = err.to_string();
         assert!(
@@ -1212,12 +1379,16 @@ mod tests {
         let err = create_schema(&conn).await.unwrap_err();
         let mismatch = SchemaMismatch::find_in(&err).expect("a SchemaMismatch");
         assert_eq!(
-            mismatch.tables,
-            vec![TableShapeMismatch {
-                table: "conflict".to_string(),
-                missing_columns: vec![],
-                unexpected_columns: vec!["retired_field".to_string()],
-            }]
+            mismatch,
+            &SchemaMismatch {
+                missing_tables: vec![],
+                unexpected_tables: vec![],
+                tables: vec![TableShapeMismatch {
+                    table: "conflict".to_string(),
+                    missing_columns: vec![],
+                    unexpected_columns: vec!["retired_field".to_string()],
+                }],
+            }
         );
     }
 
@@ -1234,41 +1405,116 @@ mod tests {
             .expect("reopening a current-shape database");
     }
 
-    /// A table this build adds that an older database never had is created,
-    /// not reported: `IF NOT EXISTS` DDL handles a missing table on its own.
+    /// Every name in `sqlite_master` of the given kind, sorted.
+    async fn names_of(conn: &libsql::Connection, kind: &str) -> Vec<String> {
+        let mut rows = conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name",
+                libsql::params![kind],
+            )
+            .await
+            .unwrap();
+        let mut names = Vec::new();
+        while let Some(row) = rows.next().await.unwrap() {
+            names.push(row.get::<String>(0).unwrap());
+        }
+        names
+    }
+
+    /// The tables this build adds, dropped from a current-shape database: the
+    /// table set a database created before they existed holds, with every
+    /// other table's columns unchanged. Refused before any DDL, so neither
+    /// table is created and nothing else is written.
     #[tokio::test]
-    async fn a_missing_table_is_created_rather_than_reported() {
+    async fn a_database_missing_a_table_is_refused_before_any_ddl() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("partial.db");
+        let path = dir.path().join("missing-tables.db");
         let conn = open(&path).await;
         create_schema(&conn).await.unwrap();
-        conn.execute("DROP TABLE conflict_participant", ())
+        conn.execute_batch(
+            "DROP TABLE structural_rule;
+             DROP TABLE type_ancestry;",
+        )
+        .await
+        .unwrap();
+        let tables_before = names_of(&conn, "table").await;
+        let triggers_before = names_of(&conn, "trigger").await;
+        let indexes_before = names_of(&conn, "index").await;
+
+        let err = create_schema(&conn)
+            .await
+            .expect_err("a database missing a table must be refused");
+        let mismatch = SchemaMismatch::find_in(&err)
+            .unwrap_or_else(|| panic!("expected a SchemaMismatch, got: {err:#}"));
+        assert_eq!(
+            mismatch,
+            &SchemaMismatch {
+                missing_tables: vec!["structural_rule".to_string(), "type_ancestry".to_string()],
+                unexpected_tables: vec![],
+                tables: vec![],
+            }
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("missing tables structural_rule, type_ancestry"),
+            "the message must name the missing tables: {message}"
+        );
+
+        assert_eq!(names_of(&conn, "table").await, tables_before);
+        assert_eq!(names_of(&conn, "trigger").await, triggers_before);
+        assert_eq!(names_of(&conn, "index").await, indexes_before);
+        assert!(conn.is_autocommit(), "the refusal must roll back");
+    }
+
+    #[tokio::test]
+    async fn a_database_with_an_extra_table_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("extra-table.db");
+        let conn = open(&path).await;
+        create_schema(&conn).await.unwrap();
+        conn.execute("CREATE TABLE retired_table (id TEXT PRIMARY KEY)", ())
             .await
             .unwrap();
 
-        create_schema(&conn)
-            .await
-            .expect("a missing table is not a mismatch");
+        let err = create_schema(&conn).await.unwrap_err();
+        let mismatch = SchemaMismatch::find_in(&err).expect("a SchemaMismatch");
         assert_eq!(
-            count(
-                &conn,
-                "SELECT count(*) FROM sqlite_master WHERE name = 'conflict_participant'"
-            )
-            .await,
-            1
+            mismatch,
+            &SchemaMismatch {
+                missing_tables: vec![],
+                unexpected_tables: vec!["retired_table".to_string()],
+                tables: vec![],
+            }
         );
+        assert!(err.to_string().contains("unexpected tables retired_table"));
     }
 
-    /// The expected shape is read back from the DDL, so every ordinary table
-    /// in it is covered and none of the virtual tables' internals leak in.
+    /// Only a database with no schema objects at all is new. One that holds
+    /// tables but no `node` table is not, and is refused like any other shape
+    /// rather than having this build's tables added beside its own.
     #[tokio::test]
-    async fn the_expected_shape_covers_every_ordinary_table_in_the_ddl() {
-        let names: Vec<&str> = expected_shape()
+    async fn a_database_holding_only_other_tables_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("other.db");
+        let conn = open(&path).await;
+        conn.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT)", ())
             .await
-            .unwrap()
-            .iter()
-            .map(|t| t.name.as_str())
-            .collect();
+            .unwrap();
+
+        let err = create_schema(&conn).await.unwrap_err();
+        let mismatch = SchemaMismatch::find_in(&err).expect("a SchemaMismatch");
+        assert!(mismatch.missing_tables.iter().any(|t| t == "node"));
+        assert_eq!(mismatch.unexpected_tables, vec!["notes".to_string()]);
+        assert_eq!(names_of(&conn, "table").await, vec!["notes".to_string()]);
+    }
+
+    /// The expected shape is read back from the DDL. Its columns cover every
+    /// ordinary table and none of the virtual tables' internals; its table set
+    /// adds the virtual tables, and is exactly the set a new database holds.
+    #[tokio::test]
+    async fn the_expected_shape_is_read_back_from_the_ddl() {
+        let expected = expected_shape().await.unwrap();
+        let names: Vec<&str> = expected.tables.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(
             names,
             vec![
@@ -1282,9 +1528,8 @@ mod tests {
                 "type_ancestry"
             ]
         );
-        let relationship = expected_shape()
-            .await
-            .unwrap()
+        let relationship = expected
+            .tables
             .iter()
             .find(|t| t.name == "relationship")
             .unwrap();
@@ -1292,6 +1537,134 @@ mod tests {
             .columns
             .iter()
             .any(|c| c == "reverse_relationship_type"));
+
+        // The table set is those tables and the two virtual tables, without the
+        // shadow tables FTS5 and sqlite-vec keep their data in.
+        let virtual_tables: BTreeSet<String> = ["node_title_fts", "vec_embeddings"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(expected.virtual_tables, virtual_tables);
+        let mut with_virtual: BTreeSet<String> = names.iter().map(|n| n.to_string()).collect();
+        with_virtual.extend(virtual_tables);
+        assert_eq!(expected.table_names, with_virtual);
+
+        // A new database holds exactly that set besides the shadow tables.
+        let dir = tempfile::tempdir().unwrap();
+        let conn = open(&dir.path().join("new.db")).await;
+        create_schema(&conn).await.unwrap();
+        let listed = read_schema(&conn).await.unwrap();
+        assert_eq!(listed.virtual_tables, expected.virtual_tables);
+        let own: BTreeSet<String> = listed
+            .tables
+            .iter()
+            .filter(|t| !is_shadow_table(t, &listed.virtual_tables))
+            .cloned()
+            .collect();
+        assert_eq!(own, expected.table_names);
+        for shadow in ["node_title_fts_data", "vec_embeddings_chunks"] {
+            assert!(listed.tables.contains(shadow), "{shadow} missing");
+        }
+    }
+
+    /// Only the expected virtual tables' shadow tables are left out: a virtual
+    /// table this build does not define is reported with every table it keeps,
+    /// rather than hiding tables named after it.
+    #[tokio::test]
+    async fn an_unexpected_virtual_table_hides_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("other-vtab.db");
+        let conn = open(&path).await;
+        create_schema(&conn).await.unwrap();
+        conn.execute("CREATE VIRTUAL TABLE retired USING fts5(body)", ())
+            .await
+            .unwrap();
+
+        let err = create_schema(&conn).await.unwrap_err();
+        let mismatch = SchemaMismatch::find_in(&err).expect("a SchemaMismatch");
+        assert!(mismatch.missing_tables.is_empty(), "{mismatch:?}");
+        for table in ["retired", "retired_data", "retired_config"] {
+            assert!(
+                mismatch.unexpected_tables.iter().any(|t| t == table),
+                "{table} must be reported: {mismatch:?}"
+            );
+        }
+    }
+
+    /// The store's writer checks the shape before its first write, the switch
+    /// to WAL, so a refused file is left byte-identical even in a journal mode
+    /// that switch would rewrite, and no WAL file is created beside it.
+    #[tokio::test]
+    async fn a_refused_file_in_another_journal_mode_is_left_byte_identical() {
+        use sha2::{Digest, Sha256};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("foreign.sqlite");
+        {
+            let conn = open(&path).await;
+            conn.execute_batch(
+                "PRAGMA journal_mode = DELETE;
+                 CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);
+                 INSERT INTO notes VALUES ('a', 'kept as it was');",
+            )
+            .await
+            .unwrap();
+        }
+        let digest =
+            |p: &std::path::Path| format!("{:x}", Sha256::digest(std::fs::read(p).unwrap()));
+        let before = digest(&path);
+
+        let err = match crate::SqliteStore::new(path.clone()).await {
+            Ok(_) => panic!("a foreign database must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            SchemaMismatch::find_in(&err).is_some(),
+            "expected a SchemaMismatch, got: {err:#}"
+        );
+        assert_eq!(digest(&path), before, "the refused file is byte-identical");
+        assert!(!dir.path().join("foreign.sqlite-wal").exists());
+    }
+
+    /// Which shadow tables a virtual table keeps is the module's business, not
+    /// the DDL's: one a newer FTS5 or sqlite-vec adds does not make a database
+    /// this build created fail the shape check.
+    #[tokio::test]
+    async fn a_shadow_table_the_module_adds_is_not_a_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shadow.db");
+        let conn = open(&path).await;
+        create_schema(&conn).await.unwrap();
+        conn.execute("CREATE TABLE vec_embeddings_newer_module (id INTEGER)", ())
+            .await
+            .unwrap();
+
+        create_schema(&conn)
+            .await
+            .expect("a module's own shadow table is not part of the shape");
+    }
+
+    /// A database holding schema objects but no tables (here only a view named
+    /// like this build's table) is not new: it is refused rather than having
+    /// the DDL run beside its objects.
+    #[tokio::test]
+    async fn a_database_holding_only_a_view_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("view.db");
+        let conn = open(&path).await;
+        conn.execute("CREATE VIEW node AS SELECT 'a' AS id", ())
+            .await
+            .unwrap();
+
+        let err = create_schema(&conn).await.unwrap_err();
+        let mismatch = SchemaMismatch::find_in(&err).expect("a SchemaMismatch");
+        assert!(mismatch.missing_tables.iter().any(|t| t == "node"));
+        assert!(
+            mismatch.tables.is_empty(),
+            "a view is a missing table, not a table with other columns: {mismatch:?}"
+        );
+        assert_eq!(names_of(&conn, "table").await, Vec::<String>::new());
+        assert_eq!(names_of(&conn, "view").await, vec!["node".to_string()]);
     }
 
     // ---- The type-ancestry table (ADR-086 §5) ----

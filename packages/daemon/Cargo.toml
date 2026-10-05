@@ -64,6 +64,10 @@ windows-sys = { version = "0.61", features = [
 
 [dev-dependencies]
 tempfile = "3.0"
+# Building a database file of another release's shape from its DDL, and
+# hashing it to show a refused open left it untouched.
+libsql = { workspace = true }
+sha2 = "0.10"
 # Integration tests need PtySession::launch_for_test to spawn shell utilities
 # (echo, cat) without a real agent binary. The `testing` feature exposes that
 # helper as part of the agent crate's public surface.
