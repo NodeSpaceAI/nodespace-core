@@ -1515,6 +1515,20 @@ fn is_stdout_broken_pipe(message: &str) -> bool {
         && (message.contains("Broken pipe") || message.contains("The pipe is being closed"))
 }
 
+/// Exit quietly with [`BROKEN_PIPE_EXIT_CODE`] when `error` is a stdout
+/// broken pipe that a command returned as `Err` (writers over an `impl Write`
+/// such as `skill guidance`), rather than raised as a `println!` panic.
+pub fn exit_if_broken_pipe(error: &anyhow::Error) {
+    let broken = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+    });
+    if broken {
+        std::process::exit(BROKEN_PIPE_EXIT_CODE);
+    }
+}
+
 /// Make `nodespace ... | head` exit quietly when the reader closes early.
 ///
 /// Rust ignores SIGPIPE, so a write to a closed pipe returns EPIPE and

@@ -12,7 +12,7 @@ use tokio::process::Command;
 
 use crate::cli_integration::spawn_routing_daemon;
 
-const BROKEN_PIPE_EXIT_CODE: i32 = 141;
+use nodespace_cli::BROKEN_PIPE_EXIT_CODE;
 
 /// Run `nodespace --socket <sock> <args>` with stdout's reader gone.
 async fn run_with_closed_stdout(
@@ -64,16 +64,24 @@ async fn closed_stdout_exits_quietly_without_a_panic() {
         .expect("seed node");
     }
 
-    let out = run_with_closed_stdout(&sock, home.path(), &["query", "--type", "text"]).await;
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    // `query` prints with `println!` (a panic without the hook); `skill
+    // guidance` writes through an `impl Write` and returns the error.
+    for args in [&["query", "--type", "text"][..], &["skill", "guidance"][..]] {
+        let out = run_with_closed_stdout(&sock, home.path(), args).await;
+        let stderr = String::from_utf8_lossy(&out.stderr);
 
-    assert!(
-        !stderr.contains("panicked"),
-        "panic text on stderr: {stderr}"
-    );
-    assert!(
-        !stderr.contains("Broken pipe"),
-        "broken pipe reported: {stderr}"
-    );
-    assert_eq!(out.status.code(), Some(BROKEN_PIPE_EXIT_CODE), "{stderr}");
+        assert!(
+            !stderr.contains("panicked"),
+            "{args:?}: panic text on stderr: {stderr}"
+        );
+        assert!(
+            !stderr.contains("Broken pipe"),
+            "{args:?}: broken pipe reported: {stderr}"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(BROKEN_PIPE_EXIT_CODE),
+            "{args:?}: {stderr}"
+        );
+    }
 }
