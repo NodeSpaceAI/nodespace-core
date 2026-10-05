@@ -52,7 +52,7 @@ For team collaboration, contact [developer@nodespace.ai](mailto:developer@nodesp
 
 **Prerequisites:**
 - [Bun 1.0+](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
-- [Rust 1.80+](https://rustup.rs) — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+- [rustup](https://rustup.rs) — `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`. It installs the Rust toolchain `rust-toolchain.toml` pins on the first build.
 
 ```bash
 git clone https://github.com/NodeSpaceAI/nodespace-core

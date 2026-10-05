@@ -64,10 +64,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
+      # rust-toolchain.toml pins the toolchain, and cargo uses that one whatever
+      # else is installed. So this installs the pinned toolchain and adds the
+      # target to it; a target added to another toolchain is one cargo never
+      # builds with here. Every job that compiles Rust does the same.
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-apple-darwin
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -290,11 +295,12 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         uses: actions/checkout@v7
 
-      - name: Install Rust stable
+      - name: Install the pinned Rust toolchain
         if: steps.filter.outputs.skip != 'true'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_targets }}
+        shell: bash
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add ${{ matrix.rust_targets }}
 
       - name: Rust cache
         if: steps.filter.outputs.skip != 'true'
@@ -432,10 +438,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add aarch64-apple-darwin
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -708,11 +715,12 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         uses: actions/checkout@v7
 
-      - name: Install Rust stable
+      - name: Install the pinned Rust toolchain
         if: steps.filter.outputs.skip != 'true'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+        shell: bash
+        run: |
+          rustup toolchain install --no-self-update
+          rustup target add ${{ matrix.target }}
 
       - name: Rust cache
         if: steps.filter.outputs.skip != 'true'

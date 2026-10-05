@@ -80,8 +80,9 @@ export const TIERS = {
   // every checkout after it, and nothing else automated runs clippy. It shares
   // the gate's target directory, so build scripts, proc macros and llama.cpp's
   // C/C++ build are already there and only changed crates are checked again.
-  // The version goes to the log first: nothing pins the toolchain, so the
-  // verdict is this machine's clippy's, and a failure must say which that was.
+  // rust-toolchain.toml pins the toolchain, so every machine gives the same
+  // verdict. The version goes to the log first, so a failure shows the pin
+  // was the clippy that ran.
   // The timeout is the compile stage's: in a cold gate checkout this is the
   // first stage to run the build scripts, llama.cpp's included.
   rustLint: {
