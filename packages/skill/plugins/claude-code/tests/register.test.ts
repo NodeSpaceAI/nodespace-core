@@ -633,12 +633,39 @@ describe('the item being worked on', () => {
     await $.tool.call(bash('ls'))
 
     const tools = seen.tools
-    const asked = await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as never)
     const refused = await $.tool.call(bash('ls'))
+    const asked = await $.tool.call({ tool: 'AskUserQuestion', questions: [] } as never)
 
-    expect(asked.deny).toBeUndefined()
     expect(refused.deny).toContain('changed under it')
+    expect(asked.deny).toBeUndefined()
     expect(seen.tools).toBe(tools + 1)
+
+    // The answer is the user's reply: work goes on.
+    await $.tool.call(bash('ls'))
+    expect(seen.tools).toBe(tools + 2)
+  })
+
+  test("a write through the nodespace tool is the session's own", async ($, on) => {
+    const w = world()
+    const { clock, seen } = host(on, w)
+
+    await $.session.start(START)
+    await $.tool.call({ tool: 'mcp__nodespace__nodespace', args: 'node context t1' } as never)
+
+    seen.onTool = () => {
+      w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'done' } }
+      w.contextVersion = 'c2'
+    }
+    await $.tool.call({ tool: 'mcp__nodespace__nodespace', args: 'node set-status t1 done' } as never)
+    seen.onTool = () => {}
+    await clock.advance(60_000)
+
+    const tools = seen.tools
+    const calls = w.calls.length
+
+    await $.tool.call(bash('ls'))
+    expect(seen.tools).toBe(tools + 1)
+    expect(w.calls.slice(calls)).toEqual([['nodespace', '--json', 'node', 'context', 't1', '--version-only']])
   })
 
   test("the item's title cannot speak outside the graph marker", async ($, on) => {
@@ -720,6 +747,9 @@ describe('reading the shell line and the remote', () => {
       'echo t1 | xargs nodespace node set-status done',
       'echo `nodespace node delete t1`',
       'env X=1 nodespace import notes.md',
+      'nodespace query --type task | xargs -I{} nodespace node set-status {} done',
+      'for id in $(nodespace query --type task); do nodespace node set-status $id done; done',
+      'if nodespace node get t1; then nodespace node update t1 --content x; fi',
     ]) {
       expect(mayWrite(line), line).toBe(true)
     }
@@ -727,6 +757,7 @@ describe('reading the shell line and the remote', () => {
     for (const line of [
       'nodespace search x',
       'nodespace --json node context t1 --path spec',
+      '/usr/local/bin/nodespace search x | head',
       'cd /Users/me/nodespace/nodespace-core && ls',
       'ls',
     ]) {

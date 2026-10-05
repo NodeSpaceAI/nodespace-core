@@ -34,6 +34,7 @@ const MAX_DESCRIPTION_CHARS = 240
 const MAX_NOTE_ENTRIES = 20
 const MAX_VALUE_CHARS = 80
 const GRAPH_MARKER = 'nodespace-graph-data'
+const GRAPH_MARKER_ANYWHERE = new RegExp(GRAPH_MARKER, 'gi')
 
 /** Shipped text: never read from the graph (ADR-093 §5). */
 const ORIENTATION = [
@@ -110,7 +111,7 @@ function list(value: unknown): unknown[] {
 function clean(value: string, max: number): string {
   const flat = value
     .replace(/\s+/g, ' ')
-    .replace(/nodespace-graph-data/gi, 'nodespace graph data')
+    .replace(GRAPH_MARKER_ANYWHERE, 'nodespace graph data')
     .trim()
 
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
@@ -765,19 +766,18 @@ function shellLine(tool: string, input: Record<string, unknown>): string | null 
 
 /**
  * Whether a shell line may write to NodeSpace: it holds a command that is not
- * a known read, or it names `nodespace` in a way this module cannot read
- * (inside backticks, behind `xargs`, in a script's arguments). Erring toward
+ * a known read, or it names `nodespace` somewhere this module cannot read
+ * (inside backticks, behind `xargs`, in a loop's body). Erring toward
  * "may write" costs one extra read; erring the other way stops the session
  * over its own change.
  */
 export function mayWrite(line: string): boolean {
   const invocations = nodespaceInvocations(line)
+  const mentions = line.match(/(?:^|[\s`'"(;|&=/])nodespace\s+[a-z-]/g) ?? []
 
-  if (invocations.length > 0) {
-    return !invocations.every(isRead)
-  }
-
-  return /(?:^|[\s`'"(;|&=])nodespace\s+[a-z-]/.test(line)
+  // More mentions than commands read: one of them is a command this module
+  // did not read (after `xargs`, `do` or `then`), and it may be a write.
+  return mentions.length > invocations.length || !invocations.every(isRead)
 }
 
 /**
@@ -931,6 +931,13 @@ export const register: Register = (on, options) => {
 
     if (ran.deny !== undefined) {
       return ran
+    }
+
+    // An answer given through a tool is the user's reply, as a prompt is.
+    if (USER_FACING_TOOLS.includes(tool)) {
+      await quietly(undefined, async () => {
+        await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
+      })
     }
 
     if (line !== null) {
