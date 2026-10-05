@@ -312,8 +312,8 @@ mod tests {
         let paths: Vec<String> =
             candidate_paths_for(Some(PathBuf::from("/home/user/.nodespace")), false)
                 .iter()
-            .map(|p| p.display().to_string())
-            .collect();
+                .map(|p| p.display().to_string())
+                .collect();
         let joined = paths.join("\n");
 
         assert!(

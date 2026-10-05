@@ -163,7 +163,10 @@ fn logs_resolves_the_redirected_homes_log() {
         .join("logs")
         .join("nodespaced.log");
     assert!(path_only.status.success(), "stderr: {}", stderr(&path_only));
-    assert_eq!(stdout(&path_only).trim_end(), expected.display().to_string());
+    assert_eq!(
+        stdout(&path_only).trim_end(),
+        expected.display().to_string()
+    );
 
     // The log that is read is the redirected one, not the real home's.
     let read = nodespace(real.path(), isolated.path(), &["logs"]);
