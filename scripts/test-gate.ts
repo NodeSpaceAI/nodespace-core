@@ -54,7 +54,7 @@ import {
   type StageSpec,
 } from "./gate-stage";
 import { TOOLS_DIR } from "./setup-rust-tooling";
-import { formatPruneResult, freeGiB, freeSpaceRefusal, GATE_INCREMENTAL_MAX_AGE_MS, pruneIncremental } from "./gate-disk";
+import { formatPruneResult, freeGiB, freeSpaceRefusal, GATE_INCREMENTAL, pruneIncremental } from "./gate-disk";
 
 export type GateMode = "push" | "merge";
 
@@ -284,7 +284,7 @@ registerLockRelease(machineSlot);
 // own target/, and the gate can need several gigabytes more. Running out
 // halfway surfaces as a confusing I/O failure in whichever stage hit it, so
 // it is checked before the first compile, with the cause named.
-console.log(formatPruneResult(pruneIncremental(join(process.cwd(), "target"), GATE_INCREMENTAL_MAX_AGE_MS), GATE_INCREMENTAL_MAX_AGE_MS));
+console.log(formatPruneResult(pruneIncremental(join(process.cwd(), "target"), GATE_INCREMENTAL)));
 const refusal = freeSpaceRefusal(freeGiB("."), "the merge gate");
 if (refusal !== null) {
   console.error(refusal);

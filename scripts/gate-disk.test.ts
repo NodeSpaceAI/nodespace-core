@@ -5,23 +5,28 @@
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  diskUsageKiB,
   formatPruneResult,
   freeGiB,
   freeSpaceRefusal,
-  GATE_INCREMENTAL_MAX_AGE_MS,
+  GATE_INCREMENTAL,
   listIncrementalDirs,
   MIN_FREE_GIB,
   pruneIncremental,
   selectSuperseded,
-  WORKTREE_INCREMENTAL_MAX_AGE_MS,
+  toolOutput,
+  WORKTREE_INCREMENTAL,
+  type PruneLimits,
 } from "./gate-disk";
 
 const HOUR = 60 * 60_000;
+const GIB = 1024 ** 2; // in KiB
 const NOW = Date.UTC(2026, 9, 5, 12);
+const TWO_HOURS: PruneLimits = { maxAgeMs: 2 * HOUR, budgetGiB: 30 };
 
 let target: string;
 let incremental: string;
@@ -44,8 +49,8 @@ function setMtime(path: string, ms: number): void {
  * A crate's incremental directory as rustc leaves it: a session directory and
  * its lock file, all last modified `hoursAgo` before NOW.
  */
-function crateDir(name: string, hoursAgo: number): string {
-  const dir = join(incremental, name);
+function crateDir(name: string, hoursAgo: number, root: string = incremental): string {
+  const dir = join(root, name);
   const session = join(dir, "s-hmxc908iox-19oyelo-an6ha9ui8q6i8bj12q4rbgsbj");
   mkdirSync(session, { recursive: true });
   writeFileSync(join(session, "dep-graph.bin"), "x".repeat(4096));
@@ -57,59 +62,97 @@ function crateDir(name: string, hoursAgo: number): string {
   return dir;
 }
 
+/** A compile under way in `dir`: a working session created a second ago, the directory's own time left old. */
+function compileUnderWay(dir: string, dirHoursAgo: number): string {
+  const working = join(dir, "s-hmxd0000aa-0000000-working");
+  mkdirSync(working);
+  setMtime(working, NOW - 1000);
+  setMtime(dir, NOW - dirHoursAgo * HOUR);
+  return working;
+}
+
 describe("selectSuperseded", () => {
-  const dirs = [
-    { name: "nodespace_core-old", lastUsedMs: NOW - 5 * HOUR },
-    { name: "nodespace_core-edge", lastUsedMs: NOW - 2 * HOUR },
-    { name: "nodespace_core-live", lastUsedMs: NOW - 10 * 60_000 },
-  ];
-
-  test("selects the directories unused for longer than the period", () => {
-    expect(selectSuperseded(dirs, NOW, 2 * HOUR)).toEqual(["nodespace_core-old"]);
+  const dir = (name: string, hoursAgo: number, gib: number | null = 1) => ({
+    name,
+    lastUsedMs: NOW - hoursAgo * HOUR,
+    kib: gib === null ? null : gib * GIB,
   });
 
-  test("keeps everything when nothing is older than the period", () => {
-    expect(selectSuperseded(dirs, NOW, 24 * HOUR)).toEqual([]);
+  test("selects the directories last compiled longer than the period before the newest compile", () => {
+    const dirs = [dir("core-live", 0.1), dir("core-old", 5), dir("core-edge", 2.1), dir("core-recent", 1)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["core-old"]);
   });
 
-  test("keeps a directory used after the prune's own clock reading", () => {
-    expect(selectSuperseded([{ name: "it-racing", lastUsedMs: NOW + 1000 }], NOW, 2 * HOUR)).toEqual([]);
+  test("measures from the newest compile, so an idle checkout keeps its latest directories", () => {
+    // Nothing built for three days: by the clock every directory is old.
+    const dirs = [dir("core-latest", 72), dir("types-latest", 72.5), dir("core-superseded", 80)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["core-superseded"]);
+  });
+
+  test("a directory dated in the future doesn't make every other one look old", () => {
+    const dirs = [dir("core-skewed", -48), dir("core-live", 0.5), dir("core-old", 5)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["core-old"]);
+  });
+
+  test("past the budget, removes the oldest of what the age rule kept until it fits", () => {
+    const dirs = [dir("set3", 0.1, 12), dir("set1", 1.5, 12), dir("set2", 1, 12), dir("old", 6, 12)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["old", "set1"]);
+  });
+
+  test("keeps everything within the period and the budget", () => {
+    const dirs = [dir("set1", 1.5, 10), dir("set2", 1, 10), dir("set3", 0.1, 10)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual([]);
+  });
+
+  test("applies only the age rule when a size is unknown", () => {
+    const dirs = [dir("set3", 0.1, 40), dir("set2", 1, null), dir("old", 6, 40)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["old"]);
+  });
+
+  test("selects nothing from an empty listing", () => {
+    expect(selectSuperseded([], TWO_HOURS, NOW)).toEqual([]);
   });
 });
 
 describe("listIncrementalDirs", () => {
   test("dates a directory by its newest entry, so one a compile has just opened counts as in use", () => {
-    const dir = crateDir("nodespace_core-0j8syoplaewcn", 30);
-    // A compile under way: a working session directory created just now. The
-    // crate directory's own time is put back, as if only the entry were new.
-    const working = join(dir, "s-hmxd0000aa-0000000-working");
-    mkdirSync(working);
-    setMtime(working, NOW - 1000);
-    setMtime(dir, NOW - 30 * HOUR);
+    compileUnderWay(crateDir("nodespace_core-0j8syoplaewcn", 30), 30);
 
     const [listed] = listIncrementalDirs(incremental);
     expect(listed.name).toBe("nodespace_core-0j8syoplaewcn");
     expect(listed.lastUsedMs).toBe(NOW - 1000);
+    expect(listed.kib).toBeGreaterThan(0);
   });
 
-  test("ignores plain files and reports nothing for a missing directory", () => {
-    writeFileSync(join(incremental, "stray-file"), "");
-    expect(listIncrementalDirs(incremental)).toEqual([]);
+  test("lists only real directories: no plain file, and no symlink to a directory", () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), "gate-disk-elsewhere-"));
+    try {
+      crateDir("outside-target", 30, elsewhere);
+      writeFileSync(join(incremental, "stray-file"), "");
+      symlinkSync(join(elsewhere, "outside-target"), join(incremental, "linked-0j8syoplaewcn"));
+      expect(listIncrementalDirs(incremental)).toEqual([]);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  test("reports nothing for a missing directory", () => {
     expect(listIncrementalDirs(join(target, "no-such-dir"))).toEqual([]);
   });
 });
 
 describe("pruneIncremental", () => {
-  test("removes the directories unused for the period and keeps the rest", () => {
+  test("removes the superseded directories and keeps the rest", () => {
     const stale = crateDir("nodespace_core-0j8syoplaewcn", 5);
     const alsoStale = crateDir("nodespace_types-2065x6qla1y24", 30);
     const live = crateDir("nodespace_core-3pnxa8lpia5a9", 1);
 
-    const result = pruneIncremental(target, 2 * HOUR, NOW);
+    const result = pruneIncremental(target, TWO_HOURS, NOW);
 
     expect(result.removed).toBe(2);
     expect(result.kept).toBe(1);
     expect(result.freedGiB).toBeGreaterThan(0);
+    expect(result.keptGiB).toBeGreaterThan(0);
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(alsoStale)).toBe(false);
     expect(existsSync(live)).toBe(true);
@@ -117,25 +160,42 @@ describe("pruneIncremental", () => {
   });
 
   test("keeps an old directory that a compile is using now", () => {
-    const dir = crateDir("nodespace_daemon-1b4kgzkp3as2o", 30);
-    const working = join(dir, "s-hmxd0000aa-0000000-working");
-    mkdirSync(working);
-    setMtime(working, NOW - 1000);
-    setMtime(dir, NOW - 30 * HOUR);
+    crateDir("nodespace_core-3pnxa8lpia5a9", 0.1);
+    const working = compileUnderWay(crateDir("nodespace_daemon-1b4kgzkp3as2o", 30), 30);
 
-    expect(pruneIncremental(target, 2 * HOUR, NOW)).toEqual({ removed: 0, kept: 1, freedGiB: 0 });
+    const result = pruneIncremental(target, TWO_HOURS, NOW);
+
+    expect(result.removed).toBe(0);
+    expect(result.kept).toBe(2);
     expect(existsSync(working)).toBe(true);
+  });
+
+  test("never follows or removes a symlink, nor what it points to", () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), "gate-disk-elsewhere-"));
+    try {
+      const outside = crateDir("outside-target", 30, elsewhere);
+      const link = join(incremental, "linked-0j8syoplaewcn");
+      symlinkSync(outside, link);
+      crateDir("nodespace_core-3pnxa8lpia5a9", 0.1);
+
+      expect(pruneIncremental(target, TWO_HOURS, NOW).removed).toBe(0);
+      expect(existsSync(link)).toBe(true);
+      expect(readdirSync(outside)).toHaveLength(2);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 
   test("touches nothing outside debug/incremental", () => {
     crateDir("nodespace_core-0j8syoplaewcn", 30);
+    crateDir("nodespace_core-3pnxa8lpia5a9", 0.1);
     const deps = join(target, "debug", "deps");
     mkdirSync(deps);
     writeFileSync(join(deps, "libnodespace_core-abc.rlib"), "x");
     setMtime(join(deps, "libnodespace_core-abc.rlib"), NOW - 30 * HOUR);
     setMtime(deps, NOW - 30 * HOUR);
 
-    pruneIncremental(target, 2 * HOUR, NOW);
+    expect(pruneIncremental(target, TWO_HOURS, NOW).removed).toBe(1);
 
     expect(readdirSync(deps)).toEqual(["libnodespace_core-abc.rlib"]);
     expect(existsSync(incremental)).toBe(true);
@@ -143,30 +203,30 @@ describe("pruneIncremental", () => {
 
   test("does nothing in a checkout that has never built", () => {
     rmSync(join(target, "debug"), { recursive: true });
-    expect(pruneIncremental(target, 2 * HOUR, NOW)).toEqual({ removed: 0, kept: 0, freedGiB: 0 });
+    expect(pruneIncremental(target, TWO_HOURS, NOW)).toEqual({ removed: 0, kept: 0, freedGiB: 0, keptGiB: 0 });
   });
 
-  test("the gate checkout's period is shorter than a working worktree's", () => {
-    expect(GATE_INCREMENTAL_MAX_AGE_MS).toBeLessThan(WORKTREE_INCREMENTAL_MAX_AGE_MS);
+  test("the gate checkout's limits are tighter than a working worktree's period", () => {
+    expect(GATE_INCREMENTAL.maxAgeMs).toBeLessThan(WORKTREE_INCREMENTAL.maxAgeMs);
   });
 });
 
 describe("formatPruneResult", () => {
-  test("says how many directories and how much disk a prune removed", () => {
-    expect(formatPruneResult({ removed: 212, kept: 158, freedGiB: 31.42 }, 2 * HOUR)).toBe(
-      "  incremental cache: removed 212 directories (31.4 GiB) unused for 2h; 158 kept"
+  test("says how many directories and how much disk a prune removed and kept", () => {
+    expect(formatPruneResult({ removed: 184, kept: 302, freedGiB: 15.93, keptGiB: 24.61 })).toBe(
+      "  incremental cache: removed 184 directories (15.9 GiB); 302 directories kept (24.6 GiB)"
     );
   });
 
-  test("still reports the count when the size couldn't be measured", () => {
-    expect(formatPruneResult({ removed: 1, kept: 0, freedGiB: null }, 24 * HOUR)).toBe(
-      "  incremental cache: removed 1 directory unused for 24h; 0 kept"
+  test("still reports the counts when the sizes couldn't be measured", () => {
+    expect(formatPruneResult({ removed: 1, kept: 1, freedGiB: null, keptGiB: null })).toBe(
+      "  incremental cache: removed 1 directory; 1 directory kept"
     );
   });
 
   test("says so when there was nothing to remove", () => {
-    expect(formatPruneResult({ removed: 0, kept: 111, freedGiB: 0 }, 24 * HOUR)).toBe(
-      "  incremental cache: nothing unused for 24h (111 directories kept)"
+    expect(formatPruneResult({ removed: 0, kept: 111, freedGiB: 0, keptGiB: 3.4 })).toBe(
+      "  incremental cache: nothing to remove; 111 directories kept (3.4 GiB)"
     );
   });
 });
@@ -197,5 +257,25 @@ describe("freeGiB", () => {
 
   test("is null for a path df can't read", () => {
     expect(freeGiB(join(target, "no-such-dir"))).toBeNull();
+  });
+});
+
+describe("system tools", () => {
+  test("a tool that isn't installed gives null, not a crash", () => {
+    expect(toolOutput(["nodespace-no-such-tool", "-Pk", target])).toBeNull();
+  });
+
+  test("a tool that fails gives null", () => {
+    expect(toolOutput(["false"])).toBeNull();
+  });
+
+  test("sizes each directory with du", () => {
+    const dir = crateDir("nodespace_core-0j8syoplaewcn", 1);
+    expect(diskUsageKiB([dir]).get(dir)).toBeGreaterThan(0);
+  });
+
+  test("sizes are unknown, not zero, on a machine with no du", () => {
+    const dir = crateDir("nodespace_core-0j8syoplaewcn", 1);
+    expect(diskUsageKiB([dir], "nodespace-no-such-tool").size).toBe(0);
   });
 });
