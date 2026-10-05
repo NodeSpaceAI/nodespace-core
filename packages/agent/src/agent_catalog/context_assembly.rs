@@ -11,6 +11,9 @@
 use crate::agent_catalog::registry::SystemAgentRegistry;
 use crate::agent_types::{AgentType, ContextError, ContextFile};
 use nodespace_core::models::Node;
+use nodespace_core::ops::search_ops::{
+    normalize_enumerate_query, search_semantic, SearchSemanticInput,
+};
 use nodespace_core::services::NodeEmbeddingService;
 use nodespace_core::NodeService;
 use std::collections::{HashMap, HashSet};
@@ -252,7 +255,8 @@ impl GraphContextAssembler {
         let embedding_guard = self.embedding_service.read().await;
         let semantic_neighbors = match embedding_guard.as_ref() {
             Some(embedding_service) => {
-                Self::find_semantic_neighbors(embedding_service, &seed_nodes, &seed_ids).await
+                self.find_semantic_neighbors(embedding_service, &seed_nodes, &seed_ids)
+                    .await
             }
             None => {
                 tracing::info!("Embedding service unavailable, skipping semantic expansion");
@@ -307,7 +311,8 @@ impl GraphContextAssembler {
     }
 
     async fn find_semantic_neighbors(
-        embedding_service: &NodeEmbeddingService,
+        &self,
+        embedding_service: &Arc<NodeEmbeddingService>,
         seed_nodes: &[Node],
         seed_ids: &HashSet<String>,
     ) -> Vec<(Node, f64)> {
@@ -321,16 +326,25 @@ impl GraphContextAssembler {
                 &seed.content
             };
 
-            if query.trim().is_empty() {
+            // An empty or `*` query asks search to list nodes, not to find
+            // what is near this seed.
+            if normalize_enumerate_query(query).is_none() {
                 continue;
             }
 
-            match embedding_service
-                .semantic_search_nodes(query, NEIGHBORS_PER_SEED, SEMANTIC_THRESHOLD, None, false)
-                .await
+            match search_semantic(
+                &self.node_service,
+                embedding_service,
+                neighbor_search_input(query),
+            )
+            .await
             {
-                Ok(results) => {
-                    for (node, score) in results {
+                Ok(output) => {
+                    let scores = output
+                        .nodes
+                        .iter()
+                        .map(|n| n["similarity"].as_f64().unwrap_or(0.0));
+                    for (node, score) in output.matched_nodes.into_iter().zip(scores) {
                         if !seen.contains(&node.id) {
                             seen.insert(node.id.clone());
                             neighbors.push((node, score));
@@ -390,6 +404,33 @@ impl GraphContextAssembler {
         }
 
         relationships
+    }
+}
+
+/// The search that finds a seed node's semantic neighbours.
+///
+/// The neighbours are the user's knowledge near the seed, so the search names
+/// the `knowledge` scope: the user's documents, records and user-defined
+/// types. Skills, tools and the built-in schemas are embedded in the same
+/// index and are close to many seeds, but they are not context for the nodes
+/// the session was given, and the session gets its tool guidance from
+/// `SKILL.md`.
+fn neighbor_search_input(query: &str) -> SearchSemanticInput {
+    SearchSemanticInput {
+        query: query.to_string(),
+        threshold: Some(SEMANTIC_THRESHOLD),
+        limit: Some(NEIGHBORS_PER_SEED),
+        collection_id: None,
+        collection: None,
+        exclude_collections: None,
+        include_markdown: Some(0),
+        include_archived: None,
+        scope: Some("knowledge".to_string()),
+        node_types: None,
+        property_filters: None,
+        include_edges: None,
+        graph_boost: None,
+        include_title_matches: None,
     }
 }
 
@@ -839,6 +880,21 @@ mod tests {
 
         let err = write_skill_md(&missing).await.unwrap_err();
         assert!(matches!(err, ContextError::WriteFailed(_)));
+    }
+
+    /// Neighbour expansion names its scope and no type list. A search with no
+    /// scope, or one that names types and leaves the scope out, is not held
+    /// to the user's knowledge and returns skills, tools and built-in schemas.
+    #[test]
+    fn neighbor_search_is_scoped_to_knowledge() {
+        let input = neighbor_search_input("Hall Nine booking");
+
+        assert_eq!(input.query, "Hall Nine booking");
+        assert_eq!(input.scope.as_deref(), Some("knowledge"));
+        assert!(input.node_types.is_none());
+        assert_eq!(input.limit, Some(NEIGHBORS_PER_SEED));
+        assert_eq!(input.threshold, Some(SEMANTIC_THRESHOLD));
+        assert_eq!(input.include_markdown, Some(0));
     }
 
     #[tokio::test]

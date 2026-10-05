@@ -15,6 +15,7 @@ mod extends_chain_tool_results_test;
 mod get_related_nodes_both_direction;
 mod golden_scenario6_handauthored;
 mod golden_scenario6_sequence;
+mod live_context_assembly_scope;
 mod live_delete_resolved_incidents;
 mod live_embedding_prefix_measurement;
 mod live_openai_compat_routing;
