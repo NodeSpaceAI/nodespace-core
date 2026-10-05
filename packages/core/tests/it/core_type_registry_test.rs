@@ -600,7 +600,7 @@ async fn a_typed_clients_generic_update_may_not_name_a_typed_core_field() {
         &svc,
         "skill",
         "Research",
-        json!({ "description": "Search", "tool_whitelist": [] }),
+        json!({ "use_for": "Search", "tool_whitelist": [] }),
     )
     .await
     .unwrap();

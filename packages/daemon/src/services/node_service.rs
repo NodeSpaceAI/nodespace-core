@@ -3140,7 +3140,7 @@ fn skill_guidance_entry(skill: GuidanceSkill) -> SkillGuidanceEntry {
     SkillGuidanceEntry {
         id: skill.id,
         name: skill.name,
-        description: skill.description,
+        use_for: skill.use_for,
         modified_at: skill.modified_at,
         instructions,
         confidence: skill.confidence.map(wire_confidence),
@@ -5953,7 +5953,7 @@ mod tests {
             id,
             "skill",
             "Graph Editing",
-            r#"{"description":"Update a record","tool_whitelist":["update_node"],"exclusion":"Delete records"}"#,
+            r#"{"use_for":"Update a record","tool_whitelist":["update_node"],"not_for":"Delete records"}"#,
         ))
         .await
         .unwrap();
@@ -5967,20 +5967,20 @@ mod tests {
 
         svc.update_skill_node(request(
             1,
-            r#"{"toolWhitelist": ["update_node", "get_node"], "maxIterations": 4, "exclusion": null}"#,
+            r#"{"toolWhitelist": ["update_node", "get_node"], "maxIterations": 4, "notFor": null}"#,
         ))
         .await
         .expect("typed skill update succeeds");
         let node = svc.node_service.get_node(id).await.unwrap().unwrap();
         assert_eq!(node.version, 2);
         let typed = nodespace_core::models::node_to_typed_value(node).unwrap();
-        assert_eq!(typed["description"], "Update a record");
+        assert_eq!(typed["useFor"], "Update a record");
         assert_eq!(
             typed["toolWhitelist"],
             serde_json::json!(["update_node", "get_node"])
         );
         assert_eq!(typed["maxIterations"], 4);
-        assert!(typed.get("exclusion").is_none(), "cleared exclusion");
+        assert!(typed.get("notFor").is_none(), "cleared not_for");
 
         let err = svc
             .update_skill_node(request(1, r#"{"maxIterations": 6}"#))
@@ -7089,7 +7089,7 @@ mod tests {
         GuidanceSkill {
             id: id.to_string(),
             name: "A skill".to_string(),
-            description: "What it is for".to_string(),
+            use_for: "What it is for".to_string(),
             modified_at: "2026-10-01T00:00:00+00:00".to_string(),
             confidence: Some(0.8),
             instructions: instructions.to_string(),

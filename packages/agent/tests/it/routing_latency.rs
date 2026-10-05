@@ -134,7 +134,7 @@ impl AgentToolExecutor for BenchExecutor {
             SkillCandidate {
                 id: "skill-node-creation".into(),
                 name: "Node Creation".into(),
-                description: "Create new records, entries, or instances of a type".into(),
+                use_for: "Create new records, entries, or instances of a type".into(),
                 score: 0.72,
                 tools: vec!["create_node".into(), "search_nodes".into()],
                 instructions: if self.with_instructions {
@@ -158,7 +158,7 @@ impl AgentToolExecutor for BenchExecutor {
             SkillCandidate {
                 id: "skill-research".into(),
                 name: "Research & Search".into(),
-                description: "Search and explore the knowledge graph".into(),
+                use_for: "Search and explore the knowledge graph".into(),
                 score: 0.55,
                 tools: vec!["search_nodes".into(), "get_node".into()],
                 instructions: if self.with_instructions {

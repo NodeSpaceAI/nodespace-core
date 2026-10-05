@@ -591,13 +591,13 @@ async fn skill_guidance_with_no_task_lists_every_skill_without_a_model() {
 
         let mut expected: Vec<(&str, &str)> = nodespace_agent::skill_pipeline::SKILL_SEEDS
             .iter()
-            .map(|seed| (seed.title, seed.description))
+            .map(|seed| (seed.title, seed.use_for))
             .collect();
         expected.sort();
         let listed: Vec<(&str, &str)> = response
             .skills
             .iter()
-            .map(|s| (s.name.as_str(), s.description.as_str()))
+            .map(|s| (s.name.as_str(), s.use_for.as_str()))
             .collect();
         assert_eq!(
             listed, expected,

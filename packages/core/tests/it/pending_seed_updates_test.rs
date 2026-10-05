@@ -27,12 +27,12 @@ async fn create_test_service() -> Result<(Arc<NodeService>, TempDir)> {
     Ok((service, temp_dir))
 }
 
-fn skill(description: &str, body: &str) -> NodeTemplate {
+fn skill(use_for: &str, body: &str) -> NodeTemplate {
     NodeTemplate::skill(
         SKILL_ID,
         "Filing Notes",
         SkillFields {
-            description: description.to_string(),
+            use_for: use_for.to_string(),
             ..SkillFields::default()
         },
         body,
@@ -231,7 +231,7 @@ async fn taking_the_shipped_settings_of_a_skill_replaces_only_that_aspect() -> R
     edit_root(
         &service,
         SKILL_ID,
-        json!({ "description": "The user's description." }),
+        json!({ "use_for": "The user's description." }),
     )
     .await?;
     edit_body(&service, SKILL_ID, "The body the user wrote.").await?;
@@ -245,7 +245,7 @@ async fn taking_the_shipped_settings_of_a_skill_replaces_only_that_aspect() -> R
     assert_eq!(pending[0].aspect, SeedAspect::Config);
     let stored = service.get_node(SKILL_ID).await?.unwrap();
     assert_eq!(
-        stored.properties["skill"]["description"],
+        stored.properties["skill"]["use_for"],
         "The user's description."
     );
 
@@ -272,7 +272,7 @@ async fn taking_the_shipped_settings_of_a_skill_replaces_only_that_aspect() -> R
 
     let stored = service.get_node(SKILL_ID).await?.unwrap();
     assert_eq!(
-        stored.properties["skill"]["description"],
+        stored.properties["skill"]["use_for"],
         "File a note in the right collection."
     );
     assert_eq!(stored.properties["_seed"]["config_modified"], false);
@@ -295,7 +295,7 @@ async fn taking_the_shipped_settings_of_a_skill_replaces_only_that_aspect() -> R
     .await?;
     let stored = service.get_node(SKILL_ID).await?.unwrap();
     assert_eq!(
-        stored.properties["skill"]["description"],
+        stored.properties["skill"]["use_for"],
         "File a note, third wording."
     );
     assert!(service.list_pending_seed_updates().await?.is_empty());
@@ -433,7 +433,7 @@ async fn a_seed_nobody_edited_is_replaced_without_asking() -> Result<()> {
 
     let stored = service.get_node(SKILL_ID).await?.unwrap();
     assert_eq!(
-        stored.properties["skill"]["description"],
+        stored.properties["skill"]["use_for"],
         "File a note, reworded."
     );
     assert_eq!(
@@ -455,7 +455,7 @@ async fn a_reset_clears_the_pending_state_of_what_it_resets() -> Result<()> {
     edit_root(
         &service,
         SKILL_ID,
-        json!({ "description": "The user's description." }),
+        json!({ "use_for": "The user's description." }),
     )
     .await?;
     edit_body(&service, SKILL_ID, "The body the user wrote.").await?;

@@ -1976,7 +1976,7 @@ impl NodeBehavior for CheckboxNodeBehavior {
 /// - Child prompt nodes containing guidance and examples
 ///
 /// Content holds the skill name (e.g., "Research & Search").
-/// The `description` property drives embedding for discovery.
+/// The `use_for` property drives embedding for discovery.
 pub struct SkillNodeBehavior;
 
 impl NodeBehavior for SkillNodeBehavior {
@@ -1992,7 +1992,7 @@ impl NodeBehavior for SkillNodeBehavior {
             ));
         }
 
-        // Field types (description, exclusion, tool_whitelist,
+        // Field types (use_for, not_for, tool_whitelist,
         // max_iterations) are the model's to check. Decoded from
         // the properties rather than the node, so a type extending `skill`
         // is held to the same field shapes.
@@ -2010,7 +2010,7 @@ impl NodeBehavior for SkillNodeBehavior {
         // A skill that fails to decode was rejected by `validate` on write,
         // so only an in-memory node can reach here malformed; embed its name.
         let description = SkillFields::from_properties(&node.properties)
-            .map(|skill| skill.description)
+            .map(|skill| skill.use_for)
             .unwrap_or_default();
         let desc = description.as_str();
         let name = &node.content;

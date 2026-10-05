@@ -372,18 +372,18 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
       nodeType: 'skill',
       content: 'Contract Skill',
       properties: {
-        description: 'Update a record',
+        use_for: 'Update a record',
         tool_whitelist: ['update_node'],
-        exclusion: 'Delete records',
+        not_for: 'Delete records',
       },
     });
     const created = (await h.adapter.getNode(id)) as unknown as {
       version: number;
-      description: string;
+      useFor: string;
       toolWhitelist: string[];
       maxIterations: number;
     };
-    expect(created.description).toBe('Update a record');
+    expect(created.useFor).toBe('Update a record');
     expect(created.toolWhitelist).toEqual(['update_node']);
     expect(created.maxIterations).toBe(2);
 
@@ -393,17 +393,17 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     });
     expect(updated.toolWhitelist).toEqual(['update_node', 'get_node']);
     expect(updated.maxIterations).toBe(4);
-    expect(updated.exclusion).toBe('Delete records');
+    expect(updated.notFor).toBe('Delete records');
     expect(updated.properties).toEqual({});
 
     // null clears; a cleared number reads as the schema's default.
     const cleared = await h.adapter.updateSkillNode(id, updated.version, {
-      exclusion: null,
+      notFor: null,
       maxIterations: null,
     });
-    expect(cleared.exclusion).toBeUndefined();
+    expect(cleared.notFor).toBeUndefined();
     expect(cleared.maxIterations).toBe(2);
-    expect(cleared.description).toBe('Update a record');
+    expect(cleared.useFor).toBe('Update a record');
   });
 
   it('typed database-settings update → read back carries the typed list', async () => {

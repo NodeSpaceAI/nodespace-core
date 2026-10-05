@@ -409,7 +409,7 @@ fn context_version(node: &ContextNode, paths: &[PathNodes], attached: &AttachedS
         let skill = &attached.skill;
         part(&skill.id);
         part(&skill.name);
-        part(&skill.description);
+        part(&skill.use_for);
         part(&skill.instructions);
         part(&skill.tool_commands.len().to_string());
         for command in &skill.tool_commands {

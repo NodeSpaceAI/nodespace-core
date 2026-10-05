@@ -1112,8 +1112,8 @@ pub fn render_candidates_for_prompt(candidates: &[SkillCandidate]) -> Option<Str
     );
     for (i, c) in eligible.iter().enumerate() {
         out.push_str(&format!("\n--- Candidate {}: {}\n", i + 1, c.name));
-        if !c.description.is_empty() {
-            out.push_str(&format!("Purpose: {}\n", c.description));
+        if !c.use_for.is_empty() {
+            out.push_str(&format!("Purpose: {}\n", c.use_for));
         }
         if !c.instructions.is_empty() {
             out.push_str(&format!("\n{}\n", c.instructions));
@@ -1612,7 +1612,7 @@ mod tests {
         SkillCandidate {
             id: format!("skill-{name}"),
             name: name.to_string(),
-            description: format!("{name} description"),
+            use_for: format!("{name} description"),
             score,
             tools: tools.iter().map(|t| t.to_string()).collect(),
             instructions: format!("{name} instructions"),

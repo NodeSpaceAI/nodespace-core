@@ -10479,7 +10479,7 @@ mod tests {
             title: "Research & Search".to_string(),
             root_node_type: "skill".to_string(),
             root_properties: json!({
-                "description": description,
+                "use_for": description,
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
@@ -10532,7 +10532,7 @@ mod tests {
 
         let root_after = service.get_node(&root.id).await.unwrap().unwrap();
         assert_eq!(
-            SkillFields::from_node(&root_after).unwrap().description,
+            SkillFields::from_node(&root_after).unwrap().use_for,
             "Search v2",
             "sanity: config must have actually replaced"
         );
@@ -10670,7 +10670,7 @@ mod tests {
     /// zero fields, so its properties never round-trip through
     /// `normalize_flat_properties_to_namespace`'s flat-property-hoisting branch
     /// with anything worth namespacing. `skill` has real required fields
-    /// (`description`, `tool_whitelist`) and hits that hoisting path on every
+    /// (`use_for`, `tool_whitelist`) and hits that hoisting path on every
     /// create. This proves `_seed` still survives — landing at
     /// `properties._seed`, not buried under `properties.skill._seed` — for a
     /// type that actually exercises the mechanism the whole fix depends on.
@@ -10685,7 +10685,7 @@ mod tests {
             title: "Research & Search".to_string(),
             root_node_type: "skill".to_string(),
             root_properties: json!({
-                "description": description,
+                "use_for": description,
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
@@ -10705,7 +10705,7 @@ mod tests {
         // Real schema fields land namespaced under properties.skill.* — confirms
         // this node actually went through the hoisting path this test targets.
         assert_eq!(
-            nodes[0].properties["skill"]["description"], "Search v1",
+            nodes[0].properties["skill"]["use_for"], "Search v1",
             "schema field must be namespaced under properties.skill"
         );
         // _seed must NOT be nested under properties.skill — it must survive at
@@ -10731,7 +10731,7 @@ mod tests {
             "replace must not leave the stale skill node behind"
         );
         assert_eq!(
-            SkillFields::from_node(&nodes[0]).unwrap().description,
+            SkillFields::from_node(&nodes[0]).unwrap().use_for,
             "Search v2"
         );
     }
@@ -10751,7 +10751,7 @@ mod tests {
             title: "Research & Search".to_string(),
             root_node_type: "skill".to_string(),
             root_properties: json!({
-                "description": description,
+                "use_for": description,
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
@@ -10808,7 +10808,7 @@ mod tests {
         let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
         assert_eq!(
-            SkillFields::from_node(&nodes[0]).unwrap().description,
+            SkillFields::from_node(&nodes[0]).unwrap().use_for,
             "Search v2",
             "unmodified config must still replace even though guidance is protected"
         );
@@ -10832,7 +10832,7 @@ mod tests {
             title: "Research & Search".to_string(),
             root_node_type: "skill".to_string(),
             root_properties: json!({
-                "description": description,
+                "use_for": description,
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
@@ -10857,7 +10857,7 @@ mod tests {
             .update_node(
                 &root.id,
                 root.version,
-                NodeUpdate::new().with_properties(json!({"description": "User's own description"})),
+                NodeUpdate::new().with_properties(json!({"use_for": "User's own description"})),
             )
             .await
             .unwrap();
@@ -10888,7 +10888,7 @@ mod tests {
         let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
         assert_eq!(
-            SkillFields::from_node(&nodes[0]).unwrap().description,
+            SkillFields::from_node(&nodes[0]).unwrap().use_for,
             "User's own description",
             "user-modified config must survive reseed despite the template changing"
         );
@@ -10913,7 +10913,7 @@ mod tests {
             id: TEST_SEED_ID.to_string(),
             title: "Research & Search".to_string(),
             root_node_type: "skill".to_string(),
-            root_properties: json!({"description": "Search v1"}),
+            root_properties: json!({"use_for": "Search v1"}),
             child_node_type: Some("text".to_string()),
             tier: SeedTier::System,
             markdown_content: "Guidance v1.".to_string(),
@@ -10976,7 +10976,7 @@ mod tests {
             id: TEST_SEED_ID.to_string(),
             title: "Research & Search".to_string(),
             root_node_type: "skill".to_string(),
-            root_properties: json!({"description": "Search v1"}),
+            root_properties: json!({"use_for": "Search v1"}),
             child_node_type: Some("text".to_string()),
             tier: SeedTier::System,
             markdown_content: "Guidance v1.".to_string(),
@@ -10996,7 +10996,7 @@ mod tests {
             .update_node(
                 &root.id,
                 root.version,
-                NodeUpdate::new().with_properties(json!({"description": "User's own"})),
+                NodeUpdate::new().with_properties(json!({"use_for": "User's own"})),
             )
             .await
             .unwrap();
@@ -11018,7 +11018,7 @@ mod tests {
 
         let nodes = service.query_nodes_by_type("skill", true).await.unwrap();
         assert_eq!(
-            SkillFields::from_node(&nodes[0]).unwrap().description,
+            SkillFields::from_node(&nodes[0]).unwrap().use_for,
             "Search v1",
             "--all reset must restore config to the template"
         );
@@ -11122,7 +11122,7 @@ mod tests {
             title: "Research & Search".to_string(),
             root_node_type: "skill".to_string(),
             root_properties: json!({
-                "description": "Skill v1",
+                "use_for": "Skill v1",
                 "tool_whitelist": ["search_semantic"],
             }),
             child_node_type: Some("text".to_string()),
@@ -11173,7 +11173,7 @@ mod tests {
             "unchanged skill template must not be duplicated by the prompt's replace"
         );
         assert_eq!(
-            SkillFields::from_node(&skills[0]).unwrap().description,
+            SkillFields::from_node(&skills[0]).unwrap().use_for,
             "Skill v1",
             "unchanged skill content must be untouched"
         );

@@ -773,7 +773,7 @@ impl SqliteStore {
 /// The score a node's embedding search result carries: peak chunk
 /// similarity, boosted by the share of the node's chunks that matched.
 ///
-/// Shared so a vector scored outside the KNN query (a skill's exclusion
+/// Shared so a vector scored outside the KNN query (a skill's `not_for`
 /// text, see `skill_ops::find_skills`) lands on the same scale as the
 /// search results it is compared with.
 pub(crate) fn composite_similarity_score(

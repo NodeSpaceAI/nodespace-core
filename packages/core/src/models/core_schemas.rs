@@ -1660,7 +1660,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
         // Agent Guidance schema — unconditional, always-on base system-prompt
         // sections (identity, tool strategy, formatting rules, etc.), assembled
         // by PromptAssembler on every turn. Distinct from `skill`: skill nodes
-        // are discovered on demand via search_skills and require a description
+        // are discovered on demand via search_skills and require a `use_for`
         // for semantic matching; agent-guidance nodes carry no discovery
         // metadata and are simply fetched by type. Supersedes the `prompt`
         // schema (ADR-057), which shipped with this same empty shape but no
@@ -1690,8 +1690,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             schema_version: 1,
             fields: vec![
                 SchemaField {
-                    name: "description".to_string(),
-                    friendly_name: "Description".to_string(),
+                    name: "use_for".to_string(),
+                    friendly_name: "What it's for".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
@@ -1702,7 +1702,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: None,
                     default: None,
                     description: Some(
-                        "What this skill does (drives semantic search discovery)".to_string(),
+                        "The requests this skill should handle, worded the way someone \
+                         would ask. Short and specific."
+                            .to_string(),
                     ),
                     item_type: None,
                     fields: None,
@@ -1711,8 +1713,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique_case_insensitive: None,
                 },
                 SchemaField {
-                    name: "exclusion".to_string(),
-                    friendly_name: "Exclusion".to_string(),
+                    name: "not_for".to_string(),
+                    friendly_name: "What it's NOT for".to_string(),
                     field_type: crate::models::SchemaFieldType::Text,
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
@@ -1723,9 +1725,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: None,
                     default: None,
                     description: Some(
-                        "What this skill is not for; lowers its discovery score on requests \
-                         that match this better than the description"
-                            .to_string(),
+                        "Requests that sound similar but belong to another skill.".to_string(),
                     ),
                     item_type: None,
                     fields: None,
@@ -3210,8 +3210,15 @@ mod tests {
             RelationshipCardinality::Many
         );
         assert_eq!(skill.relationships.len(), 2);
-        assert!(skill.get_field("description").is_some());
-        assert!(skill.get_field("exclusion").is_some());
+        // The labels the app shows for the two retrieval fields; "NOT" is
+        // capitalised on purpose.
+        let label = |name: &str| {
+            skill
+                .get_field(name)
+                .map(|field| field.friendly_name.clone())
+        };
+        assert_eq!(label("use_for").as_deref(), Some("What it's for"));
+        assert_eq!(label("not_for").as_deref(), Some("What it's NOT for"));
         assert!(skill.get_field("tool_whitelist").is_some());
         assert!(skill.get_field("max_iterations").is_some());
 

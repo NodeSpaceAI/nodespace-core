@@ -134,7 +134,7 @@ async fn a_built_in_skill_is_fetched_by_name_and_by_id_with_its_tool_commands() 
 
         assert_eq!(by_name.id, seed.id);
         assert_eq!(by_name.name, seed.title);
-        assert_eq!(by_name.description, seed.description);
+        assert_eq!(by_name.use_for, seed.use_for);
         assert!(!by_name.instructions.trim().is_empty(), "{}", seed.title);
         assert_eq!(by_name.confidence, None, "a fetch by name ranks nothing");
 

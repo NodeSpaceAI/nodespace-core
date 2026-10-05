@@ -57,9 +57,86 @@ async fn seed_and_embed() -> Option<(Arc<NodeEmbeddingService>, Arc<NodeService>
     seed_and_embed_registry(seed_skill_nodes()).await
 }
 
+/// Names a JSON file of trial wording, so a `use_for` or `not_for` can be
+/// measured against the whole live suite before it is written into a seed
+/// table (and the crate rebuilt):
+///
+/// ```json
+/// { "Organization": { "use_for": "…", "not_for": null } }
+/// ```
+///
+/// A key that is absent leaves that field as seeded; `null` clears a
+/// `not_for`. Every registry the suite seeds takes the wording, so while the
+/// variable is set every live guard measures the trial, and the confusion
+/// matrix prints its results and then fails: a trial is read, never passed.
+pub(crate) const TEXT_OVERRIDES_VAR: &str = "SKILL_TEXT_OVERRIDES";
+
+/// `registry` with the trial wording of [`TEXT_OVERRIDES_VAR`] applied, or
+/// unchanged when the variable is unset.
+fn with_trial_wording(registry: Vec<NodeTemplate>) -> Vec<NodeTemplate> {
+    let Ok(path) = std::env::var(TEXT_OVERRIDES_VAR) else {
+        return registry;
+    };
+    let overrides: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read trial wording"))
+            .expect("trial wording must be a JSON object keyed by skill name");
+    eprintln!("TRIAL WORDING from {path}: {:?}", overrides.keys());
+    // A misspelt skill or field would otherwise measure the seeded wording
+    // and report it as the trial's.
+    for (skill, wording) in &overrides {
+        assert!(
+            registry.iter().any(|t| &t.title == skill),
+            "trial wording names {skill:?}, which is not a seeded skill"
+        );
+        let fields = wording
+            .as_object()
+            .unwrap_or_else(|| panic!("trial wording for {skill:?} must be an object"));
+        for field in fields.keys() {
+            assert!(
+                field == "use_for" || field == "not_for",
+                "trial wording for {skill:?} sets {field:?}; only use_for and not_for can be tried"
+            );
+        }
+    }
+    registry
+        .into_iter()
+        .map(|t| {
+            let Some(wording) = overrides.get(&t.title) else {
+                return t;
+            };
+            let mut fields =
+                SkillFields::from_properties(&t.root_properties).expect("seed decodes as a skill");
+            if let Some(use_for) = wording.get("use_for") {
+                fields.use_for = use_for
+                    .as_str()
+                    .expect("use_for must be a string")
+                    .to_string();
+            }
+            if let Some(not_for) = wording.get("not_for") {
+                assert!(
+                    not_for.is_string() || not_for.is_null(),
+                    "not_for must be a string, or null to clear it"
+                );
+                fields.not_for = not_for.as_str().map(str::to_string);
+            }
+            NodeTemplate {
+                root_properties: fields.properties(),
+                ..t
+            }
+        })
+        .collect()
+}
+
 /// [`seed_and_embed`] over an explicit registry, for tests that compare the
 /// seeded registry against a modified copy of it.
-async fn seed_and_embed_registry(
+pub(crate) async fn seed_and_embed_registry(
+    registry: Vec<NodeTemplate>,
+) -> Option<(Arc<NodeEmbeddingService>, Arc<NodeService>, TempDir)> {
+    seed_and_embed_exactly(with_trial_wording(registry)).await
+}
+
+/// Seed and embed `registry` as given, with no trial wording applied.
+async fn seed_and_embed_exactly(
     registry: Vec<NodeTemplate>,
 ) -> Option<(Arc<NodeEmbeddingService>, Arc<NodeService>, TempDir)> {
     let temp_dir = TempDir::new().expect("tempdir");
@@ -119,7 +196,7 @@ async fn seed_and_embed_registry(
 /// Run `find_skills` `REPS` times for `query` and return, for each rep, the
 /// ranked candidate names (score-descending, as `find_skills`/`semantic_search_nodes`
 /// already returns them).
-async fn repeated_rankings(
+pub(crate) async fn repeated_rankings(
     embedding_service: &Arc<NodeEmbeddingService>,
     node_service: &Arc<NodeService>,
     query: &str,
@@ -576,7 +653,7 @@ async fn control_deletion_requests_are_not_outranked_by_graph_editing() {
 /// "remove the resolved tickets" failed for a different reason: Graph
 /// Editing's "mark it resolved" out-ranked Node Deletion on it (0.855 vs
 /// 0.841), which no wording of either description could separate from "mark
-/// incident resolved". Graph Editing's `exclusion` is what holds it now.
+/// incident resolved". Graph Editing's `not_for` is what holds it now.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
 async fn deletion_requests_mentioning_resolved_route_node_deletion() {
@@ -605,7 +682,7 @@ async fn deletion_requests_mentioning_resolved_route_node_deletion() {
 
 /// "remove" is the weakest deletion verb, and a completion-state word after it
 /// ("the done tasks", "the paid invoices") is exactly what Graph Editing's
-/// description names. Without Graph Editing's `exclusion`, "remove the
+/// description names. Without Graph Editing's `not_for`, "remove the
 /// resolved tickets" ranked it first and `delete_node` was silently withheld.
 /// Rank 1 on every rep, since `delete_node` is offered only from the winner.
 #[tokio::test]
@@ -635,9 +712,9 @@ async fn remove_requests_mentioning_a_state_route_node_deletion() {
     );
 }
 
-/// The cost side of Graph Editing's deletion-verb `exclusion`: a request that
+/// The cost side of Graph Editing's deletion-verb `not_for`: a request that
 /// removes a *field* rather than a record also says "remove", and the
-/// exclusion lowers Graph Editing on it. It must still reach the top 3, or the
+/// `not_for` lowers Graph Editing on it. It must still reach the top 3, or the
 /// turn loses `update_node`.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
@@ -662,58 +739,82 @@ async fn removing_a_field_still_reaches_graph_editing() {
     );
 }
 
-/// An exclusion must cost a skill nothing on the requests it is meant to
-/// serve. The penalty applies only where a query matches the exclusion better
-/// than the description; this pins that on the real model by scoring the
-/// completion-state requests with and without Graph Editing's exclusion and
-/// requiring identical scores — not merely the same rank.
-#[tokio::test]
-#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
-async fn graph_editing_exclusion_leaves_completion_state_scores_unchanged() {
-    let Some((with, with_ns, _t1)) = seed_and_embed().await else {
-        return;
-    };
-    let stripped: Vec<NodeTemplate> = seed_skill_nodes()
-        .into_iter()
+/// The requests among `requests` on which `skill` scores differently with its
+/// `not_for` than without it. `None` when the model isn't on disk.
+///
+/// A `not_for` must cost a skill nothing on the requests it is meant to
+/// serve: the penalty applies only where a query matches `not_for` better
+/// than `use_for`. This scores each request against the registry as seeded
+/// and against a copy with only this skill's `not_for` removed, and compares
+/// raw confidences, not `scored_ranking`'s 3-decimal strings, which would
+/// hide a penalty below 0.0005.
+async fn requests_its_not_for_changes<'a>(
+    skill: &str,
+    requests: &[&'a str],
+) -> Option<Vec<&'a str>> {
+    let registry = with_trial_wording(seed_skill_nodes());
+    let stripped: Vec<NodeTemplate> = registry
+        .iter()
+        .cloned()
         .map(|t| {
-            let mut skill =
+            if t.title != skill {
+                return t;
+            }
+            let mut fields =
                 SkillFields::from_properties(&t.root_properties).expect("seed decodes as a skill");
-            skill.exclusion = None;
+            assert!(
+                fields.not_for.take().is_some(),
+                "{skill} carries no not_for to measure"
+            );
             NodeTemplate {
-                root_properties: skill.properties(),
+                root_properties: fields.properties(),
                 ..t
             }
         })
         .collect();
-    let Some((without, without_ns, _t2)) = seed_and_embed_registry(stripped).await else {
-        return;
-    };
+    let (with, with_ns, _t1) = seed_and_embed_exactly(registry).await?;
+    let (without, without_ns, _t2) = seed_and_embed_exactly(stripped).await?;
 
     let mut changed = Vec::new();
-    for query in [
-        "The incident Rowan was on call for — mark it resolved",
-        "mark the incident as resolved",
-        "mark incident resolved",
-        "set the incident's resolved field to true",
-        "mark the invoice as paid",
-        "mark the outage report done",
-        "mark the task as done",
-    ] {
-        // Raw confidences, not `scored_ranking`'s 3-decimal strings, which
-        // would hide a penalty below 0.0005.
-        let a = skill_confidence(&with, &with_ns, query, "Graph Editing").await;
-        let b = skill_confidence(&without, &without_ns, query, "Graph Editing").await;
-        eprintln!("{query:?}: with={a:?} without={b:?}");
+    for &request in requests {
+        let a = skill_confidence(&with, &with_ns, request, skill).await;
+        let b = skill_confidence(&without, &without_ns, request, skill).await;
+        eprintln!("{request:?}: with={a:?} without={b:?}");
         let (Some(a), Some(b)) = (a, b) else {
-            panic!("Graph Editing must be ranked for {query:?}: with={a:?} without={b:?}");
+            panic!("{skill} must be ranked for {request:?}: with={a:?} without={b:?}");
         };
         if a != b {
-            changed.push(query);
+            changed.push(request);
         }
     }
+    Some(changed)
+}
+
+/// Graph Editing's `not_for` names deletion; the completion-state requests
+/// the skill exists for must score exactly as they would without it — not
+/// merely rank the same.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn graph_editing_not_for_leaves_completion_state_scores_unchanged() {
+    let Some(changed) = requests_its_not_for_changes(
+        "Graph Editing",
+        &[
+            "The incident Rowan was on call for — mark it resolved",
+            "mark the incident as resolved",
+            "mark incident resolved",
+            "set the incident's resolved field to true",
+            "mark the invoice as paid",
+            "mark the outage report done",
+            "mark the task as done",
+        ],
+    )
+    .await
+    else {
+        return;
+    };
     assert!(
         changed.is_empty(),
-        "Graph Editing's exclusion changed its score on completion-state requests {changed:?}"
+        "Graph Editing's not_for changed its score on completion-state requests {changed:?}"
     );
 }
 
@@ -981,7 +1082,7 @@ async fn retrieved_candidates(
             SkillCandidate {
                 id: text("id"),
                 name: text("name"),
-                description: text("description"),
+                use_for: text("use_for"),
                 score: s.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
                 tools: s
                     .get("tools")
@@ -1025,7 +1126,7 @@ async fn routed_candidates(
 /// lookups at rank 1 and stayed below Schema Creation here: "keep track of
 /// decisions behind each feature" (what Stage 1 makes of "start keeping track
 /// of the decisions behind each feature") ranks Graph Editing, Research &
-/// Search, Organization, then Schema Creation. An `exclusion` naming the
+/// Search, Organization, then Schema Creation. A `not_for` naming the
 /// tracking verbs put Schema Creation back, and dropped Research & Search
 /// from the top 3 on short lookups ("list specs on sync").
 ///
@@ -1125,9 +1226,9 @@ async fn start_tracking_requests_route_schema_creation() {
 /// skill by 0.01 to 0.02 on requests of every kind: it then led "add Lantern
 /// Autosave to specs we keep" and "move the offline sync spec's review to
 /// next week", and passed the search skill on a lookup. Narrowing Graph
-/// Editing to one named item moved it by 0.005 at most, and an `exclusion`
+/// Editing to one named item moved it by 0.005 at most, and a `not_for`
 /// naming the setting-up verbs did not move it at all: these requests sit
-/// closer to its description than to any exclusion. Having Stage 1 say
+/// closer to its `use_for` than to any `not_for`. Having Stage 1 say
 /// "record type" or "a new kind of record" lifted both skills together.
 ///
 /// For those three only the second half is asserted: Schema Creation is in
@@ -1349,7 +1450,7 @@ async fn adds_to_an_existing_list_keep_a_skill_that_can_create() {
 /// Covers the user's own words and the capability phrasings Stage 1 produces
 /// for them, including requests worded with "fire" and "run": the verbs a
 /// question about why a rule has not fired uses too, and so the ones the
-/// skill's exclusion must not cost it. The closest is "stop that rule firing
+/// skill's `not_for` must not cost it. The closest is "stop that rule firing
 /// for low priority tasks", 0.868 to Play Workflow State's 0.860.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
@@ -1417,7 +1518,7 @@ async fn play_change_requests_route_play_authoring() {
 /// is Play Workflow State's: it must lead, so a question that asks for no
 /// change is not answered with a write skill first.
 ///
-/// Play Authoring's `exclusion` is what holds this. Without it "why didn't the
+/// Play Authoring's `not_for` is what holds this. Without it "why didn't the
 /// play trigger for that story?" led with Play Authoring, 0.887 to 0.863; with
 /// it Play Workflow State leads, 0.863 to 0.846.
 #[tokio::test]
@@ -1443,6 +1544,331 @@ async fn control_why_a_rule_has_not_fired_still_routes_play_workflow_state() {
         misses.is_empty(),
         "Play Workflow State lost rank 1 for {misses:?}"
     );
+}
+
+/// The requests among `requests` that `skill` leads on any rep.
+async fn requests_led_by<'a>(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    requests: &[&'a str],
+    skill: &str,
+) -> Vec<&'a str> {
+    let mut led = Vec::new();
+    for &request in requests {
+        eprintln!(
+            "{request:?}: {:?}",
+            scored_ranking(embedding_service, node_service, request, 6).await
+        );
+        let rankings = repeated_rankings(embedding_service, node_service, request).await;
+        if rankings
+            .iter()
+            .any(|ranked| ranked.first().is_some_and(|first| first == skill))
+        {
+            led.push(request);
+        }
+    }
+    led
+}
+
+/// One more record of a kind that already exists, and a saved view of
+/// records, share Schema Creation's nouns ("customer", "ticket", "invoice")
+/// and define nothing. Its `not_for` names both; without it "add a new
+/// customer called Harbor Freight" led with Schema Creation at 0.745 over
+/// Node Creation's 0.737.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn one_more_record_or_a_saved_view_does_not_lead_with_schema_creation() {
+    let Some((es, ns, _tmp)) = seed_and_embed().await else {
+        return;
+    };
+    let led = requests_led_by(
+        &es,
+        &ns,
+        &[
+            "add a new customer called Harbor Freight",
+            "create a ticket for the login bug",
+            "add another album: Blue Train by Coltrane",
+            "save a view of my overdue invoices",
+            "create a saved query for open tickets",
+            "make a filter for tasks due this week",
+        ],
+        "Schema Creation",
+    )
+    .await;
+    assert!(
+        led.is_empty(),
+        "Schema Creation led requests that define no type: {led:?}"
+    );
+}
+
+/// The cost side of Schema Creation's `not_for`: the tracking and
+/// schema-change requests the skill exists for score exactly as they would
+/// without it.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn schema_creation_not_for_leaves_tracking_scores_unchanged() {
+    let Some(changed) = requests_its_not_for_changes(
+        "Schema Creation",
+        &[
+            "track albums I mean to listen to",
+            "I need a tracker for the venues I book",
+            "start keeping tabs on who owes me money",
+            "set up something to log my freelance gigs",
+            "track equipment checkout and return status",
+            "add a priority field to my invoices",
+            "add a severity field to tickets",
+            "define a new type for vendors with a name and a contact",
+        ],
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(
+        changed.is_empty(),
+        "Schema Creation's not_for changed its score on its own requests {changed:?}"
+    );
+}
+
+/// A request to link two records, in the verbs a user says it with, must
+/// lead with Relationship Management. Its earlier wording led none of these:
+/// "attach the contract to the Harbor Freight account" ranked it 9th at 0.604
+/// behind Graph Editing's 0.672.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn linking_requests_route_relationship_management() {
+    let Some((es, ns, _tmp)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &es,
+        &ns,
+        &[
+            "attach the contract to the Harbor Freight account",
+            "connect the retro notes to the sprint they belong to",
+            "link this invoice to the Acme account",
+        ],
+        "Relationship Management",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Relationship Management lost rank 1 for {misses:?}"
+    );
+}
+
+/// The cost side of Relationship Management's `not_for`, which names
+/// starting to track a kind of thing: the linking requests it wins score
+/// exactly as they would without it. Three others are lowered and are not
+/// here: "link this invoice to the Acme account" by 0.006 (0.793 to 0.787,
+/// still first, which `linking_requests_route_relationship_management`
+/// holds), "point rebuild task at the decision it has to respect" by 0.024
+/// (0.848 to 0.824, second to third, still in the window, which
+/// `scenario_11c_routes_relationship_management_every_rep` holds), and "this
+/// task depends on the API migration" by 0.020 (0.805 to 0.785), which the
+/// skill does not win either way.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn relationship_management_not_for_leaves_linking_scores_unchanged() {
+    let Some(changed) = requests_its_not_for_changes(
+        "Relationship Management",
+        &[
+            "attach the contract to the Harbor Freight account",
+            "connect the retro notes to the sprint they belong to",
+            "which tasks depend on the API migration?",
+            "the launch task is blocked by the security review",
+        ],
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(
+        changed.is_empty(),
+        "Relationship Management's not_for changed its score on linking requests {changed:?}"
+    );
+}
+
+/// What Relationship Management's and Organization's `not_for` exist for:
+/// reworded to win their own requests, each rose on a request to start
+/// tracking a kind of thing and pushed Schema Creation out of the window
+/// ("start keeping tabs on who owes me money": without its `not_for`,
+/// Relationship Management scores 0.827 against Schema Creation's 0.805).
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn tracking_requests_are_not_taken_by_linking_or_filing() {
+    let Some((es, ns, _tmp)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &es,
+        &ns,
+        &[
+            "start keeping tabs on who owes me money",
+            "track albums I mean to listen to",
+            "I need a tracker for the venues I book",
+        ],
+        "Schema Creation",
+        false,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Schema Creation missed the top-{RETRIEVAL_TOP_K} for {misses:?}"
+    );
+}
+
+/// Putting records into a collection is said as filing and moving as often
+/// as adding. Organization's earlier wording named only the last: "file these
+/// under the Q3 folder" ranked it 10th at 0.737.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn filing_requests_route_organization() {
+    let Some((es, ns, _tmp)) = seed_and_embed().await else {
+        return;
+    };
+    let misses = routing_misses(
+        &es,
+        &ns,
+        &[
+            "file these under the Q3 folder",
+            "move the recipe notes into the Cooking collection",
+            "group these notes under Travel",
+            "categorize these receipts as business expenses",
+        ],
+        "Organization",
+        true,
+    )
+    .await;
+    assert!(misses.is_empty(), "Organization lost rank 1 for {misses:?}");
+}
+
+/// The cost side of Organization's `not_for`: these filing requests score
+/// exactly as they would without it. Two others are lowered and keep their
+/// place: "categorize these receipts as business expenses" by 0.048 (0.821 to
+/// 0.772, still first, which `filing_requests_route_organization` holds) and
+/// "Add this note to my reading list collection" by 0.024 (0.833 to 0.809,
+/// still in the window, which
+/// `control_prompt_still_routes_organization_every_rep` holds). What the
+/// `not_for` buys is held by
+/// `tracking_requests_are_not_taken_by_linking_or_filing` and
+/// `unrouted_find_requests_still_route_research_and_search`.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn organization_not_for_leaves_filing_scores_unchanged() {
+    let Some(changed) = requests_its_not_for_changes(
+        "Organization",
+        &[
+            "file these under the Q3 folder",
+            "move the recipe notes into the Cooking collection",
+            "group these notes under Travel",
+        ],
+    )
+    .await
+    else {
+        return;
+    };
+    assert!(
+        changed.is_empty(),
+        "Organization's not_for changed its score on filing requests {changed:?}"
+    );
+}
+
+/// Every skill that carries a `not_for`, with the live guards that measured
+/// it: at least one showing the confused requests reach the right skill, and
+/// one showing the skill's own requests are left as they were.
+///
+/// A `not_for` that misfires is quieter than a missing tool — the right
+/// skill simply ranks lower — and wording that reads as equivalent was
+/// measured to behave very differently. So each one is a measured decision,
+/// and adding one means adding its guards and naming them here.
+const NOT_FOR_GUARDS: &[(&str, &[&str])] = &[
+    (
+        "Schema Creation",
+        &[
+            "one_more_record_or_a_saved_view_does_not_lead_with_schema_creation",
+            "schema_creation_not_for_leaves_tracking_scores_unchanged",
+        ],
+    ),
+    (
+        "Relationship Management",
+        &[
+            "tracking_requests_are_not_taken_by_linking_or_filing",
+            "linking_requests_route_relationship_management",
+            "relationship_management_not_for_leaves_linking_scores_unchanged",
+        ],
+    ),
+    (
+        "Organization",
+        &[
+            "tracking_requests_are_not_taken_by_linking_or_filing",
+            "unrouted_find_requests_still_route_research_and_search",
+            "filing_requests_route_organization",
+            "control_prompt_still_routes_organization_every_rep",
+            "organization_not_for_leaves_filing_scores_unchanged",
+        ],
+    ),
+    (
+        "Graph Editing",
+        &[
+            "remove_requests_mentioning_a_state_route_node_deletion",
+            "removing_a_field_still_reaches_graph_editing",
+            "graph_editing_not_for_leaves_completion_state_scores_unchanged",
+        ],
+    ),
+    (
+        "Play Authoring",
+        &[
+            "play_change_requests_route_play_authoring",
+            "control_why_a_rule_has_not_fired_still_routes_play_workflow_state",
+        ],
+    ),
+];
+
+/// Runs in the gate, with no model: the live guards themselves are ignored
+/// by default, so this is what stops a `not_for` being added without one.
+#[test]
+fn every_not_for_names_its_live_guards() {
+    let mut carrying: Vec<String> = seed_skill_nodes()
+        .into_iter()
+        .filter(|t| {
+            SkillFields::from_properties(&t.root_properties)
+                .expect("seed decodes as a skill")
+                .not_for
+                .is_some()
+        })
+        .map(|t| t.title)
+        .collect();
+    carrying.sort();
+    let mut guarded: Vec<String> = NOT_FOR_GUARDS
+        .iter()
+        .map(|(skill, _)| skill.to_string())
+        .collect();
+    guarded.sort();
+    assert_eq!(
+        carrying, guarded,
+        "the skills that carry a not_for and the skills NOT_FOR_GUARDS lists must be the same"
+    );
+
+    let suites = [
+        include_str!("live_skill_retrieval_stability.rs"),
+        include_str!("skill_confusion_matrix.rs"),
+    ];
+    for (skill, guards) in NOT_FOR_GUARDS {
+        assert!(!guards.is_empty(), "{skill} names no guard");
+        for guard in *guards {
+            // The attributes too: a function that lost them is no longer run.
+            let test = format!(
+                "#[tokio::test]\n#[ignore = \"requires the locked nomic-embed-text-v1.5 GGUF on \
+                 disk\"]\nasync fn {guard}()"
+            );
+            assert!(
+                suites.iter().any(|source| source.contains(&test)),
+                "{skill}'s guard `{guard}` is not a live test in the suite"
+            );
+        }
+    }
 }
 
 /// Adds whose record is named after another skill's subject, as Stage 1 words

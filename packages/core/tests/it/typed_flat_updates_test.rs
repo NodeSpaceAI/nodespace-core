@@ -175,7 +175,7 @@ async fn a_collection_update_conflicts_on_a_stale_version_and_refuses_another_ty
 
 async fn create_skill(svc: &NodeService) -> Node {
     let node = SkillFields::new("Update a record", &["update_node", "get_node"], 3)
-        .with_exclusion("Delete records")
+        .with_not_for("Delete records")
         .into_node("Graph Editing");
     let id = svc
         .create_node(node)
@@ -194,7 +194,7 @@ async fn a_skill_update_writes_and_clears_its_fields() {
             &skill.id,
             skill.version,
             SkillNodeUpdate {
-                description: Some("Change a record".to_string()),
+                use_for: Some("Change a record".to_string()),
                 tool_whitelist: Some(vec!["update_node".to_string()]),
                 max_iterations: Some(Some(5)),
                 ..Default::default()
@@ -205,7 +205,7 @@ async fn a_skill_update_writes_and_clears_its_fields() {
     assert_eq!(updated.version, skill.version + 1);
     assert_eq!(
         SkillFields::from_node(&updated).unwrap(),
-        SkillFields::new("Change a record", &["update_node"], 5).with_exclusion("Delete records"),
+        SkillFields::new("Change a record", &["update_node"], 5).with_not_for("Delete records"),
         "the fields the update did not name are kept"
     );
     assert_eq!(updated.content, "Graph Editing");
@@ -215,14 +215,14 @@ async fn a_skill_update_writes_and_clears_its_fields() {
             &skill.id,
             updated.version,
             SkillNodeUpdate {
-                exclusion: Some(None),
+                not_for: Some(None),
                 max_iterations: Some(None),
                 ..Default::default()
             },
         )
         .await
         .expect("clearing skill fields succeeds");
-    assert!(cleared.properties["skill"]["exclusion"].is_null());
+    assert!(cleared.properties["skill"]["not_for"].is_null());
     // A cleared field reads as the schema's default.
     assert_eq!(
         SkillFields::from_node(&cleared).unwrap(),
@@ -230,8 +230,8 @@ async fn a_skill_update_writes_and_clears_its_fields() {
     );
 
     let wire = typed(&svc, &skill.id).await;
-    assert_eq!(wire["description"], "Change a record");
-    assert!(wire.get("exclusion").is_none());
+    assert_eq!(wire["useFor"], "Change a record");
+    assert!(wire.get("notFor").is_none());
     assert_eq!(wire["toolWhitelist"], json!(["update_node"]));
     assert_eq!(wire["maxIterations"], 2);
     assert!(wire.get("nodeTypes").is_none());
@@ -242,7 +242,10 @@ async fn a_skill_update_writes_and_clears_its_fields() {
 async fn a_skill_update_conflicts_on_a_stale_version_and_refuses_another_type() {
     let (svc, _tmp) = test_service().await;
     let skill = create_skill(&svc).await;
-    let update = || SkillNodeUpdate::description("Change a record");
+    let update = || SkillNodeUpdate {
+        use_for: Some("Change a record".to_string()),
+        ..Default::default()
+    };
 
     svc.update_skill_node(&skill.id, skill.version, update())
         .await

@@ -600,11 +600,11 @@ Because they share the one `relationship_type` column with schema-declared relat
 
 ### Authoring a skill
 
-A `skill` node is guidance an agent finds by search: its name and `description` are what a request is matched against, and its markdown children are the procedure to follow. Create the root, then add the guidance beneath it as markdown children:
+A `skill` node is guidance an agent finds by search: its name and `use_for` are what a request is matched against, and its markdown children are the procedure to follow. Write `use_for` as the requests the skill should handle, in the words someone would ask them, short and specific. Where a request that belongs to another skill keeps matching this one, name that request in `not_for`; it lowers this skill only on requests closer to `not_for` than to `use_for`. Create the root, then add the guidance beneath it as markdown children:
 
 ```bash
 nodespace node create --type skill --content 'Booking a Venue' \
-  --properties '{"description":"Reserve a venue for an event: check its capacity, then record the booking. Use when the user wants to book, reserve or hold a venue.","tool_whitelist":["create_node","update_node","get_node"]}'
+  --properties '{"use_for":"Reserve a venue for an event: check its capacity, then record the booking. Use when the user wants to book, reserve or hold a venue.","tool_whitelist":["create_node","update_node","get_node"]}'
 ```
 
 **Link the skill to the schemas it is about.** A skill written for one type, or for a few, says so with an `applies_to` edge to each type's schema node. A schema's id is its node id, so the target is the type id itself:
@@ -627,7 +627,7 @@ nodespace relationship delete --from <skill-id> --type attached_to --to <node-id
 
 From then on `node context` returns the skill with that node, with any node whose context paths or `--path` reach it, and, when the node is a saved query, with every node that currently matches the query; `query run` returns the skills attached to the query it ran. After a `relationship delete`, the next read no longer returns it. A skill can be attached to many nodes, and a node can have many skills.
 
-`attached_to` is not `applies_to`. `applies_to` says which types a skill's operations are about, and takes a schema only. `attached_to` says where to hand the skill over, and takes any node. Attaching a skill does not hide it: it is still listed by `skill guidance` and matched by a task, so its description should still say when it applies.
+`attached_to` is not `applies_to`. `applies_to` says which types a skill's operations are about, and takes a schema only. `attached_to` says where to hand the skill over, and takes any node. Attaching a skill does not hide it: it is still listed by `skill guidance` and matched by a task, so its `use_for` should still say when it applies.
 
 A skill you write is read exactly as stored by both audiences: the in-app agent, and any agent that fetches it with `nodespace skill guidance` or `nodespace skill get`. Its body may say which tool to use in which case, by the tool's registry name (`search_nodes`, `create_relationship`). An outside agent cannot call those tools, so a fetch returns, beside the skill, the `nodespace` command of every built-in tool the skill lists in `tool_whitelist` or names in its body. `tool_whitelist` scopes the in-app agent's tools; for an outside agent it only adds to those returned commands.
 
@@ -647,7 +647,7 @@ A fetch (`guidance "<task>"` or `get`) returns each skill's instructions, its to
   "query": "Recording a Decision",
   "count": 1,
   "guidance": [{
-    "node_id": "…", "title": "Recording a Decision", "description": "…",
+    "node_id": "…", "title": "Recording a Decision", "use_for": "…",
     "content": "Use `search_nodes` when you know the decision's name. Link it with create_relationship.",
     "tool_commands": [
       { "tool": "create_relationship", "command": "nodespace relationship create" },
@@ -663,7 +663,7 @@ A fetch (`guidance "<task>"` or `get`) returns each skill's instructions, its to
 - `skill get` takes the exact name the list shows, or the node id. A name no skill has is an error (exit 1) naming it; a name two skills share is an error listing their ids. `confidence` is `null`: nothing was ranked.
 - `confidence` is between 0.0 and 1.0. Skills arrive best match first, so read the order to rank them: several strong matches can all show 1.0.
 
-A listing (`guidance` with no task) returns names and descriptions only, plus the list's `version` (top level in `--json`, in the first line of human output). The version changes when a skill is added, removed or archived, and when a skill's name, description, tool list or any part of its body changes. Two listings with no such change between them print the same version, so comparing it is enough to know whether a list read earlier is still current.
+A listing (`guidance` with no task) returns each skill's name and `use_for` only, plus the list's `version` (top level in `--json`, in the first line of human output). The version changes when a skill is added, removed or archived, and when a skill's name, `use_for`, tool list or any part of its body changes. Two listings with no such change between them print the same version, so comparing it is enough to know whether a list read earlier is still current.
 
 ### Schema inspection and management
 
@@ -1304,20 +1304,20 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 
 **`nodespace skill status`** — Report which harnesses currently have the skill installed, and which are present on this machine without it
 
-**`nodespace skill guidance`** — Fetch the skills that match a task, each with its instructions, the commands of the tools it names, and the schemas of the types the task touches. With no task, list every skill by name and description, with the list's version. Covers the built-in skills, skills a user wrote and skills an installed workflow added. Output is always provenance-marked (a banner in human mode, a `"provenance": "graph-fetched"` envelope in `--json` mode), because it is read from the graph and anyone with write access can edit it
+**`nodespace skill guidance`** — Fetch the skills that match a task, each with its instructions, the commands of the tools it names, and the schemas of the types the task touches. With no task, list every skill by name and what it is for, with the list's version. Covers the built-in skills, skills a user wrote and skills an installed workflow added. Output is always provenance-marked (a banner in human mode, a `"provenance": "graph-fetched"` envelope in `--json` mode), because it is read from the graph and anyone with write access can edit it
 
-- `<QUERY>` — The task at hand, in your own words (e.g. "add a task to the spec", "define a new type with an enum field"). Matched by meaning against every skill's name and description, ranked the way the in-app agent ranks skills. Omit it, or pass an empty string, to list every skill by name and description without its instructions
+- `<QUERY>` — The task at hand, in your own words (e.g. "add a task to the spec", "define a new type with an enum field"). Matched by meaning against every skill's name and `use_for`, ranked the way the in-app agent ranks skills. Omit it, or pass an empty string, to list every skill by name and what it is for without its instructions
 - `--limit <LIMIT>` — Maximum number of skills to return for a task. The daemon returns at most 10 whatever is asked for. Ignored when listing
 
 **`nodespace skill get`** — Fetch one skill by its exact name or its id, with what `guidance` returns for a matched skill: its instructions, the commands of the tools it names and the schemas it is linked to, provenance-marked the same way. Use it when you already know which skill you need, from the list or from an earlier fetch. Fails when no skill has that name
 
 - `<NAME_OR_ID>` — The skill's exact name as the list shows it (e.g. "Node Deletion"), or its node id. Case-sensitive, no normalization (required)
 
-**`nodespace skill reset`** — Discard a user's customization of a seeded skill node's config (description/exclusion/tool_whitelist/max_iterations) and/or guidance (procedural markdown), restoring it to the currently-compiled template, whether or not a newer shipped version is pending (`nodespace seed pending`). It overrides the `_seed.config_modified` / `_seed.guidance_modified` durability guard (ADR-072) — reconciliation on daemon startup never discards a user-modified aspect on its own. Requires confirmation unless `--yes` is passed
+**`nodespace skill reset`** — Discard a user's customization of a seeded skill node's config (use_for/not_for/tool_whitelist/max_iterations) and/or guidance (procedural markdown), restoring it to the currently-compiled template, whether or not a newer shipped version is pending (`nodespace seed pending`). It overrides the `_seed.config_modified` / `_seed.guidance_modified` durability guard (ADR-072) — reconciliation on daemon startup never discards a user-modified aspect on its own. Requires confirmation unless `--yes` is passed
 
 - `<KEY>` — The seed key to reset — a seeded skill's exact title (e.g. "Research & Search"), matching what `nodespace skill guidance` fetches under. Case-sensitive, no normalization (required)
 - `--guidance` — Reset the procedural guidance (markdown children) to the currently- compiled template, discarding any customization
-- `--config` — Reset the config (description/exclusion/tool_whitelist/max_iterations) to the currently-compiled template, discarding any customization
+- `--config` — Reset the config (use_for/not_for/tool_whitelist/max_iterations) to the currently-compiled template, discarding any customization
 - `--all` — Reset both guidance and config — equivalent to passing both flags
 - `--yes` — Reset without prompting for confirmation. Required in a non-interactive context (no `--yes` there is a hard error, not an auto-proceed) — unlike `install`/`mcp enable`, this is the one destructive path in the system (ADR-072), and auto-confirming a content discard with no one watching would defeat the point of requiring confirmation at all
 

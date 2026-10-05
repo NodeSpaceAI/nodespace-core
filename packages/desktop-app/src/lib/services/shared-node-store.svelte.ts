@@ -3728,7 +3728,7 @@ export class SharedNodeStore {
   }
 
   /**
-   * Update a skill's typed fields (description, exclusion, toolWhitelist,
+   * Update a skill's typed fields (useFor, notFor, toolWhitelist,
    * maxIterations). See `updateTypedNode()` for the write path.
    */
   updateSkillNode(

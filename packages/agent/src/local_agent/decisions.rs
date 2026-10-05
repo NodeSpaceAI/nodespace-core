@@ -372,7 +372,7 @@ mod tests {
         SkillCandidate {
             id: "id".into(),
             name: "Skill".into(),
-            description: "desc".into(),
+            use_for: "desc".into(),
             score: 0.5,
             tools: vec![],
             instructions: String::new(),
@@ -386,7 +386,7 @@ mod tests {
         SkillCandidate {
             id: name.to_lowercase().replace(' ', "-"),
             name: name.into(),
-            description: "desc".into(),
+            use_for: "desc".into(),
             score,
             tools: tools.iter().map(|t| t.to_string()).collect(),
             instructions: String::new(),

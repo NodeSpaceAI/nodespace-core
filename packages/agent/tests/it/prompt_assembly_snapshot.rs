@@ -451,7 +451,7 @@ fn skill_whitelist(tmpl: &NodeTemplate) -> Vec<String> {
 }
 
 fn skill_description(tmpl: &NodeTemplate) -> String {
-    seed_skill(tmpl).description
+    seed_skill(tmpl).use_for
 }
 
 /// Two real seeded skills standing in for what retrieval would hand Stage 2
@@ -482,7 +482,7 @@ fn fixture_candidates() -> Vec<SkillCandidate> {
         SkillCandidate {
             id: "fixture-skill-node-creation".to_string(),
             name: node_creation.title.clone(),
-            description: skill_description(node_creation),
+            use_for: skill_description(node_creation),
             score: 0.85,
             tools: skill_whitelist(node_creation),
             instructions: render_seed_instructions(node_creation),
@@ -493,7 +493,7 @@ fn fixture_candidates() -> Vec<SkillCandidate> {
         SkillCandidate {
             id: "fixture-skill-schema-creation".to_string(),
             name: schema_creation.title.clone(),
-            description: skill_description(schema_creation),
+            use_for: skill_description(schema_creation),
             score: 0.85,
             tools: skill_whitelist(schema_creation),
             instructions: render_seed_instructions(schema_creation),
@@ -685,7 +685,7 @@ fn stage2_lookup_block_matches_golden() {
     let candidates = vec![SkillCandidate {
         id: "fixture-skill-research-and-search".to_string(),
         name: research.title.clone(),
-        description: skill_description(research),
+        use_for: skill_description(research),
         score: 0.85,
         tools: skill_whitelist(research),
         instructions: render_seed_instructions(research),
@@ -802,7 +802,7 @@ fn stage2_play_authoring_matches_golden() {
     let candidates = vec![SkillCandidate {
         id: authoring.id.clone(),
         name: authoring.title.clone(),
-        description: skill_description(authoring),
+        use_for: skill_description(authoring),
         score: 0.85,
         tools: skill_whitelist(authoring),
         instructions: render_seed_instructions(authoring),

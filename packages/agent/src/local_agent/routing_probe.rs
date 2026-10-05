@@ -66,7 +66,7 @@ fn probe_candidate() -> SkillCandidate {
     SkillCandidate {
         id: "skill-research".to_string(),
         name: "Research".to_string(),
-        description: String::new(),
+        use_for: String::new(),
         score: 0.9,
         tools: vec!["search_nodes".to_string()],
         instructions: String::new(),

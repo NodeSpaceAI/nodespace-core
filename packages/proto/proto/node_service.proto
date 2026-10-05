@@ -51,7 +51,7 @@ service NodeService {
   // Fetch the skills matching a task, each with its procedure, and the
   // schemas relevant to the same task: what an agent outside the app reads
   // before an operation. Ranked by the skill search the in-app agent uses.
-  // An empty query lists every skill by name and description instead, with
+  // An empty query lists every skill by name and `use_for` instead, with
   // no procedures and no schemas, and needs no embedding model.
   rpc GetSkillGuidance(SkillGuidanceRequest) returns (SkillGuidanceResponse);
   // One skill, by its exact name or its id, with what a match returns for it:
@@ -605,7 +605,7 @@ message ResetSeedNodeResponse {
   bool config_reset = 2;
   bool guidance_reset = 3;
   // Short before-state summary for a CLI confirmation prompt — e.g. current
-  // description/tool_whitelist for config, child count and a content preview
+  // use_for/tool_whitelist for config, child count and a content preview
   // for guidance. Empty string when that aspect was not requested.
   string config_summary = 4;
   string guidance_summary = 5;
@@ -687,7 +687,7 @@ message SkillGuidanceRequest {
 message SkillGuidanceEntry {
   string id = 1;
   string name = 2;
-  string description = 3;
+  string use_for = 3;
   // RFC 3339.
   string modified_at = 4;
   // The skill's procedure as markdown, written for an agent that drives
@@ -727,7 +727,7 @@ message SkillGuidanceResponse {
   repeated SchemaGuidanceEntry schemas = 2;
   // The version of the skill list, set in a listing only. It changes when a
   // skill is added, removed or archived, and when a skill's name,
-  // description, tool list or procedure changes; two listings with no such
+  // `use_for`, tool list or procedure changes; two listings with no such
   // change between them carry the same version.
   string version = 3;
 }

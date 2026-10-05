@@ -380,9 +380,9 @@ async fn skill_typed_update_matches_the_http_adapter_contract() {
             parent_id: None,
             insert_position: None,
             properties: json!({
-                "description": "Update a record",
+                "use_for": "Update a record",
                 "tool_whitelist": ["update_node"],
-                "exclusion": "Delete records",
+                "not_for": "Delete records",
             }),
         },
     )
@@ -401,8 +401,8 @@ async fn skill_typed_update_matches_the_http_adapter_contract() {
     )
     .await
     .expect("update_skill_node (set) failed");
-    assert_eq!(updated["description"], json!("Update a record"));
-    assert_eq!(updated["exclusion"], json!("Delete records"));
+    assert_eq!(updated["useFor"], json!("Update a record"));
+    assert_eq!(updated["notFor"], json!("Delete records"));
     assert_eq!(updated["toolWhitelist"], json!(["update_node", "get_node"]));
     assert_eq!(updated["maxIterations"], json!(4));
     assert_eq!(updated["properties"], json!({}));
@@ -415,7 +415,7 @@ async fn skill_typed_update_matches_the_http_adapter_contract() {
         id.clone(),
         version,
         SkillNodeUpdate {
-            exclusion: Some(None),
+            not_for: Some(None),
             max_iterations: Some(None),
             ..Default::default()
         },
@@ -423,8 +423,8 @@ async fn skill_typed_update_matches_the_http_adapter_contract() {
     .await
     .expect("update_skill_node (clear) failed");
     assert!(
-        cleared.get("exclusion").is_none(),
-        "cleared exclusion must be absent"
+        cleared.get("notFor").is_none(),
+        "cleared not_for must be absent"
     );
     // A cleared number reads as the schema's default.
     assert_eq!(cleared["maxIterations"], json!(2));

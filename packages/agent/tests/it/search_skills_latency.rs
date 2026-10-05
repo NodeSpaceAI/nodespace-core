@@ -243,7 +243,7 @@ impl AgentToolExecutor for BenchToolExecutor {
                             {
                                 "id": "skill-accounting",
                                 "name": "Accounting & Invoices",
-                                "description": "Manage invoices and track payment status.",
+                                "use_for": "Manage invoices and track payment status.",
                                 "confidence": 0.89,
                                 "tools": ["search_nodes", "search_semantic", "create_node", "update_node"],
                                 "schema_metadata": [
