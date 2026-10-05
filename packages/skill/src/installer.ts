@@ -9,11 +9,11 @@ import {
   lstatSync,
   realpathSync,
 } from 'node:fs';
-import { join, dirname, basename, relative, resolve, isAbsolute, sep } from 'node:path';
+import { join, dirname, relative, resolve, isAbsolute, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { AGENTS } from './agents.js';
-import type { AgentConfig, AgentName, InstallResult, UninstallResult } from './types.js';
+import type { AgentName, InstallResult, UninstallResult } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Walk up past dist/ if running from compiled output; src/ stays at package root.
@@ -35,9 +35,8 @@ const REFERENCES_DIR = 'references';
 export const INSTALL_RECORD = '.nodespace-install.json';
 
 /**
- * The reference files the installer wrote before it kept a record, when each
- * agent's `shims` named them one by one. An install directory with no record
- * is treated as holding these (plus its `SKILL.md` and harness shim), so
+ * The reference files the installer wrote before it kept a record. An install
+ * directory with no record is treated as holding these (plus its `SKILL.md`), so
  * uninstalling, or reinstalling from a skill that has dropped one, still
  * cleans them up.
  *
@@ -48,6 +47,12 @@ export const PRE_RECORD_REFERENCES = [
   'references/cli.md',
   'references/graph-authored-guidance.md',
 ] as const;
+
+/** The skill file every agent gets, at the root of its install directory. */
+const SKILL_FILE = 'SKILL.md';
+
+/** What an install directory with no record is read as holding. */
+const PRE_RECORD_FILES: readonly string[] = [SKILL_FILE, ...PRE_RECORD_REFERENCES];
 
 /**
  * The reference files of the skill at `packageRoot`: every `*.md` directly
@@ -139,8 +144,8 @@ export function claudeCodePluginManagedSkillExists(claudeConfigDir: string): boo
 
 /**
  * Installs the skill at `packageRoot` into `targetAgents` (or every detected
- * agent): `SKILL.md`, the agent's harness shim, and every `references/*.md`
- * the package root ships.
+ * agent): `SKILL.md`, the agent's harness plugin where it has one, and every
+ * `references/*.md` the package root ships.
  *
  * Each agent's install directory gets a record (`INSTALL_RECORD`) of exactly
  * what was written, and a file an earlier install put there that this skill no
@@ -181,19 +186,26 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
       continue;
     }
 
-    // What the skill is made of: the agent's shims (flat, under their
-    // basename) plus every reference file the package root ships. Each entry
-    // is `[source path, path inside the install directory]`.
+    // What the skill is made of: `SKILL.md`, the agent's harness plugin, and
+    // every reference file the package root ships. Each entry is
+    // `[source path, path inside the install directory]`.
     const root = resolve(config.installDir);
+    // A plugin is installed whole or not at all: a manifest without the
+    // module its hooks file names is a plugin the harness cannot load.
+    const pluginDir = config.plugin?.dir ?? '';
+    const pluginFiles = (config.plugin?.files ?? []).map(
+      (file): [string, string] => [join(packageRoot, pluginDir, file), file],
+    );
     const present = [
-      ...config.shims.map((shim): [string, string] => [join(packageRoot, shim), basename(shim)]),
+      [join(packageRoot, SKILL_FILE), SKILL_FILE] as [string, string],
+      ...(pluginFiles.every(([src]) => existsSync(src)) ? pluginFiles : []),
       ...listReferenceFiles(packageRoot).map((ref): [string, string] => [join(packageRoot, ref), ref]),
     ].filter(([src]) => existsSync(src));
 
     // A skill is discovered by its SKILL.md, so a package without one is
     // broken, not a skill that has shrunk: install nothing, and leave whatever
     // is already installed, and its record, exactly as it is.
-    if (!present.some(([, rel]) => rel === 'SKILL.md')) {
+    if (!present.some(([, rel]) => rel === SKILL_FILE)) {
       results.push({ agent: agentName, installed: [], changed: false });
       continue;
     }
@@ -210,7 +222,7 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
       // SKILL.md gets the agent's frontmatter prepended — a skill is
       // discovered by its YAML `name` + `description` under the Agent Skills
       // standard; everything else is copied verbatim.
-      const content = config.skillFrontmatter && rel === 'SKILL.md'
+      const content = config.skillFrontmatter && rel === SKILL_FILE
         ? Buffer.from(config.skillFrontmatter + '\n' + readFileSync(src, 'utf8'), 'utf8')
         : readFileSync(src);
       if (writeIfDifferent(dest, content)) changed = true;
@@ -221,7 +233,7 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
     // Files an earlier install put here that this skill no longer ships. They
     // are compared by resolved path, so an oddly spelled entry naming a file
     // just written (`./SKILL.md`) is never mistaken for a stale one.
-    const previous = readInstallRecord(root) ?? preRecordFiles(config);
+    const previous = readInstallRecord(root) ?? PRE_RECORD_FILES;
     const keep = new Set(wrote.map(rel => resolve(root, rel)));
     const undeleted: string[] = [];
     for (const rel of previous) {
@@ -289,14 +301,6 @@ function writeInstallRecord(installDir: string, files: string[]): void {
 }
 
 /**
- * The files the installer wrote before it kept a record: `SKILL.md`, the
- * agent's harness shim and the references in `PRE_RECORD_REFERENCES`.
- */
-function preRecordFiles(config: AgentConfig): string[] {
-  return [...config.shims.map(shim => basename(shim)), ...PRE_RECORD_REFERENCES];
-}
-
-/**
  * What an uninstall removes from an install directory that has no record: the
  * pre-record files, plus every reference the skill being uninstalled ships
  * (`packageRoot`), which may name ones the pre-record list does not.
@@ -305,7 +309,7 @@ function preRecordFiles(config: AgentConfig): string[] {
  * warning: the pre-record list is still worth removing, and an uninstall should
  * not abort over the state of a directory it only reads.
  */
-function filesWithoutRecord(config: AgentConfig, packageRoot: string): string[] {
+function filesWithoutRecord(packageRoot: string): string[] {
   let shipped: string[] = [];
   try {
     shipped = listReferenceFiles(packageRoot);
@@ -316,7 +320,7 @@ function filesWithoutRecord(config: AgentConfig, packageRoot: string): string[] 
       'any it ships that the pre-record list does not name are left in place.\n',
     );
   }
-  return [...new Set([...preRecordFiles(config), ...shipped])];
+  return [...new Set([...PRE_RECORD_FILES, ...shipped])];
 }
 
 /** Whether `path` is `root` or lies inside it, comparing the paths as written. */
@@ -415,8 +419,8 @@ export function checkInstalled(targetAgents?: AgentName[]): AgentName[] {
  * Removes the skill from `targetAgents` (or every configured agent).
  *
  * With a record, removes exactly the files it names and the record itself.
- * Without one, the install predates the record: it removes the agent's shims,
- * every reference file `packageRoot` ships and `PRE_RECORD_REFERENCES`. Either
+ * Without one, the install predates the record: it removes `SKILL.md`, every
+ * reference file `packageRoot` ships and `PRE_RECORD_REFERENCES`. Either
  * way it then prunes only the directories those files leave empty, and the
  * install directory itself once nothing is left in it.
  *
@@ -433,7 +437,7 @@ export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT
     if (!config || !existsSync(config.installDir)) continue;
 
     const root = resolve(config.installDir);
-    const files = readInstallRecord(root) ?? filesWithoutRecord(config, packageRoot);
+    const files = readInstallRecord(root) ?? filesWithoutRecord(packageRoot);
 
     const removed: string[] = [];
     for (const rel of files) {

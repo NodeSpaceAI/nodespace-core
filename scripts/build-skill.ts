@@ -16,7 +16,7 @@
  *   2. **The plain JS build** (`tsc` compiles src/ -> dist/, packages/skill/
  *      package.json's own `build` script) — the fallback for a platform this
  *      hasn't been wired up for yet, or a dev/source checkout. Needs `bun` or
- *      `node` on $PATH to run. Staged (dist/, shims/, SKILL.md, references/,
+ *      `node` on $PATH to run. Staged (dist/, plugins/, SKILL.md, references/,
  *      package.json for its `"type": "module"` marker) into
  *      packages/desktop-app/src-tauri/resources/skill/, a `resources` entry
  *      in tauri.conf.json — also where the compiled binary's
@@ -328,7 +328,7 @@ export function bunCompileTarget(rustTriple: string): string {
 /**
  * What `bun build --compile` actually bundles into the standalone installer:
  * everything reachable from `src/install.ts`, plus the manifests that shape
- * how those get resolved. Deliberately NOT SKILL.md, references/ or shims/ —
+ * how those get resolved. Deliberately NOT SKILL.md, references/ or plugins/ —
  * the binary reads those at runtime from `--resource-root`, so they are
  * staged resources, never compile inputs, and counting them here would
  * recompile 58MB every time a doc line moved.
@@ -421,7 +421,7 @@ export async function compileInstaller(
  * points at it by relative path, so omitting it leaves the body referring to a
  * file that isn't there.
  */
-export const STAGED_ENTRIES = ['dist', 'shims', 'SKILL.md', 'references', 'package.json'];
+export const STAGED_ENTRIES = ['dist', 'plugins', 'SKILL.md', 'references', 'package.json'];
 
 /**
  * `--target <rust-triple>` override for `main()`'s compiled-binary triple,

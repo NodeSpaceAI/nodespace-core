@@ -88,7 +88,7 @@ use tokio::process::Command as ChildCommand;
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// The one tool this server exposes. `pub` so `packages/skill/SKILL.md`'s
-/// Preflight Check (Branch 2, the MCP passthrough) can be tested against this
+/// "Reaching NodeSpace" section (its MCP passthrough entry) can be tested against this
 /// value directly (`packages/cli/tests/it/skill_md_generation.rs`) rather than a
 /// second, hand-typed copy that could silently drift from a future rename.
 pub const TOOL_NAME: &str = "nodespace";
@@ -103,7 +103,7 @@ const TOOL_DESCRIPTION: &str = "Run a `nodespace` CLI command. `args` is the exa
 /// block indefinitely (interactive PTY attachment), which would otherwise
 /// wedge this server's single-threaded request loop forever.
 ///
-/// `pub` for the same reason as [`TOOL_NAME`]: SKILL.md's Branch 2 documents
+/// `pub` for the same reason as [`TOOL_NAME`]: SKILL.md documents
 /// this exact timeout, and a test pins the two together.
 pub const DISPATCH_TIMEOUT: Duration = Duration::from_secs(120);
 

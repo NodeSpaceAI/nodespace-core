@@ -29,78 +29,31 @@ It persists across sessions — what you save today is searchable tomorrow, and 
 
 Use NodeSpace as a working memory across sessions:
 
-1. **Search at session start** — run the preflight, then search for prior context before you begin. (`nodespace search "topic"`)
+1. **Search at session start** — search for prior context before you begin. (`nodespace search "topic"`)
 2. **Save as you go** — save discoveries, decisions, and summaries during the session. Don't wait until the end. (`nodespace node create --type text --content "…"`)
 3. **It persists across sessions** — your context window does not. Anything worth remembering next time should be stored.
 
 Date nodes make temporal retrieval reliable: if a finding is time-bound, attach it under today's date node so future searches can scope by day.
 
-## Preflight Check
+## Reaching NodeSpace
 
-**Before starting any multi-step NodeSpace operation**, work out which of three capability branches you're on, then follow that branch. Check capability first, before running anything — the branches below differ in how (or whether) you can run a `nodespace` command at all, so branching on a command's output only works once you already know you have a way to run commands.
+How you run a `nodespace` command depends on the tools you were given. Decide from your tool list:
 
-**This is a soft inference, not an API call.** There is no "do I have Bash?" check to run — decide from the tools you were actually given this turn:
+- **A shell tool**: run `nodespace <args>` on a shell line.
+- **No shell, but a `nodespace` tool** (one `args: string` parameter, the MCP passthrough): call it with the argument list that would follow `nodespace` on a shell line. `nodespace search "auth tokens"` becomes `args: "search \"auth tokens\""`. Every command in this skill, its references and the instructions you fetch works the same way through it.
+- **Neither**: NodeSpace is not reachable from this surface. Run nothing and guess at no result. Tell the user so, and point them at the NodeSpace desktop app or a shell- or MCP-capable agent.
 
-1. **A Bash/shell tool is available** → "Branch 1: Shell available" below.
-2. **No Bash, but a `nodespace` tool is available** (its schema takes one `args: string` parameter — the MCP passthrough) → "Branch 2: No shell, `nodespace` MCP tool available" below.
-3. **Neither** → "Branch 3: Neither shell nor MCP tool available" below.
+The CLI talks to the `nodespaced` daemon on this machine, and a command that cannot reach it says so. `nodespace diagnostics` reports the database's health: when it lists `errors`, report them to the user before continuing.
 
-A wrong guess should degrade gracefully, not dead-end: if Branch 1's commands come back as though there's no shell at all, or the `nodespace` tool you expected never appears in your tool list, fall through to the next branch rather than repeating the same failed approach.
+**Confirmation is the same on every surface.** Never run the installer, start the daemon, or delete a node or type without the user's explicit confirmation. A deletion is previewed first and carried out only after the user says yes.
 
-**Consent discipline is identical on every branch.** Never run the installer, start the daemon, or delete a node or type without the user's explicit confirmation — the MCP passthrough is not an exception just because it's a tool call instead of a shell line. A deletion is previewed first and carried out only after the user says yes, whichever branch dispatched it.
-
-### Branch 1: Shell available
-
-Run these two commands to confirm the tooling is present and healthy:
-
-```bash
-nodespace --version
-nodespace diagnostics
-```
-
-Run this preflight once per session or task, not before every individual command.
-
-#### Failure recovery
-
-| Symptom | Cause | Recovery |
+| What a command returns | Cause | What to do |
 |---------|-------|----------|
-| `command not found: nodespace` | CLI not installed or not on `$PATH` | Tell the user NodeSpace CLI is not installed and propose installing it — never run the installer without their explicit confirmation. If they confirm, run `sh -c "$(curl -fsSL https://nodespace.ai/install.sh)" -- --no-gui` (installs the CLI only, non-interactively — the same script the one-line install and `brew install --cask nodespaceai/nodespace/nodespace` both use). Then retry the original command. If it still fails because this shell session hasn't picked up the updated `$PATH`, tell the user to open a new terminal and try again. If they decline the install, stop. |
-| `Could not connect to nodespaced` | Daemon not running | Surface the CLI's own message to the user: start the daemon with `nodespaced`. Do not retry automatically — wait for confirmation. |
-| `diagnostics` shows entries in `errors` | Database issues | Report the specific error messages to the user before continuing. |
+| `command not found: nodespace` | The CLI is not installed or not on `$PATH` | Tell the user and propose installing it. If they confirm, run `sh -c "$(curl -fsSL https://nodespace.ai/install.sh)" -- --no-gui` (the CLI only, non-interactively), then retry. If the shell has not picked up the new `$PATH`, ask them to open a new terminal. If they decline, stop. |
+| `Failed to run the nodespace CLI at ...` (from the `nodespace` tool) | The CLI behind the tool is missing or broken | Tell the user NodeSpace needs reinstalling: the desktop app, or `brew install --cask nodespaceai/nodespace/nodespace`. You cannot install it from there. |
+| `Could not connect to nodespaced` | The daemon is not running | Tell the user to start it with `nodespaced` (it starts on login when installed from the DMG). Do not retry until they confirm. |
 | `This database needs …` and a `Download …` line | The database requires an extension this build doesn't support; the daemon refuses it and leaves the file untouched | Relay the message to the user verbatim, download line included. Don't retry, and never move or edit the file. Offer another database instead (`references/cli.md`, *Manage local databases*). |
-
-### Branch 2: No shell, `nodespace` MCP tool available
-
-There's no shell, but a `nodespace` tool is on your tool list: a passthrough with one `args` parameter — the exact argument list that would follow `nodespace` on a shell line. Every command in this skill, its references and the instructions you fetch works verbatim through it, with no separate command set to learn: what Branch 1 runs as `nodespace search "auth tokens"` on a shell line, this branch calls the tool with `args: "search \"auth tokens\""`; `nodespace node get <id>` becomes `args: "node get <id>"`; and so on.
-
-Run the same preflight by calling the tool twice:
-
-```
-args: "--version"
-args: "diagnostics"
-```
-
-The tool's result text carries the underlying CLI's own output, so read it the way you'd read a shell command's output — but you cannot self-heal by running an installer or starting a daemon; you can only tell the user what's wrong.
-
-#### Failure recovery
-
-| Symptom (in the tool result) | Cause | Recovery |
-|---------|-------|----------|
-| `Failed to run the nodespace CLI at ...` | The CLI binary backing this passthrough is missing or broken | Tell the user NodeSpace needs to be reinstalled — point at the desktop app or `brew install --cask nodespaceai/nodespace/nodespace`. You cannot install it yourself from here; do not propose a command to run. |
-| `Could not connect to nodespaced` | Daemon not running | Tell the user to start it with `nodespaced` on the machine hosting this connector — same fix as Branch 1, but you cannot run it yourself. Do not retry automatically. |
-| `diagnostics` call (`args: "diagnostics"`) shows entries in `errors` | Database issues | Report the specific error messages to the user before continuing — same as Branch 1. |
-| `This database needs …` and a `Download …` line | Same as Branch 1 | Same as Branch 1: relay it verbatim, don't retry, never touch the file. |
-| `did not complete within 120s` | The dispatched command streams or blocks (e.g. `session launch`/`session attach`) — this passthrough kills and reports it as a timeout rather than staying open | Do not retry it through this tool. Tell the user this NodeSpace command needs an interactive session and isn't supported through this connector; point them at a shell-capable surface (Branch 1: Claude Code, or Claude Desktop's Code tab) for it. |
-
-### Branch 3: Neither shell nor MCP tool available
-
-NodeSpace is not reachable from this surface. There is no command to run and nothing to propose running — do not attempt a `nodespace` invocation, and do not fabricate or guess at a result. Tell the user plainly that NodeSpace can't be reached from here, and point them at a surface that can: the NodeSpace desktop app, or a shell- or MCP-capable agent harness (e.g. Claude Code, or Claude Desktop's Code tab). Installing a connector is a step the user takes in their own client, not something you can do on their behalf.
-
-## Prerequisites
-
-The `nodespace` CLI talks to the `nodespaced` daemon over a Unix socket; if the daemon is not running, commands fail with a connection error.
-
-Start the daemon: `nodespaced` (or it starts automatically on login if installed via DMG).
+| `did not complete within 120s` (from the `nodespace` tool) | The command streams or blocks (`session launch`, `session attach`), which the tool ends as a timeout | Do not retry it through the tool. Tell the user that command needs a shell. |
 
 ## The Instructions Live in NodeSpace: Fetch Them
 
@@ -112,7 +65,7 @@ nodespace skill guidance                                    # every skill, by na
 nodespace skill get "<skill name>"                          # one skill you already know, by its exact name or id
 ```
 
-Branch 2: `args: "skill guidance \"<the task>\""`.
+Through the `nodespace` tool: `args: "skill guidance \"<the task>\""`.
 
 More instructions live there than this file carries, of two kinds. One fetch returns both.
 

@@ -16,7 +16,7 @@
   },
   "files": [
     "dist",
-    "shims",
+    "plugins",
     "SKILL.md",
     "references"
   ],
@@ -28,8 +28,9 @@
     "build": "tsc",
     "test": "bunx vitest run",
     "test:watch": "bunx vitest",
-    "quality:check": "bunx tsc --noEmit && bunx tsc --noEmit -p tsconfig.shims.json",
-    "quality:fix": "bunx tsc --noEmit && bunx tsc --noEmit -p tsconfig.shims.json"
+    "test:plugin": "claude plugin validate plugins/claude-code && claude plugin test plugins/claude-code",
+    "quality:check": "bunx tsc --noEmit",
+    "quality:fix": "bunx tsc --noEmit"
   },
   "dependencies": {},
   "devDependencies": {

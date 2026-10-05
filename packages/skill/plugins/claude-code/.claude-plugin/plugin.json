@@ -1,0 +1,16 @@
+{
+  "name": "nodespace",
+  "version": "0.1.0",
+  "description": "Puts NodeSpace in the session: checks it is reachable, finds the project for the checkout, lists the graph's skills in the system prompt, and says when they or the item being worked on change.",
+  "author": { "name": "NodeSpace", "url": "https://nodespace.ai" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "watch_interval_seconds": {
+      "type": "number",
+      "title": "Item check interval (seconds)",
+      "description": "How often, at most, a tool call checks whether the item the session is working on has changed in NodeSpace.",
+      "default": 60
+    }
+  }
+}

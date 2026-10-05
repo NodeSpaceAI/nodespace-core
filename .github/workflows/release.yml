@@ -836,7 +836,7 @@ jobs:
             --outfile "nodespace-skill-installer-${{ matrix.target }}"
           chmod +x "nodespace-skill-installer-${{ matrix.target }}"
 
-      # The sidecar reads SKILL.md/shims/references from --resource-root at
+      # The sidecar reads SKILL.md/plugins/references from --resource-root at
       # runtime (see install.ts/installer.ts) rather than bundling them --
       # same split as the Tauri build. Packaged as one tarball per target so
       # install.sh/the CLI can fetch and unpack a single release asset
@@ -847,7 +847,7 @@ jobs:
         run: |
           bun run --cwd packages/skill build
           tar -czf "nodespace-skill-installer-resources-${{ matrix.target }}.tar.gz" \
-            -C packages/skill dist shims SKILL.md references package.json
+            -C packages/skill dist plugins SKILL.md references package.json
 
       - name: Upload binaries to release
         if: steps.filter.outputs.skip != 'true' && github.event_name == 'release'

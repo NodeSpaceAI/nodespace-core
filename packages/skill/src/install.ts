@@ -65,7 +65,7 @@ function pluginManaged(): boolean {
  * the remaining positional args separately. Needed for the compiled
  * standalone-binary distribution (see `installer.ts`'s `PACKAGE_ROOT` doc
  * comment): a `bun build --compile` executable has no source-relative
- * sibling directory containing SKILL.md/shims/references the way a plain
+ * sibling directory containing SKILL.md/plugins/references the way a plain
  * `dist/install.js` does, so the caller (skill_setup.rs, for the compiled
  * binary; a person, for a manual run) must say where those files actually
  * are. Absent entirely for the existing `bun`/`node` + dist/install.js
@@ -134,7 +134,7 @@ Commands:
 Agents: ${validAgents.join(', ')}
 MCP clients: ${validMcpClients.join(', ')}
 
---resource-root <path>  Where SKILL.md/shims/references actually live. Only
+--resource-root <path>  Where SKILL.md/plugins/references actually live. Only
                          needed by the compiled standalone binary distribution
                          — a plain dist/install.js run finds these next to
                          itself automatically. Ignored by the mcp-* commands,

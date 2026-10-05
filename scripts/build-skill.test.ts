@@ -350,11 +350,11 @@ describe("compileInputs", () => {
   });
 
   test("excludes the runtime-only resources read via --resource-root", () => {
-    // SKILL.md/references/shims are read at runtime from the staged resource
+    // SKILL.md/references/plugins are read at runtime from the staged resource
     // root, never bundled. Counting them would recompile 58MB whenever a doc
     // line moved -- exactly the tax the guard exists to remove.
     const inputs = compileInputs("/skill");
-    for (const runtimeOnly of ["SKILL.md", "references", "shims", "dist"]) {
+    for (const runtimeOnly of ["SKILL.md", "references", "plugins", "dist"]) {
       expect(inputs).not.toContain(join("/skill", runtimeOnly));
     }
   });
@@ -770,7 +770,7 @@ describe("staging with a skill extension", () => {
   /** A skill package holding every staged entry, the shape of packages/skill. */
   function writeSkill(): string {
     write("skill/dist/install.js", "console.log('install');\n");
-    write("skill/shims/claude.md", "# shim\n");
+    write("skill/plugins/claude-code/.claude-plugin/plugin.json", "{}\n");
     write("skill/SKILL.md", CORE_SKILL_MD);
     write("skill/references/cli.md", "# core cli\n");
     write("skill/package.json", '{ "type": "module" }\n');
@@ -803,7 +803,7 @@ describe("staging with a skill extension", () => {
       "dist/install.js": "console.log('install');\n",
       "package.json": '{ "type": "module" }\n',
       "references/cli.md": "# core cli\n",
-      "shims/claude.md": "# shim\n",
+      "plugins/claude-code/.claude-plugin/plugin.json": "{}\n",
       "SKILL.md": CORE_SKILL_MD,
     });
   });
@@ -819,7 +819,7 @@ describe("staging with a skill extension", () => {
       "package.json": '{ "type": "module" }\n',
       "references/cli.md": "# core cli\n",
       "references/fixture-guide.md": readFileSync(join(FIXTURE_DIR, "references", "fixture-guide.md"), "utf8"),
-      "shims/claude.md": "# shim\n",
+      "plugins/claude-code/.claude-plugin/plugin.json": "{}\n",
       "SKILL.md": `${CORE_SKILL_MD}\n${fragment}`,
     });
   });
@@ -906,7 +906,7 @@ describe("staging with a skill extension", () => {
     const skill = writeSkill();
     const extensions = fixtureExtension(skill);
 
-    for (const entry of ["dist", "shims", "package.json"]) {
+    for (const entry of ["dist", "plugins", "package.json"]) {
       expect(stagedSources(entry, skill, extensions)).toEqual(stagedSources(entry, skill));
     }
   });
