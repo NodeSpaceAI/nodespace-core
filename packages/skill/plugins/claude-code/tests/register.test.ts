@@ -350,6 +350,20 @@ describe('the skill list on each prompt', () => {
     expect(seen.context[1]).toBeUndefined()
   })
 
+  test('a skill whose text alone changed is named as changed', async ($, on) => {
+    const w = world()
+    const { seen } = host(on, w)
+
+    await $.session.start(START)
+
+    w.skills = [skill('s1', 'Implementing a task', 'when a task is ready to build'), w.skills[1]!]
+    w.listVersion = 'v2'
+    await $.prompt.submit(prompt('hello'))
+
+    expect(seen.context[0]?.[0]).toContain('- Changed: "Implementing a task": when a task is ready to build')
+    expect(seen.context[0]?.[0]).not.toContain('Reviewing a change')
+  })
+
   test('a skill the session fetched and that changed is named as out of date', async ($, on) => {
     const w = world()
     const { seen } = host(on, w, {}, 'node:        skill/s1\ntitle: Implementing a task')
@@ -781,6 +795,17 @@ describe('reading the shell line and the remote', () => {
     ]) {
       expect(mayWrite(line), line).toBe(false)
     }
+  })
+
+  test("the lookup names the checkout's own remote when it is none of the common spellings", () => {
+    const remote = 'ssh://git@gitlab.example.com:2222/group/repo.git\n'
+    const spellings = remoteSpellings(httpsRemote(remote) ?? '', remote)
+
+    expect(spellings).toHaveLength(7)
+    expect(spellings).toContain('ssh://git@gitlab.example.com:2222/group/repo.git')
+    expect(spellings).toContain('https://gitlab.example.com/group/repo')
+    // One of the common spellings is not listed twice.
+    expect(remoteSpellings('https://github.com/acme/widgets', 'git@github.com:acme/widgets.git')).toHaveLength(6)
   })
 
   test('the lookup names every spelling, and each reads back as the same remote', () => {
