@@ -58,8 +58,9 @@ traversing to them.
 there are any. `schema update --json` returns `id` and `success`, a count for
 each kind of change it made (`fields_added`, `fields_removed`,
 `fields_renamed`, `field_values_added`, `relationships_added`,
-`relationships_removed`, `context_paths_added`, `context_paths_removed`) and
-`affected_plays` when a forced update touched
+`relationships_removed`, `context_paths_added`, `context_paths_removed`),
+`stranded_context_paths` when removing a relationship left a context path
+that no longer resolves, and `affected_plays` when a forced update touched
 any. Without `--json` both print a short summary instead.
 
 **Two ways to set properties**, on `node create` and `node update` alike:
@@ -815,9 +816,9 @@ nodespace schema update --params '{"schema_id":"task","remove_context_paths":["p
 nodespace schema get task        # context_paths lists the type's paths, inherited ones included
 ```
 
-A path is written as `node context --path` takes it (`"spec.decisions"`, `"child_of*"`), or as a list of hops (`["spec","decisions"]`). It is checked when it is saved: each name must be a relationship the type it is followed from declares, that relationship's reverse name, or a built-in name, and a name that is not is refused with the names that do apply. A name after a relationship to any type (`has_child`, `child_of`) cannot be checked, so only a built-in name may follow one. A relationship has to exist before a path over it is added, so add the relationship in an earlier call. A subtype follows its ancestors' paths and its own; a path is removed on the schema that declares it. A schema declares at most 20. Context paths are not set by `schema create`.
+A path is written as `node context --path` takes it (`"spec.decisions"`, `"child_of*"`), or as a list of hops (`["spec","decisions"]`). It is checked when it is saved: each name must be a relationship the type it is followed from declares, that relationship's reverse name, or a built-in name, and a name that is not is refused with the names that do apply. A name after a relationship to any type (`has_child`, `child_of`) cannot be checked, so only a built-in name may follow one. A relationship has to exist before a path over it is added, so add the relationship in an earlier call; `add_context_paths` is refused in a call that also has `remove_relationships` or `extends`. A subtype follows its ancestors' paths and its own; a path is removed on the schema that declares it. A schema declares at most 20. Context paths are not set by `schema create`.
 
-If a relationship a context path names is later removed, `node context` on that type fails naming the schema and the path: remove the path, or declare the relationship again.
+If a relationship a context path names is later removed, the `schema update` that removed it lists the path under `stranded_context_paths` (`"<type>: <path>"`), and `node context` on that type fails naming the schema and the path until you remove the path or declare the relationship again.
 
 **Output:** Schema nodes as JSON (same shape as regular nodes; `node_type="schema"`)
 

@@ -2440,6 +2440,32 @@ fn read_dotted_context_paths(params: &mut Value, key: &str) -> Result<(), Markdo
     Ok(())
 }
 
+/// Every context path, on any schema, that no longer resolves through the
+/// schemas as they now stand: `"<schema id>: <path>"`, in schema order.
+async fn stranded_context_paths(
+    node_service: &Arc<NodeService>,
+) -> Result<Vec<String>, MarkdownError> {
+    let schemas = node_service
+        .get_all_schemas()
+        .await
+        .map_err(|e| MarkdownError::internal_error(format!("Failed to read the schemas: {e}")))?;
+    let mut stranded = Vec::new();
+    for schema in schemas {
+        for path in &schema.context_paths {
+            match crate::ops::path_ops::resolve_path(node_service, Some(&schema.envelope.id), path)
+                .await
+            {
+                Ok(_) => {}
+                Err(e @ crate::ops::path_ops::PathResolveError::Lookup { .. }) => {
+                    return Err(MarkdownError::internal_error(e.to_string()));
+                }
+                Err(_) => stranded.push(format!("{}: {path}", schema.envelope.id)),
+            }
+        }
+    }
+    Ok(stranded)
+}
+
 /// Check the context paths an update adds and removes (ADR-094 §2), against
 /// the schema and the schemas as they stand before the update changes
 /// anything.
@@ -2460,6 +2486,22 @@ async fn validate_context_path_changes(
         return Ok(());
     }
     let schema_id = &schema.envelope.id;
+    // An added path is checked against the relationships as they stand, so
+    // it is not added by a call that also takes relationships away: the path
+    // could be checked against one this call removes.
+    let takes_relationships_away = params
+        .remove_relationships
+        .as_ref()
+        .is_some_and(|names| !names.is_empty())
+        || params.extends.is_some();
+    if !add.is_empty() && takes_relationships_away {
+        return Err(MarkdownError::invalid_params(
+            "add_context_paths cannot be combined with remove_relationships or extends: a \
+             context path is checked against the relationships as they stand. Change the \
+             relationships first, then add the paths in a second call."
+                .to_string(),
+        ));
+    }
     let in_force = node_service
         .resolve_context_paths(schema_id)
         .await
@@ -3327,14 +3369,22 @@ pub async fn update_schema(
         context_paths.retain(|path| !remove.contains(path));
         context_paths_removed = before - context_paths.len();
     }
-    let context_paths_added = params.add_context_paths.as_ref().map_or(0, Vec::len);
-    context_paths.extend(params.add_context_paths.iter().flatten().cloned());
+    // Phase 0 read the schema before the renames; one already here was added
+    // by a call that committed since, and is not stored twice.
+    let mut context_paths_added = 0;
+    for path in params.add_context_paths.iter().flatten() {
+        if !context_paths.contains(path) {
+            context_paths.push(path.clone());
+            context_paths_added += 1;
+        }
+    }
 
     // The schema as this call leaves it. A template, the `abstract` flag and
     // the structural rules keep their current value unless the call sets one.
     // Whether the flag may change was settled in Phase 0
     // (`validate_type_system_changes`).
     let previous_extends = schema.extends.clone();
+    let updated_extends = extends.clone();
     let expected_version = schema.envelope.version;
     let updated_schema = SchemaNode {
         is_abstract: params.is_abstract.unwrap_or(schema.is_abstract),
@@ -3622,6 +3672,17 @@ pub async fn update_schema(
         other => MarkdownError::internal_error(format!("Failed to update schema: {}", other)),
     })?;
 
+    // Taking a relationship away can leave a context path, on this schema or
+    // on any other, naming something that no longer resolves; a context read
+    // of that type then fails until the path is removed. The author is told
+    // here, where the change was made.
+    let stranded_context_paths = if relationships_removed > 0 || previous_extends != updated_extends
+    {
+        stranded_context_paths(node_service).await?
+    } else {
+        Vec::new()
+    };
+
     Ok(SchemaUpdateOutput {
         schema_id: params.schema_id,
         success: true,
@@ -3657,6 +3718,8 @@ pub async fn update_schema(
         },
         context_paths_added: (context_paths_added > 0).then_some(context_paths_added),
         context_paths_removed: (context_paths_removed > 0).then_some(context_paths_removed),
+        stranded_context_paths: (!stranded_context_paths.is_empty())
+            .then_some(stranded_context_paths),
         affected_plays: affected_names,
     })
 }

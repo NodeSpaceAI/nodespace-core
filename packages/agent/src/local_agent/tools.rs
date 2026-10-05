@@ -2463,7 +2463,7 @@ fn def_get_node_context() -> ToolDefinition {
                 },
                 "version_only": {
                     "type": "boolean",
-                    "description": "Set true to get the read's 'version' and nothing else, to compare with the version an earlier read returned."
+                    "description": "Set true to get the read's 'version' and nothing else, to compare with the version an earlier read returned. Pass the same 'paths' as that earlier read: a read with other paths has another version."
                 }
             },
             "required": ["id"]

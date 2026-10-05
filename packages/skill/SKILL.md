@@ -194,9 +194,10 @@ you fetched. Attach one with `nodespace relationship create --from <skill-id>
 arguments detaches it.
 
 **Noticing that your work moved.** Keep the `version` of the read you work
-from. `nodespace node context <id> --version-only` prints the current one; when
-it differs, the node, something it returned or one of its skills changed, so
-read it again before you write.
+from. `nodespace node context <id> --version-only`, with the same `--path`
+flags as that read, prints the current one; when it differs, the node,
+something it returned or one of its skills changed, so read it again before
+you write.
 
 **Setting up a work-tracking workflow.** When the user asks for one (Linear-style
 issues and cycles, spec-driven development, Jira-style sprints), first run

@@ -12,12 +12,12 @@ use crate::governance;
 use crate::models::{CoreNodeType, Node, QueryFields, SKILL_ATTACHED_TO};
 use crate::ops::path_ops::{resolve_hop, undeclared_message, HopResolution};
 use crate::ops::query_ops::checked_definition;
-use crate::ops::skill_ops::{self, GuidanceSchema, GuidanceSkill};
+use crate::ops::skill_ops::{self, GuidanceSchema, GuidanceSkill, SkillGuidance};
 use crate::ops::OpsError;
 use crate::services::{NodeService, QueryDefinition, QueryService};
 use nodespace_types::{RelationshipHop, RelationshipPath, ResolvedHop, ResolvedPath};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The most paths one read is given, and the most context paths one schema
 /// declares.
@@ -264,7 +264,8 @@ pub async fn read_node_context(
             id: input.node_id.clone(),
         })?;
     let queries = SkillQueries::load(node_service).await?;
-    context_of(node_service, root, input.paths, &queries).await
+    let mut cache = ReadCache::default();
+    context_of(node_service, root, input.paths, &queries, &mut cache).await
 }
 
 /// Read each of `nodes`, the items a saved query run returned, with its
@@ -276,10 +277,12 @@ pub async fn read_node_contexts(
     query_id: &str,
 ) -> Result<ContextItems, OpsError> {
     let queries = SkillQueries::load(node_service).await?;
-    let mut attached = attached_skills(node_service, &[query_id.to_string()]).await?;
+    let mut cache = ReadCache::default();
+    let mut attached =
+        applicable_skills(node_service, &[query_id.to_string()], &[], &mut cache).await?;
     let mut items = Vec::with_capacity(nodes.len());
     for node in nodes {
-        let item = context_of(node_service, node, Vec::new(), &queries).await?;
+        let item = context_of(node_service, node, Vec::new(), &queries, &mut cache).await?;
         for skill in &item.attached.skills {
             if !attached
                 .skills
@@ -310,8 +313,9 @@ async fn context_of(
     root: Node,
     asked: Vec<RelationshipPath>,
     queries: &SkillQueries,
+    cache: &mut ReadCache,
 ) -> Result<NodeContext, OpsError> {
-    let declared = node_service.resolve_context_paths(&root.node_type).await?;
+    let declared = cache.context_paths(node_service, &root.node_type).await?;
 
     let mut returned_ids = vec![root.id.clone()];
     let mut paths: Vec<PathNodes> = Vec::with_capacity(declared.len() + asked.len());
@@ -354,7 +358,7 @@ async fn context_of(
     }
 
     let matched = queries.matching(node_service, &root).await?;
-    let attached = applicable_skills(node_service, &returned_ids, &matched).await?;
+    let attached = applicable_skills(node_service, &returned_ids, &matched, cache).await?;
     let node = context_node(node_service, root).await?;
     let version = context_version(&node, &paths, &attached);
     Ok(NodeContext {
@@ -419,6 +423,7 @@ fn context_version(node: &ContextNode, paths: &[PathNodes], attached: &AttachedS
         part(&attached.matched_queries.len().to_string());
         for query in &attached.matched_queries {
             part(&query.id);
+            part(&query.title);
         }
     }
     part(&attached.schemas.len().to_string());
@@ -440,7 +445,7 @@ pub async fn attached_skills(
     node_service: &NodeService,
     node_ids: &[String],
 ) -> Result<AttachedSkills, OpsError> {
-    applicable_skills(node_service, node_ids, &[]).await
+    applicable_skills(node_service, node_ids, &[], &mut ReadCache::default()).await
 }
 
 /// The skills attached to any of `returned_ids`, the nodes a read returned,
@@ -454,6 +459,7 @@ async fn applicable_skills(
     node_service: &NodeService,
     returned_ids: &[String],
     matched: &[MatchedQuery],
+    cache: &mut ReadCache,
 ) -> Result<AttachedSkills, OpsError> {
     let mut target_ids: Vec<String> = returned_ids.to_vec();
     for query in matched {
@@ -519,27 +525,7 @@ async fn applicable_skills(
     }
 
     let skill_ids: Vec<String> = order.iter().map(|known| known.skill_id.clone()).collect();
-    let mut loaded = node_service
-        .store()
-        .get_nodes_by_ids(&skill_ids)
-        .await
-        .map_err(|e| OpsError::Internal(format!("Failed to read attached skills: {e}")))?;
-
-    let mut skill_nodes = Vec::with_capacity(order.len());
-    for skill_id in &skill_ids {
-        let Some(node) = loaded.remove(skill_id) else {
-            continue;
-        };
-        if governance::participates(&node)
-            && node_service
-                .type_is_a(&node.node_type, CoreNodeType::Skill)
-                .await?
-        {
-            skill_nodes.push(node);
-        }
-    }
-
-    let guidance = skill_ops::fetch_skills(node_service, &skill_nodes).await?;
+    let guidance = cache.guidance(node_service, skill_ids).await?;
     let skills = guidance
         .skills
         .into_iter()
@@ -560,6 +546,69 @@ async fn applicable_skills(
         skills,
         schemas: guidance.schemas,
     })
+}
+
+/// What the items of one call share, read once: the context paths of each
+/// type, and each set of skills as it is handed over. The items of a queue
+/// are mostly of one type and carry the same procedure, so a run with context
+/// renders that procedure once and not once per item.
+///
+/// It lives for one call and is never kept: every call reads what is stored.
+#[derive(Default)]
+struct ReadCache {
+    context_paths: HashMap<String, Vec<(RelationshipPath, String)>>,
+    guidance: HashMap<Vec<String>, SkillGuidance>,
+}
+
+impl ReadCache {
+    async fn context_paths(
+        &mut self,
+        node_service: &NodeService,
+        node_type: &str,
+    ) -> Result<Vec<(RelationshipPath, String)>, OpsError> {
+        if let Some(known) = self.context_paths.get(node_type) {
+            return Ok(known.clone());
+        }
+        let paths = node_service.resolve_context_paths(node_type).await?;
+        self.context_paths
+            .insert(node_type.to_string(), paths.clone());
+        Ok(paths)
+    }
+
+    /// The skills among `skill_ids`, in that order, as a fetch by name
+    /// returns them, with their schemas. An id that is archived, or is not a
+    /// skill, is left out.
+    async fn guidance(
+        &mut self,
+        node_service: &NodeService,
+        skill_ids: Vec<String>,
+    ) -> Result<SkillGuidance, OpsError> {
+        if let Some(known) = self.guidance.get(&skill_ids) {
+            return Ok(known.clone());
+        }
+        let mut loaded = node_service
+            .store()
+            .get_nodes_by_ids(&skill_ids)
+            .await
+            .map_err(|e| OpsError::Internal(format!("Failed to read attached skills: {e}")))?;
+
+        let mut skill_nodes = Vec::with_capacity(skill_ids.len());
+        for skill_id in &skill_ids {
+            let Some(node) = loaded.remove(skill_id) else {
+                continue;
+            };
+            if governance::participates(&node)
+                && node_service
+                    .type_is_a(&node.node_type, CoreNodeType::Skill)
+                    .await?
+            {
+                skill_nodes.push(node);
+            }
+        }
+        let guidance = skill_ops::fetch_skills(node_service, &skill_nodes).await?;
+        self.guidance.insert(skill_ids, guidance.clone());
+        Ok(guidance)
+    }
 }
 
 /// `node` with its direct checkbox children.

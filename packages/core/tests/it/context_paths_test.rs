@@ -272,6 +272,16 @@ async fn a_schema_declares_context_paths_checked_when_saved() -> Result<()> {
         .await
         .expect_err("context paths are written through update_schema");
     assert!(bypass.to_string().contains("update_schema"), "{bypass}");
+    // Nor is creating the schema node with paths already on it.
+    let minted = service
+        .create_node(Node::new(
+            "schema".to_string(),
+            "Sidestep".to_string(),
+            json!({ "isCore": false, "schemaVersion": 1, "fields": [], "contextPaths": [["sponsor"]] }),
+        ))
+        .await
+        .expect_err("a schema is not created with context paths");
+    assert!(minted.to_string().contains("add_context_paths"), "{minted}");
     Ok(())
 }
 
@@ -463,12 +473,32 @@ async fn a_context_path_that_no_longer_resolves_names_its_schema() -> Result<()>
     )
     .await
     .map_err(anyhow::Error::msg)?;
-    update_schema(
+    // A path is not added by the call that takes relationships away: it
+    // would be checked against one the call removes.
+    let combined = update_schema(
+        &service,
+        json!({
+            "schema_id": "desk",
+            "remove_relationships": ["requests"],
+            "add_context_paths": ["requests"]
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        combined.contains("cannot be combined with remove_relationships"),
+        "{combined}"
+    );
+    assert!(declared_paths(&service, "desk").await.is_empty());
+
+    // The removal goes through, and says which path it stranded.
+    let removed = update_schema(
         &service,
         json!({ "schema_id": "desk", "remove_relationships": ["requests"] }),
     )
     .await
     .map_err(anyhow::Error::msg)?;
+    assert_eq!(removed["strandedContextPaths"], json!(["request: desk"]));
 
     let error = read_node_context(
         &service,

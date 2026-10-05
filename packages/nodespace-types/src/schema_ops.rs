@@ -249,6 +249,13 @@ pub struct SchemaUpdateOutput {
     pub context_paths_added: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_paths_removed: Option<usize>,
+    /// Context paths the update left naming a relationship that no longer
+    /// resolves, each as `"<schema id>: <path>"`: present when an update that
+    /// took a relationship away stranded one, on this schema or another. A
+    /// context read of that type fails until the path is removed or the
+    /// relationship is declared again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stranded_context_paths: Option<Vec<String>>,
     /// Plays affected by the change (present when `force` let it through).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affected_plays: Option<Vec<String>>,
@@ -375,6 +382,7 @@ mod tests {
             relationships_removed: None,
             context_paths_added: None,
             context_paths_removed: None,
+            stranded_context_paths: None,
             affected_plays: None,
         })
         .unwrap();

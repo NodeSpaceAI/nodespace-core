@@ -619,6 +619,9 @@ pub fn schema_updated_to_json(updated: &SchemaUpdateOutput) -> Value {
     if let Some(plays) = &updated.affected_plays {
         value["affected_plays"] = json!(plays);
     }
+    if let Some(paths) = &updated.stranded_context_paths {
+        value["stranded_context_paths"] = json!(paths);
+    }
     value
 }
 
@@ -637,6 +640,7 @@ fn schema_update_counts(updated: &SchemaUpdateOutput) -> Vec<(&'static str, usiz
         relationships_removed,
         context_paths_added,
         context_paths_removed,
+        stranded_context_paths: _,
         affected_plays: _,
     } = updated;
 
@@ -677,6 +681,11 @@ fn render_schema_updated(result_json: &str, json: bool) -> Result<String> {
     }
     for play in updated.affected_plays.iter().flatten() {
         lines.push(format!("affected play: {play}"));
+    }
+    for path in updated.stranded_context_paths.iter().flatten() {
+        lines.push(format!(
+            "stranded context path (no longer resolves; remove it with remove_context_paths): {path}"
+        ));
     }
     Ok(lines.join("\n"))
 }

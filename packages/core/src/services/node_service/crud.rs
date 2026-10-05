@@ -564,6 +564,21 @@ impl NodeService {
                 node.id
             )));
         }
+        // A schema is created before its relationships are declared, so a
+        // context path given here has nothing to be checked against.
+        if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type)
+            && node
+                .properties
+                .get(crate::models::schema_node::CONTEXT_PATHS_KEY)
+                .is_some()
+        {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Schema '{}' cannot be created with context paths: add them with update_schema \
+                 (add_context_paths) once its relationships are declared, so each path is \
+                 checked against the schemas.",
+                node.id
+            )));
+        }
         Ok(())
     }
 
