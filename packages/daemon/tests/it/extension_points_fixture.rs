@@ -12,7 +12,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use nodespace_core::{NodeService, NodeUpdate, SqliteStore};
 use nodespace_daemon::{
@@ -24,17 +24,27 @@ use tempfile::TempDir;
 /// The extension id the fixture declares.
 const FIXTURE_ID: &str = "fixture";
 
+/// Held by every [`IsolatedDaemonHome`], so tests that share a process (a
+/// plain `cargo test`) take turns with the environment instead of one test
+/// restoring it while another still resolves the model path from it.
+static ENVIRONMENT: Mutex<()> = Mutex::new(());
+
 /// Points `NODESPACE_HOME` at a temporary directory and
 /// `NODESPACED_MODEL_PATH` at a file that does not exist, and restores both
-/// when dropped, a panic included. The environment is process-global; nextest
-/// runs each test in its own process.
+/// when dropped, a panic included. The environment is process-global: nextest
+/// runs each test in its own process, and [`ENVIRONMENT`] serializes tests
+/// that share one.
 struct IsolatedDaemonHome {
     home: TempDir,
     saved: Vec<(&'static str, Option<OsString>)>,
+    _environment: MutexGuard<'static, ()>,
 }
 
 impl IsolatedDaemonHome {
     fn new() -> Self {
+        // A test that panicked while holding the lock restored the
+        // environment as it unwound, so its poison carries no meaning here.
+        let environment = ENVIRONMENT.lock().unwrap_or_else(PoisonError::into_inner);
         let home = TempDir::new().unwrap();
         let saved = ["NODESPACE_HOME", "NODESPACED_MODEL_PATH"]
             .map(|var| (var, std::env::var_os(var)))
@@ -44,7 +54,11 @@ impl IsolatedDaemonHome {
             "NODESPACED_MODEL_PATH",
             home.path().join("no-model-here.gguf"),
         );
-        Self { home, saved }
+        Self {
+            home,
+            saved,
+            _environment: environment,
+        }
     }
 
     fn path(&self) -> &Path {
@@ -64,7 +78,12 @@ impl Drop for IsolatedDaemonHome {
 }
 
 /// The daemon's shared services, built as a composing build builds them.
+/// The context carries the extensions every database is built from.
 async fn shared_services(extensions: DaemonExtensions) -> SharedServices {
+    extensions
+        .check()
+        .expect("the fixture's extensions are valid");
+    let declared = extensions.supported_extensions().to_vec();
     let (shared, model_task) = build_shared_services(extensions)
         .await
         .expect("the daemon starts");
@@ -72,6 +91,7 @@ async fn shared_services(extensions: DaemonExtensions) -> SharedServices {
         model_task.is_none() && !shared.context.has_model,
         "no model is loaded"
     );
+    assert_eq!(shared.context.extensions.supported_extensions(), declared);
     shared
 }
 
@@ -81,21 +101,28 @@ async fn database_requiring(dir: &Path, name: &str, ids: &[&str]) -> PathBuf {
     let db_dir = dir.join(name);
     std::fs::create_dir_all(&db_dir).unwrap();
     let path = db_dir.join(format!("{name}.sqlite"));
-    let mut store = Arc::new(SqliteStore::new(path.clone()).await.unwrap());
-    let node_service = NodeService::new(&mut store).await.unwrap();
-    let settings = node_service
-        .get_node("database-settings-singleton")
-        .await
-        .unwrap()
-        .unwrap();
-    node_service
-        .update_node(
-            &settings.id,
-            settings.version,
-            NodeUpdate::new().with_properties(serde_json::json!({ "required_extensions": ids })),
-        )
-        .await
-        .unwrap();
+    {
+        let mut store = Arc::new(SqliteStore::new(path.clone()).await.unwrap());
+        let node_service = NodeService::new(&mut store).await.unwrap();
+        let settings = node_service
+            .get_node("database-settings-singleton")
+            .await
+            .unwrap()
+            .unwrap();
+        node_service
+            .update_node(
+                &settings.id,
+                settings.version,
+                NodeUpdate::new()
+                    .with_properties(serde_json::json!({ "required_extensions": ids })),
+            )
+            .await
+            .unwrap();
+    }
+    assert!(
+        !PathBuf::from(format!("{}-wal", path.display())).exists(),
+        "the fixture closed cleanly"
+    );
     path
 }
 
@@ -149,19 +176,19 @@ async fn core_refuses_a_database_requiring_any_extension() {
     );
 }
 
-/// A malformed extension id stops the daemon before it builds anything.
+/// A malformed extension id stops the daemon before it builds anything, with
+/// the error `check` reports for it.
 #[tokio::test]
 async fn an_invalid_extension_id_stops_startup() {
     let _home = IsolatedDaemonHome::new();
-    let err = build_shared_services(DaemonExtensions::none().supported_extension("Fixture"))
+    let extensions = DaemonExtensions::none().supported_extension("Fixture");
+    let expected = DaemonExtensionsError::InvalidExtensionId("Fixture".to_string());
+    assert_eq!(extensions.check(), Err(expected.clone()));
+
+    let err = build_shared_services(extensions)
         .await
         .err()
         .expect("startup is refused");
 
-    assert_eq!(
-        err.downcast_ref::<DaemonExtensionsError>(),
-        Some(&DaemonExtensionsError::InvalidExtensionId(
-            "Fixture".to_string()
-        ))
-    );
+    assert_eq!(err.downcast_ref::<DaemonExtensionsError>(), Some(&expected));
 }

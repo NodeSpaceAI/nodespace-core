@@ -38,7 +38,10 @@ impl DaemonExtensions {
     /// is rejected when the daemon starts (see [`DaemonExtensionsError`]).
     /// Declaring an id twice is the same as declaring it once.
     pub fn supported_extension(mut self, id: impl Into<String>) -> Self {
-        self.supported_extensions.push(id.into());
+        let id = id.into();
+        if !self.supported_extensions.contains(&id) {
+            self.supported_extensions.push(id);
+        }
         self
     }
 
@@ -66,7 +69,11 @@ impl DaemonExtensions {
 }
 
 /// Why the daemon refused a [`DaemonExtensions`] at startup.
+///
+/// `non_exhaustive`: a new hook adds the ways it can be refused, which is a
+/// minor change to the extension API.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DaemonExtensionsError {
     /// A declared extension id does not have the form
     /// [`DaemonExtensions::supported_extension`] requires.
@@ -90,6 +97,18 @@ impl std::error::Error for DaemonExtensionsError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn declaring_an_id_twice_declares_it_once() {
+        assert_eq!(
+            DaemonExtensions::none()
+                .supported_extension("fixture")
+                .supported_extension("other")
+                .supported_extension("fixture")
+                .supported_extensions(),
+            ["fixture", "other"]
+        );
+    }
 
     #[test]
     fn check_rejects_the_first_invalid_supported_id() {
