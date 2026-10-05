@@ -5449,21 +5449,26 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // — a compound request must not silently widen Stage 2's candidate
         // bound past the system-owned limit ADR-038 requires. Each query asks
         // for one more than that bound, which `select_candidates` keeps only
-        // when a read-only skill took a write skill's place.
+        // when a read-only skill took a write skill's place. A query that
+        // asks for something to be added is ranked by
+        // `routing::retrieve_candidates`' own rules for an add.
         let mut merged: Vec<crate::agent_types::SkillCandidate> = Vec::new();
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut top_score: f32 = 0.0;
         for query in &queries {
-            match self
-                .tool_executor
-                .retrieve_skills(query, routing::RETRIEVAL_FETCH)
-                .await
-            {
-                Ok(r) => {
-                    if let Some(s) = r.candidates.first().map(|c| c.score) {
+            let retrieved = routing::retrieve_candidates(query, |q, limit| async move {
+                self.tool_executor
+                    .retrieve_skills(&q, limit)
+                    .await
+                    .map(|r| r.candidates)
+            })
+            .await;
+            match retrieved {
+                Ok(candidates) => {
+                    if let Some(s) = candidates.first().map(|c| c.score) {
                         top_score = top_score.max(s);
                     }
-                    for c in r.candidates {
+                    for c in candidates {
                         if seen_ids.insert(c.id.clone()) {
                             merged.push(c);
                         }
@@ -14582,7 +14587,7 @@ mod tests {
         // ADR-038: retrieval is a deterministic system step, not a model tool
         // call. The model supplies the query; the system issues the retrieval.
         let engine = routed_engine(
-            "create a schema",
+            "find billing notes",
             "search_nodes",
             r#"{"query":"x"}"#,
             "Done.",
@@ -14607,8 +14612,60 @@ mod tests {
 
         assert_eq!(
             queries.lock().unwrap().as_slice(),
-            &["create a schema".to_string()],
+            &["find billing notes".to_string()],
             "the system must issue exactly one retrieval, on Stage 1's query"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_add_that_reaches_no_creating_skill_is_retrieved_for_one() {
+        // Stage 1 words the request verb first. Retrieval returns a deletion
+        // skill and nothing that can create, so the system searches again
+        // with the capability named first, and the deletion skill is not a
+        // candidate on the turn.
+        let engine = RecordingEngine::new(routed_engine(
+            "add cache invalidation decision",
+            "search_nodes",
+            r#"{"query":"x"}"#,
+            "Done.",
+        ));
+        let tool_names = engine.tool_names_handle();
+        let registry = MockToolExecutor::new()
+            .with_tool("search_nodes", json!({}), json!({"nodes": []}))
+            .with_tool("delete_node", json!({}), json!({}));
+        let exec = RoutingToolExecutor::new(
+            registry,
+            vec![
+                skill_candidate("deletion", 0.9, &["delete_node", "search_nodes"]),
+                skill_candidate("research", 0.8, &["search_nodes"]),
+            ],
+        );
+        let queries = exec.queries_handle();
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+        loop_
+            .run_turn(
+                &mut session,
+                "Add the cache invalidation decision.",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            queries.lock().unwrap().as_slice(),
+            &[
+                "add cache invalidation decision".to_string(),
+                routing::create_retrieval_query("add cache invalidation decision"),
+            ]
+        );
+        let stage2_tools = tool_names.lock().unwrap()[1].clone();
+        assert!(
+            stage2_tools.contains(&"search_nodes".to_string())
+                && !stage2_tools.contains(&"delete_node".to_string()),
+            "an add is offered the remaining candidates' tools and not delete_node: {stage2_tools:?}"
         );
     }
 
@@ -14680,7 +14737,7 @@ mod tests {
         // just that the turn completes, since a failure to dedup would still
         // let the turn succeed on a duplicated candidate set.
         let engine = RecordingEngine::new(multi_routed_engine(
-            &["log an expense", "remind me Friday"],
+            &["track an expense", "remind me Friday"],
             "search_nodes",
             r#"{"query":"x"}"#,
             "Done.",
@@ -14715,7 +14772,10 @@ mod tests {
 
         assert_eq!(
             queries.lock().unwrap().as_slice(),
-            &["log an expense".to_string(), "remind me Friday".to_string()],
+            &[
+                "track an expense".to_string(),
+                "remind me Friday".to_string()
+            ],
             "retrieval must run once per route_multi query, in order"
         );
 

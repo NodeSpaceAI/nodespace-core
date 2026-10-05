@@ -15,7 +15,9 @@ import { join } from "node:path";
 import type { TurnRecord } from "../types.ts";
 import fixture, {
   assertFixture,
+  assertRouting,
   constantAnswerBaseline,
+  createdAType,
   stage1Expectation,
   type RoutingScenario,
 } from "./routing.ts";
@@ -97,6 +99,97 @@ describe("route_multi scoring", () => {
     const plain = byId("direct-node-search");
     const t = turn({ toolsCalled: ["search_nodes"], routingDecision: "multi" });
     expect(assertFixture(plain, [t]).passed).toBe(false);
+  });
+});
+
+describe("type-creating scenarios are scored on the type", () => {
+  const created = { name: "create_schema", isError: false };
+  const refused = { name: "create_schema", isError: true };
+  const failedUpdate = { name: "update_schema", isError: true };
+
+  test("every scenario that expects Schema Creation must create a type", () => {
+    const schemaScenarios = scenarios.filter(
+      (s) => s.expected.kind === "skill" && s.expected.skill === "Schema Creation",
+    );
+    expect(schemaScenarios.length).toBeGreaterThan(0);
+    expect(schemaScenarios.every((s) => s.createsType === true)).toBe(true);
+  });
+
+  test("a create_schema the tool refused fails, though the turn routed", () => {
+    const s = byId("indirect-schema-freelance");
+    const turns = [
+      turn({
+        routingDecision: "query",
+        toolsCalled: ["create_schema", "update_schema", "update_schema"],
+        toolCalls: [refused, failedUpdate, failedUpdate],
+        reply: "• schema creation failed • schema update failed (2×)",
+      }),
+    ];
+    expect(assertRouting(s, turns).passed).toBe(true);
+    const verdict = assertFixture(s, turns);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failure).toContain("every create_schema call was refused");
+  });
+
+  test("a refused call followed by an accepted one passes", () => {
+    const s = byId("indirect-schema-freelance");
+    const turns = [
+      turn({
+        routingDecision: "query",
+        toolsCalled: ["create_schema", "create_schema"],
+        toolCalls: [refused, created],
+      }),
+    ];
+    expect(assertFixture(s, turns).passed).toBe(true);
+  });
+
+  test("naming the skill in the reply without creating a type fails", () => {
+    const s = byId("direct-schema-create");
+    const turns = [
+      turn({
+        routingDecision: "query",
+        reply: "I'll use the Schema Creation skill for that.",
+      }),
+    ];
+    expect(assertRouting(s, turns).passed).toBe(true);
+    const verdict = assertFixture(s, turns);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failure).toContain("create_schema was not called");
+  });
+
+  test("a compound request that asks for a type must create it", () => {
+    const s = byId("multi-schema-and-search");
+    const searched = turn({
+      routingDecision: "multi",
+      toolsCalled: ["search_semantic"],
+      toolCalls: [{ name: "search_semantic", isError: false }],
+    });
+    expect(assertFixture(s, [searched]).passed).toBe(false);
+    const createdToo = turn({
+      routingDecision: "multi",
+      toolsCalled: ["create_schema", "search_semantic"],
+      toolCalls: [created, { name: "search_semantic", isError: false }],
+    });
+    expect(assertFixture(s, [createdToo]).passed).toBe(true);
+  });
+
+  test("a turn recorded without per-call outcomes is read by tool name", () => {
+    const s = byId("direct-schema-create");
+    const turns = [turn({ routingDecision: "query", toolsCalled: ["create_schema"] })];
+    expect(createdAType(turns)).toBe(true);
+    expect(assertFixture(s, turns).passed).toBe(true);
+  });
+
+  test("a scenario that asks for no type is not held to one", () => {
+    const s = byId("direct-node-create");
+    const turns = [
+      turn({
+        routingDecision: "query",
+        toolsCalled: ["create_node"],
+        toolCalls: [{ name: "create_node", isError: false }],
+      }),
+    ];
+    expect(assertFixture(s, turns).passed).toBe(true);
   });
 });
 

@@ -1127,7 +1127,7 @@ impl NodeBehavior for DateNodeBehavior {
 /// - Properties must be valid JSON object
 /// - Field names must be unique (alphanumeric and underscores, with an optional
 ///   `<namespace>:` prefix — see [`validate_schema_field_name`])
-/// - Enum fields must have at least one value defined (in core_values or user_values)
+/// - Enum fields must have at least one value defined (in `coreValues` or `userValues`)
 ///
 /// # Strongly-Typed Validation
 ///
@@ -1247,7 +1247,7 @@ fn validate_schema_field(field: &SchemaField) -> Result<(), NodeValidationError>
 
         if !has_values {
             return Err(NodeValidationError::InvalidProperties(format!(
-                "Enum field '{}' must have at least one value defined (in core_values or user_values)",
+                "Enum field '{}' has no values. An enum field needs at least one, listed in coreValues",
                 field.name
             )));
         }
@@ -4224,7 +4224,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(NodeValidationError::InvalidProperties(ref msg))
-                if msg.contains("Enum field") && msg.contains("must have at least one value")
+                if msg.contains("Enum field") && msg.contains("has no values")
         ));
 
         // Enum with core_values should pass
@@ -4463,7 +4463,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(NodeValidationError::InvalidProperties(ref msg))
-                if msg.contains("Enum field") && msg.contains("must have at least one value")
+                if msg.contains("Enum field") && msg.contains("has no values")
         ));
     }
 
