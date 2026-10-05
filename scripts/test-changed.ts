@@ -21,7 +21,9 @@ import { reportBranchBehind } from "./check-branch-behind";
 import { stageSkipReason } from "./check-node-types-doc";
 import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
 import { describeScope, gateScope } from "./gate-scope";
-import { createLogDir, runStage, TIERS, type StageSpec } from "./gate-stage";
+import { join } from "node:path";
+import { formatPruneResult, freeGiB, freeSpaceRefusal, pruneIncremental, WORKTREE_INCREMENTAL_MAX_AGE_MS } from "./gate-disk";
+import { createLogDir, GATE_INFRA_EXIT, runStage, TIERS, type StageSpec } from "./gate-stage";
 
 const MINUTE = 60_000;
 
@@ -67,6 +69,19 @@ if (scope.rust) {
     process.exit(1);
   }
   registerLockRelease(slot);
+  // Under the slot, before the first compile: drop this worktree's superseded
+  // incremental directories (gate-disk.ts), then refuse a disk too full to
+  // build on. A build that fills the disk fails partway with an I/O error and
+  // stops every other session on the machine with it. That is this machine's
+  // fault, not the change's, so it exits like the merge gate's refusal.
+  console.log(
+    formatPruneResult(pruneIncremental(join(process.cwd(), "target"), WORKTREE_INCREMENTAL_MAX_AGE_MS), WORKTREE_INCREMENTAL_MAX_AGE_MS)
+  );
+  const refusal = freeSpaceRefusal(freeGiB("."), "the test:changed Rust tier");
+  if (refusal !== null) {
+    console.error(refusal);
+    process.exit(GATE_INFRA_EXIT);
+  }
   await run(TIERS.typesCheck);
   // First to compile nodespace-core in a fresh worktree, so it gets the cold
   // build's time, like the Rust tier below.
