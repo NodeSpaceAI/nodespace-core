@@ -80,7 +80,9 @@ pub trait NodeAccessor: Send + Sync {
 /// about every type; they just declare intent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchScope {
-    /// Default: the user's knowledge — `KNOWLEDGE_CORE_TYPES` plus user-defined types
+    /// Default: the user's knowledge — `KNOWLEDGE_CORE_TYPES` plus user-defined
+    /// types, leaving out the built-in schemas (see
+    /// `NodeEmbeddingService::matches_scope`)
     Knowledge,
     /// Only conversation nodes (ai-chat)
     Conversations,

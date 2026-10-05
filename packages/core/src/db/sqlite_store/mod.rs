@@ -16,6 +16,11 @@ const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 128;
 /// by node and many chunks map to one node, so we fetch `limit * this` to cover enough
 /// distinct nodes.
 const EMBEDDING_KNN_OVERFETCH: i64 = 10;
+/// The largest `k` a sqlite-vec KNN query accepts (its `SQLITE_VEC_VEC0_K_MAX`).
+/// A larger one fails the whole query ("k value in knn query too large"), and
+/// `limit * EMBEDDING_KNN_OVERFETCH` passes it from a limit of 410, which search
+/// callers reach once they over-fetch for their own filters.
+const VEC0_K_MAX: i64 = 4096;
 const BM25_MAX_TOKENS: usize = 4;
 const BM25_STOP_WORDS: &[&str] = &[
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
@@ -2201,6 +2206,34 @@ mod tests {
         assert_eq!(node.version, 7);
         assert_eq!(node.created_at.to_rfc3339(), "2026-01-02T03:04:05+00:00");
         assert_eq!(node.modified_at.to_rfc3339(), "2026-02-03T04:05:06+00:00");
+        Ok(())
+    }
+
+    /// A large limit is held to sqlite-vec's largest `k` instead of failing
+    /// the query. The limit is past the cap itself, so `k` must be capped after
+    /// it is raised to the limit, not before.
+    #[tokio::test]
+    async fn test_search_embeddings_large_limit_is_held_to_the_knn_cap() -> Result<()> {
+        let (store, _tmp) = create_test_store().await?;
+        let node = store
+            .create_node(
+                Node::new("text".to_string(), "vec node".to_string(), json!({})),
+                None,
+                None,
+            )
+            .await?;
+        store
+            .upsert_embeddings(&node.id, vec![unit_embedding(&node.id, 0)])
+            .await?;
+
+        let results = store
+            .search_embeddings(&unit_query(0), 5000, Some(0.5))
+            .await?;
+
+        assert_eq!(
+            results.first().map(|r| r.node_id.as_str()),
+            Some(node.id.as_str())
+        );
         Ok(())
     }
 

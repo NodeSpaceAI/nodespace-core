@@ -44,7 +44,9 @@ impl NodeService {
         existing: &Node,
         updated: &Node,
     ) -> Result<(), NodeServiceError> {
-        if Self::is_core_schema(existing) != Self::is_core_schema(updated) {
+        if crate::models::schema_node::is_core_schema(existing)
+            != crate::models::schema_node::is_core_schema(updated)
+        {
             return Err(NodeServiceError::invalid_update(format!(
                 "schema_is_core: whether schema '{}' is core is fixed when it is created",
                 existing.id
@@ -545,20 +547,13 @@ impl NodeService {
     /// (see [`Self::ensure_schema_core_status_unchanged`]), a user schema
     /// created with `isCore: true` could never be corrected or deleted.
     pub(crate) fn ensure_not_creating_core_schema(node: &Node) -> Result<(), NodeServiceError> {
-        if Self::is_core_schema(node) {
+        if crate::models::schema_node::is_core_schema(node) {
             return Err(NodeServiceError::invalid_update(format!(
                 "schema_is_core: schema '{}' cannot be created as a core type; core schemas are built in",
                 node.id
             )));
         }
         Ok(())
-    }
-
-    /// Whether `node` is a core schema — the same test the store's delete
-    /// refusal applies (`isCore` must be the boolean `true`).
-    fn is_core_schema(node: &Node) -> bool {
-        crate::models::CoreNodeType::Schema.is_exactly(&node.node_type)
-            && node.properties.get("isCore").and_then(|v| v.as_bool()) == Some(true)
     }
 
     /// Insert-only half of [`Self::create_node_in_tx`]: identical

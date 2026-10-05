@@ -39,7 +39,8 @@ use std::sync::Arc;
 
 /// Built-in types the default `Knowledge` search scope returns: the user's own
 /// documents and records. User-defined types are admitted too, but are not
-/// known statically — see [`NodeEmbeddingService::matches_scope`].
+/// known statically — see [`NodeEmbeddingService::matches_scope`], which also
+/// leaves out the built-in schemas, though `schema` is listed here.
 pub const KNOWLEDGE_CORE_TYPES: &[crate::models::CoreNodeType] = &[
     crate::models::CoreNodeType::Text,
     crate::models::CoreNodeType::Header,
@@ -885,19 +886,28 @@ impl NodeEmbeddingService {
         Ok(results)
     }
 
-    /// Check if a node type matches the given search scope.
+    /// Check if a node matches the given search scope.
     ///
     /// `user_types` is the set of user-defined (non-core schema) type names,
     /// which `Knowledge` admits alongside [`KNOWLEDGE_CORE_TYPES`]. System
     /// types (`agent-guidance`, `skill`, `tool`, `play`, …) are core and not
     /// on that list, so they stay out of the default scope.
-    pub fn matches_scope(
-        node_type: &str,
-        scope: &SearchScope,
-        user_types: &HashSet<String>,
-    ) -> bool {
+    ///
+    /// `Knowledge` also leaves out the built-in schemas
+    /// (`schema_node::is_core_schema`). Every schema is embedded so skill
+    /// and schema retrieval can find a type by meaning, and the built-in
+    /// types' names and field labels ("Checkbox", "Horizontal Line") are close
+    /// to many ordinary queries, so in the default scope they would come back
+    /// ahead of the user's notes. A user-defined schema stays in. A search
+    /// that names `schema` and requests no scope replaces this scope and
+    /// returns them all.
+    pub fn matches_scope(node: &Node, scope: &SearchScope, user_types: &HashSet<String>) -> bool {
+        let node_type = node.node_type.as_str();
         match scope {
             SearchScope::Knowledge => {
+                if crate::models::schema_node::is_core_schema(node) {
+                    return false;
+                }
                 crate::models::CoreNodeType::from_id(node_type)
                     .is_some_and(|core| KNOWLEDGE_CORE_TYPES.contains(&core))
                     || user_types.contains(node_type)
@@ -1162,18 +1172,45 @@ mod tests {
 
     /// The default scope returns the user's documents and records — including
     /// tasks, date pages and user-defined types, which the keyword half finds
-    /// by title — and never system content.
+    /// by title, and user-defined schemas — and never system content or the
+    /// built-in schemas.
     #[test]
     fn test_knowledge_scope_admits_user_knowledge_and_excludes_system_types() {
         let user_types: HashSet<String> = ["company".to_string()].into();
-        let knowledge =
-            |t: &str| NodeEmbeddingService::matches_scope(t, &SearchScope::Knowledge, &user_types);
+        let knowledge = |node: &Node| {
+            NodeEmbeddingService::matches_scope(node, &SearchScope::Knowledge, &user_types)
+        };
+        let of_type = |t: &str| Node::new(t.to_string(), String::new(), serde_json::json!({}));
+        let schema = |name: &str, is_core: bool| {
+            Node::new(
+                "schema".to_string(),
+                name.to_string(),
+                serde_json::json!({ "isCore": is_core }),
+            )
+        };
 
         for t in [
-            "text", "header", "schema", "task", "date", "project", "person", "company",
+            "text", "header", "task", "date", "project", "person", "company",
         ] {
-            assert!(knowledge(t), "{t} must be in the default scope");
+            assert!(knowledge(&of_type(t)), "{t} must be in the default scope");
         }
+        assert!(
+            knowledge(&schema("Company", false)),
+            "a user-defined schema must be in the default scope"
+        );
+        assert!(
+            knowledge(&Node::new(
+                "text".to_string(),
+                String::new(),
+                serde_json::json!({ "isCore": true })
+            )),
+            "only a schema node is read as a built-in schema"
+        );
+
+        assert!(
+            !knowledge(&schema("Checkbox", true)),
+            "a built-in schema must be outside the default scope"
+        );
         for t in [
             "agent-guidance",
             "skill",
@@ -1186,8 +1223,20 @@ mod tests {
             "ai-chat-pty",
             "invoice", // not a known user type in this set
         ] {
-            assert!(!knowledge(t), "{t} must be outside the default scope");
+            assert!(
+                !knowledge(&of_type(t)),
+                "{t} must be outside the default scope"
+            );
         }
+
+        assert!(
+            NodeEmbeddingService::matches_scope(
+                &schema("Checkbox", true),
+                &SearchScope::Everything,
+                &user_types
+            ),
+            "`Everything` keeps the built-in schemas"
+        );
     }
 
     #[test]

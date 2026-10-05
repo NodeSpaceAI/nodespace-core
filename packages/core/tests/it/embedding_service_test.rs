@@ -2116,9 +2116,9 @@ async fn test_search_semantic_enumerate_property_filter_finds_inherited_field() 
 /// `extends` ancestry, so its resolved chain is `["schema"]`, and a schema
 /// node's properties has no `"schema"` bucket at all. Before this PR,
 /// `matches`'s flat top-level lookup found this by coincidence; a naive
-/// namespace-bucket-only lookup would regress it. `schema` is also a
-/// `KNOWLEDGE_CORE_TYPES` member, so this is reachable through the default
-/// scope, not just an explicit `node_types: ["schema"]`.
+/// namespace-bucket-only lookup would regress it. The default scope leaves
+/// the built-in schemas out, so an `isCore: true` match is reachable only
+/// through an explicit `node_types: ["schema"]`.
 #[tokio::test]
 async fn test_search_semantic_enumerate_property_filter_finds_schema_nodes_own_flat_field(
 ) -> Result<()> {
@@ -2151,6 +2151,130 @@ async fn test_search_semantic_enumerate_property_filter_finds_schema_nodes_own_f
         !matched_ids.contains(&widget_schema_id.as_str()),
         "the user-defined `{widget_schema_id}` schema (isCore: false) must not match isCore: true, got {:?}",
         matched_ids
+    );
+
+    Ok(())
+}
+
+/// A search that names no type leaves the built-in schemas out and keeps
+/// user-defined ones; a search that names `schema` returns both. Every schema
+/// is embedded for skill and schema retrieval, and with the built-in schemas
+/// in the default scope an ordinary search answered with type definitions
+/// ("Checkbox", "Horizontal Line") ahead of the user's notes.
+///
+/// This runs through the enumerate path, which applies the same scope filter
+/// as a query and needs no embedding model. The ranking of a real query over
+/// embedded schemas is pinned by `default_scope_schema_search_live_test`.
+#[tokio::test]
+async fn test_search_semantic_default_scope_leaves_core_schemas_out_and_keeps_user_schemas(
+) -> Result<()> {
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let checkbox = store
+        .get_node("checkbox")
+        .await?
+        .expect("core checkbox schema is seeded");
+    assert_eq!(checkbox.node_type, "schema");
+    assert_eq!(checkbox.properties["isCore"], true);
+    let created = nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({ "name": "Venue", "fields": [{ "name": "capacity", "type": "number" }] }),
+    )
+    .await?;
+    let venue_schema_id = created["schemaId"].as_str().expect("schema id").to_string();
+    let note = create_root_node(&node_service, "text", "Hall Nine booking for the offsite").await?;
+
+    let mut untyped = empty_search_input("*", None);
+    untyped.limit = Some(1000);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, untyped).await?;
+    let ids: Vec<&str> = output.matched_nodes.iter().map(|n| n.id.as_str()).collect();
+    assert!(
+        ids.contains(&note.id.as_str()),
+        "the user's note is in the default scope"
+    );
+    assert!(
+        ids.contains(&venue_schema_id.as_str()),
+        "a user-defined schema stays in the default scope, got {ids:?}"
+    );
+    let core_schemas: Vec<&str> = output
+        .matched_nodes
+        .iter()
+        .filter(|n| n.node_type == "schema" && n.properties["isCore"] == true)
+        .map(|n| n.id.as_str())
+        .collect();
+    assert!(
+        core_schemas.is_empty(),
+        "a search that names no type must return no built-in schema, got {core_schemas:?}"
+    );
+
+    let mut typed = empty_search_input("*", Some(vec!["schema".to_string()]));
+    typed.limit = Some(1000);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, typed).await?;
+    let ids: Vec<&str> = output.matched_nodes.iter().map(|n| n.id.as_str()).collect();
+    assert!(
+        ids.contains(&checkbox.id.as_str()) && ids.contains(&venue_schema_id.as_str()),
+        "naming `schema` returns built-in and user-defined schemas, got {ids:?}"
+    );
+    assert!(
+        output.matched_nodes.iter().all(|n| n.node_type == "schema"),
+        "naming `schema` returns only schemas"
+    );
+
+    Ok(())
+}
+
+/// A small limit still reaches past the built-in schemas. The default scope
+/// drops them after the fetch, so they would otherwise fill a small window and
+/// leave nothing: the local agent's search asks for 5. The fetch takes as many
+/// extra rows as there are built-in schemas.
+///
+/// Through the enumerate path, where a fresh database's built-in schemas are
+/// its first rows. A small-limit search must return the same first results as
+/// one large enough to see every row.
+#[tokio::test]
+async fn test_search_semantic_small_limit_reaches_past_the_built_in_schemas() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+    create_root_node(&node_service, "text", "Hall Nine booking for the offsite").await?;
+
+    let limit = 2;
+    // The case this test exists for: the window a limit-2 search fetches
+    // without the extra rows (3 × limit) holds only built-in schemas. If seeding
+    // stops putting them first, this fails rather than the test passing with
+    // nothing to prove.
+    let front = node_service
+        .query_nodes(nodespace_core::models::NodeFilter::new().with_limit(limit * 3))
+        .await?;
+    assert!(
+        front.len() == limit * 3
+            && front
+                .iter()
+                .all(|n| n.node_type == "schema" && n.properties["isCore"] == true),
+        "precondition: the first {} rows are built-in schemas, got {:?}",
+        limit * 3,
+        front.iter().map(|n| &n.id).collect::<Vec<_>>()
+    );
+
+    let ids = |output: &search_ops::SearchSemanticOutput| -> Vec<String> {
+        output.matched_nodes.iter().map(|n| n.id.clone()).collect()
+    };
+    let mut everything = empty_search_input("*", None);
+    everything.limit = Some(1000);
+    let everything =
+        search_ops::search_semantic(&node_service, &embedding_service, everything).await?;
+    let mut small = empty_search_input("*", None);
+    small.limit = Some(limit);
+    let small = search_ops::search_semantic(&node_service, &embedding_service, small).await?;
+
+    let expected: Vec<String> = ids(&everything).into_iter().take(limit).collect();
+    assert_eq!(expected.len(), limit, "the database holds enough results");
+    assert_eq!(
+        ids(&small),
+        expected,
+        "a limit-{limit} search that names no type must return the first results, not stop at rows the scope drops (built-in schemas or system types)"
     );
 
     Ok(())
