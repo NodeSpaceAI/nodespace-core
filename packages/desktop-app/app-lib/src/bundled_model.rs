@@ -117,20 +117,22 @@ fn model_target_path(home: &Path) -> PathBuf {
         .join(EMBEDDING_MODEL_FILE)
 }
 
-/// The NodeSpace home by the daemon's rule: `NODESPACE_HOME` when it is set,
-/// else the user's home directory.
+/// The NodeSpace home by the daemon's rule: `NODESPACE_HOME` when it is set
+/// and not empty, else the user's home directory. A value that is not valid
+/// UTF-8 is still a path, and is used.
 fn nodespace_home(
-    nodespace_home_var: Option<String>,
+    nodespace_home_var: Option<std::ffi::OsString>,
     user_home: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    nodespace_home_var.map(PathBuf::from).or(user_home)
+    nodespace_home_var
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or(user_home)
 }
 
-/// [`nodespace_home`] from this process's environment. `std::env::var`, as the
-/// daemon reads it, so a value that is not valid UTF-8 counts as unset on both
-/// sides.
+/// [`nodespace_home`] from this process's environment.
 fn nodespace_home_from_env() -> Option<PathBuf> {
-    nodespace_home(std::env::var("NODESPACE_HOME").ok(), dirs::home_dir())
+    nodespace_home(std::env::var_os("NODESPACE_HOME"), dirs::home_dir())
 }
 
 /// Copies `bundled` to `target` unless [`skip_reason`] says there is nothing to
@@ -505,6 +507,32 @@ mod tests {
             Some(PathBuf::from("/Users/someone"))
         );
         assert_eq!(nodespace_home(None, None), None);
+    }
+
+    /// The daemon reads an empty `NODESPACE_HOME` as unset, and looks for the
+    /// model in the user's home. The copy has to land there too.
+    #[test]
+    fn an_empty_nodespace_home_is_the_user_home() {
+        assert_eq!(
+            nodespace_home(Some("".into()), Some(PathBuf::from("/Users/someone"))),
+            Some(PathBuf::from("/Users/someone"))
+        );
+    }
+
+    /// The daemon honours a home whose path is not UTF-8, so the copy does.
+    #[cfg(unix)]
+    #[test]
+    fn a_nodespace_home_that_is_not_utf8_wins_over_the_user_home() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let isolated = std::ffi::OsString::from_vec(b"/iso\xFFlated".to_vec());
+        assert_eq!(
+            nodespace_home(
+                Some(isolated.clone()),
+                Some(PathBuf::from("/Users/someone"))
+            ),
+            Some(PathBuf::from(isolated))
+        );
     }
 
     /// With `NODESPACE_HOME` set, the model lands under it and the user's home

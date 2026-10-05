@@ -31,12 +31,31 @@ use anyhow::{Context, Result};
 /// `~/.nodespace/databases.toml` with a throwaway path (ADR-053). Falls back to
 /// the user's home directory.
 pub fn nodespace_home() -> Result<PathBuf> {
-    if let Ok(custom) = std::env::var("NODESPACE_HOME") {
-        return Ok(PathBuf::from(custom));
+    if let Some(custom) = nodespace_home_override() {
+        return Ok(custom);
     }
     dirs::home_dir().context(
         "Cannot determine the NodeSpace home directory: home directory is unknown and NODESPACE_HOME not set",
     )
+}
+
+/// The home `NODESPACE_HOME` redirects NodeSpace state to, or `None` when it
+/// is unset and [`nodespace_home`] is the user's own home.
+///
+/// A caller asks this when a redirected run must leave something outside the
+/// NodeSpace home alone: another install's log, the user's service
+/// registration.
+pub fn nodespace_home_override() -> Option<PathBuf> {
+    home_override_from(std::env::var_os("NODESPACE_HOME"))
+}
+
+/// [`nodespace_home_override`] for a given value of the variable.
+///
+/// A path that is not valid UTF-8 is still a redirect: dropping it would send
+/// a run that asked for isolation to the user's own home. An empty value is
+/// unset, since as a path it would mean the working directory.
+fn home_override_from(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 /// The `.nodespace/` state directory under [`nodespace_home`].
@@ -184,3 +203,37 @@ pub use services::{
 // daemon) reads/writes these directly against `~/.nodespace/daemon.toml` --
 // see `packages/cli/src/commands/mcp.rs` and `McpConfig`'s doc comment.
 pub use services::settings_service::{read_mcp_settings, set_mcp_enabled};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    #[test]
+    fn a_set_value_is_the_override() {
+        assert_eq!(
+            home_override_from(Some(OsString::from("/isolated"))),
+            Some(PathBuf::from("/isolated"))
+        );
+    }
+
+    #[test]
+    fn an_unset_or_empty_value_is_no_override() {
+        assert_eq!(home_override_from(None), None);
+        assert_eq!(home_override_from(Some(OsString::new())), None);
+    }
+
+    /// A home whose path is not UTF-8 is still honoured, byte for byte.
+    #[cfg(unix)]
+    #[test]
+    fn a_value_that_is_not_utf8_is_still_the_override() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let value = OsString::from_vec(b"/iso\xFFlated".to_vec());
+        assert!(value.to_str().is_none(), "the fixture must not be UTF-8");
+        assert_eq!(
+            home_override_from(Some(value.clone())),
+            Some(PathBuf::from(value))
+        );
+    }
+}

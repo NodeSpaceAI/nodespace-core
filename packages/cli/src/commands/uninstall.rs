@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Args;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use super::skill;
@@ -9,22 +9,33 @@ use super::skill;
 #[derive(Args, Debug)]
 pub struct UninstallArgs {}
 
-fn home_dir() -> Result<PathBuf> {
-    let home = std::env::var("HOME")
-        .map_err(|_| anyhow::anyhow!("$HOME is unset — cannot determine home directory"))?;
-    Ok(PathBuf::from(home))
-}
-
 pub fn run(_args: UninstallArgs) -> Result<()> {
-    stop_daemon();
+    // The state directory comes from the daemon's own resolver, so it follows
+    // `NODESPACE_HOME`.
+    let state_dir = nodespace_daemon::nodespace_dir()?;
 
-    let home = home_dir()?;
+    // The service registration and the agent skills live in the user's own
+    // home, not the NodeSpace home, and belong to the install there. A
+    // redirected run removes only what is under its own home.
+    let redirected = nodespace_daemon::nodespace_home_override().is_some();
 
-    remove_bin_dir(&home);
-    remove_sock(&home);
-    report_skill_removal(&mut std::io::stdout(), skill::resolve_installer());
+    if !redirected {
+        stop_daemon();
+    }
+    remove_bin_dir(&state_dir);
+    remove_sock(&state_dir);
+    if redirected {
+        println!(
+            "NODESPACE_HOME is set: the daemon service and agent skills in your own home were left in place."
+        );
+    } else {
+        report_skill_removal(&mut std::io::stdout(), skill::resolve_installer());
+    }
 
-    println!("NodeSpace uninstalled. Your data at ~/.nodespace/database/ has been preserved.");
+    println!(
+        "NodeSpace uninstalled. Your data at {} has been preserved.",
+        state_dir.join("database").display()
+    );
 
     Ok(())
 }
@@ -89,7 +100,7 @@ fn stop_daemon() {
         .status();
 
     if let Ok(home) = std::env::var("HOME") {
-        let plist = PathBuf::from(home)
+        let plist = Path::new(&home)
             .join("Library")
             .join("LaunchAgents")
             .join("app.nodespace.daemon.plist");
@@ -107,7 +118,7 @@ fn stop_daemon() {
         .status();
 
     if let Ok(home) = std::env::var("HOME") {
-        let service = PathBuf::from(home)
+        let service = Path::new(&home)
             .join(".config")
             .join("systemd")
             .join("user")
@@ -119,9 +130,8 @@ fn stop_daemon() {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn stop_daemon() {}
 
-fn remove_bin_dir(home: &Path) {
-    let bin_dir = home.join(".nodespace").join("bin");
-    let _ = fs::remove_dir_all(&bin_dir);
+fn remove_bin_dir(state_dir: &Path) {
+    let _ = fs::remove_dir_all(state_dir.join("bin"));
 }
 
 /// Remove both build flavours' sockets, not just the release one. A single
@@ -131,10 +141,9 @@ fn remove_bin_dir(home: &Path) {
 ///
 /// Each socket's single-instance lock file goes with it. Windows has no lock
 /// files: its named pipe admits one server by itself.
-fn remove_sock(home: &Path) {
-    let dir = home.join(nodespace_proto::socket::STATE_DIR);
+fn remove_sock(state_dir: &Path) {
     for name in nodespace_proto::socket::DAEMON_SOCKET_NAMES {
-        let socket = dir.join(name);
+        let socket = state_dir.join(name);
         let _ = fs::remove_file(&socket);
         #[cfg(unix)]
         let _ = fs::remove_file(nodespace_daemon::single_instance::lock_path_for(&socket));
@@ -165,7 +174,7 @@ mod tests {
             leftovers.extend([socket, lock]);
         }
 
-        remove_sock(home.path());
+        remove_sock(&state_dir);
 
         for leftover in leftovers {
             assert!(!leftover.exists(), "{} survived", leftover.display());
