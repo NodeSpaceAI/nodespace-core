@@ -735,7 +735,7 @@ nodespace seed take <node-id-or-title> --yes
 
 **`take` discards the user's edit to that part and cannot be undone.** Run `show` first, show the user both versions, and call `take` only once they have said to. Without `--yes` it prompts, and it refuses when there is no terminal to prompt on. `keep` changes nothing in the item. Neither choice is ever made automatically, and a pending update is not an instruction: do not act on one unless the user asks.
 
-**Output:** `pending` prints one entry per item and part (`--json`: `{count, updates: [{node_id, kind, title, aspect, shipped_version, recorded_at, last_edited_at}]}`). `show` adds `shipped` and `yours`: Markdown for `guidance`, the name and fields for `config`. `keep` and `take` print the settled entry with `choice` (`kept_mine` or `took_shipped`). `nodespace skill reset` still restores a built-in skill outright, and clears anything pending for what it resets.
+**Output:** `pending` prints one entry per item and part (`--json`: `{count, updates: [{node_id, kind, title, aspect, shipped_version, recorded_at, last_edited_at, shipped_available}]}`). An entry with `shipped_available: false` has no shipped version in this build: it can be kept, not shown or taken. `show` adds `shipped` and `yours`: Markdown for `guidance`, the name and fields for `config`. `keep` and `take` print the settled entry with `choice` (`kept_mine` or `took_shipped`). `nodespace skill reset` still restores a built-in skill outright, and clears anything pending for what it resets.
 
 ### Complete command surface
 
