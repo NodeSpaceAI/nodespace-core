@@ -44,7 +44,7 @@ use tonic::transport::Server;
 use tonic::Code;
 
 /// Spawn an in-process daemon over a temp-dir UDS and return the socket path.
-async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
+pub(crate) async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
     let tempdir = TempDir::new().expect("failed to create tempdir");
     let sock_path = tempdir.path().join("test-daemon.sock");
 
@@ -99,7 +99,7 @@ async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
 /// make a live edit to a seeded skill before driving the CLI at it over
 /// gRPC — needed for `nodespace skill reset`, which has no other way to get
 /// a modified `_seed.guidance_modified` flag onto a node.
-async fn spawn_test_daemon_with_seeded_skills(
+pub(crate) async fn spawn_test_daemon_with_seeded_skills(
 ) -> (PathBuf, oneshot::Sender<()>, TempDir, Arc<CoreNodeService>) {
     let tempdir = TempDir::new().expect("failed to create tempdir");
     let sock_path = tempdir.path().join("test-daemon.sock");
@@ -187,7 +187,7 @@ fn routing_test_context() -> SharedContext {
 /// every request, `DatabaseService` manages the registry, and `NodeService`
 /// routes by the `x-ns-database-id` header. The registry is seeded with a single
 /// default database so header-less requests work and a second can be created.
-async fn spawn_routing_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
+pub(crate) async fn spawn_routing_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
     let tempdir = TempDir::new().expect("failed to create tempdir");
     let sock_path = tempdir.path().join("routing-daemon.sock");
     let registry_path = tempdir.path().join("databases.toml");
@@ -5422,7 +5422,7 @@ async fn skill_reset_reports_not_found_for_an_unknown_key() {
 /// over the real gRPC transport. Also returns the raw `CoreNodeService` and
 /// the lifecycle handle so a test can create a play node and activate it
 /// directly, mirroring how `PlaybookEngine::handle_play_created` would.
-async fn spawn_test_daemon_with_playbook() -> (
+pub(crate) async fn spawn_test_daemon_with_playbook() -> (
     PathBuf,
     oneshot::Sender<()>,
     TempDir,

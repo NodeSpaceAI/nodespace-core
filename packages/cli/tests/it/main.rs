@@ -9,6 +9,7 @@
 //! Prefer nextest over a plain `cargo test` for anything but a single test:
 //! `cargo test` runs the whole binary's tests as threads of one process.
 
+mod broken_pipe;
 mod cli_integration;
 mod cli_reference_examples;
 mod import_dir_multi;

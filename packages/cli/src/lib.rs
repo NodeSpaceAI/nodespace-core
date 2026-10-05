@@ -7,6 +7,8 @@ pub mod commands;
 pub mod output;
 pub mod terminal;
 
+pub use output::{exit_if_broken_pipe, install_broken_pipe_handler, BROKEN_PIPE_EXIT_CODE};
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use nodespace_daemon::{

@@ -1503,3 +1503,70 @@ mod tests {
         );
     }
 }
+
+/// Exit status when stdout's reader went away: 128 + SIGPIPE(13), what a shell
+/// reports for a process killed by SIGPIPE.
+pub const BROKEN_PIPE_EXIT_CODE: i32 = 141;
+
+/// True when `message` is the panic text Rust's `print!`/`println!` raise for a
+/// stdout write failure caused by a closed pipe (EPIPE).
+fn is_stdout_broken_pipe(message: &str) -> bool {
+    message.starts_with("failed printing to stdout:")
+        && (message.contains("Broken pipe") || message.contains("The pipe is being closed"))
+}
+
+/// Exit quietly with [`BROKEN_PIPE_EXIT_CODE`] when `error` is a stdout
+/// broken pipe that a command returned as `Err` (writers over an `impl Write`
+/// such as `skill guidance`), rather than raised as a `println!` panic.
+pub fn exit_if_broken_pipe(error: &anyhow::Error) {
+    let broken = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+    });
+    if broken {
+        std::process::exit(BROKEN_PIPE_EXIT_CODE);
+    }
+}
+
+/// Make `nodespace ... | head` exit quietly when the reader closes early.
+///
+/// Rust ignores SIGPIPE, so a write to a closed pipe returns EPIPE and
+/// `println!` panics with "failed printing to stdout: Broken pipe". Every
+/// command prints through `println!`, so this one panic hook is the single
+/// place that turns that case into a silent exit with
+/// [`BROKEN_PIPE_EXIT_CODE`]. Any other panic, including other stdout write
+/// errors, still goes to the previous hook unchanged.
+pub fn install_broken_pipe_handler() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied());
+        if message.is_some_and(is_stdout_broken_pipe) {
+            std::process::exit(BROKEN_PIPE_EXIT_CODE);
+        }
+        previous(info);
+    }));
+}
+
+#[cfg(test)]
+mod broken_pipe_tests {
+    use super::is_stdout_broken_pipe;
+
+    #[test]
+    fn recognises_only_the_stdout_broken_pipe_panic() {
+        assert!(is_stdout_broken_pipe(
+            "failed printing to stdout: Broken pipe (os error 32)"
+        ));
+        assert!(!is_stdout_broken_pipe(
+            "failed printing to stdout: No space left on device (os error 28)"
+        ));
+        assert!(!is_stdout_broken_pipe(
+            "failed printing to stderr: Broken pipe (os error 32)"
+        ));
+        assert!(!is_stdout_broken_pipe("something else"));
+    }
+}
