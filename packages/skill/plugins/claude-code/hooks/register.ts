@@ -137,6 +137,21 @@ export function httpsRemote(remote: string): string | null {
   return path ? `https://${match[1]}/${path}` : null
 }
 
+/**
+ * Every way one remote is commonly written, given its HTTPS form: a project's
+ * repository link holds whichever its author pasted, and all of them name the
+ * same repository.
+ */
+export function remoteSpellings(https: string): string[] {
+  const [, host = '', path = ''] = /^https:\/\/([^/]+)\/(.+)$/.exec(https) ?? []
+
+  if (host === '') {
+    return [https]
+  }
+
+  return [https, `git@${host}:${path}`, `ssh://git@${host}/${path}`].flatMap(base => [base, `${base}.git`])
+}
+
 function skillsOf(listing: unknown): NodespaceSkill[] {
   if (!isRecord(listing)) {
     return []
@@ -147,7 +162,7 @@ function skillsOf(listing: unknown): NodespaceSkill[] {
     .map(entry => ({
       id: text(entry.node_id),
       title: text(entry.title),
-      description: text(entry.description),
+      useFor: text(entry.use_for),
       modifiedAt: text(entry.modified_at),
     }))
     .filter(skill => skill.id !== '')
@@ -175,7 +190,7 @@ function buildSection(project: { title: string }, skills: readonly NodespaceSkil
         : []),
     ...shown.map(
       skill =>
-        `- ${clean(skill.title, MAX_DESCRIPTION_CHARS)}: ${clean(skill.description, MAX_DESCRIPTION_CHARS)}`,
+        `- ${clean(skill.title, MAX_DESCRIPTION_CHARS)}: ${clean(skill.useFor, MAX_DESCRIPTION_CHARS)}`,
     ),
     `</${GRAPH_MARKER}>`,
     '',
@@ -260,7 +275,9 @@ async function findProject(
     return null
   }
 
-  const filters = [{ type: 'property', operator: 'equals', property: 'repository.url', value: url }]
+  const filters = [
+    { type: 'property', operator: 'in', property: 'repository.url', value: remoteSpellings(url) },
+  ]
   const found = await nodespace($, database, [
     'query',
     '--type',
@@ -331,11 +348,11 @@ function listNote(
     const old = was.get(skill.id)
 
     if (!old) {
-      lines.push(`- Added: ${quoted(skill)}: ${clean(skill.description, MAX_DESCRIPTION_CHARS)}`)
+      lines.push(`- Added: ${quoted(skill)}: ${clean(skill.useFor, MAX_DESCRIPTION_CHARS)}`)
     } else if (
       old.modifiedAt !== skill.modifiedAt ||
       old.title !== skill.title ||
-      old.description !== skill.description
+      old.useFor !== skill.useFor
     ) {
       const renamed = old.title === skill.title ? '' : ` (was ${quoted(old)})`
       const again = fetchedIds.includes(skill.id)
@@ -343,7 +360,7 @@ function listNote(
         : ''
 
       lines.push(
-        `- Changed: ${quoted(skill)}${renamed}: ${clean(skill.description, MAX_DESCRIPTION_CHARS)}${again}`,
+        `- Changed: ${quoted(skill)}${renamed}: ${clean(skill.useFor, MAX_DESCRIPTION_CHARS)}${again}`,
       )
     }
   }
@@ -365,7 +382,7 @@ function listNote(
   }
 
   if (shown.length === 0) {
-    shown.push('- A skill changed in a way its name and description do not show.')
+    shown.push('- A skill changed in a way its name and listed text do not show.')
   }
 
   return [

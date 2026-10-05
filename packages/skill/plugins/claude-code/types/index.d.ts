@@ -1,8 +1,11 @@
-/** One skill as the list names it. `modifiedAt` is what tells an edit apart. */
+/**
+ * One skill as the list names it: its title and when to use it (`use_for` in
+ * the CLI's listing). `modifiedAt` is what tells an edit apart.
+ */
 export type NodespaceSkill = {
   id: string
   title: string
-  description: string
+  useFor: string
   modifiedAt: string
 }
 

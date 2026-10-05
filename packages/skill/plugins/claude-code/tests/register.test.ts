@@ -6,9 +6,9 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { httpsRemote, mayWrite, nodespaceInvocations } from '../hooks/register'
+import { httpsRemote, mayWrite, nodespaceInvocations, remoteSpellings } from '../hooks/register'
 
-type Skill = { node_id: string; title: string; description: string; modified_at: string }
+type Skill = { node_id: string; title: string; use_for: string; modified_at: string }
 type Node = Record<string, unknown> & { id: string; version: number }
 
 /** The graph a fake `nodespace` answers from; a test edits it between calls. */
@@ -26,13 +26,14 @@ type World = {
   isContextFailing: boolean
   isListFailing: boolean
   calls: string[][]
+  projectFilters: string[]
   statuses: (string | undefined)[]
 }
 
-const skill = (id: string, title: string, description = `when ${title} applies`): Skill => ({
+const skill = (id: string, title: string, useFor = `when ${title} applies`): Skill => ({
   node_id: id,
   title,
-  description,
+  use_for: useFor,
   modified_at: '2026-01-01T00:00:00Z',
 })
 
@@ -51,6 +52,7 @@ function world(over: Partial<World> = {}): World {
     isContextFailing: false,
     isListFailing: false,
     calls: [],
+    projectFilters: [],
     statuses: [],
     ...over,
   }
@@ -90,7 +92,9 @@ function answer(w: World, argv: readonly string[]) {
   }
 
   if (args[0] === 'query') {
-    return ok(w.project ? [w.project] : [])
+    w.projectFilters.push(args[args.indexOf('--filters') + 1] ?? '')
+
+    return ok({ collection_id: '', count: w.project ? 1 : 0, nodes: w.project ? [w.project] : [] })
   }
 
   if (args[0] === 'skill') {
@@ -179,7 +183,21 @@ describe('session start', () => {
     expect(w.calls[0]).toEqual(['nodespace', '--version'])
     expect(w.calls[1]).toEqual(['nodespace', '--json', 'diagnostics'])
     expect(w.calls[2]).toEqual(['git', 'remote', 'get-url', 'origin'])
-    expect(w.calls[3]?.join(' ')).toContain('"repository.url","value":"https://github.com/acme/widgets"')
+    expect(JSON.parse(w.projectFilters[0] ?? '[]')).toEqual([
+      {
+        type: 'property',
+        operator: 'in',
+        property: 'repository.url',
+        value: [
+          'https://github.com/acme/widgets',
+          'https://github.com/acme/widgets.git',
+          'git@github.com:acme/widgets',
+          'git@github.com:acme/widgets.git',
+          'ssh://git@github.com/acme/widgets',
+          'ssh://git@github.com/acme/widgets.git',
+        ],
+      },
+    ])
     expect(w.statuses).toEqual(['NodeSpace: Widgets'])
   })
 
@@ -315,7 +333,7 @@ describe('the skill list on each prompt', () => {
     await $.session.start(START)
 
     w.skills = [
-      { ...skill('s1', 'Implementing a task'), modified_at: '2026-02-02T00:00:00Z' },
+      { ...skill('s1', 'Implementing a task', 'when a task is ready to build'), modified_at: '2026-02-02T00:00:00Z' },
       skill('s3', 'Recording a decision'),
     ]
     w.listVersion = 'v2'
@@ -326,7 +344,7 @@ describe('the skill list on each prompt', () => {
     const note = seen.context[0]?.[0] ?? ''
 
     expect(note).toContain('- Added: "Recording a decision"')
-    expect(note).toContain('- Changed: "Implementing a task"')
+    expect(note).toContain('- Changed: "Implementing a task": when a task is ready to build')
     expect(note).toContain('- Removed: "Reviewing a change"')
     expect(note).not.toContain('You fetched this skill')
     expect(seen.context[1]).toBeUndefined()
@@ -762,6 +780,16 @@ describe('reading the shell line and the remote', () => {
       'ls',
     ]) {
       expect(mayWrite(line), line).toBe(false)
+    }
+  })
+
+  test('the lookup names every spelling, and each reads back as the same remote', () => {
+    const spellings = remoteSpellings('https://gitlab.example.com/group/sub/repo')
+
+    expect(spellings).toHaveLength(6)
+
+    for (const spelling of spellings) {
+      expect(httpsRemote(spelling), spelling).toBe('https://gitlab.example.com/group/sub/repo')
     }
   })
 

@@ -262,6 +262,22 @@ describe("renderPluginFiles", () => {
     expect(js).toContain("register");
   });
 
+  // The plugin reads the skill listing's JSON by field name, and its own tests
+  // answer from a fake CLI. This ties the names to the ones the real listing
+  // prints, so a rename on either side fails here.
+  test("the hooks module reads the skill listing by the fields the CLI prints", () => {
+    const module = renderPluginFiles("v0.2.2").find((f) => f.relPath === "hooks/register.ts")!.content;
+    const cli = readFileSync(join(REPO_ROOT, "packages", "cli", "src", "commands", "skill.rs"), "utf8");
+    const listing = /\nfn skill_json\([\s\S]*?\n}\n/.exec(cli)?.[0] ?? "";
+    const reader = /\nfunction skillsOf\([\s\S]*?\n}\n/.exec(module)?.[0] ?? "";
+    const read = [...reader.matchAll(/entry\.(\w+)/g)].map((m) => m[1]);
+
+    expect(read.sort()).toEqual(["modified_at", "node_id", "title", "use_for"]);
+    for (const field of read) {
+      expect(listing, `skill_json does not print "${field}"`).toContain(`"${field}":`);
+    }
+  });
+
   test("the hooks file names a module that is published", () => {
     const files = renderPluginFiles("v0.2.2");
     const hooks = JSON.parse(files.find((f) => f.relPath === "hooks/hooks.json")!.content) as { modules: string[] };
