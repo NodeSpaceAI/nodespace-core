@@ -366,6 +366,80 @@ describe('matchesFilter', () => {
     ).toBe(false);
   });
 
+  it('inverts a negated filter, keeping a node with no value for the field', () => {
+    const open = { type: 'property', operator: 'equals', property: 'status', value: 'open' } as const;
+    expect(matchesFilter(invoice, { ...open, negate: true })).toBe(false);
+    expect(matchesFilter(invoice, { ...open, value: 'paid', negate: true })).toBe(true);
+    expect(matchesFilter(invoice, { ...open, negate: false })).toBe(true);
+    expect(matchesFilter(invoice, { ...open, negate: null })).toBe(true);
+    // The backend's negation keeps a row whose comparison has no subject.
+    expect(matchesFilter(invoice, { ...open, property: 'missing', negate: true })).toBe(true);
+    expect(
+      matchesFilter(invoice, {
+        type: 'property',
+        operator: 'exists',
+        property: 'missing',
+        negate: true
+      })
+    ).toBe(true);
+    expect(
+      matchesFilter(invoice, { type: 'content', operator: 'contains', value: 'Acme', negate: true })
+    ).toBe(false);
+  });
+
+  it('still declines a negated filter it cannot verify', () => {
+    expect(
+      matchesFilter(invoice, {
+        type: 'related',
+        operator: 'exists',
+        path: ['blocked_by'],
+        negate: true,
+        filter: { type: 'property', operator: 'equals', property: 'status', value: 'open' }
+      })
+    ).toBe(false);
+    expect(
+      matchesFilter(invoice, {
+        type: 'relationship',
+        operator: 'equals',
+        path: ['child_of'],
+        node_id: 'p1',
+        negate: true
+      })
+    ).toBe(false);
+    // A single mentions hop is answered from the node, so its negation is too.
+    const mentioning = node('n4', { mentions: ['m1'] });
+    const mentionsM1: QueryFilter = {
+      type: 'relationship',
+      operator: 'equals',
+      path: ['mentions'],
+      node_id: 'm1'
+    };
+    expect(matchesFilter(mentioning, { ...mentionsM1, negate: true })).toBe(false);
+    expect(matchesFilter(invoice, { ...mentionsM1, negate: true })).toBe(true);
+  });
+
+  it('reads a dotted property as a path into an object value', () => {
+    const project = node('p1', {
+      properties: { repository: { url: 'https://example.com/a.git', host: { name: 'zeta' } } }
+    });
+    const url = { type: 'property', operator: 'equals', property: 'repository.url' } as const;
+    expect(matchesFilter(project, { ...url, value: 'https://example.com/a.git' })).toBe(true);
+    expect(matchesFilter(project, { ...url, value: 'https://example.com/b.git' })).toBe(false);
+    expect(
+      matchesFilter(project, {
+        type: 'property',
+        operator: 'equals',
+        property: 'repository.host.name',
+        value: 'zeta'
+      })
+    ).toBe(true);
+    // A path through a missing or scalar value has no subject.
+    for (const property of ['repository.branch', 'mirror.url', 'repository.url.scheme']) {
+      expect(matchesFilter(project, { type: 'property', operator: 'exists', property })).toBe(false);
+    }
+    expect(matchesFilter(invoice, { ...url, value: 'x' })).toBe(false);
+  });
+
   it('reads a snake_case custom field by its stored name only', () => {
     const filter = {
       type: 'property',

@@ -298,8 +298,9 @@ fn every_seeded_skill_is_served_in_real_cli_commands() {
             }
             // A group is cited either by a leaf (`node update`) or, rarely,
             // bare. A second word that is not one of its leaves is a command
-            // that does not exist.
-            if let Some(leaf) = words.get(1) {
+            // that does not exist. A flag there is the group run with its own
+            // arguments (`query --type`), which `query` takes beside `run`.
+            if let Some(leaf) = words.get(1).filter(|word| !word.starts_with('-')) {
                 if !leaves.iter().any(|c| c.get_name() == leaf) {
                     problems.push(format!("{}: `{shown}` is not a command", seed.title));
                 }

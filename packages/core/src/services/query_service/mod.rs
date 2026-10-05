@@ -93,6 +93,11 @@ impl QueryDefinition {
     /// formatted into the statement. Each must match `[A-Za-z0-9_:-]+`, which
     /// covers every real node type, property key and metadata field while
     /// leaving no quote, dot or whitespace to break out of the path literal.
+    /// A property or sort field may be a path into an object field's value
+    /// (`repository.url`): it is split on its dots and every segment is held
+    /// to the same rule, so the dots that reach the text are the path's own
+    /// separators and nothing else. Whether the schema declares such a path
+    /// is `query_ops`'s check, which needs the schemas.
     /// `*` is accepted only as the target type, where it means "all types" and
     /// never reaches the text.
     ///
@@ -108,10 +113,34 @@ impl QueryDefinition {
             validate_filter_identifiers(filter, 0)?;
         }
         for sort in self.sorting.iter().flatten() {
-            validate_identifier(&sort.field, "sort field")?;
+            validate_property_path(&sort.field, "sort field")?;
         }
         Ok(())
     }
+}
+
+/// Check a property filter's `property` or a sort's `field`: one identifier,
+/// or several joined by dots for a path into an object field's value. Every
+/// segment must pass [`validate_identifier`], so a quote, whitespace or an
+/// empty segment is refused before the name is formatted into a JSON path.
+fn validate_property_path(value: &str, label: &str) -> Result<()> {
+    if value.is_empty() {
+        return validate_identifier(value, label);
+    }
+    for segment in nodespace_types::property_segments(value) {
+        if segment.is_empty() {
+            anyhow::bail!("{label} '{value}' has an empty path segment");
+        }
+    }
+    // Checked whole rather than per segment so the message names the path
+    // the caller wrote. With the dots between non-empty segments set aside,
+    // what is left must be identifier characters.
+    validate_identifier(&value.replace('.', "_"), label).map_err(|_| {
+        anyhow::anyhow!(
+            "{label} '{value}' contains invalid characters; only [A-Za-z0-9_:-] are \
+                 allowed, with '.' between the segments of a path into a field's value"
+        )
+    })
 }
 
 /// Maximum nesting depth a [`FilterType::Related`] filter's own `filter`
@@ -136,7 +165,10 @@ const MAX_RELATED_DEPTH: usize = 0;
 /// than left to the executor to silently truncate or misexecute.
 fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()> {
     if let Some(property) = &filter.property {
-        validate_identifier(property, "filter property")?;
+        validate_property_path(property, "filter property")?;
+    }
+    if let Some(scope) = &filter.property_scope {
+        validate_identifier(scope, "filter property scope")?;
     }
     if let Some(path) = &filter.path {
         if path.is_empty() {
@@ -384,7 +416,13 @@ impl QueryService {
                     } else {
                         target_type
                     };
-                    node.properties.get(scope).and_then(|ns| ns.get(field))
+                    // A dotted field is a path into an object value, walked
+                    // one segment at a time as the SQL JSON path walks it.
+                    nodespace_types::property_segments(field)
+                        .into_iter()
+                        .try_fold(node.properties.get(scope)?, |value, segment| {
+                            value.get(segment)
+                        })
                 };
                 let val_a = bucket(a);
                 let val_b = bucket(b);
@@ -563,16 +601,7 @@ impl QueryService {
             } else {
                 filter
             };
-            let condition = match filter.filter_type {
-                FilterType::Property => {
-                    self.build_property_filter(filter, &query.target_type, &mut built)?
-                }
-                FilterType::Content => self.build_content_filter(filter, &mut built)?,
-                FilterType::Relationship => self.build_relationship_filter(filter, &mut built)?,
-                FilterType::Metadata => self.build_metadata_filter(filter, &mut built)?,
-                FilterType::Related => self.build_related_filter("id", filter, &mut built)?,
-            };
-            conditions.push(condition);
+            conditions.push(self.build_filter(filter, &query.target_type, &mut built)?);
         }
 
         // A saved query is a default query: an archived node is in none of
@@ -804,6 +833,34 @@ impl QueryService {
 
     // ========== Filter Builders ==========
 
+    /// One filter's condition over the rows of `target_type`, negated when
+    /// the filter says so.
+    ///
+    /// A negated filter keeps every row its condition does not hold for.
+    /// `IS NOT TRUE` rather than `NOT`: a comparison against an absent field
+    /// is NULL, and `NOT NULL` is NULL too, which would drop the row from
+    /// both the filter and its negation. So "status is not done" keeps a node
+    /// with no status, and a negated `exists` is "has no value".
+    fn build_filter(
+        &self,
+        filter: &QueryFilter,
+        target_type: &str,
+        built: &mut BoundSql,
+    ) -> Result<String> {
+        let condition = match filter.filter_type {
+            FilterType::Property => self.build_property_filter(filter, target_type, built)?,
+            FilterType::Content => self.build_content_filter(filter, built)?,
+            FilterType::Relationship => self.build_relationship_filter(filter, built)?,
+            FilterType::Metadata => self.build_metadata_filter(filter, built)?,
+            FilterType::Related => self.build_related_filter("id", filter, built)?,
+        };
+        Ok(if filter.is_negated() {
+            format!("({condition}) IS NOT TRUE")
+        } else {
+            condition
+        })
+    }
+
     /// Build property filter (Namespaced property access)
     ///
     /// Uses SQLite json_extract for property access. A derived attribute of
@@ -827,14 +884,28 @@ impl QueryService {
         //
         // Under a wildcard the namespace segment differs row by row, so it is
         // taken from the row's own node_type: a fixed '$.<field>' is
-        // structurally NULL for EVERY row and matches nothing.
+        // structurally NULL for EVERY row and matches nothing. A row of a
+        // subtype keeps an inherited field in the bucket of the ancestor that
+        // declares it, so when the row's own bucket has no value its
+        // ancestors' are read, nearest first. Without that an inherited
+        // field reads as absent, which a negated filter turns into a match.
+        //
+        // With a target type the bucket is one literal: the type's own, or
+        // the declaring ancestor's when `query_ops` resolved the field as
+        // inherited.
         let field = if target_type == "*" {
             format!(
-                "json_extract(properties, '$.' || node_type || '.{}')",
-                property
+                "COALESCE(json_extract(node.properties, '$.' || node.node_type || '.{property}'), \
+                 (SELECT json_extract(node.properties, '$.' || a.ancestor || '.{property}') \
+                    FROM {ancestry} a \
+                   WHERE a.node_type = node.node_type AND a.depth > 0 \
+                     AND json_extract(node.properties, '$.' || a.ancestor || '.{property}') IS NOT NULL \
+                   ORDER BY a.depth LIMIT 1))",
+                ancestry = crate::db::schema::TYPE_ANCESTRY_TABLE,
             )
         } else {
-            format!("json_extract(properties, '$.{}.{}')", target_type, property)
+            let scope = filter.property_scope.as_deref().unwrap_or(target_type);
+            format!("json_extract(properties, '$.{}.{}')", scope, property)
         };
         let field = Self::derived_or_stored(property, field);
         self.build_filter_condition(&field, &filter.operator, filter, built)
@@ -1068,11 +1139,20 @@ impl QueryService {
     /// The nested filter's property paths resolve against the declared type
     /// the path reaches. When the far end has no single declared type (a
     /// built-in relationship, or an untyped declaration) they fall back to
-    /// the per-row `'$.' || node_type || '.<field>'` path a wildcard query
-    /// uses, since the related rows may span more than one type.
+    /// the per-row path a wildcard query uses, since the related rows may
+    /// span more than one type: each row's own bucket, then its ancestors'
+    /// (see [`Self::build_property_filter`]).
     ///
     /// A many-cardinality relationship needs no special casing: the walk
     /// yields every node that reaches at least one matching related node.
+    ///
+    /// Negation composes from the two places it can be set. The nested
+    /// filter's own flag is applied to the nested condition, so the walk
+    /// starts from the related nodes that condition does not hold for. The
+    /// outer flag is applied by [`Self::build_filter`] to the whole walk:
+    /// "the path reaches no node matching the nested filter", which a node
+    /// the path leads nowhere from satisfies. Both together say "every node
+    /// the path reaches matches", the shape of "has no unfinished blocker".
     fn build_related_filter(
         &self,
         id_field: &str,
@@ -1089,17 +1169,22 @@ impl QueryService {
         if related_type != "*" {
             validate_identifier(related_type, "related node type")?;
         }
-        let nested_condition = match nested.filter_type {
-            FilterType::Property => self.build_property_filter(nested, related_type, built)?,
-            FilterType::Content => self.build_content_filter(nested, built)?,
-            FilterType::Relationship => self.build_relationship_filter(nested, built)?,
-            FilterType::Metadata => self.build_metadata_filter(nested, built)?,
-            // Rejected at validation time (`validate_filter_identifiers`'s
-            // depth cap) before this method is ever reached.
-            FilterType::Related => {
-                anyhow::bail!("Related filter nesting depth exceeds the maximum of 1")
-            }
-        };
+        // Rejected at validation time (`validate_filter_identifiers`'s depth
+        // cap) before this method is ever reached.
+        if nested.filter_type == FilterType::Related {
+            anyhow::bail!("Related filter nesting depth exceeds the maximum of 1");
+        }
+        let mut nested_condition = self.build_filter(nested, related_type, built)?;
+        // A negated nested condition holds for every node that lacks the
+        // field, of any type. Where the path's far end has a declared type,
+        // the walk starts from nodes of that type only.
+        if nested.is_negated() && related_type != "*" {
+            let far_type = built.bind(libsql::Value::Text(related_type.to_string()));
+            nested_condition = format!(
+                "{nested_condition} AND {}",
+                crate::db::schema::is_a_bound_sql("node_type", &far_type)
+            );
+        }
 
         Ok(crate::db::path_reaches_condition(
             id_field,

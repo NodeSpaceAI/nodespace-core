@@ -33,6 +33,7 @@ mod play_tools;
 mod prompt_assembly_snapshot;
 mod record_fields_beside_markdown;
 mod routing_latency;
+mod run_query_tool;
 mod search_nodes_enumerate;
 mod search_nodes_excludes_conversations;
 mod search_skills_latency;

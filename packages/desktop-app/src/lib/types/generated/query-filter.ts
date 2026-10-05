@@ -22,7 +22,8 @@ export type QueryFilter = {
    */
   operator: FilterOperator;
   /**
-   * Property key for property filters
+   * Property key for property filters. A dotted name (`repository.url`)
+   * is a path into an object field's value: see [`property_segments`].
    */
   property?: string | null;
   /**
@@ -39,6 +40,13 @@ export type QueryFilter = {
    * Case sensitivity for text comparisons
    */
   case_sensitive?: boolean | null;
+  /**
+   * Negates the filter: it keeps the nodes its condition does not hold
+   * for, a node with no value for the field among them. A negated
+   * [`FilterType::Related`] filter keeps the nodes whose path reaches no
+   * node matching the nested filter.
+   */
+  negate?: boolean | null;
   /**
    * The node a [`FilterType::Relationship`] filter's path must reach.
    */

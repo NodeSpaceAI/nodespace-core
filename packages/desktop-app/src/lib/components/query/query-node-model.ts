@@ -243,7 +243,16 @@ function filterSubject(node: Node, filter: QueryFilter): unknown {
       ? METADATA_FIELDS[filter.property](node)
       : undefined;
   }
-  return resolveFieldValue(node, filter.property);
+  // A dotted property is a path into an object field's value: the field is
+  // read as any field is, and the rest of the path is walked inside it.
+  const [field, ...inside] = filter.property.split('.');
+  return inside.reduce<unknown>(
+    (value, segment) =>
+      value !== null && typeof value === 'object'
+        ? ((value as Record<string, unknown>)[segment] ?? null)
+        : null,
+    resolveFieldValue(node, field)
+  );
 }
 
 /**
@@ -262,27 +271,41 @@ function filterSubject(node: Node, filter: QueryFilter): unknown {
  * query load includes it (the backend evaluates these filters in SQL), while
  * passing it through would show a node the query may well exclude, with
  * nothing to correct it until a reload.
+ *
+ * A negated filter (`negate`) matches when its condition does not hold, a
+ * node with no value for the field included, as the backend's does. Negating
+ * a filter that cannot be verified leaves it unverified: it still declines.
  */
 export function matchesFilter(node: Node, filter: QueryFilter): boolean {
+  const holds = filterHolds(node, filter);
+  if (holds === null) return false;
+  return filter.negate ? !holds : holds;
+}
+
+/**
+ * Whether a filter's own condition holds for a node, before any negation.
+ * `null` when the node alone cannot answer.
+ */
+function filterHolds(node: Node, filter: QueryFilter): boolean | null {
   // The backend's default: a `contains` is case-sensitive unless the filter
   // says otherwise.
   const caseSensitive = filter.case_sensitive ?? true;
 
   // A related-node filter is a condition on other nodes, which this node
   // alone cannot answer.
-  if (filter.type === 'related') return false;
+  if (filter.type === 'related') return null;
 
   if (filter.type === 'relationship') {
     // A fixed hop travels as its bare name; an open-ended one is an object.
     const [hop, ...more] = filter.path ?? [];
-    if (more.length > 0 || typeof hop !== 'string') return false;
+    if (more.length > 0 || typeof hop !== 'string') return null;
     switch (hop) {
       case 'mentions':
         return (node.mentions ?? []).some((id) => id === filter.node_id);
       case 'mentioned_by':
         return (node.mentionedIn ?? []).some((ref) => ref.id === filter.node_id);
       default:
-        return false;
+        return null;
     }
   }
 

@@ -128,7 +128,8 @@ pub struct QueryFilter {
     pub filter_type: FilterType,
     /// Comparison operator
     pub operator: FilterOperator,
-    /// Property key for property filters
+    /// Property key for property filters. A dotted name (`repository.url`)
+    /// is a path into an object field's value: see [`property_segments`].
     pub property: Option<String>,
     /// Expected value
     #[cfg_attr(feature = "ts", ts(optional, type = "unknown"))]
@@ -140,6 +141,12 @@ pub struct QueryFilter {
     pub relative_date: Option<RelativeDate>,
     /// Case sensitivity for text comparisons
     pub case_sensitive: Option<bool>,
+    /// Negates the filter: it keeps the nodes its condition does not hold
+    /// for, a node with no value for the field among them. A negated
+    /// [`FilterType::Related`] filter keeps the nodes whose path reaches no
+    /// node matching the nested filter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub negate: Option<bool>,
     /// The node a [`FilterType::Relationship`] filter's path must reach.
     pub node_id: Option<String>,
     /// The walk a [`FilterType::Relationship`] or [`FilterType::Related`]
@@ -162,9 +169,20 @@ pub struct QueryFilter {
     /// populate it without a `NodeService` in hand.
     #[serde(skip)]
     pub resolved_path: Option<ResolvedPath>,
+    /// The type whose property bucket holds [`Self::property`], when that is
+    /// not the type the filter is evaluated against: a field the type
+    /// inherits is stored under the ancestor that declares it. Resolved with
+    /// the paths, in core's `query_ops`, and never serialized.
+    #[serde(skip)]
+    pub property_scope: Option<String>,
 }
 
 impl QueryFilter {
+    /// Whether the filter keeps the nodes its condition does not hold for.
+    pub fn is_negated(&self) -> bool {
+        self.negate.unwrap_or(false)
+    }
+
     /// Whether this filter, or the filter nested in it, compares against a
     /// [`RelativeDate`].
     pub fn has_relative_date(&self) -> bool {
@@ -176,6 +194,17 @@ impl QueryFilter {
     }
 }
 
+/// The segments of a property filter's `property` or a sort's `field`: one
+/// for a plain field (`status`), several for a path into an object field's
+/// value (`repository.url` is the `url` inside `repository`).
+///
+/// Splitting is all this does. The query service checks each segment's
+/// characters before it reaches SQL, and core's `query_ops` checks a path of
+/// several segments against the schema's declared fields.
+pub fn property_segments(name: &str) -> Vec<&str> {
+    name.split('.').collect()
+}
+
 /// Sorting configuration
 ///
 /// A nested stored value, like [`QueryFilter`]: snake_case keys, one spelling,
@@ -185,8 +214,9 @@ impl QueryFilter {
 #[serde(deny_unknown_fields)]
 pub struct SortConfig {
     /// The field to sort by, under its stored name: a schema field
-    /// (`due_date`) or a metadata column (`created_at`, `modified_at`,
-    /// `node_type`, `content`, `title`)
+    /// (`due_date`), a path into an object field (`repository.url`, see
+    /// [`property_segments`]) or a metadata column (`created_at`,
+    /// `modified_at`, `node_type`, `content`, `title`)
     pub field: String,
     /// Sort direction
     pub direction: SortDirection,
@@ -544,6 +574,38 @@ mod tests {
         }] }))
         .unwrap_err();
         assert!(err.to_string().contains("'filters'"), "{err}");
+    }
+
+    /// Negation is one optional flag, stored only when set, on a filter and on
+    /// the filter nested in a related-node filter.
+    #[test]
+    fn negation_is_an_optional_flag_stored_only_when_set() {
+        let stored = json!({
+            "type": "related", "operator": "exists", "path": ["blocked_by"], "negate": true,
+            "filter": {
+                "type": "property", "operator": "in", "property": "status",
+                "value": ["done", "cancelled"], "negate": true
+            }
+        });
+        let fields = QueryFields::from_properties(&json!({ "filters": [stored, {
+            "type": "property", "operator": "equals", "property": "status", "value": "open"
+        }] }))
+        .unwrap();
+        assert!(fields.filters[0].is_negated());
+        assert!(fields.filters[0].filter.as_ref().unwrap().is_negated());
+        assert!(!fields.filters[1].is_negated());
+
+        let wire = serde_json::to_value(&fields.filters).unwrap();
+        assert_eq!(wire[0]["negate"], true);
+        assert_eq!(wire[0]["filter"]["negate"], true);
+        assert!(wire[1].get("negate").is_none());
+    }
+
+    #[test]
+    fn a_dotted_name_splits_into_path_segments() {
+        assert_eq!(property_segments("status"), ["status"]);
+        assert_eq!(property_segments("repository.url"), ["repository", "url"]);
+        assert_eq!(property_segments("a..b"), ["a", "", "b"]);
     }
 
     /// A sort item is held to the same strictness as a filter.

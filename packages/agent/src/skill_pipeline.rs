@@ -139,7 +139,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c01",
         title: "Research & Search",
         description: "Find, look up, locate, list, or search for nodes, records, notes, and documents of any type that are already stored. Search stored knowledge to answer a question: how does something work, how is it applied, what is it, what does it do, why was it chosen.",
-        tools: &["search_semantic", "search_nodes", "get_node"],
+        tools: &["search_semantic", "search_nodes", "get_node", "run_query"],
         max_iterations: 4,
         exclusion: None,
         applies_to: &[],
