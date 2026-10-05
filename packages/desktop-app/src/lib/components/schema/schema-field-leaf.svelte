@@ -14,7 +14,9 @@
   Field type → control:
   - enum    → Select (coreValues + userValues)
   - date    → Popover + Calendar
-  - number  → number Input
+  - datetime → Popover + Calendar for the day, a time input beside it
+               (one instant, shown in local time)
+  - number → number Input
   - boolean → checkbox
   - string/text → text Input
   - link    → LinkFieldControl (title that opens the URL, with an editor)
@@ -30,7 +32,16 @@
   import type { DateValue } from '@internationalized/date';
   import { labelForField } from '$lib/utils/schema-field-label';
   import { getEnumValues, enumValueLabel } from '$lib/utils/schema-enum-values';
-  import { parseScalarDate, formatDateDisplay, formatDateForStorage } from '$lib/utils/schema-date-values';
+  import {
+    parseScalarDate,
+    formatDateDisplay,
+    formatDateForStorage,
+    dateTimeLocalDay,
+    dateTimeLocalTime,
+    formatDateTimeDayDisplay,
+    withLocalDay,
+    withLocalTime
+  } from '$lib/utils/schema-date-values';
 
   let {
     field,
@@ -99,6 +110,50 @@
       />
     </Popover.Content>
   </Popover.Root>
+{:else if field.type === 'datetime'}
+  <!-- One stored instant, edited as a local day and a local time of day. -->
+  {@const rawValue = value as string | null}
+  {@const dayVal = dateTimeLocalDay(rawValue)}
+  <div class="flex items-center gap-2">
+    <Popover.Root bind:open={datePickerOpen}>
+      <Popover.Trigger
+        id={fieldId}
+        class="flex h-10 flex-1 items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:bg-accent focus-visible:text-accent-foreground"
+      >
+        <span class={dayVal ? '' : 'text-muted-foreground'}>
+          {formatDateTimeDayDisplay(rawValue)}
+        </span>
+        <svg class="h-4 w-4 opacity-50" viewBox="0 0 16 16" fill="none">
+          <rect x="2" y="3" width="12" height="11" rx="1" stroke="currentColor" stroke-width="1.5" />
+          <path d="M5 1v3M11 1v3M2 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+      </Popover.Trigger>
+      <Popover.Content class="w-auto p-0" align="start">
+        <Calendar
+          value={dayVal as never}
+          onValueChange={(newValue: DateValue | DateValue[] | undefined) => {
+            const singleValue = Array.isArray(newValue) ? newValue[0] : newValue;
+            onChange(withLocalDay(rawValue, singleValue));
+            datePickerOpen = false;
+          }}
+          type="single"
+        />
+      </Popover.Content>
+    </Popover.Root>
+    <Input
+      type="time"
+      class="h-10 w-32 shrink-0 dark:[color-scheme:dark]"
+      aria-label={`${labelForField(field)} time`}
+      value={dateTimeLocalTime(rawValue)}
+      onchange={(e) => {
+        // An emptied time is not a value to store: the day picker clears the
+        // field. Nothing is written, so the input goes back to the stored time.
+        const next = withLocalTime(rawValue, e.currentTarget.value);
+        if (next === undefined) e.currentTarget.value = dateTimeLocalTime(rawValue);
+        else onChange(next);
+      }}
+    />
+  </div>
 {:else if field.type === 'number'}
   <Input
     id={fieldId}
