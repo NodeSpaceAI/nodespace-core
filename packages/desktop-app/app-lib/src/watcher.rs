@@ -27,6 +27,9 @@
 //!   node_type + originating `database_id`).
 //! - On stream error or disconnection, reconnects with exponential backoff
 //!   starting at 1 second and capped at 30 seconds.
+//! - If the daemon refuses the active database because it requires an
+//!   extension this build does not support (ADR-083 §2), logs that once at
+//!   `info` and makes no further attempts until the active database changes.
 //! - Re-opens the stream immediately when the active database is switched, so
 //!   it streams the newly-selected database's events.
 //! - Exits cleanly when the supplied cancellation token is cancelled.
@@ -114,33 +117,110 @@ pub async fn run<R: Runtime>(
     info!("Node watcher starting");
     // Bumped on every active-database switch (ADR-053) — a change interrupts the
     // current stream so we re-open against the newly-selected database.
-    let mut db_changed = grpc_client.subscribe_active_database();
+    let db_changed = grpc_client.subscribe_active_database();
+    watch_loop(db_changed, cancel_token, || stream_once(&app, &grpc_client)).await
+}
 
+/// What the watcher does before its next attempt, given how the last one ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pause {
+    /// Sleep for the current backoff, doubling it for the next failure.
+    Backoff,
+    /// Sleep for the backoff after a clean stream end, which resets it first.
+    ResetBackoff,
+    /// The active database is refused until it changes; wait for that.
+    UntilDatabaseChanges,
+}
+
+/// Whether `error` is the daemon's refusal of the active database because it
+/// requires an extension this build does not support (ADR-083 §2). The
+/// refusal is a gRPC status, found anywhere in the error's cause chain.
+fn is_database_refusal(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<tonic::Status>().is_some_and(|status| {
+            nodespace_proto::requires_extension::unsupported_extensions(status).is_some()
+        })
+    })
+}
+
+/// Decide the pause after an attempt that ended with `outcome`.
+///
+/// A refused database stays refused until the user switches database, so
+/// asking again on a timer cannot succeed. Every other outcome backs off.
+fn pause_after(outcome: &Result<()>) -> Pause {
+    match outcome {
+        Ok(()) => Pause::ResetBackoff,
+        Err(e) if is_database_refusal(e) => Pause::UntilDatabaseChanges,
+        Err(_) => Pause::Backoff,
+    }
+}
+
+/// Run `attempt` until `cancel_token` fires, pausing between attempts as
+/// [`pause_after`] decides. `db_changed` is the active-database generation
+/// (`GrpcClient::subscribe_active_database`); it persists across attempts, so
+/// a change that lands while an attempt is running is seen by the next wait.
+#[cfg(unix)]
+async fn watch_loop<A, F>(
+    mut db_changed: tokio::sync::watch::Receiver<u64>,
+    cancel_token: tokio_util::sync::CancellationToken,
+    mut attempt: A,
+) -> Result<()>
+where
+    A: FnMut() -> F,
+    F: std::future::Future<Output = Result<()>>,
+{
     let mut backoff = BACKOFF_START;
     loop {
-        tokio::select! {
+        let pause = tokio::select! {
             biased;
             _ = cancel_token.cancelled() => {
                 info!("Node watcher received shutdown signal, exiting");
                 return Ok(());
             }
-            _ = db_changed.changed() => {
+            Ok(()) = db_changed.changed() => {
                 // Active database switched — drop the current stream and re-open
                 // immediately (backoff reset) so the new database streams at once.
                 debug!("Active database switched; re-opening WatchNodes stream");
                 backoff = BACKOFF_START;
                 continue;
             }
-            outcome = stream_once(&app, &grpc_client) => {
-                match outcome {
-                    Ok(()) => {
-                        // Server closed the stream cleanly — reconnect immediately
-                        // with the backoff reset, since this isn't an error condition.
-                        debug!("WatchNodes stream ended; reconnecting");
+            outcome = attempt() => {
+                let pause = pause_after(&outcome);
+                match &outcome {
+                    Ok(()) => debug!("WatchNodes stream ended; reconnecting"),
+                    Err(e) if pause == Pause::UntilDatabaseChanges => info!(
+                        "WatchNodes refused: the active database requires an extension this \
+                         build does not support ({e:#}); resubscribing when the active \
+                         database changes"
+                    ),
+                    Err(e) => warn!(
+                        "WatchNodes stream failed: {e:#}; reconnecting in {:?}",
+                        backoff
+                    ),
+                }
+                pause
+            }
+        };
+
+        match pause {
+            Pause::ResetBackoff => backoff = BACKOFF_START,
+            Pause::Backoff | Pause::UntilDatabaseChanges => {}
+        }
+
+        if pause == Pause::UntilDatabaseChanges {
+            // Wait for a database switch or shutdown only. If the client is gone
+            // `changed()` errors at once; fall through to the backoff sleep (whose
+            // `changed()` arm only matches a real switch) rather than spin.
+            tokio::select! {
+                _ = cancel_token.cancelled() => {
+                    info!("Node watcher cancelled while waiting for a database switch");
+                    return Ok(());
+                }
+                switched = db_changed.changed() => {
+                    if switched.is_ok() {
+                        debug!("Active database switched after a refusal; reconnecting now");
                         backoff = BACKOFF_START;
-                    }
-                    Err(e) => {
-                        warn!("WatchNodes stream failed: {e:#}; reconnecting in {:?}", backoff);
+                        continue;
                     }
                 }
             }
@@ -152,7 +232,7 @@ pub async fn run<R: Runtime>(
                 info!("Node watcher cancelled during backoff");
                 return Ok(());
             }
-            _ = db_changed.changed() => {
+            Ok(()) = db_changed.changed() => {
                 debug!("Active database switched during backoff; reconnecting now");
                 backoff = BACKOFF_START;
             }
@@ -334,4 +414,176 @@ fn emit_relationship<R: Runtime>(
         database_id,
     };
     emit_routed(app, name, &payload, target);
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::watch;
+    use tokio_util::sync::CancellationToken;
+
+    /// The status the daemon returns for a request routed to a database that
+    /// requires an extension this build does not support.
+    fn refusal() -> anyhow::Error {
+        anyhow::Error::new(nodespace_proto::requires_extension::status(&[
+            "fixture-ext".to_string(),
+        ]))
+        .context("failed to open WatchNodes stream")
+    }
+
+    fn other_failure() -> anyhow::Error {
+        anyhow::Error::new(tonic::Status::unavailable("daemon restarting"))
+            .context("failed to open WatchNodes stream")
+    }
+
+    #[test]
+    fn only_the_refusal_waits_for_a_database_change() {
+        assert_eq!(
+            pause_after(&Err(refusal())),
+            Pause::UntilDatabaseChanges,
+            "a refusal wrapped in context is still recognised"
+        );
+        assert_eq!(pause_after(&Err(other_failure())), Pause::Backoff);
+        assert_eq!(
+            pause_after(&Err(anyhow::anyhow!("plain error"))),
+            Pause::Backoff
+        );
+        assert_eq!(pause_after(&Ok(())), Pause::ResetBackoff);
+    }
+
+    struct Harness {
+        generation: Arc<watch::Sender<u64>>,
+        attempts: Arc<AtomicUsize>,
+        cancel: CancellationToken,
+        task: tokio::task::JoinHandle<Result<()>>,
+    }
+
+    /// Runs `watch_loop` over a fake attempt that fails with `error` and
+    /// counts its calls, and an active-database generation the test bumps.
+    /// `on_first` runs inside the first attempt.
+    fn run_loop(
+        error: fn() -> anyhow::Error,
+        on_first: impl Fn(&watch::Sender<u64>) + Clone + Send + 'static,
+    ) -> Harness {
+        let generation = Arc::new(watch::channel(0u64).0);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let cancel = CancellationToken::new();
+        let (in_attempt, counted) = (generation.clone(), attempts.clone());
+        let task = tokio::spawn(watch_loop(
+            generation.subscribe(),
+            cancel.clone(),
+            move || {
+                let first = counted.fetch_add(1, Ordering::SeqCst) == 0;
+                let in_attempt = in_attempt.clone();
+                let on_first = on_first.clone();
+                async move {
+                    // Runs while the attempt is in flight, not before it starts.
+                    if first {
+                        on_first(&in_attempt);
+                    }
+                    Err(error())
+                }
+            },
+        ));
+        Harness {
+            generation,
+            attempts,
+            cancel,
+            task,
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn after_a_refusal_it_makes_no_attempts_until_the_database_changes() {
+        let Harness {
+            generation,
+            attempts,
+            cancel,
+            task,
+        } = run_loop(refusal, |_| {});
+
+        // Far longer than the backoff cap, still one attempt.
+        tokio::time::sleep(BACKOFF_MAX * 10).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        generation.send_modify(|g| *g += 1);
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            2,
+            "resubscribes at once when the active database changes"
+        );
+
+        cancel.cancel();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_change_during_the_refused_attempt_is_not_missed() {
+        let Harness {
+            attempts,
+            cancel,
+            task,
+            ..
+        } = run_loop(refusal, |generation| generation.send_modify(|g| *g += 1));
+
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        cancel.cancel();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn other_errors_keep_the_exponential_backoff() {
+        let Harness {
+            attempts,
+            cancel,
+            task,
+            ..
+        } = run_loop(other_failure, |_| {});
+
+        // Attempts at 0, 1, 3, 7, 15, 31 seconds: the wait doubles.
+        tokio::time::sleep(Duration::from_secs(31) + Duration::from_millis(1)).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 6);
+
+        // Then capped at 30s: next attempt at 61s, not before.
+        tokio::time::sleep(Duration::from_secs(29)).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 6);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 7);
+
+        cancel.cancel();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_while_waiting_after_a_refusal_exits() {
+        let Harness { cancel, task, .. } = run_loop(refusal, |_| {});
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        cancel.cancel();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_active_database_channel_backs_off_instead_of_spinning() {
+        let (switch, db_changed) = watch::channel(0u64);
+        drop(switch);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = attempts.clone();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(watch_loop(db_changed, cancel.clone(), move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err::<(), _>(refusal()))
+        }));
+
+        // Attempts at 0, 1 and 3 seconds.
+        tokio::time::sleep(Duration::from_secs(3) + Duration::from_millis(1)).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+
+        cancel.cancel();
+        task.await.unwrap().unwrap();
+    }
 }
