@@ -70,17 +70,19 @@ pub(crate) async fn routed_database_services<T>(
     // A database that requires an extension this daemon does not support is
     // refused with its own status (FAILED_PRECONDITION plus the
     // `x-requires-extension-bin` payload, ADR-083 §2) rather than an opaque
-    // INTERNAL, so every client can show the same refusal. One whose
-    // requirements cannot be read reports its whole cause chain: the daemon
-    // keeps running with it closed, so the client is where the reason has to
-    // show.
+    // INTERNAL, so every client can show the same refusal. Any other failure
+    // to open reports its whole cause chain: the daemon keeps running with the
+    // database closed, so the client is where the reason has to show. That
+    // covers a database whose requirements cannot be read and one another
+    // version of NodeSpace created, whose cause names the tables that differ
+    // and says to move the database aside. Those stay INTERNAL rather than a
+    // bare FAILED_PRECONDITION: clients read FAILED_PRECONDITION without the
+    // refusal payload as a refusal of their own request (an agent not ready, a
+    // schema not found) and show their own message instead of this one.
     let services = manager.get_or_open(&id).await.map_err(|e| {
-        if let Some(refusal) = crate::services::DatabaseRequiresExtensions::find_in(&e) {
-            refusal.to_status()
-        } else if crate::services::RequiredExtensionsUnreadable::find_in(&e).is_some() {
-            Status::internal(format!("{e:#}"))
-        } else {
-            Status::internal(e.to_string())
+        match crate::services::DatabaseRequiresExtensions::find_in(&e) {
+            Some(refusal) => refusal.to_status(),
+            None => Status::internal(format!("{e:#}")),
         }
     })?;
     Ok(Some(services))
@@ -152,5 +154,61 @@ where
         // `tonic::Request`, so handlers read this via `req.extensions()`.
         req.extensions_mut().insert(self.manager.clone());
         self.inner.call(req)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::required_extensions_tests::context;
+
+    /// A closed database at `path` with the tables a v0.3.3 daemon created.
+    async fn v0_3_3_database(path: &std::path::Path) {
+        nodespace_core::db::ensure_sqlite_vec_registered().await;
+        let db = libsql::Builder::new_local(path).build().await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.query("PRAGMA journal_mode = WAL", ()).await.unwrap();
+        conn.execute_batch(include_str!("../tests/fixtures/v0_3_3_schema.sql"))
+            .await
+            .unwrap();
+    }
+
+    /// A registered database another version created is refused when a
+    /// request routes to it, and the status carries the whole cause: which
+    /// tables differ and what to do about it, not just that opening failed.
+    #[tokio::test]
+    async fn a_routed_open_of_another_versions_database_reports_the_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.sqlite");
+        v0_3_3_database(&path).await;
+        let manager = Arc::new(
+            DatabaseManager::load(dir.path().join("databases.toml"), context(&[]))
+                .await
+                .unwrap(),
+        );
+        let id = manager.register(path).await.unwrap().id;
+
+        let mut request = tonic::Request::new(());
+        request.extensions_mut().insert(manager.clone());
+        request
+            .metadata_mut()
+            .insert(DATABASE_ID_HEADER, id.as_str().parse().unwrap());
+        let status = match routed_database_services(&request).await {
+            Ok(_) => panic!("a database another version created must be refused"),
+            Err(status) => status,
+        };
+
+        assert_eq!(status.code(), tonic::Code::Internal);
+        let message = status.message();
+        assert!(
+            message.contains("missing tables")
+                && message.contains("structural_rule")
+                && message.contains("type_ancestry"),
+            "the status must name the tables that differ: {message}"
+        );
+        assert!(
+            message.contains("move this database aside"),
+            "the status must say how to recover: {message}"
+        );
     }
 }

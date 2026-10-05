@@ -1294,23 +1294,13 @@ mod open_default_database_tests {
                 .await
                 .unwrap();
         }
-        let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
-        let context = SharedContext {
-            pty_manager: Arc::new(nodespace_agent::pty::PtySessionManager::new()),
-            model,
-            has_model: false,
-            model_load_failed: Arc::new(AtomicBool::new(false)),
-            scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
-            subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
-            local_agent: nodespace_daemon::SharedLocalAgent::new(dir.path().join("daemon.toml")),
-        };
         let marker = dir.path().join("incompatible-database.json");
 
         let (manager, _bundle) = open_default_database(
             dir.path().join("databases.toml"),
             &marker,
             &db_path,
-            context,
+            test_context(dir.path()),
         )
         .await
         .expect("startup continues");
@@ -1321,6 +1311,99 @@ mod open_default_database_tests {
             nodespace_daemon::services::DatabaseStatus::RequiresExtension
         );
         assert!(!marker.exists());
+    }
+
+    fn test_context(home: &std::path::Path) -> SharedContext {
+        let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
+        SharedContext {
+            pty_manager: Arc::new(nodespace_agent::pty::PtySessionManager::new()),
+            model,
+            has_model: false,
+            model_load_failed: Arc::new(AtomicBool::new(false)),
+            scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
+            subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
+            local_agent: nodespace_daemon::SharedLocalAgent::new(home.join("daemon.toml")),
+        }
+    }
+
+    /// A closed database at `path` with the tables a v0.3.3 daemon created
+    /// and one node in it, in WAL mode as that daemon left it.
+    async fn v0_3_3_database(path: &std::path::Path) {
+        nodespace_core::db::ensure_sqlite_vec_registered().await;
+        {
+            let db = libsql::Builder::new_local(path).build().await.unwrap();
+            let conn = db.connect().unwrap();
+            conn.query("PRAGMA journal_mode = WAL", ()).await.unwrap();
+            conn.execute_batch(include_str!("../tests/fixtures/v0_3_3_schema.sql"))
+                .await
+                .unwrap();
+        }
+        assert!(
+            !std::path::PathBuf::from(format!("{}-wal", path.display())).exists(),
+            "the fixture closed cleanly"
+        );
+    }
+
+    fn sha256(path: &std::path::Path) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
+    }
+
+    /// A default database a v0.3.3 daemon created has today's columns in every
+    /// table it holds, but lacks the tables added since. It is refused before
+    /// any DDL or seeding: the marker names the missing tables, the file is
+    /// byte-identical, and the startup error is the one `main` turns into exit
+    /// status 0, so the service manager does not restart the daemon into it.
+    #[tokio::test]
+    async fn a_v0_3_3_default_is_refused_with_a_marker_and_left_unchanged() {
+        use nodespace_core::db::schema::SchemaMismatch;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("default.sqlite");
+        v0_3_3_database(&db_path).await;
+        let before = sha256(&db_path);
+        let marker = dir.path().join("incompatible-database.json");
+
+        let err = match open_default_database(
+            dir.path().join("databases.toml"),
+            &marker,
+            &db_path,
+            test_context(dir.path()),
+        )
+        .await
+        {
+            Ok(_) => panic!("a v0.3.3 default must stop startup"),
+            Err(e) => e,
+        };
+
+        // Named rather than listed: every table added after v0.3.3 is missing,
+        // and the list grows with each one.
+        let mismatch = SchemaMismatch::find_in(&err)
+            .unwrap_or_else(|| panic!("expected a SchemaMismatch, got: {err:#}"));
+        for table in ["structural_rule", "type_ancestry"] {
+            assert!(
+                mismatch.missing_tables.iter().any(|t| t == table),
+                "{table} must be reported missing: {mismatch:?}"
+            );
+        }
+        assert!(mismatch.unexpected_tables.is_empty(), "{mismatch:?}");
+        let recorded: nodespace_types::IncompatibleDatabase =
+            serde_json::from_slice(&std::fs::read(&marker).expect("the marker is written"))
+                .unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&recorded.database_path).unwrap(),
+            std::fs::canonicalize(&db_path).unwrap()
+        );
+        assert_eq!(recorded.detail, mismatch.to_string());
+        assert_eq!(
+            sha256(&db_path),
+            before,
+            "the refused default is byte-identical"
+        );
+        assert!(
+            incompatible_database::stop_cleanly_on_incompatible_database(Err(err)).is_ok(),
+            "the refusal ends the daemon with exit status 0"
+        );
     }
 }
 

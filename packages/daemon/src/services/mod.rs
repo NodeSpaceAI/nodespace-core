@@ -18,7 +18,7 @@ pub mod local_agent_service;
 pub mod node_service;
 pub mod play_edit_chat;
 #[cfg(test)]
-mod required_extensions_tests;
+pub(crate) mod required_extensions_tests;
 pub mod settings_service;
 pub mod terminal_summary;
 

@@ -162,6 +162,8 @@ mod tests {
 
     fn mismatch() -> SchemaMismatch {
         SchemaMismatch {
+            missing_tables: vec![],
+            unexpected_tables: vec![],
             tables: vec![TableShapeMismatch {
                 table: "relationship".to_string(),
                 missing_columns: vec!["reverse_relationship_type".to_string()],
