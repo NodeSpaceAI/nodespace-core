@@ -2225,6 +2225,37 @@ async fn test_search_semantic_default_scope_leaves_core_schemas_out_and_keeps_us
     Ok(())
 }
 
+/// A small limit still reaches past the built-in schemas. The default scope
+/// drops them after the fetch, so they would otherwise fill a small window and
+/// leave nothing: the local agent's search asks for 5. The fetch takes as many
+/// extra rows as there are built-in schemas.
+///
+/// Through the enumerate path, where a fresh database's built-in schemas are
+/// the first rows and the user's note comes after them.
+#[tokio::test]
+async fn test_search_semantic_small_limit_reaches_past_the_built_in_schemas() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let note = create_root_node(&node_service, "text", "Hall Nine booking for the offsite").await?;
+
+    let mut untyped = empty_search_input("*", None);
+    untyped.limit = Some(2);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, untyped).await?;
+    let ids: Vec<(&str, &str)> = output
+        .matched_nodes
+        .iter()
+        .map(|n| (n.node_type.as_str(), n.id.as_str()))
+        .collect();
+    assert!(
+        output.matched_nodes.iter().any(|n| n.id == note.id),
+        "a limit-2 search that names no type must still return the user's note, got {ids:?}"
+    );
+
+    Ok(())
+}
+
 // A full integration test of `skip_scope_filter`'s effect on a real,
 // non-enumerate semantic query would require driving `search_semantic`'s
 // embedding path to a genuine similarity match — which requires generating

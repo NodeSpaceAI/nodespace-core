@@ -40,7 +40,7 @@ use std::sync::Arc;
 /// Built-in types the default `Knowledge` search scope returns: the user's own
 /// documents and records. User-defined types are admitted too, but are not
 /// known statically — see [`NodeEmbeddingService::matches_scope`], which also
-/// leaves the built-in schemas out of `schema`.
+/// leaves out the built-in schemas, though `schema` is listed here.
 pub const KNOWLEDGE_CORE_TYPES: &[crate::models::CoreNodeType] = &[
     crate::models::CoreNodeType::Text,
     crate::models::CoreNodeType::Header,
@@ -894,14 +894,13 @@ impl NodeEmbeddingService {
     /// on that list, so they stay out of the default scope.
     ///
     /// `Knowledge` also leaves out the built-in schemas
-    /// ([`schema_node::is_core_schema`]). Every schema is embedded so skill
+    /// (`schema_node::is_core_schema`). Every schema is embedded so skill
     /// and schema retrieval can find a type by meaning, and the built-in
     /// types' names and field labels ("Checkbox", "Horizontal Line") are close
     /// to many ordinary queries, so in the default scope they would come back
     /// ahead of the user's notes. A user-defined schema stays in. A search
-    /// that names `schema` replaces this scope and returns them all.
-    ///
-    /// [`schema_node::is_core_schema`]: crate::models::schema_node::is_core_schema
+    /// that names `schema` and requests no scope replaces this scope and
+    /// returns them all.
     pub fn matches_scope(node: &Node, scope: &SearchScope, user_types: &HashSet<String>) -> bool {
         let node_type = node.node_type.as_str();
         match scope {

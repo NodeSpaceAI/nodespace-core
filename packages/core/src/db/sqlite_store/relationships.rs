@@ -2808,12 +2808,7 @@ impl SqliteStore {
         if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
             return Ok(());
         }
-        let is_core = node
-            .properties
-            .get("isCore")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if is_core {
+        if crate::models::schema_node::is_core_schema(node) {
             return Err(anyhow::anyhow!(
                 "schema_is_core: schema '{}' is a core type and cannot be deleted",
                 node.id

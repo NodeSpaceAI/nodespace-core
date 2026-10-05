@@ -657,11 +657,44 @@ pub async fn search_semantic(
         None
     };
 
-    // Over-fetch when post-filtering is needed
+    let skip_scope_filter =
+        should_skip_scope_filter(input.node_types.as_deref(), input.scope.is_none());
+
+    // User-defined types belong to the `Knowledge` scope but aren't known
+    // statically, so read them from the schema list — only when that scope
+    // will actually be applied. The same list counts the built-in schemas,
+    // which `Knowledge` drops after the fetch (see `matches_scope`).
+    let (user_types, built_in_schemas): (HashSet<String>, usize) =
+        if !skip_scope_filter && matches!(scope, SearchScope::Knowledge) {
+            let schemas = node_service
+                .get_all_schemas()
+                .await
+                .map_err(|e| OpsError::Internal(format!("Failed to load schemas: {}", e)))?;
+            let built_in = schemas.iter().filter(|s| s.is_core).count();
+            let user = schemas
+                .into_iter()
+                .filter(|s| !s.is_core)
+                .map(|s| s.envelope.id)
+                .collect();
+            (user, built_in)
+        } else {
+            (HashSet::new(), 0)
+        };
+
+    // Over-fetch when post-filtering is needed. The built-in schemas are
+    // embedded, so they can fill the front of the window and then be dropped
+    // by the scope; the fetch takes that many more rows, so at most that many
+    // are lost to them and the rest of the window is as large as before they
+    // were embedded. Without it a small limit (the local agent's search uses
+    // 5) can come back empty when the user's note ranks behind the types.
     let scope_filters = !matches!(scope, SearchScope::Everything);
     let has_post_filters =
         collection_member_ids.is_some() || !excluded_node_ids.is_empty() || scope_filters;
-    let effective_limit = if has_post_filters { limit * 3 } else { limit };
+    let effective_limit = if has_post_filters {
+        limit * 3 + built_in_schemas
+    } else {
+        limit
+    };
 
     let include_title_matches = input.include_title_matches.unwrap_or(false);
 
@@ -729,26 +762,6 @@ pub async fn search_semantic(
             semantic
         }
     };
-
-    let skip_scope_filter =
-        should_skip_scope_filter(input.node_types.as_deref(), input.scope.is_none());
-
-    // User-defined types belong to the `Knowledge` scope but aren't known
-    // statically, so read them from the schema list — only when that scope
-    // will actually be applied.
-    let user_types: HashSet<String> =
-        if !skip_scope_filter && matches!(scope, SearchScope::Knowledge) {
-            node_service
-                .get_all_schemas()
-                .await
-                .map_err(|e| OpsError::Internal(format!("Failed to load schemas: {}", e)))?
-                .into_iter()
-                .filter(|s| !s.is_core)
-                .map(|s| s.envelope.id)
-                .collect()
-        } else {
-            HashSet::new()
-        };
 
     // Apply filters
     let filtered_results: Vec<_> = results

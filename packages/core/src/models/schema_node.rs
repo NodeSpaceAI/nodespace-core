@@ -135,6 +135,10 @@ fn structural_rule<R: serde::de::DeserializeOwned + Default>(node: &Node, key: &
 /// Whether `node` is a built-in schema: a schema node whose row carries the
 /// `isCore` flag that [`from_storage`] reads into [`SchemaNode::is_core`].
 /// `false` for a user-defined schema and for any node that is not a schema.
+///
+/// The one definition of the test: the store's delete refusal, the service's
+/// guards on minting or changing a core schema, and the default search scope
+/// all use it, so they cannot disagree about which schemas are built in.
 pub fn is_core_schema(node: &Node) -> bool {
     CoreNodeType::Schema.is_exactly(&node.node_type)
         && node
