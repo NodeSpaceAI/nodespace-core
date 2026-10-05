@@ -523,12 +523,17 @@ impl SettingsServiceImpl {
         }
     }
 
-    /// Build with the default path `~/.nodespace/daemon.toml`.
+    /// Build with the default path `<nodespace_dir>/daemon.toml`.
+    ///
+    /// Resolved through [`crate::nodespace_dir`], so it follows `NODESPACE_HOME`
+    /// exactly as the database, the registry, the embedding model and the other
+    /// `daemon.toml` readers do. The file holds API keys and is written to (the
+    /// routing probe caches verdicts in it), so an isolated daemon must neither
+    /// read nor mutate the user's own copy.
     pub fn with_default_path() -> Result<Self, String> {
-        let home = std::env::var("HOME")
-            .map_err(|_| "$HOME is unset — cannot locate daemon config".to_string())?;
-        let path = PathBuf::from(home).join(".nodespace").join("daemon.toml");
-        Ok(Self::new(path))
+        let dir =
+            crate::nodespace_dir().map_err(|e| format!("cannot locate daemon config: {e}"))?;
+        Ok(Self::new(dir.join("daemon.toml")))
     }
 
     /// Create (or truncate) the temp file at `path`, already restricted to
@@ -723,6 +728,107 @@ mod tests {
         let tempdir = tempfile::TempDir::new().expect("tempdir");
         let config_path = tempdir.path().join("daemon.toml");
         (SettingsServiceImpl::new(config_path), tempdir)
+    }
+
+    /// Restores `NODESPACE_HOME` and `HOME` on drop, so a panic cannot leak them.
+    /// The environment is process-global: nextest runs each test in its own
+    /// process, and the window is the one synchronous call.
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (var, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(var, value),
+                    None => std::env::remove_var(var),
+                }
+            }
+        }
+    }
+
+    /// `with_default_path` with `NODESPACE_HOME` at `nodespace_home` and `HOME`
+    /// at `user_home`.
+    fn default_path_service(
+        nodespace_home: &std::path::Path,
+        user_home: &std::path::Path,
+    ) -> SettingsServiceImpl {
+        let _restore = EnvRestore(
+            ["NODESPACE_HOME", "HOME"]
+                .map(|v| (v, std::env::var_os(v)))
+                .into(),
+        );
+        std::env::set_var("NODESPACE_HOME", nodespace_home);
+        std::env::set_var("HOME", user_home);
+        SettingsServiceImpl::with_default_path().expect("default path")
+    }
+
+    /// A "real" home holding a `daemon.toml` with one OpenAI-compat config.
+    fn home_with_settings() -> (tempfile::TempDir, std::path::PathBuf) {
+        let home = tempfile::tempdir().expect("home tempdir");
+        let dir = home.path().join(".nodespace");
+        std::fs::create_dir_all(&dir).expect("state dir");
+        let file = dir.join("daemon.toml");
+        std::fs::write(
+            &file,
+            "[[openai_compat.configs]]\nid = \"real-id\"\nname = \"real\"\nbase_url = \"http://real\"\napi_key = \"real-secret\"\n",
+        )
+        .expect("write real settings");
+        (home, file)
+    }
+
+    /// An isolated daemon neither reads nor rewrites the user's settings file,
+    /// even though `HOME` points at one that holds an API key.
+    #[tokio::test]
+    async fn default_path_under_nodespace_home_ignores_the_user_home() {
+        let (user_home, real_file) = home_with_settings();
+        let before = std::fs::read(&real_file).expect("read real");
+        let isolated = tempfile::tempdir().expect("isolated home");
+        let svc = default_path_service(isolated.path(), user_home.path());
+
+        assert_eq!(
+            svc.config_path,
+            isolated.path().join(".nodespace").join("daemon.toml")
+        );
+        let listed = svc
+            .list_open_ai_compat_configs(Request::new(ListOpenAiCompatConfigsRequest {}))
+            .await
+            .expect("list")
+            .into_inner();
+        assert!(listed.configs.is_empty(), "must not see the user's configs");
+
+        svc.set_open_ai_compat_configs(Request::new(SetOpenAiCompatConfigsRequest {
+            configs: vec![probe_config("iso", "http://iso", "m")],
+        }))
+        .await
+        .expect("write");
+        assert_eq!(std::fs::read(&real_file).expect("re-read real"), before);
+        assert!(isolated
+            .path()
+            .join(".nodespace")
+            .join("daemon.toml")
+            .exists());
+    }
+
+    /// A settings file under `NODESPACE_HOME` is the one used, not the user's.
+    #[tokio::test]
+    async fn default_path_reads_the_file_under_nodespace_home() {
+        let (user_home, _) = home_with_settings();
+        let (isolated, _) = home_with_settings();
+        let file = isolated.path().join(".nodespace").join("daemon.toml");
+        std::fs::write(
+            &file,
+            "[[openai_compat.configs]]\nid = \"iso-id\"\nname = \"iso\"\nbase_url = \"http://iso\"\napi_key = \"iso-secret\"\n",
+        )
+        .unwrap();
+        let svc = default_path_service(isolated.path(), user_home.path());
+
+        let listed = svc
+            .list_open_ai_compat_configs(Request::new(ListOpenAiCompatConfigsRequest {}))
+            .await
+            .expect("list")
+            .into_inner();
+        assert_eq!(listed.configs.len(), 1);
+        assert_eq!(listed.configs[0].id, "iso-id");
     }
 
     #[tokio::test]

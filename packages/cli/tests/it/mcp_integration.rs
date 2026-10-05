@@ -86,6 +86,7 @@ async fn mcp_speaks_stdio_jsonrpc_and_exposes_exactly_one_tool() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
         .arg("mcp")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -156,6 +157,7 @@ async fn mcp_tool_call_reports_daemon_unreachable_actionably_not_as_a_raw_connec
         .arg(&sock)
         .arg("mcp")
         .env("HOME", tempdir.path())
+        .env_remove("NODESPACE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -209,6 +211,7 @@ async fn mcp_tool_call_rejects_an_unterminated_quote_without_dispatching_anythin
     let mut child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
         .arg("mcp")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -255,6 +258,7 @@ async fn mcp_refuses_to_start_when_not_enabled() {
     let child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
         .arg("mcp")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -301,6 +305,7 @@ async fn mcp_refuses_to_start_when_explicitly_disabled() {
     let child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
         .arg("mcp")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -385,6 +390,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
         .arg("mcp")
         .arg("status")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .output()
         .await
         .expect("run mcp status");
@@ -398,6 +404,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
         .arg("install")
         .arg("--yes")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .env("PATH", &path_with_fake_nodespace)
         .output()
         .await
@@ -439,6 +446,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
         .arg("mcp")
         .arg("status")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .output()
         .await
         .expect("run mcp status");
@@ -458,6 +466,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
     let mut child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
         .arg("mcp")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -480,6 +489,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
         .arg("mcp")
         .arg("uninstall")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .output()
         .await
         .expect("run mcp uninstall");
@@ -515,6 +525,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
     let output = Command::new(env!("CARGO_BIN_EXE_nodespace"))
         .arg("mcp")
         .env("HOME", home.path())
+        .env_remove("NODESPACE_HOME")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
