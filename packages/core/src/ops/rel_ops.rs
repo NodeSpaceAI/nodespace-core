@@ -523,8 +523,11 @@ pub async fn get_related_nodes(
     // frontend's wire contract, so do not "simplify" this back to a plain
     // `to_value` — the shapes are not equivalent. The CLI re-keys this into
     // its own snake_case node shape (`output::related_node_to_json`).
+    //
+    // Converted with each node's inherited buckets folded into its own, so a
+    // related node of an extending type keeps the fields it inherits.
     let related_nodes: Vec<Value> =
-        crate::models::nodes_to_typed_values(nodes).map_err(OpsError::Internal)?;
+        crate::ops::node_ops::nodes_to_typed_values(node_service, nodes).await?;
 
     Ok(GetRelatedOutput {
         node_id: input.node_id,
