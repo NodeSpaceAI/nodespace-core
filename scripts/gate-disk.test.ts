@@ -1,6 +1,6 @@
 // Covers the disk housekeeping of the runs that compile Rust
-// (scripts/gate-disk.ts): which incremental directories a prune removes, and
-// the free-space refusal.
+// (scripts/gate-disk.ts): which incremental directories a prune removes, when
+// deps/ is emptied, and the free-space refusal.
 //
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
@@ -9,13 +9,16 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, u
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DEPS_BUDGET_GIB,
   diskUsageKiB,
+  formatDepsResult,
   formatPruneResult,
   freeGiB,
   freeSpaceRefusal,
   GATE_INCREMENTAL,
   listIncrementalDirs,
   MIN_FREE_GIB,
+  pruneDeps,
   pruneIncremental,
   removeUnlessUsedSince,
   selectSuperseded,
@@ -286,6 +289,97 @@ describe("formatPruneResult", () => {
     expect(formatPruneResult({ removed: 0, kept: 111, freedGiB: 0, keptGiB: 3.4 })).toBe(
       "  incremental cache: nothing to remove; 111 directories kept (3.4 GiB)"
     );
+  });
+});
+
+describe("pruneDeps", () => {
+  /** A `deps/` holding two variants of one crate, about 64 KiB. */
+  function depsDir(): string {
+    const deps = join(target, "debug", "deps");
+    mkdirSync(deps, { recursive: true });
+    for (const hash of ["0d6b2f0c1e7a9b34", "9a41c07be2d35f68"]) {
+      writeFileSync(join(deps, `libnodespace_core-${hash}.rlib`), "x".repeat(32 * 1024));
+      writeFileSync(join(deps, `nodespace_core-${hash}.d`), "");
+    }
+    return deps;
+  }
+  const KIB_16 = 16 / GIB; // a budget of 16 KiB, in GiB
+
+  test("keeps everything while deps/ is within the budget", () => {
+    const deps = depsDir();
+    const result = pruneDeps(target, 1);
+    expect(result.outcome).toBe("kept");
+    expect(result.sizeGiB).toBeGreaterThan(0);
+    expect(readdirSync(deps)).toHaveLength(4);
+  });
+
+  test("empties deps/ once it is over the budget, and nothing beside it", () => {
+    const deps = depsDir();
+    crateDir("nodespace_core-0j8syoplaewcn", 1);
+    const fingerprint = join(target, "debug", ".fingerprint", "nodespace-core-0d6b2f0c1e7a9b34");
+    mkdirSync(fingerprint, { recursive: true });
+    const result = pruneDeps(target, KIB_16);
+    expect(result.outcome).toBe("emptied");
+    expect(result.sizeGiB).toBeGreaterThan(KIB_16);
+    expect(existsSync(deps)).toBe(false);
+    expect(readdirSync(incremental)).toEqual(["nodespace_core-0j8syoplaewcn"]);
+    expect(existsSync(fingerprint)).toBe(true);
+  });
+
+  test("leaves deps/ alone when its size can't be read", () => {
+    const deps = depsDir();
+    expect(pruneDeps(target, KIB_16, "nodespace-no-such-tool")).toEqual({ outcome: "unsized", sizeGiB: null });
+    expect(readdirSync(deps)).toHaveLength(4);
+  });
+
+  test("never follows a deps/ that is a symlink", () => {
+    const elsewhere = mkdtempSync(join(tmpdir(), "gate-disk-elsewhere-"));
+    try {
+      writeFileSync(join(elsewhere, "libnodespace_core-0d6b2f0c1e7a9b34.rlib"), "x".repeat(64 * 1024));
+      mkdirSync(join(target, "debug"), { recursive: true });
+      symlinkSync(elsewhere, join(target, "debug", "deps"));
+      expect(pruneDeps(target, KIB_16)).toEqual({ outcome: "not-a-directory", sizeGiB: null });
+      expect(readdirSync(elsewhere)).toHaveLength(1);
+    } finally {
+      rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  test("a target/ that has never been built has nothing to empty", () => {
+    expect(pruneDeps(join(target, "no-such-target"), KIB_16)).toEqual({ outcome: "absent", sizeGiB: null });
+  });
+
+  test("leaves a deps that is a file alone", () => {
+    mkdirSync(join(target, "debug"), { recursive: true });
+    writeFileSync(join(target, "debug", "deps"), "x".repeat(64 * 1024));
+    expect(pruneDeps(target, KIB_16)).toEqual({ outcome: "not-a-directory", sizeGiB: null });
+    expect(existsSync(join(target, "debug", "deps"))).toBe(true);
+  });
+});
+
+describe("formatDepsResult", () => {
+  test("says what was kept, and the budget", () => {
+    expect(formatDepsResult({ outcome: "kept", sizeGiB: 6.94 })).toBe(
+      `  build artifacts (deps/): 6.9 GiB kept (emptied above ${DEPS_BUDGET_GIB} GiB)`
+    );
+  });
+
+  test("says that deps/ was emptied, and that the run rebuilds it", () => {
+    expect(formatDepsResult({ outcome: "emptied", sizeGiB: 29.04 })).toBe(
+      `  build artifacts (deps/): 29.0 GiB, over the ${DEPS_BUDGET_GIB} GiB budget; emptied, so this run rebuilds them`
+    );
+  });
+
+  test("says what state a removal that failed partway leaves", () => {
+    expect(formatDepsResult({ outcome: "partly-removed", sizeGiB: 29.04 })).toBe(
+      `  build artifacts (deps/): 29.0 GiB, over the ${DEPS_BUDGET_GIB} GiB budget; could not be fully removed, and this run rebuilds what is missing`
+    );
+  });
+
+  test("says why a deps/ was left alone", () => {
+    expect(formatDepsResult({ outcome: "unsized", sizeGiB: null })).toBe("  build artifacts (deps/): size unavailable, so left alone");
+    expect(formatDepsResult({ outcome: "not-a-directory", sizeGiB: null })).toBe("  build artifacts (deps/): not a directory, so left alone");
+    expect(formatDepsResult({ outcome: "absent", sizeGiB: null })).toBe("  build artifacts (deps/): none yet");
   });
 });
 

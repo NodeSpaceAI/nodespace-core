@@ -12,10 +12,15 @@
 // the superseded ones, keeps what is left within a size budget, then checks
 // free space.
 //
+// Cargo does the same beside it, in `target/debug/deps`: every build variant's
+// artifacts are named `<name>-<hash>`, and a superseded variant's are never
+// removed. Nothing on disk says which are current, so that directory is
+// emptied whole once it passes a budget (pruneDeps).
+//
 // Both callers run this while they hold the machine slot, so no other gate or
 // test:changed run is compiling into the same target/ during the prune.
 
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { freeGiBFromDf } from "./gate-output";
 
@@ -255,6 +260,79 @@ export function formatPruneResult(result: PruneResult): string {
   const kept = `${dirs(result.kept)} kept${size(result.keptGiB)}${unsized}`;
   if (result.removed === 0) return `  incremental cache: nothing to remove; ${kept}`;
   return `  incremental cache: removed ${dirs(result.removed)}${size(result.freedGiB)}; ${kept}`;
+}
+
+/**
+ * What `target/debug/deps` may hold before a run empties it. One set of
+ * artifacts for everything the merge gate builds is 7 GiB, and the gate
+ * checkout gains a set whenever a queued PR changes the hash's inputs: 16 GiB
+ * on the day measured. So this is about three sets, and that checkout passes
+ * it about once a day.
+ */
+export const DEPS_BUDGET_GIB = 20;
+
+export interface DepsPruneResult {
+  /**
+   * `kept`: within the budget. `emptied`: over it, and removed. `partly-removed`:
+   * over it, and the removal failed partway. `absent`: there is no `deps/`.
+   * `not-a-directory`: it is a symlink or a file. `unsized`: it couldn't be
+   * read or measured. The last three leave it untouched.
+   */
+  outcome: "kept" | "emptied" | "partly-removed" | "absent" | "not-a-directory" | "unsized";
+  /** Disk `deps/` used before the prune, or null when it wasn't measured. */
+  sizeGiB: number | null;
+}
+
+/**
+ * Empties `target/debug/deps` under `targetDir` when it uses more than
+ * `budgetGiB`.
+ *
+ * All of it, because nothing on disk separates a current artifact from a
+ * superseded one: a build that finds a crate fresh writes nothing, and one
+ * crate has several current variants, built at different times. Cargo
+ * rebuilds what is missing, with the incremental directories and sccache
+ * still in place. Measured: the merge gate's builds took 103 s after an
+ * emptying, against 8 s with nothing to do and 392 s from an empty target/.
+ *
+ * Unlike the incremental prune it has no second look before it removes, so a
+ * caller runs it only while it holds the machine slot.
+ */
+export function pruneDeps(targetDir: string, budgetGiB: number = DEPS_BUDGET_GIB, du: string = "du"): DepsPruneResult {
+  const depsDir = join(targetDir, "debug", "deps");
+  if (!existsSync(depsDir)) return { outcome: "absent", sizeGiB: null };
+  try {
+    // lstat, so a symlink is seen as one and never followed.
+    if (!lstatSync(depsDir).isDirectory()) return { outcome: "not-a-directory", sizeGiB: null };
+  } catch {
+    return { outcome: "unsized", sizeGiB: null };
+  }
+  const kib = diskUsageKiB([depsDir], du).get(depsDir);
+  if (kib === undefined) return { outcome: "unsized", sizeGiB: null };
+  const sizeGiB = kib / KIB_PER_GIB;
+  if (sizeGiB <= budgetGiB) return { outcome: "kept", sizeGiB };
+  try {
+    // Cargo creates the directory again on its next build.
+    rmSync(depsDir, { recursive: true, force: true });
+    return { outcome: "emptied", sizeGiB };
+  } catch {
+    // Safe: cargo rebuilds whatever is missing.
+    return { outcome: "partly-removed", sizeGiB };
+  }
+}
+
+/** The one line a run prints about `deps/`. */
+export function formatDepsResult(result: DepsPruneResult, budgetGiB: number = DEPS_BUDGET_GIB): string {
+  const size = result.sizeGiB === null ? "" : `${result.sizeGiB.toFixed(1)} GiB`;
+  const over = `${size}, over the ${budgetGiB} GiB budget`;
+  const said = {
+    kept: `${size} kept (emptied above ${budgetGiB} GiB)`,
+    emptied: `${over}; emptied, so this run rebuilds them`,
+    "partly-removed": `${over}; could not be fully removed, and this run rebuilds what is missing`,
+    absent: "none yet",
+    "not-a-directory": "not a directory, so left alone",
+    unsized: "size unavailable, so left alone",
+  }[result.outcome];
+  return `  build artifacts (deps/): ${said}`;
 }
 
 /** Free space in GiB on the disk holding `path`, or null when it can't be read. */
