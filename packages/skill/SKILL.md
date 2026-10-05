@@ -173,6 +173,21 @@ the saved query is not changed. Any filter, here or in `nodespace query`, takes
 `"negate": true` to keep the nodes it does not hold for ("status is not done",
 "has no unfinished blocker"). `references/cli.md` has the filter shapes.
 
+**Reading a node with what governs it.** `node context` returns a node with the
+nodes its relationship paths reach and the skills attached to any of them, in
+one call:
+
+```bash
+nodespace node context <task-id> --path project
+```
+
+A skill attached to a node is the procedure or the standard for working there:
+a queue's procedure is attached to its saved query and comes back from
+`query run`; a project's standards come back with a task read with the path to
+its project. Follow an attached skill as you follow one you fetched. Attach one
+with `nodespace relationship create --from <skill-id> --type attached_to --to
+<node-id>`; `relationship delete` with the same arguments detaches it.
+
 **Setting up a work-tracking workflow.** When the user asks for one (Linear-style
 issues and cycles, spec-driven development, Jira-style sprints), first run
 `nodespace skill guidance "workspace workflow"`. A skill named `<Name> Workspace`

@@ -139,7 +139,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c01",
         title: "Research & Search",
         description: "Find, look up, locate, list, or search for nodes, records, notes, and documents of any type that are already stored. Search stored knowledge to answer a question: how does something work, how is it applied, what is it, what does it do, why was it chosen.",
-        tools: &["search_semantic", "search_nodes", "get_node", "run_query"],
+        tools: &["search_semantic", "search_nodes", "get_node", "run_query", "get_node_context"],
         max_iterations: 4,
         exclusion: None,
         applies_to: &[],
@@ -384,7 +384,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // ~0.803 -> 2nd at ~0.837) without displacing Organization's
         // own top-3 on its control prompt.
         description: "Record an edge between two nodes: a task or note that depends on, must respect, or points at another record. Explore or traverse existing relationships between nodes in the knowledge graph.",
-        tools: &["create_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
+        tools: &["create_relationship", "delete_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,
         exclusion: None,
         applies_to: &[],
@@ -569,7 +569,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0b",
         title: "Organization",
         description: "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.",
-        tools: &["create_relationship", "get_node", "search_semantic", "search_nodes"],
+        tools: &["create_relationship", "delete_relationship", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,
         exclusion: None,
         applies_to: &[],

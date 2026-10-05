@@ -11,6 +11,11 @@ pub const SKILL_NODE_TYPE: &str = "skill";
 /// search carries those schemas' definitions with a matched skill.
 pub const SKILL_APPLIES_TO: &str = "applies_to";
 
+/// The relationship from a skill to a node of any type it is handed over
+/// with: a read of that node returns the skill (ADR-094 §3). It delivers the
+/// skill and does not scope it.
+pub const SKILL_ATTACHED_TO: &str = "attached_to";
+
 /// `max_iterations` when a skill doesn't set one — the core schema's default.
 pub const DEFAULT_SKILL_MAX_ITERATIONS: u32 = 2;
 

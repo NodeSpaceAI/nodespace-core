@@ -9854,7 +9854,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let inbound: Vec<_> = inb.groups.iter().filter(|g| g.direction == "in").collect();
+        // Any-target relationships core declares are listed on every node too;
+        // this is about the two declarers of `assigned_to`.
+        let inbound: Vec<_> = inb
+            .groups
+            .iter()
+            .filter(|g| g.direction == "in" && g.relationship_name == "assigned_to")
+            .collect();
 
         assert_eq!(
             inbound.len(),

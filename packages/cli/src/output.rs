@@ -6,7 +6,12 @@
 
 use anyhow::{Context, Result};
 use nodespace_daemon::nodespace::{
-    ConflictRecord as ConflictRecordProto, DeleteNodeResponse, MergeNodesResponse, NodeListResponse,
+    ConflictRecord as ConflictRecordProto, ContextNode, DeleteNodeResponse, GetNodeContextResponse,
+    MergeNodesResponse, NodeListResponse, RunSavedQueryResponse,
+};
+
+use crate::commands::skill::{
+    announce_attached_skills, attached_skills_json, sanitize_for_terminal, write_attached_skills,
 };
 use nodespace_daemon::NodeData;
 use nodespace_types::{CreateSchemaOutput, SchemaNode, SchemaUpdateOutput};
@@ -158,15 +163,146 @@ pub fn print_node_list(response: &NodeListResponse, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// A saved query's result: its nodes, as [`print_node_list`] prints them, and
+/// the skills attached to the query node, each inside the banner a skill
+/// fetch prints.
+pub fn print_saved_query_run(response: &RunSavedQueryResponse, json: bool) -> Result<()> {
+    if json {
+        let value = json!({
+            "count": response.count,
+            "nodes": response.nodes.iter().map(node_to_json).collect::<Vec<_>>(),
+            "attached_skills": attached_skills_json(&response.skills, &response.schemas),
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+
+    let out = &mut std::io::stdout();
+    let tag = announce_attached_skills(out, &response.skills, &response.schemas)?;
+    print_node_list(
+        &NodeListResponse {
+            nodes: response.nodes.clone(),
+            count: response.count,
+            collection_id: String::new(),
+        },
+        false,
+    )?;
+    match tag {
+        Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
+        None => Ok(()),
+    }
+}
+
+/// A node as a context read returns it, in the CLI's JSON shape: the node's
+/// own keys, and `checkboxes` for its direct checkbox children.
+fn context_node_to_json(node: &ContextNode) -> Value {
+    let mut value = node.node.as_ref().map(node_to_json).unwrap_or(Value::Null);
+    if let Value::Object(map) = &mut value {
+        map.insert(
+            "checkboxes".to_string(),
+            node.checkboxes.iter().map(node_to_json).collect(),
+        );
+    }
+    value
+}
+
+fn write_human_context_node(node: &ContextNode) {
+    if let Some(data) = &node.node {
+        write_human_node(data);
+    }
+    if !node.checkboxes.is_empty() {
+        println!("checkboxes:");
+        // Graph text, like a skill's: control characters are stripped, and a
+        // continuation line stays indented under its item.
+        for checkbox in &node.checkboxes {
+            let content = sanitize_for_terminal(&checkbox.content);
+            let mut lines = content.lines();
+            println!(
+                "    {}  ({})",
+                lines.next().unwrap_or_default(),
+                sanitize_for_terminal(&checkbox.id)
+            );
+            for line in lines {
+                println!("      {line}");
+            }
+        }
+    }
+}
+
+/// A node read with the nodes its paths reach, grouped by path, and the
+/// skills attached to any of them, each inside the banner a skill fetch
+/// prints.
+pub fn print_node_context(response: &GetNodeContextResponse, json: bool) -> Result<()> {
+    let node = response.node.as_ref().context("daemon returned no node")?;
+    if json {
+        let paths: Vec<Value> = response
+            .paths
+            .iter()
+            .map(|reached| {
+                let mut group = json!({
+                    "path": reached.path,
+                    "count": reached.nodes.len(),
+                    "nodes": reached.nodes.iter().map(context_node_to_json).collect::<Vec<_>>(),
+                });
+                // Set only when the path reached more nodes than one read
+                // returns.
+                if reached.limit_reached {
+                    group["limit_reached"] = json!(true);
+                }
+                group
+            })
+            .collect();
+        let value = json!({
+            "node": context_node_to_json(node),
+            "paths": paths,
+            "attached_skills": attached_skills_json(&response.skills, &response.schemas),
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+
+    let out = &mut std::io::stdout();
+    let tag = announce_attached_skills(out, &response.skills, &response.schemas)?;
+    write_human_context_node(node);
+    for reached in &response.paths {
+        println!();
+        println!(
+            "path {} ({} node(s){}):",
+            reached.path,
+            reached.nodes.len(),
+            if reached.limit_reached {
+                "; the path reaches more, these are the first"
+            } else {
+                ""
+            }
+        );
+        for (idx, node) in reached.nodes.iter().enumerate() {
+            if idx > 0 {
+                println!();
+            }
+            write_human_context_node(node);
+        }
+    }
+    match tag {
+        Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
+        None => Ok(()),
+    }
+}
+
+/// One node in human mode. Everything read from the graph is passed through
+/// [`sanitize_for_terminal`]: a node's text can carry terminal control
+/// sequences, and some commands print it beside a provenance tag line that
+/// such a sequence could redraw. JSON mode is left lossless.
 fn write_human_node(node: &NodeData) {
-    println!("id:              {}", node.id);
-    println!("type:            {}", node.node_type);
+    let clean = sanitize_for_terminal;
+    println!("id:              {}", clean(&node.id));
+    println!("type:            {}", clean(&node.node_type));
     // Absent (this node type never gets one, e.g. `date`/`schema`) is
     // distinct from present-but-empty (a title_template whose fields are all
     // still blank) — only the former omits the line; the latter still prints,
     // just with nothing after the label.
     if let Some(title) = &node.title {
-        println!("title:           {}", title);
+        println!("title:           {}", clean(title));
     }
     println!("version:         {}", node.version);
     println!("lifecycle:       {}", node.lifecycle_status);
@@ -183,10 +319,10 @@ fn write_human_node(node: &NodeData) {
         _ => true,
     };
     if has_properties {
-        println!("properties:      {}", properties);
+        println!("properties:      {}", clean(&properties.to_string()));
     }
     println!("content:");
-    for line in node.content.lines() {
+    for line in clean(&node.content).lines() {
         println!("    {}", line);
     }
     if node.content.is_empty() {
@@ -194,7 +330,7 @@ fn write_human_node(node: &NodeData) {
     }
     if !node.markdown.is_empty() {
         println!("markdown:");
-        for line in node.markdown.lines() {
+        for line in clean(&node.markdown).lines() {
             println!("    {}", line);
         }
     }

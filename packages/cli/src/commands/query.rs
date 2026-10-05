@@ -54,7 +54,8 @@ pub struct QueryArgs {
 #[derive(Subcommand, Debug)]
 pub enum QueryCommand {
     /// Run a saved query node by its id or title, with its stored filters,
-    /// sorting and limit.
+    /// sorting and limit. The skills attached to the query come back beside
+    /// its nodes.
     Run(RunArgs),
 }
 
@@ -77,15 +78,18 @@ pub struct RunArgs {
 
 pub async fn run(client: &mut NodeClient, args: QueryArgs, json: bool) -> Result<()> {
     let response = match args.command {
-        Some(QueryCommand::Run(run)) => client
-            .run_saved_query(RunSavedQueryRequest {
-                query: run.query,
-                filters_json: run.filters,
-                limit: run.limit,
-            })
-            .await
-            .context("RunSavedQuery RPC failed")?
-            .into_inner(),
+        Some(QueryCommand::Run(run)) => {
+            let response = client
+                .run_saved_query(RunSavedQueryRequest {
+                    query: run.query,
+                    filters_json: run.filters,
+                    limit: run.limit,
+                })
+                .await
+                .context("RunSavedQuery RPC failed")?
+                .into_inner();
+            return output::print_saved_query_run(&response, json);
+        }
         None => client
             .execute_query(ExecuteQueryRequest {
                 target_type: args

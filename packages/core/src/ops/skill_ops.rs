@@ -1227,37 +1227,67 @@ pub async fn get_skill_guidance(
             }
         }
     };
-    let fields = skill_fields(node)
-        .ok_or_else(|| OpsError::Internal(format!("skill \"{key}\" does not decode as a skill")))?;
+    if skill_fields(node).is_none() {
+        return Err(OpsError::Internal(format!(
+            "skill \"{key}\" does not decode as a skill"
+        )));
+    }
+    fetch_skills(node_service, std::slice::from_ref(node)).await
+}
 
-    let instructions = render_skill_instructions(node_service, &node.id).await;
+/// Each of `skills` as a fetch by name returns it: its procedure, the command
+/// of every registry tool it lists or names, and the schemas it is linked to
+/// through `applies_to` (and their subtypes). Skills keep their order, and a
+/// schema several of them link to appears once. A node that does not decode
+/// as a skill is left out.
+pub(crate) async fn fetch_skills(
+    node_service: &NodeService,
+    skills: &[Node],
+) -> Result<SkillGuidance, OpsError> {
+    let mut guidance = SkillGuidance::default();
+    if skills.is_empty() {
+        return Ok(guidance);
+    }
     let registry = registry_tool_commands(node_service).await;
-
     let all_schemas = node_service
         .get_all_schemas()
         .await
         .map_err(|e| OpsError::Internal(format!("Failed to read schemas: {}", e)))?;
+    let skill_ids: Vec<String> = skills.iter().map(|node| node.id.clone()).collect();
     let applies_to = node_service
         .store()
-        .get_edge_targets_by_source(std::slice::from_ref(&node.id), SKILL_APPLIES_TO)
+        .get_edge_targets_by_source(&skill_ids, SKILL_APPLIES_TO)
         .await
         .map_err(|e| OpsError::Internal(format!("Failed to read applies_to links: {}", e)))?;
-    let linked = applies_to
-        .get(&node.id)
-        .map(|targets| linked_schemas(targets, &all_schemas))
-        .unwrap_or_default();
-    let mut description_cache = HashMap::new();
-    let mut schemas = Vec::with_capacity(linked.len());
-    for schema in linked {
-        let definition =
-            schema_definition(node_service, schema, &all_schemas, &mut description_cache).await;
-        schemas.extend(guidance_schema(&definition));
-    }
 
-    Ok(SkillGuidance {
-        skills: vec![fetched_skill(node, &fields, None, instructions, &registry)],
-        schemas,
-    })
+    let mut description_cache = HashMap::new();
+    for node in skills {
+        let Some(fields) = skill_fields(node) else {
+            continue;
+        };
+        let instructions = render_skill_instructions(node_service, &node.id).await;
+        guidance
+            .skills
+            .push(fetched_skill(node, &fields, None, instructions, &registry));
+
+        let linked = applies_to
+            .get(&node.id)
+            .map(|targets| linked_schemas(targets, &all_schemas))
+            .unwrap_or_default();
+        for schema in linked {
+            if guidance
+                .schemas
+                .iter()
+                .any(|known| known.id == schema.envelope.id)
+            {
+                continue;
+            }
+            let definition =
+                schema_definition(node_service, schema, &all_schemas, &mut description_cache).await;
+            guidance.schemas.extend(guidance_schema(&definition));
+        }
+    }
+    Ok(guidance)
 }
 
 /// The skills matching `query`, each with its procedure and the command of

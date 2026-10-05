@@ -920,13 +920,14 @@ pub async fn run_saved_query_nodes(
 }
 
 /// [`run_saved_query_nodes_excluding`], returning typed JSON values, the
-/// shape an agent tool call reads, and the row limit the run was held to. A
-/// result of that many rows may not be every match.
+/// shape an agent tool call reads, the row limit the run was held to, and the
+/// id of the query node that ran. A result of that many rows may not be every
+/// match.
 pub async fn run_saved_query_excluding(
     node_service: &Arc<NodeService>,
     input: RunSavedQueryInput,
     excluded: &[crate::models::CoreNodeType],
-) -> Result<(ExecuteQueryOutput, usize), OpsError> {
+) -> Result<(ExecuteQueryOutput, usize, String), OpsError> {
     let run = run_saved_query_nodes_excluding(node_service, input, excluded).await?;
     let count = run.nodes.len();
     Ok((
@@ -936,6 +937,7 @@ pub async fn run_saved_query_excluding(
             collection_id: None,
         },
         run.limit,
+        run.query_id,
     ))
 }
 

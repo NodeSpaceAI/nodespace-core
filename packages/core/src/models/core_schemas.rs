@@ -1489,20 +1489,41 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             // choose which schemas' definitions a matched skill carries.
             // Many/Many and optional: most skills are general and link to
             // nothing, and one schema can have several skills.
-            relationships: vec![SchemaRelationship {
-                name: crate::models::SKILL_APPLIES_TO.to_string(),
-                target_type: Some(crate::models::CoreNodeType::Schema.as_str().to_string()),
-                direction: RelationshipDirection::Out,
-                cardinality: RelationshipCardinality::Many,
-                required: None,
-                reverse_name: "skills".to_string(),
-                reverse_cardinality: RelationshipCardinality::Many,
-                edge_fields: None,
-                description: Some(
-                    "Schemas this skill is about; a matched skill carries their definitions"
-                        .to_string(),
-                ),
-            }],
+            relationships: vec![
+                SchemaRelationship {
+                    name: crate::models::SKILL_APPLIES_TO.to_string(),
+                    target_type: Some(crate::models::CoreNodeType::Schema.as_str().to_string()),
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "skills".to_string(),
+                    reverse_cardinality: RelationshipCardinality::Many,
+                    edge_fields: None,
+                    description: Some(
+                        "Schemas this skill is about; a matched skill carries their definitions"
+                            .to_string(),
+                    ),
+                },
+                // Hands the skill over with a node: a read of that node
+                // returns it (ADR-094 §3). No target type, since a skill can
+                // be attached to a node of any type. It says nothing about
+                // which types the skill's operations concern; that is
+                // `applies_to`.
+                SchemaRelationship {
+                    name: crate::models::SKILL_ATTACHED_TO.to_string(),
+                    target_type: None,
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "attached_skills".to_string(),
+                    reverse_cardinality: RelationshipCardinality::Many,
+                    edge_fields: None,
+                    description: Some(
+                        "Nodes this skill is handed over with; reading one returns the skill"
+                            .to_string(),
+                    ),
+                },
+            ],
             title_template: None,
             properties_header_summary_template: None,
         },
@@ -2677,6 +2698,17 @@ mod tests {
         assert_eq!(applies_to.name, "applies_to");
         assert_eq!(applies_to.target_type.as_deref(), Some("schema"));
         assert_eq!(applies_to.reverse_name, "skills");
+        // A skill is attached to a node of any type, so the link names none.
+        let attached_to = &skill.relationships[1];
+        assert_eq!(attached_to.name, "attached_to");
+        assert_eq!(attached_to.target_type, None);
+        assert_eq!(attached_to.reverse_name, "attached_skills");
+        assert_eq!(attached_to.cardinality, RelationshipCardinality::Many);
+        assert_eq!(
+            attached_to.reverse_cardinality,
+            RelationshipCardinality::Many
+        );
+        assert_eq!(skill.relationships.len(), 2);
         assert!(skill.get_field("description").is_some());
         assert!(skill.get_field("exclusion").is_some());
         assert!(skill.get_field("tool_whitelist").is_some());

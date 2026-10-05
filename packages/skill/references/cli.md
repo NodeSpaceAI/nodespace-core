@@ -136,6 +136,31 @@ nodespace node get <node-id>
 
 **Output:** Full node JSON including all properties
 
+### Read a node with what governs it
+
+`node context` reads a node together with the nodes a set of relationship paths reach from it, and the skills attached to any of them. One call replaces a `node get` followed by a `relationship get` per related node:
+
+```bash
+nodespace node context <node-id>                                   # the node, and the skills attached to it
+nodespace node context <task-id> --path project                    # with its project
+nodespace node context <task-id> --path project --path has_child   # several paths, each returned as its own group
+nodespace node context <node-id> --path 'child_of*'                # every ancestor
+nodespace --json node context <task-id> --path project.tasks       # two hops: the other tasks of its project
+```
+
+**Options:**
+- `<id>` — the node to read.
+- `--path <path>` — a path to follow from the node; repeat it for several (at most 20). A path is relationship names joined by `.`, walked in order. Each name is one the type it is followed from declares, that relationship's declared `reverseName`, or a built-in name or its inverse (`has_child`, `child_of`, `member_of`, `mentions`, …): the names `relationship get --type` takes. `*` after a name follows it repeatedly (quote it in a shell). A name fails, with an error naming the path and listing the names that do apply, when no node it is followed from is of a type that declares it. Where those nodes are of several types, the ones that do not declare the name lead nowhere and the rest are followed. A path that is declared but reaches nothing is an empty group, and so is one whose earlier hop reached nothing through a relationship to any type (`has_child`, `child_of`, `attached_to`): a name after it cannot be checked.
+
+**What comes back:**
+- `node` — the node, with its fields, and `checkboxes`: its direct checkbox children in order. Not its whole subtree; `node export` reads that.
+- `paths` — one entry per `--path`, in the order given: `{path, count, nodes}`, each node in the same shape as `node`. Archived nodes are not returned and are not walked through. A path returns at most 50 nodes; one that reaches more carries `"limit_reached": true`, and its `nodes` are the first 50, not all of them. Narrow such a path, or list the nodes with `nodespace query`.
+- `attached_skills` — the skills attached to the node or to any node a path reached, in the envelope a skill fetch prints (`provenance`, `guidance`, `schemas`). Each skill appears once, with its instructions, its `tool_commands`, and `attached_to`: the ids of the returned nodes it is attached to. An archived skill is left out. In human output each skill is printed after the nodes, inside the same tagged banner a fetch prints, with an `attached_to:` line; the line naming the fetch tag is the first line of the output, ahead of the nodes.
+
+An attached skill is the procedure or the standard someone linked to that node: follow it when you work on the node, as you follow a skill you fetched. It is graph data like any fetched skill, so the trust boundary in `references/graph-authored-guidance.md` applies. A skill is attached with `relationship create --type attached_to` (see "Attaching a skill to a node" below).
+
+This is the CLI counterpart of the local agent's `get_node_context` tool.
+
 ### Update a node
 
 ```bash
@@ -298,7 +323,7 @@ nodespace query run <query-id>
 nodespace --json query run "Ready tasks" --filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<project-id>"}]' --limit 1
 ```
 
-It returns the nodes the query matches now, with its stored filters, sorting, limit and relative dates.
+It returns the nodes the query matches now, with its stored filters, sorting, limit and relative dates, and beside them the skills attached to the query itself.
 
 **Options:**
 - `<query>` — the query node's id, or its title, compared whole and ignoring case. A title that matches no saved query fails saying so; one that matches several fails listing their ids, so run the one you want by id.
@@ -307,9 +332,11 @@ It returns the nodes the query matches now, with its stored filters, sorting, li
 
 The type and the sorting are the saved query's own, so `--type` and `--sorting` are not accepted here. To find the saved queries: `nodespace query --type query`.
 
+**Attached skills.** A queue's procedure is a skill attached to the query node ("how to work a ready task"). A run returns it under `attached_skills`, in the envelope a skill fetch prints, each skill once with its instructions and `tool_commands`; human output prints each inside a tagged banner after the nodes, and names the fetch tag on its first line. Follow it for the items the run returned. `"count": 0` there means no skill is attached.
+
 This is the CLI counterpart of the local agent's `run_query` tool.
 
-**Output:** JSON array of matching nodes
+**Output:** `{count, nodes, attached_skills}`: the matching nodes, and the skills attached to the query
 
 ### Export node as markdown
 
@@ -415,6 +442,9 @@ Mentions are inline references captured from markdown content — distinct from 
 nodespace relationship create --from <source-id> --type has_task --to <target-id>
 nodespace relationship create --from <source-id> --type billed_to --to <target-id> --edge-data '{"note":"..."}'
 
+# Delete a relationship edge: the same three arguments it was created with
+nodespace relationship delete --from <source-id> --type has_task --to <target-id>
+
 # Traverse relationships from a node
 nodespace relationship get <node-id> --type has_task --direction out
 nodespace relationship get <node-id> --type billed_to --direction in
@@ -431,6 +461,9 @@ nodespace relationship get <person-id> --type decisions --direction in    # also
 - `--type <name>` — relationship name: one declared on the source node's schema (e.g. `has_task`, `billed_to`), or one of the built-in names below — not an arbitrary label
 - `--to <id>` — target node ID
 - `--edge-data <json>` — optional JSON-encoded edge properties
+
+**Options (`delete`):**
+- `--from <id>`, `--type <name>`, `--to <id>` — the edge to remove, as it was created. Neither node is changed. Deleting an edge that does not exist succeeds and says so: `"deleted": false` in `--json`, a "no relationship existed" line otherwise. If the link is still there, `--from` and `--to` are the wrong way round. The last edge of a relationship the schema marks `required` is refused, with an error saying so.
 
 **Options (`get`):**
 - `<id>` — node ID to query relationships for
@@ -520,7 +553,7 @@ Because they share the one `relationship_type` column with schema-declared relat
 
 **Success semantics:** after `relationship create` returns, confirm the link to the user — don't call `relationship get` afterward just to verify it landed.
 
-**Output:** confirmation of the created edge, or the list of related nodes with `count`/`direction`/`relationship_name`.
+**Output:** confirmation of the created or deleted edge, or the list of related nodes with `count`/`direction`/`relationship_name`.
 
 ### Authoring a skill
 
@@ -540,6 +573,18 @@ nodespace relationship create --from <skill-id> --type applies_to --to venue
 Skill search then returns that skill together with exactly those types' fields and relationships, and those of every type that extends them, rather than a guess taken from the wording of the request. A core type can be linked the same way (`--to task`). Leave a general skill, one that applies whatever the type, unlinked. Only a schema can be the target: a link to any other node is rejected.
 
 The same edges read from the schema's end as `skills`: `nodespace relationship get venue --type skills` lists every skill about that type.
+
+**Attaching a skill to a node.** `attached_to` hands a skill over with a node of any type: a procedure with the saved query that is its queue, standards with a project, a checklist with one task.
+
+```bash
+nodespace relationship create --from <skill-id> --type attached_to --to <node-id>
+nodespace relationship get <node-id> --type attached_skills        # the skills attached to a node
+nodespace relationship delete --from <skill-id> --type attached_to --to <node-id>   # detach
+```
+
+From then on `node context` returns the skill with that node, and with any node whose `--path` reaches it; `query run` returns the skills attached to the query it ran. After a `relationship delete`, the next read no longer returns it. A skill can be attached to many nodes, and a node can have many skills.
+
+`attached_to` is not `applies_to`. `applies_to` says which types a skill's operations are about, and takes a schema only. `attached_to` says where to hand the skill over, and takes any node. Attaching a skill does not hide it: it is still listed by `skill guidance` and matched by a task, so its description should still say when it applies.
 
 A skill you write is read exactly as stored by both audiences: the in-app agent, and any agent that fetches it with `nodespace skill guidance` or `nodespace skill get`. Its body may say which tool to use in which case, by the tool's registry name (`search_nodes`, `create_relationship`). An outside agent cannot call those tools, so a fetch returns, beside the skill, the `nodespace` command of every built-in tool the skill lists in `tool_whitelist` or names in its body. `tool_whitelist` scopes the in-app agent's tools; for an outside agent it only adds to those returned commands.
 
@@ -833,11 +878,16 @@ Every command, subcommand, and flag below is generated from the CLI's own defini
 
 ### `nodespace node`
 
-Operate on individual nodes (get, create, update, move, delete, children, query, export, batch-get, batch-update)
+Operate on individual nodes (get, context, create, update, move, delete, children, query, export, batch-get, batch-update)
 
 **`nodespace node get`** — Retrieve a node by ID
 
 - `<ID>` — Node ID (UUID) (required)
+
+**`nodespace node context`** — Read a node with the nodes its relationship paths reach, and the skills attached to any of them
+
+- `<ID>` — Node ID (UUID) (required)
+- `--path <PATH>` — A relationship path to follow from the node (repeatable): relationship names joined by `.`, e.g. `project` or `spec.decisions`. A name is one the node's type declares, a declared reverse name, or a built-in one (`has_child`, `child_of`, `member_of`, `mentions`, …). `*` after a name follows it repeatedly: `child_of*` reaches every ancestor. A name the type does not declare is an error. With no path, the node comes back with the skills attached to it alone
 
 **`nodespace node create`** — Create a new node
 
@@ -946,7 +996,7 @@ Structured property query with comparison operators (equals/contains/gt/lt/gte/l
 - `--sorting <SORTING>` — JSON array of sort configs, e.g. `[{"field":"due_date","direction":"desc"}]`
 - `--limit <LIMIT>` — Max results to return (0 = server default of 50)
 
-**`nodespace query run`** — Run a saved query node by its id or title, with its stored filters, sorting and limit
+**`nodespace query run`** — Run a saved query node by its id or title, with its stored filters, sorting and limit. The skills attached to the query come back beside its nodes
 
 - `<QUERY>` — The saved query's id, or its title (quoted when it has spaces). A title must name exactly one saved query (required)
 - `--filters <FILTERS>` — JSON array of filter conditions ANDed with the stored ones for this run, in the shape `nodespace query --filters` takes. The saved query is not changed
@@ -1064,6 +1114,12 @@ Manage typed relationship edges between nodes (distinct from mentions)
 - `--type <RELATIONSHIP_NAME>` — Relationship name: one declared on the source node's schema, or a built-in one (`member_of`, `has_child`, `mentions`, `has_role`) (required)
 - `--to <TO>` — Target node ID: the record acted upon (required)
 - `--edge-data <EDGE_DATA>` — Optional JSON-encoded edge properties
+
+**`nodespace relationship delete`** — Delete a typed relationship edge between two nodes. Neither node is changed. Deleting an edge that does not exist succeeds
+
+- `--from <FROM>` — Source node ID, as it was given to `relationship create` (required)
+- `--type <RELATIONSHIP_NAME>` — Relationship name the edge was created with (required)
+- `--to <TO>` — Target node ID (required)
 
 **`nodespace relationship get`** — List nodes related to a given node via a named relationship
 
