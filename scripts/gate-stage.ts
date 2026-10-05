@@ -48,7 +48,8 @@ export interface StageSpec {
 
 /**
  * The test tiers a change can reach (see gate-scope.ts). The merge gate runs
- * them all; test:changed runs the ones the working diff reaches.
+ * them all; test:changed runs the ones the working diff reaches. `rustLint`
+ * is the merge gate's alone.
  */
 export const TIERS = {
   // Compiles the skill installer script: a nodespace-app-lib unit test asserts the
@@ -73,6 +74,16 @@ export const TIERS = {
     label: "types:check (generated TypeScript drift)",
     command: "bun run types:check",
     timeoutMs: 15 * MINUTE,
+  },
+  // Clippy over the whole workspace, warnings as errors. Merge gate only: a
+  // lint error that lands on main fails `rust:lint` and `quality:fix` for
+  // every checkout after it, and nothing else automated runs clippy. It shares
+  // the gate's target directory, so build scripts, proc macros and llama.cpp's
+  // C/C++ build are already there and only changed crates are checked again.
+  rustLint: {
+    label: "rust:lint (clippy, whole workspace)",
+    command: "bun run rust:lint",
+    timeoutMs: 20 * MINUTE,
   },
   // Compares the per-type reference in the docs repository with the registry
   // and the seeded core schemas (ADR-086). Part of the Rust tier: it runs a

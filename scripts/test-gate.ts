@@ -10,7 +10,7 @@
  *   changes main, and the merge gate tests it. Test the tiers a change
  *   reaches while developing, with `bun run test:changed`.
  * - `merge` (`--mode=merge`, run by `bun run merge <PR#>`): lint, then the
- *   full pyramid — every unit tier, the daemon build, the SKILL.md,
+ *   full pyramid — every unit tier, workspace clippy, the daemon build, the SKILL.md,
  *   generated-TypeScript and node-types.md drift checks, e2e and the
  *   Tauri-seam tests — unscoped, on the PR rebased onto current main. The
  *   only automated test run a change gets.
@@ -310,6 +310,10 @@ await Promise.all([
     // without its regenerated TypeScript fails here in seconds. In this lane
     // because cargo allows one build in a target directory at a time.
     await run(TIERS.typesCheck);
+    // Before the test binaries: clippy only checks, so a lint error fails here
+    // without waiting for the full compile. In this lane because it builds in
+    // the same target directory, and so under the machine slot.
+    await run(TIERS.rustLint);
     await run({ label: "compile Rust test binaries", command: "bun run rust:test:build", timeoutMs: 60 * MINUTE });
     await run({
       label: "compile nodespaced and the Tauri-seam test binary",
