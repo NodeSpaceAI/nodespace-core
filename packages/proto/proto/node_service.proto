@@ -26,6 +26,9 @@ service NodeService {
   // Core CRUD
   rpc CreateNode(CreateNodeRequest) returns (NodeResponse);
   rpc GetNode(GetNodeRequest) returns (NodeResponse);
+  // Read a node with the nodes a set of relationship paths reach from it,
+  // and the skills attached to any node returned.
+  rpc GetNodeContext(GetNodeContextRequest) returns (GetNodeContextResponse);
   rpc UpdateNode(UpdateNodeRequest) returns (NodeResponse);
   rpc DeleteNode(DeleteNodeRequest) returns (DeleteNodeResponse);
   // Explicitly discard a seeded node's user-modified config and/or guidance
@@ -151,7 +154,8 @@ service NodeService {
   // Run a saved query node, named by its id or its title: its stored
   // filters, sorting, limit and relative dates, with any filters given on the
   // request ANDed on for this run. Nothing is written to the query node.
-  rpc RunSavedQuery(RunSavedQueryRequest) returns (NodeListResponse);
+  // The skills attached to the query node come back beside its nodes.
+  rpc RunSavedQuery(RunSavedQueryRequest) returns (RunSavedQueryResponse);
 
   // Playbook: get-workflow-state is the one Play lifecycle operation that
   // needs purpose-built evaluation (it runs the engine's condition logic out
@@ -312,6 +316,60 @@ message SiblingOrder {
 
 message GetNodeRequest {
   string node_id = 1;
+}
+
+// ---------------------------------------------------------------------------
+// GetNodeContext
+// ---------------------------------------------------------------------------
+
+message GetNodeContextRequest {
+  string node_id = 1;
+  // JSON-encoded array of relationship paths (RelationshipPath[]), each an
+  // array of hops: a relationship name, or
+  // {"name": ..., "open_ended": true}. A name may be one the node's type
+  // declares, a declared reverse name, or a built-in one. Unset or "[]"
+  // follows none, and returns the node with the skills attached to it.
+  optional string paths_json = 2;
+}
+
+// A node as a context read returns it: its fields, and its direct checkbox
+// children in sibling order. Never its whole subtree.
+message ContextNode {
+  NodeData node = 1;
+  repeated NodeData checkboxes = 2;
+}
+
+// The nodes one path reaches from the node read.
+message PathNodes {
+  // The path in its dotted form, `*` after an open-ended hop:
+  // "child_of*.project".
+  string path = 1;
+  // Each node once, in the order the walk first reached it. Archived nodes
+  // are neither reached nor walked through.
+  repeated ContextNode nodes = 2;
+  // True when the path reaches more nodes than one read returns: `nodes` is
+  // then the first of them, not all.
+  bool limit_reached = 3;
+}
+
+// A skill attached, through the skill schema's attached_to relationship, to
+// one or more of the nodes a response returned.
+message AttachedSkillEntry {
+  // The skill as GetSkill returns it.
+  SkillGuidanceEntry skill = 1;
+  // The ids of the returned nodes it is attached to.
+  repeated string attached_to = 2;
+}
+
+message GetNodeContextResponse {
+  ContextNode node = 1;
+  // One entry per path asked for, in the order asked.
+  repeated PathNodes paths = 2;
+  // The skills attached to the node and to every node a path reached, each
+  // once. An archived skill is left out.
+  repeated AttachedSkillEntry skills = 3;
+  // The schemas those skills are linked to through applies_to.
+  repeated SchemaGuidanceEntry schemas = 4;
 }
 
 message FindDuplicateRequest {
@@ -893,6 +951,16 @@ message RunSavedQueryRequest {
   uint32 limit = 3;
 }
 
+message RunSavedQueryResponse {
+  repeated NodeData nodes = 1;
+  int32 count = 2;
+  // The skills attached to the query node that ran, each once. An archived
+  // skill is left out.
+  repeated AttachedSkillEntry skills = 3;
+  // The schemas those skills are linked to through applies_to.
+  repeated SchemaGuidanceEntry schemas = 4;
+}
+
 // ---------------------------------------------------------------------------
 // Typed relationships (distinct from mentions — see rel_ops.rs)
 // ---------------------------------------------------------------------------
@@ -951,7 +1019,11 @@ message DeleteRelationshipRequest {
   string target_id = 3;
 }
 
-message DeleteRelationshipResponse {}
+message DeleteRelationshipResponse {
+  // Whether an edge was removed. False when no such edge existed: the delete
+  // still succeeds.
+  bool deleted = 1;
+}
 
 message UpdateRelationshipPropertiesRequest {
   string source_id = 1;

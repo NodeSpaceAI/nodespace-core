@@ -43,7 +43,7 @@ pub use embedding::{ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult
 pub use nodespace_types::SchemaNode;
 pub use nodespace_types::{SchemaChildrenRule, SchemaParentRule};
 pub use nodespace_types::{
-    SkillFields, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_APPLIES_TO, SKILL_NODE_TYPE,
+    SkillFields, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_APPLIES_TO, SKILL_ATTACHED_TO, SKILL_NODE_TYPE,
 };
 
 // The core type registry (ADR-086 §3): the one list of the types NodeSpace

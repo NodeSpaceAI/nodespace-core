@@ -1,4 +1,4 @@
-//! `nodespace relationship ...` — create and query typed relationships.
+//! `nodespace relationship ...` — create, delete and query typed relationships.
 //!
 //! Distinct from `nodespace mention`: mentions are inline references captured
 //! from markdown content, while relationships are named, schema-defined edges
@@ -7,7 +7,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
-use nodespace_daemon::nodespace::{CreateRelationshipRequest, GetRelatedNodesRequest};
+use nodespace_daemon::nodespace::{
+    CreateRelationshipRequest, DeleteRelationshipRequest, GetRelatedNodesRequest,
+};
 use serde_json::json;
 
 use crate::NodeClient;
@@ -31,6 +33,9 @@ impl Direction {
 pub enum RelationshipAction {
     /// Create a typed relationship edge from one node to another.
     Create(CreateArgs),
+    /// Delete a typed relationship edge between two nodes. Neither node is
+    /// changed. Deleting an edge that does not exist succeeds.
+    Delete(DeleteArgs),
     /// List nodes related to a given node via a named relationship.
     Get(GetArgs),
 }
@@ -54,6 +59,19 @@ pub struct CreateArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct DeleteArgs {
+    /// Source node ID, as it was given to `relationship create`.
+    #[arg(long)]
+    pub from: String,
+    /// Relationship name the edge was created with.
+    #[arg(long = "type")]
+    pub relationship_name: String,
+    /// Target node ID.
+    #[arg(long)]
+    pub to: String,
+}
+
+#[derive(Args, Debug)]
 pub struct GetArgs {
     /// Node ID to query relationships for.
     pub id: String,
@@ -69,6 +87,7 @@ pub struct GetArgs {
 pub async fn run(client: &mut NodeClient, action: RelationshipAction, json: bool) -> Result<()> {
     match action {
         RelationshipAction::Create(args) => create(client, args, json).await,
+        RelationshipAction::Delete(args) => delete(client, args, json).await,
         RelationshipAction::Get(args) => get(client, args, json).await,
     }
 }
@@ -119,6 +138,48 @@ async fn create(client: &mut NodeClient, args: CreateArgs, json_out: bool) -> Re
                 edge.source_id, edge.relationship_name, edge.target_id
             );
         }
+    }
+    Ok(())
+}
+
+async fn delete(client: &mut NodeClient, args: DeleteArgs, json_out: bool) -> Result<()> {
+    let response = client
+        .delete_relationship(DeleteRelationshipRequest {
+            source_id: args.from.clone(),
+            relationship_name: args.relationship_name.clone(),
+            target_id: args.to.clone(),
+        })
+        .await
+        .map_err(|status| match status.code() {
+            // The daemon's message says why the edge may not be removed.
+            tonic::Code::InvalidArgument | tonic::Code::FailedPrecondition => {
+                anyhow::anyhow!("{}", status.message())
+            }
+            _ => anyhow::Error::new(status).context("DeleteRelationship RPC failed"),
+        })?
+        .into_inner();
+
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "source_id": args.from,
+                "relationship_name": args.relationship_name,
+                "target_id": args.to,
+                "deleted": response.deleted,
+            }))?
+        );
+    } else if response.deleted {
+        println!(
+            "Deleted relationship: {} --[{}]--> {}",
+            args.from, args.relationship_name, args.to
+        );
+    } else {
+        println!(
+            "No relationship {} --[{}]--> {} existed (no-op). Check which node is --from and \
+             which is --to.",
+            args.from, args.relationship_name, args.to
+        );
     }
     Ok(())
 }

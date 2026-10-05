@@ -264,7 +264,7 @@ pub async fn resolve_path(
 /// The error for a name `node_type` declares in neither direction: it lists
 /// the names that do resolve, so the caller can repair the path from the
 /// error alone.
-async fn undeclared_message(
+pub(crate) async fn undeclared_message(
     node_service: &NodeService,
     node_type: &str,
     name: &str,

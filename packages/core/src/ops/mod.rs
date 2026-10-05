@@ -7,6 +7,8 @@
 pub mod collection_ops;
 pub mod context_ops;
 pub mod entity_types_block;
+#[cfg(feature = "nlp")]
+pub mod node_context_ops;
 pub mod node_ops;
 pub mod path_ops;
 pub mod query_ops;

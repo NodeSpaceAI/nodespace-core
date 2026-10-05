@@ -2707,6 +2707,270 @@ async fn query_run_executes_a_saved_query_by_id_or_title() {
     let _ = shutdown.send(());
 }
 
+/// `node context` takes a node id and any number of dotted paths.
+#[test]
+fn node_context_parses_dotted_paths() {
+    use clap::Parser;
+    let parse = |args: &[&str]| nodespace_cli::Cli::try_parse_from(args);
+
+    assert!(parse(&["nodespace", "node", "context", "n1"]).is_ok());
+    assert!(parse(&[
+        "nodespace",
+        "node",
+        "context",
+        "n1",
+        "--path",
+        "project",
+        "--path",
+        "child_of*.project"
+    ])
+    .is_ok());
+    assert!(parse(&["nodespace", "node", "context"]).is_err());
+    assert!(parse(&["nodespace", "node", "context", "n1", "--path", "a..b"]).is_err());
+    assert!(parse(&[
+        "nodespace",
+        "relationship",
+        "delete",
+        "--from",
+        "a",
+        "--type",
+        "attached_to",
+        "--to",
+        "b"
+    ])
+    .is_ok());
+    assert!(parse(&["nodespace", "relationship", "delete", "--from", "a"]).is_err());
+}
+
+/// A skill attached with `relationship create` comes back from `node context`
+/// for the node it is attached to and for a node whose path reaches that
+/// node, and from `query run` for a saved query it is attached to; after
+/// `relationship delete` it does not.
+#[tokio::test]
+async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() {
+    use nodespace_daemon::nodespace::GetNodeContextRequest;
+
+    let (sock, shutdown, _tempdir, node_service) = spawn_test_daemon_with_seeded_skills().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let create = |node_type: &str, content: &str, properties: serde_json::Value| {
+        let node = nodespace_core::models::Node::new(
+            node_type.to_string(),
+            content.to_string(),
+            properties,
+        );
+        let node_service = node_service.clone();
+        async move { node_service.create_node(node).await.expect("create node") }
+    };
+    let child = |parent: String, node_type: &'static str, content: &'static str| {
+        let node_service = node_service.clone();
+        let create = create(node_type, content, serde_json::json!({}));
+        async move {
+            let id = create.await;
+            node_service
+                .create_relationship(&parent, "has_child", &id, serde_json::json!({}))
+                .await
+                .expect("place the child");
+        }
+    };
+
+    let project = create("project", "Apollo", serde_json::json!({})).await;
+    let task = create("task", "Write the spec", serde_json::json!({})).await;
+    node_service
+        .create_relationship(&project, "tasks", &task, serde_json::json!({}))
+        .await
+        .expect("link the task to its project");
+    child(task.clone(), "checkbox", "- [ ] Draft it").await;
+    let queue = create(
+        "query",
+        "Open tasks",
+        serde_json::json!({ "target_type": "task", "filters": [] }),
+    )
+    .await;
+
+    let skill = |name: &'static str, step: &'static str| {
+        let node =
+            nodespace_core::models::SkillFields::new("When this applies.", &[], 2).into_node(name);
+        let node_service = node_service.clone();
+        async move {
+            let id = node_service.create_node(node).await.expect("the skill");
+            (id, step)
+        }
+    };
+    let (standards, step) = skill("Standards", "Read the project with get_node first.").await;
+    child(standards.clone(), "text", step).await;
+    let (procedure, step) = skill("Implementing", "Tick each item as you go.").await;
+    child(procedure.clone(), "text", step).await;
+
+    for (skill, target) in [(&standards, &project), (&procedure, &queue)] {
+        commands::relationship::run(
+            &mut client,
+            commands::relationship::RelationshipAction::Create(
+                commands::relationship::CreateArgs {
+                    from: skill.clone(),
+                    relationship_name: "attached_to".into(),
+                    to: target.clone(),
+                    edge_data: None,
+                },
+            ),
+            false,
+        )
+        .await
+        .expect("attach the skill");
+    }
+
+    let read = |node_id: &str, paths: serde_json::Value| {
+        let request = GetNodeContextRequest {
+            node_id: node_id.into(),
+            paths_json: Some(paths.to_string()),
+        };
+        let mut raw = raw.clone();
+        async move { raw.get_node_context(request).await.map(|r| r.into_inner()) }
+    };
+
+    // The task, with the path to its project, carries the project's skill.
+    let context = read(&task, serde_json::json!([["project"]]))
+        .await
+        .expect("read the task");
+    let node = context.node.expect("the node");
+    assert_eq!(node.node.expect("node data").id, task);
+    assert_eq!(node.checkboxes.len(), 1);
+    assert_eq!(context.paths.len(), 1);
+    assert_eq!(context.paths[0].path, "project");
+    assert_eq!(
+        context.paths[0].nodes[0].node.as_ref().expect("reached").id,
+        project
+    );
+    assert_eq!(context.skills.len(), 1);
+    let attached = &context.skills[0];
+    assert_eq!(attached.attached_to, std::slice::from_ref(&project));
+    let fetched = attached.skill.as_ref().expect("the skill");
+    assert_eq!(fetched.name, "Standards");
+    assert!(
+        fetched
+            .instructions
+            .contains("Read the project with get_node first."),
+        "{}",
+        fetched.instructions
+    );
+    // As a skill fetch returns it: with the command of each tool it names.
+    assert!(
+        fetched
+            .tool_commands
+            .iter()
+            .any(|entry| entry.tool == "get_node" && entry.command == "nodespace node get"),
+        "{:?}",
+        fetched.tool_commands
+    );
+
+    // Without the path the task has no skill of its own.
+    let alone = read(&task, serde_json::json!([])).await.expect("read");
+    assert!(alone.paths.is_empty() && alone.skills.is_empty());
+
+    // A name the task's type does not declare is refused, naming the path.
+    let refused = read(&task, serde_json::json!([["project", "sponsor"]]))
+        .await
+        .expect_err("an undeclared name");
+    assert_eq!(refused.code(), Code::InvalidArgument);
+    assert!(
+        refused.message().contains("path 'project.sponsor'")
+            && refused.message().contains("'sponsor' is not declared"),
+        "{}",
+        refused.message()
+    );
+
+    // The queue hands over its procedure, once, beside its nodes.
+    let run = raw
+        .clone()
+        .run_saved_query(RunSavedQueryRequest {
+            query: "Open tasks".into(),
+            filters_json: None,
+            limit: 0,
+        })
+        .await
+        .expect("run the queue")
+        .into_inner();
+    assert_eq!(run.count, 1);
+    assert_eq!(run.skills.len(), 1);
+    assert_eq!(run.skills[0].skill.as_ref().unwrap().name, "Implementing");
+    assert_eq!(run.skills[0].attached_to, std::slice::from_ref(&queue));
+
+    for json in [true, false] {
+        commands::node::run(
+            &mut client,
+            commands::node::NodeAction::Context(commands::node::ContextArgs {
+                id: task.clone(),
+                paths: vec!["project".parse().unwrap(), "has_child".parse().unwrap()],
+            }),
+            json,
+        )
+        .await
+        .expect("node context");
+        commands::query::run(
+            &mut client,
+            commands::query::QueryArgs {
+                command: Some(commands::query::QueryCommand::Run(
+                    commands::query::RunArgs {
+                        query: "Open tasks".into(),
+                        filters: None,
+                        limit: 0,
+                    },
+                )),
+                target_type: None,
+                filters: None,
+                sorting: None,
+                limit: 0,
+            },
+            json,
+        )
+        .await
+        .expect("query run");
+    }
+    let unknown = commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Context(commands::node::ContextArgs {
+            id: task.clone(),
+            paths: vec!["sponsor".parse().unwrap()],
+        }),
+        false,
+    )
+    .await
+    .expect_err("an undeclared path fails the command");
+    assert!(
+        unknown.to_string().contains("path 'sponsor'"),
+        "the error must name the path: {unknown}"
+    );
+
+    // Detached, the skill is gone from the next read of that node.
+    for json in [true, false] {
+        commands::relationship::run(
+            &mut client,
+            commands::relationship::RelationshipAction::Delete(
+                commands::relationship::DeleteArgs {
+                    from: standards.clone(),
+                    relationship_name: "attached_to".into(),
+                    to: project.clone(),
+                },
+            ),
+            json,
+        )
+        .await
+        .expect("detach the skill (the second delete finds nothing and still succeeds)");
+    }
+    let context = read(&task, serde_json::json!([["project"]]))
+        .await
+        .expect("read the task again");
+    assert_eq!(context.paths[0].nodes.len(), 1);
+    assert!(context.skills.is_empty());
+
+    let _ = shutdown.send(());
+}
+
 #[tokio::test]
 async fn relationship_create_and_get() {
     let (sock, shutdown, _tempdir) = spawn_test_daemon().await;

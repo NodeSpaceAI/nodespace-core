@@ -4,9 +4,10 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::nodespace::{
     CreateNodeRequest, DeleteNodeRequest, ExportMarkdownRequest, GetChildrenRequest,
-    GetNodeRequest, GetNodesBatchRequest, MoveNodeRequest, NodeSortOrder, QueryNodesSimpleRequest,
-    ReorderNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
+    GetNodeContextRequest, GetNodeRequest, GetNodesBatchRequest, MoveNodeRequest, NodeSortOrder,
+    QueryNodesSimpleRequest, ReorderNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
 };
+use nodespace_types::RelationshipPath;
 use serde_json::json;
 
 use crate::output;
@@ -16,6 +17,9 @@ use crate::NodeClient;
 pub enum NodeAction {
     /// Retrieve a node by ID.
     Get(GetArgs),
+    /// Read a node with the nodes its relationship paths reach, and the
+    /// skills attached to any of them.
+    Context(ContextArgs),
     /// Create a new node.
     Create(CreateArgs),
     /// Update an existing node's content and/or properties.
@@ -49,6 +53,25 @@ pub enum NodeAction {
 pub struct GetArgs {
     /// Node ID (UUID).
     pub id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct ContextArgs {
+    /// Node ID (UUID).
+    pub id: String,
+    /// A relationship path to follow from the node (repeatable): relationship
+    /// names joined by `.`, e.g. `project` or `spec.decisions`. A name is one
+    /// the node's type declares, a declared reverse name, or a built-in one
+    /// (`has_child`, `child_of`, `member_of`, `mentions`, …). `*` after a name
+    /// follows it repeatedly: `child_of*` reaches every ancestor. A name the
+    /// type does not declare is an error. With no path, the node comes back
+    /// with the skills attached to it alone.
+    #[arg(long = "path", value_name = "PATH", value_parser = parse_path)]
+    pub paths: Vec<RelationshipPath>,
+}
+
+fn parse_path(s: &str) -> Result<RelationshipPath, String> {
+    s.parse()
 }
 
 #[derive(Args, Debug)]
@@ -305,6 +328,7 @@ pub struct BatchUpdateArgs {
 pub async fn run(client: &mut NodeClient, action: NodeAction, json: bool) -> Result<()> {
     match action {
         NodeAction::Get(args) => get(client, args, json).await,
+        NodeAction::Context(args) => context(client, args, json).await,
         NodeAction::Create(args) => create(client, args, json).await,
         NodeAction::Update(args) => update(client, args, json).await,
         NodeAction::SetStatus(args) => set_status(client, args, json).await,
@@ -327,6 +351,25 @@ async fn get(client: &mut NodeClient, args: GetArgs, json: bool) -> Result<()> {
 
     let node = response.node_data.context("daemon returned no node_data")?;
     output::print_node(&node, json)
+}
+
+async fn context(client: &mut NodeClient, args: ContextArgs, json: bool) -> Result<()> {
+    let response = client
+        .get_node_context(GetNodeContextRequest {
+            node_id: args.id,
+            paths_json: Some(serde_json::to_string(&args.paths)?),
+        })
+        .await
+        .map_err(|status| match status.code() {
+            // The daemon's message names the path, or the node, at fault.
+            tonic::Code::InvalidArgument | tonic::Code::NotFound => {
+                anyhow::anyhow!("{}", status.message())
+            }
+            _ => anyhow::Error::new(status).context("GetNodeContext RPC failed"),
+        })?
+        .into_inner();
+
+    output::print_node_context(&response, json)
 }
 
 async fn create(client: &mut NodeClient, args: CreateArgs, json: bool) -> Result<()> {

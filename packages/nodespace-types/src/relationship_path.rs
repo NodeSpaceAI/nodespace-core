@@ -144,6 +144,39 @@ impl RelationshipPath {
     }
 }
 
+impl std::str::FromStr for RelationshipPath {
+    type Err = String;
+
+    /// The dotted form [`Display`](std::fmt::Display) writes: relationship
+    /// names joined by `.`, with `*` after an open-ended hop
+    /// (`child_of*.project`).
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("a path needs at least one relationship name".to_string());
+        }
+        text.split('.')
+            .map(|segment| {
+                let segment = segment.trim();
+                let (name, open_ended) = match segment.strip_suffix('*') {
+                    Some(name) => (name, true),
+                    None => (segment, false),
+                };
+                if name.is_empty() {
+                    return Err(format!(
+                        "'{text}' has an empty hop: a path is relationship names joined by '.'"
+                    ));
+                }
+                Ok(RelationshipHop {
+                    name: name.to_string(),
+                    open_ended,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Self)
+    }
+}
+
 impl std::fmt::Display for RelationshipPath {
     /// The dotted form an author writes in a condition, with `*` after an
     /// open-ended hop: `child_of*.project`.
@@ -266,6 +299,25 @@ mod tests {
             path
         );
         assert_eq!(path.to_string(), "child_of*.project");
+    }
+
+    #[test]
+    fn the_dotted_form_parses_back_to_the_path_it_was_written_from() {
+        let path = RelationshipPath(vec![
+            RelationshipHop::open_ended("child_of"),
+            RelationshipHop::fixed("project"),
+        ]);
+        assert_eq!("child_of*.project".parse::<RelationshipPath>(), Ok(path));
+        assert_eq!(
+            " project ".parse::<RelationshipPath>(),
+            Ok(RelationshipPath::from_names(["project"]))
+        );
+        for bad in ["", "  ", "project.", ".project", "a..b", "*"] {
+            assert!(
+                bad.parse::<RelationshipPath>().is_err(),
+                "'{bad}' must be rejected"
+            );
+        }
     }
 
     #[test]

@@ -14,7 +14,7 @@ use nodespace_core::agent_params::{SearchNodesParams, SearchSemanticParams};
 use nodespace_core::behaviors::ToolOrigin;
 use nodespace_core::models::conflict::{ConflictKind, ConflictStatus, Resolution};
 use nodespace_core::models::CoreNodeType;
-use nodespace_core::ops::{node_ops, query_ops, rel_ops, search_ops, OpsError};
+use nodespace_core::ops::{node_context_ops, node_ops, query_ops, rel_ops, search_ops, OpsError};
 use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
 use serde::Deserialize;
@@ -262,6 +262,27 @@ struct RunQueryParams {
     pub filters: Vec<query_ops::AgentFilterItem>,
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+/// Parameters for the get_node_context tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GetNodeContextParams {
+    #[serde(alias = "node_id")]
+    pub id: String,
+    #[serde(default)]
+    pub paths: Vec<nodespace_core::services::RelationshipPath>,
+}
+
+/// Parameters for the delete_relationship tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeleteRelationshipParams {
+    pub from_id: String,
+    pub to_id: String,
+    // The alias `create_relationship` takes, for the same reason.
+    #[serde(alias = "relation_type")]
+    pub relationship_type: String,
 }
 
 /// Parameters for the dismiss_conflict tool
@@ -818,6 +839,43 @@ fn search_result_summary(node: &Value) -> Value {
         }
     }
     summary
+}
+
+/// A context read's node as a search row, with the text of its checkbox
+/// items under `checkboxes` when it has any.
+async fn context_node_summary(
+    node_service: &NodeService,
+    node: node_context_ops::ContextNode,
+) -> Result<Value, OpsError> {
+    let typed = node_ops::nodes_to_typed_values(node_service, vec![node.node]).await?;
+    let mut summary = typed
+        .first()
+        .map(search_result_summary)
+        .ok_or_else(|| OpsError::Internal("node conversion returned no value".to_string()))?;
+    if !node.checkboxes.is_empty() {
+        summary["checkboxes"] = node
+            .checkboxes
+            .iter()
+            .map(|checkbox| json!(checkbox.content))
+            .collect();
+    }
+    Ok(summary)
+}
+
+/// A skill attached to a node a read returned: what it is, the returned nodes
+/// it is attached to, and its procedure as stored.
+fn attached_skill_summary(attached: &node_context_ops::AttachedSkill) -> Value {
+    json!({
+        "id": node_uri(&attached.skill.id),
+        "name": attached.skill.name,
+        "description": attached.skill.description,
+        "attached_to": attached
+            .attached_to
+            .iter()
+            .map(|id| node_uri(id))
+            .collect::<Vec<_>>(),
+        "instructions": attached.skill.instructions,
+    })
 }
 
 /// `resolve_query`'s answer for the one node a request resolved to, built from
@@ -2277,7 +2335,9 @@ fn def_run_query() -> ToolDefinition {
             user refers to a saved query; to search by title, type or field values yourself, use \
             search_nodes. 'filters' narrows this one run (they are ANDed with the stored filters) \
             and never changes the saved query. An error naming several ids means more than one \
-            saved query has that title: run the one you want by its id. Read-only."
+            saved query has that title: run the one you want by its id. A 'skills' entry in \
+            the result is a procedure attached to the query: follow it when working on the \
+            nodes returned. Read-only."
             .into(),
         parameters_schema: json!({
             "type": "object",
@@ -2297,6 +2357,64 @@ fn def_run_query() -> ToolDefinition {
                 }
             },
             "required": ["query"]
+        }),
+    }
+}
+
+fn def_get_node_context() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_node_context".into(),
+        description: "Read one node together with the nodes related to it and the skills \
+            attached to any of them. 'paths' names what to follow from the node; each returned \
+            node comes with its fields and its checkbox items. A skill in 'skills' is a \
+            procedure or a standard someone attached to the node it lists under 'attached_to': \
+            follow it when working on that node. Use get_node for a node on its own. Read-only."
+            .into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Id of the node to read. Copied exactly from a tool result."
+                },
+                "paths": {
+                    "type": "array",
+                    "description": "Relationship paths to follow from the node. Each path is an array of relationship names walked in order: [\"project\"] reaches the node's project, [\"project\", \"tasks\"] the tasks of that project. A name is one the type of the node it is followed from declares, that relationship's reverse name, or a built-in one: has_child, child_of, member_of, mentions. A name that does not apply is rejected with an error listing the ones that do. Omit to read the node with the skills attached to it alone.",
+                    "items": {
+                        "type": "array",
+                        "items": { "type": "string" }
+                    }
+                }
+            },
+            "required": ["id"]
+        }),
+    }
+}
+
+fn def_delete_relationship() -> ToolDefinition {
+    ToolDefinition {
+        name: "delete_relationship".into(),
+        description: "Remove a named relationship between two existing records, given both ids: \
+            the reverse of create_relationship. Both records stay as they are; only the link \
+            goes. Use this to unlink, detach or unassign one record from another."
+            .into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "from_id": {
+                    "type": "string",
+                    "description": "Id of the record the relationship runs from, as it was given to create_relationship. Copied exactly from a tool result."
+                },
+                "to_id": {
+                    "type": "string",
+                    "description": "Id of the record the relationship runs to. Copied exactly from a tool result."
+                },
+                "relationship_type": {
+                    "type": "string",
+                    "description": "The relation's name, as it was created: a relationship declared on the source record's own type, or one of member_of, has_child, mentions, has_role."
+                }
+            },
+            "required": ["from_id", "to_id", "relationship_type"]
         }),
     }
 }
@@ -2594,6 +2712,8 @@ pub enum Tool {
     GetPlay,
     UpdatePlay,
     RunQuery,
+    GetNodeContext,
+    DeleteRelationship,
 }
 
 impl Tool {
@@ -2630,6 +2750,8 @@ impl Tool {
         Tool::GetPlay,
         Tool::UpdatePlay,
         Tool::RunQuery,
+        Tool::GetNodeContext,
+        Tool::DeleteRelationship,
     ];
 
     /// The number of variants, counted by walking every one of them.
@@ -2670,7 +2792,9 @@ impl Tool {
                 Tool::GetWorkflowState => Tool::GetPlay,
                 Tool::GetPlay => Tool::UpdatePlay,
                 Tool::UpdatePlay => Tool::RunQuery,
-                Tool::RunQuery => break,
+                Tool::RunQuery => Tool::GetNodeContext,
+                Tool::GetNodeContext => Tool::DeleteRelationship,
+                Tool::DeleteRelationship => break,
             };
         }
         n
@@ -2721,6 +2845,8 @@ impl Tool {
                 Tool::GetPlay => 21,
                 Tool::UpdatePlay => 22,
                 Tool::RunQuery => 23,
+                Tool::GetNodeContext => 24,
+                Tool::DeleteRelationship => 25,
             };
             assert!(expected == i, "Tool::ALL lists a variant out of order");
             i += 1;
@@ -2758,6 +2884,8 @@ impl Tool {
             Tool::GetPlay => "get_play",
             Tool::UpdatePlay => "update_play",
             Tool::RunQuery => "run_query",
+            Tool::GetNodeContext => "get_node_context",
+            Tool::DeleteRelationship => "delete_relationship",
         }
     }
 
@@ -2791,6 +2919,8 @@ impl Tool {
             Tool::GetPlay => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9616",
             Tool::UpdatePlay => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9617",
             Tool::RunQuery => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9618",
+            Tool::GetNodeContext => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9619",
+            Tool::DeleteRelationship => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a961a",
         }
     }
 
@@ -2829,6 +2959,8 @@ impl Tool {
             Tool::GetPlay => Some("nodespace node get"),
             Tool::UpdatePlay => Some("nodespace node update"),
             Tool::RunQuery => Some("nodespace query run"),
+            Tool::GetNodeContext => Some("nodespace node context"),
+            Tool::DeleteRelationship => Some("nodespace relationship delete"),
         }
     }
 
@@ -2873,6 +3005,8 @@ impl Tool {
             Tool::GetPlay => def_get_play(),
             Tool::UpdatePlay => def_update_play(),
             Tool::RunQuery => def_run_query(),
+            Tool::GetNodeContext => def_get_node_context(),
+            Tool::DeleteRelationship => def_delete_relationship(),
         }
     }
 
@@ -2907,6 +3041,8 @@ impl Tool {
             Tool::GetPlay => "play lookup",
             Tool::UpdatePlay => "play update",
             Tool::RunQuery => "saved query run",
+            Tool::GetNodeContext => "node context lookup",
+            Tool::DeleteRelationship => "relationship removal",
         }
     }
 
@@ -2930,7 +3066,8 @@ impl Tool {
             | Tool::GetConflict
             | Tool::GetWorkflowState
             | Tool::GetPlay
-            | Tool::RunQuery => WriteSemantics::Read,
+            | Tool::RunQuery
+            | Tool::GetNodeContext => WriteSemantics::Read,
 
             // Idempotent writes. Setting a node to the same content, or a task
             // to the same status, twice is a no-op — the second call is not a
@@ -2946,11 +3083,15 @@ impl Tool {
             //
             // update_play replaces a play's rules whole and sets its switch, so
             // the same call twice leaves the same play.
+            //
+            // delete_relationship removes one edge, and removing an edge that
+            // is already gone succeeds and changes nothing.
             Tool::UpdateNode
             | Tool::UpdateTaskStatus
             | Tool::DismissConflict
             | Tool::AdoptExistingConflict
-            | Tool::UpdatePlay => WriteSemantics::IdempotentWrite,
+            | Tool::UpdatePlay
+            | Tool::DeleteRelationship => WriteSemantics::IdempotentWrite,
 
             // Not idempotent, but not guarded either. A repeated `add_fields`
             // or `add_relationships` rejects the field as already present, and
@@ -2995,7 +3136,9 @@ impl Tool {
                 Some(WrittenNode::Reported("id"))
             }
             Tool::CreateSchema | Tool::UpdateSchema => Some(WrittenNode::Reported("schemaId")),
-            Tool::CreateRelationship => Some(WrittenNode::Anchor("from_id")),
+            Tool::CreateRelationship | Tool::DeleteRelationship => {
+                Some(WrittenNode::Anchor("from_id"))
+            }
             Tool::CreateNodesFromMarkdown => Some(WrittenNode::Anchor("root_id")),
             Tool::MergeConflict => Some(WrittenNode::Anchor("survivor_id")),
             Tool::DeleteNode | Tool::DismissConflict | Tool::AdoptExistingConflict => None,
@@ -3010,7 +3153,8 @@ impl Tool {
             | Tool::GetConflict
             | Tool::GetWorkflowState
             | Tool::GetPlay
-            | Tool::RunQuery => None,
+            | Tool::RunQuery
+            | Tool::GetNodeContext => None,
         }
     }
 
@@ -3072,7 +3216,11 @@ impl Tool {
             | Tool::GetWorkflowState
             | Tool::GetPlay
             | Tool::UpdatePlay
-            | Tool::RunQuery => false,
+            | Tool::RunQuery
+            | Tool::GetNodeContext => false,
+            // Removes one link and leaves both records as they were; the
+            // same link is put back with one create_relationship call.
+            Tool::DeleteRelationship => false,
         }
     }
 
@@ -3097,7 +3245,8 @@ impl Tool {
             | Tool::SearchSemantic
             | Tool::GetNode
             | Tool::GetRelatedNodes
-            | Tool::RunQuery => true,
+            | Tool::RunQuery
+            | Tool::GetNodeContext => true,
             // get_conflict/list_conflicts return conflict-journal records, not
             // graph nodes — a conflict id is not the kind of entity "that" can
             // resolve against across turns.
@@ -3120,7 +3269,8 @@ impl Tool {
             | Tool::DismissConflict
             | Tool::AdoptExistingConflict
             | Tool::MergeConflict
-            | Tool::UpdatePlay => false,
+            | Tool::UpdatePlay
+            | Tool::DeleteRelationship => false,
         }
     }
 
@@ -3165,7 +3315,9 @@ impl Tool {
             | Tool::GetWorkflowState
             | Tool::GetPlay
             | Tool::UpdatePlay
-            | Tool::RunQuery => false,
+            | Tool::RunQuery
+            | Tool::GetNodeContext
+            | Tool::DeleteRelationship => false,
         }
     }
 
@@ -3208,6 +3360,8 @@ impl Tool {
             | Tool::UpdatePlay => None,
             // Names a saved query, whose type is the query's own to state.
             Tool::RunQuery => None,
+            // Take node ids, and name relationships, not types.
+            Tool::GetNodeContext | Tool::DeleteRelationship => None,
         }
     }
 
@@ -3234,7 +3388,11 @@ impl Tool {
             | Tool::GetWorkflowState => None,
             // Reads by id. A held turn may follow a relationship from one of
             // its records to a related record of another type.
-            Tool::GetNode | Tool::GetRelatedNodes | Tool::GetConflict | Tool::GetPlay => None,
+            Tool::GetNode
+            | Tool::GetRelatedNodes
+            | Tool::GetConflict
+            | Tool::GetPlay
+            | Tool::GetNodeContext => None,
             // A read of whatever a saved query selects: it changes no node.
             Tool::RunQuery => None,
             // Writes a play and nothing else: its own type check refuses any
@@ -3246,6 +3404,7 @@ impl Tool {
             // is a separate decision.
             Tool::UpdateTaskStatus
             | Tool::CreateRelationship
+            | Tool::DeleteRelationship
             | Tool::DismissConflict
             | Tool::AdoptExistingConflict
             | Tool::MergeConflict => None,
@@ -4894,7 +5053,7 @@ impl GraphToolExecutor {
             })?;
         let ns = self.node_service()?;
 
-        let (output, limit) = match query_ops::run_saved_query_excluding(
+        let (output, limit, query_id) = match query_ops::run_saved_query_excluding(
             &ns,
             query_ops::RunSavedQueryInput {
                 query: strip_node_uri(&params.query).to_string(),
@@ -4922,6 +5081,14 @@ impl GraphToolExecutor {
 
         let nodes: Vec<Value> = output.nodes.iter().map(search_result_summary).collect();
         let mut result = json!({ "count": nodes.len(), "nodes": nodes });
+        // What the query hands over to whoever works its result: a queue's
+        // procedure is a skill attached to the query node.
+        let attached = node_context_ops::attached_skills(&ns, std::slice::from_ref(&query_id))
+            .await
+            .map_err(|e| ops_error_to_tool(e, "run_query"))?;
+        if !attached.skills.is_empty() {
+            result["skills"] = attached.skills.iter().map(attached_skill_summary).collect();
+        }
         // A full page is not a total: said on the result, so a count read
         // off it is not reported as how many nodes the query matches.
         if output.count >= limit {
@@ -4931,6 +5098,128 @@ impl GraphToolExecutor {
             ));
         }
         Ok(ok_result(tool_call_id, "run_query", result))
+    }
+
+    /// Read a node with the nodes its paths reach and the skills attached to
+    /// any of them (ADR-094 §2 and §3).
+    async fn exec_get_node_context(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: GetNodeContextParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "get_node_context".to_string(),
+                reason: e.to_string(),
+            })?;
+        let ns = self.node_service()?;
+
+        let context = match node_context_ops::read_node_context(
+            &ns,
+            node_context_ops::NodeContextInput {
+                node_id: strip_node_uri(&params.id).to_string(),
+                paths: params.paths,
+            },
+        )
+        .await
+        {
+            Ok(context) => context,
+            // A node that does not exist, or a path name that does not apply,
+            // is the model's to read and correct: the message lists the names
+            // that do apply.
+            Err(e @ (OpsError::NotFound { .. } | OpsError::InvalidParams(_))) => {
+                return Ok(error_result(
+                    tool_call_id,
+                    "get_node_context",
+                    &e.to_string(),
+                ));
+            }
+            Err(e) => return Err(ops_error_to_tool(e, "get_node_context")),
+        };
+
+        let node = context_node_summary(&ns, context.node)
+            .await
+            .map_err(|e| ops_error_to_tool(e, "get_node_context"))?;
+        let mut paths = Vec::with_capacity(context.paths.len());
+        for reached in context.paths {
+            let mut nodes = Vec::with_capacity(reached.nodes.len());
+            for node in reached.nodes {
+                nodes.push(
+                    context_node_summary(&ns, node)
+                        .await
+                        .map_err(|e| ops_error_to_tool(e, "get_node_context"))?,
+                );
+            }
+            let mut group = json!({
+                "path": reached.path,
+                "count": nodes.len(),
+                "nodes": nodes,
+            });
+            // A full page is not every node: said on the group, so its
+            // count is not reported as how many nodes the path reaches.
+            if reached.limit_reached {
+                group["limit_reached"] = json!(format!(
+                    "These are the first {} nodes this path reaches; it reaches more.",
+                    node_context_ops::MAX_NODES_PER_PATH
+                ));
+            }
+            paths.push(group);
+        }
+        let skills: Vec<Value> = context
+            .attached
+            .skills
+            .iter()
+            .map(attached_skill_summary)
+            .collect();
+
+        Ok(ok_result(
+            tool_call_id,
+            "get_node_context",
+            json!({ "node": node, "paths": paths, "skills": skills }),
+        ))
+    }
+
+    async fn exec_delete_relationship(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: DeleteRelationshipParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "delete_relationship".to_string(),
+                reason: e.to_string(),
+            })?;
+        let ns = self.node_service()?;
+
+        let source_id = strip_node_uri(&params.from_id).to_string();
+        let target_id = strip_node_uri(&params.to_id).to_string();
+        let deleted = rel_ops::delete_relationship(
+            &ns,
+            rel_ops::DeleteRelInput {
+                source_id: source_id.clone(),
+                relationship_name: params.relationship_type.clone(),
+                target_id: target_id.clone(),
+            },
+        )
+        .await
+        .map_err(|e| ops_error_to_tool(e, "delete_relationship"))?;
+
+        let mut result = json!({
+            "from_id": node_uri(&source_id),
+            "to_id": node_uri(&target_id),
+            "type": params.relationship_type,
+            "deleted": deleted,
+        });
+        // Nothing was removed: said on the result, so the user is not told a
+        // link is gone when it is still there under the other orientation.
+        if !deleted {
+            result["note"] = json!(
+                "No such relationship existed, so nothing was removed. If the link is still \
+                 there, from_id and to_id may be the wrong way round: from_id is the record the \
+                 relationship was created from."
+            );
+        }
+        Ok(ok_result(tool_call_id, "delete_relationship", result))
     }
 
     async fn exec_update_play(
@@ -5482,6 +5771,8 @@ impl AgentToolExecutor for GraphToolExecutor {
             Tool::GetPlay => self.exec_get_play(&tool_call_id, args).await,
             Tool::UpdatePlay => self.exec_update_play(&tool_call_id, args).await,
             Tool::RunQuery => self.exec_run_query(&tool_call_id, args).await,
+            Tool::GetNodeContext => self.exec_get_node_context(&tool_call_id, args).await,
+            Tool::DeleteRelationship => self.exec_delete_relationship(&tool_call_id, args).await,
         }
     }
 
@@ -6713,7 +7004,7 @@ mod tests {
     fn definitions_count() {
         // Derived from the registry: one definition per `Tool::ALL` entry.
         assert_eq!(all_tool_definitions().len(), Tool::ALL.len());
-        assert_eq!(all_tool_definitions().len(), 24);
+        assert_eq!(all_tool_definitions().len(), 26);
     }
 
     #[test]
@@ -6799,6 +7090,7 @@ mod tests {
                 "get_node",
                 "get_related_nodes",
                 "run_query",
+                "get_node_context",
             ]
         );
     }

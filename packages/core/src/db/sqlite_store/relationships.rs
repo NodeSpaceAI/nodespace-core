@@ -2431,6 +2431,60 @@ impl SqliteStore {
         Ok(targets)
     }
 
+    /// The sources of every `relationship_type` edge arriving at one of
+    /// `target_ids`, keyed by target, in edge order: the inbound counterpart
+    /// of [`Self::get_edge_targets_by_source`]. A target with no such edge
+    /// has no entry.
+    pub async fn get_edge_sources_by_target(
+        &self,
+        target_ids: &[String],
+        relationship_type: &str,
+    ) -> Result<HashMap<String, Vec<String>>> {
+        const ID_CHUNK: usize = 900;
+        let mut sources: HashMap<String, Vec<String>> = HashMap::new();
+        for chunk in target_ids.chunks(ID_CHUNK) {
+            let placeholders: Vec<String> = (2..chunk.len() + 2).map(|i| format!("?{i}")).collect();
+            let sql = format!(
+                "SELECT out_node, in_node FROM relationship \
+                 WHERE relationship_type = ?1 AND out_node IN ({}) ORDER BY rowid",
+                placeholders.join(", ")
+            );
+            let mut params = vec![libsql::Value::Text(relationship_type.to_string())];
+            params.extend(chunk.iter().map(|id| libsql::Value::Text(id.clone())));
+            let mut rows = self
+                .read()
+                .await?
+                .query(&sql, params)
+                .await
+                .context("Failed to query edge sources by target")?;
+            while let Some(row) = rows.next().await? {
+                let target: String = row.get(0)?;
+                let source: String = row.get(1)?;
+                sources.entry(target).or_default().push(source);
+            }
+        }
+        Ok(sources)
+    }
+
+    /// How many edges join `a` and `b`, in either direction and under any
+    /// relationship name.
+    pub async fn count_edges_between(&self, a: &str, b: &str) -> Result<i64> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                "SELECT COUNT(*) FROM relationship \
+                 WHERE (in_node = ?1 AND out_node = ?2) OR (in_node = ?2 AND out_node = ?1)",
+                libsql::params![a.to_string(), b.to_string()],
+            )
+            .await
+            .context("Failed to count the edges between two nodes")?;
+        match rows.next().await? {
+            Some(row) => Ok(row.get(0)?),
+            None => Ok(0),
+        }
+    }
+
     pub async fn get_schema_declarations(
         &self,
         schema_id: &str,

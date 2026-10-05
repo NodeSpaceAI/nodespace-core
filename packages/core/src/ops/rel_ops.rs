@@ -104,17 +104,32 @@ pub async fn create_relationship(
     })
 }
 
-/// Delete a relationship edge. Idempotent.
+/// Delete a relationship edge. Idempotent: deleting an edge that does not
+/// exist succeeds. Returns whether an edge was removed, so a caller does not
+/// report a deletion that did not happen (the endpoints given the wrong way
+/// round, say).
+///
+/// Read as the number of edges joining the two nodes before and after, which
+/// holds however the name was spelled: a delete through an `in` declaration's
+/// name removes an edge stored under the forward name with its ends swapped.
 pub async fn delete_relationship(
     node_service: &Arc<NodeService>,
     input: DeleteRelInput,
-) -> Result<(), OpsError> {
+) -> Result<bool, OpsError> {
+    let edges = || async {
+        node_service
+            .store()
+            .count_edges_between(&input.source_id, &input.target_id)
+            .await
+            .map_err(|e| OpsError::Internal(format!("Failed to count relationship edges: {e}")))
+    };
+    let before = edges().await?;
     node_service
         .delete_relationship(&input.source_id, &input.relationship_name, &input.target_id)
         .await
         .map_err(OpsError::from)?;
 
-    Ok(())
+    Ok(edges().await? < before)
 }
 
 /// Replace the edge attributes on an existing typed relationship edge.
