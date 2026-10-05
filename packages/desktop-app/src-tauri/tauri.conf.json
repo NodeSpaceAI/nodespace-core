@@ -30,7 +30,8 @@
     "active": true,
     "targets": "all",
     "macOS": {
-      "minimumSystemVersion": "14.0"
+      "minimumSystemVersion": "14.0",
+      "infoPlist": "Info.product.plist"
     },
     "icon": [
       "icons/32x32.png",
