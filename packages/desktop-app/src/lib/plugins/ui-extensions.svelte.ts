@@ -12,11 +12,10 @@
  *
  * A throwing `when()` counts as false and is logged once per contribution key
  * (ADR-082 §3.4); it is logged again only after it has returned normally in
- * between. A tree-item action's `when(item)` is asked once per item, so its
- * rule holds per item: a throw is logged once for that contribution and item,
- * and again only after it has returned normally for that same item. A
- * predicate that fails for some items and not others then logs each failing
- * item once, rather than on every re-evaluation of the tree.
+ * between. A tree-item action's `when(item)` is asked once per item, so it
+ * "returns normally" once it has done so for every item it threw for: a
+ * predicate that fails for some items and not others is logged once, not on
+ * every re-evaluation of the tree, and neither is one that fails for them all.
  */
 
 import {
@@ -39,24 +38,30 @@ import { createLogger } from '$lib/utils/logger';
 const log = createLogger('UiExtensions');
 
 /**
- * Contributions whose `when()` threw and has not returned normally since: by
- * contribution key, and for a tree-item action by key and item.
+ * By contribution key, the items its `when()` threw for and has not returned
+ * normally for since; `''` stands for a contribution asked about no item. A key
+ * is present exactly while its set is non-empty, so its warning is armed again
+ * once the key is gone.
  */
-const warned = new Set<string>();
+const failing = new Map<string, Set<string>>();
 
 /**
  * Runs the `when()` of the contribution keyed `key`, asked about the tree item
  * `nodeId` when there is one; a throw counts as false.
  */
 function holds(key: string, when: () => unknown, nodeId?: string): boolean {
-  const warnKey = nodeId === undefined ? key : `${key}\n${nodeId}`;
+  const item = nodeId ?? '';
   try {
     const active = Boolean(when());
-    warned.delete(warnKey);
+    const items = failing.get(key);
+    if (items?.delete(item) && items.size === 0) failing.delete(key);
     return active;
   } catch (error) {
-    if (!warned.has(warnKey)) {
-      warned.add(warnKey);
+    const items = failing.get(key);
+    if (items) {
+      items.add(item);
+    } else {
+      failing.set(key, new Set([item]));
       log.warn('Contribution when() threw; treating it as false', {
         key,
         ...(nodeId !== undefined && { nodeId }),

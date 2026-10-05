@@ -1459,32 +1459,47 @@ describe('getActiveTreeItemActions', () => {
     );
   });
 
-  it('warns once per failing item, re-armed only by that item returning normally', () => {
-    uiExtensionRegistry.register(createTestExtension());
-    // Items no other test uses: the warning state is module-wide.
+  it('warns once per contribution while any item fails, re-armed once every item recovers', () => {
+    // A contribution of its own: the warning state is module-wide.
+    const throwingFor = new Set<string>();
+    const when = (i: { nodeId: string }) => {
+      if (throwingFor.has(i.nodeId)) throw new Error('flaky: when() failed');
+      return false;
+    };
+    uiExtensionRegistry.register(ext('tree-actions', { treeItemActions: [action('flaky', { when })] }));
     const ops = { nodeId: 'ops', nodeType: 'collection' };
     const research = { nodeId: 'research', nodeType: 'collection' };
-    testExtensionFlags.treeActionThrowingFor = ['ops'];
+    const warnings = () =>
+      log.warn.mock.calls.filter(([, ctx]) => (ctx as { key?: string }).key === 'tree-actions/flaky');
 
     // Another item returning normally in between does not re-arm the warning,
     // so a tree that fails on some items does not log on every re-evaluation.
+    throwingFor.add('ops');
     getActiveTreeItemActions(ops);
     getActiveTreeItemActions(research);
     getActiveTreeItemActions(ops);
-    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(warnings()).toHaveLength(1);
+    expect(warnings()[0][1]).toMatchObject({ key: 'tree-actions/flaky', nodeId: 'ops' });
 
-    // A second failing item is warned about separately.
-    testExtensionFlags.treeActionThrowingFor = ['ops', 'research'];
+    // More failing items do not add warnings either.
+    throwingFor.add('research');
     getActiveTreeItemActions(research);
-    getActiveTreeItemActions(research);
-    expect(log.warn).toHaveBeenCalledTimes(2);
+    expect(warnings()).toHaveLength(1);
 
-    // The item returning normally re-arms its own warning.
-    testExtensionFlags.treeActionThrowingFor = ['research'];
+    // One item recovering is not enough while another still fails.
+    throwingFor.delete('ops');
     getActiveTreeItemActions(ops);
-    testExtensionFlags.treeActionThrowingFor = ['ops', 'research'];
+    throwingFor.add('ops');
     getActiveTreeItemActions(ops);
-    expect(log.warn).toHaveBeenCalledTimes(3);
+    expect(warnings()).toHaveLength(1);
+
+    // Once every item it threw for has returned normally, a new throw warns again.
+    throwingFor.clear();
+    getActiveTreeItemActions(ops);
+    getActiveTreeItemActions(research);
+    throwingFor.add('research');
+    getActiveTreeItemActions(research);
+    expect(warnings()).toHaveLength(2);
   });
 
   it('lists the fixture’s node type while the fixture is registered', () => {
