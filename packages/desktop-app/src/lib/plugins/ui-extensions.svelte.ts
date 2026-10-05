@@ -12,9 +12,11 @@
  *
  * A throwing `when()` counts as false and is logged once per contribution key
  * (ADR-082 §3.4); it is logged again only after it has returned normally in
- * between. A tree-item action's `when(item)` is asked once per item, and the
- * same rule holds across items: a throw is logged when the contribution last
- * returned normally, on whichever item.
+ * between. A tree-item action's `when(item)` is asked once per item, so its
+ * rule holds per item: a throw is logged once for that contribution and item,
+ * and again only after it has returned normally for that same item. A
+ * predicate that fails for some items and not others then logs each failing
+ * item once, rather than on every re-evaluation of the tree.
  */
 
 import {
@@ -36,19 +38,30 @@ import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('UiExtensions');
 
-/** Keys whose `when()` threw and has not returned normally since. */
-const warnedKeys = new Set<string>();
+/**
+ * Contributions whose `when()` threw and has not returned normally since: by
+ * contribution key, and for a tree-item action by key and item.
+ */
+const warned = new Set<string>();
 
-/** Runs the `when()` of the contribution keyed `key`; a throw counts as false. */
-function holds(key: string, when: () => unknown): boolean {
+/**
+ * Runs the `when()` of the contribution keyed `key`, asked about the tree item
+ * `nodeId` when there is one; a throw counts as false.
+ */
+function holds(key: string, when: () => unknown, nodeId?: string): boolean {
+  const warnKey = nodeId === undefined ? key : `${key}\n${nodeId}`;
   try {
     const active = Boolean(when());
-    warnedKeys.delete(key);
+    warned.delete(warnKey);
     return active;
   } catch (error) {
-    if (!warnedKeys.has(key)) {
-      warnedKeys.add(key);
-      log.warn('Contribution when() threw; treating it as false', { key, error });
+    if (!warned.has(warnKey)) {
+      warned.add(warnKey);
+      log.warn('Contribution when() threw; treating it as false', {
+        key,
+        ...(nodeId !== undefined && { nodeId }),
+        error
+      });
     }
     return false;
   }
@@ -88,7 +101,7 @@ export function getActiveTreeItemActions(
 ): Keyed<TreeItemActionContribution>[] {
   return uiExtensionRegistry
     .treeItemActions()
-    .filter((c) => !c.when || holds(c.key, () => c.when?.(item)));
+    .filter((c) => !c.when || holds(c.key, () => c.when?.(item), item.nodeId));
 }
 
 /** What a replaceable-slot host renders; see {@link getReplaceableSlot}. */

@@ -235,7 +235,8 @@ export type TreeItemActionProps = { nodeId: string; nodeType: string };
  * `when(item)` decides per item whether the action shows, so a role check for
  * that item stays in the extension. Like every `when()`, it is reactive and
  * pure, and controls what is shown, never what is allowed. A `when()` that
- * throws hides the action on that item and is logged once (ADR-082 §3.4).
+ * throws hides the action on that item and is logged once for that item, until
+ * it returns normally for it (ADR-082 §3.4).
  *
  * The host mounts the component once per item whose `when()` holds and reveals
  * it on hover, so it stays mounted while hidden. Optimistic items that the

@@ -1452,13 +1452,39 @@ describe('getActiveTreeItemActions', () => {
     expect(log.warn).toHaveBeenCalledTimes(1);
     expect(log.warn).toHaveBeenCalledWith(
       expect.stringContaining('when() threw'),
-      expect.objectContaining({ key: `${TEST_EXTENSION_ID}/tree-action-throwing-when` })
+      expect.objectContaining({
+        key: `${TEST_EXTENSION_ID}/tree-action-throwing-when`,
+        nodeId: 'engineering'
+      })
     );
+  });
 
-    // Returning normally, on any item, re-arms the warning.
-    getActiveTreeItemActions({ nodeId: 'design', nodeType: 'collection' });
-    getActiveTreeItemActions(item);
+  it('warns once per failing item, re-armed only by that item returning normally', () => {
+    uiExtensionRegistry.register(createTestExtension());
+    // Items no other test uses: the warning state is module-wide.
+    const ops = { nodeId: 'ops', nodeType: 'collection' };
+    const research = { nodeId: 'research', nodeType: 'collection' };
+    testExtensionFlags.treeActionThrowingFor = ['ops'];
+
+    // Another item returning normally in between does not re-arm the warning,
+    // so a tree that fails on some items does not log on every re-evaluation.
+    getActiveTreeItemActions(ops);
+    getActiveTreeItemActions(research);
+    getActiveTreeItemActions(ops);
+    expect(log.warn).toHaveBeenCalledTimes(1);
+
+    // A second failing item is warned about separately.
+    testExtensionFlags.treeActionThrowingFor = ['ops', 'research'];
+    getActiveTreeItemActions(research);
+    getActiveTreeItemActions(research);
     expect(log.warn).toHaveBeenCalledTimes(2);
+
+    // The item returning normally re-arms its own warning.
+    testExtensionFlags.treeActionThrowingFor = ['research'];
+    getActiveTreeItemActions(ops);
+    testExtensionFlags.treeActionThrowingFor = ['ops', 'research'];
+    getActiveTreeItemActions(ops);
+    expect(log.warn).toHaveBeenCalledTimes(3);
   });
 
   it('lists the fixture’s node type while the fixture is registered', () => {
