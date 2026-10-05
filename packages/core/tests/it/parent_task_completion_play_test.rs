@@ -89,6 +89,58 @@ async fn set_status(service: &NodeService, id: &str, status: &str) -> Result<()>
     Ok(())
 }
 
+/// A child of `parent` that is not a task: a checkbox or a note.
+async fn child_node(
+    service: &NodeService,
+    parent: &str,
+    node_type: &str,
+    content: &str,
+) -> Result<String> {
+    let id = service
+        .create_node(Node::new(
+            node_type.to_string(),
+            content.to_string(),
+            json!({}),
+        ))
+        .await?;
+    service
+        .create_relationship(parent, "has_child", &id, json!({}))
+        .await?;
+    Ok(id)
+}
+
+async fn set_content(service: &NodeService, id: &str, content: &str) -> Result<()> {
+    let current = service.get_node(id).await?.expect("node should exist");
+    service
+        .update_node(
+            id,
+            current.version,
+            nodespace_core::models::NodeUpdate::default().with_content(content.to_string()),
+        )
+        .await?;
+    Ok(())
+}
+
+/// A parent task with one open sub-task under it.
+async fn parent_with_sub_task(service: &NodeService) -> Result<(String, String)> {
+    let parent = task_node(service, "open").await?;
+    let sub_task = task_node(service, "open").await?;
+    service
+        .create_relationship(&parent, "has_child", &sub_task, json!({}))
+        .await?;
+    Ok((parent, sub_task))
+}
+
+/// Whether the roll-up Play is enabled and not suspended.
+async fn roll_up_is_running(service: &NodeService) -> Result<bool> {
+    let play = service
+        .get_node(PARENT_TASK_COMPLETION_PLAY_ID)
+        .await?
+        .expect("seeded");
+    let play = &play.properties["play"];
+    Ok(play["enabled"] == json!(true) && play.get("suspended_reason").is_none_or(|v| v.is_null()))
+}
+
 async fn wait_for_status(service: &Arc<NodeService>, id: &str, want: &str) -> bool {
     let want = want.to_string();
     wait_until(|| {
@@ -476,6 +528,244 @@ async fn a_parent_with_one_open_child_stays_open() -> Result<()> {
         status_of(&service, &parent).await.as_deref(),
         Some("open"),
         "one outstanding child must keep the parent open"
+    );
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// A parent with a checklist of its own is completed by the roll-up when its
+/// last sub-task finishes, provided the checklist is complete (ADR-079 §8).
+#[tokio::test]
+async fn a_parent_with_a_checked_checklist_completes_with_its_last_sub_task() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let (parent, sub_task) = parent_with_sub_task(&service).await?;
+    let other = task_node(&service, "open").await?;
+    service
+        .create_relationship(&parent, "has_child", &other, json!({}))
+        .await?;
+    child_node(&service, &parent, "checkbox", "- [x] It works").await?;
+    child_node(&service, &parent, "checkbox", "- [x] It is documented").await?;
+
+    set_status(&service, &sub_task, "done").await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        status_of(&service, &parent).await.as_deref(),
+        Some("open"),
+        "a sub-task is still open"
+    );
+
+    set_status(&service, &other, "cancelled").await?;
+    assert!(
+        wait_for_status(&service, &parent, "done").await,
+        "a checked checklist must not stop the roll-up"
+    );
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// The criteria rule is the judge of the checklist: a parent with an
+/// unchecked item is left open by it, the roll-up is not suspended, and it
+/// goes on completing other parents.
+#[tokio::test]
+async fn a_parent_with_an_unchecked_item_stays_open_and_the_roll_up_keeps_running() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let (parent, sub_task) = parent_with_sub_task(&service).await?;
+    child_node(&service, &parent, "checkbox", "- [x] It works").await?;
+    child_node(&service, &parent, "checkbox", "- [ ] Not met yet").await?;
+    set_status(&service, &sub_task, "done").await?;
+
+    // Completed after the refusal: only a Play still running rolls it up.
+    let (control_parent, control_sub_task) = parent_with_sub_task(&service).await?;
+    set_status(&service, &control_sub_task, "done").await?;
+    assert!(
+        wait_for_status(&service, &control_parent, "done").await,
+        "the roll-up must go on completing other parents"
+    );
+
+    assert_eq!(
+        status_of(&service, &parent).await.as_deref(),
+        Some("open"),
+        "an unchecked item keeps the parent open"
+    );
+    assert!(
+        roll_up_is_running(&service).await?,
+        "a refused roll-up must not suspend the Play"
+    );
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// ADR-079 §8: ticking the last item after the sub-tasks have finished does
+/// not complete the parent. A checklist gates completion and never causes
+/// it, so the parent is finished by hand, which the criteria rule now allows.
+#[tokio::test]
+async fn a_checklist_finished_after_the_sub_tasks_leaves_the_parent_to_be_finished_by_hand(
+) -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let (parent, sub_task) = parent_with_sub_task(&service).await?;
+    let item = child_node(&service, &parent, "checkbox", "- [ ] Not met yet").await?;
+    set_status(&service, &sub_task, "done").await?;
+
+    // Positive control, so the check below follows a roll-up that has run.
+    let (control_parent, control_sub_task) = parent_with_sub_task(&service).await?;
+    set_status(&service, &control_sub_task, "done").await?;
+    assert!(wait_for_status(&service, &control_parent, "done").await);
+
+    set_content(&service, &item, "- [x] Met").await?;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        status_of(&service, &parent).await.as_deref(),
+        Some("open"),
+        "ticking an item is not a task status change, so nothing re-evaluates the parent"
+    );
+
+    set_status(&service, &parent, "done").await?;
+    assert_eq!(status_of(&service, &parent).await.as_deref(), Some("done"));
+    assert!(roll_up_is_running(&service).await?);
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// A note, or any other child that is not a task, is not asked for a status.
+#[tokio::test]
+async fn a_child_that_is_not_a_task_does_not_stop_the_roll_up() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let (parent, sub_task) = parent_with_sub_task(&service).await?;
+    child_node(&service, &parent, "text", "A note about the work").await?;
+    child_node(&service, &parent, "header", "## Context").await?;
+
+    set_status(&service, &sub_task, "done").await?;
+    assert!(
+        wait_for_status(&service, &parent, "done").await,
+        "a note under the parent must not stop the roll-up"
+    );
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// A task whose only children are checkboxes and notes has no sub-task to
+/// finish, so nothing completes it: not a change to its own status, and not
+/// its checklist being completed.
+#[tokio::test]
+async fn a_task_with_no_task_children_never_auto_completes() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let task = task_node(&service, "open").await?;
+    let item = child_node(&service, &task, "checkbox", "- [ ] Not met yet").await?;
+    child_node(&service, &task, "text", "A note").await?;
+
+    set_status(&service, &task, "in_progress").await?;
+    set_content(&service, &item, "- [x] Met").await?;
+
+    let (control_parent, control_sub_task) = parent_with_sub_task(&service).await?;
+    set_status(&service, &control_sub_task, "done").await?;
+    assert!(wait_for_status(&service, &control_parent, "done").await);
+
+    assert_eq!(
+        status_of(&service, &task).await.as_deref(),
+        Some("in_progress"),
+        "a task with no sub-tasks must not complete itself"
+    );
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// Finished tasks that sit under a node that is not a task have no parent
+/// task to complete: the roll-up leaves that node alone and keeps running.
+#[tokio::test]
+async fn finished_tasks_under_a_node_that_is_not_a_task_are_left_alone() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let page = service
+        .create_node(Node::new(
+            "text".to_string(),
+            "A page of tasks".to_string(),
+            json!({}),
+        ))
+        .await?;
+    let task = task_node(&service, "open").await?;
+    service
+        .create_relationship(&page, "has_child", &task, json!({}))
+        .await?;
+    child_node(&service, &page, "text", "A note beside the task").await?;
+    let before = service.get_node(&page).await?.expect("the page");
+    set_status(&service, &task, "done").await?;
+
+    let (control_parent, control_sub_task) = parent_with_sub_task(&service).await?;
+    set_status(&service, &control_sub_task, "done").await?;
+    assert!(wait_for_status(&service, &control_parent, "done").await);
+
+    let after = service.get_node(&page).await?.expect("the page");
+    assert_eq!(
+        after.properties, before.properties,
+        "a node that is not a task must be given no status"
+    );
+    assert_eq!(after.version, before.version);
+    assert!(roll_up_is_running(&service).await?);
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// A subtype of `task` is a task on both sides of the roll-up: as the parent
+/// that is completed, and as a sub-task counted beside checkboxes and notes.
+#[tokio::test]
+async fn a_subtype_of_task_counts_as_parent_and_as_sub_task() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({ "name": "Bug", "extends": "task", "fields": [] }),
+    )
+    .await
+    .expect("creating a task-extending schema should succeed");
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let bug = |title: &str| {
+        Node::new(
+            "bug".to_string(),
+            title.to_string(),
+            json!({ "status": "open" }),
+        )
+    };
+    let parent = service.create_node(bug("a parent bug")).await?;
+    let finished = service.create_node(bug("a finished bug")).await?;
+    let open = service.create_node(bug("an open bug")).await?;
+    for child in [&finished, &open] {
+        service
+            .create_relationship(&parent, "has_child", child, json!({}))
+            .await?;
+    }
+    child_node(&service, &parent, "checkbox", "- [x] It works").await?;
+    child_node(&service, &parent, "text", "A note").await?;
+
+    set_status(&service, &finished, "done").await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        status_of(&service, &parent).await.as_deref(),
+        Some("open"),
+        "an open subtype sub-task must keep the parent open"
+    );
+
+    set_status(&service, &open, "done").await?;
+    assert!(
+        wait_for_status(&service, &parent, "done").await,
+        "a subtype parent must complete once its subtype sub-tasks finish"
     );
 
     shutdown_engine(tx, engine_task).await;
