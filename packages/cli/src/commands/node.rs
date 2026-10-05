@@ -319,7 +319,10 @@ async fn create(client: &mut NodeClient, args: CreateArgs, json: bool) -> Result
 async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result<()> {
     if args.content.is_none()
         && args.properties.is_empty()
-        && args.properties_json.is_none()
+        && args
+            .properties_json
+            .as_ref()
+            .is_none_or(|map| map.is_empty())
         && args.collections.is_empty()
         && args.collection_ids.is_empty()
         && args.remove_collection_ids.is_empty()

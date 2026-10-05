@@ -43,7 +43,7 @@ use tonic::transport::Server;
 use tonic::Code;
 
 /// Spawn an in-process daemon over a temp-dir UDS and return the socket path.
-pub(crate) async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
+async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
     let tempdir = TempDir::new().expect("failed to create tempdir");
     let sock_path = tempdir.path().join("test-daemon.sock");
 

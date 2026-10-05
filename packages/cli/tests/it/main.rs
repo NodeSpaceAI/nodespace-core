@@ -10,8 +10,8 @@
 //! `cargo test` runs the whole binary's tests as threads of one process.
 
 mod cli_integration;
+mod cli_reference_examples;
 mod import_dir_multi;
 mod mcp_integration;
-mod playbook_references;
 mod requires_extension;
 mod skill_md_generation;

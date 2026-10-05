@@ -17,27 +17,6 @@ Every key shown below is present on every node, so parse against these names
 and nothing else. `relationship get` may additionally include `title`,
 `mentions` and `mentioned_in`.
 
-**Schema JSON shape.** `schema get` and `schema list` return schemas rather
-than nodes; `schema list` wraps them as `{"count": N, "schemas": [...]}`. A
-schema is read under the keys `schema create` and `schema update` write it
-with: `fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
-`title_template` and `properties_header_summary_template`, next to `id`,
-`content` (the type's name), `is_core` and `schema_version`. There is no
-`properties` key. `extends`, `abstract`, `children`, `parent` and the two
-templates are omitted when the type doesn't declare them. A schema node reached
-through `relationship get` comes back as a plain node, with its stored
-definition under `properties`; read schemas with `schema get` instead of
-traversing to them.
-
-`schema create --json` returns what it created under the same names: `id`,
-`is_core`, `schema_version`, `fields` and `relationships`, plus the
-`description` it wrote, `extends` when the type has a base, and `warnings` when
-there are any. `schema update --json` returns `id` and `success`, a count for
-each kind of change it made (`fields_added`, `fields_removed`,
-`fields_renamed`, `field_values_added`, `relationships_added`,
-`relationships_removed`) and `affected_plays` when a forced update touched
-any. Without `--json` both print a short summary instead.
-
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -59,6 +38,27 @@ accept, so what you parse and what you type always match. Internal bookkeeping
 keys are not part of the output. A node with no properties set returns `{}`.
 Values of any JSON type round-trip, nested objects included — `--property
 address='{"city":"Berlin"}'` reads back as `.properties.address.city`.
+
+**Schema JSON shape.** `schema get` and `schema list` return schemas rather
+than nodes; `schema list` wraps them as `{"count": N, "schemas": [...]}`. A
+schema is read under the keys `schema create` and `schema update` write it
+with: `fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
+`title_template` and `properties_header_summary_template`, next to `id`,
+`content` (the type's name), `is_core` and `schema_version`. There is no
+`properties` key. `extends`, `abstract`, `children`, `parent` and the two
+templates are omitted when the type doesn't declare them. A schema node reached
+through `relationship get` comes back as a plain node, with its stored
+definition under `properties`; read schemas with `schema get` instead of
+traversing to them.
+
+`schema create --json` returns what it created under the same names: `id`,
+`is_core`, `schema_version`, `fields` and `relationships`, plus the
+`description` it wrote, `extends` when the type has a base, and `warnings` when
+there are any. `schema update --json` returns `id` and `success`, a count for
+each kind of change it made (`fields_added`, `fields_removed`,
+`fields_renamed`, `field_values_added`, `relationships_added`,
+`relationships_removed`) and `affected_plays` when a forced update touched
+any. Without `--json` both print a short summary instead.
 
 **Two ways to set properties**, on `node create` and `node update` alike:
 
@@ -96,7 +96,7 @@ nodespace node create --type text --content "Meeting notes" --parent <parent-id>
 - `--parent <id>` — optional parent node ID (creates a child node)
 - `--property key=value` / `--properties '{json}'` — set properties (see *Two ways to set properties* above)
 
-**Output:** the created node, in the node JSON shape above. It carries no parent id; read a node's place in the tree with `nodespace node children <parent-id>`.
+**Output:** the created node, in the node JSON shape above. It carries no parent id: the node is under the `--parent` you gave, or is a root node when you gave none.
 
 **Creating an instance of a custom type:** read the schema first (`nodespace schema get <type>`) so you know its fields. Use the field name exactly as it appears in the schema's `fields[].name` — do not add namespace prefixes when setting properties on instances (prefixes like `custom:` are part of a *field's name* at schema-authoring time, not something a caller adds — see Schema fields below). If the schema has a `title_template`, `--content` only needs a brief descriptive label — the display title is generated from properties. If there's no `title_template`, set `--content` to the best human-readable name available.
 

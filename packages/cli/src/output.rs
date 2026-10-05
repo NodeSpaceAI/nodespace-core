@@ -295,42 +295,47 @@ pub fn schema_created_to_json(created: &CreateSchemaOutput) -> Value {
 }
 
 pub fn print_schema_created(result_json: &str, json: bool) -> Result<()> {
+    println!("{}", render_schema_created(result_json, json)?);
+    Ok(())
+}
+
+/// What `schema create` prints: the JSON object with `--json`, a short
+/// summary without.
+fn render_schema_created(result_json: &str, json: bool) -> Result<String> {
     let created: CreateSchemaOutput =
         serde_json::from_str(result_json).context("daemon returned a malformed create result")?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&schema_created_to_json(&created))?
-        );
-        return Ok(());
+        return Ok(serde_json::to_string_pretty(&schema_created_to_json(
+            &created,
+        ))?);
     }
 
-    println!("Created schema {}", created.schema_id);
+    let mut lines = vec![format!("Created schema {}", created.schema_id)];
     if let Some(parent_type) = &created.extends {
-        println!("extends:         {}", parent_type);
+        lines.push(format!("extends:         {parent_type}"));
     }
-    println!("fields:");
+    lines.push("fields:".to_string());
     if created.fields.is_empty() {
-        println!("    (none)");
+        lines.push("    (none)".to_string());
     }
     for field in &created.fields {
-        println!("    {}: {}", field.name, field.field_type);
+        lines.push(format!("    {}: {}", field.name, field.field_type));
     }
     if !created.relationships.is_empty() {
-        println!("relationships:");
+        lines.push("relationships:".to_string());
         for relationship in &created.relationships {
-            println!(
+            lines.push(format!(
                 "    {} -> {} (reverse: {})",
                 relationship.name,
                 relationship.target_type.as_deref().unwrap_or("*"),
                 relationship.reverse_name
-            );
+            ));
         }
     }
     for warning in created.warnings.iter().flatten() {
-        println!("warning: {warning}");
+        lines.push(format!("warning: {warning}"));
     }
-    Ok(())
+    Ok(lines.join("\n"))
 }
 
 /// The JSON `schema update` prints: what the update changed, in snake_case.
@@ -376,24 +381,29 @@ fn schema_update_counts(updated: &SchemaUpdateOutput) -> Vec<(&'static str, usiz
 }
 
 pub fn print_schema_updated(result_json: &str, json: bool) -> Result<()> {
+    println!("{}", render_schema_updated(result_json, json)?);
+    Ok(())
+}
+
+/// What `schema update` prints: the JSON object with `--json`, a short
+/// summary without.
+fn render_schema_updated(result_json: &str, json: bool) -> Result<String> {
     let updated: SchemaUpdateOutput =
         serde_json::from_str(result_json).context("daemon returned a malformed update result")?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&schema_updated_to_json(&updated))?
-        );
-        return Ok(());
+        return Ok(serde_json::to_string_pretty(&schema_updated_to_json(
+            &updated,
+        ))?);
     }
 
-    println!("Updated schema {}", updated.schema_id);
+    let mut lines = vec![format!("Updated schema {}", updated.schema_id)];
     for (key, count) in schema_update_counts(&updated) {
-        println!("    {}: {count}", key.replace('_', " "));
+        lines.push(format!("    {}: {count}", key.replace('_', " ")));
     }
     for play in updated.affected_plays.iter().flatten() {
-        println!("affected play: {play}");
+        lines.push(format!("affected play: {play}"));
     }
-    Ok(())
+    Ok(lines.join("\n"))
 }
 
 /// Decode a schema read's JSON-encoded `SchemaNode`.
@@ -1309,6 +1319,31 @@ mod tests {
         for wire_key in ["schemaId", "isCore", "version"] {
             assert!(value.get(wire_key).is_none(), "{wire_key} leaked");
         }
+    }
+
+    /// Both schema writes print JSON only when asked: the flag picks between
+    /// the snake_case object and the summary.
+    #[test]
+    fn schema_writes_print_json_only_with_the_json_flag() {
+        let created = r#"{"schemaId":"invoice","isCore":false,"version":1,"description":"A bill","fields":[]}"#;
+        let as_json: Value =
+            serde_json::from_str(&render_schema_created(created, true).expect("json"))
+                .expect("--json prints JSON");
+        assert_eq!(as_json["id"], "invoice");
+        assert_eq!(
+            render_schema_created(created, false).expect("summary"),
+            "Created schema invoice\nfields:\n    (none)"
+        );
+
+        let updated = r#"{"schemaId":"invoice","success":true,"fieldsAdded":2}"#;
+        let as_json: Value =
+            serde_json::from_str(&render_schema_updated(updated, true).expect("json"))
+                .expect("--json prints JSON");
+        assert_eq!(as_json["fields_added"], 2);
+        assert_eq!(
+            render_schema_updated(updated, false).expect("summary"),
+            "Updated schema invoice\n    fields added: 2"
+        );
     }
 
     #[test]
