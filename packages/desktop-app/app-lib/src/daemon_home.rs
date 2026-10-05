@@ -115,6 +115,12 @@ pub(crate) fn windows_stop_args(
 
 /// Process id of the daemon this app started for another home while it runs,
 /// 0 when there is none.
+///
+/// Read only on Windows, where it is the one way to stop that daemon without
+/// stopping the user's (see `windows_stop_args`). Unix finds the daemon by
+/// the socket it holds and the binary it runs instead. It lives in this
+/// process only, so a Windows daemon left running by an app that crashed is
+/// not stopped by a later run.
 static CHILD_PID: AtomicU32 = AtomicU32::new(0);
 
 /// The process id of the daemon this app started for another home, while it

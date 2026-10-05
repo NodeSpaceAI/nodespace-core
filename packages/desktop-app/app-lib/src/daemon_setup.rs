@@ -285,8 +285,23 @@ fn process_argv0_matches(pid: i32, expected_path: &str) -> bool {
     else {
         return false;
     };
-    let args = String::from_utf8_lossy(&out.stdout);
-    args.split_whitespace().next() == Some(expected_path)
+    command_line_runs(&String::from_utf8_lossy(&out.stdout), expected_path)
+}
+
+/// True when the command line `args` (as `ps -o args=` prints it) runs the
+/// program at `program`: the whole line is that path, or the path followed by
+/// whitespace and arguments.
+///
+/// The path is matched whole rather than as the first whitespace-separated
+/// word, because the daemon's path is under the NodeSpace home, and a home that
+/// `NODESPACE_HOME` names may contain spaces.
+#[cfg(unix)]
+fn command_line_runs(args: &str, program: &str) -> bool {
+    !program.is_empty()
+        && args
+            .trim()
+            .strip_prefix(program)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
 /// Send SIGTERM to the running daemon so a GUI quit (Cmd+Q, the red
@@ -767,15 +782,11 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     let daemon_bin = sidecar_install_path(&bin_dir, daemon_binary_name());
 
     // Ensure all directories exist before any binary checks.
-    tokio::fs::create_dir_all(&bin_dir)
-        .await
-        .context("Failed to create ~/.nodespace/bin")?;
-    tokio::fs::create_dir_all(&log_dir)
-        .await
-        .context("Failed to create ~/.nodespace/logs")?;
-    tokio::fs::create_dir_all(&db_dir)
-        .await
-        .context("Failed to create ~/.nodespace/database")?;
+    for dir in [&bin_dir, &log_dir, &db_dir] {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .with_context(|| format!("Failed to create {}", dir.display()))?;
+    }
 
     // Always check whether the bundled sidecar differs from the installed binary.
     // If the daemon is already running but the binary changed (e.g. dev rebuild),
@@ -3382,7 +3393,7 @@ mod sidecar_path_tests {
 /// can't be exercised behaviorally here.
 #[cfg(all(test, unix))]
 mod unix_quit_signal_tests {
-    use super::{process_argv0_matches, write_pid_file};
+    use super::{command_line_runs, process_argv0_matches, write_pid_file};
     use std::os::unix::net::UnixListener;
 
     /// A real UDS this test process itself holds open, so
@@ -3460,6 +3471,27 @@ mod unix_quit_signal_tests {
         let pid = std::process::id() as i32;
 
         assert!(!process_argv0_matches(pid, ""));
+    }
+
+    /// The program path is matched whole, so a daemon under a home whose path
+    /// holds a space is still recognised, and a path that merely starts the
+    /// same way is not.
+    #[test]
+    fn a_program_path_with_spaces_is_matched_whole() {
+        let spaced = "/Users/me/NodeSpace Scratch/.nodespace/bin/nodespaced";
+
+        assert!(
+            command_line_runs(spaced, spaced),
+            "headless child, no arguments"
+        );
+        assert!(command_line_runs(&format!("{spaced} --tray\n"), spaced));
+        assert!(command_line_runs(
+            "/Users/me/.nodespace/bin/nodespaced --tray",
+            "/Users/me/.nodespace/bin/nodespaced"
+        ));
+        assert!(!command_line_runs(&format!("{spaced}.old --tray"), spaced));
+        assert!(!command_line_runs("/Users/me/NodeSpace --tray", spaced));
+        assert!(!command_line_runs(spaced, ""));
     }
 
     #[test]
