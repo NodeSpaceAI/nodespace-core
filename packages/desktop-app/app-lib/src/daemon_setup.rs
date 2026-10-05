@@ -267,9 +267,11 @@ fn pids_holding_unix_socket(socket_path: &Path) -> HashSet<i32> {
     pids
 }
 
-/// True when `pid`'s argv[0], as reported by `ps -o args=`, is exactly
-/// `expected_path`. A full match rather than a trailing-substring heuristic,
-/// so a coincidentally similar path can't be mistaken for ours.
+/// True when `pid` runs `expected_path`: its command line, as reported by
+/// `ps -o args=`, is that path, or that path followed by whitespace and its
+/// arguments ([`command_line_runs`]). A full match rather than a
+/// trailing-substring heuristic, so a coincidentally similar path can't be
+/// mistaken for ours.
 ///
 /// Guards every signal this file sends against a PID that coincidentally got
 /// reused by an unrelated process for a number a real nodespaced instance
@@ -3491,7 +3493,10 @@ mod unix_quit_signal_tests {
         ));
         assert!(!command_line_runs(&format!("{spaced}.old --tray"), spaced));
         assert!(!command_line_runs("/Users/me/NodeSpace --tray", spaced));
-        assert!(!command_line_runs(spaced, ""));
+        assert!(
+            !command_line_runs("\n", ""),
+            "an empty program matches nothing"
+        );
     }
 
     #[test]
