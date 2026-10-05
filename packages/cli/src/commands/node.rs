@@ -67,6 +67,13 @@ pub struct CreateArgs {
     /// at create time, so there is no way to supply it afterward via `update`.
     #[arg(long = "property", value_parser = parse_property)]
     pub properties: Vec<(String, serde_json::Value)>,
+    /// Set several properties at once from one JSON object:
+    /// `--properties '{"key":"value"}'`. Each value keeps the JSON type it is
+    /// written with, so this is the form for nested values and for a string
+    /// that reads as a number (`{"estimate":"3"}`). May be combined with
+    /// `--property`, which wins for a key given both ways.
+    #[arg(long = "properties", value_name = "JSON", value_parser = parse_properties_object)]
+    pub properties_json: Option<serde_json::Map<String, serde_json::Value>>,
     /// Collection path to file the node under, `:`-delimited for hierarchy
     /// (e.g. `docs:rust`) — the same syntax `import` and `search` take.
     /// Missing segments are created. Repeatable to join several collections
@@ -97,6 +104,12 @@ pub struct UpdateArgs {
     /// NOT use this to change a task's status; use `node set-status` instead.
     #[arg(long = "property", value_parser = parse_property)]
     pub properties: Vec<(String, serde_json::Value)>,
+    /// Set several properties at once from one JSON object:
+    /// `--properties '{"key":"value"}'`, deep-merged like `--property`. Each
+    /// value keeps the JSON type it is written with. May be combined with
+    /// `--property`, which wins for a key given both ways.
+    #[arg(long = "properties", value_name = "JSON", value_parser = parse_properties_object)]
+    pub properties_json: Option<serde_json::Map<String, serde_json::Value>>,
     /// Collection path to add the node to, `:`-delimited for hierarchy
     /// (e.g. `docs:rust`). Missing segments are created. Repeatable.
     /// Mutually exclusive with --collection-id.
@@ -132,6 +145,31 @@ fn parse_property(s: &str) -> Result<(String, serde_json::Value), String> {
     let parsed = serde_json::from_str(value)
         .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
     Ok((key.to_string(), parsed))
+}
+
+/// Parses the `--properties` JSON object. Anything but an object is refused
+/// here, so a mistyped blob fails as a usage error instead of reaching the
+/// daemon.
+fn parse_properties_object(s: &str) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    match serde_json::from_str(s) {
+        Ok(serde_json::Value::Object(map)) => Ok(map),
+        Ok(_) => Err("expected a JSON object, e.g. '{\"key\":\"value\"}'".to_string()),
+        Err(e) => Err(format!("invalid JSON: {e}")),
+    }
+}
+
+/// The properties a `create` or `update` sends: the `--properties` object
+/// with each `--property` entry laid over it. `None` when neither was given.
+fn merge_properties(
+    object: Option<serde_json::Map<String, serde_json::Value>>,
+    entries: Vec<(String, serde_json::Value)>,
+) -> Option<String> {
+    if object.is_none() && entries.is_empty() {
+        return None;
+    }
+    let mut map = object.unwrap_or_default();
+    map.extend(entries);
+    Some(serde_json::Value::Object(map).to_string())
 }
 
 #[derive(Args, Debug)]
@@ -256,12 +294,7 @@ async fn get(client: &mut NodeClient, args: GetArgs, json: bool) -> Result<()> {
 }
 
 async fn create(client: &mut NodeClient, args: CreateArgs, json: bool) -> Result<()> {
-    let properties = if args.properties.is_empty() {
-        String::new()
-    } else {
-        let map: serde_json::Map<String, serde_json::Value> = args.properties.into_iter().collect();
-        serde_json::Value::Object(map).to_string()
-    };
+    let properties = merge_properties(args.properties_json, args.properties).unwrap_or_default();
 
     let response = client
         .create_node(CreateNodeRequest {
@@ -286,21 +319,17 @@ async fn create(client: &mut NodeClient, args: CreateArgs, json: bool) -> Result
 async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result<()> {
     if args.content.is_none()
         && args.properties.is_empty()
+        && args.properties_json.is_none()
         && args.collections.is_empty()
         && args.collection_ids.is_empty()
         && args.remove_collection_ids.is_empty()
     {
         anyhow::bail!(
-            "update requires --content, --property, --collection, --collection-id, or --remove-collection-id"
+            "update requires --content, --property, --properties, --collection, --collection-id, or --remove-collection-id"
         );
     }
 
-    let properties = if args.properties.is_empty() {
-        None
-    } else {
-        let map: serde_json::Map<String, serde_json::Value> = args.properties.into_iter().collect();
-        Some(serde_json::Value::Object(map).to_string())
-    };
+    let properties = merge_properties(args.properties_json, args.properties);
 
     let response = client
         .update_node(UpdateNodeRequest {
@@ -593,7 +622,8 @@ async fn batch_update(client: &mut NodeClient, args: BatchUpdateArgs, json: bool
 
 #[cfg(test)]
 mod tests {
-    use super::VersionConflict;
+    use super::{merge_properties, CreateArgs, NodeAction, VersionConflict};
+    use clap::Parser;
 
     fn conflict_status(header: &str) -> tonic::Status {
         let mut status = tonic::Status::aborted("Version conflict on n-1: expected 3, got 5");
@@ -638,6 +668,63 @@ mod tests {
         assert_eq!(VersionConflict::from_status(&other), None);
         assert_eq!(
             VersionConflict::from_status(&conflict_status("not json")),
+            None
+        );
+    }
+
+    fn create_args(argv: &[&str]) -> Result<CreateArgs, clap::Error> {
+        let argv = ["nodespace", "node", "create", "--type", "task"]
+            .iter()
+            .chain(argv);
+        match crate::Cli::try_parse_from(argv)?.command {
+            crate::Command::Node {
+                action: NodeAction::Create(args),
+            } => Ok(args),
+            other => panic!("expected node create, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_properties_object_keeps_each_values_json_type() {
+        let args = create_args(&[
+            "--properties",
+            r#"{"estimate":"3","points":3,"tags":["a"]}"#,
+        ])
+        .expect("a JSON object parses");
+        assert_eq!(
+            merge_properties(args.properties_json, args.properties).as_deref(),
+            Some(r#"{"estimate":"3","points":3,"tags":["a"]}"#)
+        );
+    }
+
+    #[test]
+    fn a_property_flag_wins_over_the_same_key_in_the_object() {
+        let args = create_args(&[
+            "--properties",
+            r#"{"priority":"low","status":"open"}"#,
+            "--property",
+            "priority=high",
+        ])
+        .expect("both forms parse together");
+        assert_eq!(
+            merge_properties(args.properties_json, args.properties).as_deref(),
+            Some(r#"{"priority":"high","status":"open"}"#)
+        );
+    }
+
+    #[test]
+    fn properties_that_are_not_a_json_object_are_a_usage_error() {
+        for bad in ["[1,2]", "\"text\"", "{not json"] {
+            let err = create_args(&["--properties", bad]).expect_err("refused");
+            assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation, "{bad}");
+        }
+    }
+
+    #[test]
+    fn no_property_flag_sends_no_properties() {
+        let args = create_args(&[]).expect("parses");
+        assert_eq!(
+            merge_properties(args.properties_json, args.properties),
             None
         );
     }

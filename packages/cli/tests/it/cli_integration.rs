@@ -43,7 +43,7 @@ use tonic::transport::Server;
 use tonic::Code;
 
 /// Spawn an in-process daemon over a temp-dir UDS and return the socket path.
-async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
+pub(crate) async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
     let tempdir = TempDir::new().expect("failed to create tempdir");
     let sock_path = tempdir.path().join("test-daemon.sock");
 
@@ -259,6 +259,7 @@ async fn create_templated_type_without_content_and_reject_content() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "person".into(),
             content: None,
             parent: None,
@@ -277,6 +278,7 @@ async fn create_templated_type_without_content_and_reject_content() {
     let err = commands::node::run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "person".into(),
             content: Some("Rowan".into()),
             parent: None,
@@ -306,6 +308,7 @@ async fn create_get_update_children_delete_round_trip() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "text".into(),
             content: Some("root via CLI".into()),
             parent: None,
@@ -342,6 +345,7 @@ async fn create_get_update_children_delete_round_trip() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "text".into(),
             content: Some("child via CLI".into()),
             parent: Some(parent_id.clone()),
@@ -367,6 +371,7 @@ async fn create_get_update_children_delete_round_trip() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: parent_id.clone(),
             content: Some("parent updated via CLI".into()),
             properties: vec![],
@@ -2441,6 +2446,7 @@ async fn node_update_sets_properties_and_preserves_content() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: id.clone(),
             content: None,
             properties: vec![("custom:added".into(), serde_json::json!("value"))],
@@ -2611,6 +2617,7 @@ async fn node_update_rejects_empty_args() {
     let err = commands::node::run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: "irrelevant".into(),
             content: None,
             properties: vec![],
@@ -2723,6 +2730,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
     };
     let update = |content: &str, version| {
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: id.clone(),
             content: Some(content.into()),
             properties: vec![],
@@ -2793,6 +2801,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
     // too, and a refused one joins nothing.
     let join = |version| {
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: id.clone(),
             content: None,
             properties: vec![],
@@ -2860,6 +2869,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
     let err = commands::node::run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: large.clone(),
             content: Some("short".into()),
             properties: vec![],
@@ -3314,6 +3324,7 @@ async fn database_routing_isolates_writes() {
     commands::node::run(
         &mut node_second,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "text".into(),
             content: Some("isolated-to-second".into()),
             parent: None,
@@ -3573,6 +3584,7 @@ async fn node_create_collection_paths_are_repeatable_and_auto_create() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "text".into(),
             content: Some("collected via CLI".into()),
             parent: None,
@@ -3684,6 +3696,7 @@ async fn node_update_collection_adds_and_removes_membership() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: node_id.clone(),
             content: None,
             properties: vec![],
@@ -3710,6 +3723,7 @@ async fn node_update_collection_adds_and_removes_membership() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: node_id.clone(),
             content: None,
             properties: vec![],
@@ -3788,6 +3802,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: node_id.clone(),
             content: None,
             properties: vec![],
@@ -3818,6 +3833,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: node_id.clone(),
             content: None,
             properties: vec![],
@@ -3857,6 +3873,7 @@ async fn node_create_unresolvable_collection_is_an_error() {
     let err = commands::node::run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "text".into(),
             content: Some("should fail".into()),
             parent: None,
@@ -3916,6 +3933,7 @@ async fn node_create_required_field_without_default_needs_property_flag() {
     let err = commands::node::run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "customer".into(),
             content: Some("Northwind Labs".into()),
             parent: None,
@@ -3937,6 +3955,7 @@ async fn node_create_required_field_without_default_needs_property_flag() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "customer".into(),
             content: Some("Northwind Labs".into()),
             parent: None,
@@ -4011,6 +4030,7 @@ async fn node_create_multiple_property_flags_set_multiple_fields() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "invoice".into(),
             content: Some("INV-1001".into()),
             parent: None,
@@ -4743,6 +4763,7 @@ async fn play_rules_are_written_and_read_with_their_descriptions() {
 
     let update = |rules: serde_json::Value| {
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: play_id.clone(),
             content: None,
             properties: vec![("rules".to_string(), rules)],
@@ -4949,6 +4970,7 @@ async fn node_create_and_update_set_a_collection_description() {
 
     let create = |name: &str| {
         commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
             node_type: "collection".into(),
             content: Some(name.into()),
             parent: None,
@@ -4997,6 +5019,7 @@ async fn node_create_and_update_set_a_collection_description() {
     commands::node::run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            properties_json: None,
             id: id.clone(),
             content: None,
             properties: vec![(

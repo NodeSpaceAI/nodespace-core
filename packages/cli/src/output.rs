@@ -9,7 +9,7 @@ use nodespace_daemon::nodespace::{
     ConflictRecord as ConflictRecordProto, DeleteNodeResponse, MergeNodesResponse, NodeListResponse,
 };
 use nodespace_daemon::NodeData;
-use nodespace_types::SchemaNode;
+use nodespace_types::{CreateSchemaOutput, SchemaNode, SchemaUpdateOutput};
 use serde_json::{json, Value};
 
 pub fn print_node(node: &NodeData, json: bool) -> Result<()> {
@@ -258,6 +258,142 @@ pub fn schema_to_json(schema: &SchemaNode) -> Value {
         value["properties_header_summary_template"] = json!(template);
     }
     value
+}
+
+/// The JSON `schema create` prints: the created schema under the keys
+/// `schema get` reads one with, plus the `description` written and any
+/// `warnings`.
+pub fn schema_created_to_json(created: &CreateSchemaOutput) -> Value {
+    // Destructured in full, so a field added to `CreateSchemaOutput` fails to
+    // compile here until the CLI says how it prints.
+    let CreateSchemaOutput {
+        schema_id,
+        is_core,
+        version,
+        description,
+        fields,
+        extends,
+        relationships,
+        warnings,
+    } = created;
+
+    let mut value = json!({
+        "id": schema_id,
+        "is_core": is_core,
+        "schema_version": version,
+        "description": description,
+        "fields": fields,
+        "relationships": relationships,
+    });
+    if let Some(parent_type) = extends {
+        value["extends"] = json!(parent_type);
+    }
+    if let Some(warnings) = warnings {
+        value["warnings"] = json!(warnings);
+    }
+    value
+}
+
+pub fn print_schema_created(result_json: &str, json: bool) -> Result<()> {
+    let created: CreateSchemaOutput =
+        serde_json::from_str(result_json).context("daemon returned a malformed create result")?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&schema_created_to_json(&created))?
+        );
+        return Ok(());
+    }
+
+    println!("Created schema {}", created.schema_id);
+    if let Some(parent_type) = &created.extends {
+        println!("extends:         {}", parent_type);
+    }
+    println!("fields:");
+    if created.fields.is_empty() {
+        println!("    (none)");
+    }
+    for field in &created.fields {
+        println!("    {}: {}", field.name, field.field_type);
+    }
+    if !created.relationships.is_empty() {
+        println!("relationships:");
+        for relationship in &created.relationships {
+            println!(
+                "    {} -> {} (reverse: {})",
+                relationship.name,
+                relationship.target_type.as_deref().unwrap_or("*"),
+                relationship.reverse_name
+            );
+        }
+    }
+    for warning in created.warnings.iter().flatten() {
+        println!("warning: {warning}");
+    }
+    Ok(())
+}
+
+/// The JSON `schema update` prints: what the update changed, in snake_case.
+/// A count is present only for a kind of change the update made.
+pub fn schema_updated_to_json(updated: &SchemaUpdateOutput) -> Value {
+    let mut value = json!({ "id": updated.schema_id, "success": updated.success });
+    for (key, count) in schema_update_counts(updated) {
+        value[key] = json!(count);
+    }
+    if let Some(plays) = &updated.affected_plays {
+        value["affected_plays"] = json!(plays);
+    }
+    value
+}
+
+/// Each kind of change an update made, keyed as the JSON output names it.
+fn schema_update_counts(updated: &SchemaUpdateOutput) -> Vec<(&'static str, usize)> {
+    // Destructured in full, so a field added to `SchemaUpdateOutput` fails to
+    // compile here until the CLI says how it prints.
+    let SchemaUpdateOutput {
+        schema_id: _,
+        success: _,
+        fields_added,
+        fields_removed,
+        fields_renamed,
+        field_values_added,
+        relationships_added,
+        relationships_removed,
+        affected_plays: _,
+    } = updated;
+
+    [
+        ("fields_added", fields_added),
+        ("fields_removed", fields_removed),
+        ("fields_renamed", fields_renamed),
+        ("field_values_added", field_values_added),
+        ("relationships_added", relationships_added),
+        ("relationships_removed", relationships_removed),
+    ]
+    .into_iter()
+    .filter_map(|(key, count)| Some((key, (*count)?)))
+    .collect()
+}
+
+pub fn print_schema_updated(result_json: &str, json: bool) -> Result<()> {
+    let updated: SchemaUpdateOutput =
+        serde_json::from_str(result_json).context("daemon returned a malformed update result")?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&schema_updated_to_json(&updated))?
+        );
+        return Ok(());
+    }
+
+    println!("Updated schema {}", updated.schema_id);
+    for (key, count) in schema_update_counts(&updated) {
+        println!("    {}: {count}", key.replace('_', " "));
+    }
+    for play in updated.affected_plays.iter().flatten() {
+        println!("affected play: {play}");
+    }
+    Ok(())
 }
 
 /// Decode a schema read's JSON-encoded `SchemaNode`.
@@ -1141,5 +1277,58 @@ mod tests {
     #[test]
     fn a_malformed_schema_is_an_error_not_an_empty_one() {
         assert!(parse_schema("{\"id\": 1}").is_err());
+    }
+
+    /// `schema create` names the schema's own values as `schema get` does, so
+    /// one set of keys reads both.
+    #[test]
+    fn a_created_schema_prints_under_the_keys_a_schema_read_uses() {
+        let created: CreateSchemaOutput = serde_json::from_value(serde_json::json!({
+            "schemaId": "invoice",
+            "isCore": false,
+            "version": 1,
+            "description": "A bill",
+            "fields": [{ "name": "amount", "type": "number" }],
+            "extends": "document",
+            "warnings": ["field 'status' shadows a core property"],
+        }))
+        .expect("the daemon's create result");
+
+        let value = schema_created_to_json(&created);
+        assert_eq!(value["id"], "invoice");
+        assert_eq!(value["is_core"], false);
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["description"], "A bill");
+        assert_eq!(value["fields"][0]["name"], "amount");
+        assert_eq!(value["relationships"], serde_json::json!([]));
+        assert_eq!(value["extends"], "document");
+        assert_eq!(
+            value["warnings"][0],
+            "field 'status' shadows a core property"
+        );
+        for wire_key in ["schemaId", "isCore", "version"] {
+            assert!(value.get(wire_key).is_none(), "{wire_key} leaked");
+        }
+    }
+
+    #[test]
+    fn an_updated_schema_reports_only_the_changes_it_made() {
+        let updated: SchemaUpdateOutput = serde_json::from_value(serde_json::json!({
+            "schemaId": "invoice",
+            "success": true,
+            "fieldsAdded": 2,
+            "fieldValuesAdded": 1,
+        }))
+        .expect("the daemon's update result");
+
+        assert_eq!(
+            schema_updated_to_json(&updated),
+            serde_json::json!({
+                "id": "invoice",
+                "success": true,
+                "fields_added": 2,
+                "field_values_added": 1,
+            })
+        );
     }
 }
