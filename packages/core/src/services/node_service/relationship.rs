@@ -928,11 +928,7 @@ impl NodeService {
                 NodeServiceError::query_failed(format!("Failed to check existing parent: {e}"))
             })? {
                 if existing != source_id {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "Node '{target_id}' already has parent '{existing}'; the outline is \
-                         single-parent. Move the node instead of adding a second `has_child` \
-                         edge."
-                    )));
+                    return Err(second_parent_refused(target_id, &existing, source_id));
                 }
             }
         }
@@ -1303,11 +1299,7 @@ impl NodeService {
                         })?
                 {
                     if existing != source_id {
-                        return Err(NodeServiceError::invalid_update(format!(
-                            "Node '{target_id}' already has parent '{existing}'; the outline is \
-                             single-parent. Move the node instead of adding a second `has_child` \
-                             edge."
-                        )));
+                        return Err(second_parent_refused(target_id, &existing, source_id));
                     }
                 }
             }
@@ -2635,6 +2627,16 @@ impl NodeService {
 
         Ok(edges)
     }
+}
+
+/// The refusal for a `has_child` edge to a node that already has another
+/// parent. It names the command that moves the node under `source_id`.
+fn second_parent_refused(target_id: &str, existing: &str, source_id: &str) -> NodeServiceError {
+    NodeServiceError::invalid_update(format!(
+        "Node '{target_id}' already has parent '{existing}'; the outline is single-parent. Move \
+         it with `nodespace node move {target_id} --parent {source_id}` instead of adding a \
+         second `has_child` edge."
+    ))
 }
 
 /// `(source, name, target)` as stored: swapped onto `forward_name` when

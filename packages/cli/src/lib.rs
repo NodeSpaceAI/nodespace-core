@@ -120,7 +120,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Operate on individual nodes (get, create, update, delete, children, query, export, batch-get, batch-update).
+    /// Operate on individual nodes (get, create, update, move, delete, children, query, export, batch-get, batch-update).
     Node {
         #[command(subcommand)]
         action: commands::node::NodeAction,

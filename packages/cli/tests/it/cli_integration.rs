@@ -1785,6 +1785,392 @@ fn node_delete_confirmation_flags_are_required_together() {
     assert!(parse(&["nodespace", "node", "delete", "abc", "--descendants", "0"]).is_err());
 }
 
+/// `node move` takes one destination and one position at a time.
+#[test]
+fn node_move_destination_and_position_flags_are_exclusive() {
+    use clap::Parser;
+    let parse = |args: &[&str]| nodespace_cli::Cli::try_parse_from(args);
+
+    assert!(parse(&["nodespace", "node", "move", "a", "--parent", "p"]).is_ok());
+    assert!(parse(&["nodespace", "node", "move", "a", "--root"]).is_ok());
+    assert!(parse(&["nodespace", "node", "move", "a", "--after", "b"]).is_ok());
+    assert!(parse(&["nodespace", "node", "move", "a", "--parent", "p", "--root"]).is_err());
+    assert!(parse(&["nodespace", "node", "move", "a", "--first", "--after", "b"]).is_err());
+    // A root has no sibling order, so `--root` takes no position.
+    assert!(parse(&["nodespace", "node", "move", "a", "--root", "--first"]).is_err());
+    assert!(parse(&["nodespace", "node", "move", "a", "--root", "--after", "b"]).is_err());
+    // An empty ID (an unset shell variable) is not a request for the root.
+    assert!(parse(&["nodespace", "node", "move", "a", "--parent", ""]).is_err());
+    assert!(parse(&["nodespace", "node", "move", "a", "--after", ""]).is_err());
+}
+
+/// Create a text node through the raw client and return its ID.
+async fn seed_text_node(raw: &mut NodeClient, content: &str, parent: Option<&str>) -> String {
+    raw.create_node(CreateNodeRequest {
+        node_type: "text".into(),
+        content: content.into(),
+        parent_id: parent.map(str::to_string),
+        properties: String::new(),
+        collections: Vec::new(),
+        collection_ids: Vec::new(),
+        lifecycle_status: None,
+        id: None,
+        position: None,
+    })
+    .await
+    .expect("seed text node")
+    .into_inner()
+    .node_id
+}
+
+/// The IDs of `parent`'s children, in sibling order.
+async fn child_ids(raw: &mut NodeClient, parent: &str) -> Vec<String> {
+    raw.get_children(nodespace_daemon::nodespace::GetChildrenRequest {
+        node_id: parent.to_string(),
+    })
+    .await
+    .expect("get children")
+    .into_inner()
+    .nodes
+    .into_iter()
+    .map(|n| n.id)
+    .collect()
+}
+
+/// The version `id` is at now.
+async fn node_version(raw: &mut NodeClient, id: &str) -> i64 {
+    raw.get_node(GetNodeRequest {
+        node_id: id.to_string(),
+    })
+    .await
+    .expect("get node")
+    .into_inner()
+    .node_data
+    .expect("node_data")
+    .version
+}
+
+fn move_args(id: &str) -> commands::node::MoveArgs {
+    commands::node::MoveArgs {
+        id: id.to_string(),
+        parent: None,
+        root: false,
+        first: false,
+        after: None,
+        version: None,
+    }
+}
+
+async fn run_move(client: &mut NodeClient, args: commands::node::MoveArgs) -> anyhow::Result<()> {
+    commands::node::run(client, commands::node::NodeAction::Move(args), true).await
+}
+
+#[tokio::test]
+async fn node_move_reparents_a_node_at_the_requested_position() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let old_parent = seed_text_node(&mut raw, "old parent", None).await;
+    let new_parent = seed_text_node(&mut raw, "new parent", None).await;
+    let a = seed_text_node(&mut raw, "a", Some(&new_parent)).await;
+    let b = seed_text_node(&mut raw, "b", Some(&new_parent)).await;
+    let last = seed_text_node(&mut raw, "last", Some(&old_parent)).await;
+    let first = seed_text_node(&mut raw, "first", Some(&old_parent)).await;
+    let middle = seed_text_node(&mut raw, "middle", Some(&old_parent)).await;
+
+    // No position: last under the new parent.
+    run_move(
+        &mut client,
+        commands::node::MoveArgs {
+            parent: Some(new_parent.clone()),
+            ..move_args(&last)
+        },
+    )
+    .await
+    .expect("move to the end");
+    run_move(
+        &mut client,
+        commands::node::MoveArgs {
+            parent: Some(new_parent.clone()),
+            first: true,
+            ..move_args(&first)
+        },
+    )
+    .await
+    .expect("move to the beginning");
+    run_move(
+        &mut client,
+        commands::node::MoveArgs {
+            parent: Some(new_parent.clone()),
+            after: Some(a.clone()),
+            ..move_args(&middle)
+        },
+    )
+    .await
+    .expect("move after a sibling");
+
+    assert_eq!(
+        child_ids(&mut raw, &new_parent).await,
+        [&first, &a, &middle, &b, &last].map(String::clone)
+    );
+    assert!(child_ids(&mut raw, &old_parent).await.is_empty());
+
+    // `--root` detaches the node from its parent.
+    run_move(
+        &mut client,
+        commands::node::MoveArgs {
+            root: true,
+            ..move_args(&middle)
+        },
+    )
+    .await
+    .expect("move to root");
+    assert_eq!(
+        child_ids(&mut raw, &new_parent).await,
+        [&first, &a, &b, &last].map(String::clone)
+    );
+
+    shutdown.send(()).ok();
+}
+
+#[tokio::test]
+async fn node_move_without_a_parent_reorders_among_siblings() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let parent = seed_text_node(&mut raw, "parent", None).await;
+    let a = seed_text_node(&mut raw, "a", Some(&parent)).await;
+    let b = seed_text_node(&mut raw, "b", Some(&parent)).await;
+    let c = seed_text_node(&mut raw, "c", Some(&parent)).await;
+
+    run_move(
+        &mut client,
+        commands::node::MoveArgs {
+            first: true,
+            ..move_args(&c)
+        },
+    )
+    .await
+    .expect("reorder to the beginning");
+    assert_eq!(
+        child_ids(&mut raw, &parent).await,
+        [&c, &a, &b].map(String::clone)
+    );
+
+    // After a sibling that is not the last one, so "last" is a wrong answer.
+    let version_before = node_version(&mut raw, &c).await;
+    run_move(
+        &mut client,
+        commands::node::MoveArgs {
+            after: Some(a.clone()),
+            ..move_args(&c)
+        },
+    )
+    .await
+    .expect("reorder after a sibling");
+    assert_eq!(
+        child_ids(&mut raw, &parent).await,
+        [&a, &c, &b].map(String::clone)
+    );
+    assert!(node_version(&mut raw, &c).await > version_before);
+
+    // A root has no siblings to be ordered among.
+    run_move(
+        &mut client,
+        commands::node::MoveArgs {
+            first: true,
+            ..move_args(&parent)
+        },
+    )
+    .await
+    .expect_err("reordering a root must be refused");
+
+    // Neither a destination nor a position: nothing to do, so it is refused
+    // before any RPC.
+    let err = run_move(&mut client, move_args(&c))
+        .await
+        .expect_err("a move with no destination or position must fail");
+    assert!(err.to_string().contains("--parent"), "got: {err}");
+
+    shutdown.send(()).ok();
+}
+
+#[tokio::test]
+async fn node_move_at_a_stale_version_writes_nothing() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let old_parent = seed_text_node(&mut raw, "old parent", None).await;
+    let new_parent = seed_text_node(&mut raw, "new parent", None).await;
+    let node = seed_text_node(&mut raw, "node", Some(&old_parent)).await;
+    let sibling = seed_text_node(&mut raw, "sibling", Some(&old_parent)).await;
+    let version = node_version(&mut raw, &node).await;
+
+    for args in [
+        commands::node::MoveArgs {
+            parent: Some(new_parent.clone()),
+            version: Some(version + 1),
+            ..move_args(&node)
+        },
+        commands::node::MoveArgs {
+            after: Some(sibling.clone()),
+            version: Some(version + 1),
+            ..move_args(&node)
+        },
+    ] {
+        let err = run_move(&mut client, args)
+            .await
+            .expect_err("a stale version must be refused");
+        assert!(
+            err.to_string().contains("has changed since it was read"),
+            "got: {err:#}"
+        );
+    }
+    assert_eq!(
+        child_ids(&mut raw, &old_parent).await,
+        [&node, &sibling].map(String::clone)
+    );
+
+    // The version it is at moves it.
+    run_move(
+        &mut client,
+        commands::node::MoveArgs {
+            parent: Some(new_parent.clone()),
+            version: Some(version),
+            ..move_args(&node)
+        },
+    )
+    .await
+    .expect("move at the current version");
+    assert_eq!(child_ids(&mut raw, &new_parent).await, [node]);
+
+    shutdown.send(()).ok();
+}
+
+/// `--after` names a child of the parent the node ends up under. Anything
+/// else is refused, not quietly read as "last".
+#[tokio::test]
+async fn node_move_after_a_node_that_is_not_a_sibling_writes_nothing() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let old_parent = seed_text_node(&mut raw, "old parent", None).await;
+    let new_parent = seed_text_node(&mut raw, "new parent", None).await;
+    let first = seed_text_node(&mut raw, "first", Some(&old_parent)).await;
+    let node = seed_text_node(&mut raw, "node", Some(&old_parent)).await;
+    let last = seed_text_node(&mut raw, "last", Some(&old_parent)).await;
+    let elsewhere = seed_text_node(&mut raw, "elsewhere", Some(&new_parent)).await;
+    let version = node_version(&mut raw, &node).await;
+
+    let missing = "no-such-node".to_string();
+    for (parent, after, refusal) in [
+        // Move: a child of the parent the node is leaving, a node that does
+        // not exist, and the node itself, under a new parent and under the
+        // one it already has.
+        (Some(&new_parent), &first, "is not a child of"),
+        (Some(&new_parent), &missing, "is not a child of"),
+        (Some(&new_parent), &node, "after itself"),
+        (Some(&old_parent), &node, "after itself"),
+        // Reorder: a child of another parent, a node that does not exist,
+        // and the node itself.
+        (None, &elsewhere, "is not a child of"),
+        (None, &missing, "does not exist"),
+        (None, &node, "after itself"),
+    ] {
+        let err = run_move(
+            &mut client,
+            commands::node::MoveArgs {
+                parent: parent.cloned(),
+                after: Some(after.clone()),
+                ..move_args(&node)
+            },
+        )
+        .await
+        .expect_err("a position after a non-sibling must be refused");
+        let message = format!("{err:#}");
+        assert!(message.contains(refusal), "got: {message}");
+    }
+
+    assert_eq!(
+        child_ids(&mut raw, &old_parent).await,
+        [&first, &node, &last].map(String::clone)
+    );
+    assert_eq!(child_ids(&mut raw, &new_parent).await, [elsewhere]);
+    assert_eq!(node_version(&mut raw, &node).await, version);
+
+    shutdown.send(()).ok();
+}
+
+/// A second `has_child` edge is refused with the command that moves the node,
+/// and that command, run as printed, does it.
+#[tokio::test]
+async fn second_parent_edge_is_refused_with_the_move_command() {
+    use clap::Parser;
+
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let old_parent = seed_text_node(&mut raw, "old parent", None).await;
+    let new_parent = seed_text_node(&mut raw, "new parent", None).await;
+    let node = seed_text_node(&mut raw, "node", Some(&old_parent)).await;
+
+    let err = commands::relationship::run(
+        &mut client,
+        commands::relationship::RelationshipAction::Create(commands::relationship::CreateArgs {
+            from: new_parent.clone(),
+            relationship_name: "has_child".into(),
+            to: node.clone(),
+            edge_data: None,
+        }),
+        true,
+    )
+    .await
+    .expect_err("a second parent edge must be refused");
+    let message = format!("{err:#}");
+    let command = format!("nodespace node move {node} --parent {new_parent}");
+    assert!(message.contains(&command), "got: {message}");
+    assert_eq!(
+        child_ids(&mut raw, &old_parent).await,
+        std::slice::from_ref(&node)
+    );
+
+    let cli = nodespace_cli::Cli::try_parse_from(command.split(' ')).expect("the command parses");
+    let nodespace_cli::Command::Node { action } = cli.command else {
+        panic!("the refusal's command is not a node command");
+    };
+    commands::node::run(&mut client, action, true)
+        .await
+        .expect("the refusal's command moves the node");
+    assert_eq!(child_ids(&mut raw, &new_parent).await, [node]);
+
+    shutdown.send(()).ok();
+}
+
 /// Seed two `person` nodes sharing the same (case-insensitively) unique
 /// `email`, which trips the create-path `detect_unique_field_collisions`
 /// hook and journals an open `UniqueFieldCollision` record naming both. The

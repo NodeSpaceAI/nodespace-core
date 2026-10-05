@@ -17,7 +17,7 @@ It persists across sessions — what you save today is searchable tomorrow, and 
 - `task` — structured to-do items, with a `status`, a `due_date` (YYYY-MM-DD) and a `priority`
 - `date` — daily container nodes (e.g. "2026-05-30"); each day has one. Attach time-sensitive findings under the relevant date node so they're retrievable by day.
 
-**Hierarchy is first-class edges, not nesting.** A node has one parent edge. Children are ordered via fractional ordering — siblings have a stable position without gap-numbering. Moving or reordering a node is an edge operation (change the parent or sibling position), not a recreate-and-delete.
+**Hierarchy is first-class edges, not nesting.** A node has one parent edge. Children are ordered via fractional ordering — siblings have a stable position without gap-numbering. Moving or reordering a node is an edge operation (change the parent or sibling position), not a recreate-and-delete: `nodespace node move` (`references/cli.md`, *Move a node*).
 
 **Relationships are distinct from hierarchy and mentions.** A relationship is a named edge between two nodes (e.g. `billed_to`, `has_task`) — different from the one parent edge and from inline `mention` links captured from markdown content. A type's schema declares the relationship names its nodes may use. Four structural names are legal between any two nodes with no declaration: `member_of`, `has_child`, `mentions`, `has_role`.
 
@@ -144,8 +144,8 @@ say what to do, and it says how each command is spelled.
 
 All commands accept `--json` for machine-readable output.
 
-**Writing at the version you read.** Every node has a `version`. `node update`
-and `node set-status` take `--version <n>`: the write lands only if the node is
+**Writing at the version you read.** Every node has a `version`. `node update`,
+`node set-status` and `node move` take `--version <n>`: the write lands only if the node is
 still at that version. Otherwise nothing is written and the command reports the
 version given and the current one. After such a conflict, read the node again
 before deciding what to do; never retry with the new number unread.
