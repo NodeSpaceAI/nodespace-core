@@ -308,7 +308,7 @@ describe("pruneDeps", () => {
   test("keeps everything while deps/ is within the budget", () => {
     const deps = depsDir();
     const result = pruneDeps(target, 1);
-    expect(result.emptied).toBe(false);
+    expect(result.outcome).toBe("kept");
     expect(result.sizeGiB).toBeGreaterThan(0);
     expect(readdirSync(deps)).toHaveLength(4);
   });
@@ -319,7 +319,7 @@ describe("pruneDeps", () => {
     const fingerprint = join(target, "debug", ".fingerprint", "nodespace-core-0d6b2f0c1e7a9b34");
     mkdirSync(fingerprint, { recursive: true });
     const result = pruneDeps(target, KIB_16);
-    expect(result.emptied).toBe(true);
+    expect(result.outcome).toBe("emptied");
     expect(result.sizeGiB).toBeGreaterThan(KIB_16);
     expect(existsSync(deps)).toBe(false);
     expect(readdirSync(incremental)).toEqual(["nodespace_core-0j8syoplaewcn"]);
@@ -328,7 +328,7 @@ describe("pruneDeps", () => {
 
   test("leaves deps/ alone when its size can't be read", () => {
     const deps = depsDir();
-    expect(pruneDeps(target, KIB_16, "nodespace-no-such-tool")).toEqual({ sizeGiB: null, emptied: false });
+    expect(pruneDeps(target, KIB_16, "nodespace-no-such-tool")).toEqual({ outcome: "unsized", sizeGiB: null });
     expect(readdirSync(deps)).toHaveLength(4);
   });
 
@@ -338,7 +338,7 @@ describe("pruneDeps", () => {
       writeFileSync(join(elsewhere, "libnodespace_core-0d6b2f0c1e7a9b34.rlib"), "x".repeat(64 * 1024));
       mkdirSync(join(target, "debug"), { recursive: true });
       symlinkSync(elsewhere, join(target, "debug", "deps"));
-      expect(pruneDeps(target, KIB_16)).toEqual({ sizeGiB: null, emptied: false });
+      expect(pruneDeps(target, KIB_16)).toEqual({ outcome: "not-a-directory", sizeGiB: null });
       expect(readdirSync(elsewhere)).toHaveLength(1);
     } finally {
       rmSync(elsewhere, { recursive: true, force: true });
@@ -346,29 +346,40 @@ describe("pruneDeps", () => {
   });
 
   test("a target/ that has never been built has nothing to empty", () => {
-    expect(pruneDeps(join(target, "no-such-target"), KIB_16)).toEqual({ sizeGiB: 0, emptied: false });
+    expect(pruneDeps(join(target, "no-such-target"), KIB_16)).toEqual({ outcome: "absent", sizeGiB: null });
+  });
+
+  test("leaves a deps that is a file alone", () => {
+    mkdirSync(join(target, "debug"), { recursive: true });
+    writeFileSync(join(target, "debug", "deps"), "x".repeat(64 * 1024));
+    expect(pruneDeps(target, KIB_16)).toEqual({ outcome: "not-a-directory", sizeGiB: null });
+    expect(existsSync(join(target, "debug", "deps"))).toBe(true);
   });
 });
 
 describe("formatDepsResult", () => {
   test("says what was kept, and the budget", () => {
-    expect(formatDepsResult({ sizeGiB: 6.94, emptied: false })).toBe(
+    expect(formatDepsResult({ outcome: "kept", sizeGiB: 6.94 })).toBe(
       `  build artifacts (deps/): 6.9 GiB kept (emptied above ${DEPS_BUDGET_GIB} GiB)`
     );
   });
 
-  test("says that deps/ was emptied, and what that costs the run", () => {
-    expect(formatDepsResult({ sizeGiB: 29.04, emptied: true })).toBe(
-      `  build artifacts (deps/): 29.0 GiB, over the ${DEPS_BUDGET_GIB} GiB budget; emptied, so this run rebuilds them (about 2 minutes)`
+  test("says that deps/ was emptied, and that the run rebuilds it", () => {
+    expect(formatDepsResult({ outcome: "emptied", sizeGiB: 29.04 })).toBe(
+      `  build artifacts (deps/): 29.0 GiB, over the ${DEPS_BUDGET_GIB} GiB budget; emptied, so this run rebuilds them`
     );
   });
 
-  test("says when an over-budget deps/ couldn't be removed", () => {
-    expect(formatDepsResult({ sizeGiB: 29.04, emptied: false })).toContain("couldn't be removed");
+  test("says what state a removal that failed partway leaves", () => {
+    expect(formatDepsResult({ outcome: "partly-removed", sizeGiB: 29.04 })).toBe(
+      `  build artifacts (deps/): 29.0 GiB, over the ${DEPS_BUDGET_GIB} GiB budget; could not be fully removed, and this run rebuilds what is missing`
+    );
   });
 
-  test("says when the size was unavailable", () => {
-    expect(formatDepsResult({ sizeGiB: null, emptied: false })).toBe("  build artifacts (deps/): size unavailable, so left alone");
+  test("says why a deps/ was left alone", () => {
+    expect(formatDepsResult({ outcome: "unsized", sizeGiB: null })).toBe("  build artifacts (deps/): size unavailable, so left alone");
+    expect(formatDepsResult({ outcome: "not-a-directory", sizeGiB: null })).toBe("  build artifacts (deps/): not a directory, so left alone");
+    expect(formatDepsResult({ outcome: "absent", sizeGiB: null })).toBe("  build artifacts (deps/): none yet");
   });
 });
 

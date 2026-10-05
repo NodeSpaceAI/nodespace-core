@@ -292,10 +292,10 @@ registerLockRelease(machineSlot);
 // Under the machine slot, so nothing else is compiling into this target/:
 // drop the incremental directories of stacks this checkout no longer builds,
 // and empty deps/ once it is over its budget (gate-disk.ts), then check what
-// is left. Every worktree compiles into its
-// own target/, and the gate can need several gigabytes more. Running out
-// halfway surfaces as a confusing I/O failure in whichever stage hit it, so
-// it is checked before the first compile, with the cause named.
+// is left. Every worktree compiles into its own target/, and the gate can need
+// several gigabytes more. Running out halfway surfaces as a confusing I/O
+// failure in whichever stage hit it, so it is checked before the first
+// compile, with the cause named.
 console.log(formatPruneResult(pruneIncremental(join(process.cwd(), "target"), GATE_INCREMENTAL)));
 console.log(formatDepsResult(pruneDeps(join(process.cwd(), "target"))));
 const refusal = freeSpaceRefusal(freeGiB("."), "the merge gate");

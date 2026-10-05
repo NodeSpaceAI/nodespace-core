@@ -272,10 +272,15 @@ export function formatPruneResult(result: PruneResult): string {
 export const DEPS_BUDGET_GIB = 20;
 
 export interface DepsPruneResult {
-  /** Disk `deps/` used before the prune, or null when it couldn't be measured. */
+  /**
+   * `kept`: within the budget. `emptied`: over it, and removed. `partly-removed`:
+   * over it, and the removal failed partway. `absent`: there is no `deps/`.
+   * `not-a-directory`: it is a symlink or a file. `unsized`: it couldn't be
+   * read or measured. The last three leave it untouched.
+   */
+  outcome: "kept" | "emptied" | "partly-removed" | "absent" | "not-a-directory" | "unsized";
+  /** Disk `deps/` used before the prune, or null when it wasn't measured. */
   sizeGiB: number | null;
-  /** Whether it was over the budget and emptied. */
-  emptied: boolean;
 }
 
 /**
@@ -289,38 +294,45 @@ export interface DepsPruneResult {
  * still in place. Measured: the merge gate's builds took 103 s after an
  * emptying, against 8 s with nothing to do and 392 s from an empty target/.
  *
- * Left alone when its size can't be read, and when it is a symlink.
+ * Unlike the incremental prune it has no second look before it removes, so a
+ * caller runs it only while it holds the machine slot.
  */
 export function pruneDeps(targetDir: string, budgetGiB: number = DEPS_BUDGET_GIB, du: string = "du"): DepsPruneResult {
   const depsDir = join(targetDir, "debug", "deps");
+  if (!existsSync(depsDir)) return { outcome: "absent", sizeGiB: null };
   try {
-    if (!lstatSync(depsDir).isDirectory()) return { sizeGiB: null, emptied: false };
+    // lstat, so a symlink is seen as one and never followed.
+    if (!lstatSync(depsDir).isDirectory()) return { outcome: "not-a-directory", sizeGiB: null };
   } catch {
-    return { sizeGiB: 0, emptied: false };
+    return { outcome: "unsized", sizeGiB: null };
   }
   const kib = diskUsageKiB([depsDir], du).get(depsDir);
-  if (kib === undefined) return { sizeGiB: null, emptied: false };
+  if (kib === undefined) return { outcome: "unsized", sizeGiB: null };
   const sizeGiB = kib / KIB_PER_GIB;
-  if (sizeGiB <= budgetGiB) return { sizeGiB, emptied: false };
+  if (sizeGiB <= budgetGiB) return { outcome: "kept", sizeGiB };
   try {
     // Cargo creates the directory again on its next build.
     rmSync(depsDir, { recursive: true, force: true });
-    return { sizeGiB, emptied: true };
+    return { outcome: "emptied", sizeGiB };
   } catch {
-    // Partly removed is safe: cargo rebuilds whatever is missing.
-    return { sizeGiB, emptied: false };
+    // Safe: cargo rebuilds whatever is missing.
+    return { outcome: "partly-removed", sizeGiB };
   }
 }
 
 /** The one line a run prints about `deps/`. */
 export function formatDepsResult(result: DepsPruneResult, budgetGiB: number = DEPS_BUDGET_GIB): string {
-  if (result.sizeGiB === null) return "  build artifacts (deps/): size unavailable, so left alone";
-  const size = `${result.sizeGiB.toFixed(1)} GiB`;
-  if (result.emptied) {
-    return `  build artifacts (deps/): ${size}, over the ${budgetGiB} GiB budget; emptied, so this run rebuilds them (about 2 minutes)`;
-  }
-  if (result.sizeGiB > budgetGiB) return `  build artifacts (deps/): ${size}, over the ${budgetGiB} GiB budget, but couldn't be removed`;
-  return `  build artifacts (deps/): ${size} kept (emptied above ${budgetGiB} GiB)`;
+  const size = result.sizeGiB === null ? "" : `${result.sizeGiB.toFixed(1)} GiB`;
+  const over = `${size}, over the ${budgetGiB} GiB budget`;
+  const said = {
+    kept: `${size} kept (emptied above ${budgetGiB} GiB)`,
+    emptied: `${over}; emptied, so this run rebuilds them`,
+    "partly-removed": `${over}; could not be fully removed, and this run rebuilds what is missing`,
+    absent: "none yet",
+    "not-a-directory": "not a directory, so left alone",
+    unsized: "size unavailable, so left alone",
+  }[result.outcome];
+  return `  build artifacts (deps/): ${said}`;
 }
 
 /** Free space in GiB on the disk holding `path`, or null when it can't be read. */

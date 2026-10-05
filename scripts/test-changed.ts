@@ -70,12 +70,15 @@ if (scope.rust) {
   }
   registerLockRelease(slot);
   // Under the slot, before the first compile: drop this worktree's superseded
-  // incremental directories and empty an over-budget deps/ (gate-disk.ts), then refuse a disk too full to
-  // build on. A build that fills the disk fails partway with an I/O error and
-  // stops every other session on the machine with it. That is this machine's
-  // fault, not the change's, so it exits like the merge gate's refusal.
+  // incremental directories and empty an over-budget deps/ (gate-disk.ts),
+  // then refuse a disk too full to build on. A build that fills the disk fails
+  // partway with an I/O error and stops every other session on the machine
+  // with it. That is this machine's fault, not the change's, so it exits like
+  // the merge gate's refusal.
   console.log(formatPruneResult(pruneIncremental(join(process.cwd(), "target"), WORKTREE_INCREMENTAL)));
-  console.log(formatDepsResult(pruneDeps(join(process.cwd(), "target"))));
+  // Only with the slot: a run that opted out of the lock may be building
+  // beside another, and emptying deps/ under a running compile fails it.
+  if (slot.held) console.log(formatDepsResult(pruneDeps(join(process.cwd(), "target"))));
   const refusal = freeSpaceRefusal(freeGiB("."), "the test:changed Rust tier");
   if (refusal !== null) {
     console.error(refusal);
