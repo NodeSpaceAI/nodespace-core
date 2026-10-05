@@ -3,5 +3,5 @@
 # To bump it, see "Rust toolchain" in CLAUDE.md.
 [toolchain]
 channel = "1.97.0"
-components = ["clippy", "rustfmt"]
+components = ["clippy", "rustfmt", "rust-src"]
 profile = "minimal"

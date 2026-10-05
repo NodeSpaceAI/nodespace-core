@@ -144,7 +144,7 @@ describe("the Rust toolchain pin", () => {
     expect(workflow).not.toContain("rust-toolchain@");
     // Each job that compiles Rust has one Rust cache step.
     const compilingJobs = workflow.match(/uses: swatinem\/rust-cache@/g) ?? [];
-    const installs = workflow.match(/rustup toolchain install\n\s+rustup target add \S+/g) ?? [];
+    const installs = workflow.match(/rustup toolchain install[^\n]*\n\s+rustup target add \S+/g) ?? [];
     expect(compilingJobs.length).toBeGreaterThan(0);
     expect(installs.length).toBe(compilingJobs.length);
   });

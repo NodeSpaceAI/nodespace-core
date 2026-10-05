@@ -71,7 +71,7 @@ jobs:
       - name: Install the pinned Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install
+          rustup toolchain install --no-self-update
           rustup target add aarch64-apple-darwin
 
       - name: Rust cache
@@ -299,7 +299,7 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         shell: bash
         run: |
-          rustup toolchain install
+          rustup toolchain install --no-self-update
           rustup target add ${{ matrix.rust_targets }}
 
       - name: Rust cache
@@ -441,7 +441,7 @@ jobs:
       - name: Install the pinned Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install
+          rustup toolchain install --no-self-update
           rustup target add aarch64-apple-darwin
 
       - name: Rust cache
@@ -719,7 +719,7 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         shell: bash
         run: |
-          rustup toolchain install
+          rustup toolchain install --no-self-update
           rustup target add ${{ matrix.target }}
 
       - name: Rust cache
