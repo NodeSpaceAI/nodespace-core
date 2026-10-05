@@ -58,6 +58,14 @@ impl ScopeContext {
     }
 }
 
+/// What a node query leaves out in the statement, beyond its filter.
+enum QueryNarrowing<'a> {
+    /// These types, and every type extending one of them.
+    Excluding(&'a [crate::models::CoreNodeType]),
+    /// What a listing in the `Knowledge` search scope leaves out.
+    Knowledge(crate::db::KnowledgeListing),
+}
+
 /// The fields a queried scope declares that one subtype's nodes store outside
 /// the scope's buckets (ADR-078), for [`NodeService::project_nodes_to_scope`].
 struct RelocatedFields {
@@ -167,6 +175,28 @@ impl NodeService {
         filter: NodeFilter,
         excluded: &[crate::models::CoreNodeType],
     ) -> Result<Vec<Node>, NodeServiceError> {
+        self.query_nodes_with(filter, QueryNarrowing::Excluding(excluded))
+            .await
+    }
+
+    /// [`Self::query_nodes`] as a listing in the `Knowledge` search scope.
+    ///
+    /// The store leaves out what `listing` names in the statement, ahead of
+    /// `limit`.
+    pub async fn list_knowledge_nodes(
+        &self,
+        filter: NodeFilter,
+        listing: crate::db::KnowledgeListing,
+    ) -> Result<Vec<Node>, NodeServiceError> {
+        self.query_nodes_with(filter, QueryNarrowing::Knowledge(listing))
+            .await
+    }
+
+    async fn query_nodes_with(
+        &self,
+        filter: NodeFilter,
+        narrowing: QueryNarrowing<'_>,
+    ) -> Result<Vec<Node>, NodeServiceError> {
         // Property filters are evaluated in memory (ADR-078 scope resolution
         // needs per-row schema context SQL can't express), so offset/limit can
         // only apply AFTER filtering: fetch the whole type-scoped set, unpaged.
@@ -195,11 +225,15 @@ impl NodeService {
             include_archived: filter.include_archived,
         };
 
-        let nodes = self
-            .store
-            .query_nodes_excluding(query, excluded)
-            .await
-            .map_err(NodeServiceError::from_store)?;
+        let nodes = match narrowing {
+            QueryNarrowing::Excluding(excluded) => {
+                self.store.query_nodes_excluding(query, excluded).await
+            }
+            QueryNarrowing::Knowledge(listing) => {
+                self.store.list_knowledge_nodes(query, listing).await
+            }
+        }
+        .map_err(NodeServiceError::from_store)?;
 
         // Apply property filters in-memory if present
         let result_nodes = if let Some(ref property_filters) = filter.property_filters {

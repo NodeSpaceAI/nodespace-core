@@ -15,6 +15,95 @@ pub type BulkNodeRow = (
     Option<String>,
 );
 
+/// What a listing in the `Knowledge` search scope leaves out. See
+/// [`SqliteStore::list_knowledge_nodes`].
+///
+/// Every such listing leaves out a fragment of a system root: a node whose
+/// own type the scope returns, sitting under a root whose type it does not.
+/// The paragraphs of a skill are `text` nodes, but they are the skill's body
+/// and not the user's own. A node whose own type is outside the scope is not
+/// judged by its root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KnowledgeListing {
+    /// Also leave out every node whose own type the scope does not return.
+    /// Off for a listing that names its types, which gets those types.
+    pub scope_types_only: bool,
+}
+
+/// The core types the `Knowledge` search scope does not return. A
+/// user-defined type is never one of them, whatever it extends.
+fn system_types() -> Vec<crate::models::CoreNodeType> {
+    crate::models::CoreNodeType::ALL
+        .into_iter()
+        .filter(|t| !crate::services::embedding_service::KNOWLEDGE_CORE_TYPES.contains(t))
+        .collect()
+}
+
+/// The conditions of a [`KnowledgeListing`] on the `node` row `row` (the
+/// table's name or its alias).
+///
+/// The type check is the SQL form of
+/// [`crate::services::NodeEmbeddingService::matches_scope`] for the
+/// `Knowledge` scope and must stay in step with it: one of the scope's core
+/// types or a user-defined type (the id of a schema that is not built in),
+/// and not a built-in schema.
+///
+/// The fragment check walks `has_child` up from the row to its root. Each
+/// step is a correlated subquery on the node it leaves, which the
+/// `(out_node, relationship_type)` index serves; a `JOIN` would let SQLite
+/// drive the walk from `idx_rel_type` and scan every `has_child` edge per
+/// step. The arms are joined with `UNION`, so a cycle ends the walk.
+fn knowledge_listing_conditions(row: &str, listing: KnowledgeListing) -> Vec<String> {
+    use crate::db::schema::{is_core_schema_sql, is_exactly_one_of_sql};
+
+    let own_type = format!("{row}.node_type");
+    let system = system_types();
+    let parent_edge =
+        "FROM relationship r WHERE r.out_node = up.nid AND r.relationship_type = 'has_child'";
+    let mut conditions = Vec::new();
+
+    if listing.scope_types_only {
+        conditions.push(format!(
+            "({knowledge} OR {own_type} IN (SELECT s.id FROM node s WHERE {user_schema})) \
+             AND NOT {core_schema}",
+            knowledge = is_exactly_one_of_sql(
+                &own_type,
+                crate::services::embedding_service::KNOWLEDGE_CORE_TYPES
+            ),
+            user_schema = format_args!(
+                "{} AND NOT {}",
+                crate::db::schema::is_exactly_sql(
+                    "s.node_type",
+                    crate::models::CoreNodeType::Schema
+                ),
+                is_core_schema_sql("s")
+            ),
+            core_schema = is_core_schema_sql(row),
+        ));
+    }
+
+    conditions.push(format!(
+        "({own_is_system} OR NOT EXISTS (\
+            WITH RECURSIVE up(nid) AS (\
+                SELECT {row}.id \
+                UNION \
+                SELECT (SELECT r.in_node {parent_edge}) FROM up \
+                 WHERE EXISTS (SELECT 1 {parent_edge})\
+            ) \
+            SELECT 1 FROM up \
+             WHERE up.nid <> {row}.id \
+               AND NOT EXISTS (SELECT 1 {parent_edge}) \
+               AND {root_is_system}))",
+        own_is_system = is_exactly_one_of_sql(&own_type, &system),
+        root_is_system = is_exactly_one_of_sql(
+            "(SELECT t.node_type FROM node t WHERE t.id = up.nid)",
+            &system
+        ),
+    ));
+
+    conditions
+}
+
 /// Token cap on an entity-resolution query. Matches `BM25_MAX_TOKENS`'s intent
 /// — bound a long message to a fixed query cost — but is its own constant
 /// because the two searches answer different questions.
@@ -1887,6 +1976,32 @@ impl SqliteStore {
         query: NodeQuery,
         excluded: &[crate::models::CoreNodeType],
     ) -> Result<Vec<Node>> {
+        self.query_nodes_where(query, excluded, Vec::new()).await
+    }
+
+    /// [`Self::query_nodes`] as a listing in the `Knowledge` search scope:
+    /// the rows `listing` leaves out are left out by the statement, ahead of
+    /// `limit`, so a page holds `limit` rows whenever that many belong.
+    ///
+    /// For a query with no `mentioned_by`, which is its own statement and
+    /// takes no scope.
+    pub async fn list_knowledge_nodes(
+        &self,
+        query: NodeQuery,
+        listing: KnowledgeListing,
+    ) -> Result<Vec<Node>> {
+        self.query_nodes_where(query, &[], knowledge_listing_conditions("node", listing))
+            .await
+    }
+
+    /// [`Self::query_nodes_excluding`] with `extra` conditions on the `node`
+    /// row, each ANDed into every statement but the `mentioned_by` one.
+    async fn query_nodes_where(
+        &self,
+        query: NodeQuery,
+        excluded: &[crate::models::CoreNodeType],
+        extra: Vec<String>,
+    ) -> Result<Vec<Node>> {
         if let Some(ref mentioned_node_id) = query.mentioned_by {
             let sql = format!(
                 "SELECT n.* FROM node n JOIN relationship r ON r.in_node = n.id WHERE r.out_node = ?1 AND r.relationship_type = 'mentions'{}{}",
@@ -1918,6 +2033,7 @@ impl SqliteStore {
         let (mut conditions, bind_values) =
             Self::build_scalar_conditions_with_subtypes(&query, subtypes.as_deref());
         conditions.extend(crate::governance::excluded_types_sql("node_type", excluded));
+        conditions.extend(extra);
 
         // id-scoping (e.g. a collection's members). Build `id IN (…)` and
         // CHUNK it under SQLite's bound-parameter ceiling so a large member set
@@ -5967,6 +6083,55 @@ mod large_subtree_chunking_tests {
             assert_eq!(
                 node.version, 2,
                 "{id}'s version must be bumped so a stale OCC write against it fails"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod knowledge_listing_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// The listing's root walk must reach `relationship` by the node it is
+    /// leaving, through `idx_rel_out (out_node, relationship_type)`, and
+    /// never drive off `idx_rel_type`, which scans every `has_child` edge per
+    /// step. The statement is the one a newest-first listing runs, with the
+    /// conditions built by the same function.
+    #[tokio::test]
+    async fn knowledge_listing_walks_to_the_root_by_the_endpoint_index() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let store = SqliteStore::new(temp_dir.path().join("test.db")).await?;
+
+        for scope_types_only in [true, false] {
+            let conditions =
+                knowledge_listing_conditions("node", KnowledgeListing { scope_types_only });
+            let sql = format!(
+                "EXPLAIN QUERY PLAN SELECT * FROM node WHERE {} ORDER BY {} LIMIT 20",
+                conditions.join(" AND "),
+                SqliteStore::order_by_sql(&OrderBy::ModifiedDesc)
+            );
+            let mut rows = store
+                .read()
+                .await?
+                .query(&sql, ())
+                .await
+                .context("Failed to run EXPLAIN QUERY PLAN")?;
+            let mut detail = String::new();
+            while let Some(row) = rows.next().await? {
+                let d: String = row.get(3)?; // (id, parent, notused, detail)
+                detail.push_str(&d);
+                detail.push(' ');
+            }
+
+            assert!(
+                detail.contains("idx_rel_out"),
+                "the root walk should use idx_rel_out; plan was: {detail}"
+            );
+            assert!(
+                !detail.contains("idx_rel_type"),
+                "the root walk must not drive off idx_rel_type; plan was: {detail}"
             );
         }
         Ok(())

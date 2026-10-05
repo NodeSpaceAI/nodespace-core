@@ -823,7 +823,7 @@ mod embeddings;
 pub(crate) use embeddings::{composite_similarity_score, cosine_similarity};
 mod nodes;
 pub(crate) use nodes::NodeMove;
-pub use nodes::{BulkNodeRow, ChildPlacement, ResolvedEntity};
+pub use nodes::{BulkNodeRow, ChildPlacement, KnowledgeListing, ResolvedEntity};
 mod relationship_paths;
 pub(crate) use relationship_paths::path_reaches_condition;
 pub use relationship_paths::PathReach;

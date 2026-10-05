@@ -369,6 +369,26 @@ pub fn is_exactly_sql(column: &str, core: crate::models::CoreNodeType) -> String
     format!("{column} = '{}'", core.as_str())
 }
 
+/// A SQL predicate that is true when `column` holds exactly one of `types`.
+/// A type extending one of them does not match: for a rule that names core
+/// types and does not pass to their subtypes.
+pub fn is_exactly_one_of_sql(column: &str, types: &[crate::models::CoreNodeType]) -> String {
+    format!("{column} IN ({})", sql_type_list(types))
+}
+
+/// A SQL predicate that is true when the `node` row `row` (a table name, an
+/// alias, or a trigger's `old` / `new`) is a built-in schema: the SQL form of
+/// [`crate::models::schema_node::is_core_schema`], and it must stay in step.
+pub fn is_core_schema_sql(row: &str) -> String {
+    format!(
+        "({} AND coalesce(json_type({row}.properties, '$.isCore') = 'true', 0))",
+        is_exactly_sql(
+            &format!("{row}.node_type"),
+            crate::models::CoreNodeType::Schema
+        )
+    )
+}
+
 /// Registry type ids as a quoted SQL list: `'collection', 'schema'`.
 fn sql_type_list(types: &[crate::models::CoreNodeType]) -> String {
     types
@@ -543,13 +563,12 @@ async fn create_schema_objects(conn: &libsql::Connection) -> Result<()> {
     // schema delete refusal reads `isCore` from the row, so an update that
     // clears it — or retypes the row away from `schema` — would make a core
     // type deletable; one that sets it would make a user type undeletable.
-    let old_is_schema = is_exactly_sql("old.node_type", crate::models::CoreNodeType::Schema);
-    let new_is_schema = is_exactly_sql("new.node_type", crate::models::CoreNodeType::Schema);
+    let old_is_core = is_core_schema_sql("old");
+    let new_is_core = is_core_schema_sql("new");
     conn.execute(
         &format!(
             r#"CREATE TRIGGER IF NOT EXISTS schema_core_status_fixed BEFORE UPDATE OF node_type, properties ON node
-            WHEN ({old_is_schema} AND coalesce(json_type(old.properties, '$.isCore') = 'true', 0))
-              IS NOT ({new_is_schema} AND coalesce(json_type(new.properties, '$.isCore') = 'true', 0))
+            WHEN {old_is_core} IS NOT {new_is_core}
             BEGIN
                 SELECT RAISE(ABORT, 'schema_is_core: whether a schema is core is fixed when it is created');
             END"#
