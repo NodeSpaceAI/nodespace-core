@@ -23,7 +23,7 @@
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import type { AiChatPtyNode } from '$lib/types/ai-chat-node';
-  import type { ProjectNode } from '$lib/types/project-node';
+  import { isProjectNode, type ProjectNode } from '$lib/types/project-node';
   import {
     getCaptureSettings,
     updateCaptureSettings,
@@ -164,7 +164,7 @@
   async function loadProjects(): Promise<void> {
     try {
       const nodes = await backendAdapter.queryNodes({ nodeType: 'project' });
-      projects = Array.isArray(nodes) ? (nodes as unknown as ProjectNode[]) : [];
+      projects = Array.isArray(nodes) ? nodes.filter(isProjectNode) : [];
     } catch (e) {
       log.warn('Failed to load projects', e);
     }

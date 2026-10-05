@@ -12,8 +12,9 @@
 //!
 //! The agent runs in the working directory the launch names: a project's
 //! folder on this machine (ADR-093 §8). A launch that names none runs in a
-//! private folder at `~/.nodespace/agent-sessions/<session-uuid>/`, which is
-//! not deleted when the session ends. Nothing is written into either at
+//! private folder the launch says where to create (the daemon's
+//! `agent-sessions/<session-uuid>/`), which is not deleted when the session
+//! ends. Nothing is written into either at
 //! launch: the session gets NodeSpace's context through its harness plugin
 //! and the `nodespace` CLI, which the environment set here points at the
 //! right database.
@@ -100,8 +101,12 @@ pub struct SessionLaunch {
     /// The `ai-chat-pty` node the session is a view onto, when there is one.
     pub node_id: Option<String>,
     /// The folder the agent runs in: the project's, on this machine. `None`
-    /// runs it in a private session folder.
+    /// runs it in a private folder created under `session_folders`.
     pub working_dir: Option<PathBuf>,
+    /// Where a session with no working directory of its own gets a private
+    /// folder, named by its id. The caller decides it, so it follows wherever
+    /// the caller keeps NodeSpace's state.
+    pub session_folders: Option<PathBuf>,
     /// What NodeSpace sets in the session's environment on top of the
     /// allowlist: the database, the daemon socket and what the session was
     /// launched for. [`SESSION_ENV_VAR`] is added by the launch itself.
@@ -116,6 +121,7 @@ impl SessionLaunch {
             initial_prompt: None,
             node_id: None,
             working_dir: None,
+            session_folders: None,
             env: Vec::new(),
         }
     }
@@ -188,7 +194,7 @@ pub struct PtySession {
     harness_session_id: std::sync::Mutex<Option<String>>,
 
     /// The folder the agent runs in: the project's, or the session's private
-    /// folder at `~/.nodespace/agent-sessions/<uuid>/`.
+    /// folder.
     pub working_dir: PathBuf,
 }
 
@@ -216,7 +222,7 @@ impl PtySession {
     ///
     /// 1. Generate a session UUID.
     /// 2. Take the launch's working directory, or create the session's
-    ///    private folder at `~/.nodespace/agent-sessions/<uuid>/`.
+    ///    private folder, `<session_folders>/<uuid>/`.
     /// 3. Resolve the agent binary on `search_path`, the one detection used.
     /// 4. Open a PTY pair and spawn the binary there, with the allowlisted
     ///    environment plus what the launch sets, and `search_path` as its
@@ -228,6 +234,7 @@ impl PtySession {
             initial_prompt,
             node_id,
             working_dir,
+            session_folders,
             mut env,
         } = launch;
         let session_id = Uuid::new_v4();
@@ -246,10 +253,10 @@ impl PtySession {
         let working_dir = match working_dir {
             Some(dir) => dir,
             None => {
-                let dir = dirs::home_dir()
-                    .context("HOME not set")?
-                    .join(".nodespace")
-                    .join("agent-sessions")
+                let dir = session_folders
+                    .context(
+                        "the launch names neither a working directory nor where to create one",
+                    )?
                     .join(session_id.to_string());
                 std::fs::create_dir_all(&dir)
                     .with_context(|| format!("create session dir {}", dir.display()))?;
@@ -746,7 +753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_dir_persists_after_process_exit_and_session_drop() {
+    async fn the_working_directory_outlives_the_process_and_the_session() {
         let session = PtySession::launch_for_test("sh", vec!["-c".into(), "echo done".into()])
             .expect("launch echo session");
 
@@ -1006,17 +1013,14 @@ mod tests {
     #[tokio::test]
     async fn an_agents_own_variables_are_forwarded_and_no_others() {
         let _config = EnvVarGuard::set("CLAUDE_CONFIG_DIR", "/profiles/work");
-        let _other = EnvVarGuard::set("NODESPACE_TEST_NOT_LISTED_3547", "should-not-leak");
+        let _other = EnvVarGuard::set("NODESPACE_TEST_NOT_LISTED", "should-not-leak");
 
         let (_, claude) = run_as_launched(SessionLaunch::new(AgentType::ClaudeCode), "env").await;
         assert!(
             claude.contains("CLAUDE_CONFIG_DIR=/profiles/work"),
             "{claude:?}"
         );
-        assert!(
-            !claude.contains("NODESPACE_TEST_NOT_LISTED_3547"),
-            "{claude:?}"
-        );
+        assert!(!claude.contains("NODESPACE_TEST_NOT_LISTED"), "{claude:?}");
 
         let (_, codex) = run_as_launched(SessionLaunch::new(AgentType::Codex), "env").await;
         assert!(!codex.contains("CLAUDE_CONFIG_DIR"), "{codex:?}");

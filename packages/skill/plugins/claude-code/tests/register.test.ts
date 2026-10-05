@@ -27,6 +27,7 @@ type World = {
   isListFailing: boolean
   /** The chat node the launched session is a view onto, as a report answers it. */
   chatNode: string | null
+  isReportFailing: boolean
   calls: string[][]
   projectFilters: string[]
   statuses: (string | undefined)[]
@@ -54,6 +55,7 @@ function world(over: Partial<World> = {}): World {
     isContextFailing: false,
     isListFailing: false,
     chatNode: 'c1',
+    isReportFailing: false,
     calls: [],
     projectFilters: [],
     statuses: [],
@@ -109,7 +111,9 @@ function answer(w: World, argv: readonly string[]) {
   }
 
   if (args[0] === 'session' && args[1] === 'report-harness-session') {
-    return ok({ session_id: 'pty-1', node_id: w.chatNode })
+    return w.isReportFailing
+      ? failed('unrecognized subcommand')
+      : ok({ session_id: 'pty-1', node_id: w.chatNode })
   }
 
   if (args[0] === 'node' && args[1] === 'context') {
@@ -140,13 +144,26 @@ function answer(w: World, argv: readonly string[]) {
 /** Everything beneath the plugin: the host commands, the status line, and core. */
 function host(on: On, w: World, env: Record<string, string> = {}, toolText = '') {
   const clock = mock.clock(on, { now: 1_000_000 })
-  const seen: { context: (readonly string[] | undefined)[]; tools: number; onTool: () => void } = {
+  const seen: {
+    context: (readonly string[] | undefined)[]
+    tools: number
+    onTool: () => void
+    unset: string[]
+  } = {
     context: [],
     tools: 0,
     onTool: () => {},
+    unset: [],
   }
 
   mock.env(on, env)
+  on('env.set', (_, e) => {
+    if (e.value === undefined) {
+      seen.unset.push(e.name)
+    }
+
+    return { value: undefined }
+  })
   on('process.run', async (_, e) => {
     w.calls.push([...e.argv])
 
@@ -335,8 +352,39 @@ describe('a session NodeSpace launched', () => {
     await $.session.start(START)
 
     expect(reports(w)).toEqual([
-      ['nodespace', '--database', 'db2', '--json', 'session', 'report-harness-session', 'harness-1'],
+      [
+        'nodespace',
+        '--database',
+        'db2',
+        '--json',
+        'session',
+        'report-harness-session',
+        'harness-1',
+        '--session',
+        'pty-1',
+      ],
     ])
+  })
+
+  test('the launch is taken out of the environment, so nothing the agent starts inherits it', async ($, on) => {
+    const w = world()
+    const { seen } = host(on, w, { ...LAUNCHED, NODESPACE_LAUNCHED_FOR: 't1' })
+
+    await $.session.start(START)
+
+    expect([...seen.unset].sort()).toEqual(['NODESPACE_LAUNCHED_FOR', 'NODESPACE_SESSION'])
+  })
+
+  test('when the report is not answered nothing is opened: what was named may be the chat node', async ($, on) => {
+    const w = world({ isReportFailing: true })
+    const { seen } = host(on, w, { ...LAUNCHED, NODESPACE_LAUNCHED_FOR: 'c1' })
+
+    await $.session.start(START)
+    await $.prompt.submit(prompt('hello'))
+
+    expect(reports(w)).toHaveLength(1)
+    expect(seen.context).toEqual([undefined])
+    expect(nodespaceCalls(w).some(argv => argv.includes('context'))).toBe(false)
   })
 
   test('a session started from a terminal reports nothing and opens with nothing', async ($, on) => {

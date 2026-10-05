@@ -10,6 +10,15 @@ export type NodespaceSkill = {
 }
 
 /**
+ * What NodeSpace named when it launched this session: the PTY session's id
+ * and what the session was launched for (`''` for nothing).
+ */
+export type NodespaceLaunch = {
+  session: string
+  launchedFor: string
+}
+
+/**
  * What the plugin read at session start, and again after a compaction or a
  * `/clear`. `section` is the system prompt text built from that read: it is
  * kept, not rebuilt, so the prompt stays the same until the next read.
@@ -21,6 +30,11 @@ export type NodespaceSession = {
   section: string | null
   skills: NodespaceSkill[]
   listVersion: string
+  /**
+   * Set in a session NodeSpace launched. Read from the environment once and
+   * kept here, since the variables are then removed from it.
+   */
+  launch: NodespaceLaunch | null
   /**
    * In a session NodeSpace launched for an item: that item's context, as a
    * note for the next prompt. `null` once it has been delivered.

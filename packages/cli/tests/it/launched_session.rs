@@ -19,7 +19,7 @@ use nodespace_cli::{
 };
 use nodespace_daemon::nodespace::{
     CreateDatabaseRequest, CreateNodeRequest, GetNodeRequest, LaunchSessionRequest,
-    StreamOutputRequest, WriteInputRequest,
+    StreamOutputRequest, TerminateSessionRequest, UpdateNodeRequest, WriteInputRequest,
 };
 use nodespace_daemon::{
     AgentSessionServiceServer, DatabaseManager, DatabaseServiceImpl, DatabaseServiceServer,
@@ -79,8 +79,9 @@ fn write_agent(bin: &Path, task_id: &str) {
         r#"#!/bin/sh
 read _go
 echo "CWD=$(pwd -P)"
-echo "LAUNCHED_FOR=$NODESPACE_LAUNCHED_FOR"
+echo "LAUNCHED_FOR=${{NODESPACE_LAUNCHED_FOR-unset}}"
 echo "DATABASE=$NODESPACE_DATABASE"
+echo "PATH=$PATH"
 '{nodespace}' node get {task_id}
 echo "GET-EXIT=$?"
 '{nodespace}' session report-harness-session "harness-$NODESPACE_SESSION"
@@ -295,6 +296,19 @@ async fn a_session_launched_for_a_project_runs_in_its_folder_against_its_databas
     assert_eq!(refused.code(), Code::FailedPrecondition);
     assert!(refused.message().contains("Widgets"), "{refused}");
 
+    // A launch refused for another reason stores no folder: here, a task
+    // that does not exist.
+    let unknown_task = session
+        .launch_session(LaunchSessionRequest {
+            project_folder: Some(checkout.display().to_string()),
+            task_id: Some("no-such-task".into()),
+            ..launch_for(&project_id)
+        })
+        .await
+        .expect_err("an unknown task is refused");
+    assert_eq!(unknown_task.code(), Code::NotFound);
+    assert!(properties(&mut node, &project_id).await["project"]["checkout_path"].is_null());
+
     // A folder that does not exist is refused, and not remembered.
     let missing = session
         .launch_session(LaunchSessionRequest {
@@ -346,11 +360,25 @@ async fn a_session_launched_for_a_project_runs_in_its_folder_against_its_databas
         properties(&mut node, &project_id).await["project"]["checkout_path"],
         checkout.display().to_string()
     );
+    // The agent's PATH is the search path it was found on, so it can run what
+    // detection saw.
+    let bin = daemon.home.path().join("bin");
+    assert!(
+        output.contains(&format!("PATH={}:", bin.display())),
+        "{output}"
+    );
+
     let again = session
         .launch_session(launch_for(&project_id))
         .await
         .expect("the remembered folder is used")
         .into_inner();
+    session
+        .terminate_session(TerminateSessionRequest {
+            session_id: again.session_id.clone(),
+        })
+        .await
+        .expect("end the second session");
     assert_eq!(Path::new(&again.working_dir), checkout);
 
     // The session's end records the id the agent reported for itself.
@@ -443,11 +471,17 @@ async fn a_launch_with_no_project_runs_in_a_private_folder_with_the_environment_
         .await
         .expect("launch with no project")
         .into_inner();
+    // Under the daemon's own home, not the home of whoever runs the test.
     let working_dir = PathBuf::from(&launched.working_dir);
-    assert!(
-        working_dir.ends_with(Path::new("agent-sessions").join(&launched.session_id)),
-        "{}",
-        working_dir.display()
+    assert_eq!(
+        working_dir,
+        daemon
+            .home
+            .path()
+            .join("nodespace-home")
+            .join(".nodespace")
+            .join("agent-sessions")
+            .join(&launched.session_id)
     );
 
     let output = run_agent(&mut session, &launched.session_id).await;
@@ -457,10 +491,35 @@ async fn a_launch_with_no_project_runs_in_a_private_folder_with_the_environment_
     );
     assert!(output.contains("GET-EXIT=0"), "{output}");
     // Nothing was launched for, so the variable is absent, not empty.
-    assert!(output.contains("LAUNCHED_FOR=\r\n"), "{output}");
+    assert!(output.contains("LAUNCHED_FOR=unset\r\n"), "{output}");
     // No context file and no copy of the skill are written.
     assert_eq!(std::fs::read_dir(&working_dir).unwrap().count(), 0);
 
     send_line(&mut session, &launched.session_id).await;
-    let _ = std::fs::remove_dir(&working_dir);
+}
+
+/// The stored folder can be written by any update of the project, so a launch
+/// checks it as it checks one it is handed.
+#[tokio::test]
+async fn a_stored_folder_that_is_not_absolute_refuses_the_launch() {
+    let daemon = spawn_daemon().await;
+    let mut node = daemon.node().await;
+    let mut session = daemon.session().await;
+    let project_id = create(&mut node, "project", "Widgets", "").await;
+    write_agent(&daemon.home.path().join("bin"), "unused");
+
+    node.update_node(UpdateNodeRequest {
+        node_id: project_id.clone(),
+        properties: Some(r#"{"checkout_path":"."}"#.into()),
+        ..Default::default()
+    })
+    .await
+    .expect("store a relative folder");
+
+    let refused = session
+        .launch_session(launch_for(&project_id))
+        .await
+        .expect_err("a relative folder is not where a session runs");
+    assert_eq!(refused.code(), Code::FailedPrecondition);
+    assert!(refused.message().contains("absolute path"), "{refused}");
 }

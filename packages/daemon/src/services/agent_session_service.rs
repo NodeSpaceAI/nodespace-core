@@ -119,27 +119,17 @@ impl AgentSessionHandler {
                     project.content
                 ))
             })?;
-            let folder = PathBuf::from(stored);
-            if !folder.is_dir() {
-                return Err(Status::failed_precondition(format!(
-                    "the folder of project '{}' is not a directory on this machine: {stored}",
+            // The stored value can be written by any update of the project,
+            // so it gets the checks a named folder gets.
+            return checked_folder(stored).map_err(|problem| {
+                Status::failed_precondition(format!(
+                    "the folder of project '{}' cannot be used: {problem}",
                     project.content
-                )));
-            }
-            return Ok(folder);
+                ))
+            });
         };
 
-        let folder = PathBuf::from(given);
-        if !folder.is_absolute() {
-            return Err(Status::invalid_argument(format!(
-                "a project's folder is an absolute path, got: {given}"
-            )));
-        }
-        if !folder.is_dir() {
-            return Err(Status::invalid_argument(format!(
-                "not a directory on this machine: {given}"
-            )));
-        }
+        let folder = checked_folder(given).map_err(Status::invalid_argument)?;
         if stored != Some(given) {
             self.node_service
                 .update_project_node(
@@ -151,14 +141,35 @@ impl AgentSessionHandler {
                     },
                 )
                 .await
-                .map_err(|e| {
-                    Status::internal(format!(
-                        "storing the folder of project {project_id} failed: {e}"
-                    ))
+                .map_err(|e| match e {
+                    // The project changed between the read and the write.
+                    nodespace_core::services::NodeServiceError::VersionConflict { .. } => {
+                        Status::aborted(format!(
+                            "project {project_id} changed while its folder was being stored: launch again"
+                        ))
+                    }
+                    other => Status::internal(format!(
+                        "storing the folder of project {project_id} failed: {other}"
+                    )),
                 })?;
         }
         Ok(folder)
     }
+}
+
+/// A project's folder as a path a session can run in: absolute, and an
+/// existing directory on this machine. The error says which it is not.
+fn checked_folder(folder: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(folder);
+    if !path.is_absolute() {
+        return Err(format!(
+            "a project's folder is an absolute path, got: {folder}"
+        ));
+    }
+    if !path.is_dir() {
+        return Err(format!("not a directory on this machine: {folder}"));
+    }
+    Ok(path)
 }
 
 #[tonic::async_trait]
@@ -182,11 +193,14 @@ impl AgentSessionService for AgentSessionHandler {
         // std::process::Command on macOS — a blocking call that must not run
         // on a Tokio executor thread.
         let manager = this.manager.clone();
-        let availability = tokio::task::spawn_blocking(move || {
-            manager
-                .detect_agents()
-                .into_iter()
-                .find(|a| a.agent_type == agent_type)
+        // The path the agent is found ready on is the one it is launched
+        // with: built once, used for both.
+        let (availability, search_path) = tokio::task::spawn_blocking(move || {
+            let (agents, path) = manager.detect_agents_with_path();
+            (
+                agents.into_iter().find(|a| a.agent_type == agent_type),
+                path,
+            )
         })
         .await
         .map_err(|e| Status::internal(format!("agent detection task panicked: {e}")))?;
@@ -215,18 +229,13 @@ impl AgentSessionService for AgentSessionHandler {
             }
         }
 
-        let working_dir = match req.project_id.as_deref() {
-            Some(project_id) => Some(
-                this.project_folder(project_id, req.project_folder.as_deref())
-                    .await?,
-            ),
-            None if req.project_folder.is_some() => {
-                return Err(Status::invalid_argument(
-                    "a project folder was named without a project",
-                ));
-            }
-            None => None,
-        };
+        // Everything the launch names is checked before the project's folder
+        // is stored: a refused launch changes nothing.
+        if req.project_id.is_none() && req.project_folder.is_some() {
+            return Err(Status::invalid_argument(
+                "a project folder was named without a project",
+            ));
+        }
         if let Some(task_id) = req.task_id.as_deref() {
             this.node_service
                 .get_node(task_id)
@@ -234,10 +243,22 @@ impl AgentSessionService for AgentSessionHandler {
                 .map_err(|e| Status::internal(format!("reading {task_id} failed: {e}")))?
                 .ok_or_else(|| Status::not_found(format!("node not found: {task_id}")))?;
         }
+        let working_dir = match req.project_id.as_deref() {
+            Some(project_id) => Some(
+                this.project_folder(project_id, req.project_folder.as_deref())
+                    .await?,
+            ),
+            None => None,
+        };
+        // Beside the daemon's other state, so it follows NODESPACE_HOME.
+        let session_folders = crate::nodespace_dir()
+            .map_err(|e| Status::internal(format!("resolving the NodeSpace home failed: {e}")))?
+            .join("agent-sessions");
 
         let launch = SessionLaunch {
             agent_type,
             initial_prompt: req.prompt,
+            session_folders: Some(session_folders),
             env: session_environment(
                 database_id,
                 this.manager.daemon_socket(),
@@ -248,7 +269,7 @@ impl AgentSessionService for AgentSessionHandler {
         };
         let id = this
             .manager
-            .launch(launch)
+            .launch(launch, search_path)
             .await
             .map_err(|e| Status::internal(format!("launch session failed: {e}")))?;
 

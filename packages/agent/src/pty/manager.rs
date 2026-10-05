@@ -94,14 +94,24 @@ impl PtySessionManager {
         detect_all_agents_on(&self.agent_search_path())
     }
 
+    /// [`Self::detect_agents`], with the search path it looked on: the one to
+    /// launch with.
+    pub fn detect_agents_with_path(&self) -> (Vec<AgentAvailability>, OsString) {
+        let path = self.agent_search_path();
+        (detect_all_agents_on(&path), path)
+    }
+
     /// Launch a new agent session and register it. Returns the session id.
-    pub async fn launch(&self, launch: SessionLaunch) -> anyhow::Result<Uuid> {
-        let this = self.clone();
-        let session = tokio::task::spawn_blocking(move || {
-            PtySession::launch(launch, this.agent_search_path())
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("launch task panicked: {e}"))??;
+    ///
+    /// `search_path` is the path the caller found the agent ready on
+    /// ([`Self::agent_search_path`]): the binary is resolved on that same
+    /// value, not on one built again.
+    pub async fn launch(
+        &self,
+        launch: SessionLaunch,
+        search_path: OsString,
+    ) -> anyhow::Result<Uuid> {
+        let session = PtySession::launch(launch, search_path)?;
         Ok(self.insert(session).await)
     }
 

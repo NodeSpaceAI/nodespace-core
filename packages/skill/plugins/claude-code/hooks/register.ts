@@ -12,6 +12,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type {
   NodespaceContextPart,
   NodespaceItem,
+  NodespaceLaunch,
   NodespaceSession,
   NodespaceSkill,
   NodespaceWatch,
@@ -212,35 +213,73 @@ function buildSection(project: { title: string }, skills: readonly NodespaceSkil
 }
 
 /**
- * In a session NodeSpace launched: tells it the id Claude Code gave this
- * conversation, the one `--resume` takes. Sessions in one project share a
- * working directory, so NodeSpace cannot find the id by looking. Answers the
- * chat node the session is a view onto, when it has one.
+ * What NodeSpace's launch named, taken out of the environment: read once,
+ * kept in the session's state, and unset. Left in place the variables would
+ * reach every process the agent starts, and a second Claude Code started
+ * from the shell tool would report itself as this session and open with its
+ * work.
  */
-async function reportSession($: Engine, database: string | null): Promise<string | null> {
-  if (!(await $.env.get('NODESPACE_SESSION'))) {
+async function takeLaunch($: Engine, held: NodespaceSession | null): Promise<NodespaceLaunch | null> {
+  if (held?.launch) {
+    return held.launch
+  }
+
+  const launchedSession = (await $.env.get('NODESPACE_SESSION')) || ''
+
+  if (launchedSession === '') {
     return null
   }
 
-  const ran = await nodespace($, database, ['session', 'report-harness-session', await $.session.id()])
+  const launchedFor = (await $.env.get('NODESPACE_LAUNCHED_FOR')) || ''
+
+  // A variable that cannot be unset is left: the launch is still this one's.
+  await quietly(undefined, () => $.env.set('NODESPACE_SESSION', undefined))
+  await quietly(undefined, () => $.env.set('NODESPACE_LAUNCHED_FOR', undefined))
+
+  return { session: launchedSession, launchedFor }
+}
+
+/**
+ * Tells NodeSpace the id Claude Code gave this conversation, the one
+ * `--resume` takes. Sessions in one project share a working directory, so
+ * NodeSpace cannot find the id by looking. Answers the chat node the session
+ * is a view onto (`''` for none), or `null` when NodeSpace did not answer.
+ */
+async function reportSession(
+  $: Engine,
+  database: string | null,
+  launch: NodespaceLaunch,
+): Promise<string | null> {
+  const ran = await nodespace($, database, [
+    'session',
+    'report-harness-session',
+    await $.session.id(),
+    '--session',
+    launch.session,
+  ])
   const parsed = ran.ok ? parse(ran.stdout) : undefined
 
-  return isRecord(parsed) ? text(parsed.node_id) || null : null
+  return isRecord(parsed) ? text(parsed.node_id) : null
 }
 
 /**
  * The item a launched session was started for, when that is work and not the
  * session's own chat node: its context as a note for the first prompt, and
  * the item for the watch. `null` when nothing was named or it cannot be read.
+ *
+ * `chatNode` is what the report answered. With no answer nothing is opened:
+ * what was named may be the session's own chat node, which the app writes to
+ * as the session runs, and watching it would stop the session over that.
  */
 async function launchedItem(
   $: Engine,
   database: string | null,
+  launch: NodespaceLaunch,
   chatNode: string | null,
 ): Promise<{ note: string; item: NodespaceItem | null } | null> {
-  const id = (await $.env.get('NODESPACE_LAUNCHED_FOR')) || ''
+  const id = launch.launchedFor
 
-  if (id === '' || id === chatNode) {
+  if (id === '' || chatNode === null || id === chatNode) {
     return null
   }
 
@@ -276,14 +315,21 @@ async function launchedItem(
  * In a session NodeSpace launched it also reports the conversation's id, and
  * with `isOpening` reads the item the session was launched for.
  */
-async function load($: Engine, cwd: string, isOpening: boolean): Promise<NodespaceSession> {
+async function load(
+  $: Engine,
+  cwd: string,
+  held: NodespaceSession | null,
+  isOpening: boolean,
+): Promise<NodespaceSession> {
   const database = (await $.env.get('NODESPACE_DATABASE')) || null
+  const launch = await takeLaunch($, held)
   const empty: NodespaceSession = {
     database,
     project: null,
     section: null,
     skills: [],
     listVersion: '',
+    launch,
     opening: null,
     stale: null,
   }
@@ -304,8 +350,8 @@ async function load($: Engine, cwd: string, isOpening: boolean): Promise<Nodespa
     return empty
   }
 
-  const chatNode = await reportSession($, database)
-  const launched = isOpening ? await launchedItem($, database, chatNode) : null
+  const chatNode = launch ? await reportSession($, database, launch) : null
+  const launched = launch && isOpening ? await launchedItem($, database, launch, chatNode) : null
   const reached: NodespaceSession = { ...empty, opening: launched?.note ?? null }
 
   if (launched?.item) {
@@ -398,7 +444,7 @@ async function current($: Engine): Promise<NodespaceSession> {
     await update($, watch, () => ({ item: null, lastCheckedAt: 0, blocked: null }))
   }
 
-  const loaded = await load($, await $.session.cwd(), isNew)
+  const loaded = await load($, await $.session.cwd(), held, isNew)
 
   await update($, session, () => loaded)
   await update($, fetched, () => [])
@@ -966,7 +1012,7 @@ export const register: Register = (on, options) => {
     // what the conversation has fetched.
     await quietly(undefined, async () => {
       if ((await read($, session)) === null) {
-        const loaded = await load($, e.cwd, true)
+        const loaded = await load($, e.cwd, null, true)
 
         await update($, session, () => loaded)
         await update($, fetched, () => [])
