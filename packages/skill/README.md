@@ -19,14 +19,14 @@ every release — never hand-edited.
 
 ## What's in this package
 
-This package's build output (`dist/`, `shims/`, `SKILL.md`, `references/`) is
+This package's build output (`dist/`, `plugins/`, `SKILL.md`, `references/`) is
 consumed two ways, both inside this monorepo's own tooling:
 
 1. **Bundled into the desktop app.** `scripts/build-skill.ts` compiles
    `src/install.ts` into a standalone executable (`bun build --compile`,
    staged as the `nodespace-skill-installer` `externalBin` sidecar — the
    same mechanism as `nodespaced`/`nodespace`, on macOS and Windows, the two
-   platforms with a Tauri desktop app) and also stages `dist/`, `shims/`,
+   platforms with a Tauri desktop app) and also stages `dist/`, `plugins/`,
    `SKILL.md`, and `references/` into
    `packages/desktop-app/src-tauri/resources/skill/` as a Tauri resource. On
    first launch, the app runs the compiled binary — genuinely zero
@@ -42,7 +42,9 @@ consumed two ways, both inside this monorepo's own tooling:
    `scripts/publish-skill-repo.ts`, which renders the same frontmatter this
    package builds (via `buildSkillFrontmatter` in `src/agents.ts`) plus
    `SKILL.md`'s body and every `references/*.md` file, and pushes them to the
-   public repo — the channel for a harness the app didn't launch.
+   public repo — the channel for a harness the app didn't launch. The Claude
+   Code plugin is published at that repo's root, so a marketplace install
+   loads the same plugin the app installs.
 
 ## Manual usage (from a source checkout)
 
@@ -54,7 +56,7 @@ bun packages/skill/dist/install.js install
 `--resource-root <path>` is only needed when running a *compiled* copy of
 `install.ts` (`bun build --compile`) from somewhere other than this package
 directory — it has no source-relative sibling directory to find
-`SKILL.md`/`shims`/`references` from the way `dist/install.js` does. A plain
+`SKILL.md`/`plugins`/`references` from the way `dist/install.js` does. A plain
 `dist/install.js` run like the one above finds them automatically.
 
 ## Supported Agents
@@ -67,12 +69,46 @@ directory — it has no source-relative sibling directory to find
 | OpenCode | `~/.opencode/` exists | `~/.opencode/skills/nodespace/SKILL.md` |
 | Pi | `~/.pi/agent/` exists | `~/.pi/agent/skills/nodespace/SKILL.md` |
 
-Each install copies `SKILL.md`, the agent's harness shim (where it has one) and
-every `references/*.md` file in the package, and writes
+Each install copies `SKILL.md`, the agent's harness plugin (where it has one)
+and every `references/*.md` file in the package, and writes
 `.nodespace-install.json` beside them listing exactly the files it wrote.
 Uninstall removes the files that record lists, and a reinstall removes any
 listed file the new skill no longer ships. An install from before the record
 existed is cleaned up from the fixed file list the installer wrote back then.
+
+## The Claude Code plugin
+
+`plugins/claude-code/` is a Claude Code plugin of function hooks: a manifest
+(`.claude-plugin/plugin.json`), a hooks file (`hooks/hooks.json`), one hooks
+module (`hooks/register.ts`) and the type contract for the session state the
+module keeps (`types/index.d.ts`). The installer copies those four files into
+`<claude config dir>/skills/nodespace/`, beside `SKILL.md`, and Claude Code
+loads a plugin it finds in a skill folder with no flag.
+
+In a session it checks that the `nodespace` CLI and the daemon answer, finds
+the project whose `repository` is the checkout's remote, adds one section to
+the system prompt (an orientation and the confirmation rules, both shipped
+here, and the graph's skill list, marked as graph data), and from then on
+tells the agent when the skill list changes or when the item it is working on
+changes under it. Every piece of content comes from a `nodespace` command;
+the module holds no retrieval logic. `NODESPACE_DATABASE` in the session's
+environment selects the database for every command it runs. The one option,
+`watch_interval_seconds` (default 60), is how often at most a tool call checks
+the item being worked on.
+
+### Testing the plugin
+
+The plugin's tests run inside Claude Code's own engine, so they are not part of
+`bun run test` or the merge gate. Run them by hand after changing anything
+under `plugins/claude-code/`:
+
+```bash
+bun run --cwd packages/skill test:plugin
+```
+
+That runs `claude plugin validate` and then `claude plugin test` on the
+folder, and needs the `claude` CLI on `$PATH`. The plugin API is early access
+and changes between Claude Code releases: run it again after an upgrade.
 
 ## Prerequisites
 

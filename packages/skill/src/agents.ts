@@ -57,25 +57,34 @@ allowed-tools: Bash(nodespace:*)
 ---
 `;
 
+/**
+ * The Claude Code plugin (ADR-093 §5): a manifest, a hooks file, one hooks
+ * module and the type contract for the session state the module keeps. Claude
+ * Code loads a plugin it finds in a skill folder, so these install beside
+ * `SKILL.md` and need no flag. The plugin's tests are not installed.
+ */
+export const CLAUDE_CODE_PLUGIN = {
+  dir: 'plugins/claude-code',
+  files: [
+    '.claude-plugin/plugin.json',
+    'hooks/hooks.json',
+    'hooks/register.ts',
+    'types/index.d.ts',
+  ],
+};
+
 export const AGENTS: AgentConfig[] = [
   {
     name: 'claude-code',
     detectionDir: claudeConfigDir,
     installDir: join(claudeConfigDir, 'skills', 'nodespace'),
-    shims: [
-      'SKILL.md',
-      'shims/claude-code/nodespace-hook.ts',
-    ],
+    plugin: CLAUDE_CODE_PLUGIN,
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
     name: 'codex',
     detectionDir: join(home, '.codex'),
     installDir: join(home, '.codex', 'skills', 'nodespace'),
-    shims: [
-      'SKILL.md',
-      'shims/codex/nodespace-plugin.ts',
-    ],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
@@ -85,21 +94,12 @@ export const AGENTS: AgentConfig[] = [
     // ~/.gemini/antigravity-cli/, not a separate ~/.antigravity.
     detectionDir: join(home, '.gemini', 'antigravity-cli'),
     installDir: join(home, '.gemini', 'antigravity-cli', 'skills', 'nodespace'),
-    // No handler shim: Antigravity CLI is a shell-capable coding agent, same
-    // as Claude Code/Codex/OpenCode, so it just runs `nodespace` directly per
-    // SKILL.md's Preflight "Branch 1" — no tool-registration integration
-    // (MCP or otherwise) needed for it to use the CLI.
-    shims: ['SKILL.md'],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
     name: 'opencode',
     detectionDir: join(home, '.opencode'),
     installDir: join(home, '.opencode', 'skills', 'nodespace'),
-    shims: [
-      'SKILL.md',
-      'shims/opencode/nodespace-plugin.ts',
-    ],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
@@ -110,10 +110,6 @@ export const AGENTS: AgentConfig[] = [
     // extension dirs: ~/.pi/agent/extensions/*.ts, ~/.pi/agent/extensions/*/index.ts).
     detectionDir: join(home, '.pi', 'agent'),
     installDir: join(home, '.pi', 'agent', 'skills', 'nodespace'),
-    shims: [
-      'SKILL.md',
-      'shims/pi/nodespace-extension.ts',
-    ],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
 ];

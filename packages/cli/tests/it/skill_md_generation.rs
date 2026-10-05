@@ -474,12 +474,12 @@ fn every_reference_file_is_linked_from_the_body() {
     );
 }
 
-/// The Preflight Check's MCP passthrough branch (Branch 2) names the actual
+/// The "Reaching NodeSpace" section's MCP passthrough entry names the actual
 /// tool the `nodespace mcp` server exposes.
 ///
-/// Unlike the CLI surface and schema rules, Branch 2's prose has no
+/// Unlike the CLI surface and schema rules, that prose has no
 /// generator behind it — it is hand-written, same as the rest of the
-/// Preflight Check, because it is judgment prose rather than a derivable
+/// section, because it is judgment prose rather than a derivable
 /// listing (see this file's module doc comment). That means nothing
 /// automatically catches the tool name drifting away from
 /// `packages/cli/src/commands/mcp.rs`'s own `TOOL_NAME` constant if it is
@@ -492,13 +492,13 @@ fn skill_md_mcp_branch_names_the_real_passthrough_tool() {
     let needle = format!("`{tool_name}`");
     assert!(
         skill.contains(&needle),
-        "SKILL.md's Preflight Check (Branch 2) does not reference the MCP \
+        "SKILL.md's Reaching NodeSpace section does not reference the MCP \
          passthrough's actual tool name ({needle}, from mcp.rs's TOOL_NAME \
-         constant) — update the Preflight Check section."
+         constant) — update that section."
     );
 }
 
-/// Branch 2 documents the MCP passthrough's real dispatch timeout and the
+/// The section documents the MCP passthrough's real dispatch timeout and the
 /// streaming commands it cannot support, not an invented number.
 ///
 /// `nodespace mcp` kills and reports as a timeout any dispatched command
@@ -514,13 +514,13 @@ fn skill_md_mcp_branch_documents_the_real_dispatch_timeout() {
     let needle = format!("{timeout_secs}s");
     assert!(
         skill.contains(&needle),
-        "SKILL.md's Preflight Check (Branch 2) does not mention the MCP \
+        "SKILL.md's Reaching NodeSpace section does not mention the MCP \
          passthrough's actual dispatch timeout ({needle}, from mcp.rs's \
-         DISPATCH_TIMEOUT constant) — update the Preflight Check section."
+         DISPATCH_TIMEOUT constant) — update that section."
     );
     assert!(
         skill.contains("session launch") && skill.contains("session attach"),
-        "SKILL.md's Preflight Check (Branch 2) should name the streaming \
+        "SKILL.md's Reaching NodeSpace section should name the streaming \
          commands (session launch / session attach) that the MCP passthrough \
          cannot support, matching mcp.rs's own timeout behavior."
     );

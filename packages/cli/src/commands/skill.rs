@@ -1126,7 +1126,7 @@ fn bundled_sidecar_name(name: &str) -> String {
 /// The compiled `nodespace-skill-installer` sidecar, if one is staged beside
 /// the running `nodespace` executable -- the same directory `install.sh`
 /// and the Homebrew formula place `nodespace`/`nodespaced` in. Its resource
-/// root (SKILL.md/shims/references) is staged as a sibling `skill/`
+/// root (SKILL.md/plugins/references) is staged as a sibling `skill/`
 /// directory next to the sidecar, laid down by the same release step that
 /// places the sidecar itself (see `scripts/build-skill.ts` and
 /// `.github/workflows/release.yml`). Returns `None` when either piece is

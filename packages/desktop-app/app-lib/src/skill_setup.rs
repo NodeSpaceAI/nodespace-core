@@ -1,7 +1,7 @@
 //! First-launch skill installer.
 //!
 //! Runs the bundled `packages/skill` installer to copy SKILL.md and agent
-//! shims into detected agents' directories. Persists completion state to
+//! harness plugins into detected agents' directories. Persists completion state to
 //! `~/.nodespace/setup.json` so subsequent launches are no-ops once
 //! installation succeeds.
 //!
@@ -566,7 +566,7 @@ async fn finish_failed(
 /// [`run_skill_installer`].
 enum Installer {
     /// The compiled standalone binary (see module docs) — no external
-    /// runtime needed. `resource_root` is where SKILL.md/shims/references
+    /// runtime needed. `resource_root` is where SKILL.md/plugins/references
     /// actually live, passed as `--resource-root` (the binary has no
     /// source-relative sibling directory to infer it from the way
     /// `dist/install.js` does).
@@ -620,7 +620,7 @@ fn resolve_installer<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Installer,
 /// `daemon_setup` already uses for `nodespaced`/`nodespace` (see
 /// `daemon_setup::sidecar_path_from_exe`'s doc comment for why sidecars land
 /// beside the running executable rather than under a Resources tree) — plus
-/// the resource root it needs (`SKILL.md`/`shims`/`references`, staged the
+/// the resource root it needs (`SKILL.md`/`plugins`/`references`, staged the
 /// same place `dist/install.js` already was). Returns `None` when either
 /// piece is missing, e.g. a platform this hasn't been wired up for yet, or a
 /// dev/source checkout that hasn't run the compile step — the caller falls
@@ -1337,7 +1337,7 @@ mod tests {
     /// it through the same `compiled_installer_command` + `parse_installer_output`
     /// pair `run_skill_installer`'s `Installer::Compiled` branch uses,
     /// against an isolated fake `$HOME` — asserting SKILL.md and the
-    /// claude-code shim land where `packages/skill`'s agent config says they
+    /// claude-code plugin land where `packages/skill`'s agent config says they
     /// should, with ZERO bun/node on the child's `$PATH` (only the compiled
     /// binary itself, which needs no external runtime by construction).
     /// Requires `bun` on $PATH to run the compile step (this repo is
@@ -1407,12 +1407,12 @@ mod tests {
             "SKILL.md was not installed into the fake $HOME at {}",
             installed_skill.display()
         );
-        let installed_shim = fake_home
+        let installed_plugin = fake_home
             .path()
-            .join(".claude/skills/nodespace/nodespace-hook.ts");
+            .join(".claude/skills/nodespace/.claude-plugin/plugin.json");
         assert!(
-            installed_shim.exists(),
-            "claude-code shim was not installed"
+            installed_plugin.exists(),
+            "the claude-code plugin was not installed"
         );
     }
 
@@ -1572,7 +1572,7 @@ mod tests {
     /// End-to-end: actually runs the real built installer (via the same
     /// `installer_command` production code uses) against an isolated,
     /// throwaway `$HOME` — never the real one — and asserts SKILL.md and
-    /// the claude-code shim land where `packages/skill`'s agent config says
+    /// the claude-code plugin land where `packages/skill`'s agent config says
     /// they should. Requires `bun` on $PATH (this repo is Bun-only, so the
     /// test/pre-push environment always has it — see CLAUDE.md) and
     /// `packages/skill` already built (`bun run build:skill`, staged by
@@ -1608,19 +1608,19 @@ mod tests {
             "SKILL.md was not installed into the fake $HOME at {}",
             installed_skill.display()
         );
-        let installed_shim = fake_home
+        let installed_plugin = fake_home
             .path()
-            .join(".claude/skills/nodespace/nodespace-hook.ts");
+            .join(".claude/skills/nodespace/.claude-plugin/plugin.json");
         assert!(
-            installed_shim.exists(),
-            "claude-code shim was not installed"
+            installed_plugin.exists(),
+            "the claude-code plugin was not installed"
         );
     }
 
     /// End-to-end proof of the detected-but-skipped path, using a genuinely
     /// incomplete package rather than synthetic stdout: copies the real
     /// `packages/skill` resource root into a scratch dir, then deletes every
-    /// shim source file (`SKILL.md`, `references/`, `shims/`) from it before
+    /// source file (`SKILL.md`, `references/`, `plugins/`) from it before
     /// running the real installer binary against it -- so the agent's
     /// detection dir genuinely exists AND the package genuinely has nothing
     /// to install for it, the same way a truncated/corrupted app bundle
@@ -1646,19 +1646,16 @@ mod tests {
         copy_dir_recursive(&real_resource_root, &incomplete_root)
             .expect("copy the real skill package root into scratch");
 
-        // `install()` skips a shim per-file (existsSync(src)), not per-agent
-        // -- so a package missing only SKILL.md still installs its other
-        // shims and does NOT hit the "detected but no files to install"
-        // path. Removing every shim source file (SKILL.md, references/,
-        // shims/) is what genuinely makes claude-code have zero files to
+        // Removing every source file (SKILL.md, references/, plugins/) is
+        // what genuinely makes claude-code have zero files to
         // install, reproducing a truncated/corrupted package rather than
         // asserting against a fixture built to already agree with the parser.
         std::fs::remove_file(incomplete_root.join("SKILL.md"))
             .expect("remove SKILL.md to construct a genuinely incomplete package");
         std::fs::remove_dir_all(incomplete_root.join("references"))
             .expect("remove references/ to construct a genuinely incomplete package");
-        std::fs::remove_dir_all(incomplete_root.join("shims"))
-            .expect("remove shims/ to construct a genuinely incomplete package");
+        std::fs::remove_dir_all(incomplete_root.join("plugins"))
+            .expect("remove plugins/ to construct a genuinely incomplete package");
 
         let installer_path = incomplete_root.join("dist").join("install.js");
         assert!(
@@ -1700,7 +1697,7 @@ mod tests {
     /// Recursive directory copy for
     /// `run_skill_installer_reports_agents_skipped_for_a_genuinely_incomplete_package`
     /// -- `std::fs` has no built-in recursive copy, and this needs the whole
-    /// real skill package root (SKILL.md, shims/, references/, dist/)
+    /// real skill package root (SKILL.md, plugins/, references/, dist/)
     /// duplicated into scratch so a file can be deleted from the copy
     /// without touching the checked-in package.
     fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {

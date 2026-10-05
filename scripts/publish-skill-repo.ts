@@ -16,7 +16,7 @@
  * It never hand-writes the skill body: it copies `packages/skill/SKILL.md`
  * (the body -- the checked-in file carries no frontmatter, see
  * packages/skill/src/types.ts) and every `references/*.md` file in
- * `packages/skill` (see `sharedShimPaths`) verbatim, whatever they currently
+ * `packages/skill` (see `publishedSkillPaths`) verbatim, whatever they currently
  * are. The reference list comes from that directory, the same rule the
  * installer applies, so what is published is what is installed. If a future
  * change to `packages/skill` shrinks SKILL.md to a stub with guidance fetched
@@ -48,15 +48,17 @@
  * outright: a push removes every file under it that the rendered set no
  * longer lists, so a reference deleted from `packages/skill` is deleted from
  * the public repo too instead of staying published. Files outside it (the
- * repo's own README, and `.claude-plugin/marketplace.json`, which is
- * rewritten but never pruned) are left alone. Hand edits to
+ * repo's own README; `.claude-plugin/marketplace.json` and the Claude Code
+ * plugin's files, which are rewritten but never pruned) are left alone. Hand edits to
  * NodeSpaceAI/nodespace-skill do not survive the next release.
  *
  * Alongside the skill content, this also renders and pushes
  * `.claude-plugin/marketplace.json` (see `renderMarketplaceFile`) so
  * `/plugin marketplace add NodeSpaceAI/nodespace-skill` +
  * `/plugin install nodespace@nodespace-skill` works in Claude Code without
- * a clone-and-copy detour. That mechanism is Claude Code-specific: Codex and
+ * a clone-and-copy detour. The plugin that install loads is the one the
+ * installer puts beside `SKILL.md` (ADR-093 §5), published at the repo root
+ * (see `renderPluginFiles`). That mechanism is Claude Code-specific: Codex and
  * Antigravity CLI have their own native plugin mechanisms with different,
  * incompatible manifest formats (`.codex-plugin/plugin.json` and Antigravity's
  * own `plugin.json` -- installed under `~/.gemini/antigravity-cli/plugins/`,
@@ -89,7 +91,7 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { AGENTS, buildSkillFrontmatter, SHARED_SKILL_FRONTMATTER } from "../packages/skill/src/agents";
+import { buildSkillFrontmatter, CLAUDE_CODE_PLUGIN, SHARED_SKILL_FRONTMATTER } from "../packages/skill/src/agents";
 import { listReferenceFiles } from "../packages/skill/src/installer";
 import { pushFilesToRepo, type RepoFile } from "./push-to-external-repo";
 
@@ -106,26 +108,21 @@ export function normalizeVersion(version: string): string {
   return version.replace(/^v/, "");
 }
 
-/** The harness-agnostic files every installer target ships: the shims every
- * agent's `shims` list in packages/skill/src/agents.ts has in common (today
- * just SKILL.md), plus every `references/*.md` in `packages/skill` -- the
- * files the installer copies for every agent (`listReferenceFiles`).
- * Harness-specific shims (the `shims/claude-code/nodespace-hook.ts` family)
- * are deliberately excluded: they're per-harness integration glue the
- * installer places into each agent's own hook/plugin system, not part of a
- * generic Agent Skills folder a user can drop into any of them.
+/** The harness-agnostic files every installer target ships: `SKILL.md`, plus
+ * every `references/*.md` in `packages/skill` -- the files the installer
+ * copies for every agent (`listReferenceFiles`). A harness plugin is not part
+ * of a generic Agent Skills folder a user can drop into any harness, so it is
+ * published separately (`renderPluginFiles`).
  *
- * Derived rather than hardcoded, on purpose: this is the same "several
- * separate places enumerate what the skill is made of" drift class
- * `packages/skill/src/tests/installer.test.ts` guards against for
+ * The reference list is derived rather than hardcoded, on purpose: this is
+ * the same "several separate places enumerate what the skill is made of"
+ * drift class `packages/skill/src/tests/installer.test.ts` guards against for
  * build-skill.ts, the installer, and the PTY path -- a hardcoded list here
  * would be exactly the kind of copy that silently stops matching the
  * installer if a reference is ever added or removed.
  */
-export function sharedShimPaths(): string[] {
-  const [first, ...rest] = AGENTS.map((a) => new Set(a.shims));
-  const common = [...first].filter((path) => rest.every((shims) => shims.has(path)));
-  return [...common, ...listReferenceFiles(SKILL_DIR)];
+export function publishedSkillPaths(): string[] {
+  return ["SKILL.md", ...listReferenceFiles(SKILL_DIR)];
 }
 
 /** Reads packages/skill's current build inputs from disk -- never a cached
@@ -156,16 +153,32 @@ export function readSkillSource(): {
 export function renderPublishFiles(version: string): RepoFile[] {
   const v = normalizeVersion(version);
   const frontmatter = buildSkillFrontmatter({
-    compatibility: `Targets NodeSpace app v${v}. Requires either a shell with the \`nodespace\` CLI on $PATH, or an MCP client connected to \`nodespace mcp\` (its bash-less passthrough) -- see Preflight Check in SKILL.md.`,
+    compatibility: `Targets NodeSpace app v${v}. Requires either a shell with the \`nodespace\` CLI on $PATH, or an MCP client connected to \`nodespace mcp\` (its bash-less passthrough) -- see Reaching NodeSpace in SKILL.md.`,
   });
 
-  return sharedShimPaths().map((relSrcPath) => {
+  return publishedSkillPaths().map((relSrcPath) => {
     const content = readFileSync(join(SKILL_DIR, relSrcPath), "utf8");
     const isSkillMd = relSrcPath === "SKILL.md";
     return {
       relPath: `${SKILL_PUBLISH_DIR}/${relSrcPath}`,
       content: isSkillMd ? frontmatter + "\n" + content : content,
     };
+  });
+}
+
+/** Renders the Claude Code plugin (ADR-093 §5) at the root of SKILL_REPO,
+ * which is the plugin root the marketplace entry names (`source: "./"`): the
+ * same files, at the same relative paths, the installer puts beside
+ * `SKILL.md` (`CLAUDE_CODE_PLUGIN`), so a marketplace install and an app
+ * install load one plugin. The manifest's `version` is stamped with the
+ * release, as the marketplace entry's is, so the two never disagree. */
+export function renderPluginFiles(version: string): RepoFile[] {
+  const v = normalizeVersion(version);
+  return CLAUDE_CODE_PLUGIN.files.map((relPath) => {
+    const content = readFileSync(join(SKILL_DIR, CLAUDE_CODE_PLUGIN.dir, relPath), "utf8");
+    if (relPath !== ".claude-plugin/plugin.json") return { relPath, content };
+    const manifest = { ...(JSON.parse(content) as Record<string, unknown>), version: v };
+    return { relPath, content: `${JSON.stringify(manifest, null, 2)}\n` };
   });
 }
 
@@ -215,10 +228,11 @@ export function extractSkillMeta(frontmatter: string): { name: string; descripti
  * `.claude-plugin/marketplace.json`), not guessed: a marketplace needs
  * `name` + `owner` + `plugins[]`, and each plugin entry's own
  * `name`/`description`/`version`/`license`/`repository` fields are
- * sufficient metadata on their own -- no separate
- * `skills/nodespace/.claude-plugin/plugin.json` is required for a plugin
- * that only uses the default `skills/` directory convention, which
- * `skills/nodespace/SKILL.md` (see `renderPublishFiles`) already satisfies.
+ * sufficient metadata for the listing. The plugin's own manifest
+ * (`.claude-plugin/plugin.json`, see `renderPluginFiles`) sits at the same
+ * root and carries the same name and version; the skill is found by the
+ * default `skills/` directory convention, which `skills/nodespace/SKILL.md`
+ * (see `renderPublishFiles`) satisfies.
  *
  * `source: "./"` points the plugin root at the marketplace root -- this
  * repo's own root -- rather than a `./plugins/<name>` subdirectory, because
@@ -310,7 +324,7 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const files = [...renderPublishFiles(command), renderMarketplaceFile(command)];
+  const files = [...renderPublishFiles(command), ...renderPluginFiles(command), renderMarketplaceFile(command)];
   for (const file of files) {
     console.log(`--- ${file.relPath} ---`);
     console.log(file.content);

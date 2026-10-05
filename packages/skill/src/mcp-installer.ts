@@ -8,7 +8,7 @@ import type { McpClientName } from './mcp-clients.js';
  * Writes/removes a bash-less MCP client's config (e.g. Claude Desktop's
  * `claude_desktop_config.json`) so it launches `nodespace mcp` -- the
  * installer gap ADR-038's Trust Boundary section implies: `installer.ts`
- * already does this for each CLI harness's `SKILL.md`/shim files, but
+ * already does this for each CLI harness's `SKILL.md` and plugin files, but
  * nothing wrote an MCP client's own config. Mirrors that module's shape
  * (pure `node:fs`, a target list, `{name, ...}[]` results, no npm dependency
  * -- `packages/skill`'s `dependencies` stays `{}`) rather than inventing a

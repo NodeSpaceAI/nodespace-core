@@ -5,16 +5,18 @@ export interface AgentConfig {
   detectionDir: string;
   installDir: string;
   /**
-   * Files copied from the package root into `installDir`, as paths relative to
-   * that root: `SKILL.md` plus the agent's harness shim, which installs flat
-   * under its basename.
+   * The harness plugin installed beside `SKILL.md`, for a harness that loads
+   * one from its skill folder (ADR-093 §5): `dir` is its folder under the
+   * package root, and each of `files`, a path relative to `dir`, installs at
+   * that same path inside `installDir`.
    *
-   * The skill's `references/*.md` files are deliberately not listed here. The
-   * installer copies every one it finds in the package root's `references/`
-   * directory (`listReferenceFiles`), so adding or dropping a reference is a
-   * change to that directory alone.
+   * `SKILL.md` and the skill's `references/*.md` files are not listed
+   * anywhere: every agent gets `SKILL.md`, and the installer copies every
+   * reference it finds in the package root's `references/` directory
+   * (`listReferenceFiles`), so adding or dropping a reference is a change to
+   * that directory alone.
    */
-  shims: string[];
+  plugin?: { dir: string; files: string[] };
   /**
    * Frontmatter to prepend to `SKILL.md` when installing for this agent.
    *

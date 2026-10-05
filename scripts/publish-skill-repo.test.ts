@@ -17,7 +17,8 @@ import {
   readSkillSource,
   renderMarketplaceFile,
   renderPublishFiles,
-  sharedShimPaths,
+  publishedSkillPaths,
+  renderPluginFiles,
   SKILL_PUBLISH_DIR,
   SKILL_REPO,
 } from "./publish-skill-repo";
@@ -30,7 +31,7 @@ const REPO_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
 setDefaultTimeout(30_000);
 
 // Every reference file under packages/skill/references/, spelled out. The file
-// list comes from the directory rather than each agent's `shims`, so a file
+// list comes from the directory rather than a list kept per agent, so a file
 // added or dropped there is a deliberate change to this list.
 const REFERENCES = [
   "references/cli.md",
@@ -82,16 +83,16 @@ describe("readSkillSource", () => {
   });
 });
 
-describe("sharedShimPaths", () => {
+describe("publishedSkillPaths", () => {
   // Guards the drift class packages/skill/src/tests/installer.test.ts's
   // "publishes every directory the agents install from" test guards
-  // elsewhere: this derives the published file set from the shims every agent
-  // shares plus the references directory instead of a hardcoded list, so a
+  // elsewhere: this derives the published file set from `SKILL.md` plus the
+  // references directory instead of a hardcoded list, so a
   // reference added to (or removed from) packages/skill/references/ is picked
   // up automatically -- and this test fails loudly if that derivation ever
   // stops matching what the skill actually contains.
   test("is exactly SKILL.md plus every reference in packages/skill/references/ today", () => {
-    expect(sharedShimPaths().sort()).toEqual(["SKILL.md", ...REFERENCES]);
+    expect(publishedSkillPaths().sort()).toEqual(["SKILL.md", ...REFERENCES]);
   });
 
   test("includes every reference file the installer would install, and nothing else from references/", () => {
@@ -99,18 +100,14 @@ describe("sharedShimPaths", () => {
     const onDisk = readdirSync(referencesDir)
       .filter((name) => name.endsWith(".md"))
       .map((name) => `references/${name}`);
-    const published = sharedShimPaths().filter((path) => path.startsWith("references/"));
+    const published = publishedSkillPaths().filter((path) => path.startsWith("references/"));
     expect(published.sort()).toEqual(onDisk.sort());
   });
 
-  test("excludes every harness-specific shim", () => {
-    // Antigravity carries no harness-specific shim at all (see
-    // packages/skill/src/agents.ts) -- it's a shell-capable agent that just
-    // runs `nodespace` directly, so there's nothing of its own to exclude here.
-    const shared = new Set(sharedShimPaths());
-    expect(shared.has("shims/claude-code/nodespace-hook.ts")).toBe(false);
-    expect(shared.has("shims/codex/nodespace-plugin.ts")).toBe(false);
-    expect(shared.has("shims/opencode/nodespace-plugin.ts")).toBe(false);
+  test("publishes no harness plugin file inside the skill folder", () => {
+    // The skill folder is the generic Agent Skills folder any harness can
+    // take. The Claude Code plugin is published at the repository root.
+    expect(publishedSkillPaths().filter((path) => path.startsWith("plugins/") || path.startsWith("hooks/"))).toEqual([]);
   });
 
   // Guidance that only another build's users need never reaches the public
@@ -118,7 +115,7 @@ describe("sharedShimPaths", () => {
   // implies this; this one names the removed file. Its name is built from
   // fragments, so a search of the repository for it finds no copy here.
   test("does not publish the removed multi-user reference", () => {
-    expect(sharedShimPaths()).not.toContain(["references/shared", "workspaces.md"].join("-"));
+    expect(publishedSkillPaths()).not.toContain(["references/shared", "workspaces.md"].join("-"));
   });
 
   // A build adds guidance with NODESPACE_SKILL_EXTENSIONS (scripts/build-skill.ts).
@@ -132,7 +129,7 @@ describe("sharedShimPaths", () => {
       writeFileSync(join(extension, "references", "extension-only.md"), "# Extension-only guidance\n");
       writeFileSync(join(extension, "SKILL.md"), "## Extension-only section\n");
       process.env.NODESPACE_SKILL_EXTENSIONS = extension;
-      expect(sharedShimPaths().sort()).toEqual(["SKILL.md", ...REFERENCES]);
+      expect(publishedSkillPaths().sort()).toEqual(["SKILL.md", ...REFERENCES]);
       const files = renderPublishFiles("v0.2.2");
       expect(files.map((f) => f.relPath)).not.toContain("skills/nodespace/references/extension-only.md");
       const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
@@ -179,7 +176,7 @@ describe("renderPublishFiles", () => {
     // or an MCP connector to `nodespace mcp` -- not just "the CLI on $PATH",
     // which reads as a shell-only requirement and doesn't warn a bash-less
     // installer that it needs the MCP passthrough instead. See SKILL.md's
-    // Preflight Check (Branch 2) for the guidance this string points at.
+    // Reaching NodeSpace section for the guidance this string points at.
     const files = renderPublishFiles("v0.2.2");
     const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
     const m = /^compatibility:\s*(.+)$/m.exec(skillMd.content);
@@ -231,6 +228,37 @@ describe("renderPublishFiles", () => {
     expect(links.length).toBeGreaterThan(0);
     for (const link of links) {
       expect(published.has(`skills/nodespace/${link}`), `SKILL.md links ${link}`).toBe(true);
+    }
+  });
+});
+
+describe("renderPluginFiles", () => {
+  test("publishes the installed plugin's files at the repository root, the manifest stamped with the release", () => {
+    const files = renderPluginFiles("v0.2.2");
+    expect(files.map((f) => f.relPath).sort()).toEqual([
+      ".claude-plugin/plugin.json",
+      "hooks/hooks.json",
+      "hooks/register.ts",
+      "types/index.d.ts",
+    ]);
+
+    const manifest = JSON.parse(files.find((f) => f.relPath === ".claude-plugin/plugin.json")!.content);
+    expect(manifest.version).toBe("0.2.2");
+    // The marketplace entry names the plugin `nodespace`; a manifest that
+    // disagreed would install under another name.
+    expect(manifest.name).toBe(JSON.parse(renderMarketplaceFile("v0.2.2").content).plugins[0].name);
+
+    const pluginDir = join(REPO_ROOT, "packages", "skill", "plugins", "claude-code");
+    for (const file of files.filter((f) => f.relPath !== ".claude-plugin/plugin.json")) {
+      expect(file.content).toBe(readFileSync(join(pluginDir, file.relPath), "utf8"));
+    }
+  });
+
+  test("the hooks file names a module that is published", () => {
+    const files = renderPluginFiles("v0.2.2");
+    const hooks = JSON.parse(files.find((f) => f.relPath === "hooks/hooks.json")!.content) as { modules: string[] };
+    for (const module of hooks.modules) {
+      expect(files.map((f) => f.relPath)).toContain(join("hooks", module));
     }
   });
 });
@@ -341,7 +369,11 @@ describe("--push", () => {
         .nothrow();
       expect(result.exitCode, result.stderr.toString()).toBe(0);
 
-      const rendered = [...renderPublishFiles("v0.2.2"), renderMarketplaceFile("v0.2.2")];
+      const rendered = [
+        ...renderPublishFiles("v0.2.2"),
+        ...renderPluginFiles("v0.2.2"),
+        renderMarketplaceFile("v0.2.2"),
+      ];
       const tree = await remote.tree();
       expect(tree).not.toContain(stale);
       expect(tree).toEqual(["README.md", ...rendered.map((f) => f.relPath)].sort());
