@@ -7,6 +7,8 @@ pub mod commands;
 pub mod output;
 pub mod terminal;
 
+pub use output::install_broken_pipe_handler;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use nodespace_daemon::{
