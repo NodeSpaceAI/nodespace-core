@@ -30,7 +30,8 @@ notes. Two traps, both of which have bitten before:
    (ADR-053)". Observed behavior: the daemon still served the real DB.
 
 **`NODESPACE_HOME` is the correct lever.** It relocates the whole state
-directory — database, registry, models — in one variable.
+directory — database, registry, embedding model — in one variable. Chat models
+still load from `$HOME`.
 
 ## Launch sequence
 

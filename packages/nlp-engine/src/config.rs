@@ -299,9 +299,8 @@ impl EmbeddingConfig {
     ///
     /// An explicit `model_path` is authoritative: it is returned when the file
     /// exists and is `NotFound` when it does not, never swapped for another
-    /// file. The daemon always passes one, resolved under its own NodeSpace
-    /// home (which follows `NODESPACE_HOME`), so an isolated daemon whose model
-    /// has gone missing gets no model rather than the real user's.
+    /// file. A caller that owns a home directory resolves the path itself and
+    /// passes it; this crate never substitutes the user's copy for it.
     ///
     /// Without one, the model is looked up in the user's home directory, the
     /// default for a standalone caller such as a live test:

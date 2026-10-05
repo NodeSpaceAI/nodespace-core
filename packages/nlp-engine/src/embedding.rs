@@ -452,8 +452,11 @@ impl EmbeddingService {
 
     /// Initialize the model (loads from bundled path)
     ///
-    /// If the model file is not found, the service will operate in stub mode
-    /// returning zero vectors. This allows tests to run without the model.
+    /// If no `model_path` was given and no model is found, the service will
+    /// operate in stub mode returning zero vectors. This allows tests to run
+    /// without the model. A `model_path` that was given but is missing is an
+    /// error instead: the caller asked for that file, and a stub would write
+    /// zero vectors in its place.
     ///
     /// ## Performance
     /// Creates a persistent LlamaContext that is reused across all embedding calls.
@@ -470,6 +473,9 @@ impl EmbeddingService {
             // Resolve model path - if not found, operate in stub mode
             let model_path = match self.config.resolve_model_path() {
                 Ok(path) => path,
+                Err(e) if self.config.model_path.is_some() => {
+                    return Err(EmbeddingError::ModelLoadError(e.to_string()));
+                }
                 Err(e) => {
                     tracing::warn!(
                         "Model not found, operating in stub mode (zero vectors): {}",
@@ -850,6 +856,27 @@ mod tests {
             matches!(err, EmbeddingError::ContextOverflow(ref msg) if msg.contains("8193") && msg.contains("8192")),
             "expected ContextOverflow naming both sizes, got {err:?}"
         );
+    }
+
+    /// A missing explicit `model_path` fails the load rather than falling into
+    /// stub mode. Path resolution fails before any backend work, so no model is
+    /// loaded.
+    #[cfg(feature = "embedding-service")]
+    #[test]
+    fn initialize_fails_when_an_explicit_model_path_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut service = EmbeddingService::new(EmbeddingConfig {
+            model_path: Some(dir.path().join("absent.gguf")),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let err = service.initialize().unwrap_err();
+        assert!(
+            matches!(err, EmbeddingError::ModelLoadError(_)),
+            "expected ModelLoadError, got {err:?}"
+        );
+        assert!(!service.is_initialized());
     }
 
     #[test]

@@ -438,7 +438,7 @@ export function awaitSkillIndex(
       `      LEFT JOIN embedding e ON e.node_id=n.id WHERE n.node_type='skill' GROUP BY 1"\n` +
       `  An empty embedding table with 8 skill rows means the worker never ran. An\n` +
       `  isolated daemon loads no embedding model unless NODESPACED_MODEL_PATH names\n` +
-      `  one: its log then says "NLP model not found".`,
+      `  one; without it the daemon log says "NLP model not found".`,
   );
 }
 
