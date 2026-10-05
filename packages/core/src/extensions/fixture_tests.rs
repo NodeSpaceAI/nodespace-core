@@ -257,20 +257,43 @@ async fn a_collection_retyped_to_the_subtype_is_rebucketed_and_validated() {
 
 /// A behaviour does not make its type known: until the subtype's schema
 /// exists in the database, a node of the type is refused rather than stored
-/// as a type that is not a collection.
+/// as a type that is not a collection, on every create path and on a retype.
 #[tokio::test]
 async fn a_subtype_without_its_schema_is_an_unknown_type() {
+    fn is_unknown<T: std::fmt::Debug>(
+        result: &Result<T, crate::services::NodeServiceError>,
+    ) -> bool {
+        matches!(
+            result,
+            Err(crate::services::NodeServiceError::UnknownNodeType { node_type })
+                if node_type == FIXTURE_TYPE
+        )
+    }
     let (svc, _tmp) = service(false).await;
 
     let refused = create(&svc, FIXTURE_TYPE, "Team", json!({})).await;
-    assert!(
-        matches!(
-            refused,
-            Err(crate::services::NodeServiceError::UnknownNodeType { ref node_type })
-                if node_type == FIXTURE_TYPE
-        ),
-        "{refused:?}"
-    );
+    assert!(is_unknown(&refused), "create with params: {refused:?}");
+
+    let refused = svc
+        .create_node(Node::new(
+            FIXTURE_TYPE.to_string(),
+            "Team".to_string(),
+            json!({}),
+        ))
+        .await;
+    assert!(is_unknown(&refused), "create_node: {refused:?}");
+
+    let node = create(&svc, "collection", "Team", json!({})).await.unwrap();
+    let refused = svc
+        .update_node(
+            &node.id,
+            node.version,
+            NodeUpdate::new().with_node_type(FIXTURE_TYPE.to_string()),
+        )
+        .await;
+    assert!(is_unknown(&refused), "retype: {refused:?}");
+    let unchanged = svc.get_node(&node.id).await.unwrap().unwrap();
+    assert_eq!(unchanged.node_type, "collection");
 }
 
 /// The node service validates with the behaviours it was given, and a plain

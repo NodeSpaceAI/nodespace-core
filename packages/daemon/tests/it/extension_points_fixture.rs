@@ -234,9 +234,15 @@ async fn an_invalid_extension_id_stops_startup() {
 #[tokio::test]
 async fn a_subtype_behaviour_is_enforced_in_every_database() {
     let home = IsolatedDaemonHome::new();
-    let shared =
-        shared_services(DaemonExtensions::none().behavior(Arc::new(FixtureCollectionBehavior)))
-            .await;
+    let extensions = DaemonExtensions::none().behavior(Arc::new(FixtureCollectionBehavior));
+    assert_eq!(extensions.data().check(), Ok(()));
+    assert!(extensions
+        .data()
+        .behavior_registry()
+        .unwrap()
+        .get(FIXTURE_TYPE)
+        .is_some());
+    let shared = shared_services(extensions).await;
     let manager = DatabaseManager::load(home.path().join("databases.toml"), shared.context)
         .await
         .unwrap();

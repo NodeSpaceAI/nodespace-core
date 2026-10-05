@@ -95,10 +95,14 @@ impl DataExtensions {
         let mut registry = NodeBehaviorRegistry::new();
         for behavior in &self.behaviors {
             let type_name = behavior.type_name();
-            if crate::services::node_service::normalize_schema_id(type_name) != type_name {
+            // A core type is refused as one first, though some core ids
+            // (`code-block`) are not schema ids `create_schema` produces.
+            registry.register(behavior.clone())?;
+            if type_name.is_empty()
+                || crate::services::node_service::normalize_schema_id(type_name) != type_name
+            {
                 return Err(DataExtensionsError::NotASchemaId(type_name.to_string()));
             }
-            registry.register(behavior.clone())?;
         }
         Ok(registry)
     }
@@ -208,7 +212,16 @@ mod tests {
 
     #[test]
     fn a_behaviour_whose_type_is_not_a_schema_id_is_rejected() {
-        for type_name in ["team-space", "Team", "team space"] {
+        assert_eq!(
+            DataExtensions::none()
+                .behavior(behavior("code-block"))
+                .check(),
+            Err(DataExtensionsError::Behavior(
+                BehaviorRegistrationError::CoreType("code-block".to_string())
+            )),
+            "a core type is reported as one"
+        );
+        for type_name in ["team-space", "Team", "team space", ""] {
             assert_eq!(
                 DataExtensions::none().behavior(behavior(type_name)).check(),
                 Err(DataExtensionsError::NotASchemaId(type_name.to_string())),
