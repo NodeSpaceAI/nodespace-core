@@ -396,8 +396,11 @@ pub fn lookup_retrieval_query(topic: &str) -> String {
 ///
 /// What is added need not be a record: "add a priority field to the ticket
 /// type" and "add this note to my reading list" open with one of these verbs
-/// too. Both rules are safe on those. Neither asks for a removal, and the
-/// skill they belong to keeps its place.
+/// too. Neither asks for a removal, so leaving the removing skills out costs
+/// them nothing. The second search can cost one a candidate: when it runs, the
+/// skill it adds leads, and the one that was third is no longer judged. On
+/// the requests of this kind that were measured it does not run, and each
+/// keeps its leader.
 ///
 /// English only, and narrow on purpose: "put", "make" and "set" also start
 /// requests to change a record, so they are left out, and a request worded
@@ -452,7 +455,7 @@ pub fn skill_can_create_a_record(candidate: &SkillCandidate) -> bool {
 /// The skill is left out whole, with the tools it holds that remove nothing.
 /// A skill that can both create and remove is therefore not offered on an
 /// add, including one a chat pins: a pinned skill that can remove user data
-/// needs a retrieval score to clear its bar, and it has none here.
+/// needs a retrieval score to clear its bar, and it has none from this query.
 pub fn without_destructive_skills(mut ranked: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
     ranked.retain(|c| !skill_is_destructive(c));
     ranked
@@ -480,10 +483,11 @@ pub fn lacks_a_creating_skill(ranked: &[SkillCandidate]) -> bool {
 /// - When none of the candidates Stage 2 would then judge can create a record,
 ///   retrieval runs once more on [`create_retrieval_query`], and the best
 ///   match that can create and cannot remove joins the ranking with the score
-///   that search gave it. That score is on the second query's scale, which names the skill's
-///   own capability, so the skill usually leads the turn it was added to.
-///   Every other candidate keeps the score it had: the second search adds one
-///   skill and removes none.
+///   that search gave it. That score is on the second query's scale, which
+///   names the skill's own capability, so the skill usually leads the turn it
+///   was added to. Every other candidate keeps the score it had: the second
+///   search adds one skill to the ranking and removes none from it, though the
+///   skill it adds can take the last place Stage 2 judges.
 ///
 /// A second search that fails leaves the first ranking as it was.
 ///
@@ -1834,6 +1838,41 @@ mod tests {
             names(&judged)
         );
         assert!(!stage2_permitted_names(&judged).contains("delete_node"));
+    }
+
+    /// The cost of ranking the added skill on the second query's scale, in a
+    /// compound request: it can outrank the deletion skill the other half
+    /// retrieved, and a removing tool is offered only from the leader.
+    #[tokio::test]
+    async fn in_a_compound_request_the_added_skill_can_outrank_the_other_halfs_deletion() {
+        let removal = "delete the old draft";
+        let second = create_retrieval_query(ADD);
+        let searches = Searches::new(vec![
+            (ADD, collision_ranking()),
+            (
+                &second,
+                vec![candidate("Node Creation", 0.908, &["create_node"])],
+            ),
+            (
+                removal,
+                vec![candidate("Node Deletion", 0.86, &["delete_node"])],
+            ),
+        ]);
+        // The merge `agent_loop`'s `route` makes of a compound request's
+        // queries: every ranking, deduplicated, by score.
+        let mut merged = searches.run(ADD).await.unwrap();
+        merged.extend(searches.run(removal).await.unwrap());
+        merged.sort_by(|a, b| b.score.total_cmp(&a.score));
+        let judged = select_candidates(merged);
+
+        assert_eq!(names(&judged)[..2], ["Node Creation", "Node Deletion"]);
+        let offered = stage2_permitted_names(&judged);
+        assert!(offered.contains("create_node"));
+        assert!(
+            !offered.contains("delete_node"),
+            "the deletion skill is a candidate and does not lead, so its tool is withheld"
+        );
+        assert_eq!(destructive_tools_withheld(&judged), ["delete_node"]);
     }
 
     #[tokio::test]
