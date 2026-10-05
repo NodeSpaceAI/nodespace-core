@@ -3678,7 +3678,18 @@ pub async fn update_schema(
     // here, where the change was made.
     let stranded_context_paths = if relationships_removed > 0 || previous_extends != updated_extends
     {
-        stranded_context_paths(node_service).await?
+        // The update is committed: a failure to look must not report it as
+        // failed.
+        stranded_context_paths(node_service)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    schema_id = %params.schema_id,
+                    error = %e,
+                    "Could not check for stranded context paths after a schema update"
+                );
+                Vec::new()
+            })
     } else {
         Vec::new()
     };

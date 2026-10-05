@@ -551,7 +551,8 @@ impl NodeService {
         Ok(node.id)
     }
 
-    /// Refuse creating a core schema through the service.
+    /// Refuse creating a core schema through the service, and creating any
+    /// schema with context paths already on it.
     ///
     /// Core schemas are seeded straight into the store at startup; nothing
     /// else may mint one. Since whether a schema is core is fixed at creation
