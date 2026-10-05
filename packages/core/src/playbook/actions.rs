@@ -631,7 +631,29 @@ impl BindingContext {
                             }
                             scopes.get(&node.node_type).cloned().flatten()
                         }
-                        _ => None,
+                        // No declared item type: the item is read at its own
+                        // type, which still takes a scope when that type
+                        // extends another, for its inherited fields and its
+                        // `type_chain`.
+                        (Some(ns), None) => {
+                            if !scopes.contains_key(&node.node_type) {
+                                let scope = crate::playbook::cel::CelScope::resolve(
+                                    ns,
+                                    &node.node_type,
+                                    &node,
+                                )
+                                .await
+                                .map_err(|e| {
+                                    format!(
+                                        "where(): reading '{}' items failed: {}",
+                                        node.node_type, e
+                                    )
+                                })?;
+                                scopes.insert(node.node_type.clone(), scope);
+                            }
+                            scopes.get(&node.node_type).cloned().flatten()
+                        }
+                        (None, _) => None,
                     };
                     crate::playbook::cel::scoped_node_value(&node, scope.as_ref())
                 }

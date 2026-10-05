@@ -2969,6 +2969,16 @@ mod tests {
                 }
             }
 
+            // `type_chain` comes from the schemas, not from a struct field,
+            // and resolves on a related node like the others.
+            match resolver
+                .resolve_path(&child, &["child_of".to_string(), "type_chain".to_string()])
+                .await
+            {
+                ResolvedValue::Scalar(v) => assert_eq!(v, json!(["gr_core_task"])),
+                other => panic!("expected a Scalar for child_of.type_chain, got {other:?}"),
+            }
+
             // A core field on the root node itself resolves the same way, with
             // no traversal involved.
             match resolver.resolve_path(&child, &["id".to_string()]).await {

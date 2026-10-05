@@ -791,6 +791,50 @@ async fn a_child_of_another_type_with_its_own_status_is_not_a_sub_task() -> Resu
     Ok(())
 }
 
+/// ADR-079 §2: a sub-task whose status cannot be read is not finished. It is
+/// a task, so it is not passed over like a note: it holds the parent open.
+#[tokio::test]
+async fn a_sub_task_with_no_status_holds_the_parent_open() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let (parent, sub_task) = parent_with_sub_task(&service).await?;
+    let cleared = task_node(&service, "open").await?;
+    service
+        .create_relationship(&parent, "has_child", &cleared, json!({}))
+        .await?;
+    let current = service.get_node(&cleared).await?.expect("the sub-task");
+    service
+        .update_node(
+            &cleared,
+            current.version,
+            nodespace_core::models::NodeUpdate::default()
+                .with_properties(json!({ "status": null })),
+        )
+        .await?;
+    assert_eq!(
+        status_of(&service, &cleared).await,
+        None,
+        "precondition: the sub-task reads no status"
+    );
+
+    set_status(&service, &sub_task, "done").await?;
+
+    let (control_parent, control_sub_task) = parent_with_sub_task(&service).await?;
+    set_status(&service, &control_sub_task, "done").await?;
+    assert!(wait_for_status(&service, &control_parent, "done").await);
+
+    assert_eq!(
+        status_of(&service, &parent).await.as_deref(),
+        Some("open"),
+        "a sub-task with no status must hold the parent open"
+    );
+    assert!(roll_up_is_running(&service).await?);
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
 /// A subtype of `task` is a task on both sides of the roll-up: as the parent
 /// that is completed, and as a sub-task counted beside checkboxes and notes.
 #[tokio::test]

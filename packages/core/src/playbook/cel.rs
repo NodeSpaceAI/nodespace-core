@@ -370,7 +370,9 @@ pub(crate) fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value 
         return fields;
     };
     // `CelScope::resolve` gives no scope only for a node read at its own
-    // type when that type extends nothing: its chain is its type alone.
+    // type when that type extends nothing: its chain is its type alone. A
+    // caller with no schema access also passes none, and reads the type
+    // alone for want of anything better.
     let chain = match scope {
         Some(scope) => type_chain_value(&scope.node_chain),
         None => type_chain_value(&[&node.node_type]),

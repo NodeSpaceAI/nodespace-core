@@ -24,6 +24,8 @@ const RESERVED_CORE_PROPERTIES: &[&str] = &[
     "id",
     "node_type",
     "content",
+    "version",
+    "type_chain",
     "parent_id",
     "root_id",
     "created_at",
