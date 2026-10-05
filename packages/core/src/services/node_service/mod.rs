@@ -1321,6 +1321,10 @@ pub struct NodeService {
     /// Behavior registry for validation
     pub(crate) behaviors: Arc<NodeBehaviorRegistry>,
 
+    /// The fields other builds added to core relationships, validated on
+    /// every edge write (ADR-082 §2.2). Empty unless one registered some.
+    pub(crate) edge_fields: Arc<crate::extensions::EdgeFieldRegistry>,
+
     /// Broadcast channel for domain events (buffers
     /// `DOMAIN_EVENT_CHANNEL_CAPACITY` events)
     /// Changed from DomainEvent to EventEnvelope
@@ -1464,6 +1468,7 @@ impl Clone for NodeService {
         Self {
             store: self.store.clone(),
             behaviors: self.behaviors.clone(),
+            edge_fields: self.edge_fields.clone(),
             event_tx: self.event_tx.clone(),
             origin_filtered_event_tx: self.origin_filtered_event_tx.clone(),
             excluded_event_origin: self.excluded_event_origin.clone(),
@@ -1515,7 +1520,8 @@ impl NodeService {
 
     /// [`Self::new`] for a database another build adds to (ADR-082 §2): the
     /// node service validates with core's behaviours and the behaviours
-    /// `extensions` adds for its subtypes of core types.
+    /// `extensions` adds for its subtypes of core types, and validates the
+    /// fields it adds to core relationships on every edge write.
     ///
     /// # Errors
     ///
@@ -1528,6 +1534,9 @@ impl NodeService {
     ) -> Result<Self, NodeServiceError> {
         let behaviors = extensions
             .behavior_registry()
+            .map_err(|e| NodeServiceError::initialization_error(e.to_string()))?;
+        let edge_fields = extensions
+            .edge_field_registry()
             .map_err(|e| NodeServiceError::initialization_error(e.to_string()))?;
 
         // Initialize broadcast channel for domain events (EventEnvelope)
@@ -1623,6 +1632,7 @@ impl NodeService {
         let service = Self {
             store: Arc::clone(store),
             behaviors: Arc::new(behaviors),
+            edge_fields: Arc::new(edge_fields),
             event_tx,
             origin_filtered_event_tx,
             excluded_event_origin,

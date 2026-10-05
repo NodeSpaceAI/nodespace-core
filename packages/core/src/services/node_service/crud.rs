@@ -3751,7 +3751,7 @@ impl NodeService {
     /// [`Self::check_field_value`], as a field's value and as an array's
     /// element, and a text value is not type-checked, so those never mismatch
     /// here.
-    fn scalar_mismatch(
+    pub(crate) fn scalar_mismatch(
         field_type: crate::models::SchemaFieldType,
         value: &serde_json::Value,
     ) -> Option<&'static str> {
@@ -3783,7 +3783,7 @@ impl NodeService {
 
     /// A rejected value as a rejection message names it: a string is quoted,
     /// anything else is named by its JSON type.
-    fn describe_received(value: &serde_json::Value) -> String {
+    pub(crate) fn describe_received(value: &serde_json::Value) -> String {
         match value.as_str() {
             Some(s) => format!("the string '{}'", s),
             None => crate::schema::json_type_name(value).to_string(),

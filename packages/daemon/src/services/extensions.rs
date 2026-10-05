@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use nodespace_core::behaviors::NodeBehavior;
-use nodespace_core::extensions::{is_extension_id, DataExtensions, DataExtensionsError};
+use nodespace_core::extensions::{
+    is_extension_id, DataExtensions, DataExtensionsError, EdgeFieldDeclaration,
+};
 
 /// What a build composing the daemon adds to it. Built once and handed to
 /// [`super::build_shared_services`], which checks it before it builds
@@ -65,8 +67,18 @@ impl DaemonExtensions {
         self
     }
 
+    /// Adds fields to a core relationship (ADR-082 §2.2), stored in the
+    /// extension's bucket of each edge's properties. Every database the
+    /// daemon opens validates that bucket on every edge write through its
+    /// node API; a bucket nobody registered is left alone. See
+    /// [`DataExtensions::edge_fields`] for what is rejected at startup.
+    pub fn edge_fields(mut self, declaration: EdgeFieldDeclaration) -> Self {
+        self.data = self.data.edge_fields(declaration);
+        self
+    }
+
     /// What this value adds to each database's data model: the subtype
-    /// behaviours.
+    /// behaviours and the edge fields.
     pub fn data(&self) -> &DataExtensions {
         &self.data
     }
@@ -98,7 +110,8 @@ pub enum DaemonExtensionsError {
     /// A declared extension id does not have the form
     /// [`DaemonExtensions::supported_extension`] requires.
     InvalidExtensionId(String),
-    /// A behaviour was refused (see [`DataExtensions::check`]).
+    /// A behaviour or an edge-field declaration was refused (see
+    /// [`DataExtensions::check`]).
     Data(DataExtensionsError),
 }
 

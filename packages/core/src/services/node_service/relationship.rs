@@ -795,6 +795,21 @@ impl NodeService {
             .any(|scope| scope == expected_type))
     }
 
+    /// Refuse edge properties whose bucket of another build's fields on
+    /// `relationship_name` does not satisfy their declaration (ADR-082 §2.2).
+    /// Every edge write that takes its properties from a caller runs it before
+    /// anything is stored, an idempotent create of an existing edge included.
+    /// A bucket no build registered is never read.
+    fn validate_extension_edge_fields(
+        &self,
+        relationship_name: &str,
+        properties: &serde_json::Value,
+    ) -> Result<(), NodeServiceError> {
+        self.edge_fields
+            .validate(relationship_name, properties)
+            .map_err(NodeServiceError::invalid_update)
+    }
+
     pub async fn create_relationship(
         &self,
         source_id: &str,
@@ -841,6 +856,10 @@ impl NodeService {
                 })
                 .await;
         }
+
+        // Another build's fields on this built-in relationship (ADR-082 §2.2).
+        // A declared relationship is checked in `write_relationship_in_tx`.
+        self.validate_extension_edge_fields(relationship_name, &edge_data)?;
 
         // A declared (custom) relationship runs this same refusal inside
         // `create_relationship_in_tx`, after its `in` rewrite settles which
@@ -1179,6 +1198,9 @@ impl NodeService {
             relationship_name,
             target_id,
         );
+
+        // Another build's fields on the stored relationship (ADR-082 §2.2).
+        self.validate_extension_edge_fields(relationship_name, &edge_data)?;
 
         if let Some(target) = Self::get_node_in_tx_or_virtual_date(tx, target_id).await? {
             let accepts_references = crate::db::SqliteStore::accepts_inbound_references_in_tx(
@@ -2259,6 +2281,10 @@ impl NodeService {
             relationship_name,
             target_id,
         );
+
+        // Another build's fields on the stored relationship (ADR-082 §2.2),
+        // built-in or declared.
+        self.validate_extension_edge_fields(relationship_name, &properties)?;
 
         if !is_builtin {
             if let Some(source) = self.get_node(source_id).await? {

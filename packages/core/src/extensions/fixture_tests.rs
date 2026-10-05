@@ -1,7 +1,12 @@
-//! A fixture subtype of `collection` with its own behaviour, the way another
-//! build adds one (ADR-082 §2.1, §9): validation by its behaviour and its
-//! base's, fields in its own bucket, queries for `collection` returning it, and
-//! retyping a collection to it.
+//! The data extension points used the way another build uses them (ADR-082
+//! §2, §9):
+//!
+//! - a fixture subtype of `collection` with its own behaviour: validation by
+//!   its behaviour and its base's, fields in its own bucket, queries for
+//!   `collection` returning it, and retyping a collection to it;
+//! - a fixture edge field on `member_of`, in the extension's bucket of the
+//!   edge's properties: stored there, validated on every edge write, and a
+//!   bucket nobody registered left alone.
 //!
 //! This file records the data half of the extension API. A change to it needs
 //! an `EXTENSION_API_VERSION` bump (ADR-082 §8), which
@@ -12,9 +17,10 @@ use std::sync::Arc;
 use serde_json::json;
 use tempfile::TempDir;
 
-use super::DataExtensions;
+use super::{DataExtensions, EdgeFieldDeclaration};
 use crate::behaviors::{CollectionNodeBehavior, NodeBehavior};
 use crate::db::SqliteStore;
+use crate::models::schema::{EdgeField, EnumValue, SchemaFieldType};
 use crate::models::{Node, NodeUpdate, ValidationError as NodeValidationError};
 use crate::services::{CollectionService, CreateNodeParams, InsertPositionOwned, NodeService};
 
@@ -330,4 +336,309 @@ async fn a_node_service_with_a_behaviour_for_a_core_type_is_refused() {
         store.get_schema("collection").await.unwrap().is_none(),
         "core's schemas were not seeded"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Edge fields (ADR-082 §2.2)
+// ---------------------------------------------------------------------------
+
+/// The fixture's extension id, which names its bucket.
+const FIXTURE_ID: &str = "fixture";
+
+fn edge_field(
+    name: &str,
+    field_type: SchemaFieldType,
+    values: &[&str],
+    required: bool,
+) -> EdgeField {
+    EdgeField {
+        name: name.to_string(),
+        field_type,
+        core_values: (!values.is_empty())
+            .then(|| values.iter().map(|v| EnumValue::new(*v, *v)).collect()),
+        indexed: None,
+        required: required.then_some(true),
+        default: None,
+        target_type: None,
+        description: None,
+    }
+}
+
+/// The fixture's fields on `member_of`: a required `permission` enum and an
+/// optional `since` date, with a rule between them their types cannot
+/// express.
+fn member_of_fields() -> EdgeFieldDeclaration {
+    EdgeFieldDeclaration::new(
+        "member_of",
+        FIXTURE_ID,
+        vec![
+            edge_field(
+                "permission",
+                SchemaFieldType::Enum,
+                &["admin", "modify", "read_only"],
+                true,
+            ),
+            edge_field("since", SchemaFieldType::Date, &[], false),
+        ],
+    )
+    .with_validator(|bucket| {
+        let admin = bucket.get("permission") == Some(&json!("admin"));
+        let since = bucket.get("since").is_some_and(|v| !v.is_null());
+        if admin && !since {
+            Err("an admin membership records since when".to_string())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+async fn edge_service(extensions: DataExtensions) -> (Arc<NodeService>, TempDir) {
+    let tmp = TempDir::new().unwrap();
+    let mut store = Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+    let svc = Arc::new(
+        NodeService::new_with_extensions(&mut store, &extensions)
+            .await
+            .unwrap(),
+    );
+    (svc, tmp)
+}
+
+/// A collection and a text node to put in it.
+async fn member_and_collection(svc: &NodeService) -> (String, String) {
+    let collection = create(svc, "collection", "Team", json!({})).await.unwrap();
+    let member = create(svc, "text", "Notes", json!({})).await.unwrap();
+    (member.id, collection.id)
+}
+
+async fn stored_edge(svc: &NodeService, source: &str, target: &str) -> Option<serde_json::Value> {
+    svc.store()
+        .get_relationship_record(source, target, "member_of")
+        .await
+        .unwrap()
+        .map(|record| record.properties)
+}
+
+/// The fixture's fields are stored in its bucket of the edge, beside core's
+/// `order`, on both of `create_relationship`'s `member_of` paths: the
+/// auto-ordered one and the one with an explicit order.
+#[tokio::test]
+async fn an_edge_field_on_member_of_is_stored_in_the_extension_bucket() {
+    let (svc, _tmp) = edge_service(DataExtensions::none().edge_fields(member_of_fields())).await;
+    let (member, collection) = member_and_collection(&svc).await;
+    let other = create(&svc, "text", "More notes", json!({})).await.unwrap();
+
+    svc.create_relationship(
+        &member,
+        "member_of",
+        &collection,
+        json!({ "fixture": { "permission": "modify" } }),
+    )
+    .await
+    .unwrap();
+    let stored = stored_edge(&svc, &member, &collection).await.unwrap();
+    assert_eq!(stored["fixture"], json!({ "permission": "modify" }));
+    assert!(
+        stored.get("order").is_some(),
+        "core's order is kept: {stored}"
+    );
+
+    let bucket = json!({ "permission": "admin", "since": "2026-10-01" });
+    svc.create_relationship(
+        &other.id,
+        "member_of",
+        &collection,
+        json!({ "order": 5.0, "fixture": bucket }),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        stored_edge(&svc, &other.id, &collection).await.unwrap(),
+        json!({ "order": 5.0, "fixture": bucket })
+    );
+}
+
+/// Every way the fixture's bucket can be wrong, refused before anything is
+/// stored.
+#[tokio::test]
+async fn an_invalid_bucket_is_refused_on_create() {
+    let (svc, _tmp) = edge_service(DataExtensions::none().edge_fields(member_of_fields())).await;
+    let (member, collection) = member_and_collection(&svc).await;
+
+    let cases = [
+        (
+            json!({ "fixture": { "permission": "owner" } }),
+            "one of: admin, modify, read_only",
+        ),
+        (json!({ "fixture": "modify" }), "must be a JSON object"),
+        (
+            json!({ "fixture": { "permission": "modify", "level": 2 } }),
+            "'level' is not a field",
+        ),
+        (
+            json!({ "fixture": { "since": "2026-10-01" } }),
+            "'fixture.permission' is required",
+        ),
+        (
+            json!({ "fixture": { "permission": "modify", "since": 5 } }),
+            "must be a date",
+        ),
+        (
+            json!({ "fixture": { "permission": "admin" } }),
+            "an admin membership records since when",
+        ),
+    ];
+    for (edge_data, expected) in cases {
+        let refused = svc
+            .create_relationship(&member, "member_of", &collection, edge_data.clone())
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains(expected)),
+            "{edge_data}: expected '{expected}', got {refused:?}"
+        );
+        assert_eq!(
+            stored_edge(&svc, &member, &collection).await,
+            None,
+            "{edge_data}"
+        );
+    }
+}
+
+/// The transactional write path, which a Play's `add_relationship` action
+/// and the multi-edge create use, validates the bucket too.
+#[tokio::test]
+async fn an_invalid_bucket_is_refused_in_a_transaction() {
+    let (svc, _tmp) = edge_service(DataExtensions::none().edge_fields(member_of_fields())).await;
+    let (member, collection) = member_and_collection(&svc).await;
+
+    let in_tx = svc.clone();
+    let (source, target) = (member.clone(), collection.clone());
+    let refused = svc
+        .with_transaction(move |tx| {
+            Box::pin(async move {
+                in_tx
+                    .create_relationship_in_tx(
+                        tx,
+                        &source,
+                        "member_of",
+                        &target,
+                        json!({ "order": 1.0, "fixture": { "permission": "owner" } }),
+                    )
+                    .await
+            })
+        })
+        .await;
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("one of: admin, modify, read_only")),
+        "{:?}",
+        refused.map(|_| ())
+    );
+    assert_eq!(stored_edge(&svc, &member, &collection).await, None);
+}
+
+/// Replacing an edge's properties validates the bucket, and so does
+/// creating an edge that already exists, which stores nothing.
+#[tokio::test]
+async fn an_invalid_bucket_is_refused_on_update_and_on_an_existing_edge() {
+    let (svc, _tmp) = edge_service(DataExtensions::none().edge_fields(member_of_fields())).await;
+    let (member, collection) = member_and_collection(&svc).await;
+    let valid = json!({ "order": 1.0, "fixture": { "permission": "read_only" } });
+    svc.create_relationship(&member, "member_of", &collection, valid.clone())
+        .await
+        .unwrap();
+
+    let refused = svc
+        .update_relationship_properties(
+            &member,
+            "member_of",
+            &collection,
+            json!({ "order": 1.0, "fixture": { "permission": "owner" } }),
+        )
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    let refused = svc
+        .create_relationship(
+            &member,
+            "member_of",
+            &collection,
+            json!({ "fixture": { "permission": "owner" } }),
+        )
+        .await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(stored_edge(&svc, &member, &collection).await, Some(valid));
+
+    let updated =
+        json!({ "order": 1.0, "fixture": { "permission": "admin", "since": "2026-10-05" } });
+    svc.update_relationship_properties(&member, "member_of", &collection, updated.clone())
+        .await
+        .unwrap();
+    assert_eq!(stored_edge(&svc, &member, &collection).await, Some(updated));
+}
+
+/// Core reads only registered buckets: another bucket on the edge is stored
+/// as given, the fixture's bucket on a relationship it did not declare fields
+/// for is too, and without the fixture's declaration its bucket is just as
+/// opaque.
+#[tokio::test]
+async fn a_bucket_nobody_registered_is_left_alone() {
+    let (svc, _tmp) = edge_service(DataExtensions::none().edge_fields(member_of_fields())).await;
+    let (member, collection) = member_and_collection(&svc).await;
+    let edge = json!({ "order": 1.0, "other": { "anything": [1, "two"] } });
+    svc.create_relationship(&member, "member_of", &collection, edge.clone())
+        .await
+        .unwrap();
+    assert_eq!(stored_edge(&svc, &member, &collection).await, Some(edge));
+
+    let mentioned = create(&svc, "text", "Mentioned", json!({})).await.unwrap();
+    let mention = json!({ "fixture": { "permission": "owner" } });
+    svc.create_relationship(&member, "mentions", &mentioned.id, mention.clone())
+        .await
+        .unwrap();
+    let stored = svc
+        .store()
+        .get_relationship_record(&member, &mentioned.id, "mentions")
+        .await
+        .unwrap()
+        .expect("the mention is stored");
+    assert_eq!(stored.properties, mention);
+
+    let (plain, _tmp) = edge_service(DataExtensions::none()).await;
+    let (member, collection) = member_and_collection(&plain).await;
+    let edge = json!({ "order": 1.0, "fixture": { "permission": "owner", "level": 2 } });
+    plain
+        .create_relationship(&member, "member_of", &collection, edge.clone())
+        .await
+        .unwrap();
+    assert_eq!(stored_edge(&plain, &member, &collection).await, Some(edge));
+}
+
+/// A refused declaration fails the node service before anything is written.
+#[tokio::test]
+async fn a_node_service_with_a_refused_edge_field_declaration_is_refused() {
+    let tmp = TempDir::new().unwrap();
+    let mut store = Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+    let has_child = EdgeFieldDeclaration::new(
+        "has_child",
+        FIXTURE_ID,
+        vec![edge_field("note", SchemaFieldType::Text, &[], false)],
+    );
+
+    let refused = NodeService::new_with_extensions(
+        &mut store,
+        &DataExtensions::none().edge_fields(has_child),
+    )
+    .await;
+    assert!(
+        matches!(
+            refused,
+            Err(crate::services::NodeServiceError::InitializationError(ref msg))
+                if msg.contains("fields can be added only to member_of and has_role edges")
+        ),
+        "{:?}",
+        refused.err()
+    );
+    assert!(store.get_schema("collection").await.unwrap().is_none());
 }

@@ -15,7 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use nodespace_core::behaviors::{BehaviorRegistrationError, CollectionNodeBehavior, NodeBehavior};
-use nodespace_core::extensions::DataExtensionsError;
+use nodespace_core::extensions::{DataExtensionsError, EdgeFieldDeclaration};
+use nodespace_core::models::schema::{EdgeField, EnumValue, SchemaFieldType};
 use nodespace_core::{
     Node, NodeService, NodeUpdate, SqliteStore, ValidationError as NodeValidationError,
 };
@@ -305,5 +306,125 @@ async fn a_behaviour_for_a_core_type_stops_startup() {
         Some(&DaemonExtensionsError::Data(DataExtensionsError::Behavior(
             BehaviorRegistrationError::CoreType("collection".to_string())
         )))
+    );
+}
+
+/// The fixture's `permission` on `member_of`, in its bucket of the edge:
+/// `admin`, `modify` or `read_only`.
+fn permission_on(relationship: &str) -> EdgeFieldDeclaration {
+    EdgeFieldDeclaration::new(
+        relationship,
+        FIXTURE_ID,
+        vec![EdgeField {
+            name: "permission".to_string(),
+            field_type: SchemaFieldType::Enum,
+            core_values: Some(
+                ["admin", "modify", "read_only"]
+                    .map(|v| EnumValue::new(v, v))
+                    .to_vec(),
+            ),
+            indexed: None,
+            required: Some(true),
+            default: None,
+            target_type: None,
+            description: None,
+        }],
+    )
+}
+
+/// Edge fields handed to `build_shared_services` are validated in every
+/// database the daemon opens, and stored in the extension's bucket.
+#[tokio::test]
+async fn an_edge_field_is_validated_in_every_database() {
+    let home = IsolatedDaemonHome::new();
+    let shared =
+        shared_services(DaemonExtensions::none().edge_fields(permission_on("member_of"))).await;
+    let manager = DatabaseManager::load(home.path().join("databases.toml"), shared.context)
+        .await
+        .unwrap();
+
+    for name in ["first", "second"] {
+        let path = database_requiring(home.path(), name, &[]).await;
+        let id = manager.register(path).await.unwrap().id;
+        let database = manager.get_or_open(&id).await.unwrap();
+        let node_service = database.node_service_grpc.node_service();
+        let collection = node_service
+            .create_node(Node::new(
+                "collection".to_string(),
+                "Team".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let member = node_service
+            .create_node(Node::new(
+                "text".to_string(),
+                "Notes".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+        let refused = node_service
+            .create_relationship(
+                &member,
+                "member_of",
+                &collection,
+                json!({ "fixture": { "permission": "owner" } }),
+            )
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains("one of: admin, modify, read_only")),
+            "{name}: {:?}",
+            refused.map(|_| ())
+        );
+
+        node_service
+            .create_relationship(
+                &member,
+                "member_of",
+                &collection,
+                json!({ "fixture": { "permission": "modify" } }),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let stored = node_service
+            .store()
+            .get_relationship_record(&member, &collection, "member_of")
+            .await
+            .unwrap()
+            .expect("the edge is stored");
+        assert_eq!(
+            stored.properties["fixture"],
+            json!({ "permission": "modify" }),
+            "{name}"
+        );
+    }
+}
+
+/// Fields on a relationship another build may not add to stop the daemon at
+/// startup: a `has_child` edge is recreated when its node moves, so the
+/// bucket would not survive.
+#[tokio::test]
+async fn an_edge_field_declaration_on_has_child_stops_startup() {
+    let _home = IsolatedDaemonHome::new();
+    let err =
+        build_shared_services(DaemonExtensions::none().edge_fields(permission_on("has_child")))
+            .await
+            .err()
+            .expect("startup is refused");
+
+    assert!(
+        matches!(
+            err.downcast_ref::<DaemonExtensionsError>(),
+            Some(DaemonExtensionsError::Data(DataExtensionsError::EdgeFields {
+                relationship,
+                extension_id,
+                ..
+            })) if relationship == "has_child" && extension_id == FIXTURE_ID
+        ),
+        "{err:#}"
     );
 }
