@@ -74,6 +74,27 @@ any. Without `--json` both print a short summary instead.
 
 Both may be given together; `--property` wins for a key set both ways.
 
+**Link fields.** A field of type `link` holds a web link: an object with exactly
+the keys `title` and `url`, both strings, where `url` is an absolute URL (a
+scheme and a host, no whitespace). Write it whole and clear it with `null`:
+
+```bash
+nodespace node update <node-id> --property 'repository={"title":"nodespace-core","url":"https://github.com/NodeSpaceAI/nodespace-core"}'
+nodespace node update <node-id> --property repository=null
+```
+
+A bare URL string, a missing or extra key, or a relative URL is rejected with a
+message naming the field. A list of links (an `array` field with `itemType`
+`link`) takes a JSON array of the same objects, and the whole array is replaced
+on each write. With `--json` a link reads back as that object
+(`.properties.repository.url`); the human output prints it in the `properties`
+line with its title and URL. `nodespace schema get <type>` lists the field as
+`link`. A query filter or sort reads a link's parts by path
+(`{"property":"repository.url"}`, `repository.title`). Declare one with
+`{"name":"repository","type":"link"}`, or
+`{"name":"commits","type":"array","itemType":"link"}` for a list; a link field
+cannot be `unique`.
+
 
 **Selecting a database.** A single daemon can serve several local databases. The data commands that read or write a database (`node`, `query`, `search`, `mention`, `schema`, `relationship`, `import`, `diagnostics`) accept a global `--database <name|id>` flag that routes the request to a specific database; the `NODESPACE_DATABASE` environment variable sets the same target when the flag is absent. Without either, requests go to the daemon's default database. Model management (`nodespace model`) is daemon-global — the loaded inference model is shared across all databases, so the flag is accepted but has no effect there. Manage the set of databases with the `nodespace database` subcommands (below).
 

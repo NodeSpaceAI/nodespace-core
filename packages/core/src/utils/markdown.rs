@@ -149,7 +149,10 @@ pub fn interpolate_title_template_with_schema(
                     Some(serde_json::Value::Number(n)) => Some(n.to_string()),
                     Some(serde_json::Value::Bool(b)) => Some(b.to_string()),
                     Some(serde_json::Value::Null) | None => None,
-                    Some(other) => Some(other.to_string()),
+                    Some(other) => Some(
+                        link_field_label(fields, &field_name, other)
+                            .unwrap_or_else(|| other.to_string()),
+                    ),
                 };
 
                 if let Some(raw) = raw_string {
@@ -185,6 +188,34 @@ pub fn interpolate_title_template_with_schema(
     normalized.trim().to_string()
 }
 
+/// A `link` field's value as plain text: the link's title (its URL when it
+/// has none), and a list of links as those, comma-separated. A title is plain
+/// text, so a link in one is named, not written as Markdown. `None` when
+/// `field_name` is not a link field or the value is not a link.
+fn link_field_label(
+    fields: &[SchemaField],
+    field_name: &str,
+    value: &serde_json::Value,
+) -> Option<String> {
+    use crate::models::{LinkValue, SchemaFieldType};
+
+    let field = fields.iter().find(|f| f.name == field_name)?;
+    let label = |v: &serde_json::Value| {
+        LinkValue::from_json(v)
+            .ok()
+            .map(|link| link.label().to_string())
+    };
+    if field.field_type == SchemaFieldType::Link {
+        return label(value);
+    }
+    if field.field_type == SchemaFieldType::Array && field.item_type == Some(SchemaFieldType::Link)
+    {
+        let links: Option<Vec<String>> = value.as_array()?.iter().map(label).collect();
+        return links.map(|links| links.join(", "));
+    }
+    None
+}
+
 /// The field names a title template references, in order: `{first_name}
 /// {last_name}` → `["first_name", "last_name"]`. An unclosed `{` ends the scan.
 pub fn title_template_fields(template: &str) -> Vec<&str> {
@@ -206,6 +237,43 @@ pub fn title_template_fields(template: &str) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_field_renders_in_a_title_as_its_label() {
+        let field = |name: &str, field_type, item_type| SchemaField {
+            name: name.to_string(),
+            field_type,
+            item_type,
+            ..Default::default()
+        };
+        use crate::models::SchemaFieldType::{Array, Link, Text};
+        let fields = [
+            field("repository", Link, None),
+            field("commits", Array, Some(Link)),
+            field("notes", Text, None),
+        ];
+        let properties = serde_json::json!({
+            "repository": { "title": "Core", "url": "https://example.com/core" },
+            "commits": [
+                { "title": "a1b2", "url": "https://example.com/c/a1b2" },
+                { "title": "", "url": "https://example.com/c/c3d4" }
+            ]
+        });
+
+        assert_eq!(
+            interpolate_title_template_with_schema("{repository}", &properties, &fields),
+            "Core"
+        );
+        assert_eq!(
+            interpolate_title_template_with_schema("{commits}", &properties, &fields),
+            "a1b2, https://example.com/c/c3d4"
+        );
+        // Only a declared link field is read as one.
+        assert_eq!(
+            link_field_label(&fields, "notes", &properties["repository"]),
+            None
+        );
+    }
 
     #[test]
     fn title_template_fields_lists_tokens_in_order() {

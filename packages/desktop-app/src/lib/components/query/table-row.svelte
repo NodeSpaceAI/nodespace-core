@@ -13,6 +13,7 @@
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
   import { resolveFieldValue } from '$lib/components/schema/schema-field-resolution';
+  import { linkFieldText } from '$lib/utils/link-values';
   import { TableRow as UiTableRow, TableCell } from '$lib/components/ui/table';
 
   let {
@@ -61,7 +62,8 @@
         continue;
       }
       if (typeof rawValue === 'object') {
-        map.set(col.field, JSON.stringify(rawValue));
+        // A link shows its title, and a list of links their titles.
+        map.set(col.field, linkFieldText(fieldSchema, rawValue) ?? JSON.stringify(rawValue));
         continue;
       }
 

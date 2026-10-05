@@ -27,8 +27,9 @@ use nodespace_cli::{commands, connect, connect_database, DatabaseIdInterceptor, 
 use nodespace_core::{NodeService as CoreNodeService, SqliteStore};
 use nodespace_daemon::nodespace::{
     ConflictsForNodeRequest, CreateDatabaseRequest, CreateNodeRequest, GetConflictRequest,
-    GetNodeRequest, GetRelatedNodesRequest, GetSkillRequest, ListDatabasesRequest, NodeSortOrder,
-    QueryNodesSimpleRequest, RunSavedQueryRequest, SkillGuidanceRequest,
+    GetNodeRequest, GetRelatedNodesRequest, GetSchemaDefinitionRequest, GetSkillRequest,
+    ListDatabasesRequest, NodeSortOrder, QueryNodesSimpleRequest, RunSavedQueryRequest,
+    SkillGuidanceRequest,
 };
 use nodespace_daemon::{
     DatabaseManager, DatabaseServiceImpl, DatabaseServiceServer, DbManagerLayer, NodeServiceImpl,
@@ -4842,6 +4843,131 @@ async fn node_create_required_field_without_default_needs_property_flag() {
     let props: serde_json::Value =
         serde_json::from_str(&node.properties).expect("parse properties");
     assert_eq!(props["customer"]["company_name"], "Northwind Labs");
+
+    let _ = shutdown.send(());
+}
+
+/// A link field is written with `--property` as its `{title, url}` object,
+/// cleared with `null`, and read back as that object. A bare URL is refused
+/// with the validation message, and `schema get` reports the type as `link`.
+#[tokio::test]
+async fn node_property_sets_reads_and_clears_a_link() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    commands::schema::run(
+        &mut client,
+        commands::schema::SchemaAction::Create(commands::schema::SchemaParamsArgs {
+            params: Some(
+                serde_json::json!({
+                    "name": "Vendor",
+                    "fields": [{"name": "website", "type": "link"}]
+                })
+                .to_string(),
+            ),
+            params_file: None,
+        }),
+        true,
+    )
+    .await
+    .expect("schema create");
+
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+    let schema = raw
+        .get_schema_definition(GetSchemaDefinitionRequest {
+            schema_id: "vendor".into(),
+        })
+        .await
+        .expect("schema get")
+        .into_inner();
+    let schema: serde_json::Value =
+        serde_json::from_str(&schema.schema_json).expect("parse schema");
+    assert_eq!(schema["fields"][0]["type"], "link");
+
+    let create = |properties| {
+        commands::node::NodeAction::Create(commands::node::CreateArgs {
+            node_type: "vendor".into(),
+            content: Some("Acme".into()),
+            parent: None,
+            properties,
+            properties_json: None,
+            collections: vec![],
+            collection_ids: vec![],
+        })
+    };
+    let err = commands::node::run(
+        &mut client,
+        create(vec![(
+            "website".into(),
+            serde_json::json!("https://acme.example"),
+        )]),
+        true,
+    )
+    .await
+    .expect_err("a bare URL is not a link");
+    assert!(
+        format!("{err:?}").contains("Link field 'website'"),
+        "unexpected error: {err:?}"
+    );
+
+    let link = serde_json::json!({"title": "Acme", "url": "https://acme.example"});
+    commands::node::run(
+        &mut client,
+        create(vec![("website".into(), link.clone())]),
+        true,
+    )
+    .await
+    .expect("create with a link");
+
+    let found = raw
+        .query_nodes_simple(QueryNodesSimpleRequest {
+            include_archived: false,
+            node_type: Some("vendor".into()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("query")
+        .into_inner();
+    assert_eq!(found.nodes.len(), 1, "exactly one vendor expected");
+    let id = found.nodes[0].id.clone();
+    // What `--json` prints: the flat properties, the link as its object.
+    assert_eq!(
+        nodespace_cli::output::node_to_json(&found.nodes[0])["properties"]["website"],
+        link
+    );
+
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            id: id.clone(),
+            content: None,
+            properties: vec![("website".into(), serde_json::Value::Null)],
+            properties_json: None,
+            version: None,
+            collections: vec![],
+            collection_ids: vec![],
+            remove_collection_ids: vec![],
+        }),
+        true,
+    )
+    .await
+    .expect("clear the link");
+    let node = raw
+        .get_node(GetNodeRequest { node_id: id })
+        .await
+        .expect("get node")
+        .into_inner()
+        .node_data
+        .expect("node_data");
+    let website = nodespace_cli::output::node_to_json(&node)["properties"]
+        .get("website")
+        .cloned();
+    assert!(website.as_ref().is_none_or(|v| v.is_null()), "{website:?}");
 
     let _ = shutdown.send(());
 }

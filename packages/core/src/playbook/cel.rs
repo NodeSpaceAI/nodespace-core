@@ -1437,6 +1437,38 @@ mod tests {
         }
     }
 
+    /// A link field reads as its two parts, and as absent when unset or
+    /// cleared. A list of links is a list of them.
+    #[tokio::test]
+    async fn a_link_field_reads_as_its_title_and_url() {
+        let event = node_created_event("project");
+        let link = json!({"title": "Core", "url": "https://github.com/NodeSpaceAI/core"});
+        let set = test_node(
+            "project",
+            json!({"project": {"repository": link, "commits": [link]}}),
+        );
+        for expr in [
+            "has(node.repository)",
+            "node.repository.title == 'Core'",
+            "node.repository.url.startsWith('https://github.com/')",
+            "node.commits.exists(c, c.url == node.repository.url)",
+        ] {
+            assert_eq!(
+                evaluate_conditions(&conds(&[expr]), &set, &event, None).await,
+                ConditionResult::Pass,
+                "{expr}"
+            );
+        }
+
+        for properties in [json!({}), json!({"repository": null})] {
+            let unset = test_node("project", json!({ "project": properties }));
+            assert_eq!(
+                evaluate_conditions(&conds(&["!has(node.repository)"]), &unset, &event, None).await,
+                ConditionResult::Pass
+            );
+        }
+    }
+
     /// A cleared field still occupies its name: it does not let a prefixed
     /// field of the same bare name, or an ancestor bucket's, show through.
     #[test]

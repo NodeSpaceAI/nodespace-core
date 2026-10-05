@@ -91,9 +91,9 @@ pub use relationship_path::{
     HopDirection, RelationshipHop, RelationshipPath, ResolvedHop, ResolvedPath,
 };
 pub use schema::{
-    derive_friendly_name, EdgeField, EnumValue, RelationshipCardinality, RelationshipDirection,
-    SchemaChildrenRule, SchemaField, SchemaFieldType, SchemaNode, SchemaParentRule,
-    SchemaProtectionLevel, SchemaRelationship,
+    derive_friendly_name, EdgeField, EnumValue, LinkValue, RelationshipCardinality,
+    RelationshipDirection, SchemaChildrenRule, SchemaField, SchemaFieldType, SchemaNode,
+    SchemaParentRule, SchemaProtectionLevel, SchemaRelationship,
 };
 pub use schema_ops::{
     CreateSchemaOutput, CreateSchemaParams, FieldRename, FieldValueAddition, SchemaUpdateOutput,

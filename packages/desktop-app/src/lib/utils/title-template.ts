@@ -15,6 +15,7 @@
  */
 
 import type { SchemaField } from '$lib/types/schema-node';
+import { linkFieldText } from './link-values';
 
 /**
  * Builds a matcher for `{token}`, capturing the field name between the braces.
@@ -65,9 +66,12 @@ export function evaluateTitleTemplate(
   const interpolated = template.replace(templateTokenRe(), (_, fieldName) => {
     const val = fieldValues[fieldName];
     if (val === null || val === undefined) return '';
-    const raw = String(val);
-
     const field = fieldMap?.get(fieldName);
+    // A link is named by its title, as in the backend's title.
+    const linkText = linkFieldText(field, val);
+    if (linkText !== null) return linkText;
+    const raw = typeof val === 'object' ? JSON.stringify(val) : String(val);
+
     if (field?.type === 'enum') {
       const allValues = [...(field.coreValues ?? []), ...(field.userValues ?? [])];
       const enumEntry = allValues.find((ev) => ev.value === raw);
@@ -137,6 +141,8 @@ export function evaluateSummaryTemplate(
       if (field.type === 'date' && typeof val === 'string') {
         return formatDateValue(val);
       }
+      const linkText = linkFieldText(field, val);
+      if (linkText !== null) return linkText;
     }
 
     return String(val);

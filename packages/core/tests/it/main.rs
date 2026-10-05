@@ -31,6 +31,7 @@ mod event_emission_test;
 mod extends_subtype_identity_test;
 mod find_skills_schema_discovery_test;
 mod find_skills_schema_metadata_test;
+mod link_field_type_test;
 mod mentioning_containers_test;
 mod merge_nodes_test;
 mod methodology_jira_execution_test;

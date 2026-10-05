@@ -1720,6 +1720,14 @@ fn validate_edge_field_declarations(
             continue;
         };
         for field in edge_fields {
+            // A link is a node field's type: no write checks one on an edge.
+            if field.field_type == crate::models::SchemaFieldType::Link {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Edge field '{}' on relationship '{}' has type 'link', which is a node \
+                     field type only. Declare the link as a field of the type instead.",
+                    field.name, rel.name
+                )));
+            }
             let is_enum = field.field_type == crate::models::SchemaFieldType::Enum;
 
             if !is_enum {
@@ -3725,6 +3733,15 @@ mod tests {
 
         let rels = vec![rel_with_edge_fields(vec![role])];
         assert!(validate_edge_field_declarations(&rels).is_ok());
+    }
+
+    #[test]
+    fn a_link_edge_field_is_rejected() {
+        let rel = rel_with_edge_fields(vec![edge_field("source", "link")]);
+        let message = validate_edge_field_declarations(&[rel])
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("node field type only"), "{message}");
     }
 
     #[test]

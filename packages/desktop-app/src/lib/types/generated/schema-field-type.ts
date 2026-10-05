@@ -8,4 +8,4 @@
  * with a message that names `text`.
  */
 export type SchemaFieldType =
-  'text' | 'number' | 'boolean' | 'date' | 'datetime' | 'enum' | 'array' | 'object';
+  'text' | 'number' | 'boolean' | 'date' | 'datetime' | 'enum' | 'array' | 'object' | 'link';

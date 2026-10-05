@@ -49,6 +49,14 @@ describe('eligibleGroupByFields', () => {
     expect(eligibleGroupByFields(schema).map((f) => f.name)).toEqual(['status']);
   });
 
+  it('never offers a link field, or a list of links, as a grouping field', () => {
+    const schema = {
+      fields: [field('repository', 'link'), field('commits', 'array', { itemType: 'link' }), statusField]
+    } as SchemaNode;
+    expect(eligibleGroupByFields(schema).map((f) => f.name)).toEqual(['status']);
+    expect(resolveActiveGroupBy(eligibleGroupByFields(schema), 'repository')).toBeNull();
+  });
+
   it('returns [] for a null schema or a schema with no enum fields', () => {
     expect(eligibleGroupByFields(null)).toEqual([]);
     expect(eligibleGroupByFields({ fields: [field('name', 'text')] } as SchemaNode)).toEqual([]);

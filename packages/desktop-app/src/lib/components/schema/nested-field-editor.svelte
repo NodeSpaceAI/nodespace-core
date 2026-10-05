@@ -30,6 +30,7 @@
   import XIcon from '@lucide/svelte/icons/x';
   import PlusIcon from '@lucide/svelte/icons/plus';
   import SchemaFieldLeaf from './schema-field-leaf.svelte';
+  import LinkFieldControl from './link-field-control.svelte';
   import Self from './nested-field-editor.svelte';
   import type { SchemaField } from '$lib/types/schema-node';
   import { labelForField } from '$lib/utils/schema-field-label';
@@ -244,6 +245,11 @@
                 value={item}
                 fieldId={itemId}
                 onChange={(newItem) => {
+                  // Clearing a link in a list removes it: a list holds no empty link.
+                  if (field.itemType === 'link' && newItem === null) {
+                    removeArrayItem(index);
+                    return;
+                  }
                   const next = editArrayItem(value, index, newItem);
                   if (next) onChange(next);
                 }}
@@ -263,13 +269,23 @@
       </div>
     {/each}
     <div>
-      <Button
-        variant="ghost"
-        size="sm"
-        onclick={() => onChange(addArrayItem(value, makeEmptyArrayItem(field)))}
-      >
-        <PlusIcon class="mr-1.5 size-4" /> Add item
-      </Button>
+      {#if field.itemType === 'link'}
+        <!-- A link is stored whole, so a new one joins the list only once it
+             is complete: there is no empty item to add first. -->
+        <LinkFieldControl
+          value={null}
+          fieldId={`nested-${field.name}-new-${depth}`}
+          onChange={(link) => link && onChange(addArrayItem(value, link))}
+        />
+      {:else}
+        <Button
+          variant="ghost"
+          size="sm"
+          onclick={() => onChange(addArrayItem(value, makeEmptyArrayItem(field)))}
+        >
+          <PlusIcon class="mr-1.5 size-4" /> Add item
+        </Button>
+      {/if}
     </div>
   </div>
 {:else}

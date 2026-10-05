@@ -375,7 +375,7 @@ parameters_schema:
             "type": "boolean"
           },
           "type": {
-            "description": "Field type: text, number, date, enum, array, object, boolean",
+            "description": "Field type: text, number, date, enum, array, object, boolean, link (a web link: a title and a URL)",
             "type": "string"
           },
           "unique": {
@@ -576,7 +576,7 @@ parameters_schema:
             "type": "string"
           },
           "type": {
-            "description": "text, number, date, enum, boolean",
+            "description": "text, number, date, enum, boolean, link (a web link: a title and a URL)",
             "type": "string"
           },
           "unique": {

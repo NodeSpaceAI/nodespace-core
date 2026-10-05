@@ -1012,11 +1012,17 @@ async fn validate_schema_path(
         // reason (the same chain walk against the same `current_type`) and
         // `SchemaResolutionFailed`'s `node_type`/`location` stay identical
         // either way.
+        let link_fields: Vec<String>;
         let (field_owners, chain, rel_owners) = match tokio::try_join!(
             node_service.resolve_field_owners(&current_type),
             node_service.resolve_relationships(&current_type)
         ) {
-            Ok(((_fields, owners, chain), (_relationships, rel_owners))) => {
+            Ok(((fields, owners, chain), (_relationships, rel_owners))) => {
+                link_fields = fields
+                    .into_iter()
+                    .filter(|f| f.field_type == crate::models::SchemaFieldType::Link)
+                    .map(|f| f.name)
+                    .collect();
                 (owners, chain, rel_owners)
             }
             Err(e) => {
@@ -1080,8 +1086,27 @@ async fn validate_schema_path(
         };
 
         if is_field {
-            // Fields are terminal — if there are more segments after this, it's broken
-            if i + 1 < segments.len() - 1 {
+            // Fields are terminal — if there are more segments after this, it's broken.
+            // A link field is the one exception: its two parts read by name.
+            let rest = &segments[i + 2..];
+            if link_fields.contains(segment) {
+                let reads_a_part = match rest {
+                    [] => true,
+                    [part] => part == "title" || part == "url",
+                    _ => false,
+                };
+                if !reads_a_part {
+                    errors.push(PlayValidationError::BrokenPath {
+                        path: full_path.clone(),
+                        segment: segment.clone(),
+                        message: format!(
+                            "'{}' is a link field on '{}': only its 'title' and 'url' can be read",
+                            segment, current_type
+                        ),
+                        location: location.to_string(),
+                    });
+                }
+            } else if !rest.is_empty() {
                 errors.push(PlayValidationError::BrokenPath {
                     path: full_path.clone(),
                     segment: segment.clone(),
@@ -3609,6 +3634,48 @@ mod tests {
                 )),
                 "should report broken path for field-as-non-terminal: {:?}",
                 errors
+            );
+        }
+
+        /// A link field's two parts read by name; nothing else is under it.
+        #[tokio::test]
+        async fn test_a_link_fields_parts_are_readable_paths() {
+            let (svc, _tmp) = create_test_service().await;
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vp_linked",
+                    "fields": [{ "name": "repository", "type": "link" }]
+                }),
+            )
+            .await
+            .unwrap();
+
+            let rules = vec![make_rule(
+                "vp_linked",
+                vec![
+                    "has(node.repository)",
+                    "node.repository.url.startsWith('https://')",
+                    "node.repository.title != ''",
+                ],
+                vec![],
+            )];
+            let result = validate_play(&rules, &svc).await;
+            assert!(result.is_ok(), "{result:?}");
+
+            let rules = vec![make_rule(
+                "vp_linked",
+                vec!["node.repository.host == 'github.com'"],
+                vec![],
+            )];
+            let errors = validate_play(&rules, &svc).await.unwrap_err();
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::BrokenPath { segment, message, .. }
+                        if segment == "repository" && message.contains("'title' and 'url'")
+                )),
+                "{errors:?}"
             );
         }
 
