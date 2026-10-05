@@ -3,7 +3,8 @@
 
   Shows a play read-only, except for its switch:
   - Header: title, description, state (on, off, or suspended with its message
-    and time) and the on/off switch
+    and time), the on/off switch, and Edit, which opens a new chat bound to the
+    play beside it (ADR-090 §3)
   - Body: one lane per rule, in order: the trigger described from its fields,
     each condition's and action's authored description, and an invariant
     marker. A step's raw content (the CEL, the params) shows on demand.
