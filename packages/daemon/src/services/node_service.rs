@@ -3537,9 +3537,9 @@ fn markdown_error_to_status(err: nodespace_core::markdown::MarkdownError) -> Sta
 /// Map a typed-update error to a gRPC status. A version conflict embeds the
 /// node's authoritative current state so the client can hydrate without a
 /// second round-trip (mirrors `node_ops::update_node` for generic updates),
-/// flattened via `node_to_typed_value` so the payload matches the wire shape
-/// of every other response — the client writes it straight into its store,
-/// where type-specific fields are read from the top level.
+/// converted as every other response is, inherited buckets folded in, so the
+/// payload matches their wire shape — the client writes it straight into its
+/// store, where type-specific fields are read from the top level.
 async fn typed_update_error_to_status(
     node_service: &nodespace_core::services::NodeService,
     err: NodeServiceError,
@@ -3550,12 +3550,15 @@ async fn typed_update_error_to_status(
             expected_version,
             actual_version,
         } => {
-            let current_node = node_service
-                .get_node(&node_id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|n| nodespace_core::models::node_to_typed_value(n).ok());
+            let current_node = match node_service.get_node(&node_id).await {
+                Ok(Some(node)) => {
+                    nodespace_core::ops::node_ops::nodes_to_typed_values(node_service, vec![node])
+                        .await
+                        .ok()
+                        .and_then(|mut values| values.pop())
+                }
+                _ => None,
+            };
             ops_error_to_status(OpsError::VersionConflict {
                 node_id,
                 expected: expected_version,

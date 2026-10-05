@@ -997,8 +997,9 @@ pub async fn count_query(
 
 /// Execute a structured property query, returning typed JSON values.
 ///
-/// Thin wrapper over [`execute_query_nodes`] for callers (agent tool call)
-/// that want the typed-value shape rather than raw `Node`s.
+/// For callers (agent tool call) that want the typed-value shape rather than
+/// raw `Node`s. Unlike [`execute_query_nodes`], each row is projected to
+/// `target_type`'s scope and carries the fields that type reads (ADR-078).
 pub async fn execute_query(
     node_service: &Arc<NodeService>,
     input: ExecuteQueryInput,
@@ -3886,6 +3887,49 @@ mod tests {
                 shaped_bug_properties(&output),
                 &json!({ "state": "open", "owner": "ann" })
             );
+        }
+
+        /// A type extending the core `task`: its row carries the inherited
+        /// `priority` and the defaulted `status` at both scopes, and its own
+        /// field at its own scope only.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_subtype_of_a_core_type_returns_the_core_fields_it_inherits() {
+            const BUG: &str = "a9000000-0000-4000-8000-000000000004";
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({
+                    "name": "rs_task_bug", "extends": "task",
+                    "fields": [{ "name": "severity", "type": "text" }]
+                }),
+            )
+            .await;
+            svc.create_node(node(
+                BUG,
+                "rs_task_bug",
+                json!({ "priority": "high", "severity": "low" }),
+            ))
+            .await
+            .unwrap();
+
+            for (target_type, severity) in [("rs_task_bug", Some("low")), ("task", None)] {
+                let output = shaped_bug_at(
+                    &svc,
+                    json!({ "target_type": target_type, "filters": [{
+                        "type": "content", "operator": "contains", "value": BUG
+                    }] }),
+                )
+                .await;
+                assert_eq!(output.count, 1, "{target_type}");
+                let properties = &output.nodes[0]["properties"];
+                assert_eq!(properties["priority"], "high", "{target_type}");
+                assert!(properties["status"].is_string(), "{target_type}");
+                assert_eq!(
+                    properties.get("severity").and_then(Value::as_str),
+                    severity,
+                    "{target_type}"
+                );
+            }
         }
 
         #[tokio::test(flavor = "multi_thread")]
