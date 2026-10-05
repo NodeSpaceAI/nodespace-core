@@ -150,8 +150,8 @@ impl TreeInvariantRule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeInvariantViolation {
     pub rule: TreeInvariantRule,
-    /// The node the write would have left in violation. `None` only for a
-    /// collection refused before it was given an id.
+    /// The node the write would have left in violation. `None` for a node
+    /// refused on create: it was never written, so it has no id to look up.
     pub node_id: Option<String>,
     /// The other nodes involved: for `MemberOfNotRoot` on a reparent or merge,
     /// the collections the node belongs to (empty when the refused write is
@@ -174,7 +174,10 @@ impl TreeInvariantViolation {
         let reason = if crate::models::CoreNodeType::Collection.is_exactly(declared_by) {
             "collections nest through member_of, not has_child (ADR-059 §2)".to_string()
         } else {
-            format!("a {} is always a root", declared_by)
+            format!(
+                "{} is always a root",
+                crate::utils::with_indefinite_article(declared_by)
+            )
         };
         Self {
             rule: TreeInvariantRule::MustBeRoot,
@@ -196,9 +199,9 @@ impl TreeInvariantViolation {
             node_id: parent.id.map(str::to_string),
             related_ids: child.id.map(str::to_string).into_iter().collect(),
             detail: format!(
-                "{} cannot have children; a {} is a leaf",
+                "{} cannot have children; {} is a leaf",
                 parent.describe(),
-                declared_by
+                crate::utils::with_indefinite_article(declared_by)
             ),
         }
     }
@@ -214,11 +217,11 @@ impl TreeInvariantViolation {
             node_id: child.id.map(str::to_string),
             related_ids: parent.id.map(str::to_string).into_iter().collect(),
             detail: format!(
-                "{} cannot be a child of {}; a {} does not take a {} as a child",
+                "{} cannot be a child of {}; {} does not take {} as a child",
                 child.describe(),
                 parent.describe(),
-                declared_by,
-                child.node_type
+                crate::utils::with_indefinite_article(declared_by),
+                crate::utils::with_indefinite_article(child.node_type)
             ),
         }
     }
@@ -244,10 +247,10 @@ impl TreeInvariantViolation {
                 .into_iter()
                 .collect(),
             detail: format!(
-                "{} {}; a {} must have a parent of type: {}",
+                "{} {}; {} must have a parent of type: {}",
                 child.describe(),
                 placement,
-                declared_by,
+                crate::utils::with_indefinite_article(declared_by),
                 allowed.join(", ")
             ),
         }

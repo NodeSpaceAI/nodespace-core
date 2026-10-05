@@ -309,6 +309,13 @@ async fn use_default(
     // This sets the daemon-wide default: the CLI is stateless, so the registry's
     // default is the single source of truth for every client's header-less
     // requests (those without `--database`/`NODESPACE_DATABASE`).
+    //
+    // A refused database can still be made the default, and every request
+    // routed to it then fails. Say so now, on stderr so `--json` output stays
+    // parseable, rather than leaving it to the next command's refusal.
+    if let Some(warning) = refused_default_warning(&info) {
+        eprintln!("{warning}");
+    }
     print_info(&info, json, |i| {
         format!(
             "Default database is now '{}' ({}); \
@@ -346,9 +353,24 @@ fn info_to_json(info: &DatabaseInfo) -> serde_json::Value {
         "is_default": info.is_default,
         "status": status_str(info.status),
         "unsupported_extensions": info.unsupported_extensions,
-        "refusal": is_refused(info).then(|| {
-            nodespace_proto::extension_names::refusal_message(&info.unsupported_extensions)
-        }),
+        "refusal": refusal(info),
+    })
+}
+
+/// The refusal message of a refused database, `None` for any other.
+pub(crate) fn refusal(info: &DatabaseInfo) -> Option<String> {
+    is_refused(info)
+        .then(|| nodespace_proto::extension_names::refusal_message(&info.unsupported_extensions))
+}
+
+/// What `database use` warns when the database it just made the default is
+/// one this build refuses; `None` for any other database.
+fn refused_default_warning(info: &DatabaseInfo) -> Option<String> {
+    refusal(info).map(|message| {
+        format!(
+            "Warning: {message}. Requests without --database are refused until another \
+             database is made the default."
+        )
     })
 }
 
@@ -359,7 +381,7 @@ fn is_refused(info: &DatabaseInfo) -> bool {
 /// What a refused database needs, appended after its path in the human
 /// listing; empty for any other database. Rendered by the shared display-name
 /// module, so the listing, the tray and the app say the same thing.
-fn requirement_note(info: &DatabaseInfo) -> String {
+pub(crate) fn requirement_note(info: &DatabaseInfo) -> String {
     if is_refused(info) {
         format!(
             "  ({})",

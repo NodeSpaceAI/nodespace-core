@@ -108,9 +108,34 @@ fn the_retired_flag_is_refused_with_status_2() {
     assert_refused(RETIRED_EDITION_FLAG);
 }
 
+/// A help flag is answered, not refused: usage on stdout, status 0, and no
+/// daemon started.
 #[test]
-fn help_is_refused_with_status_2() {
-    assert_refused("--help");
+fn help_prints_usage_and_exits_zero() {
+    for flag in ["--help", "-h"] {
+        let home = tempfile::tempdir().expect("create daemon home");
+        let outcome = run_nodespaced(home.path(), &[flag]);
+
+        assert!(
+            outcome.status.success(),
+            "`nodespaced {flag}` exited with {}; stderr: {}",
+            outcome.status,
+            outcome.stderr
+        );
+        assert!(
+            outcome.stdout.starts_with("Usage: nodespaced"),
+            "stdout: {}",
+            outcome.stdout
+        );
+        for accepted in ["--tray", "--version", "--help"] {
+            assert!(outcome.stdout.contains(accepted), "{}", outcome.stdout);
+        }
+        assert_eq!(outcome.stderr, "");
+        assert!(
+            !home.path().join("d.sock").exists(),
+            "`{flag}` must not bind the daemon socket"
+        );
+    }
 }
 
 #[test]

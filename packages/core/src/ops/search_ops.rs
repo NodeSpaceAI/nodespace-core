@@ -4,7 +4,7 @@
 //! Handles collection resolution, scope filtering, lifecycle filtering,
 //! over-fetching, and optional markdown inlining.
 
-use crate::models::{Node, NodeFilter, NodeQuery};
+use crate::models::{Node, NodeFilter, NodeQuery, OrderBy};
 use crate::ops::OpsError;
 use crate::services::{
     chain_for_type, needs_property_filter_chain, resolve_type_chains_from_store, CollectionService,
@@ -268,57 +268,158 @@ async fn resolve_type_chains_for_filters(
 /// has no DB-level pushdown here, is still applied as a post-filter via
 /// [`SearchNodeFilters::matches`], matching how `semantic_search_nodes`
 /// applies the same filters.
+///
+/// A listing is the most recently modified nodes first. Two things narrow it
+/// before `limit` counts anything, so neither leaves a page short of nodes
+/// that exist:
+///
+/// - `scope.member_ids` confines it to a collection. The members are fetched
+///   by id rather than picked out of a capped slice of the whole table, which
+///   a collection's members may not be in at all.
+/// - `scope.knowledge_only` leaves out a knowledge-type node that sits under
+///   a root the `Knowledge` scope does not return: the paragraphs of a skill
+///   or of agent guidance are `text` nodes, but they are that root's body,
+///   not the user's own. A search with a query never returns them either,
+///   since it ranks roots. A node whose own type is outside the scope is not
+///   judged by its root: it is listed only when its type is named, and naming
+///   a type asks for it (see [`should_skip_scope_filter`]).
+///
+/// The scope's own type check runs after this, in [`search_semantic`], so an
+/// untyped listing whose newest nodes are system roots can still come back
+/// short.
 async fn enumerate_nodes(
     node_service: &Arc<NodeService>,
     limit: usize,
     filters: Option<&SearchNodeFilters>,
     include_archived: bool,
+    scope: EnumerateScope<'_>,
 ) -> Result<Vec<(Node, f64)>, OpsError> {
-    let per_query_limit = ENUMERATE_FETCH_CAP.min(limit.max(1) * 3);
-    let node_types = filters.and_then(|f| f.node_types.as_ref());
-
-    let nodes = match node_types {
-        Some(types) if !types.is_empty() => {
-            let mut merged = Vec::new();
-            for node_type in types {
-                let node_filter = NodeFilter::new()
-                    .with_node_type(node_type.clone())
-                    .with_include_archived(include_archived)
-                    .with_limit(per_query_limit);
-                let mut matched = node_service
-                    .query_nodes(node_filter)
-                    .await
-                    .map_err(|e| OpsError::Internal(format!("Failed to enumerate nodes: {}", e)))?;
-                merged.append(&mut matched);
-            }
-            merged
-        }
-        _ => {
-            let node_filter = NodeFilter::new()
-                .with_include_archived(include_archived)
-                .with_limit(per_query_limit);
-            node_service
-                .query_nodes(node_filter)
-                .await
-                .map_err(|e| OpsError::Internal(format!("Failed to enumerate nodes: {}", e)))?
-        }
+    if scope.member_ids.is_some_and(HashSet::is_empty) {
+        return Ok(Vec::new());
+    }
+    let page_size = ENUMERATE_FETCH_CAP.min(limit.max(1) * 3);
+    // One listing per named type, or a single listing of every type.
+    let node_types: Vec<Option<&String>> = match filters.and_then(|f| f.node_types.as_ref()) {
+        Some(types) if !types.is_empty() => types.iter().map(Some).collect(),
+        _ => vec![None],
     };
 
-    let type_chains = resolve_type_chains_for_filters(node_service, &nodes, filters).await?;
+    // Whether each root met so far is outside the scope, so a subtree's nodes
+    // read its root's type once. Each still walks its own parent chain.
+    let mut system_roots: HashMap<String, bool> = HashMap::new();
+    let mut merged: Vec<Node> = Vec::new();
+    for node_type in &node_types {
+        let mut base = NodeFilter::new()
+            .with_include_archived(include_archived)
+            .with_order_by(OrderBy::ModifiedDesc);
+        if let Some(node_type) = node_type {
+            base = base.with_node_type((*node_type).clone());
+        }
 
-    Ok(nodes
-        .into_iter()
-        .filter(|node| {
-            filters
-                .map(|f| {
+        let mut kept = 0;
+        let mut scanned = 0;
+        loop {
+            // A collection's members are read whole, by id; anything else is
+            // read a page at a time until `limit` nodes are kept.
+            let page_filter = match scope.member_ids {
+                Some(ids) => base.clone().with_ids(ids.iter().cloned().collect()),
+                None => base.clone().with_limit(page_size).with_offset(scanned),
+            };
+            let page = node_service
+                .query_nodes(page_filter)
+                .await
+                .map_err(|e| OpsError::Internal(format!("Failed to enumerate nodes: {}", e)))?;
+            let fetched = page.len();
+            scanned += fetched;
+
+            let type_chains = resolve_type_chains_for_filters(node_service, &page, filters).await?;
+            for node in page {
+                let matches_filters = filters.is_none_or(|f| {
                     let chain = chain_for_type(&type_chains, &node.node_type);
                     f.matches(&node.node_type, &node.properties, &chain)
-                })
-                .unwrap_or(true)
-        })
+                });
+                if !matches_filters
+                    || (scope.knowledge_only
+                        && !is_system_type(&node.node_type)
+                        && sits_under_system_root(node_service, &node.id, &mut system_roots)
+                            .await?)
+                {
+                    continue;
+                }
+                merged.push(node);
+                kept += 1;
+                if kept >= limit {
+                    break;
+                }
+            }
+
+            if scope.member_ids.is_some()
+                || kept >= limit
+                || fetched < page_size
+                || scanned >= ENUMERATE_FETCH_CAP
+            {
+                break;
+            }
+        }
+    }
+
+    // Each type's listing is newest first; several of them merged are not.
+    if node_types.len() > 1 {
+        merged.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    }
+    Ok(merged
+        .into_iter()
         .take(limit)
         .map(|node| (node, 1.0))
         .collect())
+}
+
+/// What narrows an enumerate beyond its type and property filters. See
+/// [`enumerate_nodes`].
+#[derive(Clone, Copy)]
+struct EnumerateScope<'a> {
+    /// The ids of the collection's members, when the listing is confined to
+    /// one.
+    member_ids: Option<&'a HashSet<String>>,
+    /// Leave out a node that sits under a system-type root.
+    knowledge_only: bool,
+}
+
+/// Whether `node_type` is a system type: a core type the `Knowledge` scope
+/// does not return. A user-defined type never is.
+fn is_system_type(node_type: &str) -> bool {
+    crate::models::CoreNodeType::from_id(node_type).is_some_and(|core| {
+        !crate::services::embedding_service::KNOWLEDGE_CORE_TYPES.contains(&core)
+    })
+}
+
+/// Whether `node_id` is a descendant of a root whose type is a system type
+/// (see [`is_system_type`]). A root is never under one, whatever its own
+/// type. `system_roots` remembers each root's answer.
+async fn sits_under_system_root(
+    node_service: &Arc<NodeService>,
+    node_id: &str,
+    system_roots: &mut HashMap<String, bool>,
+) -> Result<bool, OpsError> {
+    let failed = |e: String| OpsError::Internal(format!("Failed to resolve a node's root: {e}"));
+    let root_id = node_service
+        .get_root_id(node_id)
+        .await
+        .map_err(|e| failed(e.to_string()))?;
+    if root_id == node_id {
+        return Ok(false);
+    }
+    if let Some(&is_system) = system_roots.get(&root_id) {
+        return Ok(is_system);
+    }
+    let root_type = node_service
+        .store()
+        .get_node_type(&root_id)
+        .await
+        .map_err(|e| failed(e.to_string()))?;
+    let is_system = root_type.is_some_and(|t| is_system_type(&t));
+    system_roots.insert(root_id, is_system);
+    Ok(is_system)
 }
 
 /// Score floor for a keyword hit the store matched by word stem rather than by
@@ -704,6 +805,10 @@ pub async fn search_semantic(
             effective_limit,
             search_filters.as_ref(),
             include_archived,
+            EnumerateScope {
+                member_ids: collection_member_ids.as_ref(),
+                knowledge_only: matches!(scope, SearchScope::Knowledge),
+            },
         )
         .await?
     } else {

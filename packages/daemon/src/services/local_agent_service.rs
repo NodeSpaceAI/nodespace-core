@@ -3025,10 +3025,14 @@ fn terse_write_fact(w: &CompletedWrite) -> Option<String> {
             let title = w.summary.as_deref();
             let mut fact = String::from("Fact: ");
             match (node_type, title) {
-                (Some(t), Some(title)) => {
-                    fact.push_str(&format!("a {t} node was created with title '{title}'"))
-                }
-                (Some(t), None) => fact.push_str(&format!("a {t} node was created")),
+                (Some(t), Some(title)) => fact.push_str(&format!(
+                    "{} node was created with title '{title}'",
+                    nodespace_core::utils::with_indefinite_article(t)
+                )),
+                (Some(t), None) => fact.push_str(&format!(
+                    "{} node was created",
+                    nodespace_core::utils::with_indefinite_article(t)
+                )),
                 (None, Some(title)) => {
                     fact.push_str(&format!("a node titled '{title}' was created"))
                 }

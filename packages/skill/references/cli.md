@@ -327,7 +327,10 @@ Each object in the array: `node_id` (required), `version` (optional — omit to 
 nodespace search "meeting notes from last week"
 nodespace search "rust async" --type text --limit 10
 nodespace search "" --type task    # list all nodes of a type (empty query)
+nodespace search "" --collection "docs:rust"   # list a collection's members
 ```
+
+An empty query (or `"*"`) is a listing, not a search: the most recently modified nodes first, narrowed by `--type`, `--collection` and `--filters`. It leaves out the body paragraphs of skills, agent guidance and other system nodes, so `--type text` lists the user's own text.
 
 **Options:**
 - `--type <type>` — filter by node type (repeatable)
@@ -467,6 +470,8 @@ nodespace logs --filter <play-id> --lines 200
 nodespace logs --path-only                    # just print where the log lives
 ```
 
+With `NODESPACE_HOME` set, the log is the one under that home (`$NODESPACE_HOME/.nodespace/logs/nodespaced.log`) and no other install's log is consulted.
+
 `get-workflow-state` is the one purpose-built verb — it runs the engine's condition evaluation out of band from a live trigger, which a generic verb cannot do:
 
 ```bash
@@ -544,6 +549,7 @@ A fetch (`guidance "<task>"` or `get`) returns each skill's instructions, its to
 - `tool_commands` — each built-in tool the skill lists or names, with the command and subcommand that does the same thing. Where a step names a tool, run its command; the arguments are in this reference. A tool with no `nodespace` equivalent is left out. The body is not rewritten.
 - In human output the same list is printed under the skill's instructions, inside its banner, as `- <tool> -> <command>`.
 - `skill get` takes the exact name the list shows, or the node id. A name no skill has is an error (exit 1) naming it; a name two skills share is an error listing their ids. `confidence` is `null`: nothing was ranked.
+- `confidence` is between 0.0 and 1.0. Skills arrive best match first, so read the order to rank them: several strong matches can all show 1.0.
 
 A listing (`guidance` with no task) returns names and descriptions only, plus the list's `version` (top level in `--json`, in the first line of human output). The version changes when a skill is added, removed or archived, and when a skill's name, description, tool list or any part of its body changes. Two listings with no such change between them print the same version, so comparing it is enough to know whether a list read earlier is still current.
 
@@ -727,7 +733,7 @@ A database is addressed by **name or id**. When a name is ambiguous (shared by m
 
 **Output:** `list` prints a table (or the full list with `--json`); the other commands print the affected database record (`--json` emits the full `DatabaseInfo`). A database's status is `open`, `closed`, `missing` (its file is gone) or `requires_extension`.
 
-**Refused databases.** A database can list an extension this NodeSpace build doesn't support. The daemon then refuses to open it and changes nothing in its file. `database list` shows its status as `requires_extension` and appends what it needs after the path; with `--json` the entry carries `unsupported_extensions` and a `refusal` message (`null` for any other database). Any command routed to such a database, without `--database` when it is the default or with `--database` naming it, exits non-zero with that refusal message and a `Download …` line. Relay the message to the user verbatim, with the download line; the `refusal` field is the message alone, so when relaying from a listing, say the download link comes with the error of any command run against that database. Do not retry, and never move, rename, copy or edit the file to get around it. To keep working, target another database with `--database`. Ask the user before `database use`: it changes the default for every client, the desktop app included.
+**Refused databases.** A database can list an extension this NodeSpace build doesn't support. The daemon then refuses to open it and changes nothing in its file. `database list` shows its status as `requires_extension` and appends what it needs after the path; with `--json` the entry carries `unsupported_extensions` and a `refusal` message (`null` for any other database). `nodespace diagnostics` lists every database the same way, in both forms. `database use` accepts such a database and prints a `Warning:` line on stderr: once it is the default, every command without `--database` is refused. Any command routed to such a database, without `--database` when it is the default or with `--database` naming it, exits non-zero with that refusal message and a `Download …` line. Relay the message to the user verbatim, with the download line; the `refusal` field is the message alone, so when relaying from a listing, say the download link comes with the error of any command run against that database. Do not retry, and never move, rename, copy or edit the file to get around it. To keep working, target another database with `--database`. Ask the user before `database use`: it changes the default for every client, the desktop app included.
 
 ### Conflicts
 
@@ -1144,13 +1150,13 @@ Uninstall NodeSpace: stop daemon, remove binaries and service registration
 
 Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (Claude Code, Codex, Antigravity CLI, OpenCode, Pi) -- the CLI-only equivalent of the desktop app's first-launch skill installer -- and fetch the graph's own skills for a task (`guidance`)
 
-**`nodespace skill install`** — Detect AI-agent harnesses and install the NodeSpace skill into them. Safe to re-run: already-installed harnesses are left alone, and a harness installed since the last run is picked up
+**`nodespace skill install`** — Detect AI-agent harnesses and install the NodeSpace skill into them. Safe to re-run: a harness whose skill files are already current is left alone and reported as up to date, one holding an older skill is updated, and a harness installed since the last run is picked up
 
 - `--yes` — Install without prompting for confirmation. Implied automatically when stdin/stdout isn't a terminal (CI, a script, an agent's non-interactive shell) — mirrors install.sh's `--gui`/`--no-gui` no-TTY default: never hang waiting on a prompt that can't be answered
 
 **`nodespace skill uninstall`** — Remove the NodeSpace skill from detected (or specified) harnesses
 
-**`nodespace skill status`** — Report which harnesses currently have the skill installed
+**`nodespace skill status`** — Report which harnesses currently have the skill installed, and which are present on this machine without it
 
 **`nodespace skill guidance`** — Fetch the skills that match a task, each with its instructions, the commands of the tools it names, and the schemas of the types the task touches. With no task, list every skill by name and description, with the list's version. Covers the built-in skills, skills a user wrote and skills an installed workflow added. Output is always provenance-marked (a banner in human mode, a `"provenance": "graph-fetched"` envelope in `--json` mode), because it is read from the graph and anyone with write access can edit it
 

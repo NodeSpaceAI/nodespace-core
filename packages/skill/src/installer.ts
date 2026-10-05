@@ -1,7 +1,6 @@
 import {
   existsSync,
   mkdirSync,
-  copyFileSync,
   rmSync,
   rmdirSync,
   readdirSync,
@@ -178,7 +177,7 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
       // Reuses uninstall()'s own directory-pruning logic rather than
       // duplicating it; a no-op when nothing is there.
       uninstall(['claude-code'], packageRoot);
-      results.push({ agent: agentName, installed: [], skipReason: 'plugin-managed' });
+      results.push({ agent: agentName, installed: [], changed: false, skipReason: 'plugin-managed' });
       continue;
     }
 
@@ -195,23 +194,26 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
     // broken, not a skill that has shrunk: install nothing, and leave whatever
     // is already installed, and its record, exactly as it is.
     if (!present.some(([, rel]) => rel === 'SKILL.md')) {
-      results.push({ agent: agentName, installed: [] });
+      results.push({ agent: agentName, installed: [], changed: false });
       continue;
     }
 
     const installed: string[] = [];
     const wrote: string[] = [];
+    // Whether this run altered anything on disk. A file whose content is
+    // already what this skill ships is left alone, so a re-run over a current
+    // install changes nothing and is reported as such.
+    let changed = false;
     for (const [src, rel] of present) {
       const dest = join(root, rel);
       mkdirSync(dirname(dest), { recursive: true });
       // SKILL.md gets the agent's frontmatter prepended — a skill is
       // discovered by its YAML `name` + `description` under the Agent Skills
       // standard; everything else is copied verbatim.
-      if (config.skillFrontmatter && rel === 'SKILL.md') {
-        writeFileSync(dest, config.skillFrontmatter + '\n' + readFileSync(src, 'utf8'), 'utf8');
-      } else {
-        copyFileSync(src, dest);
-      }
+      const content = config.skillFrontmatter && rel === 'SKILL.md'
+        ? Buffer.from(config.skillFrontmatter + '\n' + readFileSync(src, 'utf8'), 'utf8')
+        : readFileSync(src);
+      if (writeIfDifferent(dest, content)) changed = true;
       installed.push(dest);
       wrote.push(rel);
     }
@@ -225,7 +227,7 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
     for (const rel of previous) {
       if (keep.has(resolve(root, rel))) continue;
       try {
-        removeRecordedFile(root, rel);
+        if (removeRecordedFile(root, rel) !== undefined) changed = true;
       } catch (err) {
         // Read-only directory, locked file. Keep it in the record so the next
         // install (or an uninstall) still knows it is ours, and carry on: one
@@ -239,10 +241,26 @@ export function install(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT):
     }
     writeInstallRecord(root, [...wrote, ...undeleted]);
 
-    results.push({ agent: agentName, installed });
+    results.push({ agent: agentName, installed, changed });
   }
 
   return results;
+}
+
+/**
+ * Writes `content` to `dest` unless the file already holds exactly that, and
+ * returns whether it wrote. A `dest` that cannot be read (missing, or not a
+ * file) is written.
+ */
+function writeIfDifferent(dest: string, content: Buffer): boolean {
+  try {
+    if (readFileSync(dest).equals(content)) return false;
+  } catch {
+    // Missing or unreadable: fall through to the write, which reports a real
+    // problem (a directory in the way, no permission) itself.
+  }
+  writeFileSync(dest, content);
+  return true;
 }
 
 /**
@@ -264,7 +282,10 @@ function readInstallRecord(installDir: string): string[] | undefined {
 
 function writeInstallRecord(installDir: string, files: string[]): void {
   const record = { files: [...files].sort() };
-  writeFileSync(join(installDir, INSTALL_RECORD), JSON.stringify(record, null, 2) + '\n', 'utf8');
+  writeIfDifferent(
+    join(installDir, INSTALL_RECORD),
+    Buffer.from(JSON.stringify(record, null, 2) + '\n', 'utf8'),
+  );
 }
 
 /**
@@ -425,6 +446,11 @@ export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT
     if (readdirSync(root).length === 0) {
       try {
         rmdirSync(root);
+        // Install makes any missing directory between the harness's own and
+        // the install directory (`skills/`). One this leaves empty goes too,
+        // whoever made it: nothing records which were ours, and an empty one
+        // holds nothing to lose. The harness's own directory is never touched.
+        pruneEmptyParents(resolve(config.detectionDir), root);
       } catch {
         // A symlinked install directory (a dotfile manager's link) cannot be
         // rmdir'd. Leaving the empty directory is the smaller failure than

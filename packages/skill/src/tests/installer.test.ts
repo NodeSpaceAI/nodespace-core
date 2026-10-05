@@ -9,6 +9,8 @@ import {
   writeFileSync,
   symlinkSync,
   lstatSync,
+  statSync,
+  utimesSync,
 } from 'node:fs';
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -385,6 +387,56 @@ describe('install', () => {
     expect(existsSync(config.installDir)).toBe(false);
   });
 
+  it('reports a first install as a change, and a re-run over it as none, rewriting nothing', () => {
+    const config = AGENTS.find(a => a.name === 'claude-code')!;
+    mkdirSync(config.detectionDir, { recursive: true });
+    seedPkgRoot(FAKE_PKG_ROOT, config);
+
+    const first = install([config.name], FAKE_PKG_ROOT)[0];
+    expect(first.changed).toBe(true);
+
+    // A file left alone keeps its modification time; one rewritten with the
+    // same bytes would not.
+    const files = [...first.installed, join(config.installDir, INSTALL_RECORD)];
+    const past = new Date('2020-01-01T00:00:00Z');
+    for (const file of files) utimesSync(file, past, past);
+
+    const second = install([config.name], FAKE_PKG_ROOT)[0];
+    expect(second.changed).toBe(false);
+    expect(second.installed).toEqual(first.installed);
+    for (const file of files) {
+      expect(statSync(file).mtime.getTime(), `${file} was rewritten`).toBe(past.getTime());
+    }
+  });
+
+  it('reports a change when an installed file differs from what the skill ships', () => {
+    const config = AGENTS.find(a => a.name === 'claude-code')!;
+    mkdirSync(config.detectionDir, { recursive: true });
+    seedPkgRoot(FAKE_PKG_ROOT, config);
+    install([config.name], FAKE_PKG_ROOT);
+    const reference = join(config.installDir, SEEDED_REFERENCES[0]);
+    const shipped = readFileSync(reference, 'utf8');
+    writeFileSync(reference, 'an older version', 'utf8');
+
+    const result = install([config.name], FAKE_PKG_ROOT)[0];
+
+    expect(result.changed).toBe(true);
+    expect(readFileSync(reference, 'utf8')).toBe(shipped);
+  });
+
+  it('reports a change when all it did was remove a reference the skill dropped', () => {
+    const config = AGENTS.find(a => a.name === 'claude-code')!;
+    mkdirSync(config.detectionDir, { recursive: true });
+    seedPkgRoot(FAKE_PKG_ROOT, config);
+    install([config.name], FAKE_PKG_ROOT);
+    rmSync(join(FAKE_PKG_ROOT, SEEDED_REFERENCES[1]));
+
+    const result = install([config.name], FAKE_PKG_ROOT)[0];
+
+    expect(result.changed).toBe(true);
+    expect(existsSync(join(config.installDir, SEEDED_REFERENCES[1]))).toBe(false);
+  });
+
   it('detects multiple agents when their dirs exist', () => {
     const agentNames = ['claude-code', 'antigravity'] as const;
     for (const name of agentNames) {
@@ -516,6 +568,38 @@ describe('uninstall', () => {
   // Uninstall must not reach outside what it installed. Pruning "any empty
   // directory" would delete a user's own folder, empty the parent, and take
   // the whole install directory with it — none of it reported in `removed`.
+  // Install makes `skills/` on its way to `skills/nodespace/`, so an uninstall
+  // that leaves it empty takes it too; the harness's own directory stays.
+  it('removes the skills directory install created, and never the harness directory', () => {
+    for (const config of AGENTS) {
+      mkdirSync(config.detectionDir, { recursive: true });
+      seedPkgRoot(FAKE_PKG_ROOT, config);
+      install([config.name], FAKE_PKG_ROOT);
+
+      uninstall([config.name]);
+
+      expect(
+        existsSync(join(config.installDir, '..')),
+        `${config.name}: the empty skills directory survived uninstall`
+      ).toBe(false);
+      expect(existsSync(config.detectionDir), `${config.name}: harness directory removed`).toBe(true);
+    }
+  });
+
+  it('keeps the skills directory when another skill is installed beside ours', () => {
+    const config = AGENTS.find(a => a.name === 'claude-code')!;
+    mkdirSync(config.detectionDir, { recursive: true });
+    seedPkgRoot(FAKE_PKG_ROOT, config);
+    install([config.name], FAKE_PKG_ROOT);
+    const otherSkill = join(config.installDir, '..', 'someone-elses-skill');
+    mkdirSync(otherSkill, { recursive: true });
+
+    uninstall([config.name]);
+
+    expect(existsSync(config.installDir)).toBe(false);
+    expect(existsSync(otherSkill)).toBe(true);
+  });
+
   // Removing more than we installed is a worse failure than leaving something
   // behind.
   it('never deletes directories it did not install', () => {

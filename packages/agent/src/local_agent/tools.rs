@@ -4162,9 +4162,9 @@ impl GraphToolExecutor {
                 return Err(ToolError::InvalidArguments {
                     tool: "create_node".to_string(),
                     reason: format!(
-                        "'content' is required for a {} record: pass its title. Only a type \
+                        "'content' is required for {} record: pass its title. Only a type \
                          with a title_template omits it.",
-                        params.node_type
+                        nodespace_core::utils::with_indefinite_article(&params.node_type)
                     ),
                 });
             }
@@ -4827,8 +4827,8 @@ impl GraphToolExecutor {
             // its own fields, which these tools neither read nor write.
             Ok(Some(node)) if CoreNodeType::Play.is_exactly(&node.node_type) => Ok(node),
             Ok(Some(node)) => Err(refused(format!(
-                "'{id}' is a {} node, not a play",
-                node.node_type
+                "'{id}' is {} node, not a play",
+                nodespace_core::utils::with_indefinite_article(&node.node_type)
             ))),
             Ok(None) => Err(refused(format!("no node found with id '{id}'"))),
             Err(e) => Err(refused(format!("{tool} failed: {e}"))),

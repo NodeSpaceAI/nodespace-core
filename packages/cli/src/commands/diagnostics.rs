@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tonic::transport::Channel;
 
-use super::database::status_str;
+use super::database::{refusal, requirement_note, status_str};
 use crate::NodeClient;
 
 /// How many recent node IDs to report.
@@ -36,6 +36,14 @@ pub struct DatabaseSummary {
     pub path: String,
     pub is_default: bool,
     pub status: String,
+    /// The extensions the database requires that this build does not support;
+    /// empty unless the daemon refuses it (ADR-083 §2).
+    pub unsupported_extensions: Vec<String>,
+    /// What a refused database needs, as the human listing appends it; empty
+    /// for any other database.
+    pub requirement_note: String,
+    /// The refusal message of a refused database, `None` for any other.
+    pub refusal: Option<String>,
 }
 
 #[derive(Debug)]
@@ -149,6 +157,9 @@ pub async fn collect(
                     path: d.path.clone(),
                     is_default: d.is_default,
                     status: status_str(d.status).to_string(),
+                    unsupported_extensions: d.unsupported_extensions.clone(),
+                    requirement_note: requirement_note(d),
+                    refusal: refusal(d),
                 })
                 .collect();
             (summaries, inner.default_database_id)
@@ -316,7 +327,7 @@ fn record_failure(rpc: &str, status: tonic::Status, errors: &mut Vec<String>) ->
     if nodespace_proto::requires_extension::unsupported_extensions(&status).is_some() {
         return Err(status.into());
     }
-    errors.push(format!("{rpc} failed: {status}"));
+    errors.push(format!("{rpc} failed: {}", crate::status_text(&status)));
     Ok(())
 }
 
@@ -438,7 +449,10 @@ fn print_human(r: &DiagnosticsReport) {
         println!("Registered databases:");
         for d in &r.databases {
             let marker = if d.is_default { "*" } else { " " };
-            println!("  {marker} {} [{}] {} — {}", d.name, d.status, d.id, d.path);
+            println!(
+                "  {marker} {} [{}] {} — {}{}",
+                d.name, d.status, d.id, d.path, d.requirement_note
+            );
         }
     }
     println!();
@@ -487,6 +501,8 @@ fn print_json(r: &DiagnosticsReport) -> Result<()> {
             "path": d.path,
             "is_default": d.is_default,
             "status": d.status,
+            "unsupported_extensions": d.unsupported_extensions,
+            "refusal": d.refusal,
         })).collect::<Vec<_>>(),
         "targeted_database_id": r.targeted_database_id,
         "targeted_database_path": r.targeted_database_path,

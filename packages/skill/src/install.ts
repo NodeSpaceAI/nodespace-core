@@ -13,7 +13,13 @@
 // stays behind `import.meta.main` so this module is safely importable for
 // unit tests (of `extractResourceRoot`) without triggering the CLI's own
 // argv parsing and `process.exit` calls as a side effect of the import.
-import { install, uninstall, checkInstalled, detectAgents } from './installer.js';
+import {
+  install,
+  uninstall,
+  checkInstalled,
+  detectAgents,
+  claudeCodePluginManagedSkillExists,
+} from './installer.js';
 import type { AgentName, InstallResult } from './types.js';
 import { AGENTS } from './agents.js';
 import { installMcp, uninstallMcp, checkMcpInstalled } from './mcp-installer.js';
@@ -33,6 +39,25 @@ export function skipReasonText(result: InstallResult): string {
   return result.skipReason === 'plugin-managed'
     ? 'already installed via the Claude Code plugin marketplace, not overwriting'
     : 'detected but no files to install (package may be incomplete)';
+}
+
+/**
+ * What follows "✓ agent: " when an install found the agent's skill files
+ * already current and rewrote none. `nodespace skill install` reads it to
+ * report that agent as up to date rather than installed.
+ */
+export const UP_TO_DATE_TEXT = 'already up to date';
+
+/**
+ * What `status` prints after "⚠ claude-code: " when Claude Code has the skill
+ * through its plugin marketplace rather than as files this installer wrote.
+ */
+export const PLUGIN_MANAGED_STATUS_TEXT = 'installed via the Claude Code plugin marketplace';
+
+/** Whether Claude Code's plugin marketplace has the skill installed. */
+function pluginManaged(): boolean {
+  const claude = AGENTS.find(agent => agent.name === 'claude-code');
+  return claude !== undefined && claudeCodePluginManagedSkillExists(claude.detectionDir);
 }
 
 /**
@@ -158,7 +183,11 @@ Examples:
     const seen = new Set<string>();
     for (const result of results) {
       seen.add(result.agent);
-      if (result.installed.length > 0) {
+      if (result.installed.length > 0 && !result.changed) {
+        // Still a ✓ line, so a caller that reads only the marker counts the
+        // agent as installed; the text after it says nothing was rewritten.
+        console.log(`✓ ${result.agent}: ${UP_TO_DATE_TEXT} (${result.installed.length} file(s))`);
+      } else if (result.installed.length > 0) {
         console.log(`✓ ${result.agent}: installed ${result.installed.length} file(s)`);
         for (const file of result.installed) {
           console.log(`  → ${file}`);
@@ -220,6 +249,11 @@ Examples:
     for (const name of checked) {
       if (present.has(name)) {
         console.log(`✓ ${name}: present`);
+      } else if (name === 'claude-code' && pluginManaged()) {
+        // A ⚠ line, as `install` prints for the same state: the skill is
+        // there, but not as files this installer wrote, so it is neither
+        // "present" (a ✓ a caller would count as ours) nor absent.
+        console.log(`⚠ ${name}: ${PLUGIN_MANAGED_STATUS_TEXT}`);
       } else {
         console.log(`  ${name}: not present`);
       }

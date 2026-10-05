@@ -32,7 +32,15 @@ export interface AgentConfig {
 
 export interface InstallResult {
   agent: AgentName;
+  /** Every file of the skill now in place, whether or not this run wrote it. */
   installed: string[];
+  /**
+   * Whether this run altered the install directory: wrote a file whose
+   * content differed or was missing, or removed one the skill no longer
+   * ships. False for a re-run over an install that is already current, and
+   * for an agent nothing was installed for.
+   */
+  changed: boolean;
   /**
    * Set when `installed` is empty because Claude Code already has the
    * skill via its own plugin marketplace
