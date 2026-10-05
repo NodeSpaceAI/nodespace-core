@@ -536,6 +536,10 @@ message PendingSeedUpdate {
   string recorded_at = 6;
   // RFC 3339. When the user's version of this aspect was last written.
   string last_edited_at = 7;
+  // Whether this build holds the shipped version, so it can be shown and
+  // taken. False for a seed no compiled table has a row for: such an update
+  // can only be kept.
+  bool shipped_available = 8;
 }
 
 message PendingSeedUpdateListResponse {

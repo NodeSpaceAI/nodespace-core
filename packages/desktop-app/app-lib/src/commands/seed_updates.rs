@@ -30,6 +30,8 @@ pub struct PendingSeedUpdate {
     pub shipped_version: String,
     pub recorded_at: String,
     pub last_edited_at: String,
+    /// Whether this build holds the shipped version to show and take.
+    pub shipped_available: bool,
 }
 
 impl From<nodespace_proto::nodespace::PendingSeedUpdate> for PendingSeedUpdate {
@@ -42,6 +44,7 @@ impl From<nodespace_proto::nodespace::PendingSeedUpdate> for PendingSeedUpdate {
             shipped_version: u.shipped_version,
             recorded_at: u.recorded_at,
             last_edited_at: u.last_edited_at,
+            shipped_available: u.shipped_available,
         }
     }
 }

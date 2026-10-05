@@ -788,10 +788,16 @@ impl GrpcNodeService for NodeServiceImpl {
             .list_pending_seed_updates()
             .await
             .map_err(service_error_to_status)?;
+        let compiled: std::collections::HashSet<String> = compiled_seed_templates()
+            .map(|template| template.id)
+            .collect();
         Ok(Response::new(PendingSeedUpdateListResponse {
             updates: updates
                 .into_iter()
-                .map(pending_seed_update_to_proto)
+                .map(|update| {
+                    let shipped_available = compiled.contains(&update.node_id);
+                    pending_seed_update_to_proto(update, shipped_available)
+                })
                 .collect(),
         }))
     }
@@ -824,7 +830,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .ok_or_else(|| no_pending_seed_update(&req.node_id, aspect))?;
 
         Ok(Response::new(PendingSeedUpdateDetail {
-            update: Some(pending_seed_update_to_proto(comparison.update)),
+            update: Some(pending_seed_update_to_proto(comparison.update, true)),
             shipped: comparison.shipped,
             yours: comparison.yours,
         }))
@@ -867,8 +873,9 @@ impl GrpcNodeService for NodeServiceImpl {
             return Err(no_pending_seed_update(&req.node_id, aspect));
         }
 
+        let shipped_available = compiled_seed_templates().any(|t| t.id == req.node_id);
         Ok(Response::new(ResolvePendingSeedUpdateResponse {
-            update: Some(pending_seed_update_to_proto(update)),
+            update: Some(pending_seed_update_to_proto(update, shipped_available)),
         }))
     }
 
@@ -3057,6 +3064,7 @@ fn no_pending_seed_update(node_id: &str, aspect: nodespace_core::models::SeedAsp
 
 fn pending_seed_update_to_proto(
     update: nodespace_core::models::PendingSeedUpdate,
+    shipped_available: bool,
 ) -> PendingSeedUpdate {
     PendingSeedUpdate {
         node_id: update.node_id,
@@ -3066,6 +3074,7 @@ fn pending_seed_update_to_proto(
         shipped_version: update.shipped_version,
         recorded_at: update.recorded_at.to_rfc3339(),
         last_edited_at: update.last_edited_at.to_rfc3339(),
+        shipped_available,
     }
 }
 

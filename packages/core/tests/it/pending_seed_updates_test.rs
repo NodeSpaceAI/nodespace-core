@@ -48,6 +48,7 @@ fn play(description: &str) -> NodeTemplate {
         root_node_type: "play".to_string(),
         root_properties: json!({
             "rules": rules,
+            "enabled": true,
             "description": description,
             "_seed": { "default_rules": rules },
         }),
@@ -327,6 +328,32 @@ async fn an_edited_play_is_kept_and_its_shipped_change_can_be_taken() -> Result<
         stored.properties["play"]["description"],
         "Shipped description, second version."
     );
+    // Taking replaces the user's edit itself: the play they switched off is
+    // the shipped play again, and no longer theirs.
+    assert_eq!(stored.properties["play"]["enabled"], true);
+    assert_eq!(stored.properties["_seed"]["config_modified"], false);
+    assert!(service.list_pending_seed_updates().await?.is_empty());
+    Ok(())
+}
+
+/// A shipped change to a play's rules reaches a database whose play nobody
+/// edited, and the default a reset restores moves with it.
+#[tokio::test]
+async fn a_shipped_rules_change_replaces_an_unedited_play() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(&service, &play("Shipped description.")).await?;
+
+    let mut v2 = play("Shipped description.");
+    let mut rules = parent_task_completion_rules();
+    rules[0]["description"] = json!("Mark a task done once its sub-tasks are finished");
+    v2.root_properties["rules"] = rules.clone();
+    v2.root_properties["_seed"]["default_rules"] = rules.clone();
+    seed(&service, &v2).await?;
+
+    let stored = service.get_node(PLAY_ID).await?.unwrap();
+    assert_eq!(stored.properties["play"]["rules"], rules);
+    assert_eq!(stored.properties["_seed"]["default_rules"], rules);
+    assert_eq!(stored.properties["play"]["enabled"], true);
     assert!(service.list_pending_seed_updates().await?.is_empty());
     Ok(())
 }
@@ -480,7 +507,12 @@ async fn pending_state_is_not_node_content() -> Result<()> {
     assert!(!properties.contains("pending"), "{properties}");
     assert!(!properties.contains("shipped"), "{properties}");
 
+    // Read from the table itself: the service's list would hide an orphan row.
     service.delete_node(SKILL_ID, stored.version).await?;
-    assert!(service.list_pending_seed_updates().await?.is_empty());
+    assert!(service
+        .store()
+        .list_pending_seed_updates()
+        .await?
+        .is_empty());
     Ok(())
 }

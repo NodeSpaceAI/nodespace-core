@@ -96,7 +96,7 @@
   <p class="text-muted-foreground mb-6 text-sm leading-relaxed">
     NodeSpace ships skills, plays, saved queries and other built-in items that you can edit. When a
     newer version of one you edited ships, yours is kept and the new one waits here. Nothing is
-    replaced until you choose.
+    replaced until you choose. Keeping yours settles it until the shipped version changes again.
   </p>
 
   {#if error}
@@ -126,6 +126,12 @@
             <div class="text-muted-foreground mt-1 text-xs">
               {partLabel(update)} · you last edited it {lastEdited(update)}
             </div>
+            {#if !update.shippedAvailable}
+              <div class="text-muted-foreground mt-1 text-xs">
+                This version of NodeSpace does not include the shipped version, so it can only be
+                kept.
+              </div>
+            {/if}
           </div>
 
           <div class="flex shrink-0 gap-1.5">
@@ -133,6 +139,7 @@
               variant="ghost"
               size="sm"
               aria-expanded={reviewingKey === key}
+              disabled={!update.shippedAvailable}
               onclick={() => toggleReview(update)}
             >
               {reviewingKey === key ? 'Hide' : 'Compare'}
@@ -145,7 +152,12 @@
             >
               Keep mine
             </Button>
-            <Button variant="default" size="sm" disabled={working} onclick={() => startTake(update)}>
+            <Button
+              variant="default"
+              size="sm"
+              disabled={working || !update.shippedAvailable}
+              onclick={() => startTake(update)}
+            >
               Take shipped…
             </Button>
           </div>

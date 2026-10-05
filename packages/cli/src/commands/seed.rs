@@ -216,6 +216,7 @@ fn update_json(update: &PendingSeedUpdate) -> serde_json::Value {
         "shipped_version": update.shipped_version,
         "recorded_at": update.recorded_at,
         "last_edited_at": update.last_edited_at,
+        "shipped_available": update.shipped_available,
     })
 }
 
@@ -250,6 +251,12 @@ fn print_pending(w: &mut impl Write, updates: &[PendingSeedUpdate], json_out: bo
         writeln!(w, "aspect:      {}", update.aspect)?;
         writeln!(w, "last edited: {}", update.last_edited_at)?;
         writeln!(w, "node:        {}", update.node_id)?;
+        if !update.shipped_available {
+            writeln!(
+                w,
+                "shipped:     not in this build -- it can be kept, not shown or taken"
+            )?;
+        }
     }
     writeln!(w)?;
     writeln!(
@@ -374,6 +381,7 @@ mod tests {
             shipped_version: "abc123".to_string(),
             recorded_at: "2026-10-01T00:00:00+00:00".to_string(),
             last_edited_at: "2026-09-20T12:00:00+00:00".to_string(),
+            shipped_available: true,
         }
     }
 
@@ -407,8 +415,20 @@ mod tests {
                 "shipped_version": "abc123",
                 "recorded_at": "2026-10-01T00:00:00+00:00",
                 "last_edited_at": "2026-09-20T12:00:00+00:00",
+                "shipped_available": true,
             })
         );
+    }
+
+    #[test]
+    fn pending_says_when_the_shipped_version_is_not_in_this_build() {
+        let mut orphan = update("n1", "Team Overview", "guidance");
+        orphan.shipped_available = false;
+
+        let mut buf = Vec::new();
+        print_pending(&mut buf, &[orphan], false).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("shipped:     not in this build"), "{out}");
     }
 
     #[test]

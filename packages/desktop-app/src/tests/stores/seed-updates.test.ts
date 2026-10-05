@@ -39,6 +39,7 @@ function update(overrides: Partial<PendingSeedUpdate> = {}): PendingSeedUpdate {
     shippedVersion: 'abc',
     recordedAt: '2026-10-01T00:00:00Z',
     lastEditedAt: '2026-09-20T12:00:00Z',
+    shippedAvailable: true,
     ...overrides
   };
 }
@@ -225,6 +226,17 @@ describe('Built-in updates page', () => {
 
     expect(commands()).not.toContain('resolve_pending_seed_update');
     expect(seedUpdatesStore.updates).toHaveLength(1);
+  });
+
+  it('offers only Keep mine for an item this build has no shipped version of', async () => {
+    serve([update({ shippedAvailable: false })]);
+    const { container, findByText } = render(BuiltInUpdatesSettings);
+    await findByText('Research & Search');
+
+    expect(button(container, 'Compare').disabled).toBe(true);
+    expect(button(container, 'Take shipped…').disabled).toBe(true);
+    expect(button(container, 'Keep mine').disabled).toBe(false);
+    expect(container.textContent).toContain('it can only be');
   });
 
   it('reports a choice the daemon refused and keeps the row', async () => {

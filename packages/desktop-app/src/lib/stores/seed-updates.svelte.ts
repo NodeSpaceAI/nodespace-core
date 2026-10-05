@@ -19,6 +19,11 @@ export interface PendingSeedUpdate {
   shippedVersion: string;
   recordedAt: string;
   lastEditedAt: string;
+  /**
+   * Whether this build holds the shipped version. When it does not, the update
+   * can be kept but not compared or taken.
+   */
+  shippedAvailable: boolean;
 }
 
 /** Both versions of one pending aspect, as text. */
@@ -132,6 +137,8 @@ class SeedUpdatesStore {
       });
     } catch (e) {
       log.warn('Failed to settle a pending seed update', { error: e, update, choice });
+      // The list may be out of date, as when the CLI settled this one already.
+      void this.load();
       throw e;
     }
     if (generation !== this.#generation) return;

@@ -1276,6 +1276,7 @@ mod tests {
                 "conflict_participant",
                 "embedding",
                 "node",
+                "pending_seed_update",
                 "relationship",
                 "structural_rule",
                 "type_ancestry"

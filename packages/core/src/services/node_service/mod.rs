@@ -1626,7 +1626,11 @@ impl NodeService {
 
         // ADR-079: Plays that ship with the product. After the core schemas,
         // which a play node's own type and its rules' `task` trigger depend on.
-        crate::playbook::core_plays::seed_core_plays(&service).await?;
+        // Non-fatal, like the daemon's own seed tables: reconciling a play
+        // must never be what keeps a database from opening.
+        if let Err(e) = crate::playbook::core_plays::seed_core_plays(&service).await {
+            tracing::warn!(error = %e, "Failed to reconcile core plays (non-fatal)");
+        }
 
         Ok(service)
     }
@@ -2342,7 +2346,11 @@ impl NodeService {
             self.replace_seed_config(&existing_node, template_root)
                 .await?;
             self.store
-                .set_property_bool(&existing_node.id, "$._seed.config_modified", false)
+                .set_property_bool(
+                    &existing_node.id,
+                    &format!("$._seed.{}", SeedAspect::Config.modified_key()),
+                    false,
+                )
                 .await
                 .map_err(NodeServiceError::from_store)?;
             self.settle_pending_seed_update(&existing_node.id, SeedAspect::Config, true)
@@ -2360,7 +2368,11 @@ impl NodeService {
             self.replace_seed_guidance(&existing_node.id, children, new_guidance_version)
                 .await?;
             self.store
-                .set_property_bool(&existing_node.id, "$._seed.guidance_modified", false)
+                .set_property_bool(
+                    &existing_node.id,
+                    &format!("$._seed.{}", SeedAspect::Guidance.modified_key()),
+                    false,
+                )
                 .await
                 .map_err(NodeServiceError::from_store)?;
             self.settle_pending_seed_update(&existing_node.id, SeedAspect::Guidance, true)

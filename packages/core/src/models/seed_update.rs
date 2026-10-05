@@ -14,8 +14,7 @@ use std::str::FromStr;
 
 /// The two parts of a seeded node that are reconciled, and edited,
 /// independently (ADR-072).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SeedAspect {
     /// The root: its name and its fields.
     Config,
@@ -24,8 +23,6 @@ pub enum SeedAspect {
 }
 
 impl SeedAspect {
-    pub const ALL: [SeedAspect; 2] = [SeedAspect::Config, SeedAspect::Guidance];
-
     pub fn as_str(&self) -> &'static str {
         match self {
             SeedAspect::Config => "config",

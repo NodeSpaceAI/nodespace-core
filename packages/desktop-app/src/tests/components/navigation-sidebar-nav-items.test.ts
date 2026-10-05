@@ -31,7 +31,8 @@ function pendingUpdate(aspect: SeedAspect): PendingSeedUpdate {
     aspect,
     shippedVersion: 'abc',
     recordedAt: '2026-10-01T00:00:00Z',
-    lastEditedAt: '2026-09-20T00:00:00Z'
+    lastEditedAt: '2026-09-20T00:00:00Z',
+    shippedAvailable: true
   };
 }
 

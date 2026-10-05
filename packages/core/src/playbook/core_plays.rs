@@ -103,6 +103,10 @@ fn parent_task_completion_play() -> NodeTemplate {
         root_node_type: "play".to_string(),
         root_properties: json!({
             "rules": rules,
+            // Stated, not left to the schema default: a reset or a taken
+            // update replaces what the template names, so every field a
+            // user can change is named here.
+            "enabled": true,
             "description": "When every sub-task of a task is done or cancelled, \
                             mark the parent done. Reactive rules currently fire \
                             only for changes made on this device.",
