@@ -38,6 +38,8 @@ use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceErr
 
 use crate::services::ai_chat_title;
 use crate::services::chat_idle_gate::ChatIdleGate;
+use crate::services::chat_pins;
+use crate::services::play_edit_chat::{self, ChatModel, PlayEditChatError};
 use crate::services::chat_messages::{
     self, clip_summary, flatten_label, write_target, CompletedWrite, NewMessage, ResolvedEntity,
     StoredMessage,
@@ -50,7 +52,7 @@ use tonic::{Request, Response, Status};
 use crate::nodespace::{
     local_agent_service_server::LocalAgentService as GrpcLocalAgentService, AgentChunk,
     CancelModelDownloadRequest, CancelModelDownloadResponse, CancelTurnRequest, CancelTurnResponse,
-    DeleteModelRequest, DeleteModelResponse, DownloadModelRequest, EnsureModelReadyRequest,
+    CreatePlayEditChatRequest, CreatePlayEditChatResponse, DeleteModelRequest, DeleteModelResponse, DownloadModelRequest, EnsureModelReadyRequest,
     GetLocalStatusRequest, GetSystemRamRequest, GetSystemRamResponse, ListModelsRequest,
     ListModelsResponse, LoadModelRequest, LoadModelResponse, LocalAgentStatusResponse, ModelEntry,
     ModelLoadProgressEvent, RecommendedModelRequest, RecommendedModelResponse,
@@ -842,7 +844,14 @@ impl LocalAgentServiceImpl {
                 return;
             }
         };
-        let prior_history: Vec<ChatMessage> = history[..history.len() - 1].to_vec();
+        let mut prior_history: Vec<ChatMessage> = history[..history.len() - 1].to_vec();
+
+        // What the chat pins (ADR-090 §4). The nodes it is about are stated
+        // last, next to the message they are read against, on every turn:
+        // unlike what a turn looked up, they do not age out of the
+        // conversation. Its skills go to routing, below.
+        let pins = chat_pins::load_chat_pins(&self.inner.node_service, &node_id).await;
+        prior_history.extend(chat_pins::pinned_nodes_message(&pins.nodes));
 
         let service = self.get_service().await;
 
@@ -887,6 +896,14 @@ impl LocalAgentServiceImpl {
         if *self.inner.shared.active_model_routing_disabled.lock().await {
             service
                 .set_session_routing_disabled(&session_id, true)
+                .await;
+        }
+
+        // A pinned skill is a Stage-2 candidate on every routed turn of this
+        // chat, beside what retrieval finds (ADR-090 §5).
+        if !pins.skills.is_empty() {
+            service
+                .set_session_pinned_skills(&session_id, pins.skills)
                 .await;
         }
 
@@ -1447,6 +1464,29 @@ impl GrpcLocalAgentService for LocalAgentServiceImpl {
             tracing::info!(node_id, "ai-chat turn cancelled");
         }
         Ok(Response::new(CancelTurnResponse {}))
+    }
+
+    async fn create_play_edit_chat(
+        &self,
+        request: Request<CreatePlayEditChatRequest>,
+    ) -> Result<Response<CreatePlayEditChatResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+        let model = ChatModel {
+            provider: req.provider,
+            model: req.model,
+        };
+        let chat_id =
+            play_edit_chat::create_play_edit_chat(&this.inner.node_service, &req.play_id, model)
+                .await
+                .map_err(|error| match error {
+                    PlayEditChatError::PlayNotFound(_) => Status::not_found(error.to_string()),
+                    PlayEditChatError::NotAPlay { .. } => {
+                        Status::invalid_argument(error.to_string())
+                    }
+                    PlayEditChatError::Service(_) => Status::internal(error.to_string()),
+                })?;
+        Ok(Response::new(CreatePlayEditChatResponse { chat_id }))
     }
 
     async fn get_status(
@@ -2756,9 +2796,16 @@ struct AssistantRecord<'a> {
 /// An assistant message with no outcome — a failed turn's error notice — is
 /// left out rather than guessed at. It neither asked the user anything nor
 /// resolved what they asked, so the intent around it is unchanged.
+///
+/// So is an assistant message that comes before the user's first: the message
+/// the system opens a chat with (ADR-090 §3). A turn answers a request, and
+/// no request had been made. It offers choices, and is stored `clarified` so
+/// they render, but it is not a request's one clarification: the agent may
+/// still ask about what the user picks.
 fn prior_turns_from_history(messages: &[StoredMessage]) -> Vec<PriorTurn> {
     messages
         .iter()
+        .skip_while(|m| m.role != AiChatMessageRole::User)
         .filter(|m| m.role == AiChatMessageRole::Assistant)
         .filter_map(|m| {
             m.outcome.map(|outcome| PriorTurn {
@@ -4553,6 +4600,214 @@ mod tests {
         );
     }
 
+    /// [`StubEngine`], keeping the messages of every request it is sent.
+    struct RecordingEngine {
+        inner: StubEngine,
+        requests: Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>,
+    }
+
+    #[async_trait]
+    impl ChatInferenceEngine for RecordingEngine {
+        async fn generate(
+            &self,
+            request: nodespace_agent::agent_types::InferenceRequest,
+            on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+        ) -> Result<InferenceUsage, InferenceError> {
+            self.requests.lock().unwrap().push(request.messages.clone());
+            self.inner.generate(request, on_chunk).await
+        }
+
+        async fn model_info(
+            &self,
+        ) -> Result<Option<nodespace_agent::agent_types::ChatModelSpec>, InferenceError> {
+            self.inner.model_info().await
+        }
+
+        async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
+            self.inner.token_count(text).await
+        }
+    }
+
+    /// A play's edit chat, on a service whose engine records what it is sent.
+    /// Returns the play's and the chat's ids and the recorded requests.
+    async fn play_edit_chat_on_a_recording_engine(
+        svc: &LocalAgentServiceImpl,
+        node_service: &Arc<NodeService>,
+    ) -> (String, String, Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>>) {
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        svc.replace_engine(Arc::new(RecordingEngine {
+            inner: StubEngine::new("Which rule?"),
+            requests: requests.clone(),
+        }))
+        .await;
+        let play_id = node_service
+            .create_node(Node::new(
+                "play".to_string(),
+                "Close finished parents".to_string(),
+                serde_json::json!({ "rules": [] }),
+            ))
+            .await
+            .expect("create play");
+        let chat_id =
+            play_edit_chat::create_play_edit_chat(node_service, &play_id, ChatModel::default())
+                .await
+                .expect("create edit chat");
+        (play_id, chat_id, requests)
+    }
+
+    /// The system records in a request that state the pinned nodes.
+    fn pinned_records(request: &[ChatMessage]) -> Vec<&ChatMessage> {
+        request
+            .iter()
+            .filter(|m| {
+                m.role == Role::System && m.content.starts_with("Nodes pinned to this conversation")
+            })
+            .collect()
+    }
+
+    /// Creating a play's edit chat calls no model, and the first turn answers
+    /// the user's reply to the opening message: the model is sent that
+    /// message as the assistant's, then the pinned play, then the reply.
+    #[tokio::test]
+    async fn an_edit_chats_first_turn_answers_the_reply_to_its_opening_message() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        let (play_id, chat_id, requests) =
+            play_edit_chat_on_a_recording_engine(&svc, &node_service).await;
+        assert!(
+            requests.lock().unwrap().is_empty(),
+            "creating the chat must not call a model"
+        );
+
+        send_user_message(&node_service, &chat_id, "Change a condition").await;
+        svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+        let requests = requests.lock().unwrap();
+        let request = requests.last().expect("the turn called the model");
+        let conversation: Vec<&ChatMessage> = request.iter().skip(1).collect();
+        assert_eq!(
+            conversation.iter().map(|m| m.role).collect::<Vec<_>>(),
+            [Role::Assistant, Role::System, Role::User]
+        );
+        assert!(conversation[0].content.contains(&play_id));
+        assert_eq!(
+            conversation[1].content.lines().last(),
+            Some(format!("- nodespace://{play_id} \"Close finished parents\" (play)").as_str())
+        );
+        assert_eq!(conversation[2].content, "Change a condition");
+
+        let ai_chat = get_ai_chat(&node_service, &chat_id).await;
+        assert_eq!(ai_chat.turn_status, AiChatTurnStatus::Idle);
+        assert_eq!(ai_chat.messages.last().unwrap().content, "Which rule?");
+    }
+
+    /// The opening message offers choices but answers no request, so it is
+    /// not the one clarification of the request the user then makes: the
+    /// agent may still ask about what they picked. Its reply to that is the
+    /// first turn the contract counts.
+    #[tokio::test]
+    async fn an_edit_chats_opening_message_is_not_a_requests_clarification() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        let (_play_id, chat_id, requests) =
+            play_edit_chat_on_a_recording_engine(&svc, &node_service).await;
+
+        let opened = load_chat_messages(&node_service, &chat_id).await;
+        assert_eq!(opened[0].outcome, Some(AiChatTurnOutcome::Clarified));
+        assert!(prior_turns_from_history(&opened).is_empty());
+
+        send_user_message(&node_service, &chat_id, "Change a condition").await;
+        svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+        // One generation: the reply was not put back as a second question.
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        let after = load_chat_messages(&node_service, &chat_id).await;
+        assert_eq!(
+            prior_turns_from_history(&after),
+            vec![PriorTurn {
+                outcome: AiChatTurnOutcome::Replied,
+                response: "Which rule?".to_string(),
+            }]
+        );
+    }
+
+    /// A pinned node is stated on every turn. It is not one of the entities a
+    /// turn looked up, so a turn that looked up as many as a message keeps
+    /// does not push it out.
+    #[tokio::test]
+    async fn a_pinned_node_stays_in_the_entity_list_past_the_cap() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        let (play_id, chat_id, requests) =
+            play_edit_chat_on_a_recording_engine(&svc, &node_service).await;
+
+        send_user_message(&node_service, &chat_id, "Which tasks does it touch?").await;
+        let mut looked_up = Vec::new();
+        for n in 0..MAX_RESOLVED_ENTITIES {
+            let id = node_service
+                .create_node(Node::new(
+                    "text".to_string(),
+                    format!("Task {n}"),
+                    serde_json::json!({}),
+                ))
+                .await
+                .expect("create node");
+            looked_up.push(ResolvedEntity {
+                node_id: format!("nodespace://{id}"),
+                title: Some(format!("Task {n}")),
+                node_type: Some("text".to_string()),
+                tool: "search_nodes".to_string(),
+            });
+        }
+        chat_messages::append_message(
+            &node_service,
+            &chat_id,
+            NewMessage {
+                resolved_entities: &looked_up,
+                ..NewMessage::text(AiChatMessageRole::Assistant, "These twenty.")
+            },
+        )
+        .await
+        .expect("append assistant message");
+
+        for message in ["Now change its condition", "And its action"] {
+            send_user_message(&node_service, &chat_id, message).await;
+            svc.maybe_handle_ai_chat_node(&chat_id).await;
+
+            let requests = requests.lock().unwrap();
+            let request = requests.last().expect("the turn called the model");
+            let pinned = pinned_records(request);
+            assert_eq!(pinned.len(), 1, "stated once per turn");
+            assert!(pinned[0].content.contains(&play_id));
+            // Stated last, next to the message it is read against.
+            let at = request
+                .iter()
+                .position(|m| std::ptr::eq(m, pinned[0]))
+                .unwrap();
+            assert_eq!(request[at + 1].content, message);
+        }
+    }
+
+    /// A chat that pins nothing is sent no such record.
+    #[tokio::test]
+    async fn a_chat_without_pins_is_sent_no_pinned_record() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        svc.replace_engine(Arc::new(RecordingEngine {
+            inner: StubEngine::new("Hello back!"),
+            requests: requests.clone(),
+        }))
+        .await;
+        let node_id = create_processing_node_with_user_message(&node_service, "Hi there").await;
+
+        svc.maybe_handle_ai_chat_node(&node_id).await;
+
+        let requests = requests.lock().unwrap();
+        let request = requests.last().expect("the turn called the model");
+        assert!(pinned_records(request).is_empty());
+        assert_eq!(
+            request.iter().skip(1).map(|m| m.role).collect::<Vec<_>>(),
+            [Role::User]
+        );
+    }
+
     /// A chat asked for a turn with no user message to answer is put back to
     /// `idle`, not left `processing` with its composer locked: a client that
     /// writes the status without a message stored (its create failed, or it
@@ -5634,6 +5889,13 @@ mod tests {
     async fn turn_outcomes_persist_and_rebuild_the_prior_turns() {
         let (svc, node_service, _tempdir) = test_service().await;
         let node_id = create_ai_chat_node(&node_service).await;
+        chat_messages::append_message(
+            &node_service,
+            &node_id,
+            NewMessage::text(AiChatMessageRole::User, "Tidy up my contacts"),
+        )
+        .await
+        .expect("append user message");
 
         for (text, outcome) in [
             (

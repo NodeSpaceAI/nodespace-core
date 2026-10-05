@@ -941,6 +941,7 @@ async fn stage2_candidate_names(
                 instructions: String::new(),
                 schema_metadata: serde_json::json!([]),
                 schemas_linked: false,
+                pinned: false,
             }
         })
         .collect();

@@ -30,6 +30,10 @@ use nodespace_core::markdown::{NodeTemplate, SeedTier};
 use nodespace_core::models::{CoreNodeType, SkillFields, SKILL_APPLIES_TO};
 use nodespace_core::services::{NodeService, NodeServiceError};
 
+/// The Play Authoring skill's fixed id. A chat opened to edit a play pins it
+/// (ADR-090 §3).
+pub const PLAY_AUTHORING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0c";
+
 /// One built-in skill, as its table row.
 #[derive(Debug, Clone, Copy)]
 pub struct SkillSeed {
@@ -514,7 +518,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // The description names changing a play and switching it, and says
         // nothing of why a rule has not fired: that is Play Workflow State's
         // request, and the two share every noun.
-        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0c",
+        id: PLAY_AUTHORING_SKILL_ID,
         title: "Play Authoring",
         description: "Change a Play automation: edit when a rule runs, its conditions, or its actions, add or remove a rule, or turn the Play on or off. Use when the user wants an automation, rule, or workflow to behave differently or to stop running.",
         // The exclusion is what separates the two. Without it "why didn't the
@@ -1448,6 +1452,7 @@ mod tests {
                 instructions: String::new(),
                 schema_metadata: serde_json::json!([]),
                 schemas_linked: false,
+                pinned: false,
             };
             let mutates = crate::local_agent::routing::skill_is_mutating(&candidate);
             assert_eq!(

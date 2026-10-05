@@ -500,6 +500,13 @@ pub struct AgentSession {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prior_turns: Vec<PriorTurn>,
 
+    /// The skills this session's chat pins (ADR-090 §5), each marked
+    /// `pinned`. Every routed turn offers them to Stage 2 beside the
+    /// candidates retrieval returns. Set by the caller that rebuilds the
+    /// session from its chat; empty for a chat that pins no skill.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_skills: Vec<SkillCandidate>,
+
     /// Every `nodespace://` id a tool result or system record has produced in
     /// this session: the only ids a reply may link.
     ///
@@ -717,6 +724,11 @@ pub struct SkillCandidate {
     /// none. Only a linked set can hold a turn to its types — see
     /// `routing::offered_types`.
     pub schemas_linked: bool,
+    /// Whether the chat pins this skill (ADR-090 §5). A pinned skill is a
+    /// candidate on every routed turn of its chat, whatever retrieval scored
+    /// it: the pin, not the score, is what makes it eligible.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// Outcome of the deterministic retrieval step.

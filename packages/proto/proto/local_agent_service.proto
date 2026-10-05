@@ -14,6 +14,9 @@ service LocalAgentService {
   rpc SubscribeTokenStream(SubscribeTokenStreamRequest) returns (stream AgentChunk);
   // Cancel an in-progress inference turn for a given node.
   rpc CancelTurn(CancelTurnRequest)              returns (CancelTurnResponse);
+  // Create the chat a play is edited through: a native chat that pins the
+  // play-authoring skill and the play, opened by a message the system writes.
+  rpc CreatePlayEditChat(CreatePlayEditChatRequest) returns (CreatePlayEditChatResponse);
   rpc GetStatus(GetLocalStatusRequest)           returns (LocalAgentStatusResponse);
   rpc EnsureModelReady(EnsureModelReadyRequest)  returns (stream ModelLoadProgressEvent);
   rpc ListModels(ListModelsRequest)              returns (ListModelsResponse);
@@ -101,6 +104,24 @@ message CancelTurnRequest {
 }
 
 message CancelTurnResponse {}
+
+// ---------------------------------------------------------------------------
+// CreatePlayEditChat
+// ---------------------------------------------------------------------------
+
+message CreatePlayEditChatRequest {
+  // The play the chat edits.
+  string play_id = 1;
+  // The model the chat starts on, when the client has a default: where
+  // inference runs (`native`, `openai-compat`) and the model's id.
+  optional string provider = 2;
+  optional string model = 3;
+}
+
+message CreatePlayEditChatResponse {
+  // The new ai-chat-native node.
+  string chat_id = 1;
+}
 
 // ---------------------------------------------------------------------------
 // EnsureModelReady — server-streaming model load/download progress
