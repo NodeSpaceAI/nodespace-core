@@ -45,6 +45,7 @@ fn test_context() -> (SharedContext, Arc<EmbeddingScheduler>) {
                 .expect("nodespace dir")
                 .join("daemon.toml"),
         ),
+        extensions: nodespace_daemon::DaemonExtensions::none(),
     };
     (context, scheduler)
 }

@@ -13,6 +13,7 @@ pub mod chat_pins;
 pub mod database_manager;
 pub mod database_service;
 pub mod embeddings_service;
+pub mod extensions;
 pub mod import_service;
 pub mod local_agent_service;
 pub mod node_service;
@@ -34,6 +35,7 @@ pub use database_manager::{
 };
 pub use database_service::DatabaseServiceImpl;
 pub use embeddings_service::{EmbeddingReady, EmbeddingsServiceImpl};
+pub use extensions::{DaemonExtensions, DaemonExtensionsError};
 pub use import_service::ImportServiceImpl;
 pub use local_agent_service::{LocalAgentServiceImpl, SharedLocalAgent};
 pub use node_service::NodeServiceImpl;

@@ -77,7 +77,13 @@ describe("WATCHED_PATHS", () => {
 
   test("watches the surface snapshot, the Rust fixtures and the skill-extension fixture", () => {
     expect(WATCHED_PATHS).toEqual(
-      expect.arrayContaining([SNAPSHOT, RUST_FIXTURE, "packages/desktop-app/app-lib/tests/it/extension_hooks_test.rs", "scripts/fixtures/skill-extension/"])
+      expect.arrayContaining([
+        SNAPSHOT,
+        RUST_FIXTURE,
+        "packages/desktop-app/app-lib/tests/it/extension_hooks_test.rs",
+        "packages/daemon/tests/it/extension_points_fixture.rs",
+        "scripts/fixtures/skill-extension/",
+      ])
     );
   });
 

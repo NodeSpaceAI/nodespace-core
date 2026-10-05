@@ -71,6 +71,7 @@ fn gated_context() -> (SharedContext, Arc<Mutex<Vec<String>>>) {
                 .expect("nodespace dir")
                 .join("daemon.toml"),
         ),
+        extensions: nodespace_daemon::DaemonExtensions::none(),
     };
     (context, seen)
 }

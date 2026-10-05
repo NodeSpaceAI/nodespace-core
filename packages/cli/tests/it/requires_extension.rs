@@ -37,6 +37,7 @@ fn context(home: &Path) -> SharedContext {
         scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
         local_agent: nodespace_daemon::SharedLocalAgent::new(home.join("daemon.toml")),
+        extensions: nodespace_daemon::DaemonExtensions::none(),
     }
 }
 

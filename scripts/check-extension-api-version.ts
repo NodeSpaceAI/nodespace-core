@@ -61,6 +61,8 @@ export const WATCHED_PATHS: readonly string[] = [
   "packages/desktop-app/app-lib/src/extensions/fixture_tests.rs",
   "packages/desktop-app/app-lib/tests/it/extension_hooks_test.rs",
   "packages/desktop-app/app-lib/tests/it/extension_daemon_profile_test.rs",
+  // The daemon extension points, driven through build_shared_services.
+  "packages/daemon/tests/it/extension_points_fixture.rs",
   // The layout NODESPACE_SKILL_EXTENSIONS accepts.
   "scripts/fixtures/skill-extension/",
 ];
