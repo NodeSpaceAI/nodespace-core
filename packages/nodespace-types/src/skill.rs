@@ -36,12 +36,13 @@ pub const DEFAULT_SKILL_MAX_ITERATIONS: u32 = 2;
 #[cfg_attr(feature = "ts", ts(optional_fields))]
 #[serde(rename_all = "camelCase")]
 pub struct SkillFields {
-    /// What the skill is for. Drives the skill's embedding for retrieval.
-    pub description: String,
-    /// What the skill is *not* for, scored against the query to penalize
-    /// verb-only overlaps. `None` when absent or blank.
+    /// The requests the skill should handle, worded the way someone would
+    /// ask. Embedded with the skill's name for retrieval.
+    pub use_for: String,
+    /// Requests that sound similar but belong to another skill, scored
+    /// against the query to penalize verb-only overlaps. `None` when absent or blank.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclusion: Option<String>,
+    pub not_for: Option<String>,
     /// Tools a turn that selects this skill may call.
     pub tool_whitelist: Vec<String>,
     /// ReAct iteration budget for the skill.
@@ -52,8 +53,8 @@ impl Default for SkillFields {
     /// What a skill with no stored fields reads as: the schema's defaults.
     fn default() -> Self {
         Self {
-            description: String::new(),
-            exclusion: None,
+            use_for: String::new(),
+            not_for: None,
             tool_whitelist: Vec::new(),
             max_iterations: DEFAULT_SKILL_MAX_ITERATIONS,
         }
@@ -61,23 +62,19 @@ impl Default for SkillFields {
 }
 
 impl SkillFields {
-    /// A skill's fields with no exclusion.
-    pub fn new(
-        description: impl Into<String>,
-        tool_whitelist: &[&str],
-        max_iterations: u32,
-    ) -> Self {
+    /// A skill's fields with no `not_for`.
+    pub fn new(use_for: impl Into<String>, tool_whitelist: &[&str], max_iterations: u32) -> Self {
         Self {
-            description: description.into(),
-            exclusion: None,
+            use_for: use_for.into(),
+            not_for: None,
             tool_whitelist: tool_whitelist.iter().map(|t| t.to_string()).collect(),
             max_iterations,
         }
     }
 
-    /// Set what the skill is not for. A blank exclusion is no exclusion.
-    pub fn with_exclusion(mut self, exclusion: impl Into<String>) -> Self {
-        self.exclusion = normalize_exclusion(&exclusion.into());
+    /// Set what the skill is not for. A blank value is none.
+    pub fn with_not_for(mut self, not_for: impl Into<String>) -> Self {
+        self.not_for = normalize_not_for(&not_for.into());
         self
     }
 
@@ -101,8 +98,8 @@ impl SkillFields {
     /// (`properties.skill.*`) or flat shape. For callers that hold a skill's
     /// parts rather than a [`Node`], such as a wire record or a seed template.
     ///
-    /// An absent or `null` field takes its default: empty description and
-    /// lists, no exclusion, [`DEFAULT_SKILL_MAX_ITERATIONS`].
+    /// An absent or `null` field takes its default: empty `use_for` and
+    /// lists, no `not_for`, [`DEFAULT_SKILL_MAX_ITERATIONS`].
     ///
     /// # Errors
     ///
@@ -117,10 +114,10 @@ impl SkillFields {
                 .filter(|v| !v.is_null())
         };
 
-        let description = optional_string(field("description"), "description")?;
-        let exclusion = optional_string(field("exclusion"), "exclusion")?
+        let use_for = optional_string(field("use_for"), "use_for")?;
+        let not_for = optional_string(field("not_for"), "not_for")?
             .as_deref()
-            .and_then(normalize_exclusion);
+            .and_then(normalize_not_for);
         let tool_whitelist = string_list(field("tool_whitelist"), "tool_whitelist")?;
         let max_iterations = match field("max_iterations") {
             None => DEFAULT_SKILL_MAX_ITERATIONS,
@@ -136,8 +133,8 @@ impl SkillFields {
         };
 
         Ok(Self {
-            description: description.unwrap_or_default(),
-            exclusion,
+            use_for: use_for.unwrap_or_default(),
+            not_for,
             tool_whitelist,
             max_iterations,
         })
@@ -146,12 +143,12 @@ impl SkillFields {
     /// The skill's config as flat properties — the shape a create or update
     /// writes, which the store hoists under `properties.skill.*`.
     ///
-    /// `exclusion` is omitted when unset rather than written empty.
+    /// `not_for` is omitted when unset rather than written empty.
     pub fn properties(&self) -> Value {
         let mut props = Map::new();
-        props.insert("description".to_string(), json!(self.description));
-        if let Some(exclusion) = &self.exclusion {
-            props.insert("exclusion".to_string(), json!(exclusion));
+        props.insert("use_for".to_string(), json!(self.use_for));
+        if let Some(not_for) = &self.not_for {
+            props.insert("not_for".to_string(), json!(not_for));
         }
         props.insert("tool_whitelist".to_string(), json!(self.tool_whitelist));
         props.insert("max_iterations".to_string(), json!(self.max_iterations));
@@ -185,7 +182,7 @@ pub struct SkillNode {
 
 /// Partial update for a skill's core fields, received from the frontend.
 ///
-/// `description` and `tool_whitelist` have no clear path (the schema requires
+/// `use_for` and `tool_whitelist` have no clear path (the schema requires
 /// them), and `null` for either is refused rather than read as absent; the
 /// other fields are tri-state: absent leaves the field unchanged,
 /// `null` clears it, and a value sets it. A list is replaced whole. The
@@ -201,13 +198,13 @@ pub struct SkillNodeUpdate {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_set_only"
     )]
-    pub description: Option<String>,
+    pub use_for: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_clearable"
     )]
-    pub exclusion: Option<Option<String>>,
+    pub not_for: Option<Option<String>>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -223,16 +220,6 @@ pub struct SkillNodeUpdate {
 }
 
 impl SkillNodeUpdate {
-    /// An update that sets only `description`, leaving every other field as
-    /// stored. For a write that must not clobber concurrent edits to the rest
-    /// of the config.
-    pub fn description(description: impl Into<String>) -> Self {
-        Self {
-            description: Some(description.into()),
-            ..Default::default()
-        }
-    }
-
     /// True when the update changes nothing.
     pub fn is_empty(&self) -> bool {
         self == &Self::default()
@@ -243,11 +230,11 @@ impl SkillNodeUpdate {
     /// service layer moves the keys into the `skill` storage bucket.
     pub fn to_properties_patch(&self) -> Value {
         let mut patch = Map::new();
-        if let Some(description) = &self.description {
-            patch.insert("description".to_string(), json!(description));
+        if let Some(use_for) = &self.use_for {
+            patch.insert("use_for".to_string(), json!(use_for));
         }
-        if let Some(exclusion) = &self.exclusion {
-            patch.insert("exclusion".to_string(), json!(exclusion));
+        if let Some(not_for) = &self.not_for {
+            patch.insert("not_for".to_string(), json!(not_for));
         }
         if let Some(tool_whitelist) = &self.tool_whitelist {
             patch.insert("tool_whitelist".to_string(), json!(tool_whitelist));
@@ -259,8 +246,8 @@ impl SkillNodeUpdate {
     }
 }
 
-fn normalize_exclusion(exclusion: &str) -> Option<String> {
-    let trimmed = exclusion.trim();
+fn normalize_not_for(not_for: &str) -> Option<String> {
+    let trimmed = not_for.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
@@ -297,7 +284,7 @@ mod tests {
 
     fn sample() -> SkillFields {
         SkillFields::new("Update a record", &["update_node", "get_node"], 3)
-            .with_exclusion("Delete records")
+            .with_not_for("Delete records")
     }
 
     #[test]
@@ -321,7 +308,7 @@ mod tests {
     fn minimal_skill_round_trips_without_optional_keys() {
         let skill = SkillFields::new("Search", &["search_nodes"], 4);
         let props = skill.properties();
-        assert!(props.get("exclusion").is_none());
+        assert!(props.get("not_for").is_none());
         assert_eq!(SkillFields::from_properties(&props).unwrap(), skill);
     }
 
@@ -332,27 +319,27 @@ mod tests {
         let props = json!({
             "max_iterations": 2,
             "tool_whitelist": ["get_node"],
-            "skill": { "max_iterations": 4, "description": "d" },
+            "skill": { "max_iterations": 4, "use_for": "d" },
         });
         let skill = SkillFields::from_properties(&props).unwrap();
         assert_eq!(skill.max_iterations, 4);
-        assert_eq!(skill.description, "d");
+        assert_eq!(skill.use_for, "d");
         // Absent from the bucket, so read from the flat level.
         assert_eq!(skill.tool_whitelist, vec!["get_node"]);
     }
 
     #[test]
     fn null_skill_bucket_falls_back_to_flat() {
-        let props = json!({ "skill": null, "description": "d", "tool_whitelist": ["x"] });
+        let props = json!({ "skill": null, "use_for": "d", "tool_whitelist": ["x"] });
         let skill = SkillFields::from_properties(&props).unwrap();
-        assert_eq!(skill.description, "d");
+        assert_eq!(skill.use_for, "d");
         assert_eq!(skill.tool_whitelist, vec!["x"]);
     }
 
     #[test]
     fn absent_and_null_fields_take_defaults() {
         let skill = SkillFields::from_properties(
-            &json!({ "skill": { "exclusion": null, "max_iterations": null } }),
+            &json!({ "skill": { "not_for": null, "max_iterations": null } }),
         )
         .unwrap();
         assert_eq!(skill, SkillFields::default());
@@ -360,28 +347,24 @@ mod tests {
     }
 
     #[test]
-    fn blank_exclusion_is_none() {
+    fn blank_not_for_is_none() {
         let skill =
-            SkillFields::from_properties(&json!({ "skill": { "exclusion": "   " } })).unwrap();
-        assert_eq!(skill.exclusion, None);
-        assert_eq!(
-            SkillFields::new("", &[], 1).with_exclusion(" ").exclusion,
-            None
-        );
+            SkillFields::from_properties(&json!({ "skill": { "not_for": "   " } })).unwrap();
+        assert_eq!(skill.not_for, None);
+        assert_eq!(SkillFields::new("", &[], 1).with_not_for(" ").not_for, None);
     }
 
     #[test]
-    fn exclusion_is_trimmed() {
-        let skill =
-            SkillFields::from_properties(&json!({ "exclusion": "  Delete them. " })).unwrap();
-        assert_eq!(skill.exclusion.as_deref(), Some("Delete them."));
+    fn not_for_is_trimmed() {
+        let skill = SkillFields::from_properties(&json!({ "not_for": "  Delete them. " })).unwrap();
+        assert_eq!(skill.not_for.as_deref(), Some("Delete them."));
     }
 
     #[test]
     fn wrong_typed_fields_are_rejected() {
         for (props, message) in [
-            (json!({ "description": 5 }), "description must be a string"),
-            (json!({ "exclusion": [] }), "exclusion must be a string"),
+            (json!({ "use_for": 5 }), "use_for must be a string"),
+            (json!({ "not_for": [] }), "not_for must be a string"),
             (
                 json!({ "tool_whitelist": "get_node" }),
                 "tool_whitelist must be an array",
@@ -424,9 +407,9 @@ mod tests {
     #[test]
     fn update_refuses_to_clear_a_required_field() {
         for json in [
-            r#"{"description": null}"#,
+            r#"{"useFor": null}"#,
             r#"{"toolWhitelist": null}"#,
-            r#"{"maxIterations": 3, "description": null}"#,
+            r#"{"maxIterations": 3, "useFor": null}"#,
         ] {
             let error = serde_json::from_str::<SkillNodeUpdate>(json)
                 .expect_err("null must not clear a required field")
@@ -435,8 +418,8 @@ mod tests {
         }
         // Absent is still "unchanged", and a value still sets.
         let update: SkillNodeUpdate =
-            serde_json::from_str(r#"{"description": "d", "toolWhitelist": []}"#).unwrap();
-        assert_eq!(update.description.as_deref(), Some("d"));
+            serde_json::from_str(r#"{"useFor": "d", "toolWhitelist": []}"#).unwrap();
+        assert_eq!(update.use_for.as_deref(), Some("d"));
         assert_eq!(update.tool_whitelist, Some(Vec::new()));
     }
 
@@ -459,16 +442,16 @@ mod tests {
     #[test]
     fn update_distinguishes_absent_null_and_value() {
         let update: SkillNodeUpdate = serde_json::from_str(
-            r#"{"exclusion": null, "maxIterations": 5, "toolWhitelist": ["get_node"]}"#,
+            r#"{"notFor": null, "maxIterations": 5, "toolWhitelist": ["get_node"]}"#,
         )
         .unwrap();
-        assert_eq!(update.description, None);
-        assert_eq!(update.exclusion, Some(None));
+        assert_eq!(update.use_for, None);
+        assert_eq!(update.not_for, Some(None));
         assert_eq!(update.max_iterations, Some(Some(5)));
         assert_eq!(
             update.to_properties_patch(),
             json!({
-                "exclusion": null,
+                "not_for": null,
                 "tool_whitelist": ["get_node"],
                 "max_iterations": 5
             })
@@ -479,21 +462,13 @@ mod tests {
             .is_empty());
     }
 
-    #[test]
-    fn description_update_sets_only_the_description() {
-        assert_eq!(
-            SkillNodeUpdate::description("new").to_properties_patch(),
-            json!({ "description": "new" })
-        );
-    }
-
-    /// The wire fields are camelCase and an unset exclusion is omitted.
+    /// The wire fields are camelCase and an unset `not_for` is omitted.
     #[test]
     fn fields_serialize_camel_case() {
         assert_eq!(
             serde_json::to_value(SkillFields::new("Search", &["get_node"], 4)).unwrap(),
             json!({
-                "description": "Search",
+                "useFor": "Search",
                 "toolWhitelist": ["get_node"],
                 "maxIterations": 4
             })

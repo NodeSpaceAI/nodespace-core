@@ -1056,7 +1056,7 @@ impl NodeEmbeddingService {
     /// (Graph Editing started out-ranking Node Deletion on "remove the done
     /// tasks"). Most of what gets stored — skill and schema descriptions,
     /// short notes — is about as short as a query, so the symmetric framing
-    /// fits, and skill descriptions, exclusions and routing bars are tuned
+    /// fits, and skill `use_for` and `not_for` text and routing bars are tuned
     /// against it. Re-measure before changing this, especially once long
     /// multi-chunk documents dominate a workspace.
     pub fn embed_query_text(&self, query: &str) -> Result<Vec<f32>, NodeServiceError> {

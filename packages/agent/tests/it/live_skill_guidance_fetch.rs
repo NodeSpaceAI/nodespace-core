@@ -206,13 +206,10 @@ async fn a_query_from_a_skills_own_description_returns_that_skill_first() {
     };
 
     for seed in SKILL_SEEDS {
-        let guidance = find_skill_guidance(
-            &embedding_service,
-            &node_service,
-            input(seed.description, 3),
-        )
-        .await
-        .expect("the fetch must succeed");
+        let guidance =
+            find_skill_guidance(&embedding_service, &node_service, input(seed.use_for, 3))
+                .await
+                .expect("the fetch must succeed");
 
         let names: Vec<&str> = guidance.skills.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
@@ -227,7 +224,7 @@ async fn a_query_from_a_skills_own_description_returns_that_skill_first() {
             "{:?} came back with no procedure",
             seed.title
         );
-        assert_eq!(first.description, seed.description);
+        assert_eq!(first.use_for, seed.use_for);
     }
 }
 

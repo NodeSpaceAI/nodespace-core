@@ -62,7 +62,7 @@ const NEIGHBORS_PER_SEED: usize = 5;
 
 /// (request, skill that should win). The live routing suite's requests plus
 /// the indirect intents from the skill-retrieval wording study.
-const SKILL_CASES: &[(&str, &str)] = &[
+pub(crate) const SKILL_CASES: &[(&str, &str)] = &[
     (
         "Start keeping the calls we make on how the system is built, and who made each one",
         "Schema Creation",
@@ -778,7 +778,7 @@ async fn measure_skills(env: &Env) {
             .map(|s| SkillCandidate {
                 id: String::new(),
                 name: s["name"].as_str().unwrap_or_default().to_string(),
-                description: String::new(),
+                use_for: String::new(),
                 score: s["confidence"].as_f64().unwrap_or(0.0) as f32,
                 tools: s["tools"]
                     .as_array()

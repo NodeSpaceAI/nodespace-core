@@ -333,7 +333,7 @@ fn skill_md_teaches_the_fetch_and_restates_no_procedure() {
         "SKILL.md must show how to fetch the skills for a task"
     );
     assert!(
-        body.contains("every skill, by name and description"),
+        body.contains("every skill, by name and what it is for"),
         "SKILL.md must show how to list every skill"
     );
     // What comes back, and how to treat it.

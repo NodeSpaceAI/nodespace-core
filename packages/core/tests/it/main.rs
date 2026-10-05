@@ -67,7 +67,6 @@ mod search_result_scaling_test;
 mod sibling_order_rebalance_test;
 mod skill_applies_to_test;
 mod skill_attached_to_test;
-mod skill_updater_test;
 mod store_concurrency_test;
 mod structural_rules_test;
 mod tool_subtypes_test;

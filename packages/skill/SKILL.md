@@ -108,7 +108,7 @@ This file says what NodeSpace is and how to reach it. **How to do things in it i
 
 ```bash
 nodespace skill guidance "<the task, in your own words>"   # the skills for it, and the schemas it touches
-nodespace skill guidance                                    # every skill, by name and description
+nodespace skill guidance                                    # every skill, by name and what it is for
 nodespace skill get "<skill name>"                          # one skill you already know, by its exact name or id
 ```
 

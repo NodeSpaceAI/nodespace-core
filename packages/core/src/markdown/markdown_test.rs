@@ -3185,7 +3185,7 @@ mod template_tests {
             title: name.to_string(),
             root_node_type: "skill".to_string(),
             root_properties: serde_json::json!({
-                "description": "test skill",
+                "use_for": "test skill",
                 "tool_whitelist": ["get_node"],
                 "max_iterations": 3,
             }),

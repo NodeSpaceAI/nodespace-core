@@ -323,7 +323,7 @@ impl NodeService {
         .await
     }
 
-    /// Update a skill's core fields (`description`, `exclusion`,
+    /// Update a skill's core fields (`use_for`, `not_for`,
     /// `tool_whitelist`, `max_iterations`) with optimistic
     /// concurrency control. See [`Self::update_person_node`] for why this
     /// delegates to the generic pipeline; the resulting field shapes are

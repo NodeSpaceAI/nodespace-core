@@ -468,24 +468,24 @@ const LINKED_TYPE = "bug_report";
 /// Three, because a turn has an offered set only when every tool-bearing
 /// candidate that clears its bar is linked, and Stage 2 judges the top three:
 /// fewer would leave room for an unlinked built-in, and the turn would not be
-/// held. Their descriptions share the scenarios' vocabulary so that they, and
+/// held. Their `use_for` text shares the scenarios' vocabulary so that they, and
 /// not the built-ins, lead retrieval for a bug-report request.
-const LINKED_SKILLS: Array<{ name: string; description: string; tools: string[] }> = [
+const LINKED_SKILLS: Array<{ name: string; useFor: string; tools: string[] }> = [
   {
     name: "Bug Report Intake",
-    description:
+    useFor:
       "File a bug report: record a new bug report for a component with its status and the date it was filed.",
     tools: ["search_nodes", "create_node"],
   },
   {
     name: "Bug Report Follow-up",
-    description:
+    useFor:
       "Follow up on a bug report: find the bug report and change its status or add what happened next.",
     tools: ["search_nodes", "update_node", "create_node"],
   },
   {
     name: "Bug Report Lookup",
-    description:
+    useFor:
       "Look up bug reports: list bug reports by component, status or the date they were filed.",
     tools: ["search_nodes"],
   },
@@ -549,7 +549,7 @@ function seedLinkedSkills(env: EvalEnv): void {
       "--content",
       skill.name,
       "--property",
-      `description=${skill.description}`,
+      `use_for=${skill.useFor}`,
       "--property",
       `tool_whitelist=${JSON.stringify(skill.tools)}`,
     ]) as { id?: string } | null;
@@ -622,7 +622,7 @@ const FIXTURES: DecisionScenario[] = [
   // ── Skill routing (instance vs type) ───────────────────────────────────
   //
   // The layer the observed failures actually occur at. Stage 1 matches an
-  // embedding of the message against skill `description` properties (ADR-064
+  // embedding of the message against skill `use_for` properties (ADR-064
   // rule 3: those are retrieval index keys, not documentation) — tool
   // descriptions are not consulted, and by the time they are, the whitelist is
   // already scoped.

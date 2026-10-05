@@ -59,7 +59,7 @@ pub enum SkillAction {
     Status,
     /// Fetch the skills that match a task, each with its instructions, the
     /// commands of the tools it names, and the schemas of the types the task
-    /// touches. With no task, list every skill by name and description, with
+    /// touches. With no task, list every skill by name and what it is for, with
     /// the list's version. Covers the built-in skills, skills a user wrote
     /// and skills an installed workflow added. Output is always
     /// provenance-marked (a banner in human mode, a `"provenance":
@@ -73,7 +73,7 @@ pub enum SkillAction {
     /// list or from an earlier fetch. Fails when no skill has that name.
     Get(GetArgs),
     /// Discard a user's customization of a seeded skill node's config
-    /// (description/exclusion/tool_whitelist/max_iterations) and/or guidance
+    /// (use_for/not_for/tool_whitelist/max_iterations) and/or guidance
     /// (procedural markdown), restoring it to the currently-compiled
     /// template, whether or not a newer shipped version is pending
     /// (`nodespace seed pending`). It overrides the
@@ -102,9 +102,9 @@ pub struct UninstallArgs {}
 pub struct GuidanceArgs {
     /// The task at hand, in your own words (e.g. "add a task to the
     /// spec", "define a new type with an enum field"). Matched by
-    /// meaning against every skill's name and description, ranked the way
+    /// meaning against every skill's name and `use_for`, ranked the way
     /// the in-app agent ranks skills. Omit it, or pass an empty string, to
-    /// list every skill by name and description without its instructions.
+    /// list every skill by name and what it is for without its instructions.
     #[arg(default_value = "")]
     pub query: String,
 
@@ -139,7 +139,7 @@ pub struct ResetArgs {
     #[arg(long)]
     pub guidance: bool,
 
-    /// Reset the config (description/exclusion/tool_whitelist/max_iterations) to the
+    /// Reset the config (use_for/not_for/tool_whitelist/max_iterations) to the
     /// currently-compiled template, discarding any customization.
     #[arg(long)]
     pub config: bool,
@@ -386,7 +386,7 @@ pub async fn run_get(client: &mut NodeClient, args: GetArgs, json: bool) -> Resu
 /// What a guidance response answers.
 #[derive(Debug, Clone, Copy)]
 enum Fetch<'a> {
-    /// Every skill, by name and description.
+    /// Every skill, by name and what it is for.
     Listing,
     /// The skills matching a task.
     Task(&'a str),
@@ -601,7 +601,7 @@ fn skill_json(skill: &SkillGuidanceEntry, with_commands: bool) -> serde_json::Va
         "node_id": skill.id,
         "node_type": "skill",
         "title": skill.name,
-        "description": skill.description,
+        "use_for": skill.use_for,
         "modified_at": skill.modified_at,
         "confidence": skill.confidence,
         "content": skill.instructions,
@@ -635,12 +635,8 @@ fn write_skill_block(
     )?;
     writeln!(w, "node:        skill/{}", sanitize_for_terminal(&skill.id))?;
     writeln!(w, "title:       {}", sanitize_for_terminal(&skill.name))?;
-    if !skill.description.is_empty() {
-        writeln!(
-            w,
-            "description: {}",
-            sanitize_for_terminal(&skill.description)
-        )?;
+    if !skill.use_for.is_empty() {
+        writeln!(w, "use_for:     {}", sanitize_for_terminal(&skill.use_for))?;
     }
     writeln!(
         w,
@@ -920,7 +916,7 @@ fn print_guidance(
                 w,
                 "- {} -- {}",
                 sanitize_for_terminal(&skill.name),
-                sanitize_for_terminal(&skill.description)
+                sanitize_for_terminal(&skill.use_for)
             )?;
         }
         writeln!(w, "=== END GRAPH-FETCHED SKILL LIST [{tag}] ===")?;
@@ -1317,16 +1313,11 @@ mod tests {
     use super::*;
     use nodespace_daemon::nodespace::{SkillGuidanceEntry, ToolCommandEntry};
 
-    fn fake_skill_node(
-        id: &str,
-        title: &str,
-        description: &str,
-        markdown: &str,
-    ) -> SkillGuidanceEntry {
+    fn fake_skill_node(id: &str, title: &str, use_for: &str, markdown: &str) -> SkillGuidanceEntry {
         SkillGuidanceEntry {
             id: id.to_string(),
             name: title.to_string(),
-            description: description.to_string(),
+            use_for: use_for.to_string(),
             modified_at: "2026-09-05T00:00:00Z".to_string(),
             instructions: markdown.to_string(),
             confidence: Some(0.9),
@@ -1637,7 +1628,7 @@ mod tests {
         assert_eq!(value["schemas"][0]["relationships"][0]["name"], "in_cycle");
     }
 
-    /// An empty query lists what exists: every skill's name and description
+    /// An empty query lists what exists: every skill's name and `use_for`
     /// under one banner, and none of the instructions.
     #[test]
     fn print_guidance_lists_names_and_descriptions_for_an_empty_query() {
@@ -1690,7 +1681,7 @@ mod tests {
         );
         assert!(out.contains("not part of the shipped skill"));
         assert!(out.contains("node:        skill/n1"));
-        assert!(out.contains("description: Create new nodes"));
+        assert!(out.contains("use_for:     Create new nodes"));
         assert!(
             out.contains("Always confirm the type first."),
             "the actual guidance content must still be present alongside the banner"
@@ -1719,7 +1710,7 @@ mod tests {
         assert_eq!(value["guidance"][0]["node_id"], "n1");
         assert_eq!(value["guidance"][0]["node_type"], "skill");
         assert_eq!(value["guidance"][0]["title"], "Node Creation");
-        assert_eq!(value["guidance"][0]["description"], "Create new nodes");
+        assert_eq!(value["guidance"][0]["use_for"], "Create new nodes");
         assert_eq!(
             value["guidance"][0]["content"],
             "# Node Creation Guidance\n\nAlways confirm the type first."

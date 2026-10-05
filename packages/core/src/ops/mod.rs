@@ -17,7 +17,6 @@ pub mod rel_ops;
 pub mod search_ops;
 #[cfg(feature = "nlp")]
 pub mod skill_ops;
-pub mod skill_updater;
 
 use crate::services::NodeServiceError;
 

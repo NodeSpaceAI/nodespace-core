@@ -38,7 +38,7 @@ const MAX_UNSCOPED_SCHEMA_METADATA: usize = 5;
 /// models. Revisit if user-defined skill libraries grow past ~30 skills.
 const MAX_SKILL_LIMIT: usize = 10;
 
-/// How many skills `find_skills` scores before applying exclusion penalties
+/// How many skills `find_skills` scores before applying `not_for` penalties
 /// and truncating to the caller's `limit`.
 ///
 /// A penalty only ever lowers a skill, so it can promote a skill that ranked
@@ -49,13 +49,13 @@ const MAX_SKILL_LIMIT: usize = 10;
 /// Twice [`MAX_SKILL_LIMIT`] covers the registry sizes that cap is sized for.
 const SKILL_RERANK_POOL: usize = 2 * MAX_SKILL_LIMIT;
 
-/// Weight on a skill's exclusion margin in [`exclusion_penalized_score`].
+/// Weight on a skill's `not_for` margin in [`not_for_penalized_score`].
 ///
 /// Measured on the locked embedding model against the full seeded registry:
-/// at 1.0 Graph Editing's exclusion puts Node Deletion first on "remove the
+/// at 1.0 Graph Editing's `not_for` puts Node Deletion first on "remove the
 /// resolved tickets" by +0.047 (it ranked second, −0.014, without one). An
 /// offline sweep at 0.5 left a margin under +0.01, too thin to hold.
-const EXCLUSION_PENALTY_WEIGHT: f64 = 1.0;
+const NOT_FOR_PENALTY_WEIGHT: f64 = 1.0;
 
 /// Confidence assigned to a schema recovered by the lexical backstop
 /// (`append_named_schema_candidates`) rather than found by semantic search.
@@ -463,34 +463,34 @@ fn linked_schemas<'a>(targets: &[String], all_schemas: &'a [SchemaNode]) -> Vec<
     all_schemas.iter().filter(|s| is_linked(s)).collect()
 }
 
-/// A skill's retrieval score after its exclusion is applied.
+/// A skill's retrieval score after its `not_for` is applied.
 ///
-/// A skill may carry an `exclusion`: text describing what it is *not* for.
-/// It cannot go in the description, because a description is embedded and an
+/// A skill may carry a `not_for`: requests that belong to another skill.
+/// It cannot go in `use_for`, because `use_for` is embedded and an
 /// embedding has no negation — "not for deleting" embeds *near* deleting. So
-/// the exclusion is embedded on its own and compared with the query, and the
-/// skill loses score by however much the query matches its exclusion better
-/// than its description:
+/// `not_for` is embedded on its own and compared with the query, and the
+/// skill loses score by however much the query matches its `not_for` better
+/// than its `use_for`:
 ///
-/// `score − λ · max(0, exclusion_score − score)`
+/// `score − λ · max(0, not_for_score − score)`
 ///
-/// The margin form is deliberate. Subtracting the exclusion similarity
+/// The margin form is deliberate. Subtracting the `not_for` similarity
 /// outright would lower the skill on every query — unrelated texts on this
 /// model still score around 0.8 — shifting it against every skill without an
-/// exclusion and through the absolute score bars in routing. Here a query
-/// closer to the description than to the exclusion is left exactly as it was,
+/// `not_for` and through the absolute score bars in routing. Here a query
+/// closer to `use_for` than to `not_for` is left exactly as it was,
 /// so the penalty acts only where the two genuinely overlap.
-fn exclusion_penalized_score(score: f64, exclusion_score: f64) -> f64 {
-    score - EXCLUSION_PENALTY_WEIGHT * (exclusion_score - score).max(0.0)
+fn not_for_penalized_score(score: f64, not_for_score: f64) -> f64 {
+    score - NOT_FOR_PENALTY_WEIGHT * (not_for_score - score).max(0.0)
 }
 
-/// Apply each skill's exclusion (see [`exclusion_penalized_score`]) to the
+/// Apply each skill's `not_for` (see [`not_for_penalized_score`]) to the
 /// raw similarity ranking, then re-rank and truncate to `limit`.
 ///
-/// An exclusion that fails to embed leaves that skill's score unchanged: a
-/// missing penalty degrades to the ranking retrieval had before exclusions
+/// A `not_for` that fails to embed leaves that skill's score unchanged: a
+/// missing penalty degrades to the ranking retrieval had before `not_for`
 /// existed, rather than failing the whole search.
-fn rerank_with_exclusions(
+fn rerank_with_not_for(
     embedding_service: &NodeEmbeddingService,
     query_vector: &[f32],
     pool: Vec<(crate::models::Node, f64)>,
@@ -499,45 +499,42 @@ fn rerank_with_exclusions(
     let mut scored: Vec<(crate::models::Node, f64)> = pool
         .into_iter()
         .map(|(node, score)| {
-            let Some(exclusion) = SkillFields::from_node(&node)
+            let Some(not_for) = SkillFields::from_node(&node)
                 .ok()
-                .and_then(|skill| skill.exclusion)
+                .and_then(|skill| skill.not_for)
             else {
                 return (node, score);
             };
             // Same shape `SkillNodeBehavior::get_embeddable_content` gives the
-            // description (name, blank line, text), so the two vectors share
+            // `use_for` (name, blank line, text), so the two vectors share
             // the name and differ only in what the skill does versus what it
-            // excludes. Embedded bare, the exclusion scored closer to
-            // completion-state requests than the description did, and
+            // excludes. Embedded bare, the `not_for` scored closer to
+            // completion-state requests than `use_for` did, and
             // lowered Graph Editing on "mark the outage report done" out of
             // the top 3.
-            let exclusion_text = format!("{}\n\n{}", node.content, exclusion);
-            match embedding_service
-                .nlp_engine()
-                .embed_document(&exclusion_text)
-            {
-                Ok(exclusion_vector) => {
+            let not_for_text = format!("{}\n\n{}", node.content, not_for);
+            match embedding_service.nlp_engine().embed_document(&not_for_text) {
+                Ok(not_for_vector) => {
                     // Scored as a single fully-matching chunk, the same
                     // composite a one-chunk skill node gets in the KNN search.
                     // Assumes the skill's own embedding is one chunk too, as
-                    // every seeded skill's is. A description long enough to
+                    // every seeded skill's is. A `use_for` long enough to
                     // split scores below that full-density composite, so its
-                    // exclusion would weigh more than the same text on a
+                    // `not_for` would weigh more than the same text on a
                     // short skill.
-                    let exclusion_score = crate::db::composite_similarity_score(
-                        crate::db::cosine_similarity(query_vector, &exclusion_vector),
+                    let not_for_score = crate::db::composite_similarity_score(
+                        crate::db::cosine_similarity(query_vector, &not_for_vector),
                         1,
                         1,
                     );
-                    let adjusted = exclusion_penalized_score(score, exclusion_score);
+                    let adjusted = not_for_penalized_score(score, not_for_score);
                     if adjusted < score {
                         tracing::debug!(
                             skill = %node.content,
                             score,
-                            exclusion_score,
+                            not_for_score,
                             adjusted,
-                            "find_skills: exclusion lowered a skill's score"
+                            "find_skills: not_for lowered a skill's score"
                         );
                     }
                     (node, adjusted)
@@ -546,7 +543,7 @@ fn rerank_with_exclusions(
                     tracing::warn!(
                         skill = %node.content,
                         error = %e,
-                        "find_skills: failed to embed a skill's exclusion; scoring without it"
+                        "find_skills: failed to embed a skill's not_for; scoring without it"
                     );
                     (node, score)
                 }
@@ -563,7 +560,7 @@ fn rerank_with_exclusions(
 /// schema metadata for the matched skill's scoped types.
 ///
 /// Returns up to `limit` matches (default 3) with `id`, `name`, `kind`,
-/// `description`, `confidence`, `tools`, `schema_metadata`, and `instructions`.
+/// `use_for`, `confidence`, `tools`, `schema_metadata`, and `instructions`.
 /// The `instructions` field is the skill's child subtree rendered to markdown
 /// — the actual procedure the model must follow. The `schema_metadata` field
 /// contains type IDs, field names, and enum values for the schemas the skill
@@ -614,7 +611,7 @@ pub async fn find_skills(
     // indexed by this query).
     //
     // The query is embedded once and shared by the skill search, the schema
-    // search below, and the exclusion scoring in `rerank_with_exclusions`.
+    // search below, and the `not_for` scoring in `rerank_with_not_for`.
     let query_vector = embedding_service
         .embed_query_text(&input.query)
         .map_err(|e| OpsError::Internal(format!("Skill search failed: {}", e)))?;
@@ -627,7 +624,7 @@ pub async fn find_skills(
         )
         .await
         .map_err(|e| OpsError::Internal(format!("Skill search failed: {}", e)))?;
-    let skill_results = rerank_with_exclusions(embedding_service, &query_vector, skill_pool, limit);
+    let skill_results = rerank_with_not_for(embedding_service, &query_vector, skill_pool, limit);
 
     // Fetch all schemas once; used to attach metadata to each matched skill
     // AND (below) to resolve and lexically backstop the schema search.
@@ -693,10 +690,10 @@ pub async fn find_skills(
     let mut schema_description_cache: HashMap<String, String> = HashMap::new();
 
     for (node, confidence) in &skill_results {
-        // `exclusion` was spent on ranking in `rerank_with_exclusions`; it is
+        // `not_for` was spent on ranking in `rerank_with_not_for`; it is
         // retrieval-only and never reaches the model.
         let SkillFields {
-            description,
+            use_for,
             tool_whitelist,
             ..
         } = match SkillFields::from_node(node) {
@@ -761,7 +758,7 @@ pub async fn find_skills(
 
         skills.push(skill_entry(
             node,
-            &description,
+            &use_for,
             &tool_whitelist,
             *confidence,
             schema_metadata,
@@ -798,7 +795,7 @@ pub async fn find_skills(
             "id": schema.envelope.id,
             "name": schema.envelope.content,
             "kind": "schema",
-            "description": "",
+            "use_for": "",
             "confidence": confidence,
             "tools": Value::Array(vec![]),
             "schema_metadata": schema_metadata,
@@ -850,7 +847,7 @@ pub async fn find_skills(
 /// A skill as [`find_skills`] and [`skills_by_id`] return it.
 fn skill_entry(
     node: &Node,
-    description: &str,
+    use_for: &str,
     tool_whitelist: &[String],
     confidence: f64,
     schema_metadata: Vec<Value>,
@@ -861,7 +858,7 @@ fn skill_entry(
         "id": node.id,
         "name": node.content,
         "kind": "skill",
-        "description": description,
+        "use_for": use_for,
         "confidence": confidence,
         "tools": tool_whitelist,
         "schema_metadata": schema_metadata,
@@ -926,7 +923,7 @@ pub async fn skills_by_id(
         let instructions = render_skill_instructions(node_service, &node.id).await;
         skills.push(skill_entry(
             node,
-            &fields.description,
+            &fields.use_for,
             &fields.tool_whitelist,
             0.0,
             schema_metadata,
@@ -942,7 +939,7 @@ pub async fn skills_by_id(
 pub struct GuidanceSkill {
     pub id: String,
     pub name: String,
-    pub description: String,
+    pub use_for: String,
     /// RFC 3339.
     pub modified_at: String,
     /// The retrieval score the skill search gave it. `None` in a listing,
@@ -993,7 +990,7 @@ pub struct SkillGuidance {
 pub struct SkillListing {
     pub skills: Vec<GuidanceSkill>,
     /// Changes when a skill is added, removed or archived, and when a skill's
-    /// name, description, tool list or procedure changes. Two listings with
+    /// name, `use_for`, tool list or procedure changes. Two listings with
     /// no such change between them carry the same version.
     pub version: String,
 }
@@ -1013,7 +1010,7 @@ fn guidance_skill(node: &Node, fields: &SkillFields, confidence: Option<f64>) ->
     GuidanceSkill {
         id: node.id.clone(),
         name: node.content.clone(),
-        description: fields.description.clone(),
+        use_for: fields.use_for.clone(),
         modified_at: node.modified_at.to_rfc3339(),
         confidence,
         instructions: String::new(),
@@ -1131,7 +1128,7 @@ async fn registry_tool_commands(node_service: &NodeService) -> Vec<GuidanceToolC
 }
 
 /// The version of a skill list: a digest of every skill's id, name,
-/// description, tool list and procedure. Derived from what is stored, so
+/// `use_for`, tool list and procedure. Derived from what is stored, so
 /// nothing is written when a skill changes, and a change to any other node
 /// leaves it as it was.
 fn skill_list_version(skills: &[(&Node, SkillFields, String)]) -> String {
@@ -1148,7 +1145,7 @@ fn skill_list_version(skills: &[(&Node, SkillFields, String)]) -> String {
     for (node, fields, body) in ordered {
         part(&node.id);
         part(&node.content);
-        part(&fields.description);
+        part(&fields.use_for);
         part(&fields.tool_whitelist.len().to_string());
         for tool in &fields.tool_whitelist {
             part(tool);
@@ -1159,7 +1156,7 @@ fn skill_list_version(skills: &[(&Node, SkillFields, String)]) -> String {
     digest[..16].to_string()
 }
 
-/// Every skill in the graph, by name, with its description and no procedure,
+/// Every skill in the graph, by name, with its `use_for` and no procedure,
 /// and the list's version: what an agent browses to learn which skills exist,
 /// and what a client compares to learn whether that list changed.
 ///
@@ -1542,13 +1539,8 @@ mod tests {
         assert!(skill_tool_commands(&registry, &[], "No tool here.").is_empty());
     }
 
-    fn versioned_skill(
-        id: &str,
-        name: &str,
-        description: &str,
-        tools: &[&str],
-    ) -> (Node, SkillFields) {
-        let fields = SkillFields::new(description, tools, 3);
+    fn versioned_skill(id: &str, name: &str, use_for: &str, tools: &[&str]) -> (Node, SkillFields) {
+        let fields = SkillFields::new(use_for, tools, 3);
         let node = Node::new_with_id(
             id.to_string(),
             "skill".to_string(),
@@ -2097,17 +2089,17 @@ mod tests {
     }
 
     #[test]
-    fn exclusion_penalty_is_inert_when_the_query_fits_the_description_better() {
+    fn not_for_penalty_is_inert_when_the_query_fits_use_for_better() {
         // The property the margin form exists for: a query closer to what the
         // skill does than to what it excludes keeps its score exactly.
-        assert_eq!(exclusion_penalized_score(0.82, 0.70), 0.82);
-        assert_eq!(exclusion_penalized_score(0.82, 0.82), 0.82);
+        assert_eq!(not_for_penalized_score(0.82, 0.70), 0.82);
+        assert_eq!(not_for_penalized_score(0.82, 0.82), 0.82);
     }
 
     #[test]
-    fn exclusion_penalty_lowers_by_the_weighted_margin() {
+    fn not_for_penalty_lowers_by_the_weighted_margin() {
         // At λ = 1.0: 0.855 − (0.90 − 0.855) = 0.81.
-        let adjusted = exclusion_penalized_score(0.855, 0.90);
+        let adjusted = not_for_penalized_score(0.855, 0.90);
         assert!((adjusted - 0.81).abs() < 1e-12, "{adjusted} != 0.81");
         assert!(adjusted < 0.855);
     }

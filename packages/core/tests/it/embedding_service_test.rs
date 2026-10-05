@@ -2555,7 +2555,7 @@ async fn test_search_semantic_enumerate_leaves_out_a_system_roots_fragments() ->
     let skill = Node::new(
         "skill".to_string(),
         "A skill".to_string(),
-        json!({ "description": "What the skill is for" }),
+        json!({ "use_for": "What the skill is for" }),
     );
     node_service.create_node(skill.clone()).await?;
     // All newer than the user's nodes, and many times the limit of 2.
@@ -2597,7 +2597,7 @@ async fn test_search_semantic_enumerate_lists_user_nodes_behind_newer_system_roo
         let skill = Node::new(
             "skill".to_string(),
             format!("Skill {i}"),
-            json!({ "description": "What the skill is for" }),
+            json!({ "use_for": "What the skill is for" }),
         );
         node_service.create_node(skill).await?;
     }
@@ -2629,7 +2629,7 @@ async fn test_search_semantic_enumerate_lists_user_text_behind_a_thousand_fragme
     let skill = Node::new(
         "skill".to_string(),
         "A skill".to_string(),
-        json!({ "description": "What the skill is for" }),
+        json!({ "use_for": "What the skill is for" }),
     );
     node_service.create_node(skill.clone()).await?;
     let fragments = (0..1100)
@@ -2672,7 +2672,7 @@ async fn test_search_semantic_enumerate_judges_a_fragment_by_its_root() -> Resul
     let skill = Node::new(
         "skill".to_string(),
         "A skill".to_string(),
-        json!({ "description": "What the skill is for" }),
+        json!({ "use_for": "What the skill is for" }),
     );
     node_service.create_node(skill.clone()).await?;
     let skill_heading = create_child_node(&node_service, &skill.id, "header", "# Steps").await?;
@@ -2684,7 +2684,7 @@ async fn test_search_semantic_enumerate_judges_a_fragment_by_its_root() -> Resul
     let filed = Node::new(
         "skill".to_string(),
         "A filed skill".to_string(),
-        json!({ "description": "A skill kept inside a document" }),
+        json!({ "use_for": "A skill kept inside a document" }),
     );
     node_service.create_node(filed.clone()).await?;
     node_service
@@ -2804,7 +2804,7 @@ async fn test_search_semantic_enumerate_lists_a_named_system_type_under_its_root
     let skill = Node::new(
         "skill".to_string(),
         "A skill".to_string(),
-        json!({ "description": "What the skill is for" }),
+        json!({ "use_for": "What the skill is for" }),
     );
     node_service.create_node(skill.clone()).await?;
     let quote = create_child_node(&node_service, &skill.id, "quote-block", "> A caution").await?;

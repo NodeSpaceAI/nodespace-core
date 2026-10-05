@@ -8259,7 +8259,7 @@ mod tests {
                     "query": "create a new task",
                     "matches": [
                         {"id": "skill-1", "name": "Node Creation", "confidence": 0.91,
-                         "description": "Create new nodes", "tools": ["create_node"]}
+                         "use_for": "Create new nodes", "tools": ["create_node"]}
                     ]
                 }),
             )
@@ -8378,7 +8378,7 @@ mod tests {
                     "query": "mark an invoice as paid",
                     "matches": [
                         {"id": "skill-graph-editing", "name": "Graph Editing", "confidence": 0.9,
-                         "description": "Modify existing nodes in the knowledge graph",
+                         "use_for": "Modify existing nodes in the knowledge graph",
                          "tools": ["update_node", "search_nodes", "resolve_query"]}
                     ]
                 }),
@@ -8541,7 +8541,7 @@ mod tests {
                     "query": "x",
                     "matches": [
                         {"id": "skill-1", "name": "Match", "confidence": 0.9,
-                         "description": "matched skill", "tools": ["search_semantic"]}
+                         "use_for": "matched skill", "tools": ["search_semantic"]}
                     ]
                 }),
             )
@@ -14514,7 +14514,7 @@ mod tests {
         SkillCandidate {
             id: format!("skill-{name}"),
             name: name.to_string(),
-            description: format!("Use this to {name}"),
+            use_for: format!("Use this to {name}"),
             score,
             tools: tools.iter().map(|t| t.to_string()).collect(),
             instructions: format!("INSTRUCTIONS FOR {name}"),
@@ -19364,7 +19364,7 @@ mod tests {
             SkillCandidate {
                 id: seed.id.to_string(),
                 name: seed.title.to_string(),
-                description: seed.description.to_string(),
+                use_for: seed.use_for.to_string(),
                 score: 0.95,
                 tools: seed.tools.iter().map(|t| t.to_string()).collect(),
                 instructions: seed.template().markdown_content,

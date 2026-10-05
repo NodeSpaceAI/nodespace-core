@@ -707,8 +707,8 @@ pub struct SkillCandidate {
     pub id: String,
     /// Skill name (the node's content).
     pub name: String,
-    /// The skill's `description` property — the index key retrieval matched on.
-    pub description: String,
+    /// The skill's `use_for` property — the index key retrieval matched on.
+    pub use_for: String,
     /// Raw retrieval score. The mechanical half of the Stage-2 gate; the
     /// model's judgment is the other, independently-sourced half.
     pub score: f32,

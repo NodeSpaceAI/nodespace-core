@@ -39,17 +39,17 @@ pub const PLAY_AUTHORING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0c"
 pub struct SkillSeed {
     /// The skill node's fixed id.
     pub id: &'static str,
-    /// The skill's name, embedded for retrieval with its description.
+    /// The skill's name, embedded for retrieval with its `use_for`.
     pub title: &'static str,
     /// What the skill is for. Only words for what the skill DOES: an
     /// embedding has no negation.
-    pub description: &'static str,
+    pub use_for: &'static str,
     /// Tools a turn that selects this skill may call.
     pub tools: &'static [&'static str],
     /// ReAct iteration budget for the skill.
     pub max_iterations: u32,
     /// What the skill is not for, scored against the query separately.
-    pub exclusion: Option<&'static str>,
+    pub not_for: Option<&'static str>,
     /// The schemas the skill is about, by id: each gets an `applies_to` link
     /// from the skill ([`link_seeded_skills`]). Empty for a skill that is
     /// generic across every type.
@@ -62,9 +62,9 @@ impl SkillSeed {
     /// The seed this row installs, with its rule includes resolved for the
     /// local agent.
     pub fn template(&self) -> NodeTemplate {
-        let mut skill = SkillFields::new(self.description, self.tools, self.max_iterations);
-        if let Some(exclusion) = self.exclusion {
-            skill = skill.with_exclusion(exclusion);
+        let mut skill = SkillFields::new(self.use_for, self.tools, self.max_iterations);
+        if let Some(not_for) = self.not_for {
+            skill = skill.with_not_for(not_for);
         }
         NodeTemplate::skill(
             self.id,
@@ -90,7 +90,7 @@ impl SkillSeed {
 /// guidance body. Tool whitelists and max_iterations are still stored
 /// as properties on the skill node — they're consumed by external (ACP) agents
 /// that prefer the older skill-scoped flow. The local agent ignores them and
-/// just uses the description/name returned by `search_skills`.
+/// just uses the `use_for`/name returned by `search_skills`.
 ///
 /// Play Authoring links to the `play` schema through `applies_to`. The others
 /// link to none: they are generic across every type, so each takes skill
@@ -125,11 +125,11 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // Management on "point rebuild task at the decision it has to
         // respect", taking that skill's place in the top 3 and
         // `create_relationship` with it. Without the sentence the
-        // margin is 0.006 the right way. An `exclusion` naming the
+        // margin is 0.006 the right way. A `not_for` naming the
         // linking verbs was measured too and rejected: it also dropped
         // this skill out of the top 3 on short lookups ("list specs on
         // sync"), which score low enough against any description to
-        // sit closer to an exclusion.
+        // sit closer to a `not_for`.
         //
         // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
         // `lookups_route_research_and_search`,
@@ -138,10 +138,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // and `research_and_search_does_not_displace_write_skills`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c01",
         title: "Research & Search",
-        description: "Find, look up, locate, list, or search for nodes, records, notes, and documents of any type that are already stored. Search stored knowledge to answer a question: how does something work, how is it applied, what is it, what does it do, why was it chosen.",
+        use_for: "Find, look up, locate, list, or search for nodes, records, notes, and documents of any type that are already stored. Search stored knowledge to answer a question: how does something work, how is it applied, what is it, what does it do, why was it chosen.",
         tools: &["search_semantic", "search_nodes", "get_node", "run_query", "get_node_context"],
         max_iterations: 4,
-        exclusion: None,
+        not_for: None,
         applies_to: &[],
         body: include_str!("seeds/skills/research-and-search.md"),
     },
@@ -152,7 +152,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // outside the app reads the same rule in its own vocabulary.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c02",
         title: "Node Creation",
-        description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
+        use_for: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Spec, ADR, Ticket. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
         // `update_node` is whitelisted here as well as on Graph
         // Editing — deliberately, to remove a single point of failure
         // rather than because this skill is about editing.
@@ -194,7 +194,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // a silent duplicate on 3 of 3 reps.
         tools: &["create_node", "update_node", "update_task_status", "search_semantic", "search_nodes", "get_node", "route_clarify"],
         max_iterations: 3,
-        exclusion: None,
+        not_for: None,
         applies_to: &[],
         body: include_str!("seeds/skills/node-creation.md"),
     },
@@ -269,12 +269,31 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `updates_to_one_record_do_not_lead_with_schema_creation`,
         // `adds_to_an_existing_list_keep_a_skill_that_can_create` and
         // `a_new_kind_of_record_with_named_details_leads_or_places_schema_creation`.
+        //
+        // The `not_for` names the two requests that share this skill's
+        // nouns and define nothing: one more record of a kind that is
+        // already there, and a saved view. Without it "add a new
+        // customer called Harbor Freight" led with this skill (0.745
+        // over Node Creation's 0.737); with it Node Creation leads and
+        // this skill scores 0.718. Its measured cost is "create a record
+        // of who made which architecture decision", a tracking request
+        // worded as one record, which this skill led at 0.897 and now
+        // ranks third on at 0.844.
+        //
+        // Wording is measured here as it was for Graph Editing. "Add
+        // another one of a kind that is already tracked." fixed the same
+        // request and dropped this skill out of the window on four of
+        // its own ("track architecture decisions and who made them"
+        // among them); naming "customer, ticket or invoice" dropped it
+        // on "add a priority field to my invoices". Guarded by
+        // `one_more_record_or_a_saved_view_does_not_lead_with_schema_creation`
+        // and `schema_creation_not_for_leaves_tracking_scores_unchanged`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c03",
         title: "Schema Creation",
-        description: "Start tracking: set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
+        use_for: "Start tracking: set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",
         tools: &["create_schema", "update_schema", "get_node"],
         max_iterations: 3,
-        exclusion: None,
+        not_for: Some("Add one record of a kind that already exists. Save a view, a filter or a query."),
         applies_to: &[],
         body: include_str!("seeds/skills/schema-creation.md"),
     },
@@ -313,7 +332,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `completion_state_updates_route_graph_editing`,
         // `control_conflict_requests_still_route_conflict_journal`,
         // and `control_deletion_requests_are_not_outranked_by_graph_editing`.
-        description: "Update a record that already exists and keep it: mark it resolved, done, or paid, or set or change one of its fields, status, title, or content. Use when the user wants an existing item to stay but move to a new state. For tasks, use update_task_status to change status.",
+        use_for: "Update a record that already exists and keep it: mark it resolved, done, or paid, or set or change one of its fields, status, title, or content. Use when the user wants an existing item to stay but move to a new state. For tasks, use update_task_status to change status.",
         // `create_node` is whitelisted here as the mirror of
         // `update_node` on Node Creation: "record this" and "change
         // that" are the same user intent inflected two ways, and either
@@ -330,9 +349,9 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // the same amount on "mark incident resolved", leaving that
         // completion-state guard 0.003 from falling out of the top 3.
         //
-        // An exclusion is scored against the query separately and
+        // A `not_for` is scored against the query separately and
         // costs this skill only on requests closer to it than to the
-        // description (`skill_ops::exclusion_penalized_score`). This
+        // `use_for` (`skill_ops::not_for_penalized_score`). This
         // one puts Node Deletion first on "remove the resolved
         // tickets" by +0.047 and leaves every completion-state score
         // unchanged. Its one measured cost: "remove the due date from
@@ -347,8 +366,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
         // `remove_requests_mentioning_a_state_route_node_deletion`,
         // `removing_a_field_still_reaches_graph_editing`, and
-        // `graph_editing_exclusion_leaves_completion_state_scores_unchanged`.
-        exclusion: Some("Remove them, delete them, get rid of them, purge them."),
+        // `graph_editing_not_for_leaves_completion_state_scores_unchanged`.
+        not_for: Some("Remove them, delete them, get rid of them, purge them."),
         applies_to: &[],
         body: include_str!("seeds/skills/graph-editing.md"),
     },
@@ -394,10 +413,52 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // failing query (Relationship Management: unranked 6th at
         // ~0.803 -> 2nd at ~0.837) without displacing Organization's
         // own top-3 on its control prompt.
-        description: "Record an edge between two nodes: a task or note that depends on, must respect, or points at another record. Explore or traverse existing relationships between nodes in the knowledge graph.",
+        //
+        // That wording still never led a linking request said in a
+        // user's words: across the confusion matrix it was first on
+        // none of seven and unranked on three ("attach the contract to
+        // the Harbor Freight account": 9th at 0.604 behind Graph
+        // Editing's 0.672). Leading with the verbs themselves, aimed at
+        // "one record to another" where the earlier draft's were bare,
+        // puts it first on that request (0.719), on "connect the retro
+        // notes to the sprint they belong to" (9th at 0.720 -> first at
+        // 0.805) and on "link this invoice to the Acme account" (0.710
+        // -> 0.793), and Organization keeps its control prompt.
+        // Appending the same verbs to the "edge" sentence instead moved
+        // the first of those by 0.026 and changed no rank.
+        //
+        // "record an edge between two nodes" stays, beside the verbs. A
+        // request Stage 1 words that way ("record an edge between the
+        // rebuild task and the storage decision") leads with this skill
+        // by 0.001 with it, and with Graph Editing (0.895) without it,
+        // this skill outside the top three; the phrase moved to the end
+        // of the text did not restore it.
+        //
+        // The phrase has costs of its own against the wording without
+        // it: the lead on "connect the retro notes…" over Node Merge
+        // narrows from 0.025 to 0.004, on "attach the contract…" from
+        // 0.087 to 0.047, and "which tasks depend on the API
+        // migration?" falls from first (0.805) to third (0.783).
+        //
+        // Both sentences of the `not_for` are measured. Without the
+        // first, "start keeping tabs on who owes me money" pushes
+        // Schema Creation out of the window (this skill 0.827, Schema
+        // Creation 0.805). Without the second, this skill led "mark the
+        // outage report done" over Graph Editing by 0.002; with it
+        // Graph Editing leads by 0.032. The second sentence lowers
+        // three linking requests: "link this invoice to the Acme
+        // account" by 0.006 (still first), "point rebuild task at the
+        // decision it has to respect" by 0.024 (second to third, still
+        // in the window) and "this task depends on the API migration"
+        // by 0.020, which this skill does not win either way. Guarded in
+        // `tests/it/live_skill_retrieval_stability.rs` by
+        // `linking_requests_route_relationship_management`,
+        // `add_shaped_requests_for_another_skill_keep_their_leader` and
+        // `relationship_management_not_for_leaves_linking_scores_unchanged`.
+        use_for: "Link, connect or attach one record to another, or record an edge between two nodes: say that a task or note depends on, is blocked by, belongs to, must respect, or points at another record. Show which records depend on or are linked to one.",
         tools: &["create_relationship", "delete_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,
-        exclusion: None,
+        not_for: Some("Start keeping track of a kind of thing. Mark it done, resolved or paid."),
         applies_to: &[],
         body: include_str!("seeds/skills/relationship-management.md"),
     },
@@ -437,10 +498,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // words for what the skill DOES. Scoping ("use this only when…")
         // belongs in the instruction subtree, which the model reads as
         // text — not in the description, which is what gets embedded.
-        description: "Delete, remove, erase, purge, discard, trash, drop, or get rid of stored content. Take something out of the knowledge graph permanently.",
+        use_for: "Delete, remove, erase, purge, discard, trash, drop, or get rid of stored content. Take something out of the knowledge graph permanently.",
         tools: &["delete_node", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,
-        exclusion: None,
+        not_for: None,
         applies_to: &[],
         body: include_str!("seeds/skills/node-deletion.md"),
     },
@@ -469,10 +530,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `tests/it/live_skill_retrieval_stability.rs` by
         // `deletion_requests_mentioning_resolved_route_node_deletion`
         // and `control_conflict_requests_still_route_conflict_journal`.
-        description: "List, inspect, or dismiss conflicts between colliding nodes recorded in the conflict journal: two records that claim the same identity, duplicates, or sync collisions.",
+        use_for: "List, inspect, or dismiss conflicts between colliding nodes recorded in the conflict journal: two records that claim the same identity, duplicates, or sync collisions.",
         tools: &["list_conflicts", "get_conflict", "dismiss_conflict", "adopt_existing_conflict", "search_nodes"],
         max_iterations: 3,
-        exclusion: None,
+        not_for: None,
         applies_to: &[],
         body: include_str!("seeds/skills/conflict-journal.md"),
     },
@@ -489,10 +550,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // (`SINGLE_OWNER_BY_DESIGN` in this module's tests) rather
         // than being folded into Conflict Journal's lower-stakes
         // whitelist.
-        description: "Merge two nodes that both represent the same real thing into one, combining their data and archiving the loser. Use when the user wants two duplicate or colliding records combined into a single record.",
+        use_for: "Merge two nodes that both represent the same real thing into one, combining their data and archiving the loser. Use when the user wants two duplicate or colliding records combined into a single record.",
         tools: &["merge_conflict", "dismiss_conflict", "adopt_existing_conflict", "get_conflict", "get_node", "search_nodes"],
         max_iterations: 3,
-        exclusion: None,
+        not_for: None,
         applies_to: &[],
         body: include_str!("seeds/skills/node-merge.md"),
     },
@@ -505,10 +566,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // ADR-035's capability-parity clause).
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c09",
         title: "Play Workflow State",
-        description: "Check why a Play automation rule hasn't fired for a node, or what conditions are still unmet, by evaluating that node against every active Play rule that could apply to it. Use when the user asks why an automation, rule, or workflow hasn't triggered, or wants to know what's missing before it will.",
+        use_for: "Check why a Play automation rule hasn't fired for a node, or what conditions are still unmet, by evaluating that node against every active Play rule that could apply to it. Use when the user asks why an automation, rule, or workflow hasn't triggered, or wants to know what's missing before it will.",
         tools: &["get_workflow_state", "search_semantic", "search_nodes"],
         max_iterations: 3,
-        exclusion: None,
+        not_for: None,
         applies_to: &[],
         body: include_str!("seeds/skills/play-workflow-state.md"),
     },
@@ -531,8 +592,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // request, and the two share every noun.
         id: PLAY_AUTHORING_SKILL_ID,
         title: "Play Authoring",
-        description: "Change a Play automation: edit when a rule runs, its conditions, or its actions, add or remove a rule, or turn the Play on or off. Use when the user wants an automation, rule, or workflow to behave differently or to stop running.",
-        // The exclusion is what separates the two. Without it "why didn't the
+        use_for: "Change a Play automation: edit when a rule runs, its conditions, or its actions, add or remove a rule, or turn the Play on or off. Use when the user wants an automation, rule, or workflow to behave differently or to stop running.",
+        // The `not_for` is what separates the two. Without it "why didn't the
         // play trigger for that story?" led with this skill, 0.887 to Play
         // Workflow State's 0.863, putting a write skill first on a question
         // that asks for no change. With it Play Workflow State leads every
@@ -554,7 +615,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         tools: &["get_play", "update_play", "search_nodes", "route_clarify"],
         // Read, write, and two repairs of a rejected write.
         max_iterations: 5,
-        exclusion: Some("Diagnose why nothing happened for a node: which conditions are still unmet."),
+        not_for: Some("Diagnose why nothing happened for a node: which conditions are still unmet."),
         applies_to: &[nodespace_core::models::PLAY_NODE_TYPE],
         body: include_str!("seeds/skills/play-authoring.md"),
     },
@@ -565,10 +626,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // no-followup-search success rule.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0a",
         title: "Bulk Import",
-        description: "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
+        use_for: "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
         tools: &["create_nodes_from_markdown"],
         max_iterations: 2,
-        exclusion: None,
+        not_for: None,
         applies_to: &[],
         body: include_str!("seeds/skills/bulk-import.md"),
     },
@@ -579,10 +640,34 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // find-then-act, collection-at-create-time, and success-means-stop rules.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0b",
         title: "Organization",
-        description: "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.",
+        // The earlier wording named only "add to a collection,
+        // categorize, or group", and lost the other ways the request
+        // is said: "file these under the Q3 folder" ranked it 10th
+        // (0.737, Bulk Import leading at 0.833) and "move the recipe
+        // notes into the Cooking collection" 3rd (0.790, behind Node
+        // Creation's 0.821). Naming folders, filing and moving puts it
+        // first on both (0.834 and 0.840).
+        //
+        // Both sentences of the `not_for` are measured. Without the
+        // first, the new wording took "start keeping tabs on who owes
+        // me money" from Schema Creation; without the second it led
+        // two raw questions ("explain how the frontend persistence
+        // layer works": 0.774 over Research & Search's 0.761). A
+        // version nearer the old sentence shape ("…file under a
+        // folder, move into a collection, categorize, or group nodes")
+        // dropped the skill out of the window on "Add this note to my
+        // reading list collection". The `not_for` costs it 0.048 on
+        // "categorize these receipts as business expenses" (0.821 to
+        // 0.772, still first) and 0.024 on that reading-list request
+        // (0.833 to 0.809, still in the window). Guarded in
+        // `tests/it/live_skill_retrieval_stability.rs` by
+        // `filing_requests_route_organization`,
+        // `control_prompt_still_routes_organization_every_rep` and
+        // `organization_not_for_leaves_filing_scores_unchanged`.
+        use_for: "Organize nodes into collections, folders and categories: file them under one, move them into it, add them to a collection, categorize, or group them.",
         tools: &["create_relationship", "delete_relationship", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,
-        exclusion: None,
+        not_for: Some("Start keeping track of a kind of thing. Explain how something works."),
         applies_to: &[],
         body: include_str!("seeds/skills/organization.md"),
     },
@@ -943,7 +1028,7 @@ mod tests {
         let naming_a_tool: Vec<&str> = SKILL_SEEDS
             .iter()
             .filter(|seed| {
-                seed.description
+                seed.use_for
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .any(|token| tools.contains(&token))
             })
@@ -1077,8 +1162,8 @@ mod tests {
             // Decoding also rejects a non-positive max_iterations.
             let skill = tmpl_skill(seed);
             assert!(
-                !skill.description.is_empty(),
-                "Skill '{}' must have a non-empty description",
+                !skill.use_for.is_empty(),
+                "Skill '{}' must have a non-empty use_for",
                 seed.title
             );
             assert!(
@@ -1457,7 +1542,7 @@ mod tests {
             let candidate = crate::agent_types::SkillCandidate {
                 id: format!("seed-{title}"),
                 name: title.to_string(),
-                description: String::new(),
+                use_for: String::new(),
                 score: 1.0,
                 tools: tools.clone(),
                 instructions: String::new(),
@@ -1494,7 +1579,7 @@ mod tests {
     /// Scoping rules belong in the instruction subtree (read as text), never in
     /// the description (embedded).
     #[test]
-    fn no_seeded_skill_description_names_operations_it_excludes() {
+    fn no_seeded_use_for_names_operations_it_excludes() {
         // A negation followed, within the same clause, by a verb belonging to a
         // different operation. Matching the PAIR rather than the negation alone
         // keeps this on the failure mode that was actually measured.
@@ -1513,7 +1598,7 @@ mod tests {
         ];
 
         for tmpl in seed_skill_nodes() {
-            let desc = tmpl_skill(&tmpl).description.to_lowercase();
+            let desc = tmpl_skill(&tmpl).use_for.to_lowercase();
 
             for neg in negations {
                 let Some(at) = desc.find(neg) else { continue };
@@ -1534,36 +1619,17 @@ mod tests {
         }
     }
 
-    /// An exclusion misfiring is quieter than a missing tool — the right skill
-    /// simply ranks lower — and wording that reads as equivalent was measured
-    /// to behave very differently. So each one is a measured decision with its
-    /// own live guard, and adding one to another skill must be deliberate:
-    /// extend this list together with a test in
-    /// `tests/it/live_skill_retrieval_stability.rs` showing it leaves that
-    /// skill's intended requests unchanged.
+    /// The verbs a real deletion request uses must all be present, since
+    /// `use_for` is the entire retrieval signal for this skill. Guards the
+    /// opposite failure from
+    /// `no_seeded_use_for_names_operations_it_excludes`: a `use_for`
+    /// narrowed so far that a genuine "get rid of this" no longer matches it.
     #[test]
-    fn only_measured_skills_carry_an_exclusion() {
-        let with_exclusion: Vec<String> = seed_skill_nodes()
-            .into_iter()
-            .filter(|t| tmpl_skill(t).exclusion.is_some())
-            .map(|t| t.title)
-            .collect();
-        assert_eq!(
-            with_exclusion,
-            vec!["Graph Editing".to_string(), "Play Authoring".to_string()]
-        );
-    }
-
-    /// The verbs a real deletion request uses must all be present, since the
-    /// description is the entire retrieval signal for this skill. Guards the
-    /// opposite failure from the test above: a description narrowed so far that
-    /// a genuine "get rid of this" no longer matches it.
-    #[test]
-    fn node_deletion_description_carries_the_destructive_verbs() {
+    fn node_deletion_use_for_carries_the_destructive_verbs() {
         let desc = seed_skill_nodes()
             .into_iter()
             .find(|t| t.title == "Node Deletion")
-            .map(|t| tmpl_skill(&t).description)
+            .map(|t| tmpl_skill(&t).use_for)
             .expect("Node Deletion must be seeded")
             .to_lowercase();
 
@@ -1592,22 +1658,30 @@ mod tests {
     /// linking prompt despite `create_relationship` being exactly the tool
     /// that turn needed.
     ///
-    /// Deliberately does NOT assert generic "link"/"connect"/"associate"/
-    /// "relate" verbs: an earlier draft carrying those cleared retrieval for
-    /// this skill but crowded Organization out of ITS own top-3 (see
-    /// `control_prompt_still_routes_organization_every_rep`), since
-    /// Organization also whitelists `create_relationship` and its
-    /// "categorize"/"group" language sits semantically adjacent to them.
+    /// The linking verbs are asserted too. A draft that carried them bare
+    /// crowded Organization out of its own top-3; aimed at "one record to
+    /// another" they do not (see
+    /// `control_prompt_still_routes_organization_every_rep`), and without
+    /// them the skill led none of the linking requests in the confusion
+    /// matrix.
     #[test]
-    fn relationship_management_description_carries_the_linking_verbs() {
+    fn relationship_management_use_for_carries_the_linking_verbs() {
         let desc = seed_skill_nodes()
             .into_iter()
             .find(|t| t.title == "Relationship Management")
-            .map(|t| tmpl_skill(&t).description)
+            .map(|t| tmpl_skill(&t).use_for)
             .expect("Relationship Management must be seeded")
             .to_lowercase();
 
-        for phrase in ["point", "depends on", "must respect", "edge"] {
+        for phrase in [
+            "points at",
+            "depends on",
+            "must respect",
+            "edge",
+            "link",
+            "connect",
+            "attach",
+        ] {
             assert!(
                 desc.contains(phrase),
                 "Relationship Management's description is missing {phrase:?}, wording a real \
@@ -2148,13 +2222,13 @@ mod tests {
     /// would silently regress scenario 3 with no other signal in `cargo test`
     /// or `bun run test:all`.
     #[test]
-    fn schema_creation_description_covers_natural_tracking_phrasing() {
+    fn schema_creation_use_for_covers_natural_tracking_phrasing() {
         let seeds = seed_skill_nodes();
         let schema_skill = seeds
             .iter()
             .find(|s| s.title == "Schema Creation")
             .expect("Schema Creation skill must exist");
-        let description = tmpl_skill(schema_skill).description;
+        let description = tmpl_skill(schema_skill).use_for;
 
         let natural_phrases = ["keep track of", "log", "maintain records for"];
         assert!(

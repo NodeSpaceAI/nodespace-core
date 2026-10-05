@@ -746,7 +746,7 @@ fn skill_candidate_from(s: &serde_json::Value) -> SkillCandidate {
     SkillCandidate {
         id: text("id"),
         name: text("name"),
-        description: text("description"),
+        use_for: text("use_for"),
         score: s.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
         tools: s
             .get("tools")
@@ -890,7 +890,7 @@ fn attached_skill_summary(attached: &node_context_ops::AttachedSkill) -> Value {
     let mut summary = json!({
         "id": node_uri(&attached.skill.id),
         "name": attached.skill.name,
-        "description": attached.skill.description,
+        "use_for": attached.skill.use_for,
     });
     put_skill_sources(&mut summary, attached);
     summary["instructions"] = json!(attached.skill.instructions);
@@ -1871,7 +1871,7 @@ fn def_get_related_nodes() -> ToolDefinition {
 fn def_search_skills() -> ToolDefinition {
     ToolDefinition {
         name: "search_skills".into(),
-        description: "Search registered skills by describing your intent. Returns up to 3 matches sorted by relevance, each with name, description, confidence (0-1), tools, and instructions. \
+        description: "Search registered skills by describing your intent. Returns up to 3 matches sorted by relevance, each with name, use_for (the requests the skill handles), confidence (0-1), tools, and instructions. \
             When you receive results: judge each candidate against the understood intent — pick one and emit its typed action in this same turn, OR ask the user to clarify (offering the candidates as concrete options). \
             Empty result = no skill matches — proceed with general tools or fall through to semantic_search. \
             Skip this tool for conversational replies; call it when the user wants to find, create, update, delete, or connect something.".into(),

@@ -190,7 +190,7 @@ fn research_candidate() -> SkillCandidate {
     SkillCandidate {
         id: "skill-research".to_string(),
         name: "Research".to_string(),
-        description: "Find existing nodes and answer questions about their content.".to_string(),
+        use_for: "Find existing nodes and answer questions about their content.".to_string(),
         score: 0.9,
         tools: vec!["search_nodes".to_string()],
         instructions: "Call search_nodes with a query describing what the user is looking for. \
@@ -209,7 +209,7 @@ fn research_candidate() -> SkillCandidate {
 /// block that reaches the model carries a name and nothing else.
 fn names_only_candidate() -> SkillCandidate {
     SkillCandidate {
-        description: String::new(),
+        use_for: String::new(),
         instructions: String::new(),
         schema_metadata: serde_json::json!([]),
         schemas_linked: false,
@@ -645,7 +645,7 @@ mod tests {
         let probe_block = routing::render_candidates_for_prompt(&[SkillCandidate {
             id: "skill-research".to_string(),
             name: "Research".to_string(),
-            description: String::new(),
+            use_for: String::new(),
             score: 0.9,
             tools: vec!["search_nodes".to_string()],
             instructions: String::new(),

@@ -379,8 +379,8 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
         CoreNodeType::Skill => {
             const {
                 &[
-                    F::text("description", "description"),
-                    F::text("exclusion", "exclusion"),
+                    F::text("use_for", "useFor"),
+                    F::text("not_for", "notFor"),
                     F::new("tool_whitelist", "toolWhitelist", Array),
                     F::new("max_iterations", "maxIterations", Number),
                 ]
@@ -919,8 +919,8 @@ mod wire_contract {
             "Graph Editing".to_string(),
             serde_json::json!({
                 "skill": {
-                    "description": "Update a record",
-                    "exclusion": "Delete records",
+                    "use_for": "Update a record",
+                    "not_for": "Delete records",
                     "tool_whitelist": ["update_node", "get_node"],
                     "max_iterations": 3,
                     "custom:team": "Agents"
@@ -933,8 +933,8 @@ mod wire_contract {
         assert_eq!(out["nodeType"], "skill");
         assert_eq!(out["content"], "Graph Editing");
         assert_eq!(out["lifecycleStatus"], "active");
-        assert_eq!(out["description"], "Update a record");
-        assert_eq!(out["exclusion"], "Delete records");
+        assert_eq!(out["useFor"], "Update a record");
+        assert_eq!(out["notFor"], "Delete records");
         assert_eq!(
             out["toolWhitelist"],
             serde_json::json!(["update_node", "get_node"])
@@ -947,8 +947,8 @@ mod wire_contract {
         assert_eq!(
             flat_properties_view(&out),
             serde_json::json!({
-                "description": "Update a record",
-                "exclusion": "Delete records",
+                "use_for": "Update a record",
+                "not_for": "Delete records",
                 "tool_whitelist": ["update_node", "get_node"],
                 "max_iterations": 3,
                 "custom:team": "Agents"
@@ -965,8 +965,8 @@ mod wire_contract {
         );
         let out = node_to_typed_value(node).unwrap();
 
-        assert_eq!(out["description"], "");
-        assert!(out.get("exclusion").is_none());
+        assert_eq!(out["useFor"], "");
+        assert!(out.get("notFor").is_none());
         assert_eq!(out["toolWhitelist"], serde_json::json!([]));
         assert_eq!(out["maxIterations"], 2);
     }

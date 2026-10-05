@@ -1434,7 +1434,7 @@ pub fn prepare_nodes_from_template(
     // reset names, not the node's identity, which is its id.
     //
     // Two independent hashes, not one: `config_version` covers only the root
-    // node (the retrieval/dispatch knobs — description, exclusion, tool_whitelist,
+    // node (the retrieval/dispatch knobs — use_for, not_for, tool_whitelist,
     // max_iterations) and `guidance_version` covers only the children (the
     // procedural markdown body). A seeded node's config and guidance are
     // edited independently by users, so reconciliation needs to detect and

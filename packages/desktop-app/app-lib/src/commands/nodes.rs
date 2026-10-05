@@ -1441,7 +1441,7 @@ pub async fn update_collection_node(
     node_to_typed_value(node)
 }
 
-/// Update a skill's core fields (description, exclusion, tool whitelist, max
+/// Update a skill's core fields (use_for, not_for, tool whitelist, max
 /// iterations, node types).
 #[tauri::command]
 pub async fn update_skill_node(

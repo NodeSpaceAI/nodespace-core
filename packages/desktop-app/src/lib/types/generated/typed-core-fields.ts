@@ -37,8 +37,8 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
   ],
   collection: [{ storage: 'description', wire: 'description' }],
   skill: [
-    { storage: 'description', wire: 'description' },
-    { storage: 'exclusion', wire: 'exclusion' },
+    { storage: 'use_for', wire: 'useFor' },
+    { storage: 'not_for', wire: 'notFor' },
     { storage: 'tool_whitelist', wire: 'toolWhitelist', structured: 'array' },
     { storage: 'max_iterations', wire: 'maxIterations', structured: 'number' }
   ],
@@ -108,7 +108,7 @@ export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string
   spec: { specStatus: 'draft' },
   plan: { planStatus: 'draft' },
   decision: { decisionStatus: 'proposed' },
-  skill: { description: '', maxIterations: 2, toolWhitelist: [] },
+  skill: { maxIterations: 2, toolWhitelist: [], useFor: '' },
   'database-settings': { requiredExtensions: [] },
   query: { executionCount: 0, filters: [], generatedBy: 'user', targetType: '*' },
   play: { enabled: true, rules: [] },

@@ -33,14 +33,14 @@ function schema(id: string, fields: SchemaField[]): SchemaNode {
 }
 
 const skillLike = schema('skill', [
-  field({ name: 'description', required: true }),
+  field({ name: 'use_for', required: true }),
   field({ name: 'tool_whitelist', required: true, default: [], type: 'array' }),
   field({ name: 'notes' })
 ]);
 
 describe('placeholder eligibility', () => {
   it('lists only required fields that have no default', () => {
-    expect(requiredFieldsWithoutDefault(skillLike).map((f) => f.name)).toEqual(['description']);
+    expect(requiredFieldsWithoutDefault(skillLike).map((f) => f.name)).toEqual(['use_for']);
   });
 
   it('needs a placeholder only when such a field exists', () => {
@@ -54,7 +54,7 @@ describe('placeholder eligibility', () => {
 
   it('decides a typed core type by its schema, like any other', () => {
     // `task.status` is required but defaults to `open`, so a task is created
-    // right away; `skill.description` has no default, so a skill waits.
+    // right away; `skill.use_for` has no default, so a skill waits.
     const task = schema('task', [field({ name: 'status', required: true, default: 'open' })]);
     expect(needsUnsavedPlaceholder(task)).toBe(false);
     expect(needsUnsavedPlaceholder(skillLike)).toBe(true);
@@ -69,14 +69,14 @@ describe('placeholder eligibility', () => {
     const required = requiredFieldsWithoutDefault(skillLike);
     const base = { nodeType: 'skill' } as never;
     expect(missingRequiredFields({ ...(base as object), properties: {} } as never, required)).toEqual([
-      'description'
+      'use_for'
     ]);
-    // A skill's description is a typed field, read from the top level.
+    // A skill's `use_for` is a typed field, read from the top level.
     expect(
-      missingRequiredFields({ nodeType: 'skill', properties: {}, description: '  ' } as never, required)
-    ).toEqual(['description']);
+      missingRequiredFields({ nodeType: 'skill', properties: {}, useFor: '  ' } as never, required)
+    ).toEqual(['use_for']);
     expect(
-      missingRequiredFields({ nodeType: 'skill', properties: {}, description: 'x' } as never, required)
+      missingRequiredFields({ nodeType: 'skill', properties: {}, useFor: 'x' } as never, required)
     ).toEqual([]);
     // A user-defined type's field is read from `properties`.
     const noteRequired = [field({ name: 'body', required: true })];
@@ -115,7 +115,7 @@ describe('createInstancePlaceholder', () => {
     expect(createNodeSpy).not.toHaveBeenCalled();
   });
 
-  it('is created once the required description is filled', async () => {
+  it('is created once the required field is filled', async () => {
     const node = createInstancePlaceholder(skillLike);
     const typedSpy = vi.spyOn(backendAdapter, 'updateSkillNode');
 
@@ -123,7 +123,7 @@ describe('createInstancePlaceholder', () => {
     // under its storage name, since a node without it would be rejected.
     sharedNodeStore.updateNode(
       node.id,
-      { description: 'Summarises a thread', maxIterations: 3 } as never,
+      { useFor: 'Summarises a thread', maxIterations: 3 } as never,
       { type: 'viewer', viewerId: 'test' }
     );
 
@@ -132,7 +132,7 @@ describe('createInstancePlaceholder', () => {
       expect.objectContaining({
         id: node.id,
         nodeType: 'skill',
-        properties: { description: 'Summarises a thread', max_iterations: 3 }
+        properties: { use_for: 'Summarises a thread', max_iterations: 3 }
       })
     );
     expect(typedSpy).not.toHaveBeenCalled();
@@ -141,7 +141,7 @@ describe('createInstancePlaceholder', () => {
 
   it('creates the skill at the first character and saves the rest, one keystroke at a time', async () => {
     // The form writes on every keystroke. The first character completes the
-    // placeholder and starts its create, which must carry the description or
+    // placeholder and starts its create, which must carry `use_for` or
     // the backend rejects the node; the characters typed while that create is
     // in flight are staged, and go out as one typed write once it lands.
     const node = createInstancePlaceholder(skillLike);
@@ -156,40 +156,40 @@ describe('createInstancePlaceholder', () => {
       return { ...node, ...update, id, version: version + 1 } as never;
     });
 
-    for (const description of ['S', 'Su', 'Sum']) {
-      sharedNodeStore.updateNode(node.id, { description } as never, viewer);
+    for (const useFor of ['S', 'Su', 'Sum']) {
+      sharedNodeStore.updateNode(node.id, { useFor } as never, viewer);
     }
 
     await vi.waitFor(() => expect(order).toHaveLength(2), { timeout: 3000 });
-    expect(order).toEqual(['create:{"description":"S"}', 'typed:{"description":"Sum"}']);
+    expect(order).toEqual(['create:{"use_for":"S"}', 'typed:{"useFor":"Sum"}']);
     expect(createNodeSpy).toHaveBeenCalledTimes(1);
     expect(sharedNodeStore.isNodePersisted(node.id)).toBe(true);
   });
 
-  it('creates the skill with the description that completed it, even if it is emptied right after', async () => {
+  it('creates the skill with the value that completed it, even if it is emptied right after', async () => {
     // A character typed, then deleted: the create has already started with
-    // the description that completed the placeholder, so the node exists and
-    // the description typed next is saved through the typed update.
+    // the value that completed the placeholder, so the node exists and
+    // the one typed next is saved through the typed update.
     const node = createInstancePlaceholder(skillLike);
     const viewer = { type: 'viewer' as const, viewerId: 'test' };
     const typedSpy = vi
       .spyOn(backendAdapter, 'updateSkillNode')
       .mockImplementation(async (id, version, update) => {
-        if (update.description === null) throw new Error('description cannot be cleared');
+        if (update.useFor === null) throw new Error('useFor cannot be cleared');
         return { ...node, ...update, id, version: version + 1 } as never;
       });
 
-    sharedNodeStore.updateNode(node.id, { description: 'S' } as never, viewer);
+    sharedNodeStore.updateNode(node.id, { useFor: 'S' } as never, viewer);
     await vi.waitFor(() => expect(createNodeSpy).toHaveBeenCalledTimes(1), { timeout: 200 });
     expect(createNodeSpy.mock.calls[0][0]).toEqual(
-      expect.objectContaining({ properties: { description: 'S' } })
+      expect.objectContaining({ properties: { use_for: 'S' } })
     );
 
-    sharedNodeStore.updateNode(node.id, { description: null } as never, viewer);
-    sharedNodeStore.updateNode(node.id, { description: 'Sum' } as never, viewer);
+    sharedNodeStore.updateNode(node.id, { useFor: null } as never, viewer);
+    sharedNodeStore.updateNode(node.id, { useFor: 'Sum' } as never, viewer);
 
     await vi.waitFor(() =>
-      expect(typedSpy.mock.calls.map((call) => call[2])).toContainEqual({ description: 'Sum' })
+      expect(typedSpy.mock.calls.map((call) => call[2])).toContainEqual({ useFor: 'Sum' })
     );
     expect(createNodeSpy).toHaveBeenCalledTimes(1);
     expect(sharedNodeStore.isNodePersisted(node.id)).toBe(true);

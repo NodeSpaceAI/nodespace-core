@@ -1190,14 +1190,14 @@ mod tests {
         let mut node = sample_node();
         node.node_type = "skill".into();
         node.properties =
-            r#"{"_seed":{"version":"abc"},"skill":{"description":"d","version":"1.0"}}"#.into();
+            r#"{"_seed":{"version":"abc"},"skill":{"use_for":"d","version":"1.0"}}"#.into();
 
         let json = node_to_json(&node);
 
         // `skill.version` wins; the `_seed` namespace never surfaces, so the
         // two `version` keys cannot collide in the flat output.
         assert_eq!(json["properties"]["version"], "1.0");
-        assert_eq!(json["properties"]["description"], "d");
+        assert_eq!(json["properties"]["use_for"], "d");
         assert!(json["properties"].get("_seed").is_none());
     }
 

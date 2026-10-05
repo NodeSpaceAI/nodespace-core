@@ -22,14 +22,15 @@ export type SkillNode = {
   title?: string | null;
   lifecycleStatus: string;
   /**
-   * What the skill is for. Drives the skill's embedding for retrieval.
+   * The requests the skill should handle, worded the way someone would
+   * ask. Embedded with the skill's name for retrieval.
    */
-  description: string;
+  useFor: string;
   /**
-   * What the skill is *not* for, scored against the query to penalize
-   * verb-only overlaps. `None` when absent or blank.
+   * Requests that sound similar but belong to another skill, scored
+   * against the query to penalize verb-only overlaps. `None` when absent or blank.
    */
-  exclusion?: string;
+  notFor?: string;
   /**
    * Tools a turn that selects this skill may call.
    */
