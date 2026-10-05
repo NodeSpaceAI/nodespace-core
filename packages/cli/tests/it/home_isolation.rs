@@ -82,21 +82,28 @@ fn real_home() -> tempfile::TempDir {
 
 /// Runs `nodespace <args>` with `HOME` at `real` and `NODESPACE_HOME` at
 /// `isolated`.
-///
-/// `PATH` is an empty directory, so the command can start no service manager
-/// and no script runtime: nothing a test does reaches this machine's own
-/// daemon or agent skills.
 fn nodespace(real: &Path, isolated: &Path, args: &[&str]) -> Output {
-    let empty_path = tempfile::tempdir().expect("empty PATH dir");
-    Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .args(args)
-        .env("HOME", real)
+    command(real, args)
         .env("NODESPACE_HOME", isolated)
-        .env("PATH", empty_path.path())
-        .env_remove("NODESPACED_SOCKET")
-        .env_remove("NODESPACE_DATABASE")
         .output()
         .expect("run nodespace")
+}
+
+/// `nodespace <args>` with `HOME` at `real` and no `NODESPACE_HOME`.
+///
+/// `PATH` names a directory that does not exist, so the command can start no
+/// service manager and no script runtime: nothing a test does reaches this
+/// machine's own daemon or agent skills.
+fn command(real: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nodespace"));
+    command
+        .args(args)
+        .env("HOME", real)
+        .env("PATH", real.join("no-such-directory"))
+        .env_remove("NODESPACE_HOME")
+        .env_remove("NODESPACED_SOCKET")
+        .env_remove("NODESPACE_DATABASE");
+    command
 }
 
 fn stdout(output: &Output) -> String {
@@ -134,18 +141,81 @@ fn uninstall_removes_the_redirected_install_and_leaves_the_real_home_alone() {
         ]
     );
 
-    let out = stdout(&output);
+    // The whole output: skill removal prints a line on every path it takes,
+    // so its absence here is the proof it did not run.
     let kept = isolated.path().join(STATE_DIR).join("database");
+    assert_eq!(
+        stdout(&output),
+        format!(
+            "NODESPACE_HOME is set: the daemon service and agent skills in your own home were left in place.\n\
+             NodeSpace uninstalled. Your data at {} has been preserved.\n",
+            kept.display()
+        )
+    );
+}
+
+/// With no redirect the user's own home is the one uninstalled: the binaries,
+/// sockets, lock files and this platform's service registration go, and the
+/// data stays.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn uninstall_without_a_redirect_removes_the_install_in_the_users_home() {
+    let real = real_home();
+
+    let output = command(real.path(), &["uninstall"])
+        .output()
+        .expect("run nodespace");
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let state_dir = PathBuf::from(STATE_DIR);
+    // The other platform's service file stands in for an unrelated file.
+    let bystander = if cfg!(target_os = "macos") {
+        PathBuf::from(".config/systemd/user/nodespace.service")
+    } else {
+        PathBuf::from("Library/LaunchAgents/app.nodespace.daemon.plist")
+    };
+    let mut expected = vec![
+        bystander,
+        state_dir.join("database").join("nodespace.db"),
+        state_dir.join("logs").join("nodespaced.log"),
+    ];
+    expected.sort();
+    let left: Vec<PathBuf> = snapshot(real.path()).into_keys().collect();
+    assert_eq!(left, expected);
+
+    let out = stdout(&output);
+    let kept = real.path().join(STATE_DIR).join("database");
     assert!(
-        out.contains(&format!(
-            "Your data at {} has been preserved.",
+        out.ends_with(&format!(
+            "NodeSpace uninstalled. Your data at {} has been preserved.\n",
             kept.display()
         )),
         "got: {out}"
     );
+    assert!(!out.contains("NODESPACE_HOME"), "got: {out}");
+}
+
+/// An empty `NODESPACE_HOME` is no redirect. Read as a path it would be the
+/// working directory, and `uninstall` would delete `.nodespace/bin` there.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn an_empty_nodespace_home_is_not_a_redirect_to_the_working_directory() {
+    let real = real_home();
+    let working_dir = tempfile::tempdir().expect("working dir");
+    populate_state_dir(working_dir.path(), "working dir");
+    let before = snapshot(working_dir.path());
+
+    let output = command(real.path(), &["uninstall"])
+        .env("NODESPACE_HOME", "")
+        .current_dir(working_dir.path())
+        .output()
+        .expect("run nodespace");
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(snapshot(working_dir.path()), before);
     assert!(
-        !out.contains(&real.path().display().to_string()),
-        "the real home must not be reported: {out}"
+        !real.path().join(STATE_DIR).join("bin").exists(),
+        "the user's own install is the one removed"
     );
 }
 
