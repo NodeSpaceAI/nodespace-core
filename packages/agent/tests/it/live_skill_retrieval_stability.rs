@@ -772,6 +772,43 @@ async fn lookups_route_research_and_search() {
     );
 }
 
+/// A lookup about one field of a named record — the date it was signed off,
+/// who owns it — must lead with Research & Search as any other lookup does.
+/// The topic is a record's name and a field's name, with no verb and no
+/// question word, so it sits close to every skill that acts on a record:
+/// retrieved as "search stored knowledge for Kestrel Sync sign off date" it
+/// ranked Node Deletion 0.801, Research & Search 0.800, Conflict Journal
+/// 0.799. The verbs the retrieval query now opens with
+/// (`routing::lookup_retrieval_query`) put the search skill first on it by
+/// 0.024.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn lookups_about_a_records_field_route_research_and_search() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let queries = lookup_queries(&[
+        "Kestrel Sync sign off date",
+        "Kestrel Gateway sign off date",
+        "Q4 cycle end date",
+        "Lantern Autosave owner",
+        "offline sync spec review date",
+        "billing service on-call owner",
+    ]);
+    let misses = routing_misses(
+        &embedding_service,
+        &node_service,
+        &queries.iter().map(String::as_str).collect::<Vec<_>>(),
+        "Research & Search",
+        true,
+    )
+    .await;
+    assert!(
+        misses.is_empty(),
+        "Research & Search lost rank 1 for {misses:?}"
+    );
+}
+
 /// The raw message is what retrieval embeds when Stage 1 emits no usable
 /// decision. A request that names a retrieval verb, or a question whose topic
 /// is no other skill's subject, still reaches Research & Search at rank 1
@@ -1189,6 +1226,95 @@ async fn start_tracking_requests_route_schema_creation() {
     assert!(
         misses.is_empty(),
         "Schema Creation lost rank 1 for {misses:?}"
+    );
+}
+
+/// A request for a new kind of record that names the details each one carries
+/// ("set up Postmortems with a severity and a review date") asks for a type.
+/// It must lead with Schema Creation, not merely place it: the fields declared
+/// on a write tool come only from the candidates at the turn's top score
+/// (`routing::declare_write_tool_fields`).
+///
+/// The requests are what Stage 1 makes of such a message, in both the "set
+/// up" and the "keep track of" wording, over several nouns and details so the
+/// shape is what is measured.
+///
+/// The shape leads where the nouns are no other skill's: by 0.012 to 0.036 on
+/// the first three. It does not where they are, and that is recorded here and
+/// not accepted. An incident and its severity read as Graph Editing's
+/// completion states, and a runbook as an automation:
+///
+/// - "set up Postmortems with a severity and review date": Graph Editing
+///   0.864, Schema Creation 0.856.
+/// - "keep track of incident postmortems with severity and review date":
+///   Graph Editing 0.889, Schema Creation 0.868.
+/// - "set up Runbooks with a service and a last reviewed date": Play
+///   Authoring 0.844, Schema Creation 0.814.
+///
+/// No wording of either description separated them without a cost elsewhere.
+/// Naming the details a new kind carries in Schema Creation's ("…such as a
+/// priority, an owner, or a date") won the first by 0.004 and lifted that
+/// skill by 0.01 to 0.02 on requests of every kind: it then led "add Lantern
+/// Autosave to specs we keep" and "move the offline sync spec's review to
+/// next week", and passed the search skill on a lookup. Narrowing Graph
+/// Editing to one named item moved it by 0.005 at most, and an `exclusion`
+/// naming the setting-up verbs did not move it at all: these requests sit
+/// closer to its description than to any exclusion. Having Stage 1 say
+/// "record type" or "a new kind of record" lifted both skills together.
+///
+/// For those three only the second half is asserted: Schema Creation is in
+/// the top 3, so `create_schema` is offered.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn a_new_kind_of_record_with_named_details_leads_or_places_schema_creation() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for (query, lead_asserted) in [
+        (
+            "set up Retrospectives with an owner and a follow-up date",
+            true,
+        ),
+        (
+            "keep track of vendor contracts with a renewal date and an owner",
+            true,
+        ),
+        (
+            "keep track of customer interviews with a persona and an interview date",
+            true,
+        ),
+        ("set up Postmortems with a severity and review date", false),
+        (
+            "keep track of incident postmortems with severity and review date",
+            false,
+        ),
+        (
+            "set up Runbooks with a service and a last reviewed date",
+            false,
+        ),
+    ] {
+        eprintln!(
+            "{query:?}: {:?}",
+            scored_ranking(&embedding_service, &node_service, query, 6).await
+        );
+        let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+        let holds = |ranked: &Vec<String>| {
+            let place = ranked.iter().position(|n| n == "Schema Creation");
+            if lead_asserted {
+                place == Some(0)
+            } else {
+                place.is_some()
+            }
+        };
+        if !rankings.iter().all(holds) {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "Schema Creation lost rank 1, or missed the top-{RETRIEVAL_TOP_K} where the lead is not \
+         asserted, for {misses:?}"
     );
 }
 

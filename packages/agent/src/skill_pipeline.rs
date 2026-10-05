@@ -106,8 +106,9 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // and Node Deletion — each of which says "nodes" or "records"
         // — and was not retrieved at all.
         //
-        // "Search stored knowledge" is here because that is the query the
-        // system retrieves a lookup with (`routing::lookup_retrieval_query`):
+        // "Search stored knowledge" is here because the query the system
+        // retrieves a lookup with carries it, after this description's
+        // opening verbs (`routing::lookup_retrieval_query`):
         // a question has no retrieval verb of its own, and bare, it
         // embeds nearest whichever skill shares a noun with its topic.
         // Measured on the locked embedding model, this wording puts
@@ -253,11 +254,22 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // at the turn's top score (`routing::declare_write_tool_fields`),
         // and that is now this skill. What Stage 2 does with either
         // request was not measured.
+        //
+        // A third cost is not of the opening but of the embedding: a new
+        // kind of record whose nouns are another skill's subject leads
+        // with that skill. "keep track of incident postmortems with
+        // severity and review date" leads with Graph Editing, 0.889 to
+        // 0.868. Naming the details a new kind carries here ("…such as a
+        // priority, an owner, or a date") lifted this skill on requests of
+        // every kind, as the longer opening did, and was not kept. What
+        // was measured is on
+        // `a_new_kind_of_record_with_named_details_leads_or_places_schema_creation`.
         // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
         // `start_tracking_requests_route_schema_creation`,
         // `tracking_one_existing_record_still_reaches_a_record_skill`,
-        // `updates_to_one_record_do_not_lead_with_schema_creation` and
-        // `adds_to_an_existing_list_keep_a_skill_that_can_create`.
+        // `updates_to_one_record_do_not_lead_with_schema_creation`,
+        // `adds_to_an_existing_list_keep_a_skill_that_can_create` and
+        // `a_new_kind_of_record_with_named_details_leads_or_places_schema_creation`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c03",
         title: "Schema Creation",
         description: "Start tracking: set up a structured way to keep track of, log, or maintain records for a kind of thing the user hasn't stored before — specs, sprints, releases, tickets, or any recurring category of item with its own details to fill in. Also covers defining a new entity type or schema with custom fields, enums, and relationships, or modifying an existing schema. Use when the user wants a place to record or organize instances of something new, or says 'new type', 'node type', 'define fields', 'create schema', 'update schema', 'add a field', 'rename a field', or wants to design or change a kind of entity like Spec, Ticket, or ADR.",

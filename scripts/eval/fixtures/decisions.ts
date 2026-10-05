@@ -912,8 +912,15 @@ const FIXTURES: DecisionScenario[] = [
     // existing node, which is what makes it an entity-resolution case — the
     // recorded failure was a reply that it had no node id for the record, so
     // it could not give the date.
+    //
+    // Scored on the reply, not the schema, for the reason given on
+    // `schema-field-disambiguates`. Measured: the turn answered with the date
+    // and a link to the record through `search_semantic`, which names no type,
+    // so no schema decision is recorded and a `decision: "schema"` assertion
+    // failed a correct turn 3 of 3. The date in the reply is what the turn is
+    // for, and the recorded failure is a reply without it.
     prompt: "When did we sign off Kestrel?",
-    expected: { decision: "schema", matches: /spec/i },
+    expected: { decision: "outcome", replyMatches: SEEDED_SPEC_SIGNED_OFF_IN_REPLY },
     ambiguous: true,
     entityResolution: true,
   },

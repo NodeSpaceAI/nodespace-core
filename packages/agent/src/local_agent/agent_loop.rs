@@ -2041,17 +2041,39 @@ struct RoutingOutcome {
 /// golden-prompt test harness can build the exact same Stage-1 message from
 /// `prior_turns: &[&str]` without constructing an `AgentSession`.
 fn stage1_query(session: &AgentSession, user_message: &str) -> String {
+    stage1_query_from_turns(&turns_before_this_message(session), user_message)
+}
+
+/// The conversation ahead of the message this turn is answering: every user
+/// and assistant message but the last, which is that message.
+fn turns_before_this_message(session: &AgentSession) -> Vec<&str> {
     let prior = session
         .messages
         .split_last()
         .map(|(_, rest)| rest)
         .unwrap_or(&[]);
-    let prior_turns: Vec<&str> = prior
+    prior
         .iter()
         .filter(|m| matches!(m.role, Role::User | Role::Assistant))
         .map(|m| m.content.as_str())
-        .collect();
-    stage1_query_from_turns(&prior_turns, user_message)
+        .collect()
+}
+
+/// The retrieval query for a turn whose second clarification was suppressed:
+/// the message with the turns ahead of it, as schema retrieval blends them.
+///
+/// Stage 1 asked to clarify because the message does not say what it is
+/// about, so retrieved alone it matches whatever skills share a word with it.
+/// Measured: after two questions about a spec, "Say that again more simply."
+/// retrieved Play Authoring, Conflict Journal and Graph Editing, and with
+/// those three in front of it the model replied that it had no tool for
+/// rephrasing. What the message is about is in the conversation, which is
+/// where the user's answer to a clarification gets its meaning too.
+fn suppressed_clarify_retrieval_query(session: &AgentSession, user_message: &str) -> String {
+    nodespace_core::ops::context_ops::build_retrieval_query(
+        &turns_before_this_message(session),
+        user_message,
+    )
 }
 
 /// Build the Stage-1 chat message from prior turns and the current message.
@@ -5237,6 +5259,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // happens to end in a question mark, is decided on the blended view
         // exactly as before, at the cost of that first pass.
         //
+        // Alone is not always enough: asked how something is done, Stage 1
+        // names the action. A query for a message that asks what the
+        // workspace holds is read as a lookup of that message
+        // (`routing::decision_on_the_message_alone`), on this pass and on the
+        // one pass a chat's first message gets.
+        //
         // A follow-up that leans on its context ("and who approved it?") can
         // come back a lookup from that pass too, with a topic that names no
         // referent. The decision is right: it is a lookup, and Stage 2, which
@@ -5261,9 +5289,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 .stage1_decide(&system_prompt, message_alone.to_string())
                 .await
             {
-                Ok(alone) => {
+                Ok(mut alone) => {
                     outcome.usage.prompt_tokens += alone.usage.prompt_tokens;
                     outcome.usage.completion_tokens += alone.usage.completion_tokens;
+                    alone.decision =
+                        routing::decision_on_the_message_alone(message_alone, alone.decision);
                     if matches!(alone.decision, Some(RouteDecision::Lookup(_))) {
                         stage1 = Some(alone);
                     }
@@ -5285,13 +5315,19 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             "blended"
         };
         span.set_attribute(KeyValue::new("routing.decided_on", decided_on));
+        // With no turns ahead of it, the one pass is the message by itself.
+        let first_message = routing_query == message_alone;
         let stage1 = match stage1 {
             Some(decided) => decided,
             None => match self.stage1_decide(&system_prompt, routing_query).await {
-                Ok(blended) => {
+                Ok(mut blended) => {
                     passes += 1;
                     outcome.usage.prompt_tokens += blended.usage.prompt_tokens;
                     outcome.usage.completion_tokens += blended.usage.completion_tokens;
+                    if first_message {
+                        blended.decision =
+                            routing::decision_on_the_message_alone(message_alone, blended.decision);
+                    }
                     blended
                 }
                 Err(e) => {
@@ -5348,15 +5384,16 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // The clarification contract: at most one per intent. If the
                 // conversation already contains a clarification, asking again
                 // is the annoying-loop failure ADR-038 specifies against — fall
-                // through to retrieval on the raw message instead, so the turn
-                // resolves with whatever the general skill can offer.
+                // through to retrieval instead, on the message in the light
+                // of the turns ahead of it, so the turn resolves with the
+                // skills the conversation is about.
                 if session_already_clarified(session) {
                     routing_decision_tag = "clarify_suppressed";
                     span.set_attribute(KeyValue::new("routing.decision", "clarify_suppressed"));
                     tracing::debug!(
                         "stage-1 asked to clarify twice in one intent; falling through to retrieval"
                     );
-                    vec![user_message.to_string()]
+                    vec![suppressed_clarify_retrieval_query(session, user_message)]
                 } else {
                     span.set_attribute(KeyValue::new("routing.decision", "clarify"));
                     outcome.clarification = Some(format_clarification(&question, &options));
@@ -17364,7 +17401,7 @@ mod tests {
     async fn a_second_clarification_for_one_intent_falls_through_to_retrieval() {
         // The contract: at most one clarification per intent. On the turn after
         // the user answered one, Stage 1 asking again must be suppressed and
-        // the turn must retrieve on the raw message instead.
+        // the turn must retrieve instead.
         let engine = MockEngine::new(vec![
             vec![
                 StreamingChunk::ToolCallStart {
@@ -17402,9 +17439,6 @@ mod tests {
             AiChatTurnOutcome::Clarified,
             &format!("{CLARIFICATION_OPENER}. Which one?"),
         );
-        session
-            .messages
-            .push(ChatMessage::text(Role::User, "the first one".to_string()));
 
         let result = loop_
             .run_turn(
@@ -17422,10 +17456,13 @@ mod tests {
             "never clarify twice for one intent: {:?}",
             result.response
         );
+        // On the message with the turn ahead of it: "the first one" says
+        // nothing by itself, and retrieved alone it matches whichever skills
+        // share a word with it.
         assert_eq!(
-            queries.lock().unwrap().len(),
-            1,
-            "the suppressed clarification must fall through to retrieval"
+            *queries.lock().unwrap(),
+            vec![format!("{CLARIFICATION_OPENER}. Which one?\nthe first one")],
+            "the suppressed clarification must fall through to retrieval, in context"
         );
     }
 
@@ -17656,6 +17693,16 @@ mod tests {
         stage1: Vec<StreamingChunk>,
         stage2: Vec<Vec<StreamingChunk>>,
     ) -> (AgentTurnResult, usize, Vec<serde_json::Value>) {
+        run_turn_asking(session, "how does our retry policy work?", stage1, stage2).await
+    }
+
+    /// [`run_question_turn`] for `message`.
+    async fn run_turn_asking(
+        session: &mut AgentSession,
+        message: &str,
+        stage1: Vec<StreamingChunk>,
+        stage2: Vec<Vec<StreamingChunk>>,
+    ) -> (AgentTurnResult, usize, Vec<serde_json::Value>) {
         let mut rounds = vec![stage1];
         rounds.extend(stage2);
         let engine = Arc::new(MockEngine::new(rounds));
@@ -17674,13 +17721,7 @@ mod tests {
         );
         let loop_ = LocalAgentLoop::new(engine.clone(), Arc::new(exec));
         let result = loop_
-            .run_turn(
-                session,
-                "how does our retry policy work?",
-                |_| {},
-                |_| {},
-                CancellationToken::new(),
-            )
+            .run_turn(session, message, |_| {}, |_| {}, CancellationToken::new())
             .await
             .expect("turn should succeed");
         let searches = result
@@ -17810,8 +17851,9 @@ mod tests {
     async fn a_turn_stage1_did_not_route_as_a_lookup_is_not_searched() {
         let mut session = new_session();
 
-        let (result, generations, searches) = run_question_turn(
+        let (result, generations, searches) = run_turn_asking(
             &mut session,
+            "which skills do you have?",
             tool_round(
                 "r1",
                 routing::ROUTE_QUERY_TOOL,
@@ -17960,6 +18002,15 @@ mod tests {
         stage1: Vec<StreamingChunk>,
         stage2: Vec<Vec<StreamingChunk>>,
     ) -> String {
+        streamed_text_asking("how does our retry policy work?", stage1, stage2).await
+    }
+
+    /// [`streamed_text`] for `message`.
+    async fn streamed_text_asking(
+        message: &str,
+        stage1: Vec<StreamingChunk>,
+        stage2: Vec<Vec<StreamingChunk>>,
+    ) -> String {
         let mut rounds = vec![stage1];
         rounds.extend(stage2);
         let engine = Arc::new(MockEngine::new(rounds));
@@ -17982,7 +18033,7 @@ mod tests {
         loop_
             .run_turn(
                 &mut new_session(),
-                "how does our retry policy work?",
+                message,
                 |_| {},
                 move |chunk| {
                     if let StreamingChunk::Token { text } = chunk {
@@ -18159,7 +18210,8 @@ mod tests {
     /// its reply as it is generated.
     #[tokio::test]
     async fn a_reply_on_a_turn_that_is_not_a_lookup_streams_as_before() {
-        let streamed = streamed_text(
+        let streamed = streamed_text_asking(
+            "which skills do you have?",
             tool_round(
                 "r1",
                 routing::ROUTE_QUERY_TOOL,
@@ -18188,13 +18240,6 @@ mod tests {
         clarified: bool,
         rounds: Vec<Vec<StreamingChunk>>,
     ) -> Routed {
-        let engine = Arc::new(MockEngine::new(rounds));
-        let exec = RoutingToolExecutor::new(
-            MockToolExecutor::new(),
-            vec![skill_candidate("Research & Search", 0.9, &["search_nodes"])],
-        );
-        let queries = exec.queries_handle();
-        let loop_ = LocalAgentLoop::new(engine.clone(), Arc::new(exec));
         let mut session = new_session();
         session.messages.push(ChatMessage::text(
             Role::User,
@@ -18212,6 +18257,23 @@ mod tests {
                 "The Event Venue type already exists.",
             ));
         }
+        route_in(session, message, rounds).await
+    }
+
+    /// Runs `message` as the next turn of `session`, with `rounds` as the
+    /// engine's generations in order.
+    async fn route_in(
+        mut session: AgentSession,
+        message: &str,
+        rounds: Vec<Vec<StreamingChunk>>,
+    ) -> Routed {
+        let engine = Arc::new(MockEngine::new(rounds));
+        let exec = RoutingToolExecutor::new(
+            MockToolExecutor::new(),
+            vec![skill_candidate("Research & Search", 0.9, &["search_nodes"])],
+        );
+        let queries = exec.queries_handle();
+        let loop_ = LocalAgentLoop::new(engine.clone(), Arc::new(exec));
 
         loop_
             .run_turn(
@@ -18254,11 +18316,105 @@ mod tests {
         );
         assert_eq!(
             routed.retrieved,
-            vec!["search stored knowledge for how we onboard a new sponsor".to_string()]
+            vec![
+                "find, look up, or search stored knowledge for how we onboard a new sponsor"
+                    .to_string()
+            ]
         );
         assert_eq!(
             routed.generations, 2,
             "one Stage-1 pass and one Stage-2 generation"
+        );
+    }
+
+    /// A question about how something is done names an action, and Stage 1
+    /// answers it with a query for the action. The question is read off the
+    /// message: it is a lookup of the message, decided on that first pass.
+    #[tokio::test]
+    async fn a_question_stage1_reads_as_an_action_is_a_lookup_of_the_message() {
+        let routed = route_after_an_earlier_exchange(
+            "How do we onboard a new reviewer?",
+            false,
+            vec![
+                tool_round(
+                    "r0",
+                    routing::ROUTE_QUERY_TOOL,
+                    r#"{"query":"onboard a new reviewer"}"#,
+                ),
+                text_round("Done."),
+            ],
+        )
+        .await;
+
+        assert_eq!(routed.asked[0], "How do we onboard a new reviewer?");
+        assert_eq!(
+            routed.retrieved,
+            vec![routing::lookup_retrieval_query(
+                "How do we onboard a new reviewer"
+            )]
+        );
+        assert_eq!(
+            routed.generations, 2,
+            "one Stage-1 pass and one Stage-2 generation"
+        );
+    }
+
+    /// A chat's first message gets one pass, on the message by itself, and
+    /// the same reading: a query for a question about the workspace is a
+    /// lookup of the message.
+    #[tokio::test]
+    async fn a_first_message_stage1_reads_as_an_action_is_a_lookup_of_the_message() {
+        let routed = route_in(
+            new_session(),
+            "How do we onboard a new reviewer?",
+            vec![
+                tool_round(
+                    "r0",
+                    routing::ROUTE_QUERY_TOOL,
+                    r#"{"query":"onboard a new reviewer"}"#,
+                ),
+                text_round("Done."),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            routed.retrieved,
+            vec![routing::lookup_retrieval_query(
+                "How do we onboard a new reviewer"
+            )]
+        );
+        assert_eq!(
+            routed.generations, 2,
+            "one Stage-1 pass and one Stage-2 generation"
+        );
+    }
+
+    /// The reading is of a decision made on the message alone. When that
+    /// pass yields no decision, the message is decided in context, and a
+    /// query from there stands whatever the message's wording.
+    #[tokio::test]
+    async fn a_query_decided_in_context_is_not_read_as_a_lookup() {
+        let routed = route_after_an_earlier_exchange(
+            "How do we onboard a new reviewer?",
+            false,
+            vec![
+                // On the message alone: no routing tool called.
+                text_round("..."),
+                // Blended with the turns before it.
+                tool_round(
+                    "r1",
+                    routing::ROUTE_QUERY_TOOL,
+                    r#"{"query":"add a reviewer to the event venue"}"#,
+                ),
+                text_round("Done."),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            routed.retrieved,
+            vec!["add a reviewer to the event venue".to_string()]
         );
     }
 
@@ -18396,7 +18552,7 @@ mod tests {
 
         assert_eq!(
             *queries.lock().unwrap(),
-            vec!["search stored knowledge for the merge gate".to_string()]
+            vec!["find, look up, or search stored knowledge for the merge gate".to_string()]
         );
     }
 
