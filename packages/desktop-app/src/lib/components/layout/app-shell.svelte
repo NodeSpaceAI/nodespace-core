@@ -43,6 +43,7 @@
   import { updateStatus } from '$lib/stores/update-status.svelte';
   import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte';
   import { conflictsStore } from '$lib/stores/conflicts.svelte';
+  import { seedUpdatesStore } from '$lib/stores/seed-updates.svelte';
   import {
     DATA_PLANE_READY_EVENT,
     daemonStatus,
@@ -96,6 +97,9 @@
     if (!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) return;
     conflictsNoticeStarted = true;
     loadConflicts();
+    // Routed like the journal read above. What it finds shows as a marker on
+    // Settings; nothing is applied until the user chooses there.
+    void seedUpdatesStore.load();
   });
 
   function loadConflicts(): void {

@@ -42,6 +42,7 @@ mod object_field_type_validation_test;
 mod object_valued_property_roundtrip_test;
 mod parent_task_completion_play_test;
 mod participation_test;
+mod pending_seed_updates_test;
 mod person_duplicate_convergence_test;
 mod person_seed_test;
 mod playbook_engine_integration_test;

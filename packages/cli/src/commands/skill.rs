@@ -72,7 +72,8 @@ pub enum SkillAction {
     /// Discard a user's customization of a seeded skill node's config
     /// (description/exclusion/tool_whitelist/max_iterations) and/or guidance
     /// (procedural markdown), restoring it to the currently-compiled
-    /// template. The one path in NodeSpace allowed to override a
+    /// template, whether or not a newer shipped version is pending
+    /// (`nodespace seed pending`). It overrides the
     /// `_seed.config_modified` / `_seed.guidance_modified` durability guard
     /// (ADR-072) — reconciliation on daemon startup never discards a
     /// user-modified aspect on its own. Requires confirmation unless `--yes`
@@ -476,7 +477,7 @@ fn is_bidi_or_invisible_control(c: char) -> bool {
 /// `--json` output is a data structure, not rendered to a screen here, and
 /// mangling raw bytes inside it would make the JSON a lossy copy of what
 /// the graph actually holds.
-fn sanitize_for_terminal(s: &str) -> String {
+pub(crate) fn sanitize_for_terminal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {

@@ -29,12 +29,22 @@ service NodeService {
   rpc UpdateNode(UpdateNodeRequest) returns (NodeResponse);
   rpc DeleteNode(DeleteNodeRequest) returns (DeleteNodeResponse);
   // Explicitly discard a seeded node's user-modified config and/or guidance
-  // aspect, restoring it to the currently-compiled template (ADR-072). The
-  // only path allowed to override `_seed.config_modified` /
-  // `_seed.guidance_modified` — normal reconciliation on daemon startup
+  // aspect, restoring it to the currently-compiled template (ADR-072). It
+  // overrides `_seed.config_modified` / `_seed.guidance_modified` whether or
+  // not a shipped update is pending — normal reconciliation on daemon startup
   // never does this. `dry_run` returns the before-state summary without
   // changing anything, for a CLI confirmation prompt.
   rpc ResetSeedNode(ResetSeedNodeRequest) returns (ResetSeedNodeResponse);
+  // Shipped changes to seeded nodes that startup reconciliation held back
+  // because the user had edited that aspect (ADR-094 §8). Nothing is replaced
+  // until the user chooses, per item and per aspect.
+  rpc ListPendingSeedUpdates(ListPendingSeedUpdatesRequest) returns (PendingSeedUpdateListResponse);
+  // One pending update with the shipped version beside the user's. NOT_FOUND
+  // when nothing is pending for that node and aspect.
+  rpc GetPendingSeedUpdate(PendingSeedUpdateRef) returns (PendingSeedUpdateDetail);
+  // Settle one pending update: keep the user's version, or take the shipped
+  // one. NOT_FOUND when nothing is pending for that node and aspect.
+  rpc ResolvePendingSeedUpdate(ResolvePendingSeedUpdateRequest) returns (ResolvePendingSeedUpdateResponse);
   // Fetch the skills matching a task, each with its procedure, and the
   // schemas relevant to the same task: what an agent outside the app reads
   // before an operation. Ranked by the skill search the in-app agent uses.
@@ -505,6 +515,68 @@ message ResetSeedNodeResponse {
   // for guidance. Empty string when that aspect was not requested.
   string config_summary = 4;
   string guidance_summary = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Pending seed updates
+// ---------------------------------------------------------------------------
+
+message ListPendingSeedUpdatesRequest {}
+
+message PendingSeedUpdate {
+  string node_id = 1;
+  // The seeded node's type: the kind of item ("skill", "play", "query", ...).
+  string node_type = 2;
+  string title = 3;
+  // "config" (the node's name and fields) or "guidance" (its body).
+  string aspect = 4;
+  // Fingerprint of the shipped version that was held back.
+  string shipped_version = 5;
+  // RFC 3339. When the shipped change was first held back.
+  string recorded_at = 6;
+  // RFC 3339. When the user's version of this aspect was last written.
+  string last_edited_at = 7;
+  // Whether this build holds the shipped version, so it can be shown and
+  // taken. False for a seed no compiled table has a row for: such an update
+  // can only be kept.
+  bool shipped_available = 8;
+}
+
+message PendingSeedUpdateListResponse {
+  repeated PendingSeedUpdate updates = 1;
+}
+
+message PendingSeedUpdateRef {
+  string node_id = 1;
+  string aspect = 2;
+}
+
+message PendingSeedUpdateDetail {
+  PendingSeedUpdate update = 1;
+  // Both versions as text: Markdown for guidance, the name and the fields as
+  // JSON for config.
+  string shipped = 2;
+  string yours = 3;
+}
+
+enum SeedUpdateChoice {
+  SEED_UPDATE_CHOICE_UNSPECIFIED = 0;
+  // Keep the user's version. The update stays settled until what ships
+  // changes again.
+  SEED_UPDATE_CHOICE_KEEP_MINE = 1;
+  // Replace the user's version of this aspect with the shipped one.
+  SEED_UPDATE_CHOICE_TAKE_SHIPPED = 2;
+}
+
+message ResolvePendingSeedUpdateRequest {
+  string node_id = 1;
+  string aspect = 2;
+  SeedUpdateChoice choice = 3;
+}
+
+message ResolvePendingSeedUpdateResponse {
+  // The update that was settled, as it stood before the choice.
+  PendingSeedUpdate update = 1;
 }
 
 // ---------------------------------------------------------------------------

@@ -1308,8 +1308,9 @@ pub async fn handle_create_nodes_from_markdown(
 /// durability-guarded per aspect (config vs. guidance — see
 /// `_seed.config_modified` / `_seed.guidance_modified` in
 /// `seed_nodes_from_templates`'s doc comment). An aspect a user has touched
-/// is never auto-replaced by a template-hash change; only an explicit reset
-/// discards it.
+/// is never auto-replaced by a template-hash change: the change is recorded
+/// as pending, and only the user taking it, or an explicit reset, discards
+/// the edit.
 ///
 /// - `System`: an engineering artifact stored as a node (skill descriptions,
 ///   tool definitions, prompt sections). Most seeded content today.
@@ -1449,16 +1450,21 @@ pub fn prepare_nodes_from_template(
     // type-independent path every time.
     let config_version = compute_seed_version(std::slice::from_ref(&nodes[0]));
     let guidance_version = compute_seed_version(&nodes[1..]);
+    //
+    // A template may bring `_seed` keys of its own (a play's `default_rules`,
+    // the rules its reset restores). They are authored content, so they are
+    // part of the config hash above, and the reconciliation keys join them.
     if let Some(root_props) = nodes[0].properties.as_object_mut() {
-        root_props.insert(
-            "_seed".to_string(),
-            serde_json::json!({
-                "key": tmpl.title,
-                "config_version": config_version,
-                "guidance_version": guidance_version,
-                "tier": tmpl.tier.as_str(),
-            }),
-        );
+        let seed = root_props
+            .entry("_seed")
+            .or_insert_with(|| serde_json::json!({}));
+        if !seed.is_object() {
+            *seed = serde_json::json!({});
+        }
+        seed["key"] = serde_json::json!(tmpl.title);
+        seed["config_version"] = serde_json::json!(config_version);
+        seed["guidance_version"] = serde_json::json!(guidance_version);
+        seed["tier"] = serde_json::json!(tmpl.tier.as_str());
     }
 
     Ok(nodes)

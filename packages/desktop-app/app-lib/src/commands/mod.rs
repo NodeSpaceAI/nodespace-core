@@ -14,4 +14,5 @@ pub mod methodology;
 pub mod nodes;
 pub mod onboarding;
 pub mod schemas;
+pub mod seed_updates;
 pub mod settings;

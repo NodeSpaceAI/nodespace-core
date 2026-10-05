@@ -562,7 +562,7 @@ describe('Database Store', () => {
       expect(databaseStore.error).toBeNull();
     });
 
-    it('sends only the routing, refusal-check and window-pin commands', async () => {
+    it('sends only the routing, window-pin, pending-update and refusal-check commands', async () => {
       mockInvoke.mockResolvedValue(undefined);
 
       await databaseStore.switchTo('b');
@@ -573,6 +573,8 @@ describe('Database Store', () => {
       expect(mockInvoke.mock.calls).toEqual([
         ['set_active_database', { id: 'b' }],
         ['pin_window_database', { id: 'b' }],
+        // The new database's built-in updates waiting on a choice: a read.
+        ['list_pending_seed_updates'],
         ['list_conflicts', { input: { status: null, kind: null, limit: 1 } }]
       ]);
     });

@@ -5,13 +5,14 @@
 //! pattern prompts and skills use. It can be inspected, edited, disabled or
 //! reset to its shipped default like any other play; see [`super::seeded`].
 //!
-//! Seeding reconciles per play id rather than gating on "has anything been
-//! seeded", so a Play added after a database's first run still reaches that
-//! database — the same per-item reconciliation `seed_core_schemas_if_needed`
-//! uses. An existing play node is left untouched, so a user's edits survive
-//! startup (ADR-072).
+//! Core Plays are one of the seed tables (ADR-086 §10): each is a
+//! [`NodeTemplate`] reconciled by its fixed id on every open, like a seeded
+//! skill. A Play added in a later release reaches an existing database, a
+//! shipped change replaces a Play nobody edited, and a Play the user edited
+//! is kept, with the shipped change recorded for them to decide on (ADR-072,
+//! ADR-094 §8). A Play has no body, so its one aspect is its config.
 
-use crate::models::Node;
+use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
 use crate::services::error::NodeServiceError;
 use crate::services::NodeService;
 use serde_json::json;
@@ -92,43 +93,53 @@ pub fn parent_task_completion_rules() -> serde_json::Value {
     }])
 }
 
-/// The play node as shipped, carrying its own default for reset (ADR-060 §8).
-fn parent_task_completion_play() -> Node {
+/// The play as shipped, carrying its own default for reset (ADR-060 §8).
+fn parent_task_completion_play() -> NodeTemplate {
     let rules = parent_task_completion_rules();
-    Node::new_with_id(
-        PARENT_TASK_COMPLETION_PLAY_ID.to_string(),
-        "play".to_string(),
-        "Complete a parent task when all its children are done".to_string(),
-        json!({
+    NodeTemplate {
+        id: PARENT_TASK_COMPLETION_PLAY_ID.to_string(),
+        title: "Complete a parent task when all its children are done".to_string(),
+        markdown_content: String::new(),
+        root_node_type: "play".to_string(),
+        root_properties: json!({
             "rules": rules,
+            // Stated, not left to the schema default: a reset or a taken
+            // update replaces what the template names, so every field a
+            // user can change is named here.
+            "enabled": true,
             "description": "When every sub-task of a task is done or cancelled, \
                             mark the parent done. Reactive rules currently fire \
                             only for changes made on this device.",
             "_seed": { "default_rules": rules },
         }),
-    )
+        child_node_type: None,
+        tier: SeedTier::System,
+    }
 }
 
-/// Every Play that ships with the product.
-fn core_plays() -> Vec<Node> {
+/// Every Play that ships with the product: the core play seed table.
+pub fn core_play_templates() -> Vec<NodeTemplate> {
     vec![parent_task_completion_play()]
 }
 
-/// Seed the core Plays, skipping any that already exist.
+/// Reconcile the core Plays with their seed table.
 ///
-/// Idempotent, and reconciled per play id: a Play added in a later release
-/// reaches an existing database on its next open. An existing play node is
-/// never overwritten — a user may have edited or disabled it, and ADR-060 §8's
-/// reset path (not a silent re-seed) is how the shipped default is restored.
-pub async fn seed_core_plays_if_needed(service: &NodeService) -> Result<(), NodeServiceError> {
-    for play in core_plays() {
-        if service.get_node(&play.id).await?.is_some() {
-            continue;
-        }
-        let id = service.create_node(play).await?;
-        tracing::info!(node_id = %id, "🌱 Seeded core Play (ADR-079)");
+/// Runs on every open, through the reconciliation every seeded kind uses
+/// ([`NodeService::seed_nodes_from_templates`]): a missing Play is created
+/// under its fixed id, a shipped change replaces a Play nobody edited, and a
+/// Play the user edited or switched off is never overwritten.
+pub async fn seed_core_plays(service: &NodeService) -> Result<(), NodeServiceError> {
+    let mut groups = Vec::new();
+    for template in core_play_templates() {
+        let nodes = prepare_nodes_from_template(&template).map_err(|e| {
+            NodeServiceError::invalid_update(format!(
+                "core play '{}' does not expand: {e}",
+                template.title
+            ))
+        })?;
+        groups.push(nodes);
     }
-    Ok(())
+    service.seed_nodes_from_templates(groups).await
 }
 
 #[cfg(test)]
@@ -160,11 +171,11 @@ mod tests {
     fn the_seeded_play_carries_its_default_rules() {
         let play = parent_task_completion_play();
         assert!(
-            crate::playbook::seeded::is_seeded_play(&play),
+            crate::models::PlayFields::seeded_in(&play.root_properties),
             "a core Play must be marked as seeded"
         );
         assert_eq!(
-            play.properties["_seed"]["default_rules"], play.properties["rules"],
+            play.root_properties["_seed"]["default_rules"], play.root_properties["rules"],
             "the stored default must match the shipped rules"
         );
     }
@@ -173,10 +184,10 @@ mod tests {
     /// (ADR-090 §1), in its live rules and in its reset target alike.
     #[test]
     fn every_core_play_describes_its_rules_conditions_and_actions() {
-        for play in core_plays() {
+        for play in core_play_templates() {
             for rules in [
-                &play.properties["rules"],
-                &play.properties["_seed"]["default_rules"],
+                &play.root_properties["rules"],
+                &play.root_properties["_seed"]["default_rules"],
             ] {
                 let rules = parse_rules_from_properties(&json!({ "rules": rules }))
                     .unwrap_or_else(|e| panic!("{}: {e}", play.id));
@@ -203,7 +214,10 @@ mod tests {
     /// each is a UUID: no play id is a slug.
     #[test]
     fn the_id_table_matches_the_seeded_plays() {
-        let seeded: Vec<String> = core_plays().into_iter().map(|play| play.id).collect();
+        let seeded: Vec<String> = core_play_templates()
+            .into_iter()
+            .map(|play| play.id)
+            .collect();
         assert_eq!(seeded, CORE_PLAY_IDS);
         for id in CORE_PLAY_IDS {
             assert!(uuid::Uuid::parse_str(id).is_ok(), "{id} is not a UUID");
@@ -247,7 +261,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            seed_core_plays_if_needed(&service).await.unwrap();
+            seed_core_plays(&service).await.unwrap();
 
             let stored = service
                 .get_node(PARENT_TASK_COMPLETION_PLAY_ID)

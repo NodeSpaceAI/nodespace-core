@@ -62,18 +62,21 @@ use crate::nodespace::{
     GetRootsRequest, GetSchemaDefinitionRequest, GetSkillRequest, GetWorkflowStateRequest,
     GetWorkflowStateResponse, InstallMethodologyRequest, InstallMethodologyResponse,
     ListConflictsRequest, ListMethodologiesRequest, ListMethodologiesResponse,
-    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
-    MergeNodesRequest, MergeNodesResponse, Methodology, MoveChildrenToParentRequest,
-    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
-    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
-    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
-    OptionalStringClear, OptionalTimestampClear, PreviewMergeRequest, PreviewMergeResponse,
-    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
+    ListPendingSeedUpdatesRequest, MentionAutocompleteRequest, MentionIdsResponse, MentionResponse,
+    MentionTargetRequest, MergeNodesRequest, MergeNodesResponse, Methodology,
+    MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
+    NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse, NodeReference,
+    NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
+    OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
+    PendingSeedUpdate, PendingSeedUpdateDetail, PendingSeedUpdateListResponse,
+    PendingSeedUpdateRef, PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest,
+    RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
     RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
     ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
-    SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest, SchemaResponse,
-    SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest, SkillGuidanceEntry,
-    SkillGuidanceRequest, SkillGuidanceResponse, ToolCommandEntry, UpdateCollectionNodeRequest,
+    ResolvePendingSeedUpdateRequest, ResolvePendingSeedUpdateResponse, SchemaGuidanceEntry,
+    SchemaListResponse, SchemaParamsRequest, SchemaResponse, SchemaResultResponse, SearchRequest,
+    SeedUpdateChoice, SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest,
+    SkillGuidanceResponse, ToolCommandEntry, UpdateCollectionNodeRequest,
     UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
     UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdatePlayNodeRequest,
     UpdateProjectNodeRequest, UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
@@ -772,6 +775,107 @@ impl GrpcNodeService for NodeServiceImpl {
             guidance_reset,
             config_summary,
             guidance_summary,
+        }))
+    }
+
+    async fn list_pending_seed_updates(
+        &self,
+        request: Request<ListPendingSeedUpdatesRequest>,
+    ) -> Result<Response<PendingSeedUpdateListResponse>, Status> {
+        let this = self.route(&request).await?;
+        let updates = this
+            .node_service
+            .list_pending_seed_updates()
+            .await
+            .map_err(service_error_to_status)?;
+        let compiled: std::collections::HashSet<String> = compiled_seed_templates()
+            .map(|template| template.id)
+            .collect();
+        Ok(Response::new(PendingSeedUpdateListResponse {
+            updates: updates
+                .into_iter()
+                .map(|update| {
+                    let shipped_available = compiled.contains(&update.node_id);
+                    pending_seed_update_to_proto(update, shipped_available)
+                })
+                .collect(),
+        }))
+    }
+
+    async fn get_pending_seed_update(
+        &self,
+        request: Request<PendingSeedUpdateRef>,
+    ) -> Result<Response<PendingSeedUpdateDetail>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+        let aspect = parse_seed_aspect(&req.aspect).map_err(|status| *status)?;
+
+        // Checked before the template is resolved, so "nothing pending" is
+        // told apart from "pending, but this build ships no such seed".
+        if this
+            .node_service
+            .get_pending_seed_update(&req.node_id, aspect)
+            .await
+            .map_err(service_error_to_status)?
+            .is_none()
+        {
+            return Err(no_pending_seed_update(&req.node_id, aspect));
+        }
+        let template = prepared_seed_template(&req.node_id).map_err(|status| *status)?;
+        let comparison = this
+            .node_service
+            .compare_pending_seed_update(&template, aspect)
+            .await
+            .map_err(service_error_to_status)?
+            .ok_or_else(|| no_pending_seed_update(&req.node_id, aspect))?;
+
+        Ok(Response::new(PendingSeedUpdateDetail {
+            update: Some(pending_seed_update_to_proto(comparison.update, true)),
+            shipped: comparison.shipped,
+            yours: comparison.yours,
+        }))
+    }
+
+    async fn resolve_pending_seed_update(
+        &self,
+        request: Request<ResolvePendingSeedUpdateRequest>,
+    ) -> Result<Response<ResolvePendingSeedUpdateResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+        let aspect = parse_seed_aspect(&req.aspect).map_err(|status| *status)?;
+        let choice = SeedUpdateChoice::try_from(req.choice)
+            .ok()
+            .filter(|choice| *choice != SeedUpdateChoice::Unspecified)
+            .ok_or_else(|| Status::invalid_argument("choice must be KEEP_MINE or TAKE_SHIPPED"))?;
+
+        let update = this
+            .node_service
+            .get_pending_seed_update(&req.node_id, aspect)
+            .await
+            .map_err(service_error_to_status)?
+            .ok_or_else(|| no_pending_seed_update(&req.node_id, aspect))?;
+
+        let settled = match choice {
+            SeedUpdateChoice::TakeShipped => {
+                let template = prepared_seed_template(&req.node_id).map_err(|status| *status)?;
+                this.node_service
+                    .take_seed_update(&template, aspect)
+                    .await
+                    .map_err(service_error_to_status)?
+            }
+            _ => this
+                .node_service
+                .keep_seed_update(&req.node_id, aspect)
+                .await
+                .map_err(service_error_to_status)?,
+        };
+        if !settled {
+            return Err(no_pending_seed_update(&req.node_id, aspect));
+        }
+
+        let shipped_available = compiled_seed_templates().any(|t| t.id == req.node_id);
+        Ok(Response::new(ResolvePendingSeedUpdateResponse {
+            update: Some(pending_seed_update_to_proto(update, shipped_available)),
         }))
     }
 
@@ -2907,12 +3011,71 @@ fn resolve_seed_template(
     find_unique_seed_template(compiled_seed_templates(), node_type, seed_key)
 }
 
-/// Every compiled seed template, in the order `seed_agent_nodes` seeds them.
+/// Every compiled seed template: the tables `seed_agent_nodes` seeds, in its
+/// order, then the core plays `NodeService::new` seeds.
 fn compiled_seed_templates() -> impl Iterator<Item = nodespace_core::markdown::NodeTemplate> {
     nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
         .into_iter()
         .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
         .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
+        .chain(nodespace_core::playbook::core_plays::core_play_templates())
+}
+
+/// The compiled seed template whose node is `node_id`, expanded. A seeded
+/// node's identity is its fixed id (ADR-086 §10), so the id names its
+/// template.
+///
+/// `FAILED_PRECONDITION` when no compiled table holds that id: the shipped
+/// version of such a seed cannot be shown or taken by this build. Keeping the
+/// user's version needs no template and is still possible.
+///
+/// The error is boxed for `clippy::result_large_err`, as in
+/// [`client_id_header`].
+fn prepared_seed_template(
+    node_id: &str,
+) -> Result<Vec<nodespace_core::markdown::PreparedNode>, Box<Status>> {
+    let template = compiled_seed_templates()
+        .find(|template| template.id == node_id)
+        .ok_or_else(|| {
+            Box::new(Status::failed_precondition(format!(
+                "this build ships no seed for node '{node_id}', so its shipped version cannot \
+                 be shown or taken"
+            )))
+        })?;
+    nodespace_core::markdown::prepare_nodes_from_template(&template).map_err(|e| {
+        Box::new(Status::internal(format!(
+            "Failed to expand seed template '{}': {e}",
+            template.title
+        )))
+    })
+}
+
+fn parse_seed_aspect(aspect: &str) -> Result<nodespace_core::models::SeedAspect, Box<Status>> {
+    aspect
+        .parse()
+        .map_err(|e: String| Box::new(Status::invalid_argument(e)))
+}
+
+fn no_pending_seed_update(node_id: &str, aspect: nodespace_core::models::SeedAspect) -> Status {
+    Status::not_found(format!(
+        "no shipped update is pending for the {aspect} of node '{node_id}'"
+    ))
+}
+
+fn pending_seed_update_to_proto(
+    update: nodespace_core::models::PendingSeedUpdate,
+    shipped_available: bool,
+) -> PendingSeedUpdate {
+    PendingSeedUpdate {
+        node_id: update.node_id,
+        node_type: update.node_type,
+        title: update.title,
+        aspect: update.aspect.as_str().to_string(),
+        shipped_version: update.shipped_version,
+        recorded_at: update.recorded_at.to_rfc3339(),
+        last_edited_at: update.last_edited_at.to_rfc3339(),
+        shipped_available,
+    }
 }
 
 /// Pick the single template matching `(node_type, seed_key)`. More than one
@@ -3696,6 +3859,72 @@ mod tests {
     /// SAME seeded PersonNode a direct core query sees — proves the proto
     /// conversion (node_to_proto / OptionalNodeResponse) round-trips, not
     /// just the already-covered core logic.
+    /// A pending update reports whether this build holds its shipped version:
+    /// true for a seed in a compiled table, false for one in none, which can
+    /// then only be kept.
+    #[tokio::test]
+    async fn pending_seed_updates_report_whether_the_shipped_version_is_compiled_in() {
+        use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate};
+        use nodespace_core::models::{SeedAspect, SkillFields};
+        use nodespace_core::playbook::core_plays::PARENT_TASK_COMPLETION_PLAY_ID;
+
+        let (svc, _tmp) = make_service().await;
+        let uncompiled_id = "3d2b7c1e-5f4a-4e8b-9c6d-1a2b3c4d5e6f";
+        let uncompiled = NodeTemplate::skill(
+            uncompiled_id,
+            "A Workflow's Overview",
+            SkillFields::default(),
+            "Body.",
+        );
+        svc.node_service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&uncompiled).unwrap()])
+            .await
+            .unwrap();
+        for (node_id, aspect) in [
+            (PARENT_TASK_COMPLETION_PLAY_ID, SeedAspect::Config),
+            (uncompiled_id, SeedAspect::Guidance),
+        ] {
+            svc.node_service
+                .store()
+                .record_pending_seed_update(node_id, aspect, "a-newer-fingerprint")
+                .await
+                .unwrap();
+        }
+
+        let updates = svc
+            .list_pending_seed_updates(Request::new(ListPendingSeedUpdatesRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .updates;
+        let available = |node_id: &str| {
+            updates
+                .iter()
+                .find(|u| u.node_id == node_id)
+                .unwrap_or_else(|| panic!("{node_id} is pending: {updates:?}"))
+                .shipped_available
+        };
+        assert!(available(PARENT_TASK_COMPLETION_PLAY_ID));
+        assert!(!available(uncompiled_id));
+
+        // Showing or taking it is refused; keeping it is not.
+        let show = svc
+            .get_pending_seed_update(Request::new(PendingSeedUpdateRef {
+                node_id: uncompiled_id.to_string(),
+                aspect: "guidance".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(show.code(), tonic::Code::FailedPrecondition);
+        svc.resolve_pending_seed_update(Request::new(ResolvePendingSeedUpdateRequest {
+            node_id: uncompiled_id.to_string(),
+            aspect: "guidance".to_string(),
+            choice: SeedUpdateChoice::KeepMine as i32,
+        }))
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn get_local_person_rpc_resolves_the_seeded_owner() {
         let (svc, _tmp) = make_service().await;

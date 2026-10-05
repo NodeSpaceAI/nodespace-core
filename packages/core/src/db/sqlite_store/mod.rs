@@ -821,6 +821,7 @@ pub(crate) use relationship_paths::path_reaches_condition;
 pub use relationship_paths::PathReach;
 mod relationships;
 mod search;
+mod seed_updates;
 mod structure;
 pub(crate) use structure::Placed;
 pub(crate) mod tx;

@@ -16,6 +16,7 @@ pub mod core_schemas;
 pub mod embedding;
 mod node;
 pub mod schema;
+pub mod seed_update;
 pub mod time;
 
 // Type-safe node wrappers
@@ -34,6 +35,7 @@ pub use nodespace_types::{
     AI_CHAT_WROTE, NODESPACE_AGENT,
 };
 pub use schema::{RelationshipDirection, SchemaField, SchemaFieldType, SchemaProtectionLevel};
+pub use seed_update::{PendingSeedUpdate, PendingSeedUpdateRow, SeedAspect};
 pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers

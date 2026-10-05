@@ -17,6 +17,7 @@
   import CollectionSubPanel from './collection-sub-panel.svelte';
   import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import { databaseStore } from '$lib/stores/database.svelte';
+  import { seedUpdatesStore } from '$lib/stores/seed-updates.svelte';
   import { onMount, onDestroy } from 'svelte';
   import { schemasStore, schemasData } from '$lib/stores/schemas.svelte';
   import { aiChatsData } from '$lib/stores/ai-chats.svelte';
@@ -50,12 +51,19 @@
   }
 
   // Keyed by nav item id. Settings carries the missing-database alert because
-  // Settings → Database is where the user resolves it.
+  // Settings → Database is where the user resolves it, and otherwise the
+  // shipped updates waiting on a choice in Settings → Built-in updates.
+  let pendingSeedUpdates = $derived(seedUpdatesStore.updates.length);
   let navBadges = $derived<Record<string, NavBadge | undefined>>({
     settings:
       databaseStore.activeDatabase?.status === 'missing'
         ? { label: 'Active database is missing', settingsCategory: 'database' }
-        : undefined
+        : pendingSeedUpdates > 0
+          ? {
+              label: `${pendingSeedUpdates} built-in update${pendingSeedUpdates === 1 ? '' : 's'} to review`,
+              settingsCategory: 'built-in-updates'
+            }
+          : undefined
   });
 
   // Collections expanded state from layout store (persisted)

@@ -12,6 +12,7 @@ pub mod query;
 pub mod relationship;
 pub mod schema;
 pub mod search;
+pub mod seed;
 pub mod session;
 pub mod skill;
 pub mod uninstall;

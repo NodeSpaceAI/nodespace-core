@@ -174,6 +174,12 @@ pub enum Command {
         #[command(subcommand)]
         action: commands::conflicts::ConflictsAction,
     },
+    /// Review shipped changes to built-in items you have edited (pending,
+    /// show, take, keep).
+    Seed {
+        #[command(subcommand)]
+        action: commands::seed::SeedAction,
+    },
     /// Manage PTY agent sessions (launch, attach, list, kill).
     Session {
         #[command(subcommand)]
@@ -645,6 +651,11 @@ async fn dispatch(cli: Cli) -> Result<()> {
             let (interceptor, _) = resolve_routing(&sock, selection).await?;
             let mut client = connect(&sock, interceptor).await?;
             commands::conflicts::run(&mut client, action, json).await
+        }
+        Command::Seed { action } => {
+            let (interceptor, _) = resolve_routing(&sock, selection).await?;
+            let mut client = connect(&sock, interceptor).await?;
+            commands::seed::run(&mut client, action, json).await
         }
         Command::Session { action } => {
             let (interceptor, _) = resolve_routing(&sock, selection).await?;

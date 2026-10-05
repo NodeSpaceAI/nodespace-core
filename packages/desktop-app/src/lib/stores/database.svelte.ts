@@ -9,6 +9,7 @@ import { aiChatsData } from '$lib/stores/ai-chats.svelte';
 import { playsData } from '$lib/stores/plays.svelte';
 import { savedQueriesData } from '$lib/stores/saved-queries.svelte';
 import { conflictsStore } from '$lib/stores/conflicts.svelte';
+import { seedUpdatesStore } from '$lib/stores/seed-updates.svelte';
 import { resyncSchemaPluginsForDatabaseSwitch } from '$lib/plugins/schema-plugin-loader';
 import { notifyDatabaseActivated } from '$lib/plugins/extension-lifecycle';
 import {
@@ -576,6 +577,8 @@ class DatabaseStore {
     // The conflict journal is per-database too (ADR-068): drop the previous
     // database's records and any load still in flight against it.
     conflictsStore.invalidateForDatabaseSwitch();
+    // So are the shipped updates waiting on the user's choice.
+    seedUpdatesStore.invalidateForDatabaseSwitch();
   }
 
   /**
@@ -589,6 +592,7 @@ class DatabaseStore {
     playsData.loadPlays();
     aiChatsData.loadAiChats();
     void conflictsStore.load();
+    void seedUpdatesStore.load();
     // Re-sync the schema plugin registry (hasTitleTemplate/titleTemplate)
     // against the newly-active database's schemas — otherwise a custom type
     // keeps resolving titles via the previous database's template (or, for a
