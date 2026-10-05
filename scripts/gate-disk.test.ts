@@ -17,6 +17,7 @@ import {
   listIncrementalDirs,
   MIN_FREE_GIB,
   pruneIncremental,
+  removeUnlessUsedSince,
   selectSuperseded,
   toolOutput,
   WORKTREE_INCREMENTAL,
@@ -94,19 +95,45 @@ describe("selectSuperseded", () => {
     expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["core-old"]);
   });
 
+  test("measures each crate from its own newest compile, so a crate nothing changed keeps its current directories", () => {
+    // Set A built ten hours ago; since then a round recompiled only core.
+    const dirs = [dir("core-a", 10), dir("types-a", 10), dir("daemon-a", 10.1), dir("core-b", 0.1)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["core-a"]);
+  });
+
+  test("reads the crate from a name whose crate part has dashes or underscores", () => {
+    const dirs = [dir("nodespace_core-0j8syoplaewcn", 5), dir("nodespace_core-3pnxa8lpia5a9", 0.1), dir("nodespace_core_it-2065x6qla1y24", 5)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["nodespace_core-0j8syoplaewcn"]);
+  });
+
+  test("keeps a directory exactly the period old, and a crate's only directory however old", () => {
+    expect(selectSuperseded([dir("core-edge", 2), dir("core-live", 0)], TWO_HOURS, NOW)).toEqual([]);
+    expect(selectSuperseded([dir("core-only", 500)], TWO_HOURS, NOW)).toEqual([]);
+  });
+
   test("past the budget, removes the oldest of what the age rule kept until it fits", () => {
-    const dirs = [dir("set3", 0.1, 12), dir("set1", 1.5, 12), dir("set2", 1, 12), dir("old", 6, 12)];
-    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["old", "set1"]);
+    const dirs = [dir("core-set3", 0.1, 12), dir("core-set1", 1.5, 12), dir("core-set2", 1, 12), dir("core-old", 6, 12)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["core-old", "core-set1"]);
+  });
+
+  test("the budget takes the oldest whichever crate it belongs to, and enough of a tie to fit", () => {
+    const dirs = [dir("types-a", 1, 20), dir("core-a", 1, 20), dir("daemon-a", 1, 20)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["types-a", "core-a"]);
   });
 
   test("keeps everything within the period and the budget", () => {
-    const dirs = [dir("set1", 1.5, 10), dir("set2", 1, 10), dir("set3", 0.1, 10)];
+    const dirs = [dir("core-set1", 1.5, 10), dir("core-set2", 1, 10), dir("core-set3", 0.1, 10)];
     expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual([]);
   });
 
-  test("applies only the age rule when a size is unknown", () => {
-    const dirs = [dir("set3", 0.1, 40), dir("set2", 1, null), dir("old", 6, 40)];
-    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["old"]);
+  test("applies only the age rule when a size among the kept is unknown", () => {
+    const dirs = [dir("core-set3", 0.1, 40), dir("core-set2", 1, null), dir("core-old", 6, 40)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["core-old"]);
+  });
+
+  test("still applies the budget when only a superseded directory's size is unknown", () => {
+    const dirs = [dir("core-set3", 0.1, 20), dir("core-set2", 1, 20), dir("core-old", 6, null)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["core-old", "core-set2"]);
   });
 
   test("selects nothing from an empty listing", () => {
@@ -141,16 +168,40 @@ describe("listIncrementalDirs", () => {
   });
 });
 
+describe("removeUnlessUsedSince", () => {
+  test("removes a directory no compile has used since it was listed", () => {
+    const dir = crateDir("nodespace_core-0j8syoplaewcn", 5);
+    expect(removeUnlessUsedSince(dir, NOW - 5 * HOUR)).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  test("keeps a directory a compile opened after it was listed", () => {
+    const dir = crateDir("nodespace_core-0j8syoplaewcn", 5);
+    const listed = NOW - 5 * HOUR;
+    const working = compileUnderWay(dir, 5);
+
+    expect(removeUnlessUsedSince(dir, listed)).toBe(false);
+    expect(existsSync(working)).toBe(true);
+  });
+
+  test("reports a directory that has gone as not removed", () => {
+    expect(removeUnlessUsedSince(join(incremental, "nodespace_core-gone"), NOW)).toBe(false);
+  });
+});
+
 describe("pruneIncremental", () => {
   test("removes the superseded directories and keeps the rest", () => {
     const stale = crateDir("nodespace_core-0j8syoplaewcn", 5);
     const alsoStale = crateDir("nodespace_types-2065x6qla1y24", 30);
     const live = crateDir("nodespace_core-3pnxa8lpia5a9", 1);
+    const unchangedCrate = crateDir("nodespace_agent-1b9p21sqfl6v9", 30);
+    crateDir("nodespace_types-2g5jwlt1mzz7q", 1);
 
     const result = pruneIncremental(target, TWO_HOURS, NOW);
 
     expect(result.removed).toBe(2);
-    expect(result.kept).toBe(1);
+    expect(result.kept).toBe(3);
+    expect(existsSync(unchangedCrate)).toBe(true);
     expect(result.freedGiB).toBeGreaterThan(0);
     expect(result.keptGiB).toBeGreaterThan(0);
     expect(existsSync(stale)).toBe(false);
@@ -218,9 +269,9 @@ describe("formatPruneResult", () => {
     );
   });
 
-  test("still reports the counts when the sizes couldn't be measured", () => {
+  test("reports the counts, and that the budget wasn't applied, when the sizes couldn't be measured", () => {
     expect(formatPruneResult({ removed: 1, kept: 1, freedGiB: null, keptGiB: null })).toBe(
-      "  incremental cache: removed 1 directory; 1 directory kept"
+      "  incremental cache: removed 1 directory; 1 directory kept; sizes unavailable, so only the age rule applied"
     );
   });
 
@@ -272,6 +323,13 @@ describe("system tools", () => {
   test("sizes each directory with du", () => {
     const dir = crateDir("nodespace_core-0j8syoplaewcn", 1);
     expect(diskUsageKiB([dir]).get(dir)).toBeGreaterThan(0);
+  });
+
+  test("keeps the sizes du measured when one path has gone and du exits non-zero", () => {
+    const dir = crateDir("nodespace_core-0j8syoplaewcn", 1);
+    const sizes = diskUsageKiB([dir, join(incremental, "nodespace_core-gone")]);
+    expect(sizes.size).toBe(1);
+    expect(sizes.get(dir)).toBeGreaterThan(0);
   });
 
   test("sizes are unknown, not zero, on a machine with no du", () => {

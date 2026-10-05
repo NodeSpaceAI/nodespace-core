@@ -28,7 +28,7 @@ export const MIN_FREE_GIB = 20;
 export interface PruneLimits {
   /**
    * A directory is superseded once it was last compiled this long before the
-   * newest compile in the same target/. Measured from the newest compile, not
+   * newest compile of its crate in the same target/. Measured from that, not
    * from the clock, so a checkout that sat idle keeps its latest directories.
    */
   maxAgeMs: number;
@@ -38,7 +38,7 @@ export interface PruneLimits {
 
 /**
  * The gate checkout's limits. A stack that changes the hash's inputs builds a
- * whole new set of directories, about 8 GiB for the workspace, and that
+ * whole new set of directories, 8 to 10 GiB for the workspace, and that
  * checkout built five sets in four hours. Two hours keeps the sets of the
  * last few rounds, which a round that returns to main's inputs reuses; the
  * budget holds three sets and caps a busier day.
@@ -97,12 +97,21 @@ export function toolOutput(argv: string[]): string | null {
   }
 }
 
-/** Disk used by each of `paths` in KiB, read with `du`. Empty when `du` can't say. */
+/**
+ * Disk used by each of `paths` in KiB, read with `du`. A path `du` couldn't
+ * size is left out, and all of them when it isn't installed. Its exit code is
+ * not read: `du` exits non-zero when one file vanishes while it walks, as a
+ * build's do, and still prints every size it measured.
+ */
 export function diskUsageKiB(paths: string[], du: string = "du"): Map<string, number> {
   const sizes = new Map<string, number>();
   for (let i = 0; i < paths.length; i += 200) {
-    const output = toolOutput([du, "-sk", "--", ...paths.slice(i, i + 200)]);
-    if (output === null) return new Map();
+    let output: string;
+    try {
+      output = Bun.spawnSync([du, "-sk", "--", ...paths.slice(i, i + 200)]).stdout.toString();
+    } catch {
+      return new Map();
+    }
     for (const line of output.split("\n")) {
       const tab = line.indexOf("\t");
       const kib = Number(line.slice(0, tab));
@@ -135,20 +144,34 @@ export function listIncrementalDirs(incrementalDir: string): IncrementalDir[] {
   return dirs;
 }
 
+/** The crate a directory named `<crate>-<hash>` belongs to. */
+function crateOf(name: string): string {
+  return name.replace(/-[^-]*$/, "");
+}
+
 /**
- * The directories to remove, oldest first. Pure, for testing.
+ * The directories to remove. Pure, for testing.
  *
  * First the superseded ones: last compiled more than `maxAgeMs` before the
- * newest compile (or before `nowMs`, when a directory is dated in the
- * future). Then, while the rest exceeds the budget, the oldest of the rest.
- * The budget is skipped when any size is unknown.
+ * newest compile of the same crate (or before `nowMs`, when that is dated in
+ * the future). Each crate is measured against its own newest compile, because
+ * a crate nothing has changed is not compiled at all: measured against the
+ * newest compile of any crate, its current directories would age out while
+ * the crates around it were rebuilt. Then, while the rest exceeds the budget,
+ * the oldest of the rest, whichever crate it belongs to. The budget is
+ * skipped when a size among the rest is unknown.
  */
 export function selectSuperseded(dirs: IncrementalDir[], limits: PruneLimits, nowMs: number): string[] {
-  if (dirs.length === 0) return [];
-  const newest = Math.min(nowMs, Math.max(...dirs.map((dir) => dir.lastUsedMs)));
+  const newestOf = new Map<string, number>();
+  for (const dir of dirs) {
+    const crate = crateOf(dir.name);
+    newestOf.set(crate, Math.max(newestOf.get(crate) ?? dir.lastUsedMs, dir.lastUsedMs));
+  }
+  const superseded = (dir: IncrementalDir) =>
+    Math.min(nowMs, newestOf.get(crateOf(dir.name)) ?? nowMs) - dir.lastUsedMs > limits.maxAgeMs;
   const oldestFirst = [...dirs].sort((a, b) => a.lastUsedMs - b.lastUsedMs);
-  const selected = oldestFirst.filter((dir) => newest - dir.lastUsedMs > limits.maxAgeMs);
-  const rest = oldestFirst.slice(selected.length);
+  const selected = oldestFirst.filter(superseded);
+  const rest = oldestFirst.filter((dir) => !superseded(dir));
   if (rest.every((dir) => dir.kib !== null)) {
     let restKiB = rest.reduce((sum, dir) => sum + (dir.kib ?? 0), 0);
     for (const dir of rest) {
@@ -158,6 +181,23 @@ export function selectSuperseded(dirs: IncrementalDir[], limits: PruneLimits, no
     }
   }
   return selected.map((dir) => dir.name);
+}
+
+/**
+ * Removes the crate directory at `path` unless a compile has used it since it
+ * was listed with `listedLastUsedMs`, and says whether it did. The directory
+ * is dated again here, right before the removal, because a cargo build
+ * started by hand takes no machine slot and may have opened it meanwhile. One
+ * that can't be removed is left for the next run.
+ */
+export function removeUnlessUsedSince(path: string, listedLastUsedMs: number): boolean {
+  if (lastUsedMs(path) !== listedLastUsedMs) return false;
+  try {
+    rmSync(path, { recursive: true, force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface PruneResult {
@@ -175,10 +215,6 @@ export interface PruneResult {
  * fingerprints, not by this cache. The cost of removing a directory that was
  * still current is one compile of that crate from scratch, the next time it
  * changes.
- *
- * A directory is dated again just before it is removed, and kept if a compile
- * has used it since the listing: a cargo build started by hand takes no
- * machine slot. One that can't be removed is left and counted as kept.
  */
 export function pruneIncremental(targetDir: string, limits: PruneLimits, nowMs: number = Date.now()): PruneResult {
   const incrementalDir = join(targetDir, "debug", "incremental");
@@ -189,18 +225,12 @@ export function pruneIncremental(targetDir: string, limits: PruneLimits, nowMs: 
   let freedKiB = 0;
   let keptKiB = 0;
   for (const dir of dirs) {
-    const path = join(incrementalDir, dir.name);
-    if (selected.has(dir.name) && lastUsedMs(path) === dir.lastUsedMs) {
-      try {
-        rmSync(path, { recursive: true, force: true });
-        removed++;
-        freedKiB += dir.kib ?? 0;
-        continue;
-      } catch {
-        // Left for the next run.
-      }
+    if (selected.has(dir.name) && removeUnlessUsedSince(join(incrementalDir, dir.name), dir.lastUsedMs)) {
+      removed++;
+      freedKiB += dir.kib ?? 0;
+    } else {
+      keptKiB += dir.kib ?? 0;
     }
-    keptKiB += dir.kib ?? 0;
   }
   const measured = dirs.every((dir) => dir.kib !== null);
   return {
@@ -215,7 +245,9 @@ export function pruneIncremental(targetDir: string, limits: PruneLimits, nowMs: 
 export function formatPruneResult(result: PruneResult): string {
   const size = (gib: number | null) => (gib === null ? "" : ` (${gib.toFixed(1)} GiB)`);
   const dirs = (count: number) => `${count} ${count === 1 ? "directory" : "directories"}`;
-  const kept = `${dirs(result.kept)} kept${size(result.keptGiB)}`;
+  // Said, because without sizes the budget wasn't applied.
+  const unsized = result.keptGiB === null ? "; sizes unavailable, so only the age rule applied" : "";
+  const kept = `${dirs(result.kept)} kept${size(result.keptGiB)}${unsized}`;
   if (result.removed === 0) return `  incremental cache: nothing to remove; ${kept}`;
   return `  incremental cache: removed ${dirs(result.removed)}${size(result.freedGiB)}; ${kept}`;
 }
