@@ -340,6 +340,7 @@ jobs:
       # shipped without the embedding model with no build-time signal. Runs before the
       # sidecar build (rather than just before `Build Tauri app`) so a flaky ~146MB
       # download fails fast instead of only surfacing after paying for a full Rust build.
+      # The same step then verifies the pinned SHA-256 (download-models.ts --verify-only).
       - name: Download embedding model for bundling (Windows)
         if: steps.filter.outputs.skip != 'true' && matrix.platform == 'windows-latest'
         shell: bash

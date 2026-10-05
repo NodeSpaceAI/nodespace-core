@@ -7,7 +7,7 @@
 // step after the download and before the build) and behaviourally (the verify
 // mode accepts the pinned bytes and rejects anything else).
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -46,7 +46,11 @@ describe("release workflow model digest", () => {
       const steps = job.steps ?? [];
       test("every download step verifies the model in the same step, failing on mismatch", () => {
         for (const step of steps.filter(downloads)) {
-          const run = step.run ?? "";
+          // Ignore comment lines so a commented-out verify cannot satisfy the check.
+          const run = (step.run ?? "")
+            .split("\n")
+            .filter((line) => !line.trim().startsWith("#"))
+            .join("\n");
           expect(run).toMatch(VERIFY);
           // The verify must follow the download and run under errexit semantics:
           // a bare multi-line `run` stops at the first failing command.
@@ -63,8 +67,8 @@ describe("download-models --verify-only", () => {
   const dir = mkdtempSync(join(tmpdir(), "model-digest-"));
   const run = (bytes: string | null) => {
     const models = join(dir, "packages/desktop-app/src-tauri/resources/models");
-    Bun.spawnSync(["mkdir", "-p", models]);
-    Bun.spawnSync(["rm", "-f", join(models, MODEL_FILE)]);
+    mkdirSync(models, { recursive: true });
+    rmSync(join(models, MODEL_FILE), { force: true });
     if (bytes !== null) writeFileSync(join(models, MODEL_FILE), bytes);
     return Bun.spawnSync(["bun", join(REPO, "scripts/download-models.ts"), "--bundle", "--verify-only"], {
       cwd: dir,
@@ -91,6 +95,9 @@ describe("download-models --verify-only", () => {
     writeFileSync(f, "abc");
     expect(await mod.sha256File(f)).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     expect(mod.MODEL_SHA256).toMatch(/^[0-9a-f]{64}$/);
+    const abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    await mod.verifyStagedModel(f, abc);
+    await expect(mod.verifyStagedModel(f, "0".repeat(64))).rejects.toThrow("integrity check FAILED");
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));

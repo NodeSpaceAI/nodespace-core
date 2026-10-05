@@ -58,14 +58,14 @@ const MODEL_PATH = join(MODELS_DIR, MODEL_FILE);
  * workflow's `gh release download`). Throws, never repairs: a mismatch must
  * fail the build rather than silently re-fetch from elsewhere.
  */
-export async function verifyStagedModel(path: string): Promise<void> {
+export async function verifyStagedModel(path: string, expected: string = MODEL_SHA256): Promise<void> {
   if (!existsSync(path)) {
     throw new Error(`❌ Model integrity check FAILED: ${path} does not exist.`);
   }
   const digest = await sha256File(path);
-  if (digest !== MODEL_SHA256) {
+  if (digest !== expected) {
     throw new Error(
-      `❌ Model integrity check FAILED: expected SHA-256 ${MODEL_SHA256}, got ${digest} for ${path}. ` +
+      `❌ Model integrity check FAILED: expected SHA-256 ${expected}, got ${digest} for ${path}. ` +
         `Refusing to bundle an unverified model.`,
     );
   }
