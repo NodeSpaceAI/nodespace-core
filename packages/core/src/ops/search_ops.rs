@@ -4,6 +4,7 @@
 //! Handles collection resolution, scope filtering, lifecycle filtering,
 //! over-fetching, and optional markdown inlining.
 
+use crate::db::KnowledgeListing;
 use crate::models::{Node, NodeFilter, NodeQuery, OrderBy};
 use crate::ops::OpsError;
 use crate::services::{
@@ -14,13 +15,11 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// Safety cap on how many nodes are pulled from the DB for an "enumerate"
-/// query (see [`normalize_enumerate_query`]) before service-layer filters
-/// (scope/archived/collection/node_types/property_filters) and `limit` are
-/// applied — mirrors `semantic_search_nodes`'s over-fetch behavior, but an
-/// enumerate has no similarity ranking to over-fetch against, so this is a
-/// flat cap instead of a multiple of `limit`.
-const ENUMERATE_FETCH_CAP: usize = 1000;
+/// The most rows one page of an "enumerate" query (see
+/// [`normalize_enumerate_query`]) or of a keyword search reads from the DB.
+/// It bounds a single statement, not the listing: [`enumerate_nodes`] reads
+/// further pages while it still has rows to find.
+const ENUMERATE_PAGE_CAP: usize = 1000;
 
 /// Recognize the query spellings that mean "list everything (of this type)"
 /// rather than a literal search term, so `search_nodes` (agent path) and
@@ -255,38 +254,33 @@ async fn resolve_type_chains_for_filters(
 ///
 /// Returns `(Node, similarity)` pairs with a synthetic `similarity` of `1.0`
 /// so the result shape matches `semantic_search_nodes` and can flow through
-/// the same downstream scope/collection/archived filtering, graph_boost, and
-/// output building in [`search_semantic`].
+/// the same downstream graph_boost and output building in
+/// [`search_semantic`].
 ///
 /// Every entry in `filters.node_types` is pushed down to the DB query as a
-/// separate `with_node_type` fetch (each independently capped and merged) —
-/// not fetched unfiltered up to a shared cap and post-filtered by type. A
-/// shared-cap-then-post-filter approach silently undercounts once the total
-/// node count (across *all* types) exceeds the cap: the very "silent wrong
-/// count" failure class this function exists to eliminate, just relocated to
-/// a multi-type caller instead of a `"*"` query. `property_filters`, which
-/// has no DB-level pushdown here, is still applied as a post-filter via
-/// [`SearchNodeFilters::matches`], matching how `semantic_search_nodes`
-/// applies the same filters.
+/// separate `with_node_type` fetch (each independently limited and merged) —
+/// not fetched unfiltered up to a shared cap and post-filtered by type, which
+/// undercounts once the total node count across all types exceeds the cap.
 ///
-/// A listing is the most recently modified nodes first. Two things narrow it
-/// before `limit` counts anything, so neither leaves a page short of nodes
-/// that exist:
+/// A listing is the most recently modified nodes first. `limit` counts only
+/// nodes this function returns, so none of the following leaves a page short
+/// of nodes that exist. (A scope other than `Knowledge` is still applied by
+/// [`search_semantic`], after the fetch.)
 ///
 /// - `scope.member_ids` confines it to a collection. The members are fetched
-///   by id rather than picked out of a capped slice of the whole table, which
-///   a collection's members may not be in at all.
-/// - `scope.knowledge_only` leaves out a knowledge-type node that sits under
-///   a root the `Knowledge` scope does not return: the paragraphs of a skill
-///   or of agent guidance are `text` nodes, but they are that root's body,
-///   not the user's own. A search with a query never returns them either,
-///   since it ranks roots. A node whose own type is outside the scope is not
-///   judged by its root: it is listed only when its type is named, and naming
-///   a type asks for it (see [`should_skip_scope_filter`]).
-///
-/// The scope's own type check runs after this, in [`search_semantic`], so an
-/// untyped listing whose newest nodes are system roots can still come back
-/// short.
+///   by id rather than picked out of a slice of the whole table.
+/// - `scope.knowledge` is applied by the store, in the statement and ahead of
+///   its `LIMIT` (see [`KnowledgeListing`]): the scope's own type check for a
+///   listing that names no type, and for every listing in the scope, leaving
+///   out a knowledge-type node that sits under a root the scope does not
+///   return. A search with a query never returns those either, since it ranks
+///   roots.
+/// - `property_filters` and `scope.excluded_ids` have no pushdown. They are
+///   applied to each page as it is read, and pages are read until `limit`
+///   nodes are kept or the table is exhausted. The first page is sized for
+///   the common case, where nothing is dropped; every later one is
+///   [`ENUMERATE_PAGE_CAP`] rows, so a filter that matches little costs one
+///   statement per thousand rows, not one per `limit`.
 async fn enumerate_nodes(
     node_service: &Arc<NodeService>,
     limit: usize,
@@ -297,16 +291,13 @@ async fn enumerate_nodes(
     if scope.member_ids.is_some_and(HashSet::is_empty) {
         return Ok(Vec::new());
     }
-    let page_size = ENUMERATE_FETCH_CAP.min(limit.max(1) * 3);
+    let first_page = ENUMERATE_PAGE_CAP.min(limit.max(1) * 3);
     // One listing per named type, or a single listing of every type.
     let node_types: Vec<Option<&String>> = match filters.and_then(|f| f.node_types.as_ref()) {
         Some(types) if !types.is_empty() => types.iter().map(Some).collect(),
         _ => vec![None],
     };
 
-    // Whether each root met so far is outside the scope, so a subtree's nodes
-    // read its root's type once. Each still walks its own parent chain.
-    let mut system_roots: HashMap<String, bool> = HashMap::new();
     let mut merged: Vec<Node> = Vec::new();
     for node_type in &node_types {
         let mut base = NodeFilter::new()
@@ -318,6 +309,7 @@ async fn enumerate_nodes(
 
         let mut kept = 0;
         let mut scanned = 0;
+        let mut page_size = first_page;
         loop {
             // A collection's members are read whole, by id; anything else is
             // read a page at a time until `limit` nodes are kept.
@@ -325,10 +317,15 @@ async fn enumerate_nodes(
                 Some(ids) => base.clone().with_ids(ids.iter().cloned().collect()),
                 None => base.clone().with_limit(page_size).with_offset(scanned),
             };
-            let page = node_service
-                .query_nodes(page_filter)
-                .await
-                .map_err(|e| OpsError::Internal(format!("Failed to enumerate nodes: {}", e)))?;
+            let page = match scope.knowledge {
+                Some(listing) => {
+                    node_service
+                        .list_knowledge_nodes(page_filter, listing)
+                        .await
+                }
+                None => node_service.query_nodes(page_filter).await,
+            }
+            .map_err(|e| OpsError::Internal(format!("Failed to enumerate nodes: {}", e)))?;
             let fetched = page.len();
             scanned += fetched;
 
@@ -338,12 +335,7 @@ async fn enumerate_nodes(
                     let chain = chain_for_type(&type_chains, &node.node_type);
                     f.matches(&node.node_type, &node.properties, &chain)
                 });
-                if !matches_filters
-                    || (scope.knowledge_only
-                        && !is_system_type(&node.node_type)
-                        && sits_under_system_root(node_service, &node.id, &mut system_roots)
-                            .await?)
-                {
+                if !matches_filters || scope.excluded_ids.contains(&node.id) {
                     continue;
                 }
                 merged.push(node);
@@ -353,13 +345,10 @@ async fn enumerate_nodes(
                 }
             }
 
-            if scope.member_ids.is_some()
-                || kept >= limit
-                || fetched < page_size
-                || scanned >= ENUMERATE_FETCH_CAP
-            {
+            if scope.member_ids.is_some() || kept >= limit || fetched < page_size {
                 break;
             }
+            page_size = ENUMERATE_PAGE_CAP;
         }
     }
 
@@ -381,45 +370,10 @@ struct EnumerateScope<'a> {
     /// The ids of the collection's members, when the listing is confined to
     /// one.
     member_ids: Option<&'a HashSet<String>>,
-    /// Leave out a node that sits under a system-type root.
-    knowledge_only: bool,
-}
-
-/// Whether `node_type` is a system type: a core type the `Knowledge` scope
-/// does not return. A user-defined type never is.
-fn is_system_type(node_type: &str) -> bool {
-    crate::models::CoreNodeType::from_id(node_type).is_some_and(|core| {
-        !crate::services::embedding_service::KNOWLEDGE_CORE_TYPES.contains(&core)
-    })
-}
-
-/// Whether `node_id` is a descendant of a root whose type is a system type
-/// (see [`is_system_type`]). A root is never under one, whatever its own
-/// type. `system_roots` remembers each root's answer.
-async fn sits_under_system_root(
-    node_service: &Arc<NodeService>,
-    node_id: &str,
-    system_roots: &mut HashMap<String, bool>,
-) -> Result<bool, OpsError> {
-    let failed = |e: String| OpsError::Internal(format!("Failed to resolve a node's root: {e}"));
-    let root_id = node_service
-        .get_root_id(node_id)
-        .await
-        .map_err(|e| failed(e.to_string()))?;
-    if root_id == node_id {
-        return Ok(false);
-    }
-    if let Some(&is_system) = system_roots.get(&root_id) {
-        return Ok(is_system);
-    }
-    let root_type = node_service
-        .store()
-        .get_node_type(&root_id)
-        .await
-        .map_err(|e| failed(e.to_string()))?;
-    let is_system = root_type.is_some_and(|t| is_system_type(&t));
-    system_roots.insert(root_id, is_system);
-    Ok(is_system)
+    /// The members of the excluded collections.
+    excluded_ids: &'a HashSet<String>,
+    /// What the `Knowledge` scope leaves out, when the listing is in it.
+    knowledge: Option<KnowledgeListing>,
 }
 
 /// Score floor for a keyword hit the store matched by word stem rather than by
@@ -525,7 +479,7 @@ async fn title_match_nodes(
         return Ok(Vec::new());
     }
 
-    let per_query_limit = ENUMERATE_FETCH_CAP.min(limit.max(1) * 3);
+    let per_query_limit = ENUMERATE_PAGE_CAP.min(limit.max(1) * 3);
     let node_types = filters
         .and_then(|f| f.node_types.as_ref())
         .filter(|types| !types.is_empty());
@@ -800,14 +754,24 @@ pub async fn search_semantic(
     let include_title_matches = input.include_title_matches.unwrap_or(false);
 
     let results = if is_enumerate {
+        // A listing in the `Knowledge` scope drops nothing after the fetch,
+        // so it reads what it returns. Any other scope is applied below.
+        let knowledge = matches!(scope, SearchScope::Knowledge).then_some(KnowledgeListing {
+            scope_types_only: !skip_scope_filter,
+        });
         enumerate_nodes(
             node_service,
-            effective_limit,
+            if knowledge.is_some() {
+                limit
+            } else {
+                effective_limit
+            },
             search_filters.as_ref(),
             include_archived,
             EnumerateScope {
                 member_ids: collection_member_ids.as_ref(),
-                knowledge_only: matches!(scope, SearchScope::Knowledge),
+                excluded_ids: &excluded_node_ids,
+                knowledge,
             },
         )
         .await?

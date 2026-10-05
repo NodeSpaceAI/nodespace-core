@@ -139,8 +139,8 @@ fn structural_rule<R: serde::de::DeserializeOwned + Default>(node: &Node, key: &
 /// The one Rust definition of the test: [`from_storage`] (and so
 /// [`SchemaNode::is_core`]), the store's delete refusal, the service's guards
 /// on minting or changing a core schema and the default search scope all use
-/// it. The `schema_core_status_fixed` trigger in `db/schema.rs` is its SQL
-/// mirror and must stay in step.
+/// it. `is_core_schema_sql` in `db/schema.rs` is its SQL mirror and must
+/// stay in step.
 pub fn is_core_schema(node: &Node) -> bool {
     CoreNodeType::Schema.is_exactly(&node.node_type)
         && node

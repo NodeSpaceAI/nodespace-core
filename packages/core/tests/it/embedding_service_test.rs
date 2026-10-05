@@ -1981,7 +1981,7 @@ async fn test_search_semantic_enumerate_counts_all_instances_of_type() -> Result
 /// query (independently capped and merged) rather than fetching unfiltered
 /// up to a shared cap and post-filtering by type.
 ///
-/// Deliberately exceeds `ENUMERATE_FETCH_CAP` (1000): with the pre-fix
+/// Deliberately exceeds the 1,000-row page cap: with the pre-fix
 /// shared-cap-then-post-filter behavior, the 1000-node unfiltered fetch is
 /// dominated by "noise" nodes (of a type never requested), so almost none of
 /// the 6 "invoice"/"task" nodes created *after* the noise would survive the
@@ -2558,9 +2558,7 @@ async fn test_search_semantic_enumerate_leaves_out_a_system_roots_fragments() ->
         json!({ "description": "What the skill is for" }),
     );
     node_service.create_node(skill.clone()).await?;
-    // All newer than the user's nodes. With a limit of 2 a page holds 18
-    // rows, so the user's nodes are reached only by reading on past several
-    // pages of fragments.
+    // All newer than the user's nodes, and many times the limit of 2.
     for i in 0..70 {
         create_child_node(&node_service, &skill.id, "text", &format!("Step {i}")).await?;
     }
@@ -2578,6 +2576,219 @@ async fn test_search_semantic_enumerate_leaves_out_a_system_roots_fragments() ->
     let mut own = vec![document.id.as_str(), paragraph.id.as_str()];
     own.sort_unstable();
     assert_eq!(listed, own);
+    Ok(())
+}
+
+/// A listing that names no type is the user's nodes, however many system
+/// roots are newer. The scope's type check is part of the statement, so the
+/// skills never take the page's places: counted toward it and dropped
+/// afterwards, they left the listing empty.
+#[tokio::test]
+async fn test_search_semantic_enumerate_lists_user_nodes_behind_newer_system_roots() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let document = create_root_node(&node_service, "text", "My document").await?;
+    let task = create_root_node(&node_service, "task", "My task").await?;
+    // All newer than the user's nodes, and several times what the listing
+    // reads for a limit of 2.
+    for i in 0..150 {
+        let skill = Node::new(
+            "skill".to_string(),
+            format!("Skill {i}"),
+            json!({ "description": "What the skill is for" }),
+        );
+        node_service.create_node(skill).await?;
+    }
+
+    let mut input = empty_search_input("", None);
+    input.limit = Some(2);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    let listed: Vec<&str> = output
+        .nodes
+        .iter()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    assert_eq!(listed, vec![task.id.as_str(), document.id.as_str()]);
+    Ok(())
+}
+
+/// A type-only listing of `text` reaches the user's text behind any number
+/// of a system root's fragments. More than 1,000 of them are newer here: the
+/// listing used to stop scanning at 1,000 rows and return nothing.
+#[tokio::test]
+async fn test_search_semantic_enumerate_lists_user_text_behind_a_thousand_fragments() -> Result<()>
+{
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let document = create_root_node(&node_service, "text", "My document").await?;
+    let skill = Node::new(
+        "skill".to_string(),
+        "A skill".to_string(),
+        json!({ "description": "What the skill is for" }),
+    );
+    node_service.create_node(skill.clone()).await?;
+    let fragments = (0..1100)
+        .map(|i| {
+            (
+                Node::new("text".to_string(), String::new(), json!({})).id,
+                "text".to_string(),
+                format!("Step {i}"),
+                Some(skill.id.clone()),
+                f64::from(i),
+                json!({}),
+            )
+        })
+        .collect();
+    node_service.bulk_create_hierarchy(fragments).await?;
+
+    let mut input = empty_search_input("", Some(vec!["text".to_string()]));
+    input.limit = Some(5);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    let listed: Vec<&str> = output
+        .nodes
+        .iter()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    assert_eq!(listed, vec![document.id.as_str()]);
+    Ok(())
+}
+
+/// A fragment is judged by its root, at any depth: a paragraph nested under
+/// a skill's heading is the skill's, and one nested under the user's own
+/// heading is the user's. A system-type node is only a root when it has no
+/// parent, so a skill filed inside a user's document hides nothing.
+#[tokio::test]
+async fn test_search_semantic_enumerate_judges_a_fragment_by_its_root() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let skill = Node::new(
+        "skill".to_string(),
+        "A skill".to_string(),
+        json!({ "description": "What the skill is for" }),
+    );
+    node_service.create_node(skill.clone()).await?;
+    let skill_heading = create_child_node(&node_service, &skill.id, "header", "# Steps").await?;
+    create_child_node(&node_service, &skill_heading.id, "text", "A nested step").await?;
+
+    let document = create_root_node(&node_service, "text", "My document").await?;
+    let heading = create_child_node(&node_service, &document.id, "header", "# Notes").await?;
+    let nested = create_child_node(&node_service, &heading.id, "text", "My nested note").await?;
+    let filed = Node::new(
+        "skill".to_string(),
+        "A filed skill".to_string(),
+        json!({ "description": "A skill kept inside a document" }),
+    );
+    node_service.create_node(filed.clone()).await?;
+    node_service
+        .move_node_unchecked(
+            &filed.id,
+            Some(&document.id),
+            nodespace_core::services::InsertPosition::Beginning,
+        )
+        .await?;
+    let under_filed = create_child_node(&node_service, &filed.id, "text", "Under it").await?;
+
+    let output = search_ops::search_semantic(
+        &node_service,
+        &embedding_service,
+        empty_search_input("", Some(vec!["text".to_string(), "header".to_string()])),
+    )
+    .await?;
+
+    let mut listed: Vec<&str> = output
+        .nodes
+        .iter()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    listed.sort_unstable();
+    let mut own = vec![
+        document.id.as_str(),
+        heading.id.as_str(),
+        nested.id.as_str(),
+        under_filed.id.as_str(),
+    ];
+    own.sort_unstable();
+    assert_eq!(listed, own);
+    Ok(())
+}
+
+/// A listing that names no type returns what the `Knowledge` scope does: a
+/// user-defined type and its schema, and no built-in schema.
+#[tokio::test]
+async fn test_search_semantic_enumerate_untyped_lists_user_types_and_no_core_schema() -> Result<()>
+{
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let created = nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({ "name": "Company", "fields": [{ "name": "industry", "type": "text" }] }),
+    )
+    .await?;
+    let schema_id = created["schemaId"].as_str().expect("schema id").to_string();
+    let company = create_root_node(&node_service, &schema_id, "Northwind Trading").await?;
+    // A type with no schema is in no scope; it is listed when it is named.
+    let unregistered = create_root_node(&node_service, "unregistered", "No schema").await?;
+
+    let mut input = empty_search_input("", None);
+    input.limit = Some(1000);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    let listed: Vec<&str> = output
+        .nodes
+        .iter()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    assert!(listed.contains(&company.id.as_str()), "{listed:?}");
+    assert!(listed.contains(&schema_id.as_str()), "{listed:?}");
+    assert!(!listed.contains(&unregistered.id.as_str()), "{listed:?}");
+    assert!(
+        output
+            .matched_nodes
+            .iter()
+            .all(|n| n.properties.get("isCore") != Some(&json!(true))),
+        "a built-in schema is outside the scope"
+    );
+    Ok(())
+}
+
+/// An excluded collection's members never take the page's places: the
+/// listing reads on past them.
+#[tokio::test]
+async fn test_search_semantic_enumerate_reads_past_an_excluded_collections_members() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let kept = create_root_node(&node_service, "text", "Kept").await?;
+    let collection = create_root_node(&node_service, "collection", "Archive").await?;
+    for i in 0..60 {
+        let member = create_root_node(&node_service, "text", &format!("Filed {i}")).await?;
+        node_service
+            .create_relationship(&member.id, "member_of", &collection.id, json!({}))
+            .await?;
+    }
+
+    let mut input = empty_search_input("", Some(vec!["text".to_string()]));
+    input.limit = Some(2);
+    input.exclude_collections = Some(vec!["Archive".to_string()]);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    let listed: Vec<&str> = output
+        .nodes
+        .iter()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    assert_eq!(listed, vec![kept.id.as_str()]);
     Ok(())
 }
 
