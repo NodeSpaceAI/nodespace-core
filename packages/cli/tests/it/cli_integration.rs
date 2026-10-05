@@ -2806,18 +2806,19 @@ async fn update_and_set_status_write_only_at_the_version_named() {
         .await
         .expect_err("version 1 is stale");
     assert_refused(err, 1, 4);
+    let collection_request = || nodespace_daemon::nodespace::QueryNodesSimpleRequest {
+        include_archived: false,
+        id: None,
+        mentioned_by: None,
+        content_contains: None,
+        title_contains: None,
+        node_type: Some("collection".into()),
+        limit: 0,
+        offset: 0,
+        order_by: nodespace_daemon::nodespace::NodeSortOrder::Unspecified as i32,
+    };
     let collections = raw
-        .query_nodes_simple(nodespace_daemon::nodespace::QueryNodesSimpleRequest {
-            include_archived: false,
-            id: None,
-            mentioned_by: None,
-            content_contains: None,
-            title_contains: None,
-            node_type: Some("collection".into()),
-            limit: 0,
-            offset: 0,
-            order_by: nodespace_daemon::nodespace::NodeSortOrder::Unspecified as i32,
-        })
+        .query_nodes_simple(collection_request())
         .await
         .expect("query collections")
         .into_inner();
@@ -2828,6 +2829,15 @@ async fn update_and_set_status_write_only_at_the_version_named() {
     commands::node::run(&mut client, join(Some(4)), false)
         .await
         .expect("version 4 is current");
+    let collections = raw
+        .query_nodes_simple(collection_request())
+        .await
+        .expect("query collections")
+        .into_inner();
+    assert!(
+        collections.nodes.iter().any(|c| c.content == "claimed"),
+        "the update at the current version joins the collection"
+    );
 
     // A node too large for the conflict header to carry is still reported
     // as a conflict, with its versions, across the socket.

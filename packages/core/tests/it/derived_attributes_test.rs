@@ -192,11 +192,14 @@ async fn a_comprehension_reads_null_on_items_that_derive_nothing() -> Result<()>
         let conditions = [CompiledCondition::compile(expr).expect("valid CEL")];
         let mut resolver = GraphResolver::new(Arc::clone(&service));
         let result = evaluate_conditions(&conditions, &node, &event, Some(&mut resolver)).await;
-        assert_eq!(
-            matches!(result, ConditionResult::Pass),
-            holds,
-            "{expr}: {result:?}"
-        );
+        // A condition that does not hold must have been evaluated to false,
+        // not left unresolved.
+        let expected = if holds {
+            matches!(result, ConditionResult::Pass)
+        } else {
+            matches!(result, ConditionResult::Fail { .. })
+        };
+        assert!(expected, "{expr}: expected {holds}, got {result:?}");
     }
     Ok(())
 }
