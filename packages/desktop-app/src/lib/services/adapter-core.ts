@@ -367,7 +367,8 @@ const TYPED_UPDATE_FIELDS = {
     priority: true,
     startDate: true,
     endDate: true,
-    repository: true
+    repository: true,
+    checkoutPath: true
   } satisfies Record<keyof ProjectNodeUpdate, true>
 } as const;
 
@@ -431,6 +432,7 @@ export interface ProjectNodeUpdatePatch {
   startDate: ClearableField<string>;
   endDate: ClearableField<string>;
   repository: OptionalJsonClear | undefined;
+  checkoutPath: ClearableField<string>;
 }
 
 /** `ProjectNodeUpdate` → tri-state wire patch. See `buildTaskNodeUpdatePatch`. */
@@ -441,6 +443,7 @@ export function buildProjectNodeUpdatePatch(update: ProjectNodeUpdate): ProjectN
     startDate: clearable(update.startDate),
     endDate: clearable(update.endDate),
     repository: jsonClearable(update.repository),
+    checkoutPath: clearable(update.checkoutPath),
   };
 }
 

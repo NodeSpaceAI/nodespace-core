@@ -88,6 +88,31 @@ pub(crate) async fn routed_database_services<T>(
     Ok(Some(services))
 }
 
+/// The id of the database a routed request targets: the one its
+/// `x-ns-database-id` header names, or the default when it names none.
+///
+/// `None` on a host without the routing middleware, which serves one database
+/// and has no id for it. Call it beside [`route_or_self`], which is what
+/// rejects a header such a host cannot honour.
+pub(crate) async fn routed_database_id<T>(
+    request: &tonic::Request<T>,
+) -> Result<Option<String>, Status> {
+    let Some(manager) = request.extensions().get::<Arc<DatabaseManager>>() else {
+        return Ok(None);
+    };
+    let header = request
+        .metadata()
+        .get(DATABASE_ID_HEADER)
+        .map(|v| v.to_str())
+        .transpose()
+        .map_err(|_| Status::invalid_argument("x-ns-database-id must be valid ASCII"))?;
+    manager
+        .resolve_database_id(header)
+        .await
+        .map(|id| Some(id.as_str().to_string()))
+        .map_err(|e| Status::not_found(e.to_string()))
+}
+
 /// The common `route` adapter: resolve the target database via
 /// [`routed_database_services`] and return `pick`'s service from it, or a
 /// clone of `this` when no routing is in play. Services whose routed handle

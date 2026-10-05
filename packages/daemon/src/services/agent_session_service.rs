@@ -16,11 +16,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::Utc;
-use nodespace_agent::agent_catalog::context_assembly::GraphContextAssembler;
 use nodespace_agent::agent_types::AgentType;
-use nodespace_agent::pty::{
-    detect_all_agents, find_harness_session_id, PtySession, PtySessionManager,
-};
+use nodespace_agent::pty::{PtySession, PtySessionManager, SessionLaunch, LAUNCHED_FOR_ENV_VAR};
+use nodespace_core::models::{CoreNodeType, ProjectNodeUpdate};
 use nodespace_core::services::NodeService as CoreNodeService;
 use tokio::sync::broadcast::error::RecvError;
 use tonic::{Request, Response, Status};
@@ -29,9 +27,9 @@ use uuid::Uuid;
 use crate::nodespace::{
     agent_session_service_server::AgentSessionService, AgentAvailability, CheckAvailabilityRequest,
     CheckAvailabilityResponse, LaunchSessionRequest, LaunchSessionResponse, ListSessionsRequest,
-    ListSessionsResponse, OutputChunk, ResizeRequest, ResizeResponse, SessionInfo,
-    StreamOutputRequest, TerminateSessionRequest, TerminateSessionResponse, WriteInputRequest,
-    WriteInputResponse,
+    ListSessionsResponse, OutputChunk, ReportHarnessSessionRequest, ReportHarnessSessionResponse,
+    ResizeRequest, ResizeResponse, SessionInfo, StreamOutputRequest, TerminateSessionRequest,
+    TerminateSessionResponse, WriteInputRequest, WriteInputResponse,
 };
 use crate::services::capture_service::{finalize_capture, CompletedSession, SessionSummarizer};
 use crate::services::settings_service::{read_capture_settings, CaptureConfig};
@@ -40,7 +38,6 @@ use crate::services::settings_service::{read_capture_settings, CaptureConfig};
 #[derive(Clone)]
 pub struct AgentSessionHandler {
     manager: Arc<PtySessionManager>,
-    assembler: Arc<GraphContextAssembler>,
     node_service: Arc<CoreNodeService>,
     config_path: PathBuf,
     /// Derives a finished session's summary, when capture saves one.
@@ -50,14 +47,12 @@ pub struct AgentSessionHandler {
 impl AgentSessionHandler {
     pub fn new(
         manager: Arc<PtySessionManager>,
-        assembler: Arc<GraphContextAssembler>,
         node_service: Arc<CoreNodeService>,
         config_path: PathBuf,
         summarizer: Arc<dyn SessionSummarizer>,
     ) -> Self {
         Self {
             manager,
-            assembler,
             node_service,
             config_path,
             summarizer,
@@ -75,10 +70,94 @@ impl AgentSessionHandler {
     /// is process-global (the same `Arc` backs every database), so PTY
     /// operations (stream/write/resize/terminate/list) act on the shared session
     /// set regardless of database. Launch is the sole handler that reads the
-    /// per-database context assembler and node service (for context + capture),
+    /// per-database node service (for the project's folder and for capture),
     /// so it follows the targeted database.
     async fn route<T>(&self, request: &Request<T>) -> Result<AgentSessionHandler, Status> {
         crate::db_routing::route_or_self(self, request, |s| &s.agent_session).await
+    }
+
+    /// The folder a session launched for `project_id` runs in: the project's
+    /// `checkout_path`, its folder on this machine (ADR-093 §8).
+    ///
+    /// `given` is the folder the launch names, for a project that has none
+    /// yet or whose folder is being changed. It is checked and then stored on
+    /// the project, so the next launch needs no folder named.
+    async fn project_folder(
+        &self,
+        project_id: &str,
+        given: Option<&str>,
+    ) -> Result<PathBuf, Status> {
+        let project = self
+            .node_service
+            .get_node(project_id)
+            .await
+            .map_err(|e| Status::internal(format!("reading project {project_id} failed: {e}")))?
+            .ok_or_else(|| Status::not_found(format!("project not found: {project_id}")))?;
+        let is_project = self
+            .node_service
+            .type_is_a(&project.node_type, CoreNodeType::Project)
+            .await
+            .map_err(|e| Status::internal(format!("reading project {project_id} failed: {e}")))?;
+        if !is_project {
+            return Err(Status::invalid_argument(format!(
+                "{project_id} is a {}, not a project",
+                project.node_type
+            )));
+        }
+
+        let stored = project
+            .properties
+            .get(CoreNodeType::Project.as_str())
+            .and_then(|bucket| bucket.get("checkout_path"))
+            .and_then(|value| value.as_str())
+            .filter(|path| !path.is_empty());
+
+        let Some(given) = given else {
+            let stored = stored.ok_or_else(|| {
+                Status::failed_precondition(format!(
+                    "project '{}' has no folder on this machine: name its checkout folder to launch a session for it",
+                    project.content
+                ))
+            })?;
+            let folder = PathBuf::from(stored);
+            if !folder.is_dir() {
+                return Err(Status::failed_precondition(format!(
+                    "the folder of project '{}' is not a directory on this machine: {stored}",
+                    project.content
+                )));
+            }
+            return Ok(folder);
+        };
+
+        let folder = PathBuf::from(given);
+        if !folder.is_absolute() {
+            return Err(Status::invalid_argument(format!(
+                "a project's folder is an absolute path, got: {given}"
+            )));
+        }
+        if !folder.is_dir() {
+            return Err(Status::invalid_argument(format!(
+                "not a directory on this machine: {given}"
+            )));
+        }
+        if stored != Some(given) {
+            self.node_service
+                .update_project_node(
+                    project_id,
+                    project.version,
+                    ProjectNodeUpdate {
+                        checkout_path: Some(Some(given.to_string())),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    Status::internal(format!(
+                        "storing the folder of project {project_id} failed: {e}"
+                    ))
+                })?;
+        }
+        Ok(folder)
     }
 }
 
@@ -89,6 +168,7 @@ impl AgentSessionService for AgentSessionHandler {
         request: Request<LaunchSessionRequest>,
     ) -> Result<Response<LaunchSessionResponse>, Status> {
         let this = self.route(&request).await?;
+        let database_id = crate::db_routing::routed_database_id(&request).await?;
         let req = request.into_inner();
 
         let agent_type = parse_agent_type(&req.agent_type).map_err(Status::invalid_argument)?;
@@ -98,11 +178,13 @@ impl AgentSessionService for AgentSessionHandler {
         // but the RPC guard ensures the daemon never spawns a doomed process
         // even if the UI check is skipped or stale.
         //
-        // detect_all_agents() spawns /usr/libexec/path_helper via
+        // Building the search path spawns /usr/libexec/path_helper via
         // std::process::Command on macOS — a blocking call that must not run
         // on a Tokio executor thread.
+        let manager = this.manager.clone();
         let availability = tokio::task::spawn_blocking(move || {
-            detect_all_agents()
+            manager
+                .detect_agents()
                 .into_iter()
                 .find(|a| a.agent_type == agent_type)
         })
@@ -133,9 +215,40 @@ impl AgentSessionService for AgentSessionHandler {
             }
         }
 
+        let working_dir = match req.project_id.as_deref() {
+            Some(project_id) => Some(
+                this.project_folder(project_id, req.project_folder.as_deref())
+                    .await?,
+            ),
+            None if req.project_folder.is_some() => {
+                return Err(Status::invalid_argument(
+                    "a project folder was named without a project",
+                ));
+            }
+            None => None,
+        };
+        if let Some(task_id) = req.task_id.as_deref() {
+            this.node_service
+                .get_node(task_id)
+                .await
+                .map_err(|e| Status::internal(format!("reading {task_id} failed: {e}")))?
+                .ok_or_else(|| Status::not_found(format!("node not found: {task_id}")))?;
+        }
+
+        let launch = SessionLaunch {
+            agent_type,
+            initial_prompt: req.prompt,
+            env: session_environment(
+                database_id,
+                this.manager.daemon_socket(),
+                req.task_id.as_deref().or(req.node_id.as_deref()),
+            ),
+            node_id: req.node_id,
+            working_dir,
+        };
         let id = this
             .manager
-            .launch(agent_type, req.prompt, req.node_id, &this.assembler)
+            .launch(launch)
             .await
             .map_err(|e| Status::internal(format!("launch session failed: {e}")))?;
 
@@ -151,6 +264,10 @@ impl AgentSessionService for AgentSessionHandler {
             .as_ref()
             .map(|s| s.started_at.timestamp())
             .unwrap_or_else(current_unix_secs);
+        let working_dir = session
+            .as_ref()
+            .map(|s| s.working_dir.to_string_lossy().into_owned())
+            .unwrap_or_default();
 
         // Apply requested dimensions when the caller passed non-zero values.
         // Zero on either axis means "keep the engine default" (80x24);
@@ -213,17 +330,12 @@ impl AgentSessionService for AgentSessionHandler {
                 };
 
                 let capture = session.snapshot_capture().await;
-                // Only a session with a node has anywhere to record the id.
-                let harness_session_id = match session.node_id {
-                    Some(_) => harness_session_id(&session).await,
-                    None => None,
-                };
                 let completed = CompletedSession {
                     id: session.id,
                     node_id: session.node_id.clone(),
                     ended_at: Utc::now(),
                     exit_status,
-                    harness_session_id,
+                    harness_session_id: session.harness_session_id(),
                 };
                 // Deriving the summary can wait a long time for the model;
                 // the finished PTY session is not kept alive for it.
@@ -250,6 +362,30 @@ impl AgentSessionService for AgentSessionHandler {
         Ok(Response::new(LaunchSessionResponse {
             session_id: id.to_string(),
             created_at,
+            working_dir,
+        }))
+    }
+
+    async fn report_harness_session(
+        &self,
+        request: Request<ReportHarnessSessionRequest>,
+    ) -> Result<Response<ReportHarnessSessionResponse>, Status> {
+        let req = request.into_inner();
+        let id = parse_session_id(&req.session_id).map_err(Status::invalid_argument)?;
+        let harness_session_id = req.harness_session_id.trim();
+        if harness_session_id.is_empty() {
+            return Err(Status::invalid_argument("harness_session_id is empty"));
+        }
+        let session = self
+            .manager
+            .get(&id)
+            .await
+            .ok_or_else(|| Status::not_found(format!("session not found: {id}")))?;
+
+        session.report_harness_session_id(harness_session_id.to_string());
+
+        Ok(Response::new(ReportHarnessSessionResponse {
+            node_id: session.node_id.clone(),
         }))
     }
 
@@ -409,10 +545,11 @@ impl AgentSessionService for AgentSessionHandler {
         &self,
         _request: Request<CheckAvailabilityRequest>,
     ) -> Result<Response<CheckAvailabilityResponse>, Status> {
-        // detect_all_agents() spawns /usr/libexec/path_helper via
+        // Building the search path spawns /usr/libexec/path_helper via
         // std::process::Command on macOS — a blocking call that must not run
         // on a Tokio executor thread.
-        let results = tokio::task::spawn_blocking(detect_all_agents)
+        let manager = self.manager.clone();
+        let results = tokio::task::spawn_blocking(move || manager.detect_agents())
             .await
             .map_err(|e| Status::internal(format!("agent detection task panicked: {e}")))?;
         let agents: Vec<AgentAvailability> = results
@@ -444,48 +581,47 @@ fn parse_session_id(raw: &str) -> Result<Uuid, String> {
     Uuid::from_str(raw).map_err(|e| format!("invalid session_id '{raw}': {e}"))
 }
 
-/// Convert the proto's `agent_type` string into the canonical [`AgentType`].
-///
-/// The only accepted form is the kebab-case serde representation of
-/// [`AgentType`] (`"claude-code"`, `"codex"`, `"antigravity-cli"`, `"pi"`,
-/// `"open-code"`). Snake-case is rejected — CLAUDE.md is explicit that
-/// greenfield code carries no backward-compat aliases.
+/// Convert the proto's `agent_type` string into the [`AgentType`] it names.
+/// The only accepted form is the agent's id ([`AgentType::id`]).
 fn parse_agent_type(raw: &str) -> Result<AgentType, String> {
-    serde_json::from_value::<AgentType>(serde_json::Value::String(raw.to_string())).map_err(|_| {
+    AgentType::from_id(raw).ok_or_else(|| {
         format!(
-            "unknown agent_type '{raw}'; expected one of: claude-code, codex, antigravity-cli, pi, open-code"
+            "unknown agent_type '{raw}'; expected one of: {}",
+            AgentType::ALL.map(AgentType::id).join(", ")
         )
     })
 }
 
 fn agent_type_to_string(agent_type: AgentType) -> String {
-    // serde serialization mirrors the kebab-case form parse_agent_type accepts.
-    // `AgentType` is in-workspace and closed, so the debug-format fallback
-    // is genuinely unreachable today — it exists as defense-in-depth, not as
-    // a graceful-degradation path. The right way to add a new variant is to
-    // extend parse_agent_type / agent_type_to_string together; do NOT rely
-    // on the fallback to ship a new variant.
-    serde_json::to_value(agent_type)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_else(|| format!("{agent_type:?}"))
+    agent_type.id().to_string()
 }
 
-/// The id the harness that ran in `session` gave its own conversation: the
-/// one its resume flag takes. Read from the harness's session store under the
-/// user's home directory, which is where the harness wrote it (a PTY child is
-/// given `HOME` and none of the variables that would move the store).
-async fn harness_session_id(session: &PtySession) -> Option<String> {
-    let home = dirs::home_dir()?;
-    let agent_type = session.agent_type;
-    let session_dir = session.session_dir.clone();
-    let started_at = session.started_at;
-    tokio::task::spawn_blocking(move || {
-        find_harness_session_id(agent_type, &home, &session_dir, started_at)
-    })
-    .await
-    .ok()
-    .flatten()
+/// What NodeSpace sets in a launched session's environment, on top of the
+/// allowlist the PTY engine forwards: the database the session was launched
+/// from and the socket of the daemon that launched it, so a `nodespace`
+/// command inside reaches both, and what the session was launched for.
+///
+/// A value that is not known is left out, never set empty: the CLI reads an
+/// absent variable as "the default".
+fn session_environment(
+    database_id: Option<String>,
+    daemon_socket: Option<&std::path::Path>,
+    launched_for: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut env = Vec::new();
+    if let Some(database_id) = database_id {
+        env.push((nodespace_proto::DATABASE_ENV_VAR.to_string(), database_id));
+    }
+    if let Some(socket) = daemon_socket {
+        env.push((
+            nodespace_proto::socket::SOCKET_ENV_VAR.to_string(),
+            socket.to_string_lossy().into_owned(),
+        ));
+    }
+    if let Some(launched_for) = launched_for {
+        env.push((LAUNCHED_FOR_ENV_VAR.to_string(), launched_for.to_string()));
+    }
+    env
 }
 
 /// Apply a resize to an already-located [`PtySession`].
@@ -524,11 +660,11 @@ mod tests {
         );
         assert_eq!(parse_agent_type("codex").unwrap(), AgentType::Codex);
         assert_eq!(
-            parse_agent_type("antigravity-cli").unwrap(),
-            AgentType::AntigravityCli
+            parse_agent_type("antigravity").unwrap(),
+            AgentType::Antigravity
         );
         assert_eq!(parse_agent_type("pi").unwrap(), AgentType::Pi);
-        assert_eq!(parse_agent_type("open-code").unwrap(), AgentType::OpenCode);
+        assert_eq!(parse_agent_type("opencode").unwrap(), AgentType::OpenCode);
     }
 
     #[test]
@@ -559,7 +695,7 @@ mod tests {
         for t in [
             AgentType::ClaudeCode,
             AgentType::Codex,
-            AgentType::AntigravityCli,
+            AgentType::Antigravity,
             AgentType::Pi,
             AgentType::OpenCode,
         ] {

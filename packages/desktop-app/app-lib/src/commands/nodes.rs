@@ -1292,6 +1292,7 @@ pub async fn update_project_node(
         start_date: timestamp_clear(update.start_date),
         end_date: timestamp_clear(update.end_date),
         repository: json_clear(update.repository, "repository")?,
+        checkout_path: string_clear(update.checkout_path),
     };
     let resp = c
         .update_project_node(Request::new(req))

@@ -26,6 +26,11 @@ export type ProjectNode = {
    * project by comparing the checkout's remote with it.
    */
   repository?: LinkValue;
+  /**
+   * The folder on this machine that holds the project's checkout. It is
+   * machine-bound: absent on a machine that has not set its own.
+   */
+  checkoutPath?: string;
   id: string;
   nodeType: string;
   content: string;

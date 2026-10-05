@@ -7,9 +7,9 @@
 //! may not say, and the eval-contamination check across every model-facing
 //! guidance string.
 //!
-//! External PTY-spawned agent sessions ([`crate::agent_catalog::context_assembly`]) do
-//! not read this guidance — they get all tool/capability guidance from
-//! `packages/skill/SKILL.md`, the CLI-vocabulary companion doc.
+//! External PTY-spawned agent sessions ([`crate::pty`]) do not read this
+//! guidance: theirs comes from the harness plugin and `packages/skill/SKILL.md`,
+//! the CLI-vocabulary companion doc.
 //!
 //! `N_CTX_MINIMUM` in `nlp-engine`'s `chat/mod.rs` (16,384) is sized against
 //! the full tool-registered system prompt (~6,600 tokens), of which the

@@ -105,6 +105,10 @@ pub struct ProjectNode {
     /// project by comparing the checkout's remote with it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<LinkValue>,
+    /// The folder on this machine that holds the project's checkout. It is
+    /// machine-bound: absent on a machine that has not set its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkout_path: Option<String>,
 }
 
 /// Partial update for a project's core fields, received from the frontend.
@@ -144,6 +148,12 @@ pub struct ProjectNodeUpdate {
         deserialize_with = "deserialize_clearable"
     )]
     pub repository: Option<Option<LinkValue>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_clearable"
+    )]
+    pub checkout_path: Option<Option<String>>,
 }
 
 impl ProjectNodeUpdate {
@@ -154,6 +164,7 @@ impl ProjectNodeUpdate {
             && self.start_date.is_none()
             && self.end_date.is_none()
             && self.repository.is_none()
+            && self.checkout_path.is_none()
     }
 
     /// The flat, bare-key properties patch this update writes (`{"status":
@@ -177,6 +188,12 @@ impl ProjectNodeUpdate {
         }
         if let Some(repository) = &self.repository {
             patch.insert("repository".to_string(), serde_json::json!(repository));
+        }
+        if let Some(checkout_path) = &self.checkout_path {
+            patch.insert(
+                "checkout_path".to_string(),
+                serde_json::json!(checkout_path),
+            );
         }
         serde_json::Value::Object(patch)
     }
@@ -246,6 +263,23 @@ mod tests {
         assert_eq!(
             cleared.to_properties_patch(),
             serde_json::json!({ "repository": null })
+        );
+    }
+
+    #[test]
+    fn checkout_path_is_set_and_cleared() {
+        let update: ProjectNodeUpdate =
+            serde_json::from_str(r#"{"checkoutPath": "/work/core"}"#).unwrap();
+        assert!(!update.is_empty());
+        assert_eq!(
+            update.to_properties_patch(),
+            serde_json::json!({ "checkout_path": "/work/core" })
+        );
+        let cleared: ProjectNodeUpdate = serde_json::from_str(r#"{"checkoutPath": null}"#).unwrap();
+        assert_eq!(cleared.checkout_path, Some(None));
+        assert_eq!(
+            cleared.to_properties_patch(),
+            serde_json::json!({ "checkout_path": null })
         );
     }
 

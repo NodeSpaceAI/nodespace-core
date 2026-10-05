@@ -16,7 +16,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nodespace_agent::agent_catalog::context_assembly::GraphContextAssembler;
 use nodespace_agent::pty::{PtySession, PtySessionManager};
 use nodespace_core::{NodeService as CoreNodeService, SqliteStore};
 use nodespace_daemon::nodespace::{
@@ -52,8 +51,8 @@ impl SessionSummarizer for NoSummarizer {
 async fn spawn_test_daemon() -> (Client, Arc<PtySessionManager>, oneshot::Sender<()>, TempDir) {
     let tempdir = TempDir::new().expect("tempdir");
 
-    // The assembler holds a NodeService handle even though our tests bypass
-    // LaunchSession. SqliteStore is the only realistic way to produce one.
+    // The handler reads projects and writes a session's end through a
+    // NodeService. SqliteStore is the only realistic way to produce one.
     let mut store = Arc::new(
         SqliteStore::new(tempdir.path().join("daemon-db"))
             .await
@@ -62,14 +61,9 @@ async fn spawn_test_daemon() -> (Client, Arc<PtySessionManager>, oneshot::Sender
     let node_service = Arc::new(CoreNodeService::new(&mut store).await.expect("NodeService"));
 
     let manager = Arc::new(PtySessionManager::new());
-    let assembler = Arc::new(GraphContextAssembler::new(
-        node_service.clone(),
-        Arc::new(tokio::sync::RwLock::new(None)),
-    ));
     let capture_config_path = tempdir.path().join("daemon.toml");
     let handler = AgentSessionHandler::new(
         manager.clone(),
-        assembler,
         node_service,
         capture_config_path,
         Arc::new(NoSummarizer),

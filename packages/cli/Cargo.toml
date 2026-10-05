@@ -28,6 +28,9 @@ serde_json = { workspace = true }
 regex = "1"
 nodespace-daemon = { path = "../daemon" }
 nodespace-proto = { workspace = true }
+# The agent ids `session launch` takes and the variable that names a launched
+# session: one definition, shared with the daemon that launches it.
+nodespace-agent = { workspace = true }
 # For `flatten_namespaced_properties` — the single definition of the storage
 # nesting → flat API shape rule this CLI's output must honour.
 nodespace-types = { workspace = true }
@@ -47,7 +50,6 @@ libc = "0.2"
 
 [dev-dependencies]
 nodespace-core = { workspace = true }
-nodespace-agent = { workspace = true }
 nodespace-nlp-engine = { workspace = true }
 tempfile = "3.0"
 tokio = { workspace = true, features = ["full", "test-util"] }

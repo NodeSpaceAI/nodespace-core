@@ -17,7 +17,8 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'priority', wire: 'priority' },
     { storage: 'start_date', wire: 'startDate', date: true },
     { storage: 'end_date', wire: 'endDate', date: true },
-    { storage: 'repository', wire: 'repository', structured: 'object' }
+    { storage: 'repository', wire: 'repository', structured: 'object' },
+    { storage: 'checkout_path', wire: 'checkoutPath' }
   ],
   spec: [
     { storage: 'objective', wire: 'objective' },

@@ -260,7 +260,7 @@ describe('AgentStore', () => {
 
     it('is unavailable when the binary is missing', () => {
       const info: AgentAvailabilityInfo = {
-        agentType: 'antigravity-cli',
+        agentType: 'antigravity',
         binary: 'agy',
         binaryFound: false,
         authFound: true,
@@ -273,7 +273,7 @@ describe('AgentStore', () => {
 
     it('is unavailable when auth is missing even if the binary is found', () => {
       const info: AgentAvailabilityInfo = {
-        agentType: 'antigravity-cli',
+        agentType: 'antigravity',
         binary: 'agy',
         binaryFound: true,
         authFound: false,

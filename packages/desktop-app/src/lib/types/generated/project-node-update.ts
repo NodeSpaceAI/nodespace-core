@@ -17,4 +17,5 @@ export type ProjectNodeUpdate = {
   startDate?: string | null;
   endDate?: string | null;
   repository?: LinkValue | null;
+  checkoutPath?: string | null;
 };

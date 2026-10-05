@@ -21,6 +21,11 @@ export type NodespaceSession = {
   section: string | null
   skills: NodespaceSkill[]
   listVersion: string
+  /**
+   * In a session NodeSpace launched for an item: that item's context, as a
+   * note for the next prompt. `null` once it has been delivered.
+   */
+  opening: string | null
   /** Set when the conversation was compacted or cleared: read again before use. */
   stale: 'compact' | 'clear' | null
 }

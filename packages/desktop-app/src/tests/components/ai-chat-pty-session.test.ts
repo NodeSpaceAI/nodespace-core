@@ -29,6 +29,17 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn().mockResolvedValue(() => {})
 }));
 
+// The projects the launch form offers come through the backend adapter.
+const mockQueryNodes = vi.fn();
+vi.mock('$lib/services/backend-adapter', () => ({
+  backendAdapter: { queryNodes: (...args: unknown[]) => mockQueryNodes(...args) }
+}));
+
+const mockOpenDialog = vi.fn();
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  open: (...args: unknown[]) => mockOpenDialog(...args)
+}));
+
 import { listen } from '@tauri-apps/api/event';
 import AiChatPtySession from '$lib/components/viewers/ai-chat-pty-session.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
@@ -67,6 +78,9 @@ function mockDaemon(overrides: Record<string, () => Promise<unknown>> = {}): voi
 describe('AiChatPtySession', () => {
   beforeEach(() => {
     mockInvoke.mockReset();
+    mockQueryNodes.mockReset();
+    mockQueryNodes.mockResolvedValue([]);
+    mockOpenDialog.mockReset();
     mockDaemon();
   });
 
@@ -108,6 +122,111 @@ describe('AiChatPtySession', () => {
 
     const banner = await findByRole('alert');
     expect(banner.textContent).toContain('daemon unreachable');
+  });
+
+  describe('launching for a project', () => {
+    const project = (fields: Record<string, unknown> = {}) => ({
+      id: 'p1',
+      nodeType: 'project',
+      content: 'Widgets',
+      title: 'Widgets',
+      version: 1,
+      status: 'active',
+      properties: {},
+      ...fields
+    });
+
+    /** The `input` of the one `launch_session` call. */
+    function launchInput(): Record<string, unknown> {
+      const call = mockInvoke.mock.calls.find(([cmd]) => cmd === 'launch_session');
+      return (call?.[1] as { input: Record<string, unknown> }).input;
+    }
+
+    async function renderWith(projects: unknown[]) {
+      mockQueryNodes.mockResolvedValue(projects);
+      vi.mocked(listen).mockResolvedValue(() => {});
+      mockDaemon({
+        launch_session: () =>
+          Promise.resolve({ sessionId: 's1', createdAt: 1, workingDir: '/work/widgets' })
+      });
+      const view = render(AiChatPtySession, { props: { nodeId: 'chat-1' } });
+      const select = (await view.findByLabelText('Project')) as HTMLSelectElement;
+      await vi.waitFor(() => expect(select.options.length).toBe(projects.length + 1));
+      expect(mockQueryNodes).toHaveBeenCalledWith({ nodeType: 'project' });
+      return { ...view, select };
+    }
+
+    it('launches for no project unless one is chosen', async () => {
+      const { findByText, queryByLabelText } = await renderWith([project()]);
+
+      expect(queryByLabelText('Folder on this machine')).toBeNull();
+      await fireEvent.click(await findByText('Launch'));
+
+      await vi.waitFor(() => expect(launchInput()).toBeDefined());
+      expect(launchInput()).toMatchObject({ nodeId: 'chat-1', projectId: null, projectFolder: null });
+    });
+
+    it('asks for the folder of a project that has none on this machine, and sends it', async () => {
+      const { findByText, findByLabelText, select } = await renderWith([project()]);
+
+      await fireEvent.change(select, { target: { value: 'p1' } });
+      const folder = (await findByLabelText('Folder on this machine')) as HTMLInputElement;
+      const launch = (await findByText('Launch')).closest('button') as HTMLElement & {
+        disabled: boolean;
+      };
+
+      // No folder, no launch: the session would have nowhere to run.
+      expect(folder.value).toBe('');
+      expect(launch.disabled).toBe(true);
+
+      await fireEvent.input(folder, { target: { value: '/work/widgets' } });
+      expect(launch.disabled).toBe(false);
+      await fireEvent.click(launch);
+
+      await vi.waitFor(() => expect(launchInput()).toBeDefined());
+      expect(launchInput()).toMatchObject({ projectId: 'p1', projectFolder: '/work/widgets' });
+    });
+
+    it('fills the folder from the folder picker', async () => {
+      mockOpenDialog.mockResolvedValue('/picked/widgets');
+      const { findByText, findByLabelText, select } = await renderWith([project()]);
+
+      await fireEvent.change(select, { target: { value: 'p1' } });
+      await fireEvent.click(await findByText('Browse…'));
+
+      const folder = (await findByLabelText('Folder on this machine')) as HTMLInputElement;
+      await vi.waitFor(() => expect(folder.value).toBe('/picked/widgets'));
+      expect(mockOpenDialog).toHaveBeenCalledWith(expect.objectContaining({ directory: true }));
+    });
+
+    it('uses the folder the project already has, and names it only when it is changed', async () => {
+      const { findByText, findByLabelText, select } = await renderWith([
+        project({ checkoutPath: '/work/widgets' })
+      ]);
+
+      await fireEvent.change(select, { target: { value: 'p1' } });
+      const folder = (await findByLabelText('Folder on this machine')) as HTMLInputElement;
+      expect(folder.value).toBe('/work/widgets');
+
+      await fireEvent.click(await findByText('Launch'));
+
+      await vi.waitFor(() => expect(launchInput()).toBeDefined());
+      expect(launchInput()).toMatchObject({ projectId: 'p1', projectFolder: null });
+    });
+
+    it('sends a changed folder for the daemon to check and store', async () => {
+      const { findByText, findByLabelText, select } = await renderWith([
+        project({ checkoutPath: '/work/widgets' })
+      ]);
+
+      await fireEvent.change(select, { target: { value: 'p1' } });
+      const folder = (await findByLabelText('Folder on this machine')) as HTMLInputElement;
+      await fireEvent.input(folder, { target: { value: '/elsewhere/widgets' } });
+      await fireEvent.click(await findByText('Launch'));
+
+      await vi.waitFor(() => expect(launchInput()).toBeDefined());
+      expect(launchInput()).toMatchObject({ projectId: 'p1', projectFolder: '/elsewhere/widgets' });
+    });
   });
 
   describe('typed fields', () => {

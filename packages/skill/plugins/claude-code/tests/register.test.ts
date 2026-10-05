@@ -25,6 +25,8 @@ type World = {
   attached: Skill[]
   isContextFailing: boolean
   isListFailing: boolean
+  /** The chat node the launched session is a view onto, as a report answers it. */
+  chatNode: string | null
   calls: string[][]
   projectFilters: string[]
   statuses: (string | undefined)[]
@@ -51,6 +53,7 @@ function world(over: Partial<World> = {}): World {
     attached: [],
     isContextFailing: false,
     isListFailing: false,
+    chatNode: 'c1',
     calls: [],
     projectFilters: [],
     statuses: [],
@@ -105,9 +108,18 @@ function answer(w: World, argv: readonly string[]) {
     return ok({ provenance: 'graph-fetched', version: w.listVersion, guidance: w.skills })
   }
 
+  if (args[0] === 'session' && args[1] === 'report-harness-session') {
+    return ok({ session_id: 'pty-1', node_id: w.chatNode })
+  }
+
   if (args[0] === 'node' && args[1] === 'context') {
     if (w.isContextFailing || !w.item) {
       return failed('node not found')
+    }
+
+    // The form a person reads: what a launched session opens with.
+    if (!argv.includes('--json')) {
+      return ok(`id: ${w.item.id}\ntitle: ${String(w.item.title)}\nspec: ${String(w.governing[0]?.title)}\n`)
     }
 
     if (args.includes('--version-only')) {
@@ -146,6 +158,7 @@ function host(on: On, w: World, env: Record<string, string> = {}, toolText = '')
     return { value: undefined }
   })
   on('session.cwd', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'harness-1' }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', (_, e) => ({ sessionId: e.sessionId }))
   on('session.compact', (_, e) => ({ messages: e.messages }))
@@ -308,6 +321,93 @@ describe('session start', () => {
 
     expect(w.statuses).toEqual(['NodeSpace: the nodespace command was not found'])
     expect(w.calls).toEqual([['nodespace', '--version']])
+  })
+})
+
+describe('a session NodeSpace launched', () => {
+  const LAUNCHED = { NODESPACE_SESSION: 'pty-1', NODESPACE_DATABASE: 'db2' }
+  const reports = (w: World) => w.calls.filter(argv => argv.includes('report-harness-session'))
+
+  test("reports the conversation's own id against the session the launch named", async ($, on) => {
+    const w = world()
+
+    host(on, w, LAUNCHED)
+    await $.session.start(START)
+
+    expect(reports(w)).toEqual([
+      ['nodespace', '--database', 'db2', '--json', 'session', 'report-harness-session', 'harness-1'],
+    ])
+  })
+
+  test('a session started from a terminal reports nothing and opens with nothing', async ($, on) => {
+    const w = world()
+    const { seen } = host(on, w)
+
+    await $.session.start(START)
+    await $.prompt.submit(prompt('hello'))
+
+    expect(reports(w)).toEqual([])
+    expect(seen.context).toEqual([undefined])
+  })
+
+  test("the first prompt carries the launched task's context, once, and the task is watched", async ($, on) => {
+    const w = world()
+    const { seen, clock } = host(on, w, { ...LAUNCHED, NODESPACE_LAUNCHED_FOR: 't1' })
+
+    await $.session.start(START)
+    await $.prompt.submit(prompt('go'))
+    await $.prompt.submit(prompt('and then'))
+
+    const opening = seen.context[0]?.join('\n') ?? ''
+
+    expect(opening).toContain('launched to work on the item below')
+    expect(opening).toMatch(/<nodespace-graph-data>[\s\S]*title: Add the gauge[\s\S]*spec: Gauge spec[\s\S]*<\/nodespace-graph-data>/)
+    expect(opening).toContain('`nodespace node context t1`')
+    expect(seen.context[1]).toBeUndefined()
+
+    // Someone else finishes the task: the watch the opening set refuses the next tool call.
+    w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'done' } }
+    w.contextVersion = 'c2'
+    await clock.advance(61_000)
+
+    const refused = await $.tool.call(bash('ls'))
+
+    expect(refused.deny).toContain('changed under it')
+  })
+
+  test('a session launched for no task opens with nothing: its own chat node is not work', async ($, on) => {
+    const w = world()
+    const { seen } = host(on, w, { ...LAUNCHED, NODESPACE_LAUNCHED_FOR: 'c1' })
+
+    await $.session.start(START)
+    await $.prompt.submit(prompt('hello'))
+
+    expect(seen.context).toEqual([undefined])
+    expect(nodespaceCalls(w).some(argv => argv.includes('context'))).toBe(false)
+  })
+
+  test('with no project for the folder it still reports and opens', async ($, on) => {
+    const w = world({ project: null })
+    const { seen } = host(on, w, { ...LAUNCHED, NODESPACE_LAUNCHED_FOR: 't1' })
+
+    await $.session.start(START)
+    await $.prompt.submit(prompt('go'))
+
+    expect(reports(w)).toHaveLength(1)
+    expect(seen.context[0]?.join('\n')).toContain('title: Add the gauge')
+  })
+
+  test('after a /clear the new conversation is reported and opens with the task again', async ($, on) => {
+    const w = world()
+    const { seen } = host(on, w, { ...LAUNCHED, NODESPACE_LAUNCHED_FOR: 't1' })
+
+    await $.session.start(START)
+    await $.prompt.submit(prompt('go'))
+    await $.session.end({ reason: 'clear', sessionId: 's', resume: { id: 's' } as never })
+    await $.prompt.submit(prompt('again'))
+
+    expect(reports(w)).toHaveLength(2)
+    expect(seen.context[1]?.join('\n')).toContain('title: Add the gauge')
   })
 })
 

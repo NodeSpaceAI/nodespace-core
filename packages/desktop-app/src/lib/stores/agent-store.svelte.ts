@@ -59,7 +59,7 @@ const MOCK_AGENTS: AcpAgentInfo[] = [
     version: '1.0.0',
   },
   {
-    id: 'antigravity-cli',
+    id: 'antigravity',
     name: 'Antigravity CLI',
     binary: 'agy',
     args: [],
@@ -91,9 +91,9 @@ function modelToAgent(model: ChatModelEntry): AcpAgentInfo {
 const PTY_AGENT_LABELS: Record<string, string> = {
   'claude-code': 'Claude Code',
   codex: 'Codex',
-  'antigravity-cli': 'Antigravity CLI',
+  antigravity: 'Antigravity CLI',
   pi: 'Pi',
-  'open-code': 'Open Code',
+  opencode: 'OpenCode',
 };
 
 /** Convert a daemon availability entry to an AcpAgentInfo for unified display. */
