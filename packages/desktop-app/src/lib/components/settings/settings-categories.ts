@@ -10,6 +10,7 @@
  */
 
 import { labsFlags } from '$lib/stores/labs-flags.svelte';
+import { seedUpdatesStore } from '$lib/stores/seed-updates.svelte';
 import {
   byPriority,
   uiExtensionRegistry,
@@ -30,7 +31,8 @@ export interface CoreSettingsCategory {
 
 /**
  * Core's categories in display order. "AI Models" is gated behind the Labs "AI
- * Chat" toggle (default off); the flag gates the UI only.
+ * Chat" toggle (default off); the flag gates the UI only. "Built-in updates"
+ * is listed only when there is something to review (ADR-094 §8).
  */
 export const CORE_SETTINGS_CATEGORIES: readonly CoreSettingsCategory[] = [
   { id: 'database', label: 'Database' },
@@ -38,6 +40,10 @@ export const CORE_SETTINGS_CATEGORIES: readonly CoreSettingsCategory[] = [
   { id: 'ai-models', label: 'AI Models', visible: () => labsFlags.aiChatEnabled },
   { id: 'import', label: 'Import Sources' },
   { id: 'integrations', label: 'Integrations' },
+  // Listed while this database has shipped updates to review, and until the
+  // database changes once it has had any, so settling the last one does not
+  // close the page.
+  { id: 'built-in-updates', label: 'Built-in updates', visible: () => seedUpdatesStore.hadUpdates },
   { id: 'labs', label: 'Labs' },
   { id: 'about', label: 'About' }
 ];

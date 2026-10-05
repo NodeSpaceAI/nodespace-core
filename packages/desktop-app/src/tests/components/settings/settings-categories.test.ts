@@ -29,6 +29,7 @@ import {
   type SettingsSectionContribution
 } from '$lib/plugins/ui-extensions';
 import { labsFlags } from '$lib/stores/labs-flags.svelte';
+import { seedUpdatesStore } from '$lib/stores/seed-updates.svelte';
 import { setAllLabsFlags } from '../../helpers/labs-flags';
 
 const noComponent = () => Promise.reject(new Error('not loaded in this test'));
@@ -112,6 +113,25 @@ describe('core categories', () => {
     expect(ids()).toEqual(CORE_OFF);
   });
 
+  it('lists Built-in updates only once the database has had updates to review', () => {
+    expect(ids()).not.toContain('built-in-updates');
+
+    seedUpdatesStore.hadUpdates = true;
+    try {
+      expect(ids()).toEqual([
+        'database',
+        'display',
+        'import',
+        'integrations',
+        'built-in-updates',
+        'labs',
+        'about'
+      ]);
+    } finally {
+      seedUpdatesStore.hadUpdates = false;
+    }
+  });
+
   it('keys a core entry by its id and gives it no section', () => {
     for (const entry of settingsCategories()) {
       expect(entry.key).toBe(entry.id);
@@ -121,7 +141,18 @@ describe('core categories', () => {
 
   it('keeps About last and the ids unique', () => {
     const coreIds = CORE_SETTINGS_CATEGORIES.map((c) => c.id);
-    expect(coreIds).toEqual(CORE_ALL);
+    // Every core category, including the one listed only while there are
+    // built-in updates to review.
+    expect(coreIds).toEqual([
+      'database',
+      'display',
+      'ai-models',
+      'import',
+      'integrations',
+      'built-in-updates',
+      'labs',
+      'about'
+    ]);
     expect(new Set(coreIds).size).toBe(coreIds.length);
   });
 });

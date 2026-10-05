@@ -13,10 +13,27 @@ import NavigationSidebar from '$lib/components/layout/navigation-sidebar.svelte'
 import { layoutStore } from '$lib/stores/layout.svelte';
 import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
 import { openSettings } from '$lib/utils/open-settings';
+import {
+  seedUpdatesStore,
+  type PendingSeedUpdate,
+  type SeedAspect
+} from '$lib/stores/seed-updates.svelte';
 
 vi.mock('$lib/utils/open-settings', () => ({ openSettings: vi.fn() }));
 
 const SETTINGS_BADGED = 'Settings — Active database is missing';
+
+function pendingUpdate(aspect: SeedAspect): PendingSeedUpdate {
+  return {
+    nodeId: 'skill-1',
+    nodeType: 'skill',
+    title: 'Research & Search',
+    aspect,
+    shippedVersion: 'abc',
+    recordedAt: '2026-10-01T00:00:00Z',
+    lastEditedAt: '2026-09-20T00:00:00Z'
+  };
+}
 
 function setCollapsed(collapsed: boolean) {
   layoutStore.state = { ...layoutStore.state, sidebarCollapsed: collapsed };
@@ -51,6 +68,7 @@ describe('NavigationSidebar — nav items', () => {
     vi.mocked(openSettings).mockClear();
     databaseStore.databases = [];
     databaseStore.activeDatabaseId = null;
+    seedUpdatesStore.updates = [];
     setCollapsed(false);
   });
 
@@ -114,5 +132,27 @@ describe('NavigationSidebar — nav items', () => {
 
     expect(openSettings).toHaveBeenCalledOnce();
     expect(openSettings).toHaveBeenCalledWith('database');
+  });
+
+  it('badges Settings when built-in updates wait on a choice, and opens their page', async () => {
+    seedUpdatesStore.updates = [pendingUpdate('guidance'), pendingUpdate('config')];
+    const { container } = render(NavigationSidebar);
+
+    const settings = container.querySelector(
+      'button[aria-label="Settings — 2 built-in updates to review"]'
+    ) as HTMLButtonElement;
+    expect(settings).not.toBeNull();
+    expect(container.querySelector('[data-testid="nav-badge-settings"]')).not.toBeNull();
+    await fireEvent.click(settings);
+
+    expect(openSettings).toHaveBeenCalledWith('built-in-updates');
+  });
+
+  it('keeps the missing-database alert ahead of pending built-in updates', () => {
+    setActiveDatabaseStatus('missing');
+    seedUpdatesStore.updates = [pendingUpdate('guidance')];
+    const { container } = render(NavigationSidebar);
+
+    expect(container.querySelector(`button[aria-label="${SETTINGS_BADGED}"]`)).not.toBeNull();
   });
 });
