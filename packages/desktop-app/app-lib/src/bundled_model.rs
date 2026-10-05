@@ -438,6 +438,24 @@ mod tests {
             .expect("the copy opens for writing");
     }
 
+    /// A read-only bundle, as an install can leave it, still provisions through
+    /// whichever copy this platform uses: on macOS the clone keeps the
+    /// read-only mode, so it must flush without opening for writing.
+    #[test]
+    fn a_read_only_bundle_is_copied() {
+        let (_resources, bundled) = bundle_with_model();
+        let mut read_only = fs::metadata(&bundled).expect("bundle").permissions();
+        read_only.set_readonly(true);
+        fs::set_permissions(&bundled, read_only).expect("make the bundle read-only");
+        let home = tempfile::tempdir().expect("home");
+        let target = model_target_path(home.path());
+
+        let outcome = provision(&bundled, &target, &sha256_hex(PLACEHOLDER)).expect("provision");
+
+        assert_eq!(outcome, Provisioned::Copied);
+        assert_eq!(fs::read(&target).expect("copied model"), PLACEHOLDER);
+    }
+
     /// Temporary files from an earlier copy whose process died are removed by
     /// the next copy.
     #[test]
