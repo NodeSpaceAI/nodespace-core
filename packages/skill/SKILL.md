@@ -160,6 +160,19 @@ nodespace --database work node create --type text --content "work note"
 NODESPACE_DATABASE=work nodespace search "meeting notes"
 ```
 
+**Running a saved query.** A saved query is a view or a queue of work someone
+defined once ("Ready tasks"). Run it by its id or title; do not copy its filters:
+
+```bash
+nodespace query run "Ready tasks"
+nodespace query run "Ready tasks" --filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<project-id>"}]'
+```
+
+`--filters` narrows that one run: the filters are ANDed with the stored ones and
+the saved query is not changed. Any filter, here or in `nodespace query`, takes
+`"negate": true` to keep the nodes it does not hold for ("status is not done",
+"has no unfinished blocker"). `references/cli.md` has the filter shapes.
+
 **Setting up a work-tracking workflow.** When the user asks for one (Linear-style
 issues and cycles, spec-driven development, Jira-style sprints), first run
 `nodespace skill guidance "workspace workflow"`. A skill named `<Name> Workspace`

@@ -10,8 +10,9 @@ import type { SortDirection } from './sort-direction';
 export type SortConfig = {
   /**
    * The field to sort by, under its stored name: a schema field
-   * (`due_date`) or a metadata column (`created_at`, `modified_at`,
-   * `node_type`, `content`, `title`)
+   * (`due_date`), a path into an object field (`repository.url`, see
+   * [`property_segments`]) or a metadata column (`created_at`,
+   * `modified_at`, `node_type`, `content`, `title`)
    */
   field: string;
   /**

@@ -2914,7 +2914,28 @@ mod tests {
 
     #[test]
     fn validate_identifiers_rejects_unsafe_identifiers_in_every_position() {
-        for bad in ["'; DROP TABLE node; --", "a b", "a.b", ""] {
+        // A dot separates the segments of a path into an object value, in a
+        // property and a sort field only; a type has no path.
+        assert!(definition("a.b", None, None)
+            .validate_identifiers()
+            .is_err());
+        assert!(definition("task", Some("a.b"), Some("a.b_c.custom:d"))
+            .validate_identifiers()
+            .is_ok());
+        for bad in [
+            "'; DROP TABLE node; --",
+            "a b",
+            "",
+            "a..b",
+            ".a",
+            "a.",
+            ".",
+            "a.b c",
+            "a.'b",
+            "a.b')",
+            "a.\"b\"",
+            "a.b[0]",
+        ] {
             assert!(
                 definition(bad, None, None).validate_identifiers().is_err(),
                 "target {bad:?}"
@@ -2940,6 +2961,36 @@ mod tests {
         assert!(definition("task", None, Some("*"))
             .validate_identifiers()
             .is_err());
+    }
+
+    /// A negated filter wraps its condition in `IS NOT TRUE`, so a row whose
+    /// comparison is NULL is kept, and a path's segments become the segments
+    /// of the JSON path in the filter and the ordering alike.
+    #[tokio::test]
+    async fn a_negated_filter_and_a_path_compile_to_the_sql_they_describe() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+        let mut query = definition("task", Some("repository.url"), Some("repository.url"));
+        query.filters[0].negate = Some(true);
+
+        let built = query_service.build_query(&query, &[]).unwrap();
+        assert!(
+            built.sql.contains(
+                "(json_extract(properties, '$.task.repository.url') IS NOT NULL) IS NOT TRUE"
+            ),
+            "{}",
+            built.sql
+        );
+        assert!(
+            built
+                .sql
+                .contains("ORDER BY json_extract(properties, '$.task.repository.url') ASC"),
+            "{}",
+            built.sql
+        );
+
+        query.filters[0].negate = Some(false);
+        let built = query_service.build_query(&query, &[]).unwrap();
+        assert!(!built.sql.contains("IS NOT TRUE"), "{}", built.sql);
     }
 
     /// A definition built directly — bypassing the ops layer — must still be

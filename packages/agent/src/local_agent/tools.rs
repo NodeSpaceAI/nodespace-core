@@ -253,6 +253,17 @@ struct GetPlayParams {
     pub id: String,
 }
 
+/// Parameters for the run_query tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunQueryParams {
+    pub query: String,
+    #[serde(default)]
+    pub filters: Vec<query_ops::AgentFilterItem>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 /// Parameters for the dismiss_conflict tool
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -2245,6 +2256,51 @@ fn def_get_play() -> ToolDefinition {
     }
 }
 
+fn def_run_query() -> ToolDefinition {
+    // One filter item reads the same here as in `search_nodes`, so the item
+    // schema is that tool's, with the flag a run-time narrowing may also set.
+    // The path below is indexed, not checked: if `search_nodes`'s schema
+    // moves, this builds an item holding `negate` alone. The tool's
+    // registration test asserts the item still carries `operator`.
+    let mut filter_item =
+        def_search_nodes().parameters_schema["properties"]["filters"]["items"].clone();
+    filter_item["properties"]["negate"] = json!({
+        "type": "boolean",
+        "description": "Set true to keep the nodes this filter does NOT hold for, e.g. status not equal to 'done'. A node with no value for the property is kept too."
+    });
+
+    ToolDefinition {
+        name: "run_query".into(),
+        description: "Run a saved query the user names — a stored view or queue such as \
+            'Ready tasks' — and return the nodes it currently matches, with the query's own \
+            filters, sorting and limit. Name it by its title or its id. Use this only when the \
+            user refers to a saved query; to search by title, type or field values yourself, use \
+            search_nodes. 'filters' narrows this one run (they are ANDed with the stored filters) \
+            and never changes the saved query. An error naming several ids means more than one \
+            saved query has that title: run the one you want by its id. Read-only."
+            .into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The saved query's title (e.g. 'Ready tasks') or its node id"
+                },
+                "filters": {
+                    "type": "array",
+                    "description": "Optional extra filters for this run only, applied on top of the saved query's own. Property names are fields of the type the saved query selects. Omit to run the query as saved.",
+                    "items": filter_item
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Return at most this many nodes. It can lower the saved query's own limit, not raise it."
+                }
+            },
+            "required": ["query"]
+        }),
+    }
+}
+
 /// `update_play`'s parameter schema is where the rule shape is stated
 /// (ADR-064 rule 1): the model reads it right before the call, and the
 /// play-authoring skill's guidance does not restate it.
@@ -2537,6 +2593,7 @@ pub enum Tool {
     GetWorkflowState,
     GetPlay,
     UpdatePlay,
+    RunQuery,
 }
 
 impl Tool {
@@ -2572,6 +2629,7 @@ impl Tool {
         Tool::GetWorkflowState,
         Tool::GetPlay,
         Tool::UpdatePlay,
+        Tool::RunQuery,
     ];
 
     /// The number of variants, counted by walking every one of them.
@@ -2611,7 +2669,8 @@ impl Tool {
                 Tool::MergeConflict => Tool::GetWorkflowState,
                 Tool::GetWorkflowState => Tool::GetPlay,
                 Tool::GetPlay => Tool::UpdatePlay,
-                Tool::UpdatePlay => break,
+                Tool::UpdatePlay => Tool::RunQuery,
+                Tool::RunQuery => break,
             };
         }
         n
@@ -2661,6 +2720,7 @@ impl Tool {
                 Tool::GetWorkflowState => 20,
                 Tool::GetPlay => 21,
                 Tool::UpdatePlay => 22,
+                Tool::RunQuery => 23,
             };
             assert!(expected == i, "Tool::ALL lists a variant out of order");
             i += 1;
@@ -2697,6 +2757,7 @@ impl Tool {
             Tool::GetWorkflowState => "get_workflow_state",
             Tool::GetPlay => "get_play",
             Tool::UpdatePlay => "update_play",
+            Tool::RunQuery => "run_query",
         }
     }
 
@@ -2729,6 +2790,7 @@ impl Tool {
             Tool::GetWorkflowState => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9615",
             Tool::GetPlay => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9616",
             Tool::UpdatePlay => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9617",
+            Tool::RunQuery => "b47d2f60-1c95-4e38-a7d1-0f5e8c3a9618",
         }
     }
 
@@ -2766,6 +2828,7 @@ impl Tool {
             // play-specific read or write, and the shipped skill teaches these.
             Tool::GetPlay => Some("nodespace node get"),
             Tool::UpdatePlay => Some("nodespace node update"),
+            Tool::RunQuery => Some("nodespace query run"),
         }
     }
 
@@ -2809,6 +2872,7 @@ impl Tool {
             Tool::GetWorkflowState => def_get_workflow_state(),
             Tool::GetPlay => def_get_play(),
             Tool::UpdatePlay => def_update_play(),
+            Tool::RunQuery => def_run_query(),
         }
     }
 
@@ -2842,6 +2906,7 @@ impl Tool {
             Tool::GetWorkflowState => "workflow state lookup",
             Tool::GetPlay => "play lookup",
             Tool::UpdatePlay => "play update",
+            Tool::RunQuery => "saved query run",
         }
     }
 
@@ -2864,7 +2929,8 @@ impl Tool {
             | Tool::ListConflicts
             | Tool::GetConflict
             | Tool::GetWorkflowState
-            | Tool::GetPlay => WriteSemantics::Read,
+            | Tool::GetPlay
+            | Tool::RunQuery => WriteSemantics::Read,
 
             // Idempotent writes. Setting a node to the same content, or a task
             // to the same status, twice is a no-op — the second call is not a
@@ -2943,7 +3009,8 @@ impl Tool {
             | Tool::ListConflicts
             | Tool::GetConflict
             | Tool::GetWorkflowState
-            | Tool::GetPlay => None,
+            | Tool::GetPlay
+            | Tool::RunQuery => None,
         }
     }
 
@@ -3004,7 +3071,8 @@ impl Tool {
             | Tool::AdoptExistingConflict
             | Tool::GetWorkflowState
             | Tool::GetPlay
-            | Tool::UpdatePlay => false,
+            | Tool::UpdatePlay
+            | Tool::RunQuery => false,
         }
     }
 
@@ -3028,7 +3096,8 @@ impl Tool {
             | Tool::ResolveQuery
             | Tool::SearchSemantic
             | Tool::GetNode
-            | Tool::GetRelatedNodes => true,
+            | Tool::GetRelatedNodes
+            | Tool::RunQuery => true,
             // get_conflict/list_conflicts return conflict-journal records, not
             // graph nodes — a conflict id is not the kind of entity "that" can
             // resolve against across turns.
@@ -3095,7 +3164,8 @@ impl Tool {
             | Tool::MergeConflict
             | Tool::GetWorkflowState
             | Tool::GetPlay
-            | Tool::UpdatePlay => false,
+            | Tool::UpdatePlay
+            | Tool::RunQuery => false,
         }
     }
 
@@ -3136,6 +3206,8 @@ impl Tool {
             | Tool::GetWorkflowState
             | Tool::GetPlay
             | Tool::UpdatePlay => None,
+            // Names a saved query, whose type is the query's own to state.
+            Tool::RunQuery => None,
         }
     }
 
@@ -3163,6 +3235,8 @@ impl Tool {
             // Reads by id. A held turn may follow a relationship from one of
             // its records to a related record of another type.
             Tool::GetNode | Tool::GetRelatedNodes | Tool::GetConflict | Tool::GetPlay => None,
+            // A read of whatever a saved query selects: it changes no node.
+            Tool::RunQuery => None,
             // Writes a play and nothing else: its own type check refuses any
             // other node, so there is no type for the hold to add.
             Tool::UpdatePlay => None,
@@ -4806,6 +4880,59 @@ impl GraphToolExecutor {
         Ok(ok_result(tool_call_id, "get_play", play))
     }
 
+    /// Run a saved query by id or title, with any run-time filters ANDed on.
+    /// Conversations are left out, as they are from `search_nodes`.
+    async fn exec_run_query(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: RunQueryParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "run_query".to_string(),
+                reason: e.to_string(),
+            })?;
+        let ns = self.node_service()?;
+
+        let (output, limit) = match query_ops::run_saved_query_excluding(
+            &ns,
+            query_ops::RunSavedQueryInput {
+                query: strip_node_uri(&params.query).to_string(),
+                filters: params.filters,
+                // A limit of 0 is "none given", as it is on the CLI: taken
+                // literally it returns nothing, which reads as no match.
+                limit: params.limit.filter(|limit| *limit > 0),
+                // A query with no limit of its own returns the default page
+                // `search_nodes` does, not everything it matches.
+                max_rows: None,
+            },
+            CONVERSATION_TYPES,
+        )
+        .await
+        {
+            Ok(output) => output,
+            // A reference that names no saved query or several, or a filter
+            // that cannot run, is the model's to read and correct: the message
+            // lists the ids to choose from, or names the field at fault.
+            Err(e @ (OpsError::NotFound { .. } | OpsError::InvalidParams(_))) => {
+                return Ok(error_result(tool_call_id, "run_query", &e.to_string()));
+            }
+            Err(e) => return Err(ops_error_to_tool(e, "run_query")),
+        };
+
+        let nodes: Vec<Value> = output.nodes.iter().map(search_result_summary).collect();
+        let mut result = json!({ "count": nodes.len(), "nodes": nodes });
+        // A full page is not a total: said on the result, so a count read
+        // off it is not reported as how many nodes the query matches.
+        if output.count >= limit {
+            result["limit_reached"] = json!(format!(
+                "These are the first {limit} matches; the saved query may match more. \
+                 Do not report {limit} as the total."
+            ));
+        }
+        Ok(ok_result(tool_call_id, "run_query", result))
+    }
+
     async fn exec_update_play(
         &self,
         tool_call_id: &str,
@@ -5354,6 +5481,7 @@ impl AgentToolExecutor for GraphToolExecutor {
             Tool::GetWorkflowState => self.exec_get_workflow_state(&tool_call_id, args).await,
             Tool::GetPlay => self.exec_get_play(&tool_call_id, args).await,
             Tool::UpdatePlay => self.exec_update_play(&tool_call_id, args).await,
+            Tool::RunQuery => self.exec_run_query(&tool_call_id, args).await,
         }
     }
 
@@ -6585,7 +6713,7 @@ mod tests {
     fn definitions_count() {
         // Derived from the registry: one definition per `Tool::ALL` entry.
         assert_eq!(all_tool_definitions().len(), Tool::ALL.len());
-        assert_eq!(all_tool_definitions().len(), 23);
+        assert_eq!(all_tool_definitions().len(), 24);
     }
 
     #[test]
@@ -6670,6 +6798,7 @@ mod tests {
                 "search_semantic",
                 "get_node",
                 "get_related_nodes",
+                "run_query",
             ]
         );
     }

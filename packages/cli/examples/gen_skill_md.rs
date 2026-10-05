@@ -186,17 +186,15 @@ fn render_cli_surface_block() -> String {
             let _ = write!(out, "\n{about}\n");
         }
 
-        let leaves = visible_subcommands(sub);
-        if leaves.is_empty() {
-            let args = render_args(sub);
-            if !args.is_empty() {
-                out.push('\n');
-                out.push_str(&args);
-            }
-            continue;
+        // A command's own arguments come first: a command that takes them
+        // and has subcommands too (`query`, `query run`) is run either way.
+        let args = render_args(sub);
+        if !args.is_empty() {
+            out.push('\n');
+            out.push_str(&args);
         }
 
-        for leaf in leaves {
+        for leaf in visible_subcommands(sub) {
             let _ = write!(
                 out,
                 "\n**`nodespace {} {}`**",

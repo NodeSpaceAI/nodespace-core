@@ -2682,31 +2682,42 @@ impl NodeService {
                 )
     }
 
-    /// Resolve a saved query's relationship paths before persisting.
+    /// Resolve a saved query's relationship paths, and check its paths into
+    /// object fields' values, before persisting.
     ///
-    /// A path names relationships as an author writes them, and what a name
-    /// means depends on the schemas. Resolving it here means a name that
-    /// resolves to nothing is an error when the query is saved, rather than a
-    /// query that quietly matches nothing each time it runs. The resolved
-    /// form is not stored: a query's paths are resolved again whenever it
-    /// runs, so they always follow the current schemas.
+    /// A path names relationships or fields as an author writes them, and
+    /// what a name means depends on the schemas. Resolving it here means a
+    /// name that resolves to nothing is an error when the query is saved,
+    /// rather than a query that quietly matches nothing each time it runs.
+    /// The resolved form is not stored: a query's paths are resolved again
+    /// whenever it runs, so they always follow the current schemas.
     pub(crate) async fn validate_query_paths(
         &self,
         properties: &serde_json::Value,
     ) -> Result<(), NodeServiceError> {
         let fields = crate::models::QueryFields::from_properties(properties)
             .map_err(|e| NodeServiceError::invalid_update(e.to_string()))?;
-        if fields.filters.iter().all(|filter| filter.path.is_none()) {
-            return Ok(());
-        }
+        let to_service_error = |e: crate::ops::OpsError| match e {
+            crate::ops::OpsError::InvalidParams(message) => {
+                NodeServiceError::invalid_update(message)
+            }
+            other => NodeServiceError::query_failed(other.to_string()),
+        };
+        // The check every run makes: a name that could not be formatted into
+        // a statement is refused here, not stored to fail each time it runs.
+        crate::services::QueryDefinition::from_fields(&fields)
+            .validate_identifiers()
+            .map_err(|e| NodeServiceError::invalid_update(e.to_string()))?;
         crate::ops::query_ops::resolve_filters(self, &fields.target_type, fields.filters)
             .await
-            .map_err(|e| match e {
-                crate::ops::OpsError::InvalidParams(message) => {
-                    NodeServiceError::invalid_update(message)
-                }
-                other => NodeServiceError::query_failed(other.to_string()),
-            })?;
+            .map_err(to_service_error)?;
+        crate::ops::query_ops::check_sorting(
+            self,
+            &fields.target_type,
+            fields.sorting.as_deref().unwrap_or(&[]),
+        )
+        .await
+        .map_err(to_service_error)?;
         Ok(())
     }
 

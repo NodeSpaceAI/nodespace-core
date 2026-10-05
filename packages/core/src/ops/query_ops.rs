@@ -57,6 +57,11 @@ pub struct AgentFilterItem {
     /// Case sensitivity for text comparisons (default: true).
     #[serde(default)]
     pub case_sensitive: Option<bool>,
+    /// Negate the filter: keep the nodes its condition does not hold for.
+    /// On a related-node filter, keep the nodes whose `path` reaches no node
+    /// matching the nested `filter`.
+    #[serde(default)]
+    pub negate: Option<bool>,
     /// The node a relationship filter's `path` must reach.
     #[serde(default)]
     pub node_id: Option<String>,
@@ -260,15 +265,124 @@ fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
         value: item.value,
         relative_date: item.relative_date,
         case_sensitive: item.case_sensitive,
+        negate: item.negate,
         node_id: item.node_id,
         path: item.path.filter(|_| walks),
         filter,
         resolved_path: None,
+        property_scope: None,
     })
 }
 
+/// Resolve a property filter's `property` or a sort's `field` against the
+/// fields `target_type` declares, its inherited ones included. A name that is
+/// a path into an object field's value (`repository.url`) is checked segment
+/// by segment. A plain field name passes unchecked, as it always has: an
+/// undeclared one matches nothing.
+///
+/// Every segment but the last must be an object field, and each must be
+/// declared in the one before it. A wildcard query has no schema to check
+/// against, so a path is refused there.
+///
+/// Returns the type whose property bucket holds the field, when it is an
+/// ancestor of `target_type`: an inherited field is stored under the schema
+/// that declares it, on a node of any type in the chain.
+async fn resolve_property(
+    node_service: &NodeService,
+    declared_fields: &mut DeclaredFields,
+    target_type: &str,
+    name: &str,
+    label: &str,
+) -> Result<Option<String>, OpsError> {
+    let segments = nodespace_types::property_segments(name);
+    if target_type == "*" {
+        if segments.len() < 2 {
+            return Ok(None);
+        }
+        return Err(OpsError::InvalidParams(format!(
+            "{label} '{name}' is a path into a field's value, which is checked against a \
+             type's schema: name the type the query selects instead of every type"
+        )));
+    }
+    if !declared_fields.contains_key(target_type) {
+        let (fields, owners, _) = node_service
+            .resolve_field_owners(target_type)
+            .await
+            .map_err(|e| OpsError::Internal(e.to_string()))?;
+        declared_fields.insert(target_type.to_string(), (fields, owners));
+    }
+    let (fields, owners) = &declared_fields[target_type];
+    let scope = owners
+        .get(segments[0])
+        .filter(|owner| owner.as_str() != target_type)
+        .cloned();
+    if segments.len() < 2 {
+        return Ok(scope);
+    }
+
+    let mut declared: &[crate::models::SchemaField] = fields;
+    for (index, segment) in segments.iter().enumerate() {
+        let reached = segments[..=index].join(".");
+        let Some(field) = declared.iter().find(|field| field.name == *segment) else {
+            return Err(OpsError::InvalidParams(format!(
+                "{label} '{name}': the '{target_type}' schema declares no field '{reached}'"
+            )));
+        };
+        if index + 1 == segments.len() {
+            break;
+        }
+        declared = match (&field.field_type, field.fields.as_deref()) {
+            (crate::models::SchemaFieldType::Object, Some(nested)) => nested,
+            _ => {
+                return Err(OpsError::InvalidParams(format!(
+                    "{label} '{name}': '{reached}' is a {} field of '{target_type}' with no \
+                     declared fields inside it, so a path cannot continue past it",
+                    field.field_type
+                )));
+            }
+        };
+    }
+    Ok(scope)
+}
+
+/// Check every sort field that is a path into an object field's value
+/// against the schema, as [`resolve_filters`] checks a property filter's.
+pub async fn check_sorting(
+    node_service: &NodeService,
+    target_type: &str,
+    sorting: &[SortConfig],
+) -> Result<(), OpsError> {
+    let mut declared_fields = DeclaredFields::new();
+    for sort in sorting {
+        // A plain sort field is not checked, and nothing reads its scope.
+        if nodespace_types::property_segments(&sort.field).len() < 2 {
+            continue;
+        }
+        resolve_property(
+            node_service,
+            &mut declared_fields,
+            target_type,
+            &sort.field,
+            "sort field",
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Each type's effective fields and the type that declares each one, read
+/// once per type while one query's names are resolved.
+type DeclaredFields = std::collections::HashMap<
+    String,
+    (
+        Vec<crate::models::SchemaField>,
+        std::collections::HashMap<String, String>,
+    ),
+>;
+
 /// Resolve the paths of `filters` against the schemas, so the query service
-/// can compile them.
+/// can compile them, and check each property filter's path into an object
+/// field's value against the schema that declares it.
 ///
 /// `target_type` is the type the filters are evaluated against: the query's
 /// own `target_type`. A nested filter of a related-node filter is evaluated
@@ -286,9 +400,11 @@ pub async fn resolve_filters(
     target_type: &str,
     filters: Vec<QueryFilter>,
 ) -> Result<Vec<QueryFilter>, OpsError> {
+    let mut declared_fields = DeclaredFields::new();
     let mut resolved = Vec::with_capacity(filters.len());
     for filter in filters {
-        resolved.push(resolve_filter(node_service, target_type, filter).await?);
+        resolved
+            .push(resolve_filter(node_service, &mut declared_fields, target_type, filter).await?);
     }
     Ok(resolved)
 }
@@ -299,11 +415,24 @@ pub async fn resolve_filters(
 /// construction — boxing is what gives the recursive call a fixed size.
 fn resolve_filter<'a>(
     node_service: &'a NodeService,
+    declared_fields: &'a mut DeclaredFields,
     target_type: &'a str,
     mut filter: QueryFilter,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<QueryFilter, OpsError>> + Send + 'a>>
 {
     Box::pin(async move {
+        if filter.filter_type == FilterType::Property {
+            if let Some(property) = &filter.property {
+                filter.property_scope = resolve_property(
+                    node_service,
+                    declared_fields,
+                    target_type,
+                    property,
+                    "filter property",
+                )
+                .await?;
+            }
+        }
         let Some(path) = &filter.path else {
             return Ok(filter);
         };
@@ -318,7 +447,7 @@ fn resolve_filter<'a>(
         if let Some(nested) = filter.filter.take() {
             let related_type = resolved.far_type().unwrap_or("*").to_string();
             filter.filter = Some(Box::new(
-                resolve_filter(node_service, &related_type, *nested).await?,
+                resolve_filter(node_service, declared_fields, &related_type, *nested).await?,
             ));
         }
         filter.resolved_path = Some(resolved);
@@ -381,14 +510,13 @@ async fn to_query_definition(
     node_service: &Arc<NodeService>,
     input: ExecuteQueryInput,
 ) -> Result<QueryDefinition, OpsError> {
-    let limit = input.limit.unwrap_or(50);
+    let limit = input.limit.unwrap_or(DEFAULT_QUERY_LIMIT);
 
     let filters = input
         .filters
         .into_iter()
         .map(to_query_filter)
         .collect::<Result<Vec<_>, _>>()?;
-    let filters = resolve_filters(node_service, &input.target_type, filters).await?;
 
     let sorting: Option<Vec<SortConfig>> = input.sorting.map(|items| {
         items
@@ -400,18 +528,252 @@ async fn to_query_definition(
             .collect()
     });
 
-    let query = QueryDefinition {
-        target_type: input.target_type,
+    checked_definition(
+        node_service,
+        input.target_type,
         filters,
         sorting,
-        limit: Some(limit),
+        Some(limit),
+    )
+    .await
+}
+
+/// Rows a query returns when neither it nor its caller names a limit.
+const DEFAULT_QUERY_LIMIT: usize = 50;
+
+/// The definition the query service runs, with everything that needs the
+/// schemas done first: relationship paths resolved, and each path into an
+/// object field's value checked, in the filters and the sorting alike.
+async fn checked_definition(
+    node_service: &NodeService,
+    target_type: String,
+    filters: Vec<QueryFilter>,
+    sorting: Option<Vec<SortConfig>>,
+    limit: Option<usize>,
+) -> Result<QueryDefinition, OpsError> {
+    let query = QueryDefinition {
+        target_type,
+        filters,
+        sorting,
+        limit,
     };
     // `QueryService` enforces this itself; checking here too classifies a bad
-    // identifier as the caller's error rather than an execution failure.
+    // identifier as the caller's error rather than an execution failure. It
+    // runs ahead of the schema checks so a malformed name is reported as
+    // malformed, not as undeclared.
     query
         .validate_identifiers()
         .map_err(|e| OpsError::InvalidParams(e.to_string()))?;
-    Ok(query)
+
+    let QueryDefinition {
+        target_type,
+        filters,
+        sorting,
+        limit,
+    } = query;
+    let filters = resolve_filters(node_service, &target_type, filters).await?;
+    check_sorting(
+        node_service,
+        &target_type,
+        sorting.as_deref().unwrap_or(&[]),
+    )
+    .await?;
+    Ok(QueryDefinition {
+        target_type,
+        filters,
+        sorting,
+        limit,
+    })
+}
+
+// ============================================================================
+// Running a saved query
+// ============================================================================
+
+/// A saved query to run, named by its id or its title.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunSavedQueryInput {
+    /// The query node's id, or its title.
+    pub query: String,
+    /// Filters ANDed with the stored ones for this run only.
+    #[serde(default)]
+    pub filters: Vec<AgentFilterItem>,
+    /// At most this many nodes. It can lower the stored limit, never raise
+    /// it.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// The most rows the caller's transport returns, whatever the stored
+    /// limit says, and what a query with no limit of its own returns. Set by
+    /// the caller in code, never read from input.
+    #[serde(skip)]
+    pub max_rows: Option<usize>,
+}
+
+/// What running a saved query returned.
+#[derive(Debug)]
+pub struct SavedQueryRun {
+    /// The query node that ran.
+    pub query_id: String,
+    /// The type it selects, or `*`.
+    pub target_type: String,
+    /// The row limit the run was held to: the stored one, a lower one asked
+    /// for, or the caller's. As many rows as this may not be every match.
+    pub limit: usize,
+    pub nodes: Vec<Node>,
+}
+
+/// The saved query `reference` names: a query node's id, or the title of
+/// exactly one query.
+///
+/// A title is compared whole, ignoring case and surrounding whitespace. An
+/// archived query is found by id only, like any archived node.
+///
+/// # Errors
+///
+/// `NotFound` when nothing has that id or title, and `InvalidParams` when the
+/// id is a node of another type or several queries share the title; the
+/// message says which, and lists the ids to choose from.
+pub async fn find_saved_query(
+    node_service: &NodeService,
+    reference: &str,
+) -> Result<Node, OpsError> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Err(OpsError::InvalidParams(
+            "name the saved query to run by its id or its title".to_string(),
+        ));
+    }
+
+    // An id that names a node of another type is reported only once no query
+    // has the reference as its title: some ids read as titles (a date's id is
+    // the date), and a query may be titled the same.
+    let mut other_type = None;
+    if let Some(node) = node_service.get_node(reference).await? {
+        if node_service
+            .type_is_a(&node.node_type, crate::models::CoreNodeType::Query)
+            .await?
+        {
+            return Ok(node);
+        }
+        other_type = Some(node.node_type);
+    }
+
+    // There are few saved queries, and the comparison folds case the way a
+    // person reads a title, which SQL's ASCII-only LOWER does not.
+    let every_query = QueryDefinition {
+        target_type: nodespace_types::QUERY_NODE_TYPE.to_string(),
+        filters: Vec::new(),
+        sorting: None,
+        limit: None,
+    };
+    let wanted = reference.to_lowercase();
+    let mut titled: Vec<Node> = QueryService::new(node_service.store().clone())
+        .execute(&every_query)
+        .await
+        .map_err(|e| OpsError::Internal(format!("saved query lookup failed: {e}")))?
+        .into_iter()
+        .filter(|node| node.content.trim().to_lowercase() == wanted)
+        .collect();
+
+    match titled.len() {
+        0 => Err(match other_type {
+            Some(node_type) => OpsError::InvalidParams(format!(
+                "'{reference}' is a '{node_type}' node, not a saved query"
+            )),
+            None => OpsError::NotFound {
+                id: format!("no saved query has the id or title '{reference}'"),
+            },
+        }),
+        1 => Ok(titled.remove(0)),
+        count => Err(OpsError::InvalidParams(format!(
+            "{count} saved queries are titled '{reference}': {}. Run one by its id.",
+            titled
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+/// Run a saved query: its stored filters, sorting, limit and relative dates,
+/// with `input.filters` ANDed on for this run. Nothing is written to the
+/// query node.
+///
+/// `excluded` leaves out those types and every type extending one of them.
+pub async fn run_saved_query_nodes_excluding(
+    node_service: &Arc<NodeService>,
+    input: RunSavedQueryInput,
+    excluded: &[crate::models::CoreNodeType],
+) -> Result<SavedQueryRun, OpsError> {
+    let node = find_saved_query(node_service, &input.query).await?;
+    let fields = crate::models::QueryFields::from_properties(&node.properties)
+        .map_err(|e| OpsError::InvalidParams(format!("saved query '{}': {e}", node.id)))?;
+
+    let mut filters = fields.filters;
+    for item in input.filters {
+        filters.push(to_query_filter(item)?);
+    }
+    let limit = match (fields.limit, input.limit) {
+        (Some(stored), Some(asked)) => stored.min(asked),
+        // A query that names no limit selects everything it matches, as it
+        // does in the app and in a play: the caller's ceiling bounds it when
+        // there is one, so a run is not cut at a default nobody chose.
+        (stored, asked) => stored
+            .or(asked)
+            .or(input.max_rows)
+            .unwrap_or(DEFAULT_QUERY_LIMIT),
+    };
+    let limit = input.max_rows.map_or(limit, |max| limit.min(max));
+
+    let query = checked_definition(
+        node_service,
+        fields.target_type,
+        filters,
+        fields.sorting,
+        Some(limit),
+    )
+    .await?;
+    let nodes = QueryService::new(node_service.store().clone())
+        .execute_excluding(&query, excluded)
+        .await
+        .map_err(|e| OpsError::Internal(format!("running saved query failed: {e}")))?;
+
+    Ok(SavedQueryRun {
+        query_id: node.id,
+        target_type: query.target_type,
+        limit,
+        nodes,
+    })
+}
+
+/// [`run_saved_query_nodes_excluding`] with nothing left out.
+pub async fn run_saved_query_nodes(
+    node_service: &Arc<NodeService>,
+    input: RunSavedQueryInput,
+) -> Result<SavedQueryRun, OpsError> {
+    run_saved_query_nodes_excluding(node_service, input, &[]).await
+}
+
+/// [`run_saved_query_nodes_excluding`], returning typed JSON values, the
+/// shape an agent tool call reads, and the row limit the run was held to. A
+/// result of that many rows may not be every match.
+pub async fn run_saved_query_excluding(
+    node_service: &Arc<NodeService>,
+    input: RunSavedQueryInput,
+    excluded: &[crate::models::CoreNodeType],
+) -> Result<(ExecuteQueryOutput, usize), OpsError> {
+    let run = run_saved_query_nodes_excluding(node_service, input, excluded).await?;
+    let count = run.nodes.len();
+    Ok((
+        ExecuteQueryOutput {
+            nodes: nodes_to_typed_values(run.nodes)?,
+            count,
+            collection_id: None,
+        },
+        run.limit,
+    ))
 }
 
 /// Count the nodes a structured query matches, without materializing them.
@@ -709,6 +1071,7 @@ mod tests {
                 value: None,
                 relative_date: None,
                 case_sensitive: None,
+                negate: Some(true),
                 node_id: None,
                 path: Some(
                     serde_json::from_value(
@@ -723,12 +1086,15 @@ mod tests {
                     value: Some(json!("act")),
                     relative_date: None,
                     case_sensitive: Some(false),
+                    negate: Some(true),
                     node_id: None,
                     path: None,
                     filter: None,
                     resolved_path: None,
+                    property_scope: None,
                 })),
                 resolved_path: None,
+                property_scope: None,
             },
             QueryFilter {
                 filter_type: FilterType::Relationship,
@@ -737,10 +1103,12 @@ mod tests {
                 value: None,
                 relative_date: None,
                 case_sensitive: None,
+                negate: None,
                 node_id: Some("n1".to_string()),
                 path: Some(serde_json::from_value(json!(["mentions"])).unwrap()),
                 filter: None,
                 resolved_path: None,
+                property_scope: None,
             },
             QueryFilter {
                 filter_type: FilterType::Property,
@@ -1921,6 +2289,795 @@ mod tests {
 
             assert_eq!(ranks("asc").await, ["a", "m", "z"]);
             assert_eq!(ranks("desc").await, ["z", "m", "a"]);
+        }
+
+        // -- Negation --
+
+        /// A negated filter keeps what its condition does not hold for, a
+        /// node with no value for the field included; a negated `exists` is
+        /// "has no value".
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_negated_filter_keeps_the_nodes_its_condition_does_not_hold_for() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({"name": "ng_item", "fields": [{"name": "owner", "type": "text"}]}),
+            )
+            .await;
+            const ADA: &str = "b1000000-0000-4000-8000-000000000001";
+            const BOB: &str = "b1000000-0000-4000-8000-000000000002";
+            const NOBODY: &str = "b1000000-0000-4000-8000-000000000003";
+            svc.create_node(node(ADA, "ng_item", json!({ "owner": "ada" })))
+                .await
+                .unwrap();
+            svc.create_node(node(BOB, "ng_item", json!({ "owner": "bob" })))
+                .await
+                .unwrap();
+            svc.create_node(node(NOBODY, "ng_item", json!({})))
+                .await
+                .unwrap();
+
+            let not_ada = matching_ids(
+                &svc,
+                json!({ "target_type": "ng_item", "filters": [{
+                    "type": "property", "operator": "equals", "property": "owner",
+                    "value": "ada", "negate": true
+                }] }),
+            )
+            .await;
+            assert_eq!(not_ada, [BOB, NOBODY]);
+
+            let unowned = matching_ids(
+                &svc,
+                json!({ "target_type": "ng_item", "filters": [{
+                    "type": "property", "operator": "exists", "property": "owner", "negate": true
+                }] }),
+            )
+            .await;
+            assert_eq!(unowned, [NOBODY]);
+
+            let not_this_node = matching_ids(
+                &svc,
+                json!({ "target_type": "ng_item", "filters": [{
+                    "type": "content", "operator": "contains", "value": ADA, "negate": true
+                }] }),
+            )
+            .await;
+            assert_eq!(not_this_node, [BOB, NOBODY]);
+        }
+
+        // -- Saved queries as queues --
+
+        const READY_QUERY: &str = "c0000000-0000-4000-8000-0000000000aa";
+
+        /// Seven tasks around the two conditions of a ready queue, on the
+        /// core `task` type's `blocked_by` and a user-defined plan type:
+        ///
+        /// - `FREE` has no blocker and no plan
+        /// - `UNBLOCKED` is blocked by a done task and a cancelled one
+        /// - `BLOCKED` is blocked by an open task
+        /// - `HALF_BLOCKED` is blocked by a done task and an open one
+        /// - `PLANNED` has an approved plan
+        /// - `DRAFTED` has a draft plan
+        /// - the blockers themselves: `DONE`, `CANCELLED` (finished) and
+        ///   `OPEN` (open, unblocked, no plan)
+        mod queue {
+            pub const FREE: &str = "c0000000-0000-4000-8000-000000000001";
+            pub const UNBLOCKED: &str = "c0000000-0000-4000-8000-000000000002";
+            pub const BLOCKED: &str = "c0000000-0000-4000-8000-000000000003";
+            pub const HALF_BLOCKED: &str = "c0000000-0000-4000-8000-000000000004";
+            pub const PLANNED: &str = "c0000000-0000-4000-8000-000000000005";
+            pub const DRAFTED: &str = "c0000000-0000-4000-8000-000000000006";
+            pub const DONE: &str = "c0000000-0000-4000-8000-000000000011";
+            pub const CANCELLED: &str = "c0000000-0000-4000-8000-000000000012";
+            pub const OPEN: &str = "c0000000-0000-4000-8000-000000000013";
+            pub const APPROVED_PLAN: &str = "c0000000-0000-4000-8000-000000000021";
+            pub const DRAFT_PLAN: &str = "c0000000-0000-4000-8000-000000000022";
+        }
+
+        fn no_unfinished_blocker() -> serde_json::Value {
+            json!({
+                "type": "related", "operator": "exists", "path": ["blocked_by"], "negate": true,
+                "filter": {
+                    "type": "property", "operator": "in", "property": "status",
+                    "value": ["done", "cancelled"], "negate": true
+                }
+            })
+        }
+
+        fn no_unapproved_plan() -> serde_json::Value {
+            json!({
+                "type": "related", "operator": "exists", "path": ["plan"], "negate": true,
+                "filter": {
+                    "type": "property", "operator": "equals", "property": "plan_status",
+                    "value": "approved", "negate": true
+                }
+            })
+        }
+
+        async fn seed_queue(svc: &Arc<NodeService>) {
+            use queue::*;
+            create_schema(
+                svc,
+                json!({
+                    "name": "wf_plan",
+                    "fields": [{"name": "plan_status", "type": "text"}],
+                    "relationships": [{
+                        "name": "plans",
+                        "targetType": "task",
+                        "direction": "out",
+                        "cardinality": "many",
+                        "reverseName": "plan",
+                        "reverseCardinality": "many"
+                    }]
+                }),
+            )
+            .await;
+
+            for (id, status) in [
+                (FREE, "open"),
+                (UNBLOCKED, "open"),
+                (BLOCKED, "open"),
+                (HALF_BLOCKED, "open"),
+                (PLANNED, "open"),
+                (DRAFTED, "open"),
+                (DONE, "done"),
+                (CANCELLED, "cancelled"),
+                (OPEN, "open"),
+            ] {
+                svc.create_node(task_node(id, status, None)).await.unwrap();
+            }
+            for (blocker, blocked) in [
+                (DONE, UNBLOCKED),
+                (CANCELLED, UNBLOCKED),
+                (OPEN, BLOCKED),
+                (DONE, HALF_BLOCKED),
+                (OPEN, HALF_BLOCKED),
+            ] {
+                svc.create_relationship(blocker, "blocks", blocked, json!({}))
+                    .await
+                    .unwrap();
+            }
+            for (plan, plan_status, task) in [
+                (APPROVED_PLAN, "approved", PLANNED),
+                (DRAFT_PLAN, "draft", DRAFTED),
+            ] {
+                svc.create_node(node(plan, "wf_plan", json!({ "plan_status": plan_status })))
+                    .await
+                    .unwrap();
+                svc.create_relationship(plan, "plans", task, json!({}))
+                    .await
+                    .unwrap();
+            }
+        }
+
+        async fn save_query(svc: &Arc<NodeService>, id: &str, title: &str, fields: Value) {
+            let mut query = node(id, "query", fields);
+            query.content = title.to_string();
+            query.title = Some(title.to_string());
+            svc.create_node(query)
+                .await
+                .unwrap_or_else(|e| panic!("saving query '{title}' failed: {e}"));
+        }
+
+        async fn run_ids(svc: &Arc<NodeService>, input: Value) -> Vec<String> {
+            let input: RunSavedQueryInput = serde_json::from_value(input).unwrap();
+            let mut ids: Vec<String> = run_saved_query_nodes(svc, input)
+                .await
+                .unwrap()
+                .nodes
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            ids.sort();
+            ids
+        }
+
+        async fn run_error(svc: &Arc<NodeService>, input: Value) -> OpsError {
+            let input: RunSavedQueryInput = serde_json::from_value(input).unwrap();
+            run_saved_query_nodes(svc, input).await.unwrap_err()
+        }
+
+        /// "No `blocked_by` task whose status is not done or cancelled" keeps
+        /// a task with no blocker at all, and one whose every blocker is
+        /// finished.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn tasks_with_no_unfinished_blocker_can_be_saved_and_run() {
+            use queue::*;
+            let (svc, _tmp) = make_test_service().await;
+            seed_queue(&svc).await;
+            save_query(
+                &svc,
+                READY_QUERY,
+                "Unblocked tasks",
+                json!({ "target_type": "task", "filters": [no_unfinished_blocker()] }),
+            )
+            .await;
+
+            assert_eq!(
+                run_ids(&svc, json!({ "query": READY_QUERY })).await,
+                [FREE, UNBLOCKED, PLANNED, DRAFTED, DONE, CANCELLED, OPEN]
+            );
+        }
+
+        /// "No plan whose `plan_status` is not approved" keeps a task with no
+        /// plan at all.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn tasks_with_no_unapproved_plan_can_be_saved_and_run() {
+            use queue::*;
+            let (svc, _tmp) = make_test_service().await;
+            seed_queue(&svc).await;
+            save_query(
+                &svc,
+                READY_QUERY,
+                "Planned tasks",
+                json!({ "target_type": "task", "filters": [no_unapproved_plan()] }),
+            )
+            .await;
+
+            assert_eq!(
+                run_ids(&svc, json!({ "query": READY_QUERY })).await,
+                [
+                    FREE,
+                    UNBLOCKED,
+                    BLOCKED,
+                    HALF_BLOCKED,
+                    PLANNED,
+                    DONE,
+                    CANCELLED,
+                    OPEN
+                ]
+            );
+        }
+
+        /// A saved query runs by id and by title with its stored filters,
+        /// sorting and limit.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_saved_query_runs_by_id_and_by_title() {
+            use queue::*;
+            let (svc, _tmp) = make_test_service().await;
+            seed_queue(&svc).await;
+            save_query(
+                &svc,
+                READY_QUERY,
+                "Ready tasks",
+                json!({
+                    "target_type": "task",
+                    "filters": [
+                        { "type": "property", "operator": "equals", "property": "status", "value": "open" },
+                        no_unfinished_blocker(),
+                        no_unapproved_plan()
+                    ]
+                }),
+            )
+            .await;
+
+            let ready = [FREE, UNBLOCKED, PLANNED, OPEN];
+            assert_eq!(run_ids(&svc, json!({ "query": READY_QUERY })).await, ready);
+            assert_eq!(
+                run_ids(&svc, json!({ "query": "Ready tasks" })).await,
+                ready
+            );
+            assert_eq!(
+                run_ids(&svc, json!({ "query": "  ready TASKS " })).await,
+                ready
+            );
+
+            let run = run_saved_query_nodes(
+                &svc,
+                serde_json::from_value(json!({ "query": "Ready tasks" })).unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(run.query_id, READY_QUERY);
+            assert_eq!(run.target_type, "task");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_saved_query_runs_with_its_sorting_limit_and_relative_dates() {
+            let (svc, _tmp) = make_test_service().await;
+            let today = chrono::Local::now().date_naive();
+            let day = |offset: i64| {
+                (today + chrono::Duration::days(offset))
+                    .format("%Y-%m-%d")
+                    .to_string()
+            };
+            const OVERDUE: &str = "c1000000-0000-4000-8000-000000000001";
+            const TODAY: &str = "c1000000-0000-4000-8000-000000000002";
+            const TOMORROW: &str = "c1000000-0000-4000-8000-000000000003";
+            for (id, offset) in [(OVERDUE, -3), (TODAY, 0), (TOMORROW, 1)] {
+                svc.create_node(task_node(id, "open", Some(&day(offset))))
+                    .await
+                    .unwrap();
+            }
+            save_query(
+                &svc,
+                READY_QUERY,
+                "Due",
+                json!({
+                    "target_type": "task",
+                    "filters": [{
+                        "type": "property", "operator": "lte", "property": "due_date",
+                        "relative_date": { "anchor": "today" }
+                    }],
+                    "sorting": [{ "field": "due_date", "direction": "desc" }],
+                    "limit": 5
+                }),
+            )
+            .await;
+
+            let ordered = |input: Value| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    run_saved_query_nodes(&svc, serde_json::from_value(input).unwrap())
+                        .await
+                        .unwrap()
+                        .nodes
+                        .into_iter()
+                        .map(|n| n.id)
+                        .collect::<Vec<_>>()
+                }
+            };
+            assert_eq!(ordered(json!({ "query": "Due" })).await, [TODAY, OVERDUE]);
+            // A run-time limit lowers the stored one and never raises it.
+            assert_eq!(
+                ordered(json!({ "query": "Due", "limit": 1 })).await,
+                [TODAY]
+            );
+            assert_eq!(
+                ordered(json!({ "query": "Due", "limit": 500 })).await,
+                [TODAY, OVERDUE]
+            );
+        }
+
+        /// Filters given at run time are ANDed with the stored ones, negated
+        /// ones included, and the stored query is left as it was.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn run_time_filters_narrow_a_run_and_leave_the_query_unchanged() {
+            use queue::*;
+            let (svc, _tmp) = make_test_service().await;
+            seed_queue(&svc).await;
+            save_query(
+                &svc,
+                READY_QUERY,
+                "Unblocked tasks",
+                json!({ "target_type": "task", "filters": [no_unfinished_blocker()] }),
+            )
+            .await;
+            let before = svc.get_node(READY_QUERY).await.unwrap().unwrap();
+
+            assert_eq!(
+                run_ids(
+                    &svc,
+                    json!({ "query": READY_QUERY, "filters": [
+                        { "property": "status", "operator": "equals", "value": "open" },
+                        no_unapproved_plan()
+                    ] })
+                )
+                .await,
+                [FREE, UNBLOCKED, PLANNED, OPEN]
+            );
+
+            let after = svc.get_node(READY_QUERY).await.unwrap().unwrap();
+            assert_eq!(after.properties, before.properties);
+            assert_eq!(after.version, before.version);
+            assert_eq!(
+                run_ids(&svc, json!({ "query": READY_QUERY })).await.len(),
+                7,
+                "the next run is not narrowed"
+            );
+        }
+
+        /// A reference that names no saved query, or more than one, fails
+        /// with a message that says which.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_reference_matching_no_query_or_several_says_which() {
+            let (svc, _tmp) = make_test_service().await;
+            const FIRST: &str = "c2000000-0000-4000-8000-000000000001";
+            const SECOND: &str = "c2000000-0000-4000-8000-000000000002";
+            const TASK: &str = "c2000000-0000-4000-8000-000000000003";
+            let all_tasks = json!({ "target_type": "task", "filters": [] });
+            save_query(&svc, FIRST, "Review queue", all_tasks.clone()).await;
+            save_query(&svc, SECOND, "review queue", all_tasks).await;
+            svc.create_node(task_node(TASK, "open", None))
+                .await
+                .unwrap();
+
+            let none = run_error(&svc, json!({ "query": "Triage" })).await;
+            assert!(matches!(none, OpsError::NotFound { .. }), "{none:?}");
+            assert!(
+                none.to_string()
+                    .contains("no saved query has the id or title 'Triage'"),
+                "{none}"
+            );
+
+            let several = run_error(&svc, json!({ "query": "Review queue" })).await;
+            assert!(matches!(several, OpsError::InvalidParams(_)), "{several:?}");
+            let message = several.to_string();
+            assert!(
+                message.contains("2 saved queries are titled 'Review queue'"),
+                "{message}"
+            );
+            assert!(
+                message.contains(FIRST) && message.contains(SECOND),
+                "{message}"
+            );
+
+            let not_a_query = run_error(&svc, json!({ "query": TASK })).await;
+            assert!(
+                not_a_query
+                    .to_string()
+                    .contains("is a 'task' node, not a saved query"),
+                "{not_a_query}"
+            );
+
+            let unnamed = run_error(&svc, json!({ "query": "  " })).await;
+            assert!(matches!(unnamed, OpsError::InvalidParams(_)), "{unnamed:?}");
+
+            // A reference that is another node's id and also a query's title
+            // names the query.
+            const TITLED_AS_AN_ID: &str = "c2000000-0000-4000-8000-000000000004";
+            save_query(
+                &svc,
+                TITLED_AS_AN_ID,
+                TASK,
+                json!({ "target_type": "task", "filters": [] }),
+            )
+            .await;
+            assert_eq!(run_ids(&svc, json!({ "query": TASK })).await, [TASK]);
+        }
+
+        // -- Paths into object values --
+
+        const REPO_A: &str = "d0000000-0000-4000-8000-000000000001";
+        const REPO_B: &str = "d0000000-0000-4000-8000-000000000002";
+        const NO_REPO: &str = "d0000000-0000-4000-8000-000000000003";
+
+        async fn seed_repositories(svc: &Arc<NodeService>) {
+            create_schema(
+                svc,
+                json!({
+                    "name": "op_project",
+                    "fields": [
+                        { "name": "label", "type": "text" },
+                        { "name": "repository", "type": "object", "fields": [
+                            { "name": "url", "type": "text" },
+                            { "name": "host", "type": "object", "fields": [
+                                { "name": "name", "type": "text" }
+                            ] }
+                        ] }
+                    ]
+                }),
+            )
+            .await;
+            for (id, url, host) in [
+                (REPO_A, "https://example.com/a.git", "zeta"),
+                (REPO_B, "https://example.com/b.git", "alpha"),
+            ] {
+                svc.create_node(node(
+                    id,
+                    "op_project",
+                    json!({ "repository": { "url": url, "host": { "name": host } } }),
+                ))
+                .await
+                .unwrap();
+            }
+            svc.create_node(node(NO_REPO, "op_project", json!({ "label": "none" })))
+                .await
+                .unwrap();
+        }
+
+        /// A property filter and a sort reach a field inside an object value,
+        /// to any declared depth.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_filter_and_a_sort_reach_into_an_object_field() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_repositories(&svc).await;
+
+            let by_url = matching_ids(
+                &svc,
+                json!({ "target_type": "op_project", "filters": [{
+                    "type": "property", "operator": "equals",
+                    "property": "repository.url", "value": "https://example.com/b.git"
+                }] }),
+            )
+            .await;
+            assert_eq!(by_url, [REPO_B]);
+
+            let not_a = matching_ids(
+                &svc,
+                json!({ "target_type": "op_project", "filters": [{
+                    "type": "property", "operator": "equals", "negate": true,
+                    "property": "repository.url", "value": "https://example.com/a.git"
+                }] }),
+            )
+            .await;
+            assert_eq!(not_a, [REPO_B, NO_REPO]);
+
+            let input: ExecuteQueryInput = serde_json::from_value(json!({
+                "target_type": "op_project",
+                "filters": [{
+                    "type": "property", "operator": "exists", "property": "repository.host.name"
+                }],
+                "sorting": [{ "field": "repository.host.name", "direction": "asc" }]
+            }))
+            .unwrap();
+            let sorted: Vec<String> = execute_query_nodes(&svc, input)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|n| n.id)
+                .collect();
+            assert_eq!(sorted, [REPO_B, REPO_A]);
+        }
+
+        /// A path the schema does not declare is refused when the query is
+        /// saved and when it runs, in a filter and in a sort, with a message
+        /// naming it.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_undeclared_path_is_refused_at_save_time_and_at_run_time() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_repositories(&svc).await;
+
+            let filter_on = |property: &str| json!([{ "type": "property", "operator": "exists", "property": property }]);
+            for (property, expected) in [
+                ("repository.branch", "declares no field 'repository.branch'"),
+                ("mirror.url", "declares no field 'mirror'"),
+                ("label.length", "'label' is a text field"),
+                ("repository.url.scheme", "'repository.url' is a text field"),
+            ] {
+                let input: ExecuteQueryInput = serde_json::from_value(
+                    json!({ "target_type": "op_project", "filters": filter_on(property) }),
+                )
+                .unwrap();
+                let at_run = execute_query(&svc, input).await.unwrap_err();
+                assert!(matches!(at_run, OpsError::InvalidParams(_)), "{at_run:?}");
+                assert!(at_run.to_string().contains(expected), "{at_run}");
+                assert!(at_run.to_string().contains(property), "{at_run}");
+
+                let mut query = node(
+                    READY_QUERY,
+                    "query",
+                    json!({ "target_type": "op_project", "filters": filter_on(property) }),
+                );
+                query.content = "Undeclared".to_string();
+                let at_save = svc.create_node(query).await.unwrap_err();
+                assert!(at_save.to_string().contains(expected), "{at_save}");
+            }
+
+            let sorted = json!({
+                "target_type": "op_project",
+                "filters": [],
+                "sorting": [{ "field": "repository.branch", "direction": "asc" }]
+            });
+            let at_run = execute_query(&svc, serde_json::from_value(sorted.clone()).unwrap())
+                .await
+                .unwrap_err();
+            assert!(
+                at_run
+                    .to_string()
+                    .contains("sort field 'repository.branch'"),
+                "{at_run}"
+            );
+            let mut query = node(READY_QUERY, "query", sorted);
+            query.content = "Undeclared sort".to_string();
+            let at_save = svc.create_node(query).await.unwrap_err();
+            assert!(
+                at_save
+                    .to_string()
+                    .contains("sort field 'repository.branch'"),
+                "{at_save}"
+            );
+
+            // A name that could not be formatted into a statement is refused
+            // when the query is saved, in a filter and in a sort.
+            for fields in [
+                json!({ "target_type": "op_project", "filters": filter_on("la bel") }),
+                json!({ "target_type": "op_project", "filters": [],
+                    "sorting": [{ "field": "la'bel", "direction": "asc" }] }),
+            ] {
+                let mut query = node(READY_QUERY, "query", fields);
+                query.content = "Malformed".to_string();
+                let at_save = svc.create_node(query).await.unwrap_err();
+                assert!(
+                    at_save.to_string().contains("contains invalid characters"),
+                    "{at_save}"
+                );
+            }
+
+            // A query over every type has no schema to check a path against.
+            let wildcard: ExecuteQueryInput = serde_json::from_value(
+                json!({ "target_type": "*", "filters": filter_on("repository.url") }),
+            )
+            .unwrap();
+            let err = execute_query(&svc, wildcard).await.unwrap_err();
+            assert!(err.to_string().contains("name the type"), "{err}");
+        }
+
+        /// A subtype's node keeps an inherited field in the bucket of the
+        /// type that declares it. A filter on a query for the subtype reads
+        /// it there, plain or as a path, so its negation does not match a
+        /// node the field is set on.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_filter_on_a_subtype_reads_an_inherited_field_where_it_is_stored() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({
+                    "name": "in_ticket",
+                    "fields": [
+                        { "name": "state", "type": "text" },
+                        { "name": "repository", "type": "object", "fields": [
+                            { "name": "url", "type": "text" }
+                        ] }
+                    ]
+                }),
+            )
+            .await;
+            create_schema(
+                &svc,
+                json!({ "name": "in_bug", "extends": "in_ticket", "fields": [
+                    { "name": "severity", "type": "text" }
+                ] }),
+            )
+            .await;
+            const OPEN: &str = "e0000000-0000-4000-8000-000000000001";
+            const CLOSED: &str = "e0000000-0000-4000-8000-000000000002";
+            for (id, state, url) in [(OPEN, "open", "a.git"), (CLOSED, "closed", "b.git")] {
+                svc.create_node(node(
+                    id,
+                    "in_bug",
+                    json!({ "state": state, "severity": "low", "repository": { "url": url } }),
+                ))
+                .await
+                .unwrap();
+            }
+
+            let bugs = |filter: Value| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    matching_ids(
+                        &svc,
+                        json!({ "target_type": "in_bug", "filters": [filter] }),
+                    )
+                    .await
+                }
+            };
+            let state_closed = json!({ "type": "property", "operator": "equals", "property": "state", "value": "closed" });
+            assert_eq!(bugs(state_closed.clone()).await, [CLOSED]);
+            let mut not_closed = state_closed;
+            not_closed["negate"] = json!(true);
+            assert_eq!(bugs(not_closed).await, [OPEN]);
+
+            assert_eq!(
+                bugs(json!({
+                    "type": "property", "operator": "equals", "negate": true,
+                    "property": "repository.url", "value": "a.git"
+                }))
+                .await,
+                [CLOSED]
+            );
+            // The subtype's own field is in its own bucket.
+            assert_eq!(
+                bugs(json!({
+                    "type": "property", "operator": "equals", "property": "severity", "value": "low"
+                }))
+                .await,
+                [OPEN, CLOSED]
+            );
+
+            // Reached through a built-in relationship the far end has no one
+            // type, and each related row is read at its own type's chain.
+            const PARENT_OF_OPEN: &str = "e0000000-0000-4000-8000-000000000011";
+            const PARENT_OF_CLOSED: &str = "e0000000-0000-4000-8000-000000000012";
+            for (parent, child) in [(PARENT_OF_OPEN, OPEN), (PARENT_OF_CLOSED, CLOSED)] {
+                svc.create_node(node(parent, "in_ticket", json!({ "state": "open" })))
+                    .await
+                    .unwrap();
+                svc.create_relationship(parent, "has_child", child, json!({}))
+                    .await
+                    .unwrap();
+            }
+            let no_child_that_is_not_closed = matching_ids(
+                &svc,
+                json!({ "target_type": "in_ticket", "filters": [
+                    { "type": "related", "operator": "exists", "path": ["has_child"], "negate": true,
+                      "filter": { "type": "property", "operator": "equals", "property": "state",
+                                  "value": "closed", "negate": true } }
+                ] }),
+            )
+            .await;
+            assert_eq!(
+                no_child_that_is_not_closed,
+                [OPEN, CLOSED, PARENT_OF_CLOSED]
+            );
+        }
+
+        /// A caller's row ceiling bounds a stored limit, and is what a query
+        /// with no limit of its own returns.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_callers_row_ceiling_bounds_the_stored_limit() {
+            let (svc, _tmp) = make_test_service().await;
+            for n in 1..=4 {
+                svc.create_node(task_node(
+                    &format!("e1000000-0000-4000-8000-00000000000{n}"),
+                    "open",
+                    None,
+                ))
+                .await
+                .unwrap();
+            }
+            const LIMITED: &str = "e1000000-0000-4000-8000-0000000000a1";
+            const UNLIMITED: &str = "e1000000-0000-4000-8000-0000000000a2";
+            save_query(
+                &svc,
+                LIMITED,
+                "Limited",
+                json!({ "target_type": "task", "filters": [], "limit": 3 }),
+            )
+            .await;
+            save_query(
+                &svc,
+                UNLIMITED,
+                "Unlimited",
+                json!({ "target_type": "task", "filters": [] }),
+            )
+            .await;
+
+            let count = |query: &'static str, max_rows: Option<usize>| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    let mut input: RunSavedQueryInput =
+                        serde_json::from_value(json!({ "query": query })).unwrap();
+                    input.max_rows = max_rows;
+                    run_saved_query_nodes(&svc, input)
+                        .await
+                        .unwrap()
+                        .nodes
+                        .len()
+                }
+            };
+            assert_eq!(count("Limited", None).await, 3);
+            assert_eq!(count("Limited", Some(2)).await, 2);
+            assert_eq!(count("Limited", Some(500)).await, 3);
+            assert_eq!(count("Unlimited", Some(2)).await, 2);
+            assert_eq!(count("Unlimited", Some(500)).await, 4);
+        }
+
+        /// A path is still held to identifier characters: nothing in it can
+        /// end the JSON path it is formatted into.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_path_cannot_break_out_of_the_json_path() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_repositories(&svc).await;
+
+            for property in [
+                "repository.url') OR 1=1 --",
+                "repository.\"url\"",
+                "repository. url",
+                "repository url",
+                "repository..url",
+                ".repository",
+                "repository.",
+                "repository.url[0]",
+                "repository.$",
+            ] {
+                for input in [
+                    json!({ "target_type": "op_project", "filters": [{
+                        "type": "property", "operator": "exists", "property": property
+                    }] }),
+                    json!({ "target_type": "op_project", "filters": [],
+                        "sorting": [{ "field": property, "direction": "asc" }] }),
+                ] {
+                    let err = execute_query(&svc, serde_json::from_value(input).unwrap())
+                        .await
+                        .unwrap_err();
+                    assert!(
+                        matches!(err, OpsError::InvalidParams(_)),
+                        "{property:?} must be refused as the caller's error, got {err:?}"
+                    );
+                }
+            }
         }
     }
 }

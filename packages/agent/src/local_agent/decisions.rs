@@ -351,7 +351,8 @@ fn schema_scoped(tool_name: &str) -> bool {
             | Tool::MergeConflict
             | Tool::GetWorkflowState
             | Tool::GetPlay
-            | Tool::UpdatePlay,
+            | Tool::UpdatePlay
+            | Tool::RunQuery,
         ) => false,
         // An unrecognised name is not schema-scoped: it is either a malformed
         // generation or a tool this build does not register, and neither is a

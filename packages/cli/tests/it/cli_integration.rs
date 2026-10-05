@@ -28,7 +28,7 @@ use nodespace_core::{NodeService as CoreNodeService, SqliteStore};
 use nodespace_daemon::nodespace::{
     ConflictsForNodeRequest, CreateDatabaseRequest, CreateNodeRequest, GetConflictRequest,
     GetNodeRequest, GetRelatedNodesRequest, GetSkillRequest, ListDatabasesRequest, NodeSortOrder,
-    QueryNodesSimpleRequest, SkillGuidanceRequest,
+    QueryNodesSimpleRequest, RunSavedQueryRequest, SkillGuidanceRequest,
 };
 use nodespace_daemon::{
     DatabaseManager, DatabaseServiceImpl, DatabaseServiceServer, DbManagerLayer, NodeServiceImpl,
@@ -2105,7 +2105,8 @@ async fn execute_query_filters_by_property() {
     commands::query::run(
         &mut client,
         commands::query::QueryArgs {
-            target_type: "task".into(),
+            command: None,
+            target_type: Some("task".into()),
             filters: Some(
                 serde_json::json!([
                     {"type": "property", "operator": "equals", "property": "status", "value": "open"}
@@ -2119,6 +2120,203 @@ async fn execute_query_filters_by_property() {
     )
     .await
     .expect("execute query");
+
+    let _ = shutdown.send(());
+}
+
+/// `query run` takes a saved query's id or title and optional narrowing;
+/// without the subcommand, `query` still needs `--type`.
+#[test]
+fn query_run_parses_beside_the_inline_query() {
+    use clap::Parser;
+    let parse = |args: &[&str]| nodespace_cli::Cli::try_parse_from(args);
+
+    assert!(parse(&["nodespace", "query", "--type", "task"]).is_ok());
+    assert!(parse(&["nodespace", "query"]).is_err());
+    assert!(parse(&["nodespace", "query", "run"]).is_err());
+    assert!(parse(&["nodespace", "query", "run", "Ready tasks"]).is_ok());
+    assert!(parse(&["nodespace", "--json", "query", "run", "Ready tasks"]).is_ok());
+    assert!(parse(&[
+        "nodespace",
+        "query",
+        "run",
+        "Ready tasks",
+        "--filters",
+        "[]",
+        "--limit",
+        "1"
+    ])
+    .is_ok());
+    // A saved query carries its own type and sorting.
+    assert!(parse(&["nodespace", "query", "run", "Ready tasks", "--type", "task"]).is_err());
+    assert!(parse(&[
+        "nodespace",
+        "query",
+        "run",
+        "Ready tasks",
+        "--sorting",
+        "[]"
+    ])
+    .is_err());
+}
+
+/// `query run` returns what the saved query matches, by id and by title,
+/// narrowed by run-time filters, and says which when a title names no query
+/// or several.
+#[tokio::test]
+async fn query_run_executes_a_saved_query_by_id_or_title() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let create = |node_type: &str, content: &str, properties: serde_json::Value| {
+        let request = CreateNodeRequest {
+            node_type: node_type.into(),
+            content: content.into(),
+            parent_id: None,
+            properties: properties.to_string(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position: None,
+        };
+        let mut raw = raw.clone();
+        async move {
+            raw.create_node(request)
+                .await
+                .expect("create node")
+                .into_inner()
+                .node_id
+        }
+    };
+    create(
+        "task",
+        "open low",
+        serde_json::json!({"status": "open", "priority": "low"}),
+    )
+    .await;
+    create(
+        "task",
+        "open high",
+        serde_json::json!({"status": "open", "priority": "high"}),
+    )
+    .await;
+    create("task", "done", serde_json::json!({"status": "done"})).await;
+    let not_done = serde_json::json!({
+        "target_type": "task",
+        "filters": [{
+            "type": "property", "operator": "equals", "property": "status",
+            "value": "done", "negate": true
+        }],
+        "sorting": [{"field": "priority", "direction": "asc"}]
+    });
+    let query_id = create("query", "Not done", not_done.clone()).await;
+    create("query", "Twin", not_done.clone()).await;
+    create("query", "twin", not_done).await;
+
+    let contents = |query: &str, filters: Option<serde_json::Value>, limit: u32| {
+        let request = RunSavedQueryRequest {
+            query: query.into(),
+            filters_json: filters.map(|f| f.to_string()),
+            limit,
+        };
+        let mut raw = raw.clone();
+        async move {
+            raw.run_saved_query(request).await.map(|response| {
+                response
+                    .into_inner()
+                    .nodes
+                    .into_iter()
+                    .map(|node| node.content)
+                    .collect::<Vec<_>>()
+            })
+        }
+    };
+
+    assert_eq!(
+        contents(&query_id, None, 0).await.expect("run by id"),
+        ["open high", "open low"]
+    );
+    assert_eq!(
+        contents("not DONE", None, 0).await.expect("run by title"),
+        ["open high", "open low"]
+    );
+    assert_eq!(
+        contents("Not done", None, 1)
+            .await
+            .expect("run with a limit"),
+        ["open high"]
+    );
+    let narrowed = serde_json::json!([
+        {"property": "priority", "operator": "equals", "value": "high", "negate": true}
+    ]);
+    assert_eq!(
+        contents("Not done", Some(narrowed), 0)
+            .await
+            .expect("narrowed run"),
+        ["open low"]
+    );
+
+    let missing = contents("Nowhere", None, 0)
+        .await
+        .expect_err("no such query");
+    assert_eq!(missing.code(), Code::NotFound);
+    assert!(
+        missing
+            .message()
+            .contains("no saved query has the id or title 'Nowhere'"),
+        "{}",
+        missing.message()
+    );
+    let ambiguous = contents("Twin", None, 0).await.expect_err("two queries");
+    assert_eq!(ambiguous.code(), Code::InvalidArgument);
+    assert!(
+        ambiguous
+            .message()
+            .contains("2 saved queries are titled 'Twin'"),
+        "{}",
+        ambiguous.message()
+    );
+    let bad_filter = contents(
+        "Not done",
+        Some(serde_json::json!([{"property": "nope.deeper", "operator": "exists"}])),
+        0,
+    )
+    .await
+    .expect_err("undeclared path");
+    assert_eq!(bad_filter.code(), Code::InvalidArgument);
+    assert!(
+        bad_filter.message().contains("nope"),
+        "{}",
+        bad_filter.message()
+    );
+
+    for json in [true, false] {
+        commands::query::run(
+            &mut client,
+            commands::query::QueryArgs {
+                command: Some(commands::query::QueryCommand::Run(
+                    commands::query::RunArgs {
+                        query: "Not done".into(),
+                        filters: None,
+                        limit: 0,
+                    },
+                )),
+                target_type: None,
+                filters: None,
+                sorting: None,
+                limit: 0,
+            },
+            json,
+        )
+        .await
+        .expect("query run");
+    }
 
     let _ = shutdown.send(());
 }

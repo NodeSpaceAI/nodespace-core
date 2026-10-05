@@ -984,6 +984,71 @@ mod tests {
             assert_eq!(scanned_ids(&items), [CLOSED_TICKET]);
         }
 
+        /// A selector takes the negated filter forms, written into the rule
+        /// or read off a saved query: "not open", and "has no child that is
+        /// open".
+        #[tokio::test]
+        async fn a_selector_accepts_negated_filters() {
+            let (svc, _tmp) = create_test_service().await;
+            seed_tickets(&svc).await;
+            // The open ticket is the parent of an open bug, and the closed
+            // ticket of a closed one. A bug keeps its inherited `state` in
+            // the `sel_ticket` bucket, so each child's state has to be read
+            // there for the two parents to come apart.
+            const CLOSED_BUG: &str = "c1000000-0000-4000-8000-000000000005";
+            svc.create_node(Node::new_with_id(
+                CLOSED_BUG.to_string(),
+                "sel_bug".to_string(),
+                CLOSED_BUG.to_string(),
+                json!({ "state": "closed" }),
+            ))
+            .await
+            .unwrap();
+            svc.create_relationship(OPEN_TICKET, "has_child", OPEN_BUG, json!({}))
+                .await
+                .unwrap();
+            svc.create_relationship(CLOSED_TICKET, "has_child", CLOSED_BUG, json!({}))
+                .await
+                .unwrap();
+
+            let not_open = json!([{
+                "type": "property", "operator": "equals", "property": "state",
+                "value": "open", "negate": true
+            }]);
+            let inline = lifecycle_with_rules(scheduled_rule(
+                json!({ "target_type": "sel_ticket", "filters": not_open }),
+                json!([]),
+            ));
+            assert_eq!(
+                scanned_ids(&scan(&svc, &inline).await),
+                [CLOSED_TICKET, CLOSED_BUG]
+            );
+
+            let query_id = "c2000000-0000-4000-8000-000000000002";
+            svc.create_node(Node::new_with_id(
+                query_id.to_string(),
+                "query".to_string(),
+                "No open child".to_string(),
+                json!({ "target_type": "sel_ticket", "filters": [{
+                    "type": "related", "operator": "exists", "path": ["has_child"], "negate": true,
+                    "filter": {
+                        "type": "property", "operator": "equals", "property": "state",
+                        "value": "closed", "negate": true
+                    }
+                }] }),
+            ))
+            .await
+            .unwrap();
+            let saved =
+                lifecycle_with_rules(scheduled_rule(json!({ "query_id": query_id }), json!([])));
+            // Every ticket but the one whose child is open: the bugs have no
+            // children, and the closed ticket's only child is closed.
+            assert_eq!(
+                scanned_ids(&scan(&svc, &saved).await),
+                [OPEN_BUG, CLOSED_TICKET, CLOSED_BUG]
+            );
+        }
+
         /// A selector that cannot run selects nothing and enqueues nothing;
         /// the scan carries on with the other entries.
         #[tokio::test]

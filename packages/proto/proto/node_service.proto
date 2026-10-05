@@ -148,6 +148,10 @@ service NodeService {
   // response when only a total is needed (e.g. the query editor's preview),
   // which otherwise saturates at the response's row cap.
   rpc CountQuery(ExecuteQueryRequest) returns (CountNodesResponse);
+  // Run a saved query node, named by its id or its title: its stored
+  // filters, sorting, limit and relative dates, with any filters given on the
+  // request ANDed on for this run. Nothing is written to the query node.
+  rpc RunSavedQuery(RunSavedQueryRequest) returns (NodeListResponse);
 
   // Playbook: get-workflow-state is the one Play lifecycle operation that
   // needs purpose-built evaluation (it runs the engine's condition logic out
@@ -874,6 +878,19 @@ message ExecuteQueryRequest {
   optional string sorting_json = 3;
   // Max results to return. 0 = server default (50).
   uint32 limit = 4;
+}
+
+message RunSavedQueryRequest {
+  // The query node's id, or its title. A title must name exactly one saved
+  // query; it is compared whole, ignoring case.
+  string query = 1;
+  // JSON-encoded array of filter conditions (AgentFilterItem[]) ANDed with
+  // the stored filters for this run; "[]" or unset = none.
+  optional string filters_json = 2;
+  // At most this many results. It can lower the query's stored limit, never
+  // raise it. 0 = the stored limit; a query with none returns every match,
+  // up to the server's row cap.
+  uint32 limit = 3;
 }
 
 // ---------------------------------------------------------------------------

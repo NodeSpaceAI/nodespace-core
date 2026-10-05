@@ -239,6 +239,8 @@ nodespace query --type task --filters '[{"type":"property","operator":"gte","pro
   - A `relationship` filter selects the nodes connected to one node: `{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}` is the children of `<id>` (each matching node reaches `<id>` by following `child_of`).
   - A `related` filter selects by a condition on the connected nodes: `{"type":"related","operator":"equals","path":["project"],"filter":{"type":"property","operator":"equals","property":"status","value":"active"}}` is the tasks whose project is active.
   - `path` lists the relationship names to follow from each candidate node, in order: built-in names (`has_child`, `member_of`, `mentions`), schema-declared names, or the reverse name of either (`child_of`, `mentioned_by`, a declared `reverseName`). `{"name":"child_of","open_ended":true}` in place of a name follows it to every depth (all ancestors). A name the type does not declare is an error naming the ones it does. With `--type '*'` only built-in names resolve.
+  - Any filter takes `"negate": true` to keep the nodes it does **not** hold for: `{"type":"property","operator":"equals","property":"status","value":"done","negate":true}` is every task whose status is not `done`, a task with no status included, and a negated `exists` is "has no value". A negated `related` filter is "the path reaches no node matching the nested filter", which a node the path leads nowhere from satisfies; the nested `filter` can be negated too, and the two together say "every node the path reaches matches". Filters are ANDed; there is no OR.
+  - A `property` filter may name a field inside an object field's value with a dotted path: `"property":"repository.url"` is the `url` inside `repository`. A sort's `field` takes the same. The schema must declare every segment, so the query needs a `--type`; a path it does not declare is an error naming it.
   - A `property` filter on a date field takes `relative_date` in place of `value`, for a date relative to the day the query runs: `{"type":"property","operator":"gte","property":"due_date","relative_date":{"anchor":"today"}}` is due today or later, and `"relative_date":{"anchor":"today","offset_days":7}` is a week from today (negative for the past). The operator is one of `equals`, `gt`, `lt`, `gte`, `lte`. Today is the local date. It works inside a `related` filter's nested `filter` too. In a saved query it is stored as written and resolved each time the query runs, so prefer it to a fixed date when saving a view such as "due this week". A play's selector does not accept it.
 - `--sorting <json>` — array of `{"field":"...","direction":"asc"|"desc"}`
 - `--limit <n>` — max results (0 = server default of 50; server caps at 500 regardless of the value passed)
@@ -251,11 +253,37 @@ Worked examples:
 - "overdue tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"lt","property":"due_date","relative_date":{"anchor":"today"}}]'`
 - "issues in the current cycle" → `nodespace query --type issue --filters '[{"type":"related","operator":"exists","path":["cycle"],"filter":{"type":"property","operator":"lte","property":"start_date","relative_date":{"anchor":"today"}}},{"type":"related","operator":"exists","path":["cycle"],"filter":{"type":"property","operator":"gte","property":"end_date","relative_date":{"anchor":"today"}}}]'`
 - "high priority tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"priority","value":"high"}]'`
+- "tasks that are not done" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"status","value":"done","negate":true}]'`
+- "tasks with no unfinished blocker" → `nodespace query --type task --filters '[{"type":"related","operator":"exists","path":["blocked_by"],"negate":true,"filter":{"type":"property","operator":"in","property":"status","value":["done","cancelled"],"negate":true}}]'`
+- "the project for this repository" → `nodespace query --type project --filters '[{"type":"property","operator":"equals","property":"repository.url","value":"<remote url>"}]'` (when the `project` schema declares a `repository` object field with a `url` inside it)
 - "tasks with an unchecked item" → `nodespace query --type task --filters '[{"type":"related","operator":"equals","path":["has_child"],"filter":{"type":"property","operator":"equals","property":"checked","value":false}}]'`. `checked` is a checkbox's derived attribute: computed from its content, named in a `property` filter like a field, and never matched by a node that is not a checkbox.
 
 Date format for all date properties: **YYYY-MM-DD**.
 
 This is the CLI counterpart of the property-filtering path of the local agent's `search_nodes` tool.
+
+**Output:** JSON array of matching nodes
+
+### Run a saved query
+
+A saved query is a `query` node: a view, or a queue of work such as "Ready tasks", that someone defined once. Run it by its id or its title instead of copying its filters:
+
+```bash
+nodespace query run "Ready tasks"
+nodespace query run <query-id>
+nodespace --json query run "Ready tasks" --filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<project-id>"}]' --limit 1
+```
+
+It returns the nodes the query matches now, with its stored filters, sorting, limit and relative dates.
+
+**Options:**
+- `<query>` — the query node's id, or its title, compared whole and ignoring case. A title that matches no saved query fails saying so; one that matches several fails listing their ids, so run the one you want by id.
+- `--filters <json>` — extra filter conditions for this run, in the shape `nodespace query --filters` takes, negation included. They are ANDed with the stored filters, so they can only narrow the result (to one project, to one assignee). The saved query is not changed.
+- `--limit <n>` — at most this many results. It can lower the query's own limit, never raise it (0 = the stored limit). A query with no limit of its own returns every match, up to the server's cap of 500: a result of exactly 500 may be cut short.
+
+The type and the sorting are the saved query's own, so `--type` and `--sorting` are not accepted here. To find the saved queries: `nodespace query --type query`.
+
+This is the CLI counterpart of the local agent's `run_query` tool.
 
 **Output:** JSON array of matching nodes
 
@@ -875,9 +903,15 @@ Semantic search across the knowledge graph
 Structured property query with comparison operators (equals/contains/gt/lt/gte/lte/in/exists)
 
 - `--type <TARGET_TYPE>` — Target node type ("task", "text", etc.) or "*" for all types (required)
-- `--filters <FILTERS>` — JSON array of filter conditions, e.g. `[{"type":"property","operator":"equals","property":"status","value":"open"}]`. Supported types: property, content, metadata, relationship, related. A relationship filter names a `path` of relationship names and the `node_id` it must reach, e.g. `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`. Supported operators: equals, contains, gt, lt, gte, lte, in, exists. A property filter on a date field takes `relative_date` in place of `value` for a date relative to the day the query runs, e.g. `[{"type":"property","operator":"lte","property":"due_date","relative_date":{"anchor":"today","offset_days":7}}]`
+- `--filters <FILTERS>` — JSON array of filter conditions, e.g. `[{"type":"property","operator":"equals","property":"status","value":"open"}]`. Supported types: property, content, metadata, relationship, related. A relationship filter names a `path` of relationship names and the `node_id` it must reach, e.g. `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`. Supported operators: equals, contains, gt, lt, gte, lte, in, exists. A property filter on a date field takes `relative_date` in place of `value` for a date relative to the day the query runs, e.g. `[{"type":"property","operator":"lte","property":"due_date","relative_date":{"anchor":"today","offset_days":7}}]`. Any filter takes `"negate": true` to keep the nodes it does not hold for; on a related filter that is "the path reaches no node matching the nested filter". A property may be a path into an object field's value, e.g. `"property":"repository.url"`
 - `--sorting <SORTING>` — JSON array of sort configs, e.g. `[{"field":"due_date","direction":"desc"}]`
 - `--limit <LIMIT>` — Max results to return (0 = server default of 50)
+
+**`nodespace query run`** — Run a saved query node by its id or title, with its stored filters, sorting and limit
+
+- `<QUERY>` — The saved query's id, or its title (quoted when it has spaces). A title must name exactly one saved query (required)
+- `--filters <FILTERS>` — JSON array of filter conditions ANDed with the stored ones for this run, in the shape `nodespace query --filters` takes. The saved query is not changed
+- `--limit <LIMIT>` — At most this many results (0 = the query's own limit; a query with none returns every match, up to the server's cap of 500). It can lower the stored limit, never raise it
 
 ### `nodespace diagnostics`
 

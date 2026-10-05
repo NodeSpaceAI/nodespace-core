@@ -73,8 +73,8 @@ use crate::nodespace::{
     RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
     RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
     ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
-    ResolvePendingSeedUpdateRequest, ResolvePendingSeedUpdateResponse, SchemaGuidanceEntry,
-    SchemaListResponse, SchemaParamsRequest, SchemaResponse, SchemaResultResponse, SearchRequest,
+    ResolvePendingSeedUpdateRequest, ResolvePendingSeedUpdateResponse, RunSavedQueryRequest,
+    SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest, SchemaResponse, SchemaResultResponse, SearchRequest,
     SeedUpdateChoice, SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest,
     SkillGuidanceResponse, ToolCommandEntry, UpdateCollectionNodeRequest,
     UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
@@ -1306,6 +1306,47 @@ impl GrpcNodeService for NodeServiceImpl {
             .map_err(ops_error_to_status)?;
 
         Ok(Response::new(CountNodesResponse { count }))
+    }
+
+    async fn run_saved_query(
+        &self,
+        request: Request<RunSavedQueryRequest>,
+    ) -> Result<Response<NodeListResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let filters = match req.filters_json.as_deref() {
+            Some(raw) if !raw.is_empty() => serde_json::from_str(raw)
+                .map_err(|e| Status::invalid_argument(format!("invalid filters_json: {e}")))?,
+            _ => Vec::new(),
+        };
+        let input = query_ops::RunSavedQueryInput {
+            query: req.query,
+            filters,
+            limit: (req.limit != 0).then_some(req.limit as usize),
+            // A stored limit is capped like a requested one.
+            max_rows: Some(MAX_ROW_LIMIT),
+        };
+
+        let run = query_ops::run_saved_query_nodes(&this.node_service, input)
+            .await
+            .map_err(ops_error_to_status)?;
+
+        // Projected to the query's own type's scope, as `execute_query` does.
+        let nodes = this
+            .node_service
+            .project_nodes_to_scope(run.nodes, Some(run.target_type.as_str()))
+            .await
+            .map_err(service_error_to_status)?;
+
+        let proto_nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, nodes).await?;
+        let count = proto_nodes.len() as i32;
+
+        Ok(Response::new(NodeListResponse {
+            nodes: proto_nodes,
+            count,
+            collection_id: String::new(),
+        }))
     }
 
     async fn mention_autocomplete(

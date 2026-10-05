@@ -76,14 +76,9 @@ pub async fn selector_query(
         ));
     }
 
-    let filters = resolve_filters(node_service, &target_type, filters)
-        .await
-        .map_err(|e| match e {
-            crate::ops::OpsError::Internal(message) => SelectorError::Lookup(message),
-            other => SelectorError::Invalid(other.to_string()),
-        })?;
-
-    let query = QueryDefinition {
+    // Names are checked for shape before they are resolved, so a malformed
+    // one is reported as malformed and not as undeclared.
+    let mut query = QueryDefinition {
         target_type,
         filters,
         sorting: None,
@@ -92,6 +87,13 @@ pub async fn selector_query(
     query
         .validate_identifiers()
         .map_err(|e| SelectorError::Invalid(e.to_string()))?;
+
+    query.filters = resolve_filters(node_service, &query.target_type, query.filters)
+        .await
+        .map_err(|e| match e {
+            crate::ops::OpsError::Internal(message) => SelectorError::Lookup(message),
+            other => SelectorError::Invalid(other.to_string()),
+        })?;
     Ok(query)
 }
 
