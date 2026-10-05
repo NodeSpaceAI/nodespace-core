@@ -8,7 +8,7 @@
  * Every op must return a fresh value and never mutate its input.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   setObjectKey,
   deleteObjectKey,
@@ -17,6 +17,7 @@ import {
   addArrayItem,
   makeEmptyValueForField,
   makeEmptyArrayItem,
+  editArrayItem,
   isNestedField,
   nestedFieldSummary,
   shiftItemOpenStateOnDelete
@@ -141,6 +142,25 @@ describe('makeEmptyValueForField', () => {
   });
 });
 
+describe('editArrayItem', () => {
+  it('replaces the element at the index', () => {
+    const original = ['2026-10-05', '2026-10-06'];
+    expect(editArrayItem(original, 1, '2026-10-07')).toEqual(['2026-10-05', '2026-10-07']);
+    expect(original).toEqual(['2026-10-05', '2026-10-06']);
+  });
+
+  it('keeps a falsy value that is still a value', () => {
+    expect(editArrayItem([1], 0, 0)).toEqual([0]);
+    expect(editArrayItem([true], 0, false)).toEqual([false]);
+    expect(editArrayItem(['a'], 0, '')).toEqual(['']);
+  });
+
+  it('changes nothing when the control reports no value', () => {
+    expect(editArrayItem(['2026-10-05'], 0, null)).toBeNull();
+    expect(editArrayItem(['2026-10-05'], 0, undefined)).toBeNull();
+  });
+});
+
 describe('makeEmptyArrayItem', () => {
   it('returns an empty object for an array of objects', () => {
     expect(makeEmptyArrayItem(field({ name: 'contacts', type: 'array', itemType: 'object' }))).toEqual({});
@@ -149,6 +169,34 @@ describe('makeEmptyArrayItem', () => {
   it('returns the scalar empty for an array of scalars', () => {
     expect(makeEmptyArrayItem(field({ name: 'tags', type: 'array', itemType: 'text' }))).toBe('');
     expect(makeEmptyArrayItem(field({ name: 'counts', type: 'array', itemType: 'number' }))).toBe(0);
+  });
+
+  it('starts a date or datetime item from the current moment, never null', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 9, 5, 14, 30, 0));
+      expect(makeEmptyArrayItem(field({ name: 'days', type: 'array', itemType: 'date' }))).toBe('2026-10-05');
+      expect(makeEmptyArrayItem(field({ name: 'visits', type: 'array', itemType: 'datetime' }))).toBe(
+        new Date(2026, 9, 5, 14, 30, 0).toISOString()
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('starts an enum item from the first declared value', () => {
+    const tiers = { name: 'tiers', type: 'array', itemType: 'enum' } as const;
+    expect(
+      makeEmptyArrayItem(
+        field({
+          ...tiers,
+          coreValues: [{ value: 'gold', label: 'Gold' }],
+          userValues: [{ value: 'tin', label: 'Tin' }]
+        })
+      )
+    ).toBe('gold');
+    expect(makeEmptyArrayItem(field({ ...tiers, userValues: [{ value: 'tin', label: 'Tin' }] }))).toBe('tin');
+    expect(makeEmptyArrayItem(field(tiers))).toBe('');
   });
 
   it('defaults a missing itemType to an empty string', () => {

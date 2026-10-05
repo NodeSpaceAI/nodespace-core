@@ -8,6 +8,7 @@
  */
 
 import type { SchemaField } from '$lib/types/schema-node';
+import { getEnumValues } from '$lib/utils/schema-enum-values';
 
 /** Treat a possibly null/undefined value as an object record for safe spreading. */
 function asRecord(value: unknown): Record<string, unknown> {
@@ -59,6 +60,17 @@ export function deleteArrayIndex(value: unknown, index: number): unknown[] {
   return arr;
 }
 
+/**
+ * The array `value` after a control edits its scalar element at `index`, or
+ * `null` when the edit changes nothing. An element has no empty state (it is
+ * removed, never cleared), so a control reporting "no value" — a date picker
+ * whose selected day is clicked again — leaves the array as it is.
+ */
+export function editArrayItem(value: unknown, index: number, item: unknown): unknown[] | null {
+  if (item === null || item === undefined) return null;
+  return replaceArrayIndex(value, index, item);
+}
+
 /** Return a copy of the array `value` with `item` appended. */
 export function addArrayItem(value: unknown, item: unknown): unknown[] {
   return [...asArray(value), item];
@@ -91,11 +103,29 @@ export function makeEmptyValueForField(field: SchemaField): unknown {
  * A sensible empty element for a new array item, based on the array field's
  * `itemType`. An `object` item type yields `{}`; a scalar item type yields the
  * empty value for that scalar (mirrors {@link makeEmptyValueForField}).
+ *
+ * The new item is saved as it is added, and an element of a typed array must
+ * be of its item type, so the types with no empty value start from a real one:
+ * a `date` from today, a `datetime` from now, an `enum` from its first value.
  */
 export function makeEmptyArrayItem(field: SchemaField): unknown {
-  if (field.itemType === 'object') return {};
-  // Reuse the scalar defaults by mapping itemType onto a synthetic field type.
-  return makeEmptyValueForField({ ...field, type: field.itemType ?? 'text' });
+  switch (field.itemType) {
+    case 'object':
+      return {};
+    case 'date': {
+      const now = new Date();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      return `${now.getFullYear()}-${month}-${day}`;
+    }
+    case 'datetime':
+      return new Date().toISOString();
+    case 'enum':
+      return getEnumValues(field)[0]?.value ?? '';
+    default:
+      // Reuse the scalar defaults by mapping itemType onto a synthetic field type.
+      return makeEmptyValueForField({ ...field, type: field.itemType ?? 'text' });
+  }
 }
 
 /** True when a field renders as a nested editor (object with sub-fields, or an array). */

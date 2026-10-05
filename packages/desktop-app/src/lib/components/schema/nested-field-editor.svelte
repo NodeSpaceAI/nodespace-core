@@ -40,6 +40,7 @@
     deleteArrayIndex,
     addArrayItem,
     makeEmptyArrayItem,
+    editArrayItem,
     isNestedField,
     shiftItemOpenStateOnDelete
   } from '$lib/utils/nested-property-ops';
@@ -242,7 +243,10 @@
                 field={arrayScalarItemField(index)}
                 value={item}
                 fieldId={itemId}
-                onChange={(newItem) => onChange(replaceArrayIndex(value, index, newItem))}
+                onChange={(newItem) => {
+                  const next = editArrayItem(value, index, newItem);
+                  if (next) onChange(next);
+                }}
               />
             </div>
             <Button
