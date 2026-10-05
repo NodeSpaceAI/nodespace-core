@@ -340,6 +340,9 @@ impl GraphContextAssembler {
             .await
             {
                 Ok(output) => {
+                    // `nodes` and `matched_nodes` are the same results in the
+                    // same order; the score is carried only on the former.
+                    debug_assert_eq!(output.nodes.len(), output.matched_nodes.len());
                     let scores = output
                         .nodes
                         .iter()
@@ -882,9 +885,10 @@ mod tests {
         assert!(matches!(err, ContextError::WriteFailed(_)));
     }
 
-    /// Neighbour expansion names its scope and no type list. A search with no
-    /// scope, or one that names types and leaves the scope out, is not held
-    /// to the user's knowledge and returns skills, tools and built-in schemas.
+    /// Neighbour expansion names its scope and no type list. Naming the scope
+    /// states what the search is for and keeps its filter on: a search that
+    /// names types and leaves the scope out replaces the scope with the type
+    /// list.
     #[test]
     fn neighbor_search_is_scoped_to_knowledge() {
         let input = neighbor_search_input("Hall Nine booking");
@@ -895,6 +899,78 @@ mod tests {
         assert_eq!(input.limit, Some(NEIGHBORS_PER_SEED));
         assert_eq!(input.threshold, Some(SEMANTIC_THRESHOLD));
         assert_eq!(input.include_markdown, Some(0));
+    }
+
+    /// The scope the neighbour search names is one search accepts, and it
+    /// keeps the user's notes and drops the built-in schemas. Run as a
+    /// listing (`*`), which applies the same scope filter as a query and
+    /// needs no embedding model; the ranking of a real query is pinned by
+    /// `live_context_assembly_scope`.
+    #[tokio::test]
+    async fn neighbor_search_scope_keeps_notes_and_drops_built_in_schemas() {
+        use nodespace_core::db::SqliteStore;
+        use nodespace_core::services::NodeAccessor;
+        use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
+
+        let db_tmp = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(
+            SqliteStore::new(db_tmp.path().join("scope-test.db"))
+                .await
+                .unwrap(),
+        );
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let node_accessor: Arc<dyn NodeAccessor> = node_service.clone();
+        let embedding_service = Arc::new(NodeEmbeddingService::new(
+            Arc::new(EmbeddingService::new(EmbeddingConfig::default()).unwrap()),
+            store.clone(),
+            node_accessor,
+            node_service.behaviors().clone(),
+        ));
+        let note = Node::new(
+            "text".to_string(),
+            "Hall Nine booking for the offsite".to_string(),
+            serde_json::json!({}),
+        );
+        node_service.create_node(note.clone()).await.unwrap();
+
+        let listing = |scope: Option<String>| SearchSemanticInput {
+            query: "*".to_string(),
+            limit: Some(1000),
+            scope,
+            ..neighbor_search_input("")
+        };
+        let ids = |output: nodespace_core::ops::search_ops::SearchSemanticOutput| {
+            output
+                .matched_nodes
+                .into_iter()
+                .map(|n| n.id)
+                .collect::<HashSet<String>>()
+        };
+
+        let everything = ids(search_semantic(
+            &node_service,
+            &embedding_service,
+            listing(Some("everything".to_string())),
+        )
+        .await
+        .unwrap());
+        assert!(
+            everything.contains("checkbox"),
+            "the built-in checkbox schema is there to be found"
+        );
+
+        let scoped = ids(search_semantic(
+            &node_service,
+            &embedding_service,
+            listing(neighbor_search_input("").scope),
+        )
+        .await
+        .unwrap());
+        assert!(scoped.contains(&note.id), "the user's note is in scope");
+        assert!(
+            !scoped.contains("checkbox"),
+            "a built-in schema is outside the neighbour search's scope"
+        );
     }
 
     #[tokio::test]
