@@ -1,4 +1,4 @@
-import { isA } from '$lib/types/core-node-types';
+import { isA, typeChain } from '$lib/types/core-node-types';
 
 /**
  * The node type a tab's viewer is chosen by.
@@ -17,4 +17,17 @@ export function resolveViewerNodeType(
 ): string {
   if (!isA(tabNodeType, 'ai-chat')) return tabNodeType;
   return isA(currentNodeType, 'ai-chat') ? (currentNodeType as string) : tabNodeType;
+}
+
+/**
+ * The type whose viewer opens a `nodeType` node: the type itself when it has a
+ * viewer, otherwise the nearest ancestor in its `extends` chain that has one, so
+ * a subtype with no viewer of its own opens in its parent's. Falls back to
+ * `nodeType` when nothing in the chain has a viewer.
+ */
+export function resolveViewerFallback(
+  nodeType: string,
+  hasViewer: (nodeType: string) => boolean
+): string {
+  return typeChain(nodeType).find(hasViewer) ?? nodeType;
 }

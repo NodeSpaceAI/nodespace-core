@@ -194,6 +194,32 @@ describe('nodes', () => {
   });
 });
 
+describe('nodes.updateNode', () => {
+  it('writes through the node store, so a reactive read sees it at once', () => {
+    sharedNodeStore.setNode(node('u1', 'before'), { type: 'database', reason: 'test' }, true);
+    const update = vi.spyOn(sharedNodeStore, 'updateNode');
+    const content = track(() => nodes.getNode('u1')?.content ?? null);
+    try {
+      nodes.updateNode('u1', { content: 'after' });
+      flushSync();
+
+      expect(update).toHaveBeenCalledWith(
+        'u1',
+        { content: 'after' },
+        { type: 'viewer', viewerId: 'extension-api' }
+      );
+      expect(content.seen).toEqual(['before', 'after']);
+    } finally {
+      content.stop();
+    }
+  });
+
+  it('leaves a node the store does not hold alone', () => {
+    expect(() => nodes.updateNode('not-in-store', { content: 'x' })).not.toThrow();
+    expect(nodes.getNode('not-in-store')).toBeUndefined();
+  });
+});
+
 describe('re-exports', () => {
   it("are core's own functions and values", () => {
     expect(api.onDaemonReconnect).toBe(daemonStatus.onDaemonReconnect);

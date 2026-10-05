@@ -147,12 +147,28 @@ interface ExtensionNodes {
   fetchNode(id: string): Promise<Node | null>;
   /** Creates a node through the daemon. */
   createNode(input: CreateNodeInput): Promise<CreatedNode>;
+  /**
+   * Updates a node through the app's node-update path: the change shows in
+   * `getNode` at once and is saved to the daemon in the background. `properties`
+   * is merged into the node's existing properties, not substituted for them. It
+   * returns nothing, so it neither waits for the save nor reports a failed one:
+   * a failure surfaces through core's conflict notifications. A node the store
+   * does not hold is left alone and logged.
+   */
+  updateNode(id: string, changes: ExtensionNodeChanges): void;
 }
+
+/** The fields `nodes.updateNode` changes. */
+export type ExtensionNodeChanges = Partial<Pick<Node, 'content' | 'properties'>>;
+
+/** What a write through `nodes.updateNode` is attributed to in the node store. */
+const EXTENSION_UPDATE_SOURCE = { type: 'viewer', viewerId: 'extension-api' } as const;
 
 export const nodes: ExtensionNodes = {
   getNode: (id) => sharedNodeStore.getNode(id),
   fetchNode: (id) => backendAdapter.getNode(id),
-  createNode: (input) => backendAdapter.createNode(input)
+  createNode: (input) => backendAdapter.createNode(input),
+  updateNode: (id, changes) => sharedNodeStore.updateNode(id, changes, EXTENSION_UPDATE_SOURCE)
 };
 
 // --- Collections and schemas ----------------------------------------------------

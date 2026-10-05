@@ -57,7 +57,7 @@
  */
 
 import type { Component } from 'svelte';
-import { isCoreNodeType } from '$lib/types/core-node-types';
+import { isCoreNodeType, typeChain } from '$lib/types/core-node-types';
 import { createLogger } from '$lib/utils/logger';
 import { PluginRegistry, pluginRegistry } from './plugin-registry';
 import type { PluginDefinition } from './types';
@@ -65,7 +65,7 @@ import type { PluginDefinition } from './types';
 const log = createLogger('UiExtensionRegistry');
 
 /** The extension API version this build implements. */
-export const EXTENSION_API_VERSION = { major: 2, minor: 2 } as const;
+export const EXTENSION_API_VERSION = { major: 2, minor: 3 } as const;
 
 // --- Lifecycle hooks (ADR-082 §3.5) ---------------------------------------------
 
@@ -584,17 +584,17 @@ export class UiExtensionRegistry {
   }
 
   /**
-   * Every viewer tab for `nodeType`, across all extensions, in descending
-   * priority with ties in registration order. Does NOT evaluate `when`.
+   * Every viewer tab for `nodeType` and for the types it extends, across all
+   * extensions. The type's own tabs come first, then each ancestor's, nearest
+   * first; within one type, descending priority with ties in registration order.
+   * Does NOT evaluate `when`.
    */
   viewerTabsFor(nodeType: string): Keyed<ViewerTabContribution>[] {
-    const out: Keyed<ViewerTabContribution>[] = [];
-    for (const entry of this.extensions.values()) {
-      for (const t of entry.viewerTabs) {
-        if (t.nodeType === nodeType) out.push(t);
-      }
-    }
-    return byPriority(out);
+    const all: Keyed<ViewerTabContribution>[] = [];
+    for (const entry of this.extensions.values()) all.push(...entry.viewerTabs);
+    return typeChain(nodeType).flatMap((type) =>
+      byPriority(all.filter((t) => t.nodeType === type))
+    );
   }
 
   /**

@@ -20,6 +20,8 @@ vi.mock('$lib/services/navigation-service', async () =>
 
 import CollectionNodeViewer from '$lib/components/viewers/collection-node-viewer.svelte';
 import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
+import { setTypeResolver } from '$lib/types/core-node-types';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import {
   TEST_EXTENSION_ID,
   createTestExtension,
@@ -41,6 +43,53 @@ describe('CollectionNodeViewer extension tabs', () => {
     cleanup();
     uiExtensionRegistry.unregister(TEST_EXTENSION_ID);
     resetTestExtension();
+  });
+
+  it("shows a collection's tabs on a node of a type that extends collection", async () => {
+    setTypeResolver((id) => (id === 'board' ? ({ extends: 'collection' } as never) : undefined));
+    sharedNodeStore.setNode(
+      {
+        id: COLLECTION_ID,
+        nodeType: 'board',
+        content: COLLECTION_NAME,
+        properties: {},
+        mentions: [],
+        createdAt: '',
+        modifiedAt: '',
+        version: 1,
+        lifecycleStatus: 'active'
+      },
+      { type: 'database', reason: 'test' },
+      true
+    );
+    try {
+      const fixture = createTestExtension();
+      uiExtensionRegistry.register({
+        ...fixture,
+        viewerTabs: [
+          ...(fixture.viewerTabs ?? []),
+          {
+            id: 'board-tab',
+            nodeType: 'board',
+            label: 'Board tab',
+            load: () => import('../fixtures/test-extension/test-viewer-tab.svelte')
+          }
+        ]
+      });
+      testExtensionFlags.tab = true;
+      const { findByRole, getAllByRole } = await renderViewer();
+
+      await findByRole('tablist');
+      // The subtype's own tab first, then the collection's.
+      expect(getAllByRole('tab').map((t) => t.textContent?.trim())).toEqual([
+        'Contents',
+        'Board tab',
+        'Test tab'
+      ]);
+    } finally {
+      setTypeResolver(() => undefined);
+      sharedNodeStore.clearAll();
+    }
   });
 
   it('shows no tab strip while no tab is contributed', async () => {

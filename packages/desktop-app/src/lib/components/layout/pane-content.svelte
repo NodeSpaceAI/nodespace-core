@@ -4,7 +4,7 @@
   import { navigationStore, updateTabContent, closeTab } from '$lib/stores/navigation.svelte';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
-  import { resolveViewerNodeType } from '$lib/utils/viewer-node-type';
+  import { resolveViewerFallback, resolveViewerNodeType } from '$lib/utils/viewer-node-type';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { isOwnedByParentViewer } from '$lib/types/core-node-types';
   import { onDaemonReconnect } from '$lib/services/daemon-status';
@@ -116,12 +116,16 @@
 
   // The node type the active tab's viewer is chosen by: the node's current type
   // for the chat family (a chat can be retyped in place, so the pane swaps
-  // viewers when it changes), the tab's own type otherwise.
+  // viewers when it changes), the tab's own type otherwise. A type with no viewer
+  // of its own takes its nearest ancestor's (an `extends` subtype of `collection`
+  // opens in the collection viewer).
   const viewerNodeType = $derived.by(() => {
     const tabType = activeTab?.content?.nodeType ?? 'text';
     const nodeId = activeTab?.content?.nodeId;
-    if (!nodeId) return tabType;
-    return resolveViewerNodeType(tabType, sharedNodeStore.getNode(nodeId)?.nodeType);
+    const type = nodeId
+      ? resolveViewerNodeType(tabType, sharedNodeStore.getNode(nodeId)?.nodeType)
+      : tabType;
+    return resolveViewerFallback(type, (t) => pluginRegistry.hasViewer(t));
   });
 
   // Derive viewer component for active tab.
