@@ -1,7 +1,7 @@
 {
   "version": {
     "major": 2,
-    "minor": 1
+    "minor": 2
   },
   "entries": {
     "index": [
@@ -14,13 +14,19 @@
       "EXTENSION_API_VERSION",
       "ExtensionDatabases",
       "ExtensionLifecycle",
+      "NodeComponent",
+      "NodeComponentProps",
+      "NodeTypeContribution",
       "NodespaceExtension",
+      "PluginDefinition",
       "ReplaceableSlot",
       "ReplaceableSlotContribution",
       "SettingsSectionContribution",
       "SettingsSlot",
       "SettingsSlotContribution",
       "SettingsSlotContributionFor",
+      "TreeItemActionContribution",
+      "TreeItemActionProps",
       "ViewerTabContribution",
       "collections",
       "createLogger",
@@ -74,5 +80,5 @@
       "focusTrap"
     ]
   },
-  "typesHash": "3a796eabe63dd1b96e2d3bfa3a503f11da935b4d6156ddafd72f3195f7a4fde9"
+  "typesHash": "3f99ab6682dfb1f4604812ea95063171178de36428ccd34208999a22c1395667"
 }

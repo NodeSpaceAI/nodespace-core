@@ -39,6 +39,8 @@ const log = createLogger('CollectionsStore');
 export interface CollectionItem {
   id: string;
   name: string;
+  /** `collection`, or the subtype of it the collection's node has. */
+  nodeType: string;
   memberCount: number;
   children?: CollectionItem[];
   /**
@@ -572,6 +574,7 @@ export function buildCollectionsTree(
     itemMap.set(c.id, {
       id: c.id,
       name: c.content, // Collection name is stored in content field
+      nodeType: c.nodeType,
       memberCount: c.memberCount,
       children: [],
       pending: pendingIds.has(c.id),

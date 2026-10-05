@@ -3,13 +3,18 @@
  * =============================
  *
  * The registry behind NodeSpace's frontend extension API (ADR-082). An
- * extension is a plain object, `{ id, apiVersion, chrome?, viewerTabs?,
- * settingsSections?, settingsSlots?, replaceableSlots? }`, whose contributions
- * each carry an `id`, an optional `when()` predicate, an optional `priority` and
- * a lazy `load()` for the component they mount. Shared hosts
- * (`app-shell.svelte`, `collection-node-viewer.svelte`, the Settings pane,
- * Databases page and Labs page) import nothing from an extension; they render
- * whatever the registry contributes.
+ * extension is a plain object, `{ id, apiVersion, nodeTypes?, chrome?,
+ * viewerTabs?, settingsSections?, settingsSlots?, replaceableSlots?,
+ * treeItemActions? }`, whose contributions each carry an `id`, an optional
+ * `when()` predicate, an optional `priority` and a lazy `load()` for the
+ * component they mount. Shared hosts (`app-shell.svelte`,
+ * `collection-node-viewer.svelte`, the Settings pane, Databases page and Labs
+ * page, and the sidebar collection tree) import nothing from an extension; they
+ * render whatever the registry contributes.
+ *
+ * Node types are the exception: a `nodeTypes` entry carries a
+ * `PluginDefinition`, which registering the extension hands to the plugin registry, so the type
+ * renders and behaves like any other plugin type (see `NodeTypeContribution`).
  *
  * Registration:
  *   - `registerExtensions([...])` is what a build entry calls with the
@@ -19,6 +24,10 @@
  *     that is not {@link EXTENSION_API_VERSION}`.major`, and a contribution id
  *     repeated within one extension (the later one is dropped) are logged and
  *     skipped. Registering the identical object twice is a silent no-op.
+ *   - A node type that is a core type, or that an extension already added, is
+ *     logged and dropped. An extension's node types reach the plugin registry
+ *     only once all of its lists have been read, so a refused extension
+ *     registers none.
  *
  * Keys and ordering:
  *   - A host sees each contribution as `Keyed`: `key` is
@@ -48,12 +57,15 @@
  */
 
 import type { Component } from 'svelte';
+import { isCoreNodeType } from '$lib/types/core-node-types';
 import { createLogger } from '$lib/utils/logger';
+import { PluginRegistry, pluginRegistry } from './plugin-registry';
+import type { PluginDefinition } from './types';
 
 const log = createLogger('UiExtensionRegistry');
 
 /** The extension API version this build implements. */
-export const EXTENSION_API_VERSION = { major: 2, minor: 1 } as const;
+export const EXTENSION_API_VERSION = { major: 2, minor: 2 } as const;
 
 // --- Lifecycle hooks (ADR-082 §3.5) ---------------------------------------------
 
@@ -185,6 +197,59 @@ export type CollectionTreeRootsContribution = () => readonly string[];
 
 // --- End of collection-tree roots ----------------------------------------------
 
+// --- Node types (ADR-082 §2.1, §3.2) ------------------------------------------
+
+/**
+ * A node type the extension adds, usually an `extends` subtype of a core type.
+ * Registering the extension registers `plugin` with core's plugin registry, so
+ * the type's node component, viewer, schema form and slash commands resolve
+ * like any plugin type's; the type's own TypeScript types stay in the
+ * extension. Load components lazily (`node.lazyLoad`, `viewer.lazyLoad`).
+ *
+ * An extension adds types; it never replaces core's. A plugin whose id is a core
+ * node type is dropped and logged, and so is one whose id another extension
+ * already registered (the first is kept). Core's schema-driven registration
+ * leaves a registered type alone, so the extension's definition stays in force
+ * across database switches and schema events; it supplies `hasTitleTemplate`
+ * and `titleTemplate` itself when its schema has a title template. Pattern
+ * detection reads `plugin.pattern` like any plugin's, but only core's types
+ * have pattern templates for splitting.
+ */
+export type NodeTypeContribution = { plugin: PluginDefinition };
+
+// --- End of node types ------------------------------------------------------
+
+// --- Tree-item actions (ADR-082 §3.2) -----------------------------------------
+
+/**
+ * The item of the sidebar collection tree an action is shown on: its node id
+ * and node type (`collection`, or a subtype of it). These are the action
+ * component's props, and what its `when()` is asked about.
+ */
+export type TreeItemActionProps = { nodeId: string; nodeType: string };
+
+/**
+ * An action button on each item of the sidebar collection tree, shown while the
+ * item is hovered or holds keyboard focus.
+ *
+ * `when(item)` decides per item whether the action shows, so a role check for
+ * that item stays in the extension. Like every `when()`, it is reactive and
+ * pure, and controls what is shown, never what is allowed. A `when()` that
+ * throws hides the action on that item and is logged once, and again only
+ * after it has returned normally for every item it threw for (ADR-082 §3.4).
+ *
+ * The host mounts the component once per item whose `when()` holds and reveals
+ * it on hover, so it stays mounted while hidden. Optimistic items that the
+ * database has not confirmed yet show no actions. Content that should outlive
+ * the hover, such as a dialog, belongs in an `app-shell-modal` contribution
+ * that the action opens through the extension's own state.
+ */
+export type TreeItemActionContribution = Omit<Contribution<TreeItemActionProps>, 'when'> & {
+  when?: (item: TreeItemActionProps) => boolean;
+};
+
+// --- End of tree-item actions -------------------------------------------------
+
 export interface NodespaceExtension {
   id: string;
   apiVersion: typeof EXTENSION_API_VERSION.major;
@@ -196,11 +261,15 @@ export interface NodespaceExtension {
    * user content and personal data.
    */
   debugDump?: () => unknown;
+  /** Node types the extension adds; see {@link NodeTypeContribution}. */
+  nodeTypes?: NodeTypeContribution[];
   chrome?: ChromeContribution[];
   viewerTabs?: ViewerTabContribution[];
   settingsSections?: SettingsSectionContribution[];
   settingsSlots?: SettingsSlotContribution[];
   replaceableSlots?: ReplaceableSlotContribution[];
+  /** Actions on the sidebar collection tree's items; see {@link TreeItemActionContribution}. */
+  treeItemActions?: TreeItemActionContribution[];
   /** Collections the sidebar tree hides as containers; see {@link CollectionTreeRootsContribution}. */
   collectionTreeRoots?: CollectionTreeRootsContribution;
 }
@@ -215,6 +284,9 @@ interface RegisteredExtension {
   settingsSections: Keyed<SettingsSectionContribution>[];
   settingsSlots: Keyed<SettingsSlotContribution>[];
   replaceableSlots: Keyed<ReplaceableSlotContribution>[];
+  treeItemActions: Keyed<TreeItemActionContribution>[];
+  /** The plugins this extension registered with the plugin registry. */
+  nodeTypes: PluginDefinition[];
 }
 
 function priorityOf(c: { priority?: number }): number {
@@ -285,15 +357,74 @@ function keyContributions<C extends { id: string; load: unknown }>(
 }
 
 /**
+ * Validate an extension's node-type list and return the plugins to register. A
+ * malformed entry, a core type, or a type `takenTypes` already holds (another
+ * extension's, or an earlier entry of this list) is logged and dropped.
+ */
+function acceptNodeTypes(
+  extensionId: string,
+  list: readonly NodeTypeContribution[] | undefined,
+  takenTypes: Set<string>
+): PluginDefinition[] {
+  if (list === undefined) return [];
+  if (!Array.isArray(list)) {
+    log.error('Extension contribution list is not an array; skipped', {
+      extensionId,
+      list: 'nodeTypes'
+    });
+    return [];
+  }
+  const out: PluginDefinition[] = [];
+  for (const c of list) {
+    const plugin: unknown = typeof c === 'object' && c !== null ? c.plugin : undefined;
+    if (
+      typeof plugin !== 'object' ||
+      plugin === null ||
+      typeof (plugin as PluginDefinition).id !== 'string' ||
+      (plugin as PluginDefinition).id === ''
+    ) {
+      log.error('Node-type contribution needs a plugin with a string id; dropped', {
+        extensionId
+      });
+      continue;
+    }
+    const { id } = plugin as PluginDefinition;
+    if (isCoreNodeType(id)) {
+      log.error('Node-type contribution names a core type, which an extension cannot replace; dropped', {
+        extensionId,
+        nodeType: id
+      });
+      continue;
+    }
+    if (takenTypes.has(id)) {
+      log.error('Node type is already registered by an extension; dropped', {
+        extensionId,
+        nodeType: id
+      });
+      continue;
+    }
+    takenTypes.add(id);
+    out.push(plugin as PluginDefinition);
+  }
+  return out;
+}
+
+/**
  * Holds registered extensions. Pure data + lookups — no `$state`, no
  * reactivity (that is layered on in `ui-extensions.svelte.ts`). The one lookup
  * that runs extension code is `collectionTreeRoots()`: it calls each
  * extension's function, so a caller's derivation tracks the state that function
  * reads. Mirrors the structural shape of `PluginRegistry` (plain class, `Map`,
  * register/unregister).
+ *
+ * An extension's node types go to `plugins`, the process-wide plugin registry
+ * unless a test passes its own: registering the extension registers them there,
+ * and unregistering it removes them.
  */
 export class UiExtensionRegistry {
   private extensions = new Map<string, RegisteredExtension>();
+
+  constructor(private readonly plugins: PluginRegistry = pluginRegistry) {}
 
   /** Extensions whose `collectionTreeRoots` failed and has not returned normally since. */
   private failingTreeRoots = new WeakSet<NodespaceExtension>();
@@ -331,8 +462,10 @@ export class UiExtensionRegistry {
     }
     const seenIds = new Set<string>();
     const takenKeys = this.registeredKeys();
-    this.extensions.set(ext.id, {
+    const nodeTypes = acceptNodeTypes(ext.id, ext.nodeTypes, this.registeredNodeTypes());
+    const entry: RegisteredExtension = {
       extension: ext,
+      nodeTypes: [],
       chrome: keyContributions(ext.id, ext.chrome, 'chrome', seenIds, takenKeys),
       viewerTabs: keyContributions(ext.id, ext.viewerTabs, 'viewerTabs', seenIds, takenKeys),
       settingsSections: keyContributions(
@@ -355,9 +488,40 @@ export class UiExtensionRegistry {
         'replaceableSlots',
         seenIds,
         takenKeys
+      ),
+      treeItemActions: keyContributions(
+        ext.id,
+        ext.treeItemActions,
+        'treeItemActions',
+        seenIds,
+        takenKeys
       )
-    });
+    };
+    // Only now, with every list read, do node types reach the plugin registry,
+    // so an extension that fails to register leaves no plugin behind.
+    for (const plugin of nodeTypes) {
+      try {
+        this.plugins.register(plugin);
+        entry.nodeTypes.push(plugin);
+      } catch (error) {
+        log.error('Node type failed to register; dropped', {
+          extensionId: ext.id,
+          nodeType: plugin.id,
+          error
+        });
+      }
+    }
+    this.extensions.set(ext.id, entry);
     log.debug('Registered extension', { id: ext.id });
+  }
+
+  /** Every node type a registered extension holds. */
+  private registeredNodeTypes(): Set<string> {
+    const types = new Set<string>();
+    for (const entry of this.extensions.values()) {
+      for (const plugin of entry.nodeTypes) types.add(plugin.id);
+    }
+    return types;
   }
 
   /** Every key held by a registered extension. */
@@ -369,13 +533,30 @@ export class UiExtensionRegistry {
       for (const s of entry.settingsSections) keys.add(s.key);
       for (const s of entry.settingsSlots) keys.add(s.key);
       for (const r of entry.replaceableSlots) keys.add(r.key);
+      for (const a of entry.treeItemActions) keys.add(a.key);
     }
     return keys;
   }
 
-  /** Remove an extension by id. */
+  /**
+   * Remove an extension by id, with the node types it registered. A type whose
+   * plugin was since replaced in the plugin registry is left to its new owner.
+   */
   unregister(id: string): void {
+    const entry = this.extensions.get(id);
+    if (entry === undefined) return;
     this.extensions.delete(id);
+    for (const plugin of entry.nodeTypes) {
+      if (this.plugins.getPlugin(plugin.id) === plugin) this.plugins.unregister(plugin.id);
+    }
+  }
+
+  /** Whether a registered extension added the node type `nodeType`. */
+  hasNodeType(nodeType: string): boolean {
+    for (const entry of this.extensions.values()) {
+      if (entry.nodeTypes.some((plugin) => plugin.id === nodeType)) return true;
+    }
+    return false;
   }
 
   /** Whether an extension with `id` is registered. */
@@ -457,6 +638,16 @@ export class UiExtensionRegistry {
         if (r.slot === slot) out.push(r);
       }
     }
+    return byPriority(out);
+  }
+
+  /**
+   * Every tree-item action, across all extensions, in descending priority with
+   * ties in registration order. Does NOT evaluate `when`.
+   */
+  treeItemActions(): Keyed<TreeItemActionContribution>[] {
+    const out: Keyed<TreeItemActionContribution>[] = [];
+    for (const entry of this.extensions.values()) out.push(...entry.treeItemActions);
     return byPriority(out);
   }
 

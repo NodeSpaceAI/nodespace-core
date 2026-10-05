@@ -12,7 +12,10 @@
  *
  * A throwing `when()` counts as false and is logged once per contribution key
  * (ADR-082 §3.4); it is logged again only after it has returned normally in
- * between.
+ * between. A tree-item action's `when(item)` is asked once per item, so it
+ * "returns normally" once it has done so for every item it threw for: a
+ * predicate that fails for some items and not others is logged once, not on
+ * every re-evaluation of the tree, and neither is one that fails for them all.
  */
 
 import {
@@ -26,29 +29,53 @@ import {
   type SettingsSectionContribution,
   type SettingsSlot,
   type SettingsSlotContributionFor,
+  type TreeItemActionContribution,
+  type TreeItemActionProps,
   type ViewerTabContribution
 } from './ui-extensions';
 import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('UiExtensions');
 
-/** Keys whose `when()` threw and has not returned normally since. */
-const warnedKeys = new Set<string>();
+/**
+ * By contribution key, the items its `when()` threw for and has not returned
+ * normally for since; `''` stands for a contribution asked about no item. A key
+ * is present exactly while its set is non-empty, so its warning is armed again
+ * once the key is gone.
+ */
+const failing = new Map<string, Set<string>>();
+
+/**
+ * Runs the `when()` of the contribution keyed `key`, asked about the tree item
+ * `nodeId` when there is one; a throw counts as false.
+ */
+function holds(key: string, when: () => unknown, nodeId?: string): boolean {
+  const item = nodeId ?? '';
+  try {
+    const active = Boolean(when());
+    const items = failing.get(key);
+    if (items?.delete(item) && items.size === 0) failing.delete(key);
+    return active;
+  } catch (error) {
+    const items = failing.get(key);
+    if (items) {
+      items.add(item);
+    } else {
+      failing.set(key, new Set([item]));
+      log.warn('Contribution when() threw; treating it as false', {
+        key,
+        ...(nodeId !== undefined && { nodeId }),
+        error
+      });
+    }
+    return false;
+  }
+}
 
 /** Whether a contribution should be shown now: no `when` means always. */
 export function isContributionActive(c: Pick<Keyed<Contribution>, 'key' | 'when'>): boolean {
   if (!c.when) return true;
-  try {
-    const active = Boolean(c.when());
-    warnedKeys.delete(c.key);
-    return active;
-  } catch (error) {
-    if (!warnedKeys.has(c.key)) {
-      warnedKeys.add(c.key);
-      log.warn('Contribution when() threw; treating it as false', { key: c.key, error });
-    }
-    return false;
-  }
+  return holds(c.key, () => c.when?.());
 }
 
 /** Chrome contributions for `slot` whose `when()` currently holds. */
@@ -71,6 +98,15 @@ export function getActiveSettingsSlot<S extends SettingsSlot>(
   slot: S
 ): Keyed<SettingsSlotContributionFor<S>>[] {
   return uiExtensionRegistry.settingsSlotFor(slot).filter(isContributionActive);
+}
+
+/** Tree-item actions whose `when(item)` currently holds for `item`, in priority order. */
+export function getActiveTreeItemActions(
+  item: TreeItemActionProps
+): Keyed<TreeItemActionContribution>[] {
+  return uiExtensionRegistry
+    .treeItemActions()
+    .filter((c) => !c.when || holds(c.key, () => c.when?.(item), item.nodeId));
 }
 
 /** What a replaceable-slot host renders; see {@link getReplaceableSlot}. */

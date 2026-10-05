@@ -12,9 +12,10 @@
  * Re-recording refuses a missing bump, and a minor bump for a removal or rename.
  * Whether a changed type needs a major or a minor bump is left to review: the
  * hash records only that a declaration changed. It covers the types declared in
- * the host API's files and the registry types the API reaches; signatures that
- * reach the API through other core modules (`DatabaseInfo`, a component's props)
- * are left to review against the policy in `src/lib/extension-api/index.ts`.
+ * the host API's files and the registry, plugin and node-component types the API
+ * reaches; signatures that reach the API through other core modules
+ * (`DatabaseInfo`, a UI component's props) are left to review against the
+ * policy in `src/lib/extension-api/index.ts`.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -95,6 +96,20 @@ describe('extension API surface', () => {
     expect(covered.has('ExtensionNodes')).toBe(true);
     // A registry type only the hosts use.
     expect(covered.has('Keyed')).toBe(false);
+  });
+
+  it('hashes the plugin types a node-type contribution reaches', () => {
+    const covered = apiTypeDeclarations();
+    // Exported by the index entry from the plugin types.
+    expect(covered.has('PluginDefinition')).toBe(true);
+    // Mentioned by PluginDefinition, not exported.
+    expect(covered.has('NodeTypeConfig')).toBe(true);
+    // The node component's props, from the node-component types.
+    expect(covered.has('NodeComponentProps')).toBe(true);
+    // Declared in both modules: the plugin types' (optional `priority`) is the one hashed.
+    expect(covered.get('ViewerRegistration')?.text).toContain('priority?: number');
+    // A plugin type the API never reaches.
+    expect(covered.has('RegistryStats')).toBe(false);
   });
 });
 
