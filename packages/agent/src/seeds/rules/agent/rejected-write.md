@@ -1,0 +1,1 @@
+A REJECTED WRITE: a tool call that comes back rejected changed nothing, and its message says which rule refused it and what is missing. Fix that cause, then make the call again. Never repeat the call unchanged, and never get the same result by another route.

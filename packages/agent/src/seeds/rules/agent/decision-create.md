@@ -1,0 +1,1 @@
+Call create_node with node_type "decision" and the decision as content, leaving decision_status out. Then call create_node once per paragraph of its body, with node_type "text" and parent_id the decision's id.

@@ -1,5 +1,6 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { NodeReference } from './node-reference';
+import type { SkillRole } from './skill-role';
 
 /**
  * Wire shape for skill nodes sent to the frontend.
@@ -39,4 +40,8 @@ export type SkillNode = {
    * ReAct iteration budget for the skill.
    */
   maxIterations: number;
+  /**
+   * The lane skill search ranks the skill in.
+   */
+  role: SkillRole;
 };

@@ -3,8 +3,11 @@ import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('SeedUpdates');
 
-/** The part of a built-in item an update is about: its name and fields, or its body. */
-export type SeedAspect = 'config' | 'guidance';
+/**
+ * The part of a built-in item an update is about: its name and fields, its
+ * body, or, for a built-in type, its context paths.
+ */
+export type SeedAspect = 'config' | 'guidance' | 'context_paths';
 
 /**
  * A shipped change to a built-in item the user has edited (ADR-094 §8). The
@@ -40,12 +43,25 @@ const SEED_KIND_LABELS: Record<string, string> = {
   play: 'Play',
   query: 'Saved query',
   'agent-guidance': 'Agent guidance',
-  'tool-native': 'Tool'
+  'tool-native': 'Tool',
+  schema: 'Type'
 };
 
 /** A display name for a seeded item's kind; the type id itself for a kind not listed. */
 export function seedKindLabel(nodeType: string): string {
   return SEED_KIND_LABELS[nodeType] ?? nodeType;
+}
+
+/** What each part of a built-in item is called on the review screen. */
+const SEED_PART_LABELS: Record<SeedAspect, string> = {
+  config: 'Name and settings',
+  guidance: 'Body',
+  context_paths: 'Context paths'
+};
+
+/** A display name for the part of a built-in item an update is about. */
+export function seedPartLabel(aspect: SeedAspect): string {
+  return SEED_PART_LABELS[aspect];
 }
 
 /** Identifies one pending update: a built-in item has at most one per aspect. */

@@ -43,3 +43,4 @@ mod seed_tables;
 mod skill_confusion_matrix;
 mod skill_guidance_fetch_mechanism;
 mod skill_guidance_tool_commands;
+mod workflow_seeds;

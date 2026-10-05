@@ -19,7 +19,9 @@
 //! - add a namespaced field (`custom:estimate`);
 //! - add values to an extensible enum;
 //! - remove or rename a field core declares as theirs to change (one with
-//!   `user` protection, such as a task's `priority`).
+//!   `user` protection, such as a task's `priority`);
+//! - add or remove a context path. The `_seed` bookkeeping kept beside the
+//!   paths is not part of the definition either.
 //!
 //! A user can never add a field with a bare name to a core schema, remove a
 //! field core protects, or change a field's type or the values core gives an
@@ -471,5 +473,31 @@ mod tests {
         insert(&conn, &task).await;
 
         assert!(find_core_type_mismatches(&conn).await.unwrap().is_empty());
+    }
+
+    /// A core schema's context paths are the user's to change, and the
+    /// bookkeeping beside them is not part of its definition: neither is a
+    /// difference, whether the paths were changed or removed altogether.
+    #[tokio::test]
+    async fn a_users_context_paths_and_their_bookkeeping_are_not_a_mismatch() {
+        let (conn, _dir) = database().await;
+        seed_all(&conn).await;
+        assert!(!shipped("task").context_paths.is_empty());
+
+        for paths in [vec!["project", "blocked_by"], vec![]] {
+            let mut task = shipped("task");
+            task.context_paths = paths.iter().map(|path| path.parse().unwrap()).collect();
+            insert(&conn, &task).await;
+            conn.execute(
+                "UPDATE node SET properties = json_set(properties, '$._seed', json(?1)) \
+                 WHERE id = 'task'",
+                libsql::params![
+                    r#"{"context_paths_version":"an-earlier-one","context_paths_modified":true}"#
+                ],
+            )
+            .await
+            .unwrap();
+            assert!(find_core_type_mismatches(&conn).await.unwrap().is_empty());
+        }
     }
 }

@@ -1,0 +1,1 @@
+Run `nodespace relationship create --from <skill-id> --type applies_to --to <type-id>` once per type the skill is about. To hand the skill over with a node, run `nodespace relationship create --from <skill-id> --type attached_to --to <node-id>`.

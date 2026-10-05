@@ -19,6 +19,34 @@ pub const SKILL_ATTACHED_TO: &str = "attached_to";
 /// `max_iterations` when a skill doesn't set one — the core schema's default.
 pub const DEFAULT_SKILL_MAX_ITERATIONS: u32 = 2;
 
+/// How skill search ranks a skill (ADR-038). A closed vocabulary: search
+/// compares against `procedure` by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS))]
+#[serde(rename_all = "lowercase")]
+pub enum SkillRole {
+    /// A capability the agent finds for a request.
+    #[default]
+    Tool,
+    /// A way of working a record through its stages, handed over with the
+    /// records it governs. Ranked in its own lane, and never leads a request.
+    Procedure,
+}
+
+impl SkillRole {
+    pub const ALL: [(SkillRole, &'static str); 2] = [
+        (SkillRole::Tool, "Tool"),
+        (SkillRole::Procedure, "Procedure"),
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tool => "tool",
+            Self::Procedure => "procedure",
+        }
+    }
+}
+
 /// The typed fields of a `skill` node: its retrieval and dispatch config. The
 /// skill's name is the node's `content`, its guidance is its child subtree,
 /// and the schemas it is about are its [`SKILL_APPLIES_TO`] edges; none of
@@ -47,6 +75,8 @@ pub struct SkillFields {
     pub tool_whitelist: Vec<String>,
     /// ReAct iteration budget for the skill.
     pub max_iterations: u32,
+    /// The lane skill search ranks the skill in.
+    pub role: SkillRole,
 }
 
 impl Default for SkillFields {
@@ -57,6 +87,7 @@ impl Default for SkillFields {
             not_for: None,
             tool_whitelist: Vec::new(),
             max_iterations: DEFAULT_SKILL_MAX_ITERATIONS,
+            role: SkillRole::default(),
         }
     }
 }
@@ -69,7 +100,14 @@ impl SkillFields {
             not_for: None,
             tool_whitelist: tool_whitelist.iter().map(|t| t.to_string()).collect(),
             max_iterations,
+            role: SkillRole::default(),
         }
+    }
+
+    /// Set the skill's role.
+    pub fn with_role(mut self, role: SkillRole) -> Self {
+        self.role = role;
+        self
     }
 
     /// Set what the skill is not for. A blank value is none.
@@ -132,11 +170,19 @@ impl SkillFields {
                 })?,
         };
 
+        let role = match field("role") {
+            None => SkillRole::default(),
+            Some(v) => serde_json::from_value(v.clone()).map_err(|_| {
+                ValidationError::InvalidProperties("role must be tool or procedure".to_string())
+            })?,
+        };
+
         Ok(Self {
             use_for: use_for.unwrap_or_default(),
             not_for,
             tool_whitelist,
             max_iterations,
+            role,
         })
     }
 
@@ -152,6 +198,7 @@ impl SkillFields {
         }
         props.insert("tool_whitelist".to_string(), json!(self.tool_whitelist));
         props.insert("max_iterations".to_string(), json!(self.max_iterations));
+        props.insert("role".to_string(), json!(self.role));
         Value::Object(props)
     }
 
@@ -217,6 +264,12 @@ pub struct SkillNodeUpdate {
         deserialize_with = "deserialize_clearable"
     )]
     pub max_iterations: Option<Option<u32>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_set_only"
+    )]
+    pub role: Option<SkillRole>,
 }
 
 impl SkillNodeUpdate {
@@ -241,6 +294,9 @@ impl SkillNodeUpdate {
         }
         if let Some(max_iterations) = &self.max_iterations {
             patch.insert("max_iterations".to_string(), json!(max_iterations));
+        }
+        if let Some(role) = &self.role {
+            patch.insert("role".to_string(), json!(role));
         }
         Value::Object(patch)
     }
@@ -385,6 +441,7 @@ mod tests {
                 json!({ "max_iterations": "3" }),
                 "max_iterations must be a positive integer",
             ),
+            (json!({ "role": "guide" }), "role must be tool or procedure"),
         ] {
             match SkillFields::from_properties(&props) {
                 Err(ValidationError::InvalidProperties(m)) => assert_eq!(m, message, "{props}"),
@@ -470,7 +527,8 @@ mod tests {
             json!({
                 "useFor": "Search",
                 "toolWhitelist": ["get_node"],
-                "maxIterations": 4
+                "maxIterations": 4,
+                "role": "tool"
             })
         );
     }

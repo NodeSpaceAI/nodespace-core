@@ -720,6 +720,10 @@ pub struct SkillCandidate {
     /// none. Only a linked set can hold a turn to its types — see
     /// `routing::offered_types`.
     pub schemas_linked: bool,
+    /// The lane retrieval ranked the skill in (ADR-038). A procedure never
+    /// leads a turn, so it never decides which candidate may offer a tool that
+    /// removes user data.
+    pub role: nodespace_core::models::SkillRole,
     /// Whether the chat pins this skill (ADR-090 §5). A pinned skill is a
     /// candidate on every routed turn of its chat, whatever retrieval scored
     /// it: the pin, not the score, is what makes it eligible.

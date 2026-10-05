@@ -182,7 +182,7 @@ async fn a_user_written_skill_gets_the_commands_of_the_tools_it_names() {
     let (service, _temp) = seeded_service().await;
     user_skill(
         &service,
-        "Recording a Decision",
+        "Logging a Team Decision",
         "Record a decision and link it to what it decides.",
         &["get_node"],
         &[
@@ -193,7 +193,7 @@ async fn a_user_written_skill_gets_the_commands_of_the_tools_it_names() {
     )
     .await;
 
-    let skill = fetch(&service, "Recording a Decision").await;
+    let skill = fetch(&service, "Logging a Team Decision").await;
 
     assert_eq!(
         tools_of(&skill),
@@ -275,11 +275,14 @@ async fn an_archived_tools_command_is_not_returned() {
 async fn an_unknown_or_shared_name_fails_with_a_message_naming_it() {
     let (service, _temp) = seeded_service().await;
 
-    let error = get_skill_guidance(&service, "Writing a Spec")
+    let error = get_skill_guidance(&service, "Writing a Sonnet")
         .await
         .expect_err("no skill has this name");
     assert!(matches!(error, OpsError::NotFound { .. }), "{error:?}");
-    assert!(error.to_string().contains("\"Writing a Spec\""), "{error}");
+    assert!(
+        error.to_string().contains("\"Writing a Sonnet\""),
+        "{error}"
+    );
 
     // A name is matched exactly: another case is another name.
     get_skill_guidance(&service, "node deletion")

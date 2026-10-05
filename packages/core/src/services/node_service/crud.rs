@@ -2099,9 +2099,16 @@ impl NodeService {
         // edit (`guidance_modified`), stamped on the child's root. This is
         // tier-independent: `Starter` and `System` seeded nodes are guarded
         // identically.
+        //
+        // A schema is the exception. Its `_seed` tracks its context paths
+        // alone, which only `update_schema` writes and marks; it has no
+        // config or guidance aspect for an edit here to make the user's.
+        let is_schema =
+            |node: &Node| crate::models::CoreNodeType::Schema.is_exactly(&node.node_type);
         let touches_content = update.content.is_some() || update.properties.is_some();
         let stamp_target: Option<(String, &'static str)> = if touches_content {
             match self.store.get_node(node_id).await {
+                Ok(Some(existing)) if is_schema(&existing) => None,
                 Ok(Some(existing)) => {
                     if let Some(seed) = existing.properties.get("_seed") {
                         // Editing the seeded root itself: a config edit.
@@ -2116,7 +2123,10 @@ impl NodeService {
                         match self.get_root_id(node_id).await {
                             Ok(root_id) if root_id != node_id => {
                                 match self.store.get_node(&root_id).await {
-                                    Ok(Some(root)) if root.properties.get("_seed").is_some() => {
+                                    Ok(Some(root))
+                                        if root.properties.get("_seed").is_some()
+                                            && !is_schema(&root) =>
+                                    {
                                         let already_modified = root
                                             .properties
                                             .get("_seed")

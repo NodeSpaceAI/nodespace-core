@@ -40,6 +40,7 @@ use crate::models::{
     CoreNodeType, DecisionStatus, NodeEnvelope, PlanStatus, SchemaNode, SpecStatus,
 };
 use chrono::Utc;
+use nodespace_types::RelationshipPath;
 
 /// The `database-settings` field that lists the extensions a reader needs in
 /// order to read a database correctly (ADR-083 §2).
@@ -393,7 +394,18 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             ],
             title_template: None,
             properties_header_summary_template: None,
-            context_paths: Vec::new(),
+            // What working on a task needs beside the task (ADR-094 §2): the
+            // spec it implements, the plan it is a step of, the decisions
+            // that govern it and its spec, and its project. A user may change
+            // these; a later change to them here is then put to the user
+            // rather than applied (`NodeService::reconcile_core_context_paths`).
+            context_paths: vec![
+                RelationshipPath::from_names(["spec"]),
+                RelationshipPath::from_names(["plan"]),
+                RelationshipPath::from_names(["decisions"]),
+                RelationshipPath::from_names(["spec", "decisions"]),
+                RelationshipPath::from_names(["project"]),
+            ],
         },
         // Project schema - container for tasks, milestones, related work.
         // Name is the node `content`; ownership/membership are graph edges, not
@@ -1785,6 +1797,16 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
+                closed_status_field(
+                    "role",
+                    "Role",
+                    enum_values(&crate::models::SkillRole::ALL, crate::models::SkillRole::as_str),
+                    serde_json::json!(crate::models::SkillRole::default().as_str()),
+                    "tool: a capability the agent finds for a request. procedure: a way of \
+                     working a record through its stages, handed over with the records it \
+                     governs; skill search ranks it in its own lane and never lets it lead a \
+                     request ahead of a tool skill.",
+                ),
             ],
             // The schemas a skill is about are edges to those schema nodes,
             // not a list of ids on the skill. Skill search reads them to
@@ -3205,7 +3227,8 @@ mod tests {
         let schemas = get_core_schemas();
         let skill = schemas.iter().find(|s| s.envelope.id == "skill").unwrap();
 
-        assert_eq!(skill.fields.len(), 4);
+        assert_eq!(skill.fields.len(), 5);
+        assert!(skill.get_field("role").is_some());
         assert!(skill.get_field("node_types").is_none());
         let applies_to = &skill.relationships[0];
         assert_eq!(applies_to.name, "applies_to");

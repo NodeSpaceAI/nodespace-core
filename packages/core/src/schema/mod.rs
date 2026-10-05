@@ -3408,7 +3408,19 @@ pub async fn update_schema(
 
     // The row's properties (the description is a child subtree and the
     // declarations are relationship-table rows — neither lives in properties).
-    let properties = schema_node::to_properties(&updated_schema);
+    let mut properties = schema_node::to_properties(&updated_schema);
+    // A core schema ships with context paths, reconciled like any seeded
+    // aspect (ADR-072): a call that adds or removes one makes them the
+    // user's, so a later shipped change is put to them instead of applied
+    // (`NodeService::reconcile_core_context_paths`). Written with the paths.
+    // This assigns the whole `_seed` object and relies on the write path
+    // merging `_seed` keys, which keeps the aspect's version key; a test in
+    // `core_context_paths_seed_test` pins that.
+    if updated_schema.is_core && (context_paths_added > 0 || context_paths_removed > 0) {
+        properties["_seed"] = serde_json::json!({
+            crate::models::SeedAspect::ContextPaths.modified_key(): true,
+        });
+    }
     let relationships = schema_node::to_declarations(&updated_schema);
 
     // Validate the updated schema before saving (update_node_unchecked bypasses the behavior

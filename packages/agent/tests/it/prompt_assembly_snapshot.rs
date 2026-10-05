@@ -480,6 +480,7 @@ fn fixture_candidates() -> Vec<SkillCandidate> {
     let metadata = fixture_schema_metadata();
     vec![
         SkillCandidate {
+            role: Default::default(),
             id: "fixture-skill-node-creation".to_string(),
             name: node_creation.title.clone(),
             use_for: skill_description(node_creation),
@@ -491,6 +492,7 @@ fn fixture_candidates() -> Vec<SkillCandidate> {
             pinned: false,
         },
         SkillCandidate {
+            role: Default::default(),
             id: "fixture-skill-schema-creation".to_string(),
             name: schema_creation.title.clone(),
             use_for: skill_description(schema_creation),
@@ -683,6 +685,7 @@ fn stage2_lookup_block_matches_golden() {
         .find(|t| t.title == "Research & Search")
         .expect("seed_skill_nodes must still seed a Research & Search skill");
     let candidates = vec![SkillCandidate {
+        role: Default::default(),
         id: "fixture-skill-research-and-search".to_string(),
         name: research.title.clone(),
         use_for: skill_description(research),
@@ -800,6 +803,7 @@ fn stage2_play_authoring_matches_golden() {
         .find(|s| s.envelope.id == "play")
         .expect("play is a core schema");
     let candidates = vec![SkillCandidate {
+        role: Default::default(),
         id: authoring.id.clone(),
         name: authoring.title.clone(),
         use_for: skill_description(authoring),

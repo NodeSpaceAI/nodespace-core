@@ -379,35 +379,40 @@ async fn a_subtype_follows_its_ancestors_paths_and_its_own() -> Result<()> {
 }
 
 /// Context paths are added to and removed from a core schema like any other,
-/// and what a user declared there is still there after the database is
-/// opened again and its core schemas seeded again (ADR-072).
+/// beside the ones it ships with, and what a user declared there is still
+/// there after the database is opened again and its core schemas seeded again
+/// (ADR-072).
 #[tokio::test]
 async fn a_core_schemas_context_paths_survive_a_restart() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("test.db");
+    let theirs = ["spec", "decisions", "spec.decisions", "project", "creator"];
     {
         let mut store = Arc::new(SqliteStore::new(db_path.clone()).await?);
         let service = Arc::new(NodeService::new(&mut store).await?);
-        assert!(declared_paths(&service, "task").await.is_empty());
+        assert_eq!(
+            declared_paths(&service, "task").await,
+            ["spec", "plan", "decisions", "spec.decisions", "project"]
+        );
         update_schema(
             &service,
-            json!({ "schema_id": "task", "add_context_paths": ["project", "blocked_by"] }),
+            json!({ "schema_id": "task", "add_context_paths": ["creator", "blocked_by"] }),
         )
         .await
         .map_err(anyhow::Error::msg)?;
         update_schema(
             &service,
-            json!({ "schema_id": "task", "remove_context_paths": ["blocked_by"] }),
+            json!({ "schema_id": "task", "remove_context_paths": ["blocked_by", "plan"] }),
         )
         .await
         .map_err(anyhow::Error::msg)?;
-        assert_eq!(declared_paths(&service, "task").await, ["project"]);
+        assert_eq!(declared_paths(&service, "task").await, theirs);
     }
 
     // Opening the database seeds the core schemas again.
     let mut store = Arc::new(SqliteStore::new(db_path).await?);
     let service = Arc::new(NodeService::new(&mut store).await?);
-    assert_eq!(declared_paths(&service, "task").await, ["project"]);
+    assert_eq!(declared_paths(&service, "task").await, theirs);
     assert!(service.get_schema_node("task").await?.unwrap().is_core);
 
     let project = create(&service, "project", "Apollo", json!({})).await;
@@ -416,8 +421,8 @@ async fn a_core_schemas_context_paths_survive_a_restart() -> Result<()> {
         .create_relationship(&project, "tasks", &task, json!({}))
         .await?;
     let context = read(&service, &task, &[]).await;
-    assert_eq!(path_names(&context), ["project"]);
-    assert_eq!(context.paths[0].nodes[0].node.id, project);
+    assert_eq!(path_names(&context), theirs);
+    assert_eq!(context.paths[3].nodes[0].node.id, project);
     Ok(())
 }
 

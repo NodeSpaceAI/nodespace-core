@@ -1,0 +1,1 @@
+Run `nodespace node create --type decision --content "<what was decided>"`, leaving `decision_status` out. Then add its body beneath it, one `nodespace node create --type text --parent <decision-id> --content "<paragraph>"` per paragraph.

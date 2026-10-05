@@ -1,0 +1,1 @@
+Call create_relationship with from_id the new decision's id, relationship_type "supersedes" and to_id the old decision's id. Then call update_node with the old decision's id and field_values {"decision_status": "superseded"}, and nothing else in that call.

@@ -674,7 +674,7 @@ fn ops_error_to_tool(e: OpsError, tool_name: &str) -> ToolError {
         return ToolError::ExecutionFailed(format!(
             "{tool_name} was refused: node {node_id} has changed since it was read (version \
              {expected} was given, it is now at version {actual}). Nothing was written. Call \
-             get_node on it again before deciding what to do."
+             get_node_context on it again before deciding what to do."
         ));
     }
     ToolError::ExecutionFailed(format!("{} failed: {}", tool_name, e))
@@ -770,6 +770,10 @@ fn skill_candidate_from(s: &serde_json::Value) -> SkillCandidate {
             .get("schemas_linked")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        role: s
+            .get("role")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
         pinned: false,
     }
 }
@@ -849,22 +853,35 @@ fn search_result_summary(node: &Value) -> Value {
     summary
 }
 
-/// A context read's node as a search row, with the text of its checkbox
-/// items under `checkboxes` when it has any.
+/// A context read's node as a search row, with its checkbox items under
+/// `checkboxes` when it has any.
+///
+/// The node and each item carry `node_version`, the value a write's `version`
+/// takes: a context read is where work is picked up, and starting a task or
+/// ticking an item names the version that was read (ADR-094 §6). It is not
+/// the read's own `version`, which is a digest of everything returned.
 async fn context_node_summary(
     node_service: &NodeService,
     node: node_context_ops::ContextNode,
 ) -> Result<Value, OpsError> {
+    let node_version = node.node.version;
     let typed = node_ops::nodes_to_typed_values(node_service, vec![node.node]).await?;
     let mut summary = typed
         .first()
         .map(search_result_summary)
         .ok_or_else(|| OpsError::Internal("node conversion returned no value".to_string()))?;
+    summary["node_version"] = json!(node_version);
     if !node.checkboxes.is_empty() {
         summary["checkboxes"] = node
             .checkboxes
             .iter()
-            .map(|checkbox| json!(checkbox.content))
+            .map(|checkbox| {
+                json!({
+                    "id": node_uri(&checkbox.id),
+                    "content": checkbox.content,
+                    "node_version": checkbox.version,
+                })
+            })
             .collect();
     }
     Ok(summary)
@@ -1406,7 +1423,7 @@ fn def_create_node() -> ToolDefinition {
 static VERSION_PARAMETER: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     json!({
         "type": "integer",
-        "description": "Optional. The node's \"version\" as you last read it. The write is refused if the node has changed since; read it again before deciding what to do."
+        "description": "Optional. The node's \"node_version\" as get_node_context, or run_query with with_context, last returned it. The write is refused if the node has changed since; read it again before deciding what to do."
     })
 });
 
@@ -2446,7 +2463,7 @@ fn def_run_query() -> ToolDefinition {
                 },
                 "with_context": {
                     "type": "boolean",
-                    "description": "Set true to return each node under 'items' with what governs it: the related nodes its type's context paths reach, its checkbox items, the ids of the skills that apply to it, and a 'version' to compare later with get_node_context. Each skill is listed once, under 'skills'. At most 50 items come back."
+                    "description": "Set true to return each node under 'items' with what governs it: the related nodes its type's context paths reach, its checkbox items, its 'node_version' for a write that names the version read, the ids of the skills that apply to it, and a 'version' to compare later with get_node_context. Each skill is listed once, under 'skills'. At most 50 items come back."
                 }
             },
             "required": ["query"]
@@ -2460,6 +2477,8 @@ fn def_get_node_context() -> ToolDefinition {
         description: "Read one node together with what governs it: the related nodes its type's \
             context paths reach, and the skills that apply to it. 'paths' names more to follow \
             from the node; each returned node comes with its fields and its checkbox items. A \
+            node and each checkbox item carry 'node_version': pass it as 'version' to a write \
+            that must not land on a node changed since this read. A \
             skill in 'skills' is a procedure or a standard: it is attached to a node listed \
             under 'attached_to', or to a saved query the node currently matches, listed under \
             'matched_queries'. Follow it when working on the node. 'version' changes when the \
@@ -4530,7 +4549,11 @@ impl GraphToolExecutor {
             id: None,
             node_type: params.node_type,
             content,
-            parent_id: params.parent_id,
+            // A parent copied from a tool result carries the `nodespace://`
+            // prefix every id is shown with.
+            parent_id: params
+                .parent_id
+                .map(|parent| strip_node_uri(&parent).to_string()),
             position: nodespace_core::services::InsertPositionOwned::End,
             properties,
             collections: params

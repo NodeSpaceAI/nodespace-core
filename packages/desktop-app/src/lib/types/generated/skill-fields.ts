@@ -1,4 +1,5 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
+import type { SkillRole } from './skill-role';
 
 /**
  * The typed fields of a `skill` node: its retrieval and dispatch config. The
@@ -25,4 +26,8 @@ export type SkillFields = {
    * ReAct iteration budget for the skill.
    */
   maxIterations: number;
+  /**
+   * The lane skill search ranks the skill in.
+   */
+  role: SkillRole;
 };

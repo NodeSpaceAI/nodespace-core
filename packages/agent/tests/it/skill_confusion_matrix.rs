@@ -34,7 +34,7 @@ use std::sync::Arc;
 
 use nodespace_agent::local_agent::routing::{lookup_retrieval_query, RETRIEVAL_TOP_K};
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
-use nodespace_core::models::SkillFields;
+use nodespace_core::models::{SkillFields, SkillRole};
 use nodespace_core::ops::skill_ops::{find_skills, FindSkillsInput};
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
 use sha2::{Digest, Sha256};
@@ -44,7 +44,10 @@ use crate::live_skill_retrieval_stability::{
     repeated_rankings, seed_and_embed_registry, TEXT_OVERRIDES_VAR,
 };
 
-/// Where the request's owner must rank, on every rep.
+/// Where the request's owner must rank, on every rep. A procedure skill is
+/// ranked in its own lane (ADR-038): `find_skills` returns the best one after
+/// the tool skills, so its owner holds the request by being that one, and
+/// `First` and `Window` mean the same for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Want {
     /// First: the skill's declared write-tool fields and any destructive
@@ -164,7 +167,9 @@ const CASES: &[Case] = &[
         "Graph Editing",
     ),
     // Relationship Management: an edge between two records.
-    first(
+    // An edge to a decision is Recording a Decision's link step as much as
+    // it is an edge: either may lead.
+    window(
         "record an edge between the rebuild task and the storage decision",
         "Relationship Management",
     ),
@@ -257,6 +262,92 @@ const CASES: &[Case] = &[
     first("bring in this markdown file as a document", "Bulk Import"),
     first("create nodes from this markdown outline", "Bulk Import"),
     first("import the README into the knowledge base", "Bulk Import"),
+    // Writing a Spec: what is being built and how done is judged.
+    first("write a spec for the CSV export feature", "Writing a Spec"),
+    first(
+        "spec out offline sync with its acceptance criteria",
+        "Writing a Spec",
+    ),
+    first(
+        "draft the requirements for the billing rework",
+        "Writing a Spec",
+    ),
+    window("approve the offline sync spec", "Writing a Spec"),
+    // Writing a Plan: how one spec will be met.
+    first(
+        "write an implementation plan for the export spec",
+        "Writing a Plan",
+    ),
+    first(
+        "plan out how we are going to build the offline sync spec",
+        "Writing a Plan",
+    ),
+    first(
+        "draft a plan for the billing spec with its risks",
+        "Writing a Plan",
+    ),
+    // Breaking a Plan into Tasks.
+    first(
+        "break the export plan down into tasks",
+        "Breaking a Plan into Tasks",
+    ),
+    first(
+        "split this plan into work items with checklists",
+        "Breaking a Plan into Tasks",
+    ),
+    first(
+        "turn the approved plan into tasks",
+        "Breaking a Plan into Tasks",
+    ),
+    // Implementing a Task: the work itself, from the queue to review.
+    first("pick up the next ready task", "Implementing a Task"),
+    first(
+        "start working on the next task in the queue",
+        "Implementing a Task",
+    ),
+    first("implement the export task", "Implementing a Task"),
+    first("continue the task I was working on", "Implementing a Task"),
+    // Reviewing a Task: the review queue.
+    first(
+        "review the task that is awaiting review",
+        "Reviewing a Task",
+    ),
+    first("work the review queue", "Reviewing a Task"),
+    first(
+        "check the finished work on the export task",
+        "Reviewing a Task",
+    ),
+    // Completing a Task: closing one, and a close that was refused.
+    first("close out the export task", "Completing a Task"),
+    first("it won't let me mark this task done", "Completing a Task"),
+    window("mark the export task done", "Completing a Task"),
+    // Recording a Decision.
+    first(
+        "record the decision to use Postgres for sessions",
+        "Recording a Decision",
+    ),
+    first(
+        "log an architecture decision: we are going with gRPC",
+        "Recording a Decision",
+    ),
+    first(
+        "supersede the old caching decision with this one",
+        "Recording a Decision",
+    ),
+    // Authoring a Skill: an instruction written down for later.
+    first("write a skill for how we cut releases", "Authoring a Skill"),
+    first(
+        "save this procedure so the agent follows it next time",
+        "Authoring a Skill",
+    ),
+    first(
+        "teach the agent our naming conventions",
+        "Authoring a Skill",
+    ),
+    first(
+        "update the release skill to mention the changelog",
+        "Authoring a Skill",
+    ),
 ];
 
 /// The confusions: a request that shares `skill`'s vocabulary and belongs to
@@ -311,6 +402,40 @@ const REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD: &[(&str, &str)] = &[
     // One record is not a document to import.
     ("add a task to call the roofer on Friday", "Bulk Import"),
     ("new note: call the plumber", "Bulk Import"),
+    // One new task is a record, not a plan's breakdown and not work to do.
+    (
+        "make a task to renew the domain",
+        "Breaking a Plan into Tasks",
+    ),
+    ("make a task to renew the domain", "Implementing a Task"),
+    (
+        "add a task to call the roofer on Friday",
+        "Implementing a Task",
+    ),
+    // A field or a state of some other record is not a task being closed.
+    (
+        "the Camden invoice came in, mark it paid",
+        "Completing a Task",
+    ),
+    (
+        "set the due date on the roofing task to Friday",
+        "Completing a Task",
+    ),
+    // An automation is a play, not a written instruction.
+    (
+        "add a rule that archives invoices once they're paid",
+        "Authoring a Skill",
+    ),
+    ("turn off the rollover play", "Authoring a Skill"),
+    // A new kind of record is a type, not one decision or one spec.
+    (
+        "define a new type for vendors with a name and a contact",
+        "Writing a Spec",
+    ),
+    (
+        "I want to keep a record of the books I lend out",
+        "Recording a Decision",
+    ),
 ];
 
 /// Requests in the matrix that their owner does not yet win: measured and
@@ -352,6 +477,33 @@ const NOT_YET_WON: &[&str] = &[
     "get rid of the duplicate customer record",
     "dedupe the two vendor entries for Harbor Freight",
 ];
+
+/// Labelled requests whose owner changed when `decision` became a core type
+/// with a skill of its own (ADR-092). Each names a decision to record or to
+/// link, which Recording a Decision now does: it creates the decision and
+/// makes the link from the spec or task it constrains. Before there was such
+/// a type, logging decisions meant defining one, and pointing a task at a
+/// decision was a bare edge.
+const REOWNED_BY_RECORDING_A_DECISION: &[&str] = &[
+    "log the design decisions for the system and who authored each one",
+    "create a record of who made which architecture decision",
+    "point rebuild task at the decision it has to respect",
+];
+
+/// The labelled set of the embedding prefix study, as window cases, under
+/// the owner each request has now.
+fn labelled_cases() -> Vec<Case> {
+    SKILL_CASES
+        .iter()
+        .map(|(request, owner)| {
+            if REOWNED_BY_RECORDING_A_DECISION.contains(request) {
+                window(request, "Recording a Decision")
+            } else {
+                window(request, owner)
+            }
+        })
+        .collect()
+}
 
 /// Every skill's score for `query`, best first.
 async fn scores(
@@ -409,9 +561,9 @@ fn seed_text_digest() -> String {
         part(&fields.use_for);
         part(fields.not_for.as_deref().unwrap_or(""));
     }
-    for (request, owner) in SKILL_CASES {
-        part(request);
-        part(owner);
+    for case in labelled_cases() {
+        part(case.request);
+        part(case.owner);
     }
     for case in CASES {
         part(&case.query());
@@ -451,6 +603,16 @@ fn the_recorded_matrix_is_of_the_seeded_text() {
 async fn skills_win_their_requests() {
     let registry = seed_skill_nodes();
     let installed: Vec<String> = registry.iter().map(|t| t.title.clone()).collect();
+    let procedures: Vec<String> = registry
+        .iter()
+        .filter(|t| {
+            SkillFields::from_properties(&t.root_properties)
+                .expect("seed decodes as a skill")
+                .role
+                == SkillRole::Procedure
+        })
+        .map(|t| t.title.clone())
+        .collect();
     let Some((es, ns, _tmp)) = seed_and_embed_registry(registry).await else {
         return;
     };
@@ -461,10 +623,7 @@ async fn skills_win_their_requests() {
     // (request, the line to print, whether `NOT_YET_WON` may excuse it)
     let mut failures: Vec<(&str, String, bool)> = Vec::new();
 
-    let labelled: Vec<Case> = SKILL_CASES
-        .iter()
-        .map(|(request, owner)| window(request, owner))
-        .collect();
+    let labelled = labelled_cases();
     for case in labelled.iter().chain(CASES) {
         let Case {
             request,
@@ -498,6 +657,9 @@ async fn skills_win_their_requests() {
             .await
             .iter()
             .all(|top| match want {
+                _ if procedures.iter().any(|p| p == owner) => {
+                    top.iter().any(|skill| skill == owner)
+                }
                 Want::First => top.first().is_some_and(|skill| skill == owner),
                 Want::Window => top.iter().any(|skill| skill == owner),
             });
@@ -516,6 +678,10 @@ async fn skills_win_their_requests() {
     }
 
     for (request, skill) in REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD {
+        // A procedure never leads a request, so its pairs hold by construction.
+        if procedures.iter().any(|p| p == skill) {
+            continue;
+        }
         let ranked = scores(&es, &ns, request).await;
         let (leader, leader_score) = ranked.first().cloned().unwrap_or_default();
         let wrong_score = ranked

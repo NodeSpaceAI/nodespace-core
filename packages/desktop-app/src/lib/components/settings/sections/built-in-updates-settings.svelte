@@ -4,6 +4,7 @@
   import { Button } from '$lib/components/ui/button';
   import {
     seedKindLabel,
+    seedPartLabel,
     seedUpdateKey,
     seedUpdatesStore,
     type PendingSeedUpdate,
@@ -26,7 +27,7 @@
   });
 
   function partLabel(update: PendingSeedUpdate): string {
-    return update.aspect === 'guidance' ? 'Body' : 'Name and settings';
+    return seedPartLabel(update.aspect);
   }
 
   function lastEdited(update: PendingSeedUpdate): string {
@@ -199,7 +200,7 @@
     <Dialog.Header>
       <Dialog.Title>Take the shipped version</Dialog.Title>
       <Dialog.Description>
-        Replace your {takeTarget?.aspect === 'guidance' ? 'body' : 'name and settings'} of
+        Replace your {takeTarget ? partLabel(takeTarget).toLowerCase() : ''} of
         <strong>{takeTarget?.title}</strong> with the shipped version? Your edit to it is discarded and
         cannot be restored.
       </Dialog.Description>

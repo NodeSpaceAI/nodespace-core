@@ -87,6 +87,7 @@ export type { Selector } from './selector';
 export type { SkillFields } from './skill-fields';
 export type { SkillNode } from './skill-node';
 export type { SkillNodeUpdate } from './skill-node-update';
+export type { SkillRole } from './skill-role';
 export type { SortConfig } from './sort-config';
 export type { SortDirection } from './sort-direction';
 export type { SpecNode } from './spec-node';

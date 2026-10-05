@@ -20,6 +20,7 @@
 //! system's ability to bound K and enforce the trust boundary.
 
 use crate::agent_types::{SkillCandidate, ToolCallRaw, ToolDefinition};
+use nodespace_core::models::SkillRole;
 use nodespace_core::ops::context_ops::EXISTING_SCHEMAS_HEADER;
 use serde::Deserialize;
 
@@ -63,9 +64,22 @@ pub const RETRIEVAL_FETCH: usize = RETRIEVAL_TOP_K + 1;
 /// second read-only skill placing behind it still counts as one that took a
 /// write skill's place.
 ///
+/// The procedure lane (ADR-038) adds the best procedure after those, outside
+/// the bound: it takes no place from a tool skill.
+///
 /// `ranked` must be sorted by score, descending, as `agent_loop`'s `route`
 /// leaves it.
-pub fn select_candidates(mut ranked: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
+pub fn select_candidates(ranked: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
+    let (procedures, ranked): (Vec<_>, Vec<_>) = ranked
+        .into_iter()
+        .partition(|c| c.role == SkillRole::Procedure);
+    let mut chosen = select_tool_candidates(ranked);
+    chosen.extend(procedures.into_iter().take(1));
+    chosen
+}
+
+/// [`select_candidates`] over the tool lane alone.
+fn select_tool_candidates(mut ranked: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
     let leader_id = leading_tool_bearing_candidate(&ranked[..ranked.len().min(RETRIEVAL_TOP_K)])
         .map(|c| c.id.clone());
     let lookup_took_a_place = ranked.iter().take(RETRIEVAL_TOP_K).any(|c| {
@@ -465,10 +479,21 @@ pub fn without_destructive_skills(mut ranked: Vec<SkillCandidate>) -> Vec<SkillC
 ///
 /// On an add this is the turn that cannot do what was asked: `create_node`
 /// is reachable from two skills, and both missed the bound.
+///
+/// A procedure does not count: it never leads a turn, so the skill that can
+/// create a record has to be one that can.
 pub fn lacks_a_creating_skill(ranked: &[SkillCandidate]) -> bool {
     !select_candidates(ranked.to_vec())
         .iter()
-        .any(|c| clears_score_gate(c) && skill_can_create_a_record(c))
+        .any(can_lead_a_creation)
+}
+
+/// Whether a candidate is a tool skill that clears its bar and can create a
+/// record.
+fn can_lead_a_creation(candidate: &SkillCandidate) -> bool {
+    candidate.role != SkillRole::Procedure
+        && clears_score_gate(candidate)
+        && skill_can_create_a_record(candidate)
 }
 
 /// Retrieval's ranking for one routing query, through `retrieve`: a search for
@@ -516,7 +541,7 @@ where
         Ok(second) => {
             let creating = without_destructive_skills(second)
                 .into_iter()
-                .find(|c| clears_score_gate(c) && skill_can_create_a_record(c));
+                .find(can_lead_a_creation);
             if let Some(creating) = creating {
                 tracing::debug!(
                     skill = %creating.name,
@@ -919,9 +944,17 @@ fn is_tool_bearing_contender(candidate: &SkillCandidate) -> bool {
     clears_score_gate(candidate) && !candidate.tools.is_empty()
 }
 
+/// Whether a candidate can lead the turn: a tool-bearing contender that is
+/// not a procedure. A procedure scores on requests that belong to a tool
+/// skill, and letting it lead would withhold that skill's destructive tool
+/// (ADR-038).
+fn can_lead(candidate: &SkillCandidate) -> bool {
+    is_tool_bearing_contender(candidate) && candidate.role != SkillRole::Procedure
+}
+
 fn top_tool_bearing_score<'a>(candidates: impl Iterator<Item = &'a SkillCandidate>) -> f32 {
     candidates
-        .filter(|c| is_tool_bearing_contender(c))
+        .filter(|c| can_lead(c))
         .map(|c| c.score)
         .fold(f32::NEG_INFINITY, f32::max)
 }
@@ -959,7 +992,7 @@ fn top_tool_bearing_score<'a>(candidates: impl Iterator<Item = &'a SkillCandidat
 pub fn leading_tool_bearing_candidate(candidates: &[SkillCandidate]) -> Option<&SkillCandidate> {
     candidates
         .iter()
-        .filter(|c| is_tool_bearing_contender(c))
+        .filter(|c| can_lead(c))
         .max_by(|a, b| a.score.total_cmp(&b.score))
 }
 
@@ -1618,6 +1651,7 @@ mod tests {
             instructions: format!("{name} instructions"),
             schema_metadata: json!([]),
             schemas_linked: false,
+            role: Default::default(),
             pinned: false,
         }
     }
@@ -2524,6 +2558,78 @@ mod tests {
             names(&select_candidates(ranked)),
             vec!["Node Creation", "Graph Editing", "Schema Creation"]
         );
+    }
+
+    fn procedure(name: &str, score: f32, tools: &[&str]) -> SkillCandidate {
+        SkillCandidate {
+            role: SkillRole::Procedure,
+            ..candidate(name, score, tools)
+        }
+    }
+
+    #[test]
+    fn a_procedure_takes_no_place_from_a_tool_skill() {
+        // It outscores every tool skill, and is kept in addition to the three
+        // the window holds.
+        let ranked = vec![
+            procedure("Completing a Task", 0.95, &["update_node"]),
+            candidate("Node Deletion", 0.9, &["delete_node"]),
+            candidate("Graph Editing", 0.8, &["update_node"]),
+            candidate("Organization", 0.7, &["create_relationship"]),
+        ];
+        assert_eq!(
+            names(&select_candidates(ranked)),
+            vec![
+                "Node Deletion",
+                "Graph Editing",
+                "Organization",
+                "Completing a Task"
+            ]
+        );
+    }
+
+    #[test]
+    fn only_the_best_procedure_is_kept() {
+        let ranked = vec![
+            procedure("Writing a Plan", 0.9, &["create_node"]),
+            procedure("Writing a Spec", 0.8, &["create_node"]),
+            candidate("Graph Editing", 0.7, &["update_node"]),
+        ];
+        assert_eq!(
+            names(&select_candidates(ranked)),
+            vec!["Graph Editing", "Writing a Plan"]
+        );
+    }
+
+    #[test]
+    fn a_procedure_never_leads_the_turn() {
+        // Above the deletion skill, it would otherwise make that skill not the
+        // top score and withhold `delete_node`.
+        let candidates = vec![
+            procedure("Completing a Task", 0.95, &["update_node"]),
+            candidate("Node Deletion", 0.9, &["delete_node"]),
+        ];
+        assert_eq!(
+            leading_tool_bearing_candidate(&candidates).map(|c| c.name.as_str()),
+            Some("Node Deletion")
+        );
+        assert!(stage2_permitted_names(&candidates).contains("delete_node"));
+    }
+
+    #[test]
+    fn a_procedure_does_not_count_as_a_skill_that_can_create_a_record() {
+        // Recording a Decision holds `create_node`, and still leaves the add
+        // without a tool skill that leads it.
+        let ranked = vec![
+            candidate("Graph Editing", 0.9, &["update_node"]),
+            procedure("Recording a Decision", 0.85, &["create_node"]),
+        ];
+        assert!(lacks_a_creating_skill(&ranked));
+        let with_creator = vec![
+            candidate("Node Creation", 0.9, &["create_node"]),
+            procedure("Recording a Decision", 0.85, &["create_node"]),
+        ];
+        assert!(!lacks_a_creating_skill(&with_creator));
     }
 
     #[test]

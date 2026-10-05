@@ -378,6 +378,7 @@ mod tests {
             instructions: String::new(),
             schema_metadata,
             schemas_linked: false,
+            role: Default::default(),
             pinned: false,
         }
     }
@@ -392,6 +393,7 @@ mod tests {
             instructions: String::new(),
             schema_metadata: json!(null),
             schemas_linked: false,
+            role: Default::default(),
             pinned: false,
         }
     }

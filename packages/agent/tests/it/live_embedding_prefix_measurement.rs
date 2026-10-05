@@ -776,6 +776,7 @@ async fn measure_skills(env: &Env) {
             .iter()
             .filter(|s| s.get("kind").and_then(|v| v.as_str()) != Some("schema"))
             .map(|s| SkillCandidate {
+                role: Default::default(),
                 id: String::new(),
                 name: s["name"].as_str().unwrap_or_default().to_string(),
                 use_for: String::new(),

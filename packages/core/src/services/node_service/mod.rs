@@ -57,7 +57,9 @@ pub use conflicts::deterministic_conflict_id;
 pub use hierarchy::render_subtree_markdown;
 pub use invariants::DryRunVerdict;
 pub use relationship::{CreatedRelationship, NewRelationship, StoredEdge};
-pub use seed_updates::{shipped_seed_aspect_text, SeedUpdateComparison};
+pub use seed_updates::{
+    context_paths_version, shipped_core_schema, shipped_seed_aspect_text, SeedUpdateComparison,
+};
 
 /// Reserved ID for the DatabaseSettingsNode singleton instance.
 ///
@@ -1650,6 +1652,18 @@ impl NodeService {
             write_verification_fault: Arc::new(RwLock::new(None)),
         };
 
+        // A core schema's context paths follow the shipped ones unless the
+        // user changed them (ADR-072, ADR-094 §8). Before anything reads a
+        // context path.
+        // A failure leaves the paths as they were, which is recoverable, so
+        // it does not stop the database opening, as for plays and queries.
+        if let Err(e) = service
+            .reconcile_core_context_paths(&crate::models::core_schemas::get_core_schemas())
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to reconcile core context paths");
+        }
+
         // ADR-037: every install has exactly one local PersonNode (the user).
         service.seed_local_person_if_needed().await?;
 
@@ -1663,6 +1677,14 @@ impl NodeService {
         // must never be what keeps a database from opening.
         if let Err(e) = crate::playbook::core_plays::seed_core_plays(&service).await {
             tracing::warn!(error = %e, "Failed to reconcile core plays (non-fatal)");
+        }
+
+        // ADR-092 §8: the saved queries that ship with the product, queues
+        // included. Non-fatal for the same reason.
+        if let Err(e) =
+            crate::services::query_service::core_queries::seed_core_queries(&service).await
+        {
+            tracing::warn!(error = %e, "Failed to reconcile core saved queries (non-fatal)");
         }
 
         Ok(service)
@@ -1891,7 +1913,9 @@ impl NodeService {
     /// a database's first run would never reach that database, exactly the
     /// gap fixed there for content nodes. Existing core schemas are left
     /// untouched; only schemas from [`crate::models::core_schemas::get_core_schemas`]
-    /// missing from the database are created.
+    /// missing from the database are created. The one part of an existing
+    /// core schema that follows what ships is its context paths
+    /// ([`Self::reconcile_core_context_paths`]).
     ///
     /// This is idempotent - safe to call multiple times.
     async fn seed_core_schemas_if_needed(store: &SqliteStore) -> Result<(), NodeServiceError> {
@@ -1934,7 +1958,13 @@ impl NodeService {
         // later in the same loop.
         {
             for schema in &missing_schemas {
-                let node = crate::models::schema_node::to_node(schema);
+                // Created with the shipped context paths, and stamped as
+                // current with them (`reconcile_core_context_paths`).
+                let mut node = crate::models::schema_node::to_node(schema);
+                node.properties["_seed"] = serde_json::json!({
+                    SeedAspect::ContextPaths.version_key():
+                        seed_updates::context_paths_version(&schema.context_paths),
+                });
 
                 store.create_node(node, None, None).await.map_err(|e| {
                     NodeServiceError::SerializationError(format!(

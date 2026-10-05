@@ -12,14 +12,17 @@
 use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
-/// The two parts of a seeded node that are reconciled, and edited,
-/// independently (ADR-072).
+/// The parts of a seeded node that are reconciled, and edited, independently
+/// (ADR-072).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SeedAspect {
     /// The root: its name and its fields.
     Config,
     /// The body: the Markdown children beneath the root.
     Guidance,
+    /// A core schema's context paths (ADR-094 §2): the one part of a core
+    /// schema that ships with a value a user may change.
+    ContextPaths,
 }
 
 impl SeedAspect {
@@ -27,6 +30,7 @@ impl SeedAspect {
         match self {
             SeedAspect::Config => "config",
             SeedAspect::Guidance => "guidance",
+            SeedAspect::ContextPaths => "context_paths",
         }
     }
 
@@ -36,6 +40,7 @@ impl SeedAspect {
         match self {
             SeedAspect::Config => "config_version",
             SeedAspect::Guidance => "guidance_version",
+            SeedAspect::ContextPaths => "context_paths_version",
         }
     }
 
@@ -44,6 +49,7 @@ impl SeedAspect {
         match self {
             SeedAspect::Config => "config_modified",
             SeedAspect::Guidance => "guidance_modified",
+            SeedAspect::ContextPaths => "context_paths_modified",
         }
     }
 }
@@ -55,8 +61,9 @@ impl FromStr for SeedAspect {
         match s {
             "config" => Ok(SeedAspect::Config),
             "guidance" => Ok(SeedAspect::Guidance),
+            "context_paths" => Ok(SeedAspect::ContextPaths),
             other => Err(format!(
-                "unknown seed aspect '{other}' (expected 'config' or 'guidance')"
+                "unknown seed aspect '{other}' (expected 'config', 'guidance' or 'context_paths')"
             )),
         }
     }

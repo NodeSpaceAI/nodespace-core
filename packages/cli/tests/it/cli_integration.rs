@@ -682,12 +682,15 @@ async fn skill_get_fetches_one_skill_by_name_or_id_with_its_tool_commands() {
 
     let status = client
         .get_skill(GetSkillRequest {
-            name_or_id: "Writing a Spec".to_string(),
+            name_or_id: "Writing a Sonnet".to_string(),
         })
         .await
         .expect_err("no skill has this name");
     assert_eq!(status.code(), tonic::Code::NotFound);
-    assert!(status.message().contains("\"Writing a Spec\""), "{status}");
+    assert!(
+        status.message().contains("\"Writing a Sonnet\""),
+        "{status}"
+    );
 
     // The same through the command handler.
     commands::skill::run_get(
@@ -702,13 +705,16 @@ async fn skill_get_fetches_one_skill_by_name_or_id_with_its_tool_commands() {
     let error = commands::skill::run_get(
         &mut client,
         commands::skill::GetArgs {
-            name_or_id: "Writing a Spec".to_string(),
+            name_or_id: "Writing a Sonnet".to_string(),
         },
         true,
     )
     .await
     .expect_err("an unknown name fails the command");
-    assert!(error.to_string().contains("\"Writing a Spec\""), "{error}");
+    assert!(
+        error.to_string().contains("\"Writing a Sonnet\""),
+        "{error}"
+    );
 
     let _ = shutdown.send(());
 }
@@ -1106,7 +1112,7 @@ async fn skill_guidance_fetches_skills_and_schemas_end_to_end() {
         &[],
         3,
     )
-    .into_node("Recording a Decision");
+    .into_node("Logging a Team Decision");
     let decision_skill_id = decision_skill.id.clone();
     node_service
         .create_node(decision_skill)
@@ -2920,17 +2926,20 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
     };
 
     // The task matches the queue, so it carries the queue's procedure; with
-    // the path to its project, it carries the project's skill too.
+    // the path to its project, it carries the project's skill too. `task`
+    // ships with that path as one of its context paths, so it is followed
+    // once, in its place among them.
+    let task_paths = ["spec", "plan", "decisions", "spec.decisions", "project"];
     let context = read(&task, serde_json::json!([["project"]]))
         .await
         .expect("read the task");
     let node = context.node.expect("the node");
     assert_eq!(node.node.expect("node data").id, task);
     assert_eq!(node.checkboxes.len(), 1);
-    assert_eq!(context.paths.len(), 1);
-    assert_eq!(context.paths[0].path, "project");
+    let followed: Vec<&str> = context.paths.iter().map(|p| p.path.as_str()).collect();
+    assert_eq!(followed, task_paths);
     assert_eq!(
-        context.paths[0].nodes[0].node.as_ref().expect("reached").id,
+        context.paths[4].nodes[0].node.as_ref().expect("reached").id,
         project
     );
     assert_eq!(context.skills.len(), 2);
@@ -2962,12 +2971,12 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
         fetched.tool_commands
     );
 
-    // Without the path the project is not reached, and neither is its skill.
-    let alone = read(&task, serde_json::json!([])).await.expect("read");
-    assert!(alone.paths.is_empty());
-    assert_eq!(alone.skills.len(), 1);
-    assert_eq!(alone.skills[0].skill.as_ref().unwrap().name, "Implementing");
-    assert_ne!(alone.version, context.version);
+    // A read that names no path follows the type's context paths: the same
+    // read as the one that named the path, so the same version.
+    let unasked = read(&task, serde_json::json!([])).await.expect("read");
+    assert_eq!(unasked.paths.len(), task_paths.len());
+    assert_eq!(unasked.skills.len(), 2);
+    assert_eq!(unasked.version, context.version);
 
     // A name the task's type does not declare is refused, naming the path.
     let refused = read(&task, serde_json::json!([["project", "sponsor"]]))
@@ -2999,14 +3008,14 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
     assert_eq!(run.skills[0].skill.as_ref().unwrap().name, "Implementing");
     assert_eq!(run.skills[0].attached_to, std::slice::from_ref(&queue));
 
-    // The task schema declares the path to the project as context, so a read
-    // that names no path follows it. A path written in its dotted form is
-    // the one the schema read prints.
+    // The task schema declares another path as context, so a read that
+    // names no path follows it too. A path written in its dotted form is the
+    // one the schema read prints.
     commands::schema::run(
         &mut client,
         commands::schema::SchemaAction::Update(commands::schema::SchemaParamsArgs {
             params: Some(
-                serde_json::json!({ "schema_id": "task", "add_context_paths": ["project"] })
+                serde_json::json!({ "schema_id": "task", "add_context_paths": ["project.tasks"] })
                     .to_string(),
             ),
             params_file: None,
@@ -3045,15 +3054,34 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
     .expect("a typed schema");
     assert_eq!(
         nodespace_cli::output::schema_to_json(&schema)["context_paths"],
-        serde_json::json!(["project"])
+        serde_json::json!([
+            "spec",
+            "plan",
+            "decisions",
+            "spec.decisions",
+            "project",
+            "project.tasks"
+        ])
     );
 
     let by_default = read(&task, serde_json::json!([])).await.expect("read");
-    assert_eq!(by_default.paths.len(), 1);
-    assert_eq!(by_default.paths[0].path, "project");
+    assert_eq!(by_default.paths.len(), 6);
+    assert_eq!(by_default.paths[4].path, "project");
+    assert_eq!(by_default.paths[5].path, "project.tasks");
+    assert_eq!(
+        by_default.paths[5].nodes[0]
+            .node
+            .as_ref()
+            .expect("reached")
+            .id,
+        task
+    );
     assert_eq!(by_default.skills.len(), 2);
-    // The same read as the one that named the path, so the same version.
-    assert_eq!(by_default.version, context.version);
+    // The same read as one that names the path, so the same version.
+    let named = read(&task, serde_json::json!([["project", "tasks"]]))
+        .await
+        .expect("read");
+    assert_eq!(by_default.version, named.version);
     let version_only = raw
         .clone()
         .get_node_context(GetNodeContextRequest {
@@ -3084,7 +3112,7 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
     let item = &run.items[0];
     assert_eq!(item.node.as_ref().unwrap().node.as_ref().unwrap().id, task);
     assert_eq!(item.node.as_ref().unwrap().checkboxes.len(), 1);
-    assert_eq!(item.paths[0].path, "project");
+    assert_eq!(item.paths[4].path, "project");
     assert_eq!(item.version, by_default.version);
     let item_skills: Vec<&str> = item.skills.iter().map(|s| s.skill_id.as_str()).collect();
     assert_eq!(item_skills, [procedure.as_str(), standards.as_str()]);
@@ -3178,7 +3206,7 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
     let context = read(&task, serde_json::json!([["project"]]))
         .await
         .expect("read the task again");
-    assert_eq!(context.paths[0].nodes.len(), 1);
+    assert_eq!(context.paths[4].nodes.len(), 1);
     let names: Vec<&str> = context
         .skills
         .iter()
@@ -5761,8 +5789,8 @@ async fn seed_pending_update_is_listed_kept_and_taken_end_to_end() {
         &mut client,
         commands::seed::SeedAction::Take(commands::seed::TakeArgs {
             item: item(commands::seed::AspectArgs {
-                config: false,
                 guidance: true,
+                ..Default::default()
             }),
             yes: true,
         }),
@@ -5775,6 +5803,143 @@ async fn seed_pending_update_is_listed_kept_and_taken_end_to_end() {
         after_take.iter().all(|line| line != USER_BODY),
         "take must replace the user's body"
     );
+    assert!(node_service
+        .list_pending_seed_updates()
+        .await
+        .expect("list")
+        .is_empty());
+
+    let _ = shutdown.send(());
+}
+
+/// End-to-end: a shipped change to the context paths of a built-in type the
+/// user changed them on is listed, shown, kept by `seed keep` and replaced
+/// only by `seed take --context-paths` (ADR-094 §8). The daemon resolves the
+/// type to this build's definition, so `take` restores the paths it ships.
+#[tokio::test]
+async fn seed_pending_context_paths_update_is_listed_kept_and_taken_end_to_end() {
+    use nodespace_core::models::core_schemas::get_core_schemas;
+
+    let (sock, shutdown, _tempdir, node_service) = spawn_test_daemon_with_seeded_skills().await;
+    let shipped = ["spec", "plan", "decisions", "spec.decisions", "project"];
+    let theirs = ["spec", "decisions", "spec.decisions", "project"];
+    let stored = || async {
+        node_service
+            .get_schema_node("task")
+            .await
+            .expect("read task")
+            .expect("task is seeded")
+            .context_paths
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+    };
+
+    // The user removes a path, then a build shipping other paths opens the
+    // database: what its reconciliation does.
+    nodespace_core::schema::handle_update_schema(
+        &node_service,
+        serde_json::json!({ "schema_id": "task", "remove_context_paths": ["plan"] }),
+    )
+    .await
+    .expect("user edit must succeed");
+    let other_build = |paths: &[&str]| {
+        let mut schemas = get_core_schemas();
+        schemas
+            .iter_mut()
+            .find(|schema| schema.envelope.id == "task")
+            .expect("task is a core schema")
+            .context_paths = paths.iter().map(|path| path.parse().unwrap()).collect();
+        schemas
+    };
+    node_service
+        .reconcile_core_context_paths(&other_build(&["project"]))
+        .await
+        .expect("reconcile");
+
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let pending = client
+        .list_pending_seed_updates(nodespace_daemon::nodespace::ListPendingSeedUpdatesRequest {})
+        .await
+        .expect("list")
+        .into_inner()
+        .updates;
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(pending[0].node_id, "task");
+    assert_eq!(pending[0].node_type, "schema");
+    assert_eq!(pending[0].aspect, "context_paths");
+    assert!(pending[0].shipped_available);
+
+    let detail = client
+        .get_pending_seed_update(nodespace_daemon::nodespace::PendingSeedUpdateRef {
+            node_id: "task".to_string(),
+            aspect: "context_paths".to_string(),
+        })
+        .await
+        .expect("show")
+        .into_inner();
+    assert_eq!(detail.shipped, shipped.join("\n"));
+    assert_eq!(detail.yours, theirs.join("\n"));
+
+    let item = |aspect: commands::seed::AspectArgs| commands::seed::ItemArgs {
+        item: "task".to_string(),
+        aspect,
+    };
+    commands::seed::run(
+        &mut client,
+        commands::seed::SeedAction::Show(item(commands::seed::AspectArgs::default())),
+        true,
+    )
+    .await
+    .expect("show must succeed");
+
+    // Keep: their paths stay and nothing is pending.
+    commands::seed::run(
+        &mut client,
+        commands::seed::SeedAction::Keep(item(commands::seed::AspectArgs::default())),
+        true,
+    )
+    .await
+    .expect("keep must succeed");
+    assert_eq!(stored().await, theirs);
+    assert!(node_service
+        .list_pending_seed_updates()
+        .await
+        .expect("list")
+        .is_empty());
+    let err = commands::seed::run(
+        &mut client,
+        commands::seed::SeedAction::Take(commands::seed::TakeArgs {
+            item: item(commands::seed::AspectArgs::default()),
+            yes: true,
+        }),
+        true,
+    )
+    .await
+    .expect_err("take with nothing pending must fail");
+    assert!(err.to_string().contains("No shipped update is pending"));
+
+    // What ships changes again; this time the user takes it.
+    node_service
+        .reconcile_core_context_paths(&get_core_schemas())
+        .await
+        .expect("reconcile");
+    commands::seed::run(
+        &mut client,
+        commands::seed::SeedAction::Take(commands::seed::TakeArgs {
+            item: item(commands::seed::AspectArgs {
+                context_paths: true,
+                ..Default::default()
+            }),
+            yes: true,
+        }),
+        true,
+    )
+    .await
+    .expect("take must succeed");
+    assert_eq!(stored().await, shipped);
     assert!(node_service
         .list_pending_seed_updates()
         .await

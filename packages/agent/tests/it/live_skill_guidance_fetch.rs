@@ -255,6 +255,62 @@ async fn plainly_worded_tasks_return_the_skill_for_them() {
     }
 }
 
+/// An agent holding only the shipped skill file fetches by task before its
+/// first write. Asked to write a spec, and then to implement a ready task,
+/// the fetch leads with the procedure for each, served in commands it can
+/// run and carrying the rules it has to follow.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn writing_a_spec_and_implementing_a_ready_task_fetch_their_procedures() {
+    let Some((embedding_service, node_service, _temp_dir)) = seeded_and_embedded(false).await
+    else {
+        return;
+    };
+
+    for (task, expected, steps) in [
+        (
+            "write a spec for the CSV export feature",
+            "Writing a Spec",
+            &[
+                "nodespace node create --type spec",
+                "nodespace node create --type checkbox",
+                "a new spec is a draft",
+                "APPROVAL IS THE USER'S",
+            ][..],
+        ),
+        (
+            "implement the next ready task",
+            "Implementing a Task",
+            &[
+                "nodespace query run \"Ready tasks\" --with-context --limit 1",
+                "nodespace node set-status <task-id> in_progress --version <n>",
+                "A VERSION CONFLICT",
+                "nodespace node set-status <task-id> in_review --version <n>",
+            ][..],
+        ),
+    ] {
+        let guidance = find_skill_guidance(&embedding_service, &node_service, input(task, 3))
+            .await
+            .expect("the fetch must succeed");
+        let first = guidance.skills.first().expect("a skill is returned");
+        assert_eq!(
+            first.name, expected,
+            "{task:?} must lead with its procedure"
+        );
+        // What the fetch command prints for a built-in whose body is as
+        // seeded: the same procedure, in commands.
+        let served =
+            nodespace_agent::skill_pipeline::external_skill_body(&first.id, &first.instructions)
+                .expect("an untouched built-in is served in its CLI form");
+        for step in steps {
+            assert!(
+                served.contains(step),
+                "{expected} as fetched does not say {step:?}:\n{served}"
+            );
+        }
+    }
+}
+
 /// The fetch ranks skills exactly as the in-app skill search does for the
 /// same query: same skills, same order, same scores.
 #[tokio::test]
@@ -448,7 +504,8 @@ async fn a_user_written_skill_naming_a_tool_is_fetched_with_the_command_for_it()
     };
 
     let description = "Record a decision the team made and link it to the task it settles.";
-    let skill = SkillFields::new(description, &["get_node"], 3).into_node("Recording a Decision");
+    let skill =
+        SkillFields::new(description, &["get_node"], 3).into_node("Logging a Team Decision");
     let skill_id = skill.id.clone();
     node_service
         .create_node(skill)

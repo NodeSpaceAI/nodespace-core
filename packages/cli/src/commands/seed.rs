@@ -2,8 +2,9 @@
 //! user has edited (ADR-094 §8).
 //!
 //! NodeSpace ships skills, plays, saved queries and other items as seeded
-//! nodes, and never overwrites one a user edited. When a newer version of
-//! such an item ships, it is held back as pending. These commands list what is
+//! nodes, and the built-in types with context paths, and never overwrites
+//! what a user edited. When a newer version of such an item ships, it is held
+//! back as pending. These commands list what is
 //! pending, show the shipped version beside the user's, and settle one item:
 //! keep the user's version, or take the shipped one. Nothing is replaced
 //! without `take`.
@@ -23,8 +24,8 @@ use crate::NodeClient;
 #[derive(Subcommand, Debug)]
 pub enum SeedAction {
     /// List the built-in items you have edited that have a newer shipped
-    /// version: kind, title, which part (config or guidance), and when you
-    /// last edited it.
+    /// version: kind, title, which part (config, guidance or context paths),
+    /// and when you last edited it.
     Pending,
     /// Show one pending item's shipped version and your version.
     Show(ItemArgs),
@@ -59,7 +60,8 @@ pub struct TakeArgs {
     pub yes: bool,
 }
 
-/// Which part of the item. Needed only when both parts of it are pending.
+/// Which part of the item. Needed only when more than one part of it is
+/// pending.
 #[derive(Args, Debug, Default)]
 #[group(multiple = false)]
 pub struct AspectArgs {
@@ -70,6 +72,11 @@ pub struct AspectArgs {
     /// The item's guidance: its body.
     #[arg(long)]
     pub guidance: bool,
+
+    /// A built-in type's context paths: what a context read of a node of
+    /// that type follows.
+    #[arg(long)]
+    pub context_paths: bool,
 }
 
 impl AspectArgs {
@@ -78,10 +85,24 @@ impl AspectArgs {
             Some("config")
         } else if self.guidance {
             Some("guidance")
+        } else if self.context_paths {
+            Some("context_paths")
         } else {
             None
         }
     }
+}
+
+/// An aspect as a sentence names it: `context paths` for `context_paths`.
+/// The `aspect` value itself, in `--json` and on the `aspect:` line, is the
+/// one the daemon uses.
+fn aspect_words(aspect: &str) -> String {
+    aspect.replace('_', " ")
+}
+
+/// The flag that names an aspect: `--context-paths` for `context_paths`.
+fn aspect_flag(aspect: &str) -> String {
+    format!("--{}", aspect.replace('_', "-"))
 }
 
 pub async fn run(client: &mut NodeClient, action: SeedAction, json_out: bool) -> Result<()> {
@@ -158,7 +179,7 @@ fn select<'a>(
         [only] => Ok(only),
         [] => anyhow::bail!(
             "The {} of \"{item}\" has no shipped update pending.",
-            aspect.unwrap_or_default()
+            aspect_words(aspect.unwrap_or_default())
         ),
         several => {
             let mut nodes: Vec<&str> = several.iter().map(|u| u.node_id.as_str()).collect();
@@ -169,9 +190,20 @@ fn select<'a>(
                     nodes.join(", ")
                 );
             }
+            let mut parts: Vec<&str> = several.iter().map(|u| u.aspect.as_str()).collect();
+            parts.sort_unstable();
             anyhow::bail!(
-                "Both the config and the guidance of \"{item}\" are pending. Pass --config or \
-                 --guidance."
+                "More than one part of \"{item}\" is pending: {}. Pass {}.",
+                parts
+                    .iter()
+                    .map(|part| aspect_words(part))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                parts
+                    .iter()
+                    .map(|part| aspect_flag(part))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
             )
         }
     }
@@ -289,7 +321,7 @@ fn print_detail(
         "{} \"{}\" ({}), last edited {}",
         sanitize_for_terminal(&update.node_type),
         sanitize_for_terminal(&update.title),
-        update.aspect,
+        aspect_words(&update.aspect),
         update.last_edited_at
     )?;
     writeln!(w)?;
@@ -314,18 +346,17 @@ fn print_resolved(
         return Ok(());
     }
     let title = sanitize_for_terminal(&update.title);
+    let aspect = aspect_words(&update.aspect);
     if choice == "took_shipped" {
         writeln!(
             w,
-            "✓ The {} of \"{title}\" is now the shipped version.",
-            update.aspect
+            "✓ Replaced your {aspect} of \"{title}\" with the shipped version."
         )?;
     } else {
         writeln!(
             w,
-            "✓ Kept your {} of \"{title}\". It will be listed again when the shipped version \
-             next changes.",
-            update.aspect
+            "✓ Kept your {aspect} of \"{title}\". It will be listed again when the shipped \
+             version next changes."
         )?;
     }
     Ok(())
@@ -335,7 +366,7 @@ fn take_summary(detail: &PendingSeedUpdateDetail) -> String {
     let (title, aspect) = detail
         .update
         .as_ref()
-        .map(|u| (sanitize_for_terminal(&u.title), u.aspect.clone()))
+        .map(|u| (sanitize_for_terminal(&u.title), aspect_words(&u.aspect)))
         .unwrap_or_default();
     format!(
         "About to replace your {aspect} of \"{title}\" with the shipped version. Yours, which \
@@ -488,6 +519,7 @@ mod tests {
             update("n1", "Research & Search", "config"),
         ];
         let err = select(&updates, "n1", None).unwrap_err().to_string();
+        assert!(err.contains("config, guidance"), "{err}");
         assert!(err.contains("--config or --guidance"), "{err}");
         assert_eq!(
             select(&updates, "n1", Some("config")).unwrap().aspect,
@@ -522,5 +554,83 @@ mod tests {
         assert!(Harness::try_parse_from(["seed", "take", "n1", "--config", "--guidance"]).is_err());
         assert!(Harness::try_parse_from(["seed", "take", "n1", "--config", "--yes"]).is_ok());
         assert!(Harness::try_parse_from(["seed", "keep", "n1"]).is_ok());
+        assert!(
+            Harness::try_parse_from(["seed", "take", "task", "--context-paths", "--config"])
+                .is_err()
+        );
+    }
+
+    /// A built-in type's context paths are a part like the other two: named
+    /// by `--context-paths`, `context_paths` in `--json` and on the
+    /// `aspect:` line, and "context paths" in a sentence.
+    #[test]
+    fn a_types_context_paths_are_a_part_of_their_own() {
+        use clap::Parser;
+        #[derive(Parser, Debug)]
+        struct Harness {
+            #[command(subcommand)]
+            action: SeedAction,
+        }
+        let parsed = Harness::try_parse_from(["seed", "show", "task", "--context-paths"]).unwrap();
+        let SeedAction::Show(args) = parsed.action else {
+            panic!("show parses as Show");
+        };
+        assert_eq!(args.aspect.named(), Some("context_paths"));
+
+        let mut pending = update("task", "Task", "context_paths");
+        pending.node_type = "schema".to_string();
+        let updates = [pending.clone()];
+        assert_eq!(
+            select(&updates, "Task", Some("context_paths"))
+                .unwrap()
+                .node_id,
+            "task"
+        );
+        let err = select(&updates, "task", Some("config"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("config of \"task\""), "{err}");
+
+        let mut buf = Vec::new();
+        print_pending(&mut buf, &updates, false).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("kind:        schema"), "{out}");
+        assert!(out.contains("aspect:      context_paths"), "{out}");
+
+        let detail = PendingSeedUpdateDetail {
+            update: Some(pending.clone()),
+            shipped: "spec\nproject".to_string(),
+            yours: "project".to_string(),
+        };
+        let mut buf = Vec::new();
+        print_detail(&mut buf, &detail, false).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.starts_with("schema \"Task\" (context paths)"), "{out}");
+        assert!(out.contains("=== SHIPPED ===\nspec\nproject\n"), "{out}");
+        assert!(out.contains("=== YOURS ===\nproject\n"), "{out}");
+        assert!(
+            take_summary(&detail).contains("replace your context paths of \"Task\""),
+            "{}",
+            take_summary(&detail)
+        );
+
+        for (choice, expected) in [
+            (
+                "took_shipped",
+                "Replaced your context paths of \"Task\" with the shipped version.",
+            ),
+            ("kept_mine", "Kept your context paths of \"Task\"."),
+        ] {
+            let mut buf = Vec::new();
+            print_resolved(&mut buf, &pending, choice, false).unwrap();
+            let out = String::from_utf8(buf).unwrap();
+            assert!(out.contains(expected), "{out}");
+
+            let mut buf = Vec::new();
+            print_resolved(&mut buf, &pending, choice, true).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+            assert_eq!(value["aspect"], "context_paths");
+            assert_eq!(value["choice"], choice);
+        }
     }
 }

@@ -160,7 +160,11 @@ describe('Built-in updates page', () => {
   }
 
   it('lists each pending item with its kind and part, and applies nothing', async () => {
-    serve([update(), update({ nodeId: 'play-1', nodeType: 'play', title: 'Roll up', aspect: 'config' })]);
+    serve([
+      update(),
+      update({ nodeId: 'play-1', nodeType: 'play', title: 'Roll up', aspect: 'config' }),
+      update({ nodeId: 'task', nodeType: 'schema', title: 'Task', aspect: 'context_paths' })
+    ]);
 
     const { container, findByText } = render(BuiltInUpdatesSettings);
     await findByText('Research & Search');
@@ -168,12 +172,16 @@ describe('Built-in updates page', () => {
     const rows = Array.from(container.querySelectorAll('[data-testid="seed-update"]')).map(
       (row) => row.textContent ?? ''
     );
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(3);
     expect(rows[0]).toContain('Skill');
     expect(rows[0]).toContain('Body');
     expect(rows[1]).toContain('Roll up');
     expect(rows[1]).toContain('Play');
     expect(rows[1]).toContain('Name and settings');
+    // A built-in type's context paths are a part of their own.
+    expect(rows[2]).toContain('Task');
+    expect(rows[2]).toContain('Type');
+    expect(rows[2]).toContain('Context paths');
     // Opening the page reads; it never chooses.
     expect(commands()).toEqual(['list_pending_seed_updates']);
   });

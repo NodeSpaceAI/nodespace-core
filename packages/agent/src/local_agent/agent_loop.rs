@@ -14520,6 +14520,7 @@ mod tests {
             instructions: format!("INSTRUCTIONS FOR {name}"),
             schema_metadata: json!([]),
             schemas_linked: false,
+            role: Default::default(),
             pinned: false,
         }
     }
@@ -19374,6 +19375,7 @@ mod tests {
                     .map(|id| json!({"type_id": id, "fields": []}))
                     .collect::<Vec<_>>()),
                 schemas_linked: true,
+                role: Default::default(),
                 pinned: false,
             }
         }

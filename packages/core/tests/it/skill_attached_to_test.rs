@@ -115,6 +115,27 @@ fn reached(context: &NodeContext, path: usize) -> Vec<&str> {
         .collect()
 }
 
+/// The entry for the path `dotted`. A task's read starts with the context
+/// paths its type ships with, so a path read from a task is found by name.
+fn path_named<'a>(
+    context: &'a NodeContext,
+    dotted: &str,
+) -> &'a nodespace_core::ops::node_context_ops::PathNodes {
+    context
+        .paths
+        .iter()
+        .find(|reached| reached.path.to_string() == dotted)
+        .unwrap_or_else(|| panic!("the read followed no path '{dotted}'"))
+}
+
+fn reached_by<'a>(context: &'a NodeContext, dotted: &str) -> Vec<&'a str> {
+    path_named(context, dotted)
+        .nodes
+        .iter()
+        .map(|reached| reached.node.id.as_str())
+        .collect()
+}
+
 async fn run_query(service: &Arc<NodeService>, query: &str) -> (String, Vec<String>) {
     let run = run_saved_query_nodes(
         service,
@@ -191,7 +212,8 @@ async fn a_skill_attaches_to_a_node_of_any_type() -> Result<()> {
 }
 
 /// Proof on tasks: running the queue returns its procedure, and reading a
-/// task with the path to its project returns the project's standards.
+/// task returns its project's standards, the path to its project being one
+/// of the context paths `task` ships with.
 #[tokio::test]
 async fn the_task_flow_returns_a_queues_procedure_and_a_projects_standards() -> Result<()> {
     let (service, _tmp) = test_service().await?;
@@ -235,7 +257,7 @@ async fn the_task_flow_returns_a_queues_procedure_and_a_projects_standards() -> 
     // with the path to its project, it carries the standards too.
     let context = read(&service, &task, &["project"]).await;
     assert_eq!(context.node.node.id, task);
-    assert_eq!(reached(&context, 0), [project.as_str()]);
+    assert_eq!(reached_by(&context, "project"), [project.as_str()]);
     assert_eq!(
         skill_names(&context),
         [
@@ -258,14 +280,28 @@ async fn the_task_flow_returns_a_queues_procedure_and_a_projects_standards() -> 
         ["- [ ] Draft it"]
     );
     assert_eq!(
-        checkbox_content(&context.paths[0].nodes[0].checkboxes),
+        checkbox_content(&path_named(&context, "project").nodes[0].checkboxes),
         ["- [x] Kick-off held"]
     );
 
-    // Read without the path, the project's standards are not reached.
+    // Read with no path given, the project is still reached: `project` is a
+    // context path of `task`, followed once whether or not it is asked for.
+    let unasked = read(&service, &task, &[]).await;
     assert_eq!(
-        skill_names(&read(&service, &task, &[]).await),
-        [("Implementing", vec![])]
+        context
+            .paths
+            .iter()
+            .filter(|reached| reached.path.to_string() == "project")
+            .count(),
+        1
+    );
+    assert_eq!(reached_by(&unasked, "project"), [project.as_str()]);
+    assert_eq!(
+        skill_names(&unasked),
+        [
+            ("Implementing", vec![]),
+            ("Standards", vec![project.as_str()])
+        ]
     );
     Ok(())
 }
@@ -386,7 +422,10 @@ async fn paths_are_followed_by_name_and_returned_by_path() -> Result<()> {
 
     // A reverse name, then on from the node it reached: the sibling tasks.
     let context = read(&service, &first, &["project.tasks"]).await;
-    assert_eq!(reached(&context, 0), [first.as_str(), second.as_str()]);
+    assert_eq!(
+        reached_by(&context, "project.tasks"),
+        [first.as_str(), second.as_str()]
+    );
 
     // `child_of` reaches a node of no declared type, so `tasks` is resolved
     // from the project it turned out to be.
@@ -401,8 +440,8 @@ async fn paths_are_followed_by_name_and_returned_by_path() -> Result<()> {
     // A declared path that reaches nothing is an empty group, not an error.
     let alone = create(&service, "task", "Alone", json!({})).await;
     let context = read(&service, &alone, &["project", "project.tasks"]).await;
-    assert!(reached(&context, 0).is_empty());
-    assert!(reached(&context, 1).is_empty());
+    assert!(reached_by(&context, "project").is_empty());
+    assert!(reached_by(&context, "project.tasks").is_empty());
     Ok(())
 }
 
@@ -531,7 +570,9 @@ async fn an_unknown_path_is_refused_with_a_message_naming_it() -> Result<()> {
 }
 
 /// A skill attached to several returned nodes appears once, with each of
-/// them; one attached to the node read is returned with no path at all.
+/// them, whether the path that reached them was asked for or is one of the
+/// type's own; one attached to a node no path reaches is returned with the
+/// node read alone.
 #[tokio::test]
 async fn a_skill_attached_to_several_returned_nodes_appears_once() -> Result<()> {
     let (service, _tmp) = test_service().await?;
@@ -555,13 +596,22 @@ async fn a_skill_attached_to_several_returned_nodes_appears_once() -> Result<()>
             ("Own", vec![task.as_str()]),
         ]
     );
+    // `project` is a context path of `task`: a read given no paths reaches
+    // the project too.
     assert_eq!(
         skill_names(&read(&service, &task, &[]).await),
         [
-            ("Shared", vec![task.as_str()]),
+            ("Shared", vec![task.as_str(), project.as_str()]),
             ("Own", vec![task.as_str()])
         ]
     );
+
+    // A node of a type with no context paths is read alone.
+    let note = create(&service, "text", "A note", json!({})).await;
+    attach(&service, &shared, &note).await;
+    let alone = read(&service, &note, &[]).await;
+    assert!(alone.paths.is_empty());
+    assert_eq!(skill_names(&alone), [("Shared", vec![note.as_str()])]);
     Ok(())
 }
 

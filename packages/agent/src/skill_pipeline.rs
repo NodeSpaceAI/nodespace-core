@@ -27,12 +27,25 @@
 
 use crate::skill_rules::{resolve_includes, RuleForm};
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
-use nodespace_core::models::{CoreNodeType, SkillFields, SKILL_APPLIES_TO};
+use nodespace_core::models::{
+    CoreNodeType, SkillFields, SkillRole, SKILL_APPLIES_TO, SKILL_ATTACHED_TO,
+};
+use nodespace_core::services::query_service::core_queries::{
+    AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, READY_TASKS_QUERY_ID,
+};
 use nodespace_core::services::{NodeService, NodeServiceError};
 
 /// The Play Authoring skill's fixed id. A chat opened to edit a play pins it
 /// (ADR-090 §3).
 pub const PLAY_AUTHORING_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0c";
+
+/// The Implementing a Task skill's fixed id: the procedure of the "Ready
+/// tasks" and "In progress" queues.
+pub const IMPLEMENTING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c10";
+
+/// The Reviewing a Task skill's fixed id: the procedure of the "Awaiting
+/// review" queue.
+pub const REVIEWING_A_TASK_SKILL_ID: &str = "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c11";
 
 /// One built-in skill, as its table row.
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +67,13 @@ pub struct SkillSeed {
     /// from the skill ([`link_seeded_skills`]). Empty for a skill that is
     /// generic across every type.
     pub applies_to: &'static [&'static str],
+    /// The seeded nodes the skill is handed over with, by id: each gets an
+    /// `attached_to` link from the skill ([`link_seeded_skills`]). A
+    /// procedure names the saved queries that are its queues (ADR-094 §3).
+    pub attached_to: &'static [&'static str],
+    /// The lane skill search ranks the skill in (ADR-038). The eight workflow
+    /// procedures are `Procedure`; every other built-in is `Tool`.
+    pub role: SkillRole,
     /// The guidance, as plain Markdown with rule includes.
     pub body: &'static str,
 }
@@ -62,7 +82,8 @@ impl SkillSeed {
     /// The seed this row installs, with its rule includes resolved for the
     /// local agent.
     pub fn template(&self) -> NodeTemplate {
-        let mut skill = SkillFields::new(self.use_for, self.tools, self.max_iterations);
+        let mut skill =
+            SkillFields::new(self.use_for, self.tools, self.max_iterations).with_role(self.role);
         if let Some(not_for) = self.not_for {
             skill = skill.with_not_for(not_for);
         }
@@ -143,6 +164,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 4,
         not_for: None,
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/research-and-search.md"),
     },
     SkillSeed {
@@ -196,6 +219,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 3,
         not_for: None,
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/node-creation.md"),
     },
     SkillSeed {
@@ -295,6 +320,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 3,
         not_for: Some("Add one record of a kind that already exists. Save a view, a filter or a query."),
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/schema-creation.md"),
     },
     SkillSeed {
@@ -369,6 +396,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `graph_editing_not_for_leaves_completion_state_scores_unchanged`.
         not_for: Some("Remove them, delete them, get rid of them, purge them."),
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/graph-editing.md"),
     },
     SkillSeed {
@@ -460,6 +489,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 3,
         not_for: Some("Start keeping track of a kind of thing. Mark it done, resolved or paid."),
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/relationship-management.md"),
     },
     SkillSeed {
@@ -503,6 +534,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 3,
         not_for: None,
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/node-deletion.md"),
     },
     SkillSeed {
@@ -535,6 +568,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 3,
         not_for: None,
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/conflict-journal.md"),
     },
     SkillSeed {
@@ -555,6 +590,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 3,
         not_for: None,
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/node-merge.md"),
     },
     SkillSeed {
@@ -571,6 +608,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 3,
         not_for: None,
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/play-workflow-state.md"),
     },
     SkillSeed {
@@ -617,6 +656,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 5,
         not_for: Some("Diagnose why nothing happened for a node: which conditions are still unmet."),
         applies_to: &[nodespace_core::models::PLAY_NODE_TYPE],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/play-authoring.md"),
     },
     SkillSeed {
@@ -631,6 +672,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 2,
         not_for: None,
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/bulk-import.md"),
     },
     SkillSeed {
@@ -669,7 +712,166 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         max_iterations: 3,
         not_for: Some("Start keeping track of a kind of thing. Explain how something works."),
         applies_to: &[],
+        attached_to: &[],
+        role: SkillRole::Tool,
         body: include_str!("seeds/skills/organization.md"),
+    },
+    // The procedures of the spec, plan, task and decision model (ADR-092 §8).
+    //
+    // Each links to the types its steps read and write, so a turn routed to
+    // it alone is held to them. That includes the content types a step
+    // writes beneath a record: a criterion or checklist item is a `checkbox`,
+    // and evidence, a review note and a decision's body are `text`.
+    //
+    // The bodies name no tool: every step that has to say how it is done is
+    // a rule with a form for each reader, and the steps over saved queries
+    // and context reads are rules for the same reason.
+    //
+    // Where each `use_for` ranks, and which neighbour it sits closest to, is
+    // recorded in `tests/golden/skill_retrieval/current.tsv`.
+    SkillSeed {
+        // Writing a Spec
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0d",
+        title: "Writing a Spec",
+        use_for: "Write a spec: capture a feature's objective, boundaries and success criteria as a draft spec for the user to approve. Use when the user wants to spec out a feature, write its requirements or acceptance criteria, or approve, revise or supersede a spec.",
+        // `route_clarify` is how the skill asks before an approval.
+        tools: &["create_node", "update_node", "search_nodes", "get_node", "route_clarify"],
+        // A find, the spec, a criterion each, and the question.
+        max_iterations: 8,
+        not_for: Some("Plan out how to build something."),
+        applies_to: &[CoreNodeType::Spec.as_str(), CoreNodeType::Checkbox.as_str()],
+        attached_to: &[],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/writing-a-spec.md"),
+    },
+    SkillSeed {
+        // Writing a Plan
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0e",
+        title: "Writing a Plan",
+        use_for: "Write the implementation plan for an approved spec: the approach that meets the spec's criteria and the risks of that approach. Use when the user wants an implementation plan drafted, approved, or superseded.",
+        tools: &["create_node", "update_node", "create_relationship", "get_related_nodes", "get_node_context", "search_nodes", "route_clarify"],
+        max_iterations: 6,
+        not_for: None,
+        applies_to: &[CoreNodeType::Plan.as_str(), CoreNodeType::Spec.as_str()],
+        attached_to: &[],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/writing-a-plan.md"),
+    },
+    SkillSeed {
+        // Breaking a Plan into Tasks
+        //
+        // Also the skill for a task with a checklist and no plan: the small
+        // change that needs neither a spec nor a plan (ADR-092 §7).
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c0f",
+        title: "Breaking a Plan into Tasks",
+        use_for: "Split an implementation plan into tasks with acceptance checklists.",
+        tools: &["create_node", "create_relationship", "get_related_nodes", "get_node_context", "search_nodes"],
+        max_iterations: 12,
+        not_for: None,
+        applies_to: &[
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Plan.as_str(),
+            CoreNodeType::Spec.as_str(),
+            CoreNodeType::Checkbox.as_str(),
+        ],
+        attached_to: &[],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/breaking-a-plan-into-tasks.md"),
+    },
+    SkillSeed {
+        // Implementing a Task
+        //
+        // One procedure start to finish, attached to the two queues a task
+        // is in while it is being done, so a task carries it from the moment
+        // it is ready until it is handed over (ADR-094 §3 and §4).
+        id: IMPLEMENTING_A_TASK_SKILL_ID,
+        title: "Implementing a Task",
+        use_for: "Implement a task from the ready queue: take the next ready task, start it, work through its checklist with evidence, record the pull request, and hand it over for review. Use when the user says to pick up the next task, do the ready work, or continue or resume the task in progress.",
+        tools: &["run_query", "get_node_context", "update_task_status", "update_node", "create_node", "get_node"],
+        max_iterations: 12,
+        not_for: None,
+        applies_to: &[
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[READY_TASKS_QUERY_ID, IN_PROGRESS_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/implementing-a-task.md"),
+    },
+    SkillSeed {
+        // Reviewing a Task
+        //
+        // The procedure of the "Awaiting review" queue, for whoever works
+        // it. It and Implementing a Task each say the other's work is not
+        // theirs.
+        id: REVIEWING_A_TASK_SKILL_ID,
+        title: "Reviewing a Task",
+        use_for: "Review finished work that is awaiting review: check the pull request and the evidence against the task's checklist, record the review's outcome, and approve it or send it back. Use when the user asks for a review of finished work, or to work the review queue.",
+        tools: &["run_query", "get_node_context", "get_node", "update_task_status", "update_node", "create_node"],
+        max_iterations: 10,
+        // Separates it from Recording a Decision in the procedure lane on a
+        // request to point a task at a decision; the matrix holds it.
+        not_for: Some("Link or point one record at another."),
+        applies_to: &[
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Checkbox.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[AWAITING_REVIEW_QUERY_ID],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/reviewing-a-task.md"),
+    },
+    SkillSeed {
+        // Completing a Task
+        //
+        // What the rules on `done` ask for, and what each rejection means.
+        // It ticks nothing: an item is ticked by whoever met it.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c12",
+        title: "Completing a Task",
+        use_for: "Close out a task whose checklist is complete, and resolve a task that cannot be marked done because its checklist, its plan or a blocker stops it. Use when the user wants a task closed out, or says it won't let them mark a task done.",
+        tools: &["get_node_context", "update_task_status", "get_node", "search_nodes"],
+        max_iterations: 4,
+        not_for: None,
+        applies_to: &[CoreNodeType::Task.as_str()],
+        attached_to: &[],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/completing-a-task.md"),
+    },
+    SkillSeed {
+        // Recording a Decision
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c13",
+        title: "Recording a Decision",
+        use_for: "Record an architecture or design decision the team has made: the choice, the alternatives rejected and the reasons. Also supersede an earlier decision with a new one.",
+        tools: &["create_node", "update_node", "create_relationship", "search_nodes", "get_node", "route_clarify"],
+        max_iterations: 8,
+        not_for: None,
+        applies_to: &[
+            CoreNodeType::Decision.as_str(),
+            CoreNodeType::Spec.as_str(),
+            CoreNodeType::Task.as_str(),
+            CoreNodeType::Text.as_str(),
+        ],
+        attached_to: &[],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/recording-a-decision.md"),
+    },
+    SkillSeed {
+        // Authoring a Skill (ADR-093 §2)
+        //
+        // The sibling of Play Authoring: what a skill can be, a `use_for`
+        // that will be found, the body's shape, when to link a schema, and
+        // looking for an existing skill first.
+        id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c14",
+        title: "Authoring a Skill",
+        use_for: "Write or change a skill: an instruction, a procedure or a convention the agent finds and follows later. Use when the user wants to save how something is done, teach the agent a procedure or a team rule, or change what a skill says.",
+        tools: &["search_skills", "create_node", "update_node", "create_relationship", "search_nodes", "get_node"],
+        max_iterations: 8,
+        not_for: None,
+        applies_to: &[CoreNodeType::Skill.as_str(), CoreNodeType::Text.as_str()],
+        attached_to: &[],
+        role: SkillRole::Procedure,
+        body: include_str!("seeds/skills/skill-authoring.md"),
     },
 ];
 
@@ -728,35 +930,46 @@ pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
 }
 
 /// Link each built-in skill to the schemas its row names, through
-/// `applies_to`.
+/// `applies_to`, and to the seeded nodes it is handed over with, through
+/// `attached_to`.
 ///
 /// Runs after the skills are seeded, on every open, like the seeding itself:
 /// a link that is already there is left alone, and one that was removed is
 /// made again.
 pub async fn link_seeded_skills(node_service: &NodeService) -> Result<(), NodeServiceError> {
+    link_seeded_skills_through(node_service, SKILL_APPLIES_TO, |seed| seed.applies_to).await?;
+    link_seeded_skills_through(node_service, SKILL_ATTACHED_TO, |seed| seed.attached_to).await
+}
+
+/// Make the `relationship` links each seed's row names in `targets`.
+async fn link_seeded_skills_through(
+    node_service: &NodeService,
+    relationship: &str,
+    targets: impl Fn(&SkillSeed) -> &'static [&'static str],
+) -> Result<(), NodeServiceError> {
     let linked: Vec<&SkillSeed> = SKILL_SEEDS
         .iter()
-        .filter(|seed| !seed.applies_to.is_empty())
+        .filter(|seed| !targets(seed).is_empty())
         .collect();
     let skill_ids: Vec<String> = linked.iter().map(|seed| seed.id.to_string()).collect();
     let existing = node_service
         .store()
-        .get_edge_targets_by_source(&skill_ids, SKILL_APPLIES_TO)
+        .get_edge_targets_by_source(&skill_ids, relationship)
         .await
         .map_err(NodeServiceError::from_store)?;
 
     for seed in linked {
-        let targets = existing.get(seed.id);
-        for schema_id in seed.applies_to {
-            if targets.is_some_and(|targets| targets.iter().any(|t| t == schema_id)) {
+        let linked_already = existing.get(seed.id);
+        for target_id in targets(seed) {
+            if linked_already.is_some_and(|linked| linked.iter().any(|t| t == target_id)) {
                 continue;
             }
             // One link that fails does not cost the other skills theirs.
             if let Err(e) = node_service
-                .create_relationship(seed.id, SKILL_APPLIES_TO, schema_id, serde_json::json!({}))
+                .create_relationship(seed.id, relationship, target_id, serde_json::json!({}))
                 .await
             {
-                tracing::warn!(skill = seed.title, schema = schema_id, error = %e, "Failed to link a seeded skill to its schema");
+                tracing::warn!(skill = seed.title, relationship, target = target_id, error = %e, "Failed to link a seeded skill");
             }
         }
     }
@@ -1155,7 +1368,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 12, "Should have 12 seed skills");
+        assert_eq!(seeds.len(), 20, "Should have 20 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());
@@ -1548,6 +1761,7 @@ mod tests {
                 instructions: String::new(),
                 schema_metadata: serde_json::json!([]),
                 schemas_linked: false,
+                role: Default::default(),
                 pinned: false,
             };
             let mutates = crate::local_agent::routing::skill_is_mutating(&candidate);

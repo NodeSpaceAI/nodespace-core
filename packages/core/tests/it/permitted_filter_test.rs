@@ -30,7 +30,7 @@ fn may_start() -> Value {
     json!({ "type": "permitted", "operator": "equals", "property": "status", "value": "in_progress" })
 }
 
-/// "Ready tasks" as a view over the rules: open, and startable.
+/// "Startable tasks" as a view over the rules: open, and startable.
 async fn save_ready_query(h: &Harness, extra: Value) -> Result<()> {
     let mut fields = json!({ "target_type": "task", "filters": [open_tasks(), may_start()] });
     for (key, value) in extra.as_object().into_iter().flatten() {
@@ -40,7 +40,7 @@ async fn save_ready_query(h: &Harness, extra: Value) -> Result<()> {
         .create_node(Node::new_with_id(
             READY.to_string(),
             "query".to_string(),
-            "Ready tasks".to_string(),
+            "Startable tasks".to_string(),
             fields,
         ))
         .await?;
