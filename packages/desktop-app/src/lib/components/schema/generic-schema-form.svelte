@@ -6,7 +6,7 @@
   user-defined schema types and core types without a hardcoded form (e.g. project).
 
   Field type → control:
-  - leaf fields (string/text, number, boolean, enum, date) → SchemaFieldLeaf
+  - leaf fields (string/text, number, boolean, enum, date, datetime) → SchemaFieldLeaf
   - object/array → summary trigger opening the shared NestedPropertyModal
 
   `protection: 'system'` fields (e.g. a PTY chat's `transcript`, never
