@@ -18531,9 +18531,15 @@ mod tests {
         )
         .await;
 
+        // The query is retrieved on as written, not as a lookup. It opens with
+        // an adding verb and no candidate here can create a record, so the
+        // search for one that can follows it.
         assert_eq!(
             routed.retrieved,
-            vec!["add a reviewer to the event venue".to_string()]
+            vec![
+                "add a reviewer to the event venue".to_string(),
+                routing::create_retrieval_query("add a reviewer to the event venue"),
+            ]
         );
     }
 
