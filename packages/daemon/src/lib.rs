@@ -31,12 +31,22 @@ use anyhow::{Context, Result};
 /// `~/.nodespace/databases.toml` with a throwaway path (ADR-053). Falls back to
 /// the user's home directory.
 pub fn nodespace_home() -> Result<PathBuf> {
-    if let Ok(custom) = std::env::var("NODESPACE_HOME") {
-        return Ok(PathBuf::from(custom));
+    if let Some(custom) = nodespace_home_override() {
+        return Ok(custom);
     }
     dirs::home_dir().context(
         "Cannot determine the NodeSpace home directory: home directory is unknown and NODESPACE_HOME not set",
     )
+}
+
+/// The home `NODESPACE_HOME` redirects NodeSpace state to, or `None` when it
+/// is unset and [`nodespace_home`] is the user's own home.
+///
+/// A caller asks this when a redirected run must leave something outside the
+/// NodeSpace home alone: another install's log, the user's service
+/// registration.
+pub fn nodespace_home_override() -> Option<PathBuf> {
+    std::env::var("NODESPACE_HOME").ok().map(PathBuf::from)
 }
 
 /// The `.nodespace/` state directory under [`nodespace_home`].

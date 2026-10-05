@@ -12,6 +12,7 @@
 mod broken_pipe;
 mod cli_integration;
 mod cli_reference_examples;
+mod home_isolation;
 mod import_dir_multi;
 mod mcp_integration;
 mod requires_extension;
