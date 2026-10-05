@@ -2815,16 +2815,14 @@ impl NodeService {
         let mut cleared = Vec::new();
         if let (Some(stored), Some(written)) = (existing.as_object_mut(), new.as_object_mut()) {
             for key in Self::OPTIONAL_SCHEMA_DEFINITION_KEYS {
-                match written.remove(key) {
-                    Some(serde_json::Value::Null) => {
+                if let Some(value) = written.remove(key) {
+                    if value.is_null() {
                         if stored.remove(key).is_some() {
                             cleared.push(key);
                         }
-                    }
-                    Some(value) => {
+                    } else {
                         stored.insert(key.to_string(), value);
                     }
-                    None => {}
                 }
             }
         }

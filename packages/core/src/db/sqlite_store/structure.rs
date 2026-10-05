@@ -404,10 +404,8 @@ fn compose_rules(declared: &[DeclaredRule]) -> (SchemaChildrenRule, SchemaParent
         match rule.as_str() {
             structural_rule::CHILDREN_NONE => childless = true,
             structural_rule::MUST_BE_ROOT => root_only = true,
-            structural_rule::CHILDREN_EXCEPT => {
-                if !except.contains(target) {
-                    except.push(target.clone());
-                }
+            structural_rule::CHILDREN_EXCEPT if !except.contains(target) => {
+                except.push(target.clone());
             }
             structural_rule::PARENT_OF => {
                 if parent_of_declared_by != Some(declared_by.as_str()) {
