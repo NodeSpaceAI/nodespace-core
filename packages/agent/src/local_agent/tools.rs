@@ -130,6 +130,10 @@ struct AgentUpdateNodeParams {
     pub content: Option<String>,
     #[serde(default)]
     pub field_values: Option<Value>,
+    /// The version the caller read. The write is refused when the node has
+    /// changed since.
+    #[serde(default)]
+    pub version: Option<i64>,
 }
 
 /// Parameters for the agent's get_node tool (includes optional format field)
@@ -198,6 +202,10 @@ struct UpdateTaskStatusParams {
     #[serde(alias = "node_id")]
     pub id: String,
     pub status: String,
+    /// The version the caller read. The write is refused when the task has
+    /// changed since.
+    #[serde(default)]
+    pub version: Option<i64>,
 }
 
 /// Parameters for the delete_node tool
@@ -613,6 +621,22 @@ fn error_result(tool_call_id: &str, name: &str, message: &str) -> ToolResult {
 
 /// Convert an OpsError to a ToolError.
 fn ops_error_to_tool(e: OpsError, tool_name: &str) -> ToolError {
+    // A write that named a version the node has moved past (ADR-094 §6). The
+    // message says what to do next, because retrying the same call with the
+    // new version would overwrite a change the caller has not read.
+    if let OpsError::VersionConflict {
+        node_id,
+        expected,
+        actual,
+        ..
+    } = &e
+    {
+        return ToolError::ExecutionFailed(format!(
+            "{tool_name} was refused: node {node_id} has changed since it was read (version \
+             {expected} was given, it is now at version {actual}). Nothing was written. Call \
+             get_node on it again before deciding what to do."
+        ));
+    }
     ToolError::ExecutionFailed(format!("{} failed: {}", tool_name, e))
 }
 
@@ -1204,6 +1228,14 @@ fn def_create_node() -> ToolDefinition {
     }
 }
 
+/// The optional `version` parameter of a write tool (ADR-094 §6).
+static VERSION_PARAMETER: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "integer",
+        "description": "Optional. The node's \"version\" as you last read it. The write is refused if the node has changed since; read it again before deciding what to do."
+    })
+});
+
 fn def_update_node() -> ToolDefinition {
     ToolDefinition {
         name: "update_node".into(),
@@ -1233,7 +1265,8 @@ fn def_update_node() -> ToolDefinition {
                 "field_values": {
                     "type": "object",
                     "description": "The change itself: field keys to new values, e.g. {\"status\": \"done\"}, required whenever the request changes the node's state rather than its title. Do not invent a key from the user's wording — if no defined key covers the request, call get_node to see the full list before concluding one does not exist. When a field lists allowed values, use one of those values exactly — never a paraphrase of the user's wording, never a capitalised or spaced form of the value. Send only the keys that change, with their new values, not the unchanged ones."
-                }
+                },
+                "version": VERSION_PARAMETER.clone()
             },
             "required": ["id"]
         }),
@@ -2305,7 +2338,8 @@ fn def_update_task_status() -> ToolDefinition {
                     "type": "string",
                     "enum": ["open", "in_progress", "done", "cancelled"],
                     "description": "New status value"
-                }
+                },
+                "version": VERSION_PARAMETER.clone()
             },
             "required": ["id", "status"]
         }),
@@ -4077,8 +4111,10 @@ impl GraphToolExecutor {
         args: Value,
     ) -> Result<ToolResult, ToolError> {
         // Collect any flat (unknown) keys and promote them into field_values.
-        let flat_extras =
-            unknown_top_level_keys(&args, &["id", "node_id", "content", "field_values"]);
+        let flat_extras = unknown_top_level_keys(
+            &args,
+            &["id", "node_id", "content", "field_values", "version"],
+        );
 
         let params: AgentUpdateNodeParams =
             serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
@@ -4176,7 +4212,7 @@ impl GraphToolExecutor {
 
         let input = node_ops::UpdateNodeInput {
             node_id,
-            version: None, // ops layer auto-fetches
+            version: params.version, // absent: the ops layer reads the current one
             node_type: None,
             content: params.content,
             properties: new_properties,
@@ -4508,7 +4544,7 @@ impl GraphToolExecutor {
 
         let input = node_ops::UpdateNodeInput {
             node_id: strip_node_uri(&params.id).to_string(),
-            version: None,
+            version: params.version,
             node_type: None,
             content: None,
             properties: Some(json!({ "status": params.status })),
@@ -8900,6 +8936,121 @@ mod tests {
                 );
             }
             other => panic!("Expected ExecutionFailed, got {:?}", other),
+        }
+    }
+
+    /// `update_node` and `update_task_status` write only at the version the
+    /// call names; a stale one is refused with what to do next, and a call
+    /// naming none applies to whatever is current. `version` is the tool's
+    /// own parameter, never promoted into the node's fields.
+    #[tokio::test]
+    async fn update_tools_write_only_at_the_version_named() {
+        use nodespace_core::db::SqliteStore;
+        use nodespace_core::models::Node;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store: Arc<SqliteStore> =
+            Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let id = ns
+            .create_node(Node::new(
+                "task".to_string(),
+                "a task".to_string(),
+                json!({ "status": "open" }),
+            ))
+            .await
+            .unwrap();
+        let executor = GraphToolExecutor {
+            node_service: Some(ns.clone()),
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        };
+        let refused =
+            |result: Result<ToolResult, ToolError>, tool: &str, given: i64, now: i64| match result
+                .expect_err("a stale version must be refused")
+            {
+                ToolError::ExecutionFailed(reason) => {
+                    for part in [
+                        format!("{tool} was refused"),
+                        id.clone(),
+                        format!("version {given} was given"),
+                        format!("now at version {now}"),
+                        "Nothing was written".to_string(),
+                        "get_node".to_string(),
+                    ] {
+                        assert!(reason.contains(&part), "missing {part:?}: {reason}");
+                    }
+                    assert!(!reason.contains("  "), "stray whitespace: {reason:?}");
+                }
+                other => panic!("expected ExecutionFailed, got {other:?}"),
+            };
+
+        // The version read is still current: the write lands.
+        executor
+            .execute(
+                "update_node",
+                json!({"id": id, "field_values": {"status": "in_progress"}, "version": 1}),
+            )
+            .await
+            .expect("version 1 is current");
+
+        // A second caller that read version 1 is refused, through either tool.
+        refused(
+            executor
+                .execute(
+                    "update_node",
+                    json!({"id": id, "field_values": {"status": "done"}, "version": 1}),
+                )
+                .await,
+            "update_node",
+            1,
+            2,
+        );
+        refused(
+            executor
+                .execute(
+                    "update_task_status",
+                    json!({"id": id, "status": "done", "version": 1}),
+                )
+                .await,
+            "update_task_status",
+            1,
+            2,
+        );
+        let node = ns.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(node.version, 2, "a refused write changes nothing");
+        assert_eq!(node.properties["task"]["status"], "in_progress");
+        assert!(
+            node.properties["task"].get("version").is_none(),
+            "version is not a field: {}",
+            node.properties
+        );
+
+        // The current version lands; no version applies to what is there.
+        executor
+            .execute(
+                "update_task_status",
+                json!({"id": id, "status": "done", "version": 2}),
+            )
+            .await
+            .expect("version 2 is current");
+        executor
+            .execute("update_node", json!({"id": id, "content": "renamed"}))
+            .await
+            .expect("no version: as before");
+        assert_eq!(ns.get_node(&id).await.unwrap().unwrap().version, 4);
+
+        for tool in [Tool::UpdateNode, Tool::UpdateTaskStatus] {
+            let def = tool.definition();
+            assert_eq!(
+                def.parameters_schema["properties"]["version"]["type"], "integer",
+                "{}",
+                def.name
+            );
+            let required = def.parameters_schema["required"].as_array().unwrap();
+            assert!(!required.contains(&json!("version")), "{}", def.name);
         }
     }
 

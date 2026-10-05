@@ -112,6 +112,11 @@ pub struct UpdateArgs {
     /// Collection ID to remove the node from (repeatable).
     #[arg(long = "remove-collection-id", value_name = "ID")]
     pub remove_collection_ids: Vec<String>,
+    /// The node version you read. Updates only if the node is still at it;
+    /// otherwise nothing is written and the current version is reported.
+    /// Omit to update whatever is current.
+    #[arg(long)]
+    pub version: Option<i64>,
 }
 
 /// Parses a `key=value` CLI arg into (key, JSON value). `value` is parsed as
@@ -138,6 +143,11 @@ pub struct SetStatusArgs {
     /// cancelled) plus any added since. An invalid value is rejected with the
     /// current list.
     pub status: String,
+    /// The task version you read. Sets the status only if the task is still
+    /// at it; otherwise nothing is written and the current version is
+    /// reported. Omit to update whatever is current.
+    #[arg(long)]
+    pub version: Option<i64>,
 }
 
 #[derive(Args, Debug)]
@@ -295,7 +305,7 @@ async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result
     let response = client
         .update_node(UpdateNodeRequest {
             node_id: args.id,
-            version: None, // auto-fetch current version on the server
+            version: args.version, // unset: the server reads the current version
             node_type: None,
             content: args.content,
             properties,
@@ -306,7 +316,7 @@ async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result
             typed_client: false,
         })
         .await
-        .context("UpdateNode RPC failed")?
+        .map_err(|status| update_refused(status, json))?
         .into_inner();
 
     let node = response.node_data.context("daemon returned no node_data")?;
@@ -325,7 +335,7 @@ async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) ->
     let response = client
         .update_node(UpdateNodeRequest {
             node_id: args.id,
-            version: None, // auto-fetch current version on the server
+            version: args.version, // unset: the server reads the current version
             node_type: None,
             content: None,
             properties: Some(properties),
@@ -336,11 +346,75 @@ async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) ->
             typed_client: false,
         })
         .await
-        .context("UpdateNode RPC failed")?
+        .map_err(|status| update_refused(status, json))?
         .into_inner();
 
     let node = response.node_data.context("daemon returned no node_data")?;
     output::print_node(&node, json)
+}
+
+/// A write the daemon refused because the node has changed since the version
+/// the caller named (ADR-094 §6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionConflict {
+    pub node_id: String,
+    /// The version the caller gave.
+    pub given_version: i64,
+    /// The version the node is at now.
+    pub current_version: i64,
+}
+
+impl VersionConflict {
+    /// The conflict a failed update carries, if that is why it failed. The
+    /// daemon reports one as `ABORTED` with the versions in a metadata header.
+    pub fn from_status(status: &tonic::Status) -> Option<Self> {
+        if status.code() != tonic::Code::Aborted {
+            return None;
+        }
+        let header = status.metadata().get("x-version-conflict")?.to_str().ok()?;
+        let payload: serde_json::Value = serde_json::from_str(header).ok()?;
+        Some(Self {
+            node_id: payload.get("node_id")?.as_str()?.to_string(),
+            given_version: payload.get("expected")?.as_i64()?,
+            current_version: payload.get("actual")?.as_i64()?,
+        })
+    }
+
+    /// What the caller is told: which node, the version given, the version
+    /// it is at now, and that nothing was written.
+    pub fn message(&self) -> String {
+        format!(
+            "Node {} has changed since it was read: version {} was given and it is now at \
+             version {}. Nothing was written. Read the node again before deciding what to do.",
+            self.node_id, self.given_version, self.current_version
+        )
+    }
+
+    /// The same as structured output, for `--json`.
+    pub fn to_json(&self) -> serde_json::Value {
+        json!({
+            "error": "version_conflict",
+            "node_id": self.node_id,
+            "given_version": self.given_version,
+            "current_version": self.current_version,
+            "message": self.message(),
+        })
+    }
+}
+
+/// The error for a failed `UpdateNode`. A version conflict is reported as
+/// what it is, and under `--json` also printed as structured output; any
+/// other failure keeps the daemon's status in its chain.
+fn update_refused(status: tonic::Status, json: bool) -> anyhow::Error {
+    match VersionConflict::from_status(&status) {
+        Some(conflict) => {
+            if json {
+                println!("{:#}", conflict.to_json());
+            }
+            anyhow::anyhow!(conflict.message())
+        }
+        None => anyhow::Error::new(status).context("UpdateNode RPC failed"),
+    }
 }
 
 /// A delete names what it removes before it removes it (ADR-080): the bare
@@ -515,4 +589,56 @@ async fn batch_update(client: &mut NodeClient, args: BatchUpdateArgs, json: bool
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VersionConflict;
+
+    fn conflict_status(header: &str) -> tonic::Status {
+        let mut status = tonic::Status::aborted("Version conflict on n-1: expected 3, got 5");
+        status
+            .metadata_mut()
+            .insert("x-version-conflict", header.parse().unwrap());
+        status
+    }
+
+    #[test]
+    fn a_version_conflict_is_read_from_the_daemons_status() {
+        let status =
+            conflict_status(r#"{"node_id":"n-1","expected":3,"actual":5,"current_node":null}"#);
+        let conflict = VersionConflict::from_status(&status).expect("a conflict");
+        assert_eq!(
+            conflict,
+            VersionConflict {
+                node_id: "n-1".into(),
+                given_version: 3,
+                current_version: 5,
+            }
+        );
+        assert_eq!(
+            conflict.message(),
+            "Node n-1 has changed since it was read: version 3 was given and it is now at \
+             version 5. Nothing was written. Read the node again before deciding what to do."
+        );
+    }
+
+    #[test]
+    fn any_other_failure_is_not_a_version_conflict() {
+        // Another ABORTED, and a conflict header on another code.
+        assert_eq!(
+            VersionConflict::from_status(&tonic::Status::aborted("something else")),
+            None
+        );
+        let mut other = tonic::Status::invalid_argument("bad");
+        other.metadata_mut().insert(
+            "x-version-conflict",
+            r#"{"node_id":"n-1","expected":3,"actual":5}"#.parse().unwrap(),
+        );
+        assert_eq!(VersionConflict::from_status(&other), None);
+        assert_eq!(
+            VersionConflict::from_status(&conflict_status("not json")),
+            None
+        );
+    }
 }

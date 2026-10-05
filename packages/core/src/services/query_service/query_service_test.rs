@@ -2978,4 +2978,65 @@ mod tests {
             .unwrap();
         assert_eq!(intact.len(), 1);
     }
+
+    /// A derived attribute's SQL form computes what its Rust function does,
+    /// for every content: a filter and a condition can never disagree about
+    /// one node.
+    #[tokio::test]
+    async fn derived_attribute_sql_agrees_with_the_rust_function() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let contents = [
+            "- [x] done",
+            "- [X] done",
+            "- [x] ",
+            "- [ ] open",
+            "- [ ] ",
+            "- [x]",
+            "- [x",
+            " - [x] indented",
+            "-[x] no space",
+            "- [x]\tdone",
+            "- [y] other mark",
+            "* [x] other bullet",
+            "- [x] ünïcödé",
+            "é- [x] ",
+            "plain",
+            "",
+        ];
+        for attribute in crate::models::DerivedAttribute::ALL {
+            let sql = format!("SELECT {}", attribute.sql("?1"));
+            for content in contents {
+                let from_sql = query_service
+                    .store
+                    .count_nodes_raw(&sql, vec![libsql::Value::Text(content.to_string())])
+                    .await
+                    .unwrap();
+                let from_rust = match attribute.derive(content) {
+                    serde_json::Value::Bool(b) => i64::from(b),
+                    other => panic!("{attribute:?} derives {other}, which SQL cannot be held to"),
+                };
+                assert_eq!(from_sql, from_rust, "{attribute:?} on {content:?}");
+            }
+        }
+    }
+
+    /// Only a name the registry declares changes a property filter's
+    /// expression: every other filter keeps the one its index is built on.
+    #[test]
+    fn only_a_derived_attribute_name_changes_the_filter_expression() {
+        let stored = "json_extract(properties, '$.task.status')".to_string();
+        assert_eq!(
+            QueryService::derived_or_stored("status", stored.clone()),
+            stored
+        );
+
+        let derived = QueryService::derived_or_stored("checked", stored.clone());
+        assert!(
+            derived.starts_with("CASE WHEN node_type IN (")
+                && derived.contains("'checkbox'")
+                && derived.ends_with(&format!("ELSE {stored} END")),
+            "{derived}"
+        );
+    }
 }

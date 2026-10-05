@@ -21,6 +21,7 @@ mod core_task_link_relationships_test;
 mod core_type_registry_test;
 mod create_node_property_persistence_test;
 mod create_schema_result_reflects_persisted_state_test;
+mod derived_attributes_test;
 mod embedding_service_test;
 mod entity_resolution_test;
 mod entity_type_descriptor_extends_chain_test;

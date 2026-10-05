@@ -219,8 +219,9 @@ impl GraphResolver {
     }
 
     /// What `segment` reads as on `node` itself, without leaving it: a core
-    /// field or a property. `None` when the node holds neither, which is when
-    /// the segment is tried as a relationship.
+    /// field, a derived attribute of its type, or a property. `None` when the
+    /// node holds none of them, which is when the segment is tried as a
+    /// relationship.
     ///
     /// A core Node field is not a property and lives in no bucket, so the
     /// property lookup cannot see it. Without the first check, walking to a
@@ -242,6 +243,13 @@ impl GraphResolver {
     ) -> Result<Option<serde_json::Value>, String> {
         if let Some(core) = core_field_value(node, segment) {
             return Ok(Some(core));
+        }
+        // A derived attribute of the node's type is computed from its
+        // content, ahead of any property: nothing stored can stand in for it.
+        let chain = self.chain_of(&node.node_type).await?;
+        if let Some(attribute) = crate::models::CoreNodeType::derived_attribute_in(&chain, segment)
+        {
+            return Ok(Some(attribute.derive(&node.content)));
         }
         self.node_property(node, segment).await
     }
@@ -830,12 +838,69 @@ impl GraphResolver {
             // a real empty list, it would return vacuously true, and a childless
             // parent would auto-complete itself (ADR-079 §4).
             if !nodes.is_empty() {
-                let list = self.node_values(&nodes).await?;
+                let mut list = self.node_values(&nodes).await?;
+                let derived = derived_names_read_on_items(collections, &coll.collection.segments);
+                absent_derived_read_as_null(&mut list, &derived);
                 resolved_values.insert(coll.collection.segments.clone(), Value::List(list.into()));
             }
         }
 
         Ok(resolved_values)
+    }
+}
+
+/// The derived attributes the comprehensions over the collection at
+/// `segments` read on their items (`c.checked` in
+/// `node.has_child.exists(c, c.checked == false)`).
+fn derived_names_read_on_items<'a>(
+    collections: &'a [CollectionPath],
+    segments: &[String],
+) -> Vec<&'a str> {
+    let mut names: Vec<&str> = collections
+        .iter()
+        .filter(|coll| coll.collection.segments == segments)
+        .flat_map(|coll| {
+            coll.item_paths
+                .iter()
+                .filter(|path| path.root == coll.iter_var && path.segments.len() >= 2)
+                .map(|path| path.segments[1].as_str())
+        })
+        .filter(|name| !crate::models::DerivedAttribute::declared_as(name).is_empty())
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
+/// Give each item that has no value for a derived attribute in `names` a
+/// `null` for it.
+///
+/// A collection reached through a built-in relationship holds nodes of any
+/// type: a task's children are its checkboxes and its notes. A comprehension
+/// that reads a derived attribute on them would otherwise fail on the first
+/// item whose type does not derive it, and a failed condition is false
+/// whatever the other items hold. With `null`, `c.checked == false` is simply
+/// false for a note, so the comprehension answers for the items that do have
+/// the attribute. Only a derived attribute the comprehension reads is filled
+/// in, and only where it is absent.
+fn absent_derived_read_as_null(items: &mut [Value], names: &[&str]) {
+    if names.is_empty() {
+        return;
+    }
+    for item in items {
+        let Value::Map(map) = item else {
+            continue;
+        };
+        if names.iter().all(|name| map.map.contains_key(&key(name))) {
+            continue;
+        }
+        let mut filled = (*map.map).clone();
+        for name in names {
+            filled.entry(key(name)).or_insert(Value::Null);
+        }
+        *item = Value::Map(cel_interpreter::objects::Map {
+            map: Arc::new(filled),
+        });
     }
 }
 

@@ -3036,6 +3036,7 @@ impl NodeService {
             return Ok(());
         }
         let (fields, owners, chain) = ownership;
+        Self::reject_derived_attribute_keys(node, chain)?;
         // A type that declares no fields has nothing to validate against,
         // but a core one is still closed: its bucket takes no undeclared key.
         Self::reject_undeclared_core_keys(node, owners, chain)?;
@@ -3095,6 +3096,43 @@ impl NodeService {
                 return Err(NodeServiceError::invalid_update(format!(
                     "'{scope}' in properties holds the fields of the type '{scope}' and must be \
                      a JSON object"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse a property named after a derived attribute of the node's type
+    /// (ADR-094 §5).
+    ///
+    /// A derived attribute is computed from `content` and never stored, and
+    /// every reader computes it ahead of any property: a stored value of the
+    /// same name would be unreadable, and a write naming one is a caller that
+    /// expects it to change the attribute. The name is refused in every
+    /// bucket of the chain, a user subtype's open one included.
+    pub(crate) fn reject_derived_attribute_keys(
+        node: &Node,
+        chain: &[String],
+    ) -> Result<(), NodeServiceError> {
+        let Some(core_type) = crate::models::CoreNodeType::nearest(chain) else {
+            return Ok(());
+        };
+        let derived = core_type.derived_attributes();
+        let Some(properties) = node.properties.as_object() else {
+            return Ok(());
+        };
+        if derived.is_empty() {
+            return Ok(());
+        }
+        let buckets = chain
+            .iter()
+            .filter_map(|scope| properties.get(scope.as_str()).and_then(|v| v.as_object()));
+        for bucket in std::iter::once(properties).chain(buckets) {
+            if let Some(attribute) = derived.iter().find(|a| bucket.contains_key(a.name())) {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "'{}' is derived from the content of a '{core_type}' node and cannot be \
+                     written. Change the node's content to change it.",
+                    attribute.name()
                 )));
             }
         }

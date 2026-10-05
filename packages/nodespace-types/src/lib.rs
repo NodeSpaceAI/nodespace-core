@@ -60,8 +60,9 @@ pub use convert::{
     promoted_fields, typed_update_fields, PromotedField, PromotedShape,
 };
 pub use core_type::{
-    ChildrenRule, ContentRole, CoreNodeType, CoreTypeInfo, CoreTypeKind, ParentRule,
-    ParticipationRules, StructuralRules, TypeCategory, WireShape,
+    checkbox_is_checked, ChildrenRule, ContentRole, CoreNodeType, CoreTypeInfo, CoreTypeKind,
+    DerivedAttribute, DerivedValueType, ParentRule, ParticipationRules, StructuralRules,
+    TypeCategory, WireShape,
 };
 pub use database_settings::{DatabaseSettingsNode, DatabaseSettingsNodeUpdate};
 pub use helpers::{is_valid_lifecycle_status, LIFECYCLE_STATUSES};
