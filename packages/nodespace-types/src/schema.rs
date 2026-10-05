@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core_type::{ChildrenRule, CoreNodeType, ParentRule};
 use crate::node::NodeEnvelope;
+use crate::relationship_path::RelationshipPath;
 
 fn default_schema_version() -> u32 {
     1
@@ -693,6 +694,14 @@ pub struct SchemaNode {
     /// on a node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties_header_summary_template: Option<String>,
+    /// The paths from a node of this type to the nodes that govern it: what
+    /// a context read follows when it is given no paths (ADR-094 §2). The
+    /// ones this schema itself declares; a type's context paths are its
+    /// ancestors' and then its own, and a read of one schema's definition
+    /// reports that set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub context_paths: Vec<RelationshipPath>,
 }
 
 impl SchemaNode {
@@ -716,6 +725,7 @@ impl SchemaNode {
             relationships: Vec::new(),
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         }
     }
 

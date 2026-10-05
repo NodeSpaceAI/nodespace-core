@@ -606,6 +606,34 @@ impl NodeService {
         ))
     }
 
+    /// The context paths of `node_type` (ADR-094 §2): what a context read of
+    /// a node of that type follows when it is given none. Each path comes
+    /// with the schema that declares it.
+    ///
+    /// A type's context paths are its ancestors' and then its own, the
+    /// farthest ancestor's first. A path two schemas in the chain both
+    /// declare is listed once, under the farther one.
+    pub async fn resolve_context_paths(
+        &self,
+        node_type: &str,
+    ) -> Result<Vec<(nodespace_types::RelationshipPath, String)>, NodeServiceError> {
+        let chain = self.resolve_type_chain(node_type).await?;
+        let mut paths: Vec<(nodespace_types::RelationshipPath, String)> = Vec::new();
+        for schema_id in chain.iter().rev() {
+            // A missing mid-chain schema contributes nothing, as in
+            // `resolve_field_owners`.
+            let Some(schema) = self.get_schema_node(schema_id).await? else {
+                continue;
+            };
+            for path in schema.context_paths {
+                if !paths.iter().any(|(known, _)| *known == path) {
+                    paths.push((path, schema_id.clone()));
+                }
+            }
+        }
+        Ok(paths)
+    }
+
     /// Refuse to bring `fields`, declared by `owner`, into force on the
     /// instances of `scan_root` (and of every subtype extending it) while one
     /// of them holds a value under one of those names that the declaration

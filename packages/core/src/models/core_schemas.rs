@@ -279,6 +279,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             ],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Project schema - container for tasks, milestones, related work.
         // Name is the node `content`; ownership/membership are graph edges, not
@@ -430,6 +431,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             }],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Text schema - plain text content (no extra fields)
         SchemaNode {
@@ -444,6 +446,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Date schema - daily note containers (no extra fields)
         SchemaNode {
@@ -458,6 +461,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Header schema - markdown headers (no extra fields)
         SchemaNode {
@@ -472,6 +476,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Code block schema - code with syntax highlighting (no extra fields)
         SchemaNode {
@@ -486,6 +491,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Quote block schema - blockquotes (no extra fields)
         SchemaNode {
@@ -500,6 +506,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Ordered list schema - numbered list items (no extra fields)
         SchemaNode {
@@ -514,6 +521,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Horizontal line schema - thematic break (no extra fields)
         SchemaNode {
@@ -528,6 +536,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Table schema - GFM markdown table (no extra fields)
         SchemaNode {
@@ -542,6 +551,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Collection schema - hierarchical labels for organizing nodes
         SchemaNode {
@@ -574,6 +584,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![], // member_of is a native edge, not schema-defined
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Checkbox schema - pure content node with state encoded in content string
         SchemaNode {
@@ -588,6 +599,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // AI Chat (ADR-088): the abstract base of the chat family. Never
         // instantiated; every subtype inherits these fields in the `ai-chat` bucket.
@@ -680,6 +692,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // AI Chat (native): a conversation run by NodeSpace's own agent loop, with
         // local inference or a compatible endpoint.
@@ -770,6 +783,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             }],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // AI Chat (terminal): an external coding agent in a terminal. It holds no
         // messages; capture records these fields and the base's `summary` when the
@@ -864,6 +878,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // AI chat message (ADR-088 §3): one message of a native chat, a child of
         // its chat in conversation order. Its text is its content. What it
@@ -1053,6 +1068,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             ],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Query schema - saved query definitions
         SchemaNode {
@@ -1246,6 +1262,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Person schema — identity primitive (first_name, last_name, email).
         // A convergence collision on `email` is journaled as a
@@ -1367,6 +1384,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             // field yields just the other; both absent yields "".
             title_template: Some("{first_name} {last_name}".to_string()),
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Agent Guidance schema — unconditional, always-on base system-prompt
         // sections (identity, tool strategy, formatting rules, etc.), assembled
@@ -1388,6 +1406,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Skill schema for agent skill definitions (ADR-030)
         SchemaNode {
@@ -1526,6 +1545,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             ],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Play schema — a workflow definition node (`playbook-system.md`,
         // "Built-in Node Types"). The engine queries these by type at startup
@@ -1696,6 +1716,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Database Settings schema — the singleton anchor for database-level
         // configuration and for the owner `has_role` edge (person → this node).
@@ -1738,6 +1759,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Tool (ADR-086 §12): the abstract base of the tool family, a
         // searchable registry of what the agent can call. Never instantiated;
@@ -1822,6 +1844,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
         // Tool (native): one of NodeSpace's built-in tools, run by a Rust
         // handler. Always trusted.
@@ -1881,6 +1904,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         },
     ];
 

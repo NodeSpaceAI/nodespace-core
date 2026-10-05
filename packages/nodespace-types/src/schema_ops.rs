@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::relationship_path::RelationshipPath;
 use crate::schema::{
     EnumValue, SchemaChildrenRule, SchemaField, SchemaParentRule, SchemaRelationship,
 };
@@ -205,6 +206,18 @@ pub struct UpdateSchemaParams {
     /// unchanged. Same `{field_name}` syntax, evaluated by the client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub properties_header_summary_template: Option<String>,
+    /// Context paths to add (ADR-094 §2): the relationship paths from a node
+    /// of this type to the nodes that govern it, which a context read follows
+    /// by default. Each is a list of hops, `["spec", "decisions"]`, and is
+    /// checked against the schemas as they stand: a name the type does not
+    /// declare is refused. Allowed on a core schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub add_context_paths: Option<Vec<RelationshipPath>>,
+    /// Context paths to remove, each written as it was added. Only a path
+    /// this schema itself declares can be removed here: an inherited one is
+    /// removed on the schema that declares it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_context_paths: Option<Vec<RelationshipPath>>,
     /// Proceed even if active plays would be affected. When false (the
     /// default), such an update is refused with the affected plays listed.
     #[serde(default)]
@@ -232,6 +245,10 @@ pub struct SchemaUpdateOutput {
     pub relationships_added: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relationships_removed: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_paths_added: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_paths_removed: Option<usize>,
     /// Plays affected by the change (present when `force` let it through).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affected_plays: Option<Vec<String>>,
@@ -348,6 +365,8 @@ mod tests {
             field_values_added: None,
             relationships_added: None,
             relationships_removed: None,
+            context_paths_added: None,
+            context_paths_removed: None,
             affected_plays: None,
         })
         .unwrap();

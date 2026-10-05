@@ -98,6 +98,15 @@ fn skill_names(context: &NodeContext) -> Vec<(&str, Vec<&str>)> {
         .collect()
 }
 
+/// The saved queries a read reached its `skill`-th skill through.
+fn matched_queries(context: &NodeContext, skill: usize) -> Vec<&str> {
+    context.attached.skills[skill]
+        .matched_queries
+        .iter()
+        .map(|query| query.id.as_str())
+        .collect()
+}
+
 fn reached(context: &NodeContext, path: usize) -> Vec<&str> {
     context.paths[path]
         .nodes
@@ -222,15 +231,21 @@ async fn the_task_flow_returns_a_queues_procedure_and_a_projects_standards() -> 
         .contains("Tick each item as you go."));
     assert_eq!(with_run.skills[0].attached_to, std::slice::from_ref(&queue));
 
-    // The task, read with the path to its project, carries the standards.
+    // The task matches the queue, so it carries the queue's procedure; read
+    // with the path to its project, it carries the standards too.
     let context = read(&service, &task, &["project"]).await;
     assert_eq!(context.node.node.id, task);
     assert_eq!(reached(&context, 0), [project.as_str()]);
     assert_eq!(
         skill_names(&context),
-        [("Standards", vec![project.as_str()])]
+        [
+            ("Implementing", vec![]),
+            ("Standards", vec![project.as_str()])
+        ]
     );
-    assert!(context.attached.skills[0]
+    assert_eq!(matched_queries(&context, 0), [queue.as_str()]);
+    assert!(matched_queries(&context, 1).is_empty());
+    assert!(context.attached.skills[1]
         .skill
         .instructions
         .contains("Name things plainly."));
@@ -247,8 +262,11 @@ async fn the_task_flow_returns_a_queues_procedure_and_a_projects_standards() -> 
         ["- [x] Kick-off held"]
     );
 
-    // Read without the path, the task has no skill of its own.
-    assert!(read(&service, &task, &[]).await.attached.skills.is_empty());
+    // Read without the path, the project's standards are not reached.
+    assert_eq!(
+        skill_names(&read(&service, &task, &[]).await),
+        [("Implementing", vec![])]
+    );
     Ok(())
 }
 
@@ -307,13 +325,37 @@ async fn a_user_defined_workflow_gets_the_same_read_and_the_same_skills() -> Res
         .instructions
         .contains("Confirm, then fulfil."));
 
+    // The request matches the queue, so it carries the queue's procedure as
+    // well as its desk's rules.
     let context = read(&service, &request, &["desk"]).await;
     assert_eq!(reached(&context, 0), [desk.as_str()]);
-    assert_eq!(skill_names(&context), [("Desk rules", vec![desk.as_str()])]);
-    assert!(context.attached.skills[0]
+    assert_eq!(
+        skill_names(&context),
+        [
+            ("Handling a request", vec![]),
+            ("Desk rules", vec![desk.as_str()])
+        ]
+    );
+    assert_eq!(matched_queries(&context, 0), [queue.as_str()]);
+    assert!(context.attached.skills[1]
         .skill
         .instructions
         .contains("Answer within a day."));
+
+    // Once the request is no longer new it has left the queue, and the next
+    // read of it carries no procedure.
+    let version = service.get_node(&request).await?.unwrap().version;
+    service
+        .update_node(
+            &request,
+            version,
+            NodeUpdate::new().with_properties(json!({ "state": "handled" })),
+        )
+        .await?;
+    assert_eq!(
+        skill_names(&read(&service, &request, &["desk"]).await),
+        [("Desk rules", vec![desk.as_str()])]
+    );
     Ok(())
 }
 

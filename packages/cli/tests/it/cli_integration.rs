@@ -2611,6 +2611,7 @@ async fn query_run_executes_a_saved_query_by_id_or_title() {
             query: query.into(),
             filters_json: filters.map(|f| f.to_string()),
             limit,
+            with_context: false,
         };
         let mut raw = raw.clone();
         async move {
@@ -2692,6 +2693,7 @@ async fn query_run_executes_a_saved_query_by_id_or_title() {
                         query: "Not done".into(),
                         filters: None,
                         limit: 0,
+                        with_context: false,
                     },
                 )),
                 target_type: None,
@@ -2829,12 +2831,14 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
         let request = GetNodeContextRequest {
             node_id: node_id.into(),
             paths_json: Some(paths.to_string()),
+            version_only: false,
         };
         let mut raw = raw.clone();
         async move { raw.get_node_context(request).await.map(|r| r.into_inner()) }
     };
 
-    // The task, with the path to its project, carries the project's skill.
+    // The task matches the queue, so it carries the queue's procedure; with
+    // the path to its project, it carries the project's skill too.
     let context = read(&task, serde_json::json!([["project"]]))
         .await
         .expect("read the task");
@@ -2847,9 +2851,16 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
         context.paths[0].nodes[0].node.as_ref().expect("reached").id,
         project
     );
-    assert_eq!(context.skills.len(), 1);
-    let attached = &context.skills[0];
+    assert_eq!(context.skills.len(), 2);
+    let through_queue = &context.skills[0];
+    assert_eq!(through_queue.skill.as_ref().unwrap().name, "Implementing");
+    assert!(through_queue.attached_to.is_empty());
+    assert_eq!(through_queue.matched_queries.len(), 1);
+    assert_eq!(through_queue.matched_queries[0].id, queue);
+    assert_eq!(through_queue.matched_queries[0].title, "Open tasks");
+    let attached = &context.skills[1];
     assert_eq!(attached.attached_to, std::slice::from_ref(&project));
+    assert!(attached.matched_queries.is_empty());
     let fetched = attached.skill.as_ref().expect("the skill");
     assert_eq!(fetched.name, "Standards");
     assert!(
@@ -2869,9 +2880,12 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
         fetched.tool_commands
     );
 
-    // Without the path the task has no skill of its own.
+    // Without the path the project is not reached, and neither is its skill.
     let alone = read(&task, serde_json::json!([])).await.expect("read");
-    assert!(alone.paths.is_empty() && alone.skills.is_empty());
+    assert!(alone.paths.is_empty());
+    assert_eq!(alone.skills.len(), 1);
+    assert_eq!(alone.skills[0].skill.as_ref().unwrap().name, "Implementing");
+    assert_ne!(alone.version, context.version);
 
     // A name the task's type does not declare is refused, naming the path.
     let refused = read(&task, serde_json::json!([["project", "sponsor"]]))
@@ -2892,14 +2906,117 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
             query: "Open tasks".into(),
             filters_json: None,
             limit: 0,
+            with_context: false,
         })
         .await
         .expect("run the queue")
         .into_inner();
     assert_eq!(run.count, 1);
+    assert!(run.items.is_empty() && !run.limit_reached);
     assert_eq!(run.skills.len(), 1);
     assert_eq!(run.skills[0].skill.as_ref().unwrap().name, "Implementing");
     assert_eq!(run.skills[0].attached_to, std::slice::from_ref(&queue));
+
+    // The task schema declares the path to the project as context, so a read
+    // that names no path follows it. A path written in its dotted form is
+    // the one the schema read prints.
+    commands::schema::run(
+        &mut client,
+        commands::schema::SchemaAction::Update(commands::schema::SchemaParamsArgs {
+            params: Some(
+                serde_json::json!({ "schema_id": "task", "add_context_paths": ["project"] })
+                    .to_string(),
+            ),
+            params_file: None,
+        }),
+        true,
+    )
+    .await
+    .expect("declare the context path");
+    let refused = commands::schema::run(
+        &mut client,
+        commands::schema::SchemaAction::Update(commands::schema::SchemaParamsArgs {
+            params: Some(
+                serde_json::json!({ "schema_id": "task", "add_context_paths": ["sponsor"] })
+                    .to_string(),
+            ),
+            params_file: None,
+        }),
+        true,
+    )
+    .await
+    .expect_err("a context path the type does not declare");
+    assert!(
+        format!("{refused:#}").contains("Context path 'sponsor'"),
+        "the refusal must name the path: {refused:#}"
+    );
+    let schema: nodespace_core::models::SchemaNode = serde_json::from_str(
+        &raw.clone()
+            .get_schema_definition(nodespace_daemon::nodespace::GetSchemaDefinitionRequest {
+                schema_id: "task".into(),
+            })
+            .await
+            .expect("read the task schema")
+            .into_inner()
+            .schema_json,
+    )
+    .expect("a typed schema");
+    assert_eq!(
+        nodespace_cli::output::schema_to_json(&schema)["context_paths"],
+        serde_json::json!(["project"])
+    );
+
+    let by_default = read(&task, serde_json::json!([])).await.expect("read");
+    assert_eq!(by_default.paths.len(), 1);
+    assert_eq!(by_default.paths[0].path, "project");
+    assert_eq!(by_default.skills.len(), 2);
+    // The same read as the one that named the path, so the same version.
+    assert_eq!(by_default.version, context.version);
+    let version_only = raw
+        .clone()
+        .get_node_context(GetNodeContextRequest {
+            node_id: task.clone(),
+            paths_json: None,
+            version_only: true,
+        })
+        .await
+        .expect("read the version")
+        .into_inner();
+    assert_eq!(version_only.version, by_default.version);
+    assert!(version_only.node.is_none() && version_only.skills.is_empty());
+
+    // Run with context: the item with what governs it, and each skill once.
+    let run = raw
+        .clone()
+        .run_saved_query(RunSavedQueryRequest {
+            query: "Open tasks".into(),
+            filters_json: None,
+            limit: 0,
+            with_context: true,
+        })
+        .await
+        .expect("run the queue with context")
+        .into_inner();
+    assert_eq!(run.count, 1);
+    assert!(run.nodes.is_empty());
+    let item = &run.items[0];
+    assert_eq!(
+        item.node.as_ref().unwrap().node.as_ref().unwrap().id,
+        task
+    );
+    assert_eq!(item.node.as_ref().unwrap().checkboxes.len(), 1);
+    assert_eq!(item.paths[0].path, "project");
+    assert_eq!(item.version, by_default.version);
+    let item_skills: Vec<&str> = item.skills.iter().map(|s| s.skill_id.as_str()).collect();
+    assert_eq!(item_skills, [procedure.as_str(), standards.as_str()]);
+    assert_eq!(item.skills[0].matched_queries[0].id, queue);
+    assert_eq!(item.skills[1].attached_to, std::slice::from_ref(&project));
+    let run_skills: Vec<&str> = run
+        .skills
+        .iter()
+        .map(|s| s.skill.as_ref().unwrap().name.as_str())
+        .collect();
+    assert_eq!(run_skills, ["Implementing", "Standards"]);
 
     for json in [true, false] {
         commands::node::run(
@@ -2907,36 +3024,52 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
             commands::node::NodeAction::Context(commands::node::ContextArgs {
                 id: task.clone(),
                 paths: vec!["project".parse().unwrap(), "has_child".parse().unwrap()],
+                version_only: false,
             }),
             json,
         )
         .await
         .expect("node context");
-        commands::query::run(
+        commands::node::run(
             &mut client,
-            commands::query::QueryArgs {
-                command: Some(commands::query::QueryCommand::Run(
-                    commands::query::RunArgs {
-                        query: "Open tasks".into(),
-                        filters: None,
-                        limit: 0,
-                    },
-                )),
-                target_type: None,
-                filters: None,
-                sorting: None,
-                limit: 0,
-            },
+            commands::node::NodeAction::Context(commands::node::ContextArgs {
+                id: task.clone(),
+                paths: Vec::new(),
+                version_only: true,
+            }),
             json,
         )
         .await
-        .expect("query run");
+        .expect("node context --version-only");
+        for with_context in [false, true] {
+            commands::query::run(
+                &mut client,
+                commands::query::QueryArgs {
+                    command: Some(commands::query::QueryCommand::Run(
+                        commands::query::RunArgs {
+                            query: "Open tasks".into(),
+                            filters: None,
+                            limit: 0,
+                            with_context,
+                        },
+                    )),
+                    target_type: None,
+                    filters: None,
+                    sorting: None,
+                    limit: 0,
+                },
+                json,
+            )
+            .await
+            .expect("query run");
+        }
     }
     let unknown = commands::node::run(
         &mut client,
         commands::node::NodeAction::Context(commands::node::ContextArgs {
             id: task.clone(),
             paths: vec!["sponsor".parse().unwrap()],
+            version_only: false,
         }),
         false,
     )
@@ -2967,7 +3100,13 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
         .await
         .expect("read the task again");
     assert_eq!(context.paths[0].nodes.len(), 1);
-    assert!(context.skills.is_empty());
+    let names: Vec<&str> = context
+        .skills
+        .iter()
+        .map(|s| s.skill.as_ref().unwrap().name.as_str())
+        .collect();
+    assert_eq!(names, ["Implementing"]);
+    assert_ne!(context.version, by_default.version);
 
     let _ = shutdown.send(());
 }

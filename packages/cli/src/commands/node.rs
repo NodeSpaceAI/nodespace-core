@@ -17,8 +17,8 @@ use crate::NodeClient;
 pub enum NodeAction {
     /// Retrieve a node by ID.
     Get(GetArgs),
-    /// Read a node with the nodes its relationship paths reach, and the
-    /// skills attached to any of them.
+    /// Read a node with what governs it: the nodes its type's context paths
+    /// reach, the skills that apply to it, and a version of the read.
     Context(ContextArgs),
     /// Create a new node.
     Create(CreateArgs),
@@ -64,10 +64,16 @@ pub struct ContextArgs {
     /// the node's type declares, a declared reverse name, or a built-in one
     /// (`has_child`, `child_of`, `member_of`, `mentions`, …). `*` after a name
     /// follows it repeatedly: `child_of*` reaches every ancestor. A name the
-    /// type does not declare is an error. With no path, the node comes back
-    /// with the skills attached to it alone.
+    /// type does not declare is an error. These are followed in addition to
+    /// the context paths the node's type declares (see `schema get`); with no
+    /// path, those alone are followed.
     #[arg(long = "path", value_name = "PATH", value_parser = parse_path)]
     pub paths: Vec<RelationshipPath>,
+    /// Print the read's version and nothing else. The version changes when
+    /// the node, a node the read returns, or a skill that applies to it
+    /// changes: compare it with the one an earlier read printed.
+    #[arg(long = "version-only")]
+    pub version_only: bool,
 }
 
 fn parse_path(s: &str) -> Result<RelationshipPath, String> {
@@ -358,6 +364,7 @@ async fn context(client: &mut NodeClient, args: ContextArgs, json: bool) -> Resu
         .get_node_context(GetNodeContextRequest {
             node_id: args.id,
             paths_json: Some(serde_json::to_string(&args.paths)?),
+            version_only: args.version_only,
         })
         .await
         .map_err(|status| match status.code() {
@@ -369,6 +376,9 @@ async fn context(client: &mut NodeClient, args: ContextArgs, json: bool) -> Resu
         })?
         .into_inner();
 
+    if args.version_only {
+        return output::print_node_context_version(&response, json);
+    }
     output::print_node_context(&response, json)
 }
 

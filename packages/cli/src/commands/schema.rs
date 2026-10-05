@@ -57,7 +57,8 @@ pub struct SchemaParamsArgs {
     /// "relationships"?, "title_template"?, ...} — see CreateSchemaParams.
     /// For `update`: {"schema_id", "add_fields"?, "remove_fields"?,
     /// "rename_fields"?, "add_field_values"?, "add_relationships"?,
-    /// "remove_relationships"?, ...}
+    /// "remove_relationships"?, "add_context_paths"?,
+    /// "remove_context_paths"?, ...}
     /// — see UpdateSchemaParams. Mutually exclusive with `--params-file`.
     #[arg(long, conflicts_with = "params_file")]
     pub params: Option<String>,

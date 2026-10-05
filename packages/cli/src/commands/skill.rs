@@ -36,7 +36,7 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::nodespace::{
-    AttachedSkillEntry, GetSkillRequest, SchemaGuidanceEntry, SkillGuidanceEntry,
+    AttachedSkillEntry, GetSkillRequest, MatchedQuery, SchemaGuidanceEntry, SkillGuidanceEntry,
     SkillGuidanceRequest, SkillGuidanceResponse,
 };
 use std::io::IsTerminal;
@@ -623,6 +623,7 @@ fn write_skill_block(
     w: &mut impl std::io::Write,
     skill: &SkillGuidanceEntry,
     attached_to: &[String],
+    matched_queries: &[MatchedQuery],
     tag: &str,
 ) -> Result<()> {
     writeln!(
@@ -652,6 +653,19 @@ fn write_skill_block(
             .map(|id| sanitize_for_terminal(id))
             .collect();
         writeln!(w, "attached_to: {}", ids.join(", "))?;
+    }
+    if !matched_queries.is_empty() {
+        let queries: Vec<String> = matched_queries
+            .iter()
+            .map(|query| {
+                format!(
+                    "{} ({})",
+                    sanitize_for_terminal(&query.title),
+                    sanitize_for_terminal(&query.id)
+                )
+            })
+            .collect();
+        writeln!(w, "matched_queries: {}", queries.join(", "))?;
     }
     writeln!(w, "---")?;
     writeln!(w, "{}", sanitize_for_terminal(&skill.instructions))?;
@@ -705,9 +719,18 @@ fn write_schema_block(
     Ok(())
 }
 
-/// The skills attached to the nodes a command returned, as the value of that
-/// command's `attached_skills` key in `--json` mode: the envelope a skill
-/// fetch prints, each skill with the ids of the nodes it is attached to.
+/// The saved queries a skill was reached through, in `--json` mode.
+pub(crate) fn matched_queries_json(queries: &[MatchedQuery]) -> serde_json::Value {
+    queries
+        .iter()
+        .map(|query| serde_json::json!({ "id": query.id, "title": query.title }))
+        .collect()
+}
+
+/// The skills a command hands over, as the value of that command's
+/// `attached_skills` key in `--json` mode: the envelope a skill fetch prints,
+/// each skill with the ids of the returned nodes it is attached to and, where
+/// it was reached through one, the saved queries the node read matches.
 pub(crate) fn attached_skills_json(
     skills: &[AttachedSkillEntry],
     schemas: &[SchemaGuidanceEntry],
@@ -717,6 +740,9 @@ pub(crate) fn attached_skills_json(
         .filter_map(|attached| {
             let mut entry = skill_json(attached.skill.as_ref()?, true);
             entry["attached_to"] = serde_json::json!(attached.attached_to);
+            if !attached.matched_queries.is_empty() {
+                entry["matched_queries"] = matched_queries_json(&attached.matched_queries);
+            }
             Some(entry)
         })
         .collect();
@@ -778,7 +804,13 @@ pub(crate) fn write_attached_skills(
     writeln!(w)?;
     for attached in skills {
         if let Some(skill) = &attached.skill {
-            write_skill_block(w, skill, &attached.attached_to, tag)?;
+            write_skill_block(
+                w,
+                skill,
+                &attached.attached_to,
+                &attached.matched_queries,
+                tag,
+            )?;
         }
     }
     for schema in schemas {
@@ -905,7 +937,7 @@ fn print_guidance(
         response.schemas.len()
     )?;
     for skill in skills {
-        write_skill_block(w, skill, &[], tag)?;
+        write_skill_block(w, skill, &[], &[], tag)?;
     }
     for schema in &response.schemas {
         write_schema_block(w, schema, tag)?;

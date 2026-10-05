@@ -143,6 +143,17 @@ impl NodeService {
                 )));
             }
         }
+        // Context paths are checked against the schemas when `update_schema`
+        // saves them (ADR-094 §2), so they have the same one write path.
+        let paths = crate::models::schema_node::CONTEXT_PATHS_KEY;
+        if existing.properties.get(paths) != updated.properties.get(paths) {
+            return Err(NodeServiceError::invalid_update(format!(
+                "The context paths of schema '{}' can only be changed with update_schema \
+                 (add_context_paths, remove_context_paths), which checks each path against \
+                 the schemas.",
+                existing.id
+            )));
+        }
         Ok(())
     }
 
@@ -2798,9 +2809,14 @@ impl NodeService {
     }
 
     /// The schema properties that are stored only when they say something:
-    /// `abstract` when true, a structural rule when it is not `any`.
-    pub(crate) const OPTIONAL_SCHEMA_DEFINITION_KEYS: [&'static str; 3] =
-        ["abstract", "children", "parent"];
+    /// `abstract` when true, a structural rule when it is not `any`, the
+    /// context paths when there are any.
+    pub(crate) const OPTIONAL_SCHEMA_DEFINITION_KEYS: [&'static str; 4] = [
+        "abstract",
+        "children",
+        "parent",
+        crate::models::schema_node::CONTEXT_PATHS_KEY,
+    ];
 
     /// Merge a schema-definition write into a schema node's stored
     /// properties.

@@ -7,11 +7,12 @@
 use anyhow::{Context, Result};
 use nodespace_daemon::nodespace::{
     ConflictRecord as ConflictRecordProto, ContextNode, DeleteNodeResponse, GetNodeContextResponse,
-    MergeNodesResponse, NodeListResponse, RunSavedQueryResponse,
+    MergeNodesResponse, NodeListResponse, PathNodes, RunSavedQueryResponse,
 };
 
 use crate::commands::skill::{
-    announce_attached_skills, attached_skills_json, sanitize_for_terminal, write_attached_skills,
+    announce_attached_skills, attached_skills_json, matched_queries_json, sanitize_for_terminal,
+    write_attached_skills,
 };
 use nodespace_daemon::NodeData;
 use nodespace_types::{CreateSchemaOutput, SchemaNode, SchemaUpdateOutput};
@@ -168,11 +169,15 @@ pub fn print_node_list(response: &NodeListResponse, json: bool) -> Result<()> {
 /// fetch prints.
 pub fn print_saved_query_run(response: &RunSavedQueryResponse, json: bool) -> Result<()> {
     if json {
-        let value = json!({
+        let mut value = json!({
             "count": response.count,
             "nodes": response.nodes.iter().map(node_to_json).collect::<Vec<_>>(),
             "attached_skills": attached_skills_json(&response.skills, &response.schemas),
         });
+        // Set only when the run returned as many results as its limit allows.
+        if response.limit_reached {
+            value["limit_reached"] = json!(true);
+        }
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
@@ -187,9 +192,146 @@ pub fn print_saved_query_run(response: &RunSavedQueryResponse, json: bool) -> Re
         },
         false,
     )?;
+    if response.limit_reached {
+        println!("\nThe run returned as many results as its limit allows; the query may match more.");
+    }
     match tag {
         Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
         None => Ok(()),
+    }
+}
+
+/// A saved query's result with each item's context: the item, what its
+/// type's context paths reach, the skills that apply to it and the version
+/// of that read. Each skill is printed once, after the items, inside the
+/// banner a skill fetch prints; an item names its skills by id.
+pub fn print_saved_query_context_run(response: &RunSavedQueryResponse, json: bool) -> Result<()> {
+    if json {
+        let items: Vec<Value> = response
+            .items
+            .iter()
+            .map(|item| {
+                let skills: Vec<Value> = item
+                    .skills
+                    .iter()
+                    .map(|skill| {
+                        let mut entry = json!({
+                            "id": skill.skill_id,
+                            "attached_to": skill.attached_to,
+                        });
+                        if !skill.matched_queries.is_empty() {
+                            entry["matched_queries"] =
+                                matched_queries_json(&skill.matched_queries);
+                        }
+                        entry
+                    })
+                    .collect();
+                json!({
+                    "node": item.node.as_ref().map(context_node_to_json),
+                    "paths": path_groups_json(&item.paths),
+                    "skills": skills,
+                    "version": item.version,
+                })
+            })
+            .collect();
+        let mut value = json!({
+            "count": response.count,
+            "items": items,
+            "attached_skills": attached_skills_json(&response.skills, &response.schemas),
+        });
+        if response.limit_reached {
+            value["limit_reached"] = json!(true);
+        }
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+
+    let out = &mut std::io::stdout();
+    let tag = announce_attached_skills(out, &response.skills, &response.schemas)?;
+    if response.items.is_empty() {
+        println!("No nodes returned (count: 0)");
+    } else {
+        println!("{} item(s):", response.count);
+    }
+    for (idx, item) in response.items.iter().enumerate() {
+        println!();
+        println!("--- item {} (context version {}) ---", idx + 1, item.version);
+        if let Some(node) = &item.node {
+            write_human_context_node(node);
+        }
+        write_human_paths(&item.paths);
+        if !item.skills.is_empty() {
+            println!();
+            println!("skills (each printed once, below):");
+            for skill in &item.skills {
+                let mut through: Vec<String> = skill
+                    .attached_to
+                    .iter()
+                    .map(|id| format!("attached to {}", sanitize_for_terminal(id)))
+                    .collect();
+                through.extend(skill.matched_queries.iter().map(|query| {
+                    format!(
+                        "matches \"{}\" ({})",
+                        sanitize_for_terminal(&query.title),
+                        sanitize_for_terminal(&query.id)
+                    )
+                }));
+                println!(
+                    "    skill/{}  {}",
+                    sanitize_for_terminal(&skill.skill_id),
+                    through.join("; ")
+                );
+            }
+        }
+    }
+    if response.limit_reached {
+        println!("\nThe run returned as many items as its limit allows; the query may match more.");
+    }
+    match tag {
+        Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
+        None => Ok(()),
+    }
+}
+
+/// What each path of a context read reached, in the CLI's JSON shape.
+fn path_groups_json(paths: &[PathNodes]) -> Vec<Value> {
+    paths
+        .iter()
+        .map(|reached| {
+            let mut group = json!({
+                "path": reached.path,
+                "count": reached.nodes.len(),
+                "nodes": reached.nodes.iter().map(context_node_to_json).collect::<Vec<_>>(),
+            });
+            // Set only when the path reached more nodes than one read
+            // returns.
+            if reached.limit_reached {
+                group["limit_reached"] = json!(true);
+            }
+            group
+        })
+        .collect()
+}
+
+fn write_human_paths(paths: &[PathNodes]) {
+    for reached in paths {
+        println!();
+        println!(
+            "path {} ({} node(s){}):",
+            reached.path,
+            reached.nodes.len(),
+            if reached.limit_reached {
+                "; the path reaches more, these are the first"
+            } else {
+                ""
+            }
+        );
+        for (idx, node) in reached.nodes.iter().enumerate() {
+            if idx > 0 {
+                println!();
+            }
+            write_human_context_node(node);
+        }
     }
 }
 
@@ -235,27 +377,11 @@ fn write_human_context_node(node: &ContextNode) {
 pub fn print_node_context(response: &GetNodeContextResponse, json: bool) -> Result<()> {
     let node = response.node.as_ref().context("daemon returned no node")?;
     if json {
-        let paths: Vec<Value> = response
-            .paths
-            .iter()
-            .map(|reached| {
-                let mut group = json!({
-                    "path": reached.path,
-                    "count": reached.nodes.len(),
-                    "nodes": reached.nodes.iter().map(context_node_to_json).collect::<Vec<_>>(),
-                });
-                // Set only when the path reached more nodes than one read
-                // returns.
-                if reached.limit_reached {
-                    group["limit_reached"] = json!(true);
-                }
-                group
-            })
-            .collect();
         let value = json!({
             "node": context_node_to_json(node),
-            "paths": paths,
+            "paths": path_groups_json(&response.paths),
             "attached_skills": attached_skills_json(&response.skills, &response.schemas),
+            "version": response.version,
         });
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
@@ -263,30 +389,29 @@ pub fn print_node_context(response: &GetNodeContextResponse, json: bool) -> Resu
 
     let out = &mut std::io::stdout();
     let tag = announce_attached_skills(out, &response.skills, &response.schemas)?;
+    // The daemon computed it, so it is printed ahead of anything read from
+    // the graph.
+    println!("context version: {}\n", response.version);
     write_human_context_node(node);
-    for reached in &response.paths {
-        println!();
-        println!(
-            "path {} ({} node(s){}):",
-            reached.path,
-            reached.nodes.len(),
-            if reached.limit_reached {
-                "; the path reaches more, these are the first"
-            } else {
-                ""
-            }
-        );
-        for (idx, node) in reached.nodes.iter().enumerate() {
-            if idx > 0 {
-                println!();
-            }
-            write_human_context_node(node);
-        }
-    }
+    write_human_paths(&response.paths);
     match tag {
         Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
         None => Ok(()),
     }
+}
+
+/// The version of a context read, alone: what a client compares with the
+/// one it holds to learn whether anything the read returns has changed.
+pub fn print_node_context_version(response: &GetNodeContextResponse, json: bool) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "version": response.version }))?
+        );
+    } else {
+        println!("{}", response.version);
+    }
+    Ok(())
 }
 
 /// One node in human mode. Everything read from the graph is passed through
@@ -359,6 +484,7 @@ pub fn schema_to_json(schema: &SchemaNode) -> Value {
         relationships,
         title_template,
         properties_header_summary_template,
+        context_paths,
     } = schema;
 
     let mut value = json!({
@@ -392,6 +518,10 @@ pub fn schema_to_json(schema: &SchemaNode) -> Value {
     }
     if let Some(template) = properties_header_summary_template {
         value["properties_header_summary_template"] = json!(template);
+    }
+    // In the dotted form `add_context_paths` and `node context --path` take.
+    if !context_paths.is_empty() {
+        value["context_paths"] = context_paths.iter().map(ToString::to_string).collect();
     }
     value
 }
@@ -500,6 +630,8 @@ fn schema_update_counts(updated: &SchemaUpdateOutput) -> Vec<(&'static str, usiz
         field_values_added,
         relationships_added,
         relationships_removed,
+        context_paths_added,
+        context_paths_removed,
         affected_plays: _,
     } = updated;
 
@@ -510,6 +642,8 @@ fn schema_update_counts(updated: &SchemaUpdateOutput) -> Vec<(&'static str, usiz
         ("field_values_added", field_values_added),
         ("relationships_added", relationships_added),
         ("relationships_removed", relationships_removed),
+        ("context_paths_added", context_paths_added),
+        ("context_paths_removed", context_paths_removed),
     ]
     .into_iter()
     .filter_map(|(key, count)| Some((key, (*count)?)))
@@ -629,6 +763,12 @@ fn write_human_schema(schema: &SchemaNode) {
                 rel.target_type.as_deref().unwrap_or("*"),
                 rel.reverse_name
             );
+        }
+    }
+    if !schema.context_paths.is_empty() {
+        println!("context_paths:");
+        for path in &schema.context_paths {
+            println!("    {path}");
         }
     }
 }
