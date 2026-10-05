@@ -365,7 +365,7 @@ async fn enumerate_nodes(
 
     // Each type's listing is newest first; several of them merged are not.
     if node_types.len() > 1 {
-        merged.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+        merged.sort_by_key(|b| std::cmp::Reverse(b.modified_at));
     }
     Ok(merged
         .into_iter()
