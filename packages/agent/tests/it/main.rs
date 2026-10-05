@@ -28,6 +28,7 @@ mod live_stage1_golden_prompts;
 mod live_unset_schema_field;
 mod live_update_node_noop_gate;
 mod matrix_scenario_winnability;
+mod pinned_skill_candidates;
 mod play_tools;
 mod prompt_assembly_snapshot;
 mod record_fields_beside_markdown;

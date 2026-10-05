@@ -920,8 +920,7 @@ pub async fn skills_by_id(
         let mut schema_metadata = Vec::with_capacity(linked.len());
         for schema in linked {
             schema_metadata.push(
-                schema_definition(node_service, schema, &all_schemas, &mut description_cache)
-                    .await,
+                schema_definition(node_service, schema, &all_schemas, &mut description_cache).await,
             );
         }
         let instructions = render_skill_instructions(node_service, &node.id).await;

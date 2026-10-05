@@ -38,12 +38,12 @@ use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceErr
 
 use crate::services::ai_chat_title;
 use crate::services::chat_idle_gate::ChatIdleGate;
-use crate::services::chat_pins;
-use crate::services::play_edit_chat::{self, ChatModel, PlayEditChatError};
 use crate::services::chat_messages::{
     self, clip_summary, flatten_label, write_target, CompletedWrite, NewMessage, ResolvedEntity,
     StoredMessage,
 };
+use crate::services::chat_pins;
+use crate::services::play_edit_chat::{self, ChatModel, PlayEditChatError};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -52,11 +52,12 @@ use tonic::{Request, Response, Status};
 use crate::nodespace::{
     local_agent_service_server::LocalAgentService as GrpcLocalAgentService, AgentChunk,
     CancelModelDownloadRequest, CancelModelDownloadResponse, CancelTurnRequest, CancelTurnResponse,
-    CreatePlayEditChatRequest, CreatePlayEditChatResponse, DeleteModelRequest, DeleteModelResponse, DownloadModelRequest, EnsureModelReadyRequest,
-    GetLocalStatusRequest, GetSystemRamRequest, GetSystemRamResponse, ListModelsRequest,
-    ListModelsResponse, LoadModelRequest, LoadModelResponse, LocalAgentStatusResponse, ModelEntry,
-    ModelLoadProgressEvent, RecommendedModelRequest, RecommendedModelResponse,
-    SubscribeTokenStreamRequest, UnloadModelRequest, UnloadModelResponse,
+    CreatePlayEditChatRequest, CreatePlayEditChatResponse, DeleteModelRequest, DeleteModelResponse,
+    DownloadModelRequest, EnsureModelReadyRequest, GetLocalStatusRequest, GetSystemRamRequest,
+    GetSystemRamResponse, ListModelsRequest, ListModelsResponse, LoadModelRequest,
+    LoadModelResponse, LocalAgentStatusResponse, ModelEntry, ModelLoadProgressEvent,
+    RecommendedModelRequest, RecommendedModelResponse, SubscribeTokenStreamRequest,
+    UnloadModelRequest, UnloadModelResponse,
 };
 
 // ---------------------------------------------------------------------------
@@ -4681,8 +4682,12 @@ mod tests {
         send_user_message(&node_service, &chat_id, "Change a condition").await;
         svc.maybe_handle_ai_chat_node(&chat_id).await;
 
-        let requests = requests.lock().unwrap();
-        let request = requests.last().expect("the turn called the model");
+        let request = requests
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("the turn called the model");
         let conversation: Vec<&ChatMessage> = request.iter().skip(1).collect();
         assert_eq!(
             conversation.iter().map(|m| m.role).collect::<Vec<_>>(),

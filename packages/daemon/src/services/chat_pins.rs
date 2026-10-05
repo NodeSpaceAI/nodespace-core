@@ -148,7 +148,12 @@ mod tests {
         (service, temp_dir)
     }
 
-    async fn create(svc: &NodeService, node_type: &str, content: &str, properties: serde_json::Value) -> String {
+    async fn create(
+        svc: &NodeService,
+        node_type: &str,
+        content: &str,
+        properties: serde_json::Value,
+    ) -> String {
         svc.create_node(Node::new(
             node_type.to_string(),
             content.to_string(),
@@ -159,12 +164,18 @@ mod tests {
     }
 
     async fn chat(svc: &NodeService) -> String {
-        create(svc, "ai-chat-native", "A chat", json!({ "agent": "nodespace" })).await
+        create(
+            svc,
+            "ai-chat-native",
+            "A chat",
+            json!({ "agent": "nodespace" }),
+        )
+        .await
     }
 
     async fn skill(svc: &NodeService, name: &str) -> String {
         let fields = nodespace_core::models::SkillFields::new(
-            &format!("What {name} is for"),
+            format!("What {name} is for"),
             &["search_nodes"],
             3,
         );

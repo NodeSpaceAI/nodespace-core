@@ -240,7 +240,10 @@ mod tests {
 
         let pins = load_chat_pins(&svc, &chat_id).await;
         assert_eq!(
-            pins.skills.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            pins.skills
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
             [PLAY_AUTHORING_SKILL_ID]
         );
         assert_eq!(
@@ -341,7 +344,11 @@ mod tests {
     async fn only_a_play_gets_an_edit_chat() {
         let (svc, _dir) = test_service().await;
         let note_id = svc
-            .create_node(Node::new("text".to_string(), "A note".to_string(), json!({})))
+            .create_node(Node::new(
+                "text".to_string(),
+                "A note".to_string(),
+                json!({}),
+            ))
             .await
             .unwrap();
 

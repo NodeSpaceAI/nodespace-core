@@ -14915,10 +14915,7 @@ mod tests {
         found.pinned = false;
         found.score = 0.9;
         let (prompt, tools) = stage2_of_a_turn_with_pins(
-            vec![
-                found,
-                skill_candidate("research", 0.8, &["search_nodes"]),
-            ],
+            vec![found, skill_candidate("research", 0.8, &["search_nodes"])],
             vec![pinned_authoring()],
         )
         .await;

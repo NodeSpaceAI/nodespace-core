@@ -1314,6 +1314,27 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // POST /api/agent/play-edit-chat
+  if (method === 'POST' && pathname === '/api/agent/play-edit-chat') {
+    try {
+      const body = await req.json() as { playId: string; provider?: string | null; model?: string | null };
+      const res = await agentCall<
+        { playId: string; provider?: string; model?: string },
+        { chatId: string }
+      >(
+        (agentClient as unknown as Record<string, Function>).createPlayEditChat,
+        {
+          playId: body.playId,
+          ...(body.provider ? { provider: body.provider } : {}),
+          ...(body.model ? { model: body.model } : {}),
+        }
+      );
+      return json({ chatId: res.chatId });
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
   return new Response('Not found', { status: 404, headers: corsHeaders });
 }
 

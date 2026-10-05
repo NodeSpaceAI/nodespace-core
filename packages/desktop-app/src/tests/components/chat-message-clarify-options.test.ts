@@ -74,6 +74,37 @@ describe('ChatMessage clarify options', () => {
     expect(onSelectOption).toHaveBeenCalledWith('Search existing notes');
   });
 
+  // The message the system opens a play's edit chat with (ADR-090 §3): one
+  // line that links the play, and the choices as options. It is stored like
+  // any clarifying question, so it renders and answers like one.
+  it("renders a play edit chat's opening message as its question and five choices", async () => {
+    const onSelectOption = vi.fn();
+    const options = [
+      'Change when it runs',
+      'Change a condition',
+      'Change an action',
+      'Add a rule',
+      'Remove a rule',
+    ];
+    const { container } = render(ChatMessage, {
+      message: makeMessage({
+        content: 'What would you like to change in [Roll completion up](nodespace://play-1)?',
+        options,
+      }),
+      isLatest: true,
+      onSelectOption,
+    });
+
+    const messageText = container.querySelector('.message-content')?.textContent;
+    expect(messageText).toContain('What would you like to change in');
+    expect(messageText).toContain('Roll completion up');
+    const buttons = Array.from(container.querySelectorAll('button.clarify-option'));
+    expect(buttons.map((b) => b.textContent?.trim())).toEqual(options);
+
+    await fireEvent.click(buttons[1]);
+    expect(onSelectOption).toHaveBeenCalledWith('Change a condition');
+  });
+
   it('renders no option chips for an ordinary reply with no options', () => {
     const { container } = render(ChatMessage, {
       message: makeMessage({ options: undefined }),

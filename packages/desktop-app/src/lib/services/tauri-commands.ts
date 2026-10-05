@@ -58,6 +58,21 @@ export async function localAgentCancelTurn(nodeId: string): Promise<void> {
   return proxyPost('/api/agent/cancel-turn', { nodeId });
 }
 
+/**
+ * Create the chat a play is edited through (ADR-090 §3) and return its id.
+ * The daemon creates the chat, its pins to the play-authoring skill and the
+ * play, and its opening message; `model` is the model the chat starts on.
+ */
+export async function localAgentCreatePlayEditChat(
+  playId: string,
+  model?: { provider: string; model: string } | null
+): Promise<string> {
+  const args = { playId, provider: model?.provider ?? null, model: model?.model ?? null };
+  if (isTauri()) return invoke<string>('local_agent_create_play_edit_chat', args);
+  const created = await proxyPost<{ chatId: string }>('/api/agent/play-edit-chat', args);
+  return created.chatId;
+}
+
 // ============================================================================
 // Chat Model Management Commands
 // ============================================================================

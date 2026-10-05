@@ -14,6 +14,8 @@ vi.mock('@tauri-apps/api/core', () => mockTauriCore());
 import PlayNodeViewer from '$lib/components/viewers/play-node-viewer.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
+import { getNavigationService } from '$lib/services/navigation-service';
+import { aiChatsData } from '$lib/stores/ai-chats.svelte';
 import type { Node, PlayNode } from '$lib/types';
 import type { RuleDefinition } from '$lib/types/generated';
 
@@ -275,14 +277,76 @@ describe('PlayNodeViewer', () => {
       expect(raw[2].querySelector('pre')?.textContent).toContain('"node_id": "{item.id}"');
     });
 
-    it('offers nothing to edit: the switch is the only control', () => {
+    it('offers nothing to edit in place: its controls are the switch and Edit', () => {
       const { container } = open({ rules: [guard, closeParent] });
 
       expect(
         container.querySelectorAll('input, textarea, select, [contenteditable="true"]')
       ).toHaveLength(0);
-      expect(container.querySelectorAll('button')).toHaveLength(1);
-      expect(container.querySelector('button')?.getAttribute('role')).toBe('switch');
+      const buttons = Array.from(container.querySelectorAll('button'));
+      expect(buttons).toHaveLength(2);
+      expect(buttons[0].getAttribute('role')).toBe('switch');
+      expect(buttons[1].textContent?.trim()).toBe('Edit');
+    });
+  });
+
+  describe('Edit', () => {
+    const chat = {
+      id: 'chat-1',
+      nodeType: 'ai-chat-native',
+      content: 'Edit Roll completion up',
+      version: 1,
+      createdAt: '2026-01-01T00:00:00Z',
+      modifiedAt: '2026-01-01T00:00:00Z',
+      properties: {}
+    } as unknown as Node;
+
+    it('creates a chat bound to the play and opens it beside the play', async () => {
+      const createPlayEditChat = vi.spyOn(aiChatsData, 'createPlayEditChat').mockResolvedValue(chat);
+      const navigateToNodeInOtherPane = vi
+        .spyOn(getNavigationService(), 'navigateToNodeInOtherPane')
+        .mockResolvedValue();
+      const { getByRole, container } = open();
+
+      await fireEvent.click(getByRole('button', { name: 'Edit' }));
+      await tick();
+
+      expect(createPlayEditChat).toHaveBeenCalledWith(PLAY_ID);
+      expect(navigateToNodeInOtherPane).toHaveBeenCalledWith('chat-1');
+      expect(container.querySelector('.edit-error')).toBeNull();
+      // Opening the chat writes nothing to the play.
+      expect(updatePlayNode).not.toHaveBeenCalled();
+    });
+
+    it('makes a new chat on every click', async () => {
+      const createPlayEditChat = vi.spyOn(aiChatsData, 'createPlayEditChat').mockResolvedValue(chat);
+      vi.spyOn(getNavigationService(), 'navigateToNodeInOtherPane').mockResolvedValue();
+      const { getByRole } = open();
+
+      await fireEvent.click(getByRole('button', { name: 'Edit' }));
+      await tick();
+      await fireEvent.click(getByRole('button', { name: 'Edit' }));
+      await tick();
+
+      expect(createPlayEditChat).toHaveBeenCalledTimes(2);
+    });
+
+    it('says why when the chat could not be created, and opens nothing', async () => {
+      vi.spyOn(aiChatsData, 'createPlayEditChat').mockImplementation(async () => {
+        aiChatsData.createError = 'the daemon is not running';
+        return null;
+      });
+      const navigateToNodeInOtherPane = vi
+        .spyOn(getNavigationService(), 'navigateToNodeInOtherPane')
+        .mockResolvedValue();
+      const { getByRole } = open();
+
+      await fireEvent.click(getByRole('button', { name: 'Edit' }));
+      await tick();
+
+      expect(getByRole('alert').textContent).toContain('the daemon is not running');
+      expect(navigateToNodeInOtherPane).not.toHaveBeenCalled();
+      aiChatsData.reset();
     });
   });
 

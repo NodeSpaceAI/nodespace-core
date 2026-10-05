@@ -22,6 +22,8 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import { getNavigationService } from '$lib/services/navigation-service';
+  import { aiChatsData } from '$lib/stores/ai-chats.svelte';
   import {
     actionForEach,
     asPlayNode,
@@ -76,6 +78,24 @@
     confirmingDisable = false;
   }
 
+  // Why the last Edit opened no chat. View state, not play state.
+  let editError = $state('');
+
+  /**
+   * Edit: a new chat bound to this play, opened beside it (ADR-090 §3). Each
+   * click makes a new chat. The play stays in view and follows what the chat
+   * writes.
+   */
+  async function handleEdit() {
+    editError = '';
+    const chat = await aiChatsData.createPlayEditChat(nodeId);
+    if (!chat) {
+      editError = aiChatsData.createError;
+      return;
+    }
+    await getNavigationService().navigateToNodeInOtherPane(chat.id);
+  }
+
   function formatTime(timestamp: string): string {
     const date = new Date(timestamp);
     return Number.isNaN(date.getTime()) ? timestamp : date.toLocaleString();
@@ -96,7 +116,20 @@
           aria-label="Play on"
           bind:checked={() => playStatus === 'on', handleSwitch}
         />
+        <Button
+          class="play-edit"
+          variant="outline"
+          size="sm"
+          disabled={aiChatsData.createBusy}
+          onclick={handleEdit}
+        >
+          Edit
+        </Button>
       </div>
+
+      {#if editError}
+        <p class="edit-error" role="alert">Couldn't open an edit chat: {editError}</p>
+      {/if}
 
       {#if play.description}
         <p class="play-description">{play.description}</p>
@@ -273,6 +306,16 @@
 
   .play-title :global(.play-switch) {
     flex-shrink: 0;
+  }
+
+  .play-title :global(.play-edit) {
+    flex-shrink: 0;
+  }
+
+  .edit-error {
+    margin: 0.5rem 0 0;
+    font-size: 0.875rem;
+    color: hsl(var(--destructive));
   }
 
   .play-description {

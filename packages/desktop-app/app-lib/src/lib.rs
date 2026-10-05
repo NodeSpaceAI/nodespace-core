@@ -899,6 +899,7 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             // Local agent commands
             commands::local_agent::local_agent_status,
             commands::local_agent::local_agent_cancel_turn,
+            commands::local_agent::local_agent_create_play_edit_chat,
             commands::local_agent::ensure_model_ready,
             commands::local_agent::list_local_models,
             // Chat model management commands
