@@ -303,5 +303,7 @@ describe("checkExtensionApiVersion on a git repository", () => {
     const problems = checkExtensionApiVersion(dir);
     expect(problems).toHaveLength(1);
     expect(problems[0]).toContain("git fetch origin");
+    // git's own reason, which tells a missing ref from a broken one.
+    expect(problems[0]).toContain("fatal:");
   });
 });

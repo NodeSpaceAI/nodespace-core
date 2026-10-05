@@ -161,7 +161,7 @@ describe("readExtensionApiRelease", () => {
     commitVersion(2, 1, "Reword a comment", "// The version.\n");
     commitVersion(2, 2, "Add a slot", "// The version.\n");
 
-    expect(readExtensionApiRelease(dir)).toEqual({
+    expect(readExtensionApiRelease("v0.2.0", dir)).toEqual({
       version: { major: 2, minor: 2 },
       previous: { tag: "v0.1.0", version: { major: 2, minor: 0 } },
       changes: ["Add a hook", "Add a slot"]
@@ -171,7 +171,25 @@ describe("readExtensionApiRelease", () => {
   test("reports no previous release when there is no tag", () => {
     git("init", "--quiet");
     commitVersion(1, 0, "start");
-    expect(readExtensionApiRelease(dir)).toEqual({ version: { major: 1, minor: 0 }, previous: null, changes: [] });
+    expect(readExtensionApiRelease("v0.1.0", dir)).toEqual({
+      version: { major: 1, minor: 0 },
+      previous: null,
+      changes: []
+    });
+  });
+
+  test("skips the release's own tag when a re-run finds it already on HEAD", () => {
+    git("init", "--quiet");
+    commitVersion(2, 0, "start");
+    git("tag", "v0.1.0");
+    commitVersion(2, 1, "Add a hook");
+    git("tag", "v0.2.0");
+
+    expect(readExtensionApiRelease("v0.2.0", dir)).toEqual({
+      version: { major: 2, minor: 1 },
+      previous: { tag: "v0.1.0", version: { major: 2, minor: 0 } },
+      changes: ["Add a hook"]
+    });
   });
 
   test("refuses to release without a readable version", () => {
@@ -179,7 +197,7 @@ describe("readExtensionApiRelease", () => {
     const file = join(dir, RUST_VERSION_FILE);
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, "// no version here\n");
-    expect(() => readExtensionApiRelease(dir)).toThrow(/No EXTENSION_API_VERSION declaration/);
+    expect(() => readExtensionApiRelease("v0.1.0", dir)).toThrow(/No EXTENSION_API_VERSION declaration/);
   });
 });
 
@@ -197,15 +215,27 @@ describe("buildReleaseCreateArgs", () => {
     expect(args[notesIndex + 1]).toContain("v1.2.3");
   });
 
-  test("does not override operator-supplied --notes with generated ones", () => {
+  test("keeps operator-supplied --notes, appending the Extension API section", () => {
     const args = buildReleaseCreateArgs({
       version: "v1.2.3",
       extensionApi: unchangedApi,
-      notes: "Custom release notes"
+      notes: "Custom release notes\n"
     });
 
     expect(args).not.toContain("--generate-notes");
-    expect(args).toEqual(expect.arrayContaining(["--notes", "Custom release notes"]));
+    expect(args[args.indexOf("--notes") + 1]).toBe(
+      "Custom release notes\n\n### Extension API\n\n`EXTENSION_API_VERSION` is 2.1, unchanged since v1.2.2.\n"
+    );
+  });
+
+  test("leaves operator-supplied --notes alone when they already have an Extension API heading", () => {
+    for (const notes of [
+      "Intro\n\n### Extension API\n\nWritten by hand.\n",
+      "Intro\n\n## Extension API\n\nWritten by hand.\n"
+    ]) {
+      const args = buildReleaseCreateArgs({ version: "v1.2.3", extensionApi: unchangedApi, notes });
+      expect(args[args.indexOf("--notes") + 1]).toBe(notes);
+    }
   });
 
   test("passes through --draft and --prerelease", () => {

@@ -46,6 +46,13 @@ export const TS_VERSION_FILE = "packages/desktop-app/src/lib/plugins/ui-extensio
  * The files that record the extension API: a change to one needs a version
  * bump. An entry ending in `/` is a directory and covers every file under it.
  * A new fixture of an extension point is added here in the change that adds it.
+ *
+ * The frontend's fixture extension (`src/tests/fixtures/test-extension/`) is
+ * left out on purpose. ADR-082 section 8 enforces the TypeScript surface
+ * through the declarations snapshot, and only the Rust surface through its
+ * fixtures; watching the frontend fixture would demand a bump for every
+ * frontend test that adds a contribution. A change to slot semantics or hook
+ * timing is left to review, as the surface test notes.
  */
 export const WATCHED_PATHS: readonly string[] = [
   // The host API's surface snapshot: its exports and a hash of its types.
@@ -150,19 +157,25 @@ export function versionProblems(state: VersionState): string[] {
 // point every `git -C <dir>` below at the hook's repository instead of <dir>.
 const GIT_LOCATION_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_PREFIX"];
 
-/** Runs git in `repoRoot`; null when it exits non-zero. */
-function gitOrNull(repoRoot: string, args: string[]): string | null {
+function runGit(repoRoot: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const env = { ...process.env };
   for (const name of GIT_LOCATION_VARS) delete env[name];
   const result = spawnSync("git", ["-C", repoRoot, ...args], { encoding: "utf8", env, maxBuffer: 64 * 1024 * 1024 });
   if (result.error) throw result.error;
-  return result.status === 0 ? result.stdout : null;
+  return { ok: result.status === 0, stdout: result.stdout, stderr: result.stderr.trim() };
 }
 
+/** Runs git in `repoRoot`; null when it exits non-zero (a path absent at that revision). */
+function gitOrNull(repoRoot: string, args: string[]): string | null {
+  const result = runGit(repoRoot, args);
+  return result.ok ? result.stdout : null;
+}
+
+/** Runs git in `repoRoot`; throws with git's own message when it exits non-zero. */
 function git(repoRoot: string, args: string[]): string {
-  const out = gitOrNull(repoRoot, args);
-  if (out === null) throw new Error(`git ${args.join(" ")} failed`);
-  return out;
+  const result = runGit(repoRoot, args);
+  if (!result.ok) throw new Error(`git ${args.join(" ")}: ${result.stderr || "failed"}`);
+  return result.stdout;
 }
 
 function nulSeparated(out: string): string[] {
@@ -196,7 +209,10 @@ export function checkExtensionApiVersion(repoRoot: string = REPO): string[] {
     state = readVersionState(repoRoot);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    return [`Could not compare this branch with origin/main (${reason}). Run \`git fetch origin\` and try again.`];
+    return [
+      `Could not compare this branch with origin/main (${reason}). ` +
+        "If origin/main is missing or stale, run `git fetch origin` and try again.",
+    ];
   }
   return versionProblems(state);
 }
