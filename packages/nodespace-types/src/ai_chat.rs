@@ -142,6 +142,8 @@ pub const AI_CHAT_RESOLVED: &str = "resolved";
 /// The relationship from a message to a node it asked to delete, held until
 /// the user answers.
 pub const AI_CHAT_PENDING_DELETE: &str = "pending_delete";
+/// The relationship from a native chat to a node it pins (ADR-090 §4).
+pub const AI_CHAT_PINS: &str = "pins";
 
 /// One successful write tool call, as its message's `wrote` edge records it.
 ///

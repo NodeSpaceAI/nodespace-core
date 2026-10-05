@@ -759,17 +759,15 @@ pub async fn find_skills(
 
         let instructions = render_skill_instructions(node_service.as_ref(), &node.id).await;
 
-        skills.push(json!({
-            "id": node.id,
-            "name": node.content,
-            "kind": "skill",
-            "description": description,
-            "confidence": confidence,
-            "tools": tool_whitelist,
-            "schema_metadata": schema_metadata,
-            "schemas_linked": schemas_linked,
-            "instructions": instructions,
-        }));
+        skills.push(skill_entry(
+            node,
+            &description,
+            &tool_whitelist,
+            *confidence,
+            schema_metadata,
+            schemas_linked,
+            instructions,
+        ));
     }
 
     // Schema-typed hits: a shape distinguishable from a skill's ("kind":
@@ -847,6 +845,96 @@ pub async fn find_skills(
         query: input.query,
         total_results,
     })
+}
+
+/// A skill as [`find_skills`] and [`skills_by_id`] return it.
+fn skill_entry(
+    node: &Node,
+    description: &str,
+    tool_whitelist: &[String],
+    confidence: f64,
+    schema_metadata: Vec<Value>,
+    schemas_linked: bool,
+    instructions: String,
+) -> Value {
+    json!({
+        "id": node.id,
+        "name": node.content,
+        "kind": "skill",
+        "description": description,
+        "confidence": confidence,
+        "tools": tool_whitelist,
+        "schema_metadata": schema_metadata,
+        "schemas_linked": schemas_linked,
+        "instructions": instructions,
+    })
+}
+
+/// The skills among `ids`, each in the shape [`find_skills`] returns a
+/// matched skill in, in the order of `ids`. An id that names no participating
+/// skill is left out.
+///
+/// For a skill chosen by something other than a query, such as one a chat
+/// pins (ADR-090 §5). It reads no embedding and ranks nothing, so
+/// `confidence` is 0. `schema_metadata` is the schemas the skill links to
+/// through `applies_to`, with their subtypes: a skill with no link carries
+/// none, since the fallback [`find_skills`] uses is a guess from the query.
+pub async fn skills_by_id(
+    node_service: &NodeService,
+    ids: &[String],
+) -> Result<Vec<Value>, OpsError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let registry = participating_skills(node_service).await?;
+    let nodes: Vec<&Node> = ids
+        .iter()
+        .filter_map(|id| registry.iter().find(|node| &node.id == id))
+        .collect();
+    if nodes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let all_schemas = node_service
+        .get_all_schemas()
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to read schemas: {}", e)))?;
+    let skill_ids: Vec<String> = nodes.iter().map(|node| node.id.clone()).collect();
+    let applies_to = node_service
+        .store()
+        .get_edge_targets_by_source(&skill_ids, SKILL_APPLIES_TO)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to read applies_to links: {}", e)))?;
+
+    let mut description_cache = HashMap::new();
+    let mut skills = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        let Some(fields) = skill_fields(node) else {
+            continue;
+        };
+        let linked = applies_to
+            .get(&node.id)
+            .map(|targets| linked_schemas(targets, &all_schemas))
+            .unwrap_or_default();
+        let schemas_linked = !linked.is_empty();
+        let mut schema_metadata = Vec::with_capacity(linked.len());
+        for schema in linked {
+            schema_metadata.push(
+                schema_definition(node_service, schema, &all_schemas, &mut description_cache).await,
+            );
+        }
+        let instructions = render_skill_instructions(node_service, &node.id).await;
+        skills.push(skill_entry(
+            node,
+            &fields.description,
+            &fields.tool_whitelist,
+            0.0,
+            schema_metadata,
+            schemas_linked,
+            instructions,
+        ));
+    }
+    Ok(skills)
 }
 
 /// One skill in a guidance fetch.

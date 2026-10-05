@@ -153,6 +153,7 @@ impl AgentToolExecutor for BenchExecutor {
                     ]
                 }]),
                 schemas_linked: false,
+                pinned: false,
             },
             SkillCandidate {
                 id: "skill-research".into(),
@@ -167,6 +168,7 @@ impl AgentToolExecutor for BenchExecutor {
                 },
                 schema_metadata: json!([]),
                 schemas_linked: false,
+                pinned: false,
             },
         ];
         if !self.with_instructions && self.empty_retrieval {

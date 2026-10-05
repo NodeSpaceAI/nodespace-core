@@ -31,8 +31,8 @@ pub use node::{
 pub use nodespace_types::{
     AiChatBase, AiChatMessageNode, AiChatMessageRole, AiChatNativeNode, AiChatPendingDeleteEdge,
     AiChatProvider, AiChatPtyNode, AiChatResolvedEdge, AiChatSessionStatus, AiChatTurnOutcome,
-    AiChatTurnStatus, AiChatWrite, AiChatWroteEdge, AI_CHAT_PENDING_DELETE, AI_CHAT_RESOLVED,
-    AI_CHAT_WROTE, NODESPACE_AGENT,
+    AiChatTurnStatus, AiChatWrite, AiChatWroteEdge, AI_CHAT_PENDING_DELETE, AI_CHAT_PINS,
+    AI_CHAT_RESOLVED, AI_CHAT_WROTE, NODESPACE_AGENT,
 };
 pub use schema::{RelationshipDirection, SchemaField, SchemaFieldType, SchemaProtectionLevel};
 pub use seed_update::{PendingSeedUpdate, PendingSeedUpdateRow, SeedAspect};

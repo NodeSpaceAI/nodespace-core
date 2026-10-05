@@ -9,12 +9,14 @@ pub mod assembly;
 pub mod capture_service;
 pub mod chat_idle_gate;
 pub mod chat_messages;
+pub mod chat_pins;
 pub mod database_manager;
 pub mod database_service;
 pub mod embeddings_service;
 pub mod import_service;
 pub mod local_agent_service;
 pub mod node_service;
+pub mod play_edit_chat;
 #[cfg(test)]
 mod required_extensions_tests;
 pub mod settings_service;

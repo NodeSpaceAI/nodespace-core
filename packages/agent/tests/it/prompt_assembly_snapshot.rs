@@ -485,6 +485,7 @@ fn fixture_candidates() -> Vec<SkillCandidate> {
             instructions: render_seed_instructions(node_creation),
             schema_metadata: metadata.clone(),
             schemas_linked: false,
+            pinned: false,
         },
         SkillCandidate {
             id: "fixture-skill-schema-creation".to_string(),
@@ -495,6 +496,7 @@ fn fixture_candidates() -> Vec<SkillCandidate> {
             instructions: render_seed_instructions(schema_creation),
             schema_metadata: metadata,
             schemas_linked: false,
+            pinned: false,
         },
     ]
 }
@@ -688,6 +690,7 @@ fn stage2_lookup_block_matches_golden() {
         // custom schema leaves its unscoped fallback empty.
         schema_metadata: serde_json::json!([]),
         schemas_linked: false,
+        pinned: false,
     }];
     let block = render_candidates_for_prompt(&candidates)
         .expect("a read-only candidate at 0.85 clears its score gate");
@@ -736,6 +739,7 @@ fn stage2_tool_surface_held_to_offered_types_matches_golden() {
         .into_iter()
         .map(|c| SkillCandidate {
             schemas_linked: true,
+            pinned: false,
             ..c
         })
         .collect();
@@ -805,6 +809,7 @@ fn stage2_play_authoring_matches_golden() {
         )
         .to_json()]),
         schemas_linked: true,
+        pinned: false,
     }];
 
     let block = render_candidates_for_prompt(&candidates)

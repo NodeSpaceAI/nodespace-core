@@ -750,7 +750,24 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique_case_insensitive: None,
                 },
             ],
-            relationships: vec![],
+            // The nodes a chat is bound to (ADR-090 §4). A pinned skill is
+            // always a Stage-2 routing candidate in the chat; any other pinned
+            // node is always in the turn's entity list. Any node can be
+            // pinned, and one node can be pinned in many chats.
+            relationships: vec![SchemaRelationship {
+                name: nodespace_types::AI_CHAT_PINS.to_string(),
+                target_type: None,
+                direction: RelationshipDirection::Out,
+                cardinality: RelationshipCardinality::Many,
+                required: None,
+                reverse_name: "pinned_in".to_string(),
+                reverse_cardinality: RelationshipCardinality::Many,
+                edge_fields: None,
+                description: Some(
+                    "Nodes this chat is bound to: a pinned skill is always offered, and any other pinned node is always in view"
+                        .to_string(),
+                ),
+            }],
             title_template: None,
             properties_header_summary_template: None,
         },
@@ -2492,6 +2509,26 @@ mod tests {
         let native = core_schema(CoreNodeType::AiChatNative).unwrap();
         for gone in ["messages", "created_nodes"] {
             assert!(native.get_field(gone).is_none(), "{gone}");
+        }
+    }
+
+    /// A native chat pins nodes through one declared relationship, to a node
+    /// of any type (ADR-090 §4). The base and the terminal chat declare none.
+    #[test]
+    fn test_the_native_chat_declares_pins() {
+        let native = core_schema(CoreNodeType::AiChatNative).unwrap();
+        assert_eq!(native.relationships.len(), 1);
+        let pins = &native.relationships[0];
+        assert_eq!(pins.name, nodespace_types::AI_CHAT_PINS);
+        assert_eq!(pins.reverse_name, "pinned_in");
+        assert_eq!(pins.target_type, None);
+        assert_eq!(pins.direction, RelationshipDirection::Out);
+        assert_eq!(pins.cardinality, RelationshipCardinality::Many);
+        assert_eq!(pins.reverse_cardinality, RelationshipCardinality::Many);
+        assert!(pins.edge_fields.is_none());
+
+        for other in [CoreNodeType::AiChat, CoreNodeType::AiChatPty] {
+            assert!(core_schema(other).unwrap().relationships.is_empty());
         }
     }
 

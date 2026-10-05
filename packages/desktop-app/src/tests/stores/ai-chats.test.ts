@@ -17,10 +17,23 @@ vi.mock('$lib/utils/logger', () => ({
 import type { Node } from '$lib/types';
 
 const mockQueryNodes = vi.fn<(query: unknown) => Promise<Node[]>>();
+const mockGetNode = vi.fn<(id: string) => Promise<Node | null>>();
 vi.mock('$lib/services/backend-adapter', () => ({
   backendAdapter: {
-    queryNodes: (query: unknown) => mockQueryNodes(query)
+    queryNodes: (query: unknown) => mockQueryNodes(query),
+    getNode: (id: string) => mockGetNode(id)
   }
+}));
+
+const mockCreatePlayEditChat = vi.fn<(playId: string, model: unknown) => Promise<string>>();
+vi.mock('$lib/services/tauri-commands', () => ({
+  localAgentCreatePlayEditChat: (playId: string, model: unknown) =>
+    mockCreatePlayEditChat(playId, model)
+}));
+
+const mockDefaultModel = vi.fn<() => { provider: string; model: string } | null>();
+vi.mock('$lib/services/ai-chat-default-model', () => ({
+  getDefaultAiChatModelProperties: () => mockDefaultModel()
 }));
 
 const mockCreateSchemaInstance = vi.fn<(typeId: string) => Promise<Node>>();
@@ -377,6 +390,80 @@ describe('aiChatsData', () => {
       expect(result).toBeNull();
       // The failure belonged to a database this store no longer represents —
       // must not bleed its error into the newly-active database's banner.
+      expect(aiChatsData.createError).toBe('');
+    });
+  });
+
+  describe('createPlayEditChat', () => {
+    const editChat = () => makeChat('edit-chat', 'Edit Roll completion up', '2026-06-01T00:00:00.000Z');
+
+    beforeEach(() => {
+      mockDefaultModel.mockReturnValue({ provider: 'native', model: 'gemma-4-e4b' });
+    });
+
+    it('asks the backend for the chat on the default model, and prepends it to the list', async () => {
+      mockQueryNodes.mockResolvedValue([makeChat('existing', 'Existing', '2026-01-01T00:00:00.000Z')]);
+      await aiChatsData.loadAiChats();
+      mockCreatePlayEditChat.mockResolvedValue('edit-chat');
+      mockGetNode.mockResolvedValue(editChat());
+
+      const result = await aiChatsData.createPlayEditChat('play-1');
+
+      expect(mockCreatePlayEditChat).toHaveBeenCalledWith('play-1', {
+        provider: 'native',
+        model: 'gemma-4-e4b'
+      });
+      expect(mockGetNode).toHaveBeenCalledWith('edit-chat');
+      expect(result).toEqual(editChat());
+      expect(aiChatsData.state.chats.map((c) => c.id)).toEqual(['edit-chat', 'existing']);
+      // One backend call makes the chat: nothing is created from here.
+      expect(mockCreateSchemaInstance).not.toHaveBeenCalled();
+    });
+
+    it('registers the new chat as persisted in SharedNodeStore', async () => {
+      mockCreatePlayEditChat.mockResolvedValue('edit-chat');
+      mockGetNode.mockResolvedValue(editChat());
+
+      await aiChatsData.createPlayEditChat('play-1');
+
+      expect(sharedNodeStore.getNode('edit-chat')?.content).toBe('Edit Roll completion up');
+      expect(sharedNodeStore.isNodePersisted('edit-chat')).toBe(true);
+    });
+
+    it('creates the chat with no model when there is no default', async () => {
+      mockDefaultModel.mockReturnValue(null);
+      mockCreatePlayEditChat.mockResolvedValue('edit-chat');
+      mockGetNode.mockResolvedValue(editChat());
+
+      await aiChatsData.createPlayEditChat('play-1');
+
+      expect(mockCreatePlayEditChat).toHaveBeenCalledWith('play-1', null);
+    });
+
+    it('surfaces a failure via createError, returns null, and frees the create', async () => {
+      mockCreatePlayEditChat.mockRejectedValue(new Error('play play-1 not found'));
+
+      const result = await aiChatsData.createPlayEditChat('play-1');
+
+      expect(result).toBeNull();
+      expect(aiChatsData.createError).toBe('play play-1 not found');
+      expect(aiChatsData.createBusy).toBe(false);
+      expect(aiChatsData.state.chats).toEqual([]);
+    });
+
+    it('discards a create that resolves after invalidateForDatabaseSwitch', async () => {
+      let resolveCreate!: (id: string) => void;
+      mockCreatePlayEditChat.mockImplementation(
+        () => new Promise<string>((resolve) => (resolveCreate = resolve))
+      );
+      mockGetNode.mockResolvedValue(editChat());
+
+      const pending = aiChatsData.createPlayEditChat('play-1');
+      aiChatsData.invalidateForDatabaseSwitch();
+      resolveCreate('edit-chat');
+
+      expect(await pending).toBeNull();
+      expect(aiChatsData.state.chats).toEqual([]);
       expect(aiChatsData.createError).toBe('');
     });
   });

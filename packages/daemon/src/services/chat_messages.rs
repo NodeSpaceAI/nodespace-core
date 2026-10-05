@@ -161,7 +161,7 @@ impl StoredMessage {
     }
 }
 
-fn node_uri(id: &str) -> String {
+pub(crate) fn node_uri(id: &str) -> String {
     format!("nodespace://{id}")
 }
 
@@ -310,7 +310,7 @@ fn unreadable_edge(message_id: &str, relationship: &str, target: &Node, error: &
 
 /// A node's name, as a reader would give it: its title, else the first line
 /// of its content.
-fn display_title(node: &Node) -> Option<String> {
+pub(crate) fn display_title(node: &Node) -> Option<String> {
     node.title
         .as_deref()
         .filter(|t| !t.trim().is_empty())

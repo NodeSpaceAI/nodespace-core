@@ -159,6 +159,34 @@ describe('Tauri System Commands - API Surface', () => {
       expect(mockInvoke).toHaveBeenCalledWith('local_agent_cancel_turn', { nodeId: 'node-1' });
     });
 
+    it('localAgentCreatePlayEditChat invokes local_agent_create_play_edit_chat and returns the chat id', async () => {
+      mockInvoke.mockResolvedValue('chat-1');
+
+      const chatId = await tauriCommands.localAgentCreatePlayEditChat('play-1', {
+        provider: 'native',
+        model: 'gemma-4-e4b'
+      });
+
+      expect(mockInvoke).toHaveBeenCalledWith('local_agent_create_play_edit_chat', {
+        playId: 'play-1',
+        provider: 'native',
+        model: 'gemma-4-e4b'
+      });
+      expect(chatId).toBe('chat-1');
+    });
+
+    it('localAgentCreatePlayEditChat sends no model when there is no default', async () => {
+      mockInvoke.mockResolvedValue('chat-1');
+
+      await tauriCommands.localAgentCreatePlayEditChat('play-1', null);
+
+      expect(mockInvoke).toHaveBeenCalledWith('local_agent_create_play_edit_chat', {
+        playId: 'play-1',
+        provider: null,
+        model: null
+      });
+    });
+
     it('chatModelList invokes chat_model_list with forceRefresh', async () => {
       mockInvoke.mockResolvedValue([]);
 
@@ -345,6 +373,24 @@ describe('Tauri System Commands - API Surface', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nodeId: 'node-1' })
       });
+    });
+
+    it('localAgentCreatePlayEditChat proxies to POST /api/agent/play-edit-chat and returns the chat id', async () => {
+      fetchMock.mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: () => Promise.resolve({ chatId: 'chat-1' })
+      });
+
+      const chatId = await tauriCommands.localAgentCreatePlayEditChat('play-1');
+
+      expect(fetchMock).toHaveBeenCalledWith('http://localhost:3001/api/agent/play-edit-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playId: 'play-1', provider: null, model: null })
+      });
+      expect(chatId).toBe('chat-1');
     });
 
     it('chatModelList proxies to GET /api/agent/models with forceRefresh query param', async () => {

@@ -647,7 +647,9 @@ async fn collect_related(
 /// `mentions`, `member_of`, `has_role`) are excluded. Declared groups are always
 /// returned on both sides — outbound and inbound — even when empty, so the viewer
 /// can add the first edge and callers can distinguish a declared-but-unlinked
-/// relationship from none at all.
+/// relationship from none at all. The exception is an inbound group declared
+/// by a chat type (a native chat's `pins`): a chat writes its own edges, so
+/// that group is listed only on a node it reaches.
 pub async fn get_node_relationships(
     node_service: &Arc<NodeService>,
     node_id: &str,
@@ -792,6 +794,19 @@ pub async fn get_node_relationships(
             }
         }
         let related = kept;
+        // A chat's relationship is listed only on the nodes it reaches. A
+        // chat writes its own edges (its `pins` are set when it is created),
+        // so an empty group has no first edge to offer from this side, and
+        // `pins` targets any node: empty, it would sit on every node in the
+        // graph. With an edge, it shows as `pinned_in` on the pinned node.
+        if related.is_empty()
+            && node_service
+                .type_is_a(&source_type, crate::models::CoreNodeType::AiChat)
+                .await
+                .map_err(|e| OpsError::Internal(format!("Failed to resolve type chain: {e}")))?
+        {
+            continue;
+        }
         // Emit the group even with no edges yet — symmetric with the outbound
         // branch above — so a type reached only through a derived inbound
         // relationship (e.g. `task`, whose `project` link is declared outbound on

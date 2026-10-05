@@ -199,6 +199,7 @@ fn research_candidate() -> SkillCandidate {
             .to_string(),
         schema_metadata: serde_json::json!([]),
         schemas_linked: false,
+        pinned: false,
     }
 }
 
@@ -212,6 +213,7 @@ fn names_only_candidate() -> SkillCandidate {
         instructions: String::new(),
         schema_metadata: serde_json::json!([]),
         schemas_linked: false,
+        pinned: false,
         ..research_candidate()
     }
 }
@@ -649,6 +651,7 @@ mod tests {
             instructions: String::new(),
             schema_metadata: serde_json::json!([]),
             schemas_linked: false,
+            pinned: false,
         }])
         .unwrap();
 

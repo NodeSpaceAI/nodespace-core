@@ -2604,6 +2604,7 @@ impl AgentSession {
             routing_disabled: false,
             mentioned_entities: Vec::new(),
             prior_turns: Vec::new(),
+            pinned_skills: Vec::new(),
         }
     }
 
@@ -5181,8 +5182,17 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             // (Stage 1 ran and chose not to route) — an eval scraping the text log
             // for "none" must not conflate "routing never ran" with "routing ran
             // and declined," which would otherwise look identical downstream.
+            // A pinned skill needs no retrieval: the chat chose it. It is
+            // still offered, so a chat bound to a skill works while the
+            // embedding service loads. A chat that pins none runs unrouted.
+            outcome.candidates = routing::with_pinned_skills(
+                Vec::new(),
+                &session.pinned_skills,
+                &std::collections::HashMap::new(),
+            );
             tracing::info!(
                 routing_decision = "unavailable",
+                pinned_skills = %routing::routed_skill_names(&outcome.candidates),
                 "routing unavailable for this turn; running unrouted"
             );
             return outcome;
@@ -5289,6 +5299,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         "stage-1 routing failed; continuing unrouted"
                     );
                     span.set_attribute(KeyValue::new("routing.failed", true));
+                    // As when routing is unavailable: a pinned skill needs
+                    // neither Stage 1 nor retrieval.
+                    outcome.candidates = routing::with_pinned_skills(
+                        Vec::new(),
+                        &session.pinned_skills,
+                        &std::collections::HashMap::new(),
+                    );
                     return outcome;
                 }
             },
@@ -5420,7 +5437,16 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let merged = routing::select_candidates(merged);
+        // A pinned skill is offered whatever retrieval made of it, so it is
+        // added after the bound is applied: it takes no retrieved skill's
+        // place. It keeps the score retrieval gave it, when it gave one.
+        let retrieved_scores: std::collections::HashMap<String, f32> =
+            merged.iter().map(|c| (c.id.clone(), c.score)).collect();
+        let merged = routing::with_pinned_skills(
+            routing::select_candidates(merged),
+            &session.pinned_skills,
+            &retrieved_scores,
+        );
 
         span.set_attribute(KeyValue::new("routing.candidates", merged.len() as i64));
         span.set_attribute(KeyValue::new("routing.top_score", top_score as f64));
@@ -5868,6 +5894,23 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             session.routing_disabled = disabled;
+        }
+    }
+
+    /// Set the skills a session's chat pins (ADR-090 §5), so every routed
+    /// turn offers them to Stage 2. Each is marked `pinned` here, whatever
+    /// the caller passed.
+    pub async fn set_session_pinned_skills(
+        &self,
+        session_id: &str,
+        mut skills: Vec<crate::agent_types::SkillCandidate>,
+    ) {
+        for skill in &mut skills {
+            skill.pinned = true;
+        }
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.pinned_skills = skills;
         }
     }
 
@@ -14430,6 +14473,7 @@ mod tests {
             instructions: format!("INSTRUCTIONS FOR {name}"),
             schema_metadata: json!([]),
             schemas_linked: false,
+            pinned: false,
         }
     }
 
@@ -14812,6 +14856,159 @@ mod tests {
             stage2_prompt.contains("research"),
             "Stage 2's prompt must carry the matched candidate: {stage2_prompt}"
         );
+    }
+
+    /// Run one routed turn in a chat with `pinned` skills, where retrieval
+    /// returns `retrieved`. Returns Stage 2's system prompt and tool names.
+    async fn stage2_of_a_turn_with_pins(
+        retrieved: Vec<SkillCandidate>,
+        pinned: Vec<SkillCandidate>,
+    ) -> (String, Vec<String>) {
+        let engine = RecordingEngine::new(routed_engine(
+            "change a rule",
+            "search_nodes",
+            r#"{"query":"x"}"#,
+            "Done.",
+        ));
+        let prompts = engine.system_prompts_handle();
+        let tool_names = engine.tool_names_handle();
+        let registry = MockToolExecutor::new()
+            .with_tool("search_nodes", json!({}), json!({"nodes": []}))
+            .with_tool("update_play", json!({}), json!({}));
+        let exec = RoutingToolExecutor::new(registry, retrieved);
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+        session.pinned_skills = pinned;
+
+        loop_
+            .run_turn(
+                &mut session,
+                "change when that rule runs",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let prompt = prompts.lock().unwrap()[1].clone();
+        let tools = tool_names.lock().unwrap()[1].clone();
+        (prompt, tools)
+    }
+
+    /// A pinned skill as the daemon hands it to a session: linked to `play`,
+    /// with no retrieval score.
+    fn pinned_authoring() -> SkillCandidate {
+        let mut skill = skill_candidate("authoring", 0.0, &["update_play"]);
+        skill.schema_metadata = json!([{"type_id": "play", "fields": []}]);
+        skill.schemas_linked = true;
+        skill.pinned = true;
+        skill
+    }
+
+    /// In a chat that pins a skill, Stage 2's candidate block carries it with
+    /// its instructions and schema, beside what retrieval found, and its
+    /// tools are offered (ADR-090 §5).
+    #[tokio::test]
+    async fn a_pinned_skill_is_in_stage_2s_candidate_block_beside_retrievals() {
+        let (prompt, tools) = stage2_of_a_turn_with_pins(
+            vec![skill_candidate("research", 0.9, &["search_nodes"])],
+            vec![pinned_authoring()],
+        )
+        .await;
+
+        assert!(prompt.contains("INSTRUCTIONS FOR research"), "{prompt}");
+        assert!(prompt.contains("INSTRUCTIONS FOR authoring"), "{prompt}");
+        assert!(prompt.contains("- play"), "{prompt}");
+        assert!(tools.contains(&"update_play".to_string()), "{tools:?}");
+        assert!(tools.contains(&"search_nodes".to_string()), "{tools:?}");
+    }
+
+    /// Retrieval returning the pinned skill as well does not list it twice.
+    #[tokio::test]
+    async fn a_pinned_skill_retrieval_also_finds_is_listed_once() {
+        let mut found = pinned_authoring();
+        found.pinned = false;
+        found.score = 0.9;
+        let (prompt, tools) = stage2_of_a_turn_with_pins(
+            vec![found, skill_candidate("research", 0.8, &["search_nodes"])],
+            vec![pinned_authoring()],
+        )
+        .await;
+
+        assert_eq!(
+            prompt.matches("INSTRUCTIONS FOR authoring").count(),
+            1,
+            "{prompt}"
+        );
+        assert!(tools.contains(&"update_play".to_string()), "{tools:?}");
+    }
+
+    /// Retrieval finding nothing still leaves the pinned skill to work with.
+    #[tokio::test]
+    async fn a_pinned_skill_is_offered_when_retrieval_finds_nothing() {
+        let (prompt, tools) = stage2_of_a_turn_with_pins(vec![], vec![pinned_authoring()]).await;
+
+        assert!(prompt.contains("INSTRUCTIONS FOR authoring"), "{prompt}");
+        assert!(tools.contains(&"update_play".to_string()), "{tools:?}");
+        assert!(!tools.contains(&"search_nodes".to_string()), "{tools:?}");
+    }
+
+    /// With no retrieval to route by, a pinned skill is still offered: the
+    /// turn's one generation carries its instructions and is scoped to its
+    /// tools. The pin chose the skill, so nothing needs ranking.
+    #[tokio::test]
+    async fn a_pinned_skill_is_offered_when_routing_is_unavailable() {
+        let engine = RecordingEngine::new(MockEngine::single_text("Which rule?"));
+        let prompts = engine.system_prompts_handle();
+        let tool_names = engine.tool_names_handle();
+        // A plain executor: no retrieval, so no Stage 1.
+        let registry = MockToolExecutor::new()
+            .with_tool("search_nodes", json!({}), json!({"nodes": []}))
+            .with_tool("update_play", json!({}), json!({}));
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(registry));
+        let mut session = new_session();
+        session.pinned_skills = vec![pinned_authoring()];
+
+        loop_
+            .run_turn(
+                &mut session,
+                "change when that rule runs",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let prompts = prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1, "no Stage-1 generation");
+        assert!(
+            prompts[0].contains("INSTRUCTIONS FOR authoring"),
+            "{}",
+            prompts[0]
+        );
+        let tools = &tool_names.lock().unwrap()[0];
+        assert!(tools.contains(&"update_play".to_string()), "{tools:?}");
+        assert!(!tools.contains(&"search_nodes".to_string()), "{tools:?}");
+    }
+
+    /// A chat with no pins routes as it did: the prompt and tools of a turn
+    /// are those of the same turn in a session that never heard of pins.
+    #[tokio::test]
+    async fn a_chat_without_pins_routes_exactly_as_before() {
+        let retrieved = || {
+            vec![
+                skill_candidate("research", 0.9, &["search_nodes"]),
+                skill_candidate("authoring", 0.1, &["update_play"]),
+            ]
+        };
+        let (prompt, tools) = stage2_of_a_turn_with_pins(retrieved(), vec![]).await;
+
+        assert!(prompt.contains("INSTRUCTIONS FOR research"), "{prompt}");
+        // Below its bar and not pinned: neither rendered nor offered.
+        assert!(!prompt.contains("INSTRUCTIONS FOR authoring"), "{prompt}");
+        assert!(!tools.contains(&"update_play".to_string()), "{tools:?}");
     }
 
     /// A question about the agent's own skills is answered from the registry,
@@ -18894,6 +19091,7 @@ mod tests {
                     .map(|id| json!({"type_id": id, "fields": []}))
                     .collect::<Vec<_>>()),
                 schemas_linked: true,
+                pinned: false,
             }
         }
     }

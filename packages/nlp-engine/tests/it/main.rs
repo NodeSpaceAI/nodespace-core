@@ -9,5 +9,6 @@
 //! Prefer nextest over a plain `cargo test` for anything but a single test:
 //! `cargo test` runs the whole binary's tests as threads of one process.
 
+mod assistant_first_conversation;
 mod embedding_integration;
 mod toolcall_json_shape;

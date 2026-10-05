@@ -551,8 +551,46 @@ pub fn score_bar_for(candidate: &SkillCandidate) -> f32 {
 /// independently-sourced signals, and the model's judgment supplies the other.
 /// A candidate that clears this bar is offered to the model to judge; one that
 /// does not is never actionable regardless of what the model says.
+///
+/// A skill the chat pins clears it without a score (ADR-090 §5). The score
+/// stands for evidence that the request is about the skill, and a pin is
+/// that evidence already: the chat was created for it.
+///
+/// Not a destructive skill. A pin says what the chat is for, not that this
+/// message asks to remove something, and ADR-038 biases against the
+/// expensive error: a pinned skill that can remove user data still has to
+/// clear its own bar.
 pub fn clears_score_gate(candidate: &SkillCandidate) -> bool {
-    candidate.score >= score_bar_for(candidate)
+    (candidate.pinned && !skill_is_destructive(candidate))
+        || candidate.score >= score_bar_for(candidate)
+}
+
+/// The candidates Stage 2 judges in a chat that pins skills: `selected`, with
+/// every pinned skill among them (ADR-090 §5).
+///
+/// A pinned skill that retrieval also selected is marked, not repeated. One
+/// it did not select is added after the others, with the score retrieval gave
+/// it (`retrieved_scores`, by skill id) or none. Its score still decides
+/// whether it leads the turn, so a request on another topic is led by the
+/// skill retrieval found for it.
+///
+/// With no pinned skill, `selected` is returned as it was.
+pub fn with_pinned_skills(
+    mut selected: Vec<SkillCandidate>,
+    pinned: &[SkillCandidate],
+    retrieved_scores: &std::collections::HashMap<String, f32>,
+) -> Vec<SkillCandidate> {
+    for skill in pinned {
+        match selected.iter_mut().find(|c| c.id == skill.id) {
+            Some(found) => found.pinned = true,
+            None => selected.push(SkillCandidate {
+                score: retrieved_scores.get(&skill.id).copied().unwrap_or(0.0),
+                pinned: true,
+                ..skill.clone()
+            }),
+        }
+    }
+    selected
 }
 
 /// The highest score among gate-clearing candidates that whitelist at least
@@ -1296,6 +1334,7 @@ mod tests {
             instructions: format!("{name} instructions"),
             schema_metadata: json!([]),
             schemas_linked: false,
+            pinned: false,
         }
     }
 
@@ -2867,6 +2906,137 @@ mod tests {
 
         assert_eq!(offered_types(&candidates).unwrap(), listed_once);
         assert_eq!(listed_once, ["invoice", "issue", "bug", "task"]);
+    }
+
+    fn pinned(mut candidate: SkillCandidate) -> SkillCandidate {
+        candidate.pinned = true;
+        candidate.score = 0.0;
+        candidate
+    }
+
+    fn no_scores() -> std::collections::HashMap<String, f32> {
+        std::collections::HashMap::new()
+    }
+
+    /// A pinned skill retrieval did not return joins the candidates, and is
+    /// rendered and offered with no score to its name.
+    #[test]
+    fn a_pinned_skill_is_a_candidate_beside_what_retrieval_selected() {
+        let selected = vec![candidate("research", 0.9, &["search_nodes"])];
+        let authoring = pinned(linked("authoring", 0.0, &["update_play"], &["play"]));
+
+        let candidates =
+            with_pinned_skills(selected, std::slice::from_ref(&authoring), &no_scores());
+
+        assert_eq!(names(&candidates), ["research", "authoring"]);
+        assert!(clears_score_gate(&candidates[1]));
+        let rendered = render_candidates_for_prompt(&candidates).expect("both are eligible");
+        assert!(rendered.contains("authoring instructions"), "{rendered}");
+        assert!(rendered.contains("play"), "{rendered}");
+        let permitted = stage2_permitted_names(&candidates);
+        assert!(permitted.contains("update_play") && permitted.contains("search_nodes"));
+    }
+
+    /// The same skill, unpinned and with no score, is not a candidate: the
+    /// pin is what clears the gate.
+    #[test]
+    fn an_unpinned_skill_with_no_score_does_not_clear_the_gate() {
+        assert!(!clears_score_gate(&linked(
+            "authoring",
+            0.0,
+            &["update_play"],
+            &["play"]
+        )));
+    }
+
+    /// Retrieval found the pinned skill too: it appears once, with the score
+    /// retrieval gave it, marked pinned.
+    #[test]
+    fn a_pinned_skill_retrieval_also_selected_is_not_repeated() {
+        let selected = vec![
+            candidate("research", 0.9, &["search_nodes"]),
+            linked("authoring", 0.2, &["update_play"], &["play"]),
+        ];
+        let authoring = pinned(selected[1].clone());
+
+        let candidates = with_pinned_skills(selected, &[authoring], &no_scores());
+
+        assert_eq!(names(&candidates), ["research", "authoring"]);
+        assert_eq!(candidates[1].score, 0.2);
+        // 0.2 is below a write skill's bar; the pin still makes it eligible.
+        assert!(candidates[1].pinned && clears_score_gate(&candidates[1]));
+    }
+
+    /// A pinned skill retrieval ranked but did not select keeps that score,
+    /// so it leads the turn only when it outscored the others.
+    #[test]
+    fn a_pinned_skill_keeps_the_score_retrieval_gave_it() {
+        let selected = vec![candidate("research", 0.6, &["search_nodes"])];
+        let authoring = pinned(linked("authoring", 0.0, &["update_play"], &["play"]));
+        let scores = std::collections::HashMap::from([(authoring.id.clone(), 0.8)]);
+
+        let candidates = with_pinned_skills(selected, &[authoring], &scores);
+
+        assert_eq!(candidates[1].score, 0.8);
+        assert_eq!(
+            leading_tool_bearing_candidate(&candidates).map(|c| c.name.as_str()),
+            Some("authoring")
+        );
+    }
+
+    /// A chat that pins nothing gets exactly what retrieval selected.
+    #[test]
+    fn no_pinned_skill_leaves_the_candidates_as_they_were() {
+        let selected = vec![
+            candidate("research", 0.9, &["search_nodes"]),
+            candidate("weak", 0.01, &["update_node"]),
+        ];
+        let candidates = with_pinned_skills(selected.clone(), &[], &no_scores());
+
+        assert_eq!(names(&candidates), names(&selected));
+        assert!(candidates.iter().all(|c| !c.pinned));
+        assert!(!clears_score_gate(&candidates[1]));
+    }
+
+    /// A pinned skill counts toward the offered set like any linked
+    /// candidate: alone it holds the turn to its types, and beside an
+    /// unlinked tool-bearing skill the turn stays open.
+    #[test]
+    fn a_pinned_skill_counts_toward_the_offered_set() {
+        let authoring = pinned(linked("authoring", 0.0, &["update_play"], &["play"]));
+        assert_eq!(
+            offered_types(std::slice::from_ref(&authoring)),
+            Some(vec!["play".to_string()])
+        );
+
+        let with_linked = [
+            linked("Triage", 0.9, &["update_node"], &["issue"]),
+            authoring.clone(),
+        ];
+        assert_eq!(
+            offered_types(&with_linked),
+            Some(vec!["issue".to_string(), "play".to_string()])
+        );
+
+        let with_unlinked = [candidate("research", 0.9, &["search_nodes"]), authoring];
+        assert_eq!(offered_types(&with_unlinked), None);
+    }
+
+    /// A pin does not stand in for the destructive bar: a skill that can
+    /// remove user data is offered only when retrieval scored the request as
+    /// one for it, pinned or not.
+    #[test]
+    fn a_pin_does_not_clear_the_destructive_bar() {
+        let deletion = pinned(candidate("deletion", 0.0, &["delete_node"]));
+        assert!(skill_is_destructive(&deletion));
+        assert!(!clears_score_gate(&deletion));
+        assert!(stage2_permitted_names(std::slice::from_ref(&deletion)).is_empty());
+
+        let scored = SkillCandidate {
+            score: DESTRUCTIVE_SKILL_SCORE_BAR,
+            ..deletion
+        };
+        assert!(clears_score_gate(&scored));
     }
 
     /// Linked metadata that names no type would make an `enum` nothing

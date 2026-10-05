@@ -791,6 +791,7 @@ async fn measure_skills(env: &Env) {
                 instructions: String::new(),
                 schema_metadata: serde_json::Value::Null,
                 schemas_linked: false,
+                pinned: false,
             })
             .collect();
         all_scores.extend(candidates.iter().map(|c| f64::from(c.score)));

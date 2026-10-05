@@ -699,6 +699,59 @@ fn play_value(node: &nodespace_core::models::Node) -> (nodespace_core::models::P
     (fields, play)
 }
 
+/// A skill as `skill_ops` returns it, as the candidate routing judges.
+fn skill_candidate_from(s: &serde_json::Value) -> SkillCandidate {
+    let text = |key: &str| {
+        s.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    SkillCandidate {
+        id: text("id"),
+        name: text("name"),
+        description: text("description"),
+        score: s.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
+        tools: s
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| t.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        instructions: text("instructions"),
+        schema_metadata: s
+            .get("schema_metadata")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+        schemas_linked: s
+            .get("schemas_linked")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        pinned: false,
+    }
+}
+
+/// The skills among `ids` as pinned routing candidates (ADR-090 §5), in the
+/// order of `ids`: each with its instructions and the schemas it links to,
+/// and no score. An id that names no participating skill is left out, so the
+/// ids of the result are the skills among `ids`.
+pub async fn pinned_skill_candidates(
+    node_service: &NodeService,
+    ids: &[String],
+) -> Result<Vec<SkillCandidate>, nodespace_core::ops::OpsError> {
+    let skills = nodespace_core::ops::skill_ops::skills_by_id(node_service, ids).await?;
+    Ok(skills
+        .iter()
+        .map(|skill| SkillCandidate {
+            pinned: true,
+            ..skill_candidate_from(skill)
+        })
+        .collect())
+}
+
 /// Prefix a bare node ID with `nodespace://` so the model sees the URI format
 /// it should use when referencing nodes in responses.
 pub(crate) fn node_uri(id: &str) -> String {
@@ -5399,50 +5452,7 @@ impl AgentToolExecutor for GraphToolExecutor {
         .await
         .map_err(|e| ToolError::ExecutionFailed(format!("skill retrieval failed: {}", e)))?;
 
-        let candidates = output
-            .skills
-            .iter()
-            .map(|s| SkillCandidate {
-                id: s
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                name: s
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                description: s
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                score: s.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32,
-                tools: s
-                    .get("tools")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|t| t.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                instructions: s
-                    .get("instructions")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                schema_metadata: s
-                    .get("schema_metadata")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!([])),
-                schemas_linked: s
-                    .get("schemas_linked")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-            })
-            .collect();
+        let candidates = output.skills.iter().map(skill_candidate_from).collect();
 
         Ok(SkillRetrieval { candidates })
     }

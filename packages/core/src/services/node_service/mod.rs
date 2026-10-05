@@ -9875,6 +9875,122 @@ mod tests {
         assert_eq!(sprocket.related[0].id, "s1");
     }
 
+    /// A chat's `pins` targets any node, so it is declared toward every type.
+    /// Its reverse is listed on a node a chat pins, with that chat, and is
+    /// not an empty group on every other node.
+    #[tokio::test]
+    async fn test_pinned_in_is_listed_only_on_a_node_a_chat_pins() {
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+        let chat_id = service
+            .create_node(Node::new(
+                "ai-chat-native".to_string(),
+                "Edit a play".to_string(),
+                json!({ "agent": "nodespace" }),
+            ))
+            .await
+            .unwrap();
+        let pinned_id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "Pinned".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        let other_id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "Not pinned".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+        service
+            .create_relationship(&chat_id, crate::models::AI_CHAT_PINS, &pinned_id, json!({}))
+            .await
+            .unwrap();
+
+        let pinned_in = |groups: Vec<crate::ops::rel_ops::RelationshipGroup>| {
+            groups
+                .into_iter()
+                .filter(|g| g.direction == "in" && g.source_type == "ai-chat-native")
+                .collect::<Vec<_>>()
+        };
+        let on_pinned = pinned_in(
+            crate::ops::rel_ops::get_node_relationships(&service, &pinned_id)
+                .await
+                .unwrap()
+                .groups,
+        );
+        assert_eq!(on_pinned.len(), 1);
+        assert_eq!(on_pinned[0].count, 1);
+        assert_eq!(on_pinned[0].related[0].id, chat_id);
+
+        let on_other = pinned_in(
+            crate::ops::rel_ops::get_node_relationships(&service, &other_id)
+                .await
+                .unwrap()
+                .groups,
+        );
+        assert!(on_other.is_empty());
+    }
+
+    /// The rule above is the chat's, not every any-target relationship's: a
+    /// user schema's untyped relationship is still listed on a node with no
+    /// edge yet, so the first one can be added from that side.
+    #[tokio::test]
+    async fn test_a_user_schemas_untyped_relationship_is_listed_when_empty() {
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+        service
+            .store()
+            .create_node(
+                Node::new_with_id(
+                    "gadget".to_string(),
+                    "schema".to_string(),
+                    "Gadget".to_string(),
+                    json!({ "fields": [] }),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let declarations: Vec<crate::models::schema::SchemaRelationship> =
+            serde_json::from_value(json!([{
+                "name": "about",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "gadgets_about",
+                "reverseCardinality": "many"
+            }]))
+            .unwrap();
+        service
+            .set_schema_relationships("gadget", &declarations)
+            .await
+            .unwrap();
+        let note_id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "A note".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+        let groups = crate::ops::rel_ops::get_node_relationships(&service, &note_id)
+            .await
+            .unwrap()
+            .groups;
+        let about: Vec<_> = groups
+            .iter()
+            .filter(|g| g.direction == "in" && g.source_type == "gadget")
+            .collect();
+        assert_eq!(about.len(), 1);
+        assert_eq!(about[0].count, 0);
+    }
+
     #[tokio::test]
     async fn test_create_second_database_settings_is_noop() {
         let (service, _temp) = create_test_service().await;

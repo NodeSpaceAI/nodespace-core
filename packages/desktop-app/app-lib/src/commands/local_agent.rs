@@ -9,8 +9,8 @@ use crate::agent_events;
 use crate::commands::nodes::{refusal_or, CommandError};
 use crate::services::GrpcClient;
 use nodespace_proto::nodespace::{
-    CancelTurnRequest, EnsureModelReadyRequest, GetLocalStatusRequest, ListModelsRequest,
-    SubscribeTokenStreamRequest,
+    CancelTurnRequest, CreatePlayEditChatRequest, EnsureModelReadyRequest, GetLocalStatusRequest,
+    ListModelsRequest, SubscribeTokenStreamRequest,
 };
 use serde::Serialize;
 use std::future::Future;
@@ -271,6 +271,28 @@ pub async fn local_agent_cancel_turn(
         .await
         .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
     Ok(())
+}
+
+/// Create the chat a play is edited through, and return the chat's id. The
+/// chat pins the play-authoring skill and the play, and opens on a message
+/// the daemon writes; `provider` and `model` are the model it starts on.
+#[tauri::command]
+pub async fn local_agent_create_play_edit_chat(
+    play_id: String,
+    provider: Option<String>,
+    model: Option<String>,
+    grpc: State<'_, GrpcClient>,
+) -> Result<String, CommandError> {
+    let mut client = grpc.local_agent_client().await;
+    let resp = client
+        .create_play_edit_chat(CreatePlayEditChatRequest {
+            play_id,
+            provider,
+            model,
+        })
+        .await
+        .map_err(|e| refusal_or(e, |e| grpc_err(e.message())))?;
+    Ok(resp.into_inner().chat_id)
 }
 
 /// Get the current status of the local agent.
