@@ -5182,8 +5182,17 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             // (Stage 1 ran and chose not to route) — an eval scraping the text log
             // for "none" must not conflate "routing never ran" with "routing ran
             // and declined," which would otherwise look identical downstream.
+            // A pinned skill needs no retrieval: the chat chose it. It is
+            // still offered, so a chat bound to a skill works while the
+            // embedding service loads. A chat that pins none runs unrouted.
+            outcome.candidates = routing::with_pinned_skills(
+                Vec::new(),
+                &session.pinned_skills,
+                &std::collections::HashMap::new(),
+            );
             tracing::info!(
                 routing_decision = "unavailable",
+                pinned_skills = %routing::routed_skill_names(&outcome.candidates),
                 "routing unavailable for this turn; running unrouted"
             );
             return outcome;
@@ -14934,6 +14943,45 @@ mod tests {
         let (prompt, tools) = stage2_of_a_turn_with_pins(vec![], vec![pinned_authoring()]).await;
 
         assert!(prompt.contains("INSTRUCTIONS FOR authoring"), "{prompt}");
+        assert!(tools.contains(&"update_play".to_string()), "{tools:?}");
+        assert!(!tools.contains(&"search_nodes".to_string()), "{tools:?}");
+    }
+
+    /// With no retrieval to route by, a pinned skill is still offered: the
+    /// turn's one generation carries its instructions and is scoped to its
+    /// tools. The pin chose the skill, so nothing needs ranking.
+    #[tokio::test]
+    async fn a_pinned_skill_is_offered_when_routing_is_unavailable() {
+        let engine = RecordingEngine::new(MockEngine::single_text("Which rule?"));
+        let prompts = engine.system_prompts_handle();
+        let tool_names = engine.tool_names_handle();
+        // A plain executor: no retrieval, so no Stage 1.
+        let registry = MockToolExecutor::new()
+            .with_tool("search_nodes", json!({}), json!({"nodes": []}))
+            .with_tool("update_play", json!({}), json!({}));
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(registry));
+        let mut session = new_session();
+        session.pinned_skills = vec![pinned_authoring()];
+
+        loop_
+            .run_turn(
+                &mut session,
+                "change when that rule runs",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let prompts = prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1, "no Stage-1 generation");
+        assert!(
+            prompts[0].contains("INSTRUCTIONS FOR authoring"),
+            "{}",
+            prompts[0]
+        );
+        let tools = &tool_names.lock().unwrap()[0];
         assert!(tools.contains(&"update_play".to_string()), "{tools:?}");
         assert!(!tools.contains(&"search_nodes".to_string()), "{tools:?}");
     }
