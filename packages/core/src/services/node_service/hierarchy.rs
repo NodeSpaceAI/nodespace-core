@@ -1080,8 +1080,9 @@ impl NodeService {
 
     /// [`Self::reorder_node`]'s fast-fail checks and position resolution, run
     /// before its transaction: the node must not be a root and any `After`
-    /// sibling must exist. Resolves the position against the node's current
-    /// parent and returns the sibling to insert after (`None` = first).
+    /// sibling must be another child of its parent. Resolves the position
+    /// against the node's current parent and returns the sibling to insert
+    /// after (`None` = first).
     async fn resolve_reorder_position(
         &self,
         node_id: &str,
@@ -1096,17 +1097,52 @@ impl NodeService {
             return Err(root_reorder_violation(node_id));
         };
 
-        if let crate::services::InsertPosition::After(sibling_id) = position {
-            if !self.node_exists(sibling_id).await? {
-                return Err(NodeServiceError::hierarchy_violation(format!(
-                    "Sibling node {} does not exist",
-                    sibling_id
-                )));
-            }
-        }
+        self.require_sibling_under(node_id, &position, &parent_id)
+            .await?;
 
         self.resolve_insert_position(position, Some(&parent_id))
             .await
+    }
+
+    /// Refuse a reorder's `After` position whose sibling is not another child
+    /// of `parent_id`. Without this the store places the node last, which is
+    /// the right outcome for a sibling a concurrent move took away mid-write
+    /// but not for one the caller named wrongly.
+    ///
+    /// A move does not make this check: a client may move a node after a
+    /// sibling whose own placement it has not written yet, and the store's
+    /// "last" is then where the node belongs.
+    async fn require_sibling_under(
+        &self,
+        node_id: &str,
+        position: &crate::services::InsertPosition<'_>,
+        parent_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        let crate::services::InsertPosition::After(sibling_id) = *position else {
+            return Ok(());
+        };
+        if sibling_id == node_id {
+            return Err(NodeServiceError::hierarchy_violation(format!(
+                "Node {node_id} cannot be placed after itself"
+            )));
+        }
+        if !self.node_exists(sibling_id).await? {
+            return Err(NodeServiceError::hierarchy_violation(format!(
+                "Sibling node {sibling_id} does not exist"
+            )));
+        }
+        let sibling_parent = self
+            .store
+            .get_parent_id(sibling_id)
+            .await
+            .map_err(NodeServiceError::from_store)?;
+        if sibling_parent.as_deref() != Some(parent_id) {
+            return Err(NodeServiceError::hierarchy_violation(format!(
+                "Node {sibling_id} is not a child of {parent_id}; a node can only be placed \
+                 after a child of the parent it goes under"
+            )));
+        }
+        Ok(())
     }
 
     /// Reposition `node_id` among its siblings inside `tx`, after

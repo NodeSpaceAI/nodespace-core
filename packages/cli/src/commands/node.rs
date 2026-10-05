@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::nodespace::{
     CreateNodeRequest, DeleteNodeRequest, ExportMarkdownRequest, GetChildrenRequest,
-    GetNodeRequest, GetNodesBatchRequest, NodeSortOrder, QueryNodesSimpleRequest,
-    UpdateNodeRequest, UpdateNodesBatchRequest,
+    GetNodeRequest, GetNodesBatchRequest, MoveNodeRequest, NodeSortOrder, QueryNodesSimpleRequest,
+    ReorderNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
 };
 use serde_json::json;
 
@@ -23,6 +23,10 @@ pub enum NodeAction {
     /// Set a task node's status (dedicated verb — do not use `update` for this).
     #[command(name = "set-status")]
     SetStatus(SetStatusArgs),
+    /// Move a node under another parent (or to the root), or change its
+    /// position among its siblings. The node keeps its ID and everything
+    /// nested under it.
+    Move(MoveArgs),
     /// Delete a node and everything nested under it, in two steps: without
     /// `--version`/`--descendants` it only previews what would be removed and
     /// prints the exact command that deletes it.
@@ -189,6 +193,37 @@ pub struct SetStatusArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct MoveArgs {
+    /// Node ID to move.
+    pub id: String,
+    /// New parent node ID. Omit (with `--root` also omitted) to keep the
+    /// current parent and only change the position among its siblings.
+    #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
+    pub parent: Option<String>,
+    /// Make the node a root node (no parent). Root nodes have no order, so
+    /// this takes no position.
+    #[arg(long, conflicts_with_all = ["parent", "first", "after"])]
+    pub root: bool,
+    /// Place the node first among its siblings. With neither `--first` nor
+    /// `--after`, a node given a new parent is placed last.
+    #[arg(long, conflicts_with = "after")]
+    pub first: bool,
+    /// Place the node directly after this sibling, which must be a child of
+    /// the parent the node ends up under.
+    #[arg(
+        long,
+        value_name = "SIBLING_ID",
+        value_parser = clap::builder::NonEmptyStringValueParser::new()
+    )]
+    pub after: Option<String>,
+    /// The node version you read. Moves only if the node is still at it;
+    /// otherwise nothing is written and the current version is reported.
+    /// Omit to move whatever is current.
+    #[arg(long)]
+    pub version: Option<i64>,
+}
+
+#[derive(Args, Debug)]
 pub struct DeleteArgs {
     /// Node ID to delete.
     pub id: String,
@@ -273,6 +308,7 @@ pub async fn run(client: &mut NodeClient, action: NodeAction, json: bool) -> Res
         NodeAction::Create(args) => create(client, args, json).await,
         NodeAction::Update(args) => update(client, args, json).await,
         NodeAction::SetStatus(args) => set_status(client, args, json).await,
+        NodeAction::Move(args) => move_node(client, args, json).await,
         NodeAction::Delete(args) => delete(client, args, json).await,
         NodeAction::Children(args) => children(client, args, json).await,
         NodeAction::Query(args) => query(client, args, json).await,
@@ -348,7 +384,7 @@ async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result
             typed_client: false,
         })
         .await
-        .map_err(|status| update_refused(status, json))?
+        .map_err(|status| write_refused(status, "UpdateNode", json))?
         .into_inner();
 
     let node = response.node_data.context("daemon returned no node_data")?;
@@ -378,7 +414,7 @@ async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) ->
             typed_client: false,
         })
         .await
-        .map_err(|status| update_refused(status, json))?
+        .map_err(|status| write_refused(status, "UpdateNode", json))?
         .into_inner();
 
     let node = response.node_data.context("daemon returned no node_data")?;
@@ -434,10 +470,10 @@ impl VersionConflict {
     }
 }
 
-/// The error for a failed `UpdateNode`. A version conflict is reported as
-/// what it is, and under `--json` also printed as structured output; any
-/// other failure keeps the daemon's status in its chain.
-fn update_refused(status: tonic::Status, json: bool) -> anyhow::Error {
+/// The error for a failed versioned write (`rpc` names it). A version conflict
+/// is reported as what it is, and under `--json` also printed as structured
+/// output; any other failure keeps the daemon's status in its chain.
+fn write_refused(status: tonic::Status, rpc: &str, json: bool) -> anyhow::Error {
     match VersionConflict::from_status(&status) {
         Some(conflict) => {
             if json {
@@ -445,8 +481,116 @@ fn update_refused(status: tonic::Status, json: bool) -> anyhow::Error {
             }
             anyhow::anyhow!(conflict.message())
         }
-        None => anyhow::Error::new(status).context("UpdateNode RPC failed"),
+        None => anyhow::Error::new(status).context(format!("{rpc} RPC failed")),
     }
+}
+
+/// A new parent (or `--root`) is a `MoveNode`; a position alone is a
+/// `ReorderNode` under the parent the node already has.
+async fn move_node(client: &mut NodeClient, args: MoveArgs, json: bool) -> Result<()> {
+    use nodespace_daemon::nodespace::move_node_request::Position as MovePosition;
+    use nodespace_daemon::nodespace::reorder_node_request::Position as ReorderPosition;
+
+    let reparent = args.parent.is_some() || args.root;
+    if !reparent && !args.first && args.after.is_none() {
+        anyhow::bail!("move requires --parent, --root, --first, or --after");
+    }
+
+    // `MoveNode` places a node last when the sibling it names is not under the
+    // parent, so a mistyped `--after` is caught here. `ReorderNode` refuses
+    // one itself.
+    if let (Some(parent), Some(sibling)) = (&args.parent, &args.after) {
+        require_child_of(client, sibling, parent, &args.id).await?;
+    }
+
+    // Both RPCs take the version they write at; without `--version` that is
+    // whatever the node is at now.
+    let version = match args.version {
+        Some(version) => version,
+        None => {
+            client
+                .get_node(GetNodeRequest {
+                    node_id: args.id.clone(),
+                })
+                .await
+                .context("GetNode RPC failed")?
+                .into_inner()
+                .node_data
+                .context("daemon returned no node_data")?
+                .version
+        }
+    };
+
+    if reparent {
+        let position = match (args.first, args.after) {
+            (true, _) => Some(MovePosition::Beginning(true)),
+            (false, Some(sibling)) => Some(MovePosition::After(sibling)),
+            (false, None) => None, // the server places it last
+        };
+        let response = client
+            .move_node(MoveNodeRequest {
+                node_id: args.id,
+                version,
+                new_parent_id: args.parent, // unset with `--root`
+                position,
+            })
+            .await
+            .map_err(|status| write_refused(status, "MoveNode", json))?
+            .into_inner();
+
+        let node = response.node_data.context("daemon returned no node_data")?;
+        return output::print_node(&node, json);
+    }
+
+    let position = match args.after {
+        Some(sibling) => ReorderPosition::After(sibling),
+        None => ReorderPosition::Beginning(true),
+    };
+    client
+        .reorder_node(ReorderNodeRequest {
+            node_id: args.id.clone(),
+            version,
+            position: Some(position),
+        })
+        .await
+        .map_err(|status| write_refused(status, "ReorderNode", json))?;
+
+    // ReorderNode returns nothing; read the node back for its new version.
+    let node = client
+        .get_node(GetNodeRequest { node_id: args.id })
+        .await
+        .context("GetNode RPC failed")?
+        .into_inner()
+        .node_data
+        .context("daemon returned no node_data")?;
+    output::print_node(&node, json)
+}
+
+/// Fail unless `sibling` is a child of `parent` other than `node` itself.
+async fn require_child_of(
+    client: &mut NodeClient,
+    sibling: &str,
+    parent: &str,
+    node: &str,
+) -> Result<()> {
+    if sibling == node {
+        anyhow::bail!("Node {node} cannot be placed after itself");
+    }
+    let children = client
+        .get_children(GetChildrenRequest {
+            node_id: parent.to_string(),
+        })
+        .await
+        .context("GetChildren RPC failed")?
+        .into_inner()
+        .nodes;
+    if !children.iter().any(|child| child.id == sibling) {
+        anyhow::bail!(
+            "Node {sibling} is not a child of {parent}; a node can only be placed after a child \
+             of the parent it goes under. Nothing was written."
+        );
+    }
+    Ok(())
 }
 
 /// A delete names what it removes before it removes it (ADR-080): the bare

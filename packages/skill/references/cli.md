@@ -184,6 +184,30 @@ Dedicated verb for task status transitions. Status must be one of the values the
 
 **Output:** Updated node JSON.
 
+### Move a node
+
+```bash
+nodespace node move <node-id> --parent <parent-id>                     # under another parent, placed last
+nodespace node move <node-id> --parent <parent-id> --first             # placed first
+nodespace node move <node-id> --parent <parent-id> --after <sibling-id>
+nodespace node move <node-id> --root                                   # no parent
+nodespace node move <node-id> --first                                  # same parent, new position
+nodespace node move <node-id> --after <sibling-id>
+```
+
+The node keeps its ID and everything nested under it; never recreate a node and delete the original to relocate it.
+
+**Options:**
+- `--parent <id>` or `--root` — where the node goes. Give neither to keep the current parent and change only the position. `--root` takes no position: root nodes have no order.
+- `--first` or `--after <sibling-id>` — the position among the siblings. `--after` names a child of the parent the node ends up under; any other node is refused and nothing is written. To place a node before a sibling, name the sibling ahead of that one with `--after`, or use `--first` when there is none (`nodespace node children <parent-id>` lists them in order). With a new parent and no position, the node is placed last.
+- `--version <n>` — works as it does for `node update` (see "Writing at the version you read" above).
+
+At least one of `--parent`, `--root`, `--first` or `--after` is required. A root node has no siblings to be ordered among, so a position without `--parent` is refused for one.
+
+**This is the only way to change a node's parent.** A node has one parent, so `relationship create --type has_child` to a node that already has one is refused, and the message gives the `node move` command to run instead.
+
+**Output:** The moved node's JSON, at its new version.
+
 ### Delete a node
 
 ```bash
@@ -809,7 +833,7 @@ Every command, subcommand, and flag below is generated from the CLI's own defini
 
 ### `nodespace node`
 
-Operate on individual nodes (get, create, update, delete, children, query, export, batch-get, batch-update)
+Operate on individual nodes (get, create, update, move, delete, children, query, export, batch-get, batch-update)
 
 **`nodespace node get`** — Retrieve a node by ID
 
@@ -841,6 +865,15 @@ Operate on individual nodes (get, create, update, delete, children, query, expor
 - `<ID>` — Task node ID (required)
 - `<STATUS>` — New status. Must be one of the values the `task` schema's `status` field declares — the four built-ins (open, in_progress, done, cancelled) plus any added since. An invalid value is rejected with the current list (required)
 - `--version <VERSION>` — The task version you read. Sets the status only if the task is still at it; otherwise nothing is written and the current version is reported. Omit to update whatever is current
+
+**`nodespace node move`** — Move a node under another parent (or to the root), or change its position among its siblings. The node keeps its ID and everything nested under it
+
+- `<ID>` — Node ID to move (required)
+- `--parent <PARENT>` — New parent node ID. Omit (with `--root` also omitted) to keep the current parent and only change the position among its siblings
+- `--root` — Make the node a root node (no parent). Root nodes have no order, so this takes no position
+- `--first` — Place the node first among its siblings. With neither `--first` nor `--after`, a node given a new parent is placed last
+- `--after <SIBLING_ID>` — Place the node directly after this sibling, which must be a child of the parent the node ends up under
+- `--version <VERSION>` — The node version you read. Moves only if the node is still at it; otherwise nothing is written and the current version is reported. Omit to move whatever is current
 
 **`nodespace node delete`** — Delete a node and everything nested under it, in two steps: without `--version`/`--descendants` it only previews what would be removed and prints the exact command that deletes it
 
