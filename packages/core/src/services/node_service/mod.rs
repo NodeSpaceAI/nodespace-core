@@ -22,7 +22,7 @@
 use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
 use crate::db::{SqliteStore, StoreChange, StoreOperation, TreeInvariantViolation, Tx};
-use crate::models::{FilterOperator, Node, NodeFilter, NodeUpdate, PropertyFilter};
+use crate::models::{FilterOperator, Node, NodeFilter, NodeUpdate, PropertyFilter, SeedAspect};
 use crate::playbook::types::namespaced_property_key;
 use crate::services::error::NodeServiceError;
 use crate::services::NodeAccessor;
@@ -39,6 +39,7 @@ use tokio::sync::broadcast;
 pub mod access_gate;
 pub(crate) mod bulk;
 pub mod conflicts;
+pub mod seed_updates;
 pub(crate) mod crud;
 pub(crate) mod embedding;
 pub(crate) mod hierarchy;
@@ -51,6 +52,7 @@ pub(crate) mod schema;
 mod inherited_behavior_rule_tests;
 
 pub use conflicts::deterministic_conflict_id;
+pub use seed_updates::{shipped_seed_aspect_text, SeedUpdateComparison};
 pub use hierarchy::render_subtree_markdown;
 pub use relationship::{CreatedRelationship, NewRelationship, StoredEdge};
 
@@ -1624,7 +1626,7 @@ impl NodeService {
 
         // ADR-079: Plays that ship with the product. After the core schemas,
         // which a play node's own type and its rules' `task` trigger depend on.
-        crate::playbook::core_plays::seed_core_plays_if_needed(&service).await?;
+        crate::playbook::core_plays::seed_core_plays(&service).await?;
 
         Ok(service)
     }
@@ -1968,10 +1970,10 @@ impl NodeService {
     /// | node absent                                                    | create (root + children) |
     /// | config hash matches                                            | skip                     |
     /// | config hash differs, `config_modified` not set                 | replace root properties  |
-    /// | config hash differs, `config_modified` set                     | skip, log once           |
+    /// | config hash differs, `config_modified` set                     | keep, record as pending  |
     /// | guidance hash matches                                          | skip                     |
     /// | guidance hash differs, `guidance_modified` not set              | replace children         |
-    /// | guidance hash differs, `guidance_modified` set                 | skip, log once           |
+    /// | guidance hash differs, `guidance_modified` set                 | keep, record as pending  |
     ///
     /// A config "replace" updates the existing root's `properties` in place —
     /// the root's id and content are untouched. A guidance "replace" deletes
@@ -1982,9 +1984,13 @@ impl NodeService {
     /// template change never touches children, and vice versa.
     ///
     /// This never discards content a user has touched — see `_seed.config_modified`
-    /// / `_seed.guidance_modified`, stamped by [`Self::update_node`]. The only
-    /// path that discards a user-modified aspect is an explicit reset (see
-    /// `reset_seed_node`), which is deliberately not this function.
+    /// / `_seed.guidance_modified`, stamped by [`Self::update_node`]. A kept
+    /// aspect whose shipped version differs is recorded as pending, with that
+    /// version's fingerprint, so the choice can be put to the user (ADR-094
+    /// §8, [`Self::list_pending_seed_updates`]); the record is cleared once
+    /// the aspect is current again. The only paths that discard a
+    /// user-modified aspect are the ones a user asks for: taking a pending
+    /// update, and an explicit reset (see `reset_seed_node`).
     pub async fn seed_nodes_from_templates(
         &self,
         template_groups: Vec<Vec<crate::markdown::PreparedNode>>,
@@ -2006,6 +2012,17 @@ impl NodeService {
             .get_nodes_by_ids(&root_ids)
             .await
             .map_err(NodeServiceError::from_store)?;
+
+        // What is already pending, so a seed with nothing pending costs no
+        // write to settle.
+        let pending: HashSet<(String, SeedAspect)> = self
+            .store
+            .list_pending_seed_updates()
+            .await
+            .map_err(NodeServiceError::from_store)?
+            .into_iter()
+            .map(|row| (row.node_id, row.aspect))
+            .collect();
 
         let mut created_roots = 0u32;
         let mut created_children = 0u32;
@@ -2075,33 +2092,51 @@ impl NodeService {
                 .unwrap_or(false);
 
             // Config aspect: the root's own content/properties.
+            let config_pending = pending.contains(&(root.id.clone(), SeedAspect::Config));
             if existing_config_version == config_version {
                 skipped_config_current += 1;
+                self.settle_pending_seed_update(&root.id, SeedAspect::Config, config_pending)
+                    .await?;
             } else if config_modified {
                 tracing::info!(
                     seed_key,
                     node_type = %root.node_type,
-                    "Seed config changed but node was user-modified; skipping"
+                    "Seed config changed but node was user-modified; kept, recorded as pending"
                 );
+                self.store
+                    .record_pending_seed_update(&root.id, SeedAspect::Config, config_version)
+                    .await
+                    .map_err(NodeServiceError::from_store)?;
                 skipped_config_modified += 1;
             } else {
                 self.replace_seed_config(existing_node, root).await?;
+                self.settle_pending_seed_update(&root.id, SeedAspect::Config, config_pending)
+                    .await?;
                 replaced_config += 1;
             }
 
             // Guidance aspect: the markdown children.
+            let guidance_pending = pending.contains(&(root.id.clone(), SeedAspect::Guidance));
             if existing_guidance_version == guidance_version {
                 skipped_guidance_current += 1;
+                self.settle_pending_seed_update(&root.id, SeedAspect::Guidance, guidance_pending)
+                    .await?;
             } else if guidance_modified {
                 tracing::info!(
                     seed_key,
                     node_type = %root.node_type,
-                    "Seed guidance changed but node was user-modified; skipping"
+                    "Seed guidance changed but node was user-modified; kept, recorded as pending"
                 );
+                self.store
+                    .record_pending_seed_update(&root.id, SeedAspect::Guidance, guidance_version)
+                    .await
+                    .map_err(NodeServiceError::from_store)?;
                 skipped_guidance_modified += 1;
             } else {
                 created_children += self
                     .replace_seed_guidance(&existing_node.id, children, guidance_version)
+                    .await?;
+                self.settle_pending_seed_update(&root.id, SeedAspect::Guidance, guidance_pending)
                     .await?;
                 replaced_guidance += 1;
             }
@@ -2270,6 +2305,9 @@ impl NodeService {
     /// a dependency on `nodespace-agent`, where the seed tables live. The
     /// daemon layer resolves "key -> current template" and calls this.
     ///
+    /// A reset aspect is current with what ships, so any pending update
+    /// recorded for it is cleared.
+    ///
     /// Returns `(config_reset, guidance_reset)`: whether each requested
     /// aspect was actually present and reset (`false` if the node itself, or
     /// that specific aspect, did not exist — e.g. a config-only reset on a
@@ -2306,6 +2344,8 @@ impl NodeService {
                 .set_property_bool(&existing_node.id, "$._seed.config_modified", false)
                 .await
                 .map_err(NodeServiceError::from_store)?;
+            self.settle_pending_seed_update(&existing_node.id, SeedAspect::Config, true)
+                .await?;
             config_reset = true;
         }
 
@@ -2322,6 +2362,8 @@ impl NodeService {
                 .set_property_bool(&existing_node.id, "$._seed.guidance_modified", false)
                 .await
                 .map_err(NodeServiceError::from_store)?;
+            self.settle_pending_seed_update(&existing_node.id, SeedAspect::Guidance, true)
+                .await?;
             guidance_reset = true;
         }
 

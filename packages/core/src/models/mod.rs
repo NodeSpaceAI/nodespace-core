@@ -16,6 +16,7 @@ pub mod core_schemas;
 pub mod embedding;
 mod node;
 pub mod schema;
+pub mod seed_update;
 pub mod time;
 
 // Type-safe node wrappers
@@ -23,6 +24,7 @@ pub(crate) mod schema_node;
 
 // The AI-chat family (ADR-088) is defined once, in nodespace-types.
 pub use conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};
+pub use seed_update::{PendingSeedUpdate, PendingSeedUpdateRow, SeedAspect};
 pub use node::{
     DeleteResult, FilterOperator, Node, NodeEnvelope, NodeFilter, NodeQuery, NodeReference,
     NodeRelationship, NodeUpdate, OrderBy, PropertyFilter, TraversalDirection, ValidationError,

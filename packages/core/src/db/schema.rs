@@ -174,6 +174,21 @@ CREATE TABLE IF NOT EXISTS conflict_participant (
 
 CREATE INDEX IF NOT EXISTS idx_conflict_participant_node ON conflict_participant (node_id);
 
+-- Shipped changes to a seeded node that reconciliation held back because the
+-- user had edited that aspect (ADR-094 §8): one row per seeded node and
+-- aspect, with the fingerprint of the shipped version the user has yet to
+-- keep their own against or take.
+--
+-- Local bookkeeping, deliberately not a node or a node property: nothing that
+-- reads nodes can see it. A deleted seed takes its rows with it.
+CREATE TABLE IF NOT EXISTS pending_seed_update (
+    node_id         TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+    aspect          TEXT NOT NULL CHECK (aspect IN ('config', 'guidance')),
+    shipped_version TEXT NOT NULL,
+    recorded_at     TEXT NOT NULL,
+    PRIMARY KEY (node_id, aspect)
+) STRICT, WITHOUT ROWID;
+
 -- The resolved `extends` chain of every type, so SQL can apply a base type's
 -- rule to its subtypes (ADR-086 §5): one row per (type, ancestor) pair, the
 -- type itself included at depth 0. `issue extends task` holds
