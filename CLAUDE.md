@@ -2,7 +2,7 @@
 
 ## CRITICAL: Pre-Release Development - NO BACKWARD COMPATIBILITY
 
-**NodeSpace has ZERO users, NO production deployment, and NO releases.**
+**NodeSpace has ZERO users and NO production deployment.** Releases are published, but nobody outside the team has installed one, so an installed older release is not a compatibility target either: an update may refuse it or reset its data.
 
 - ❌ **NO backward compatibility code** - Delete old patterns immediately when replaced
 - ❌ **NO migration strategies** - We can reset the database anytime. This covers **internal data-shape changes**, not just product/version compatibility: a startup backfill, a lazy on-read format upgrade, or any code that carries existing rows from an old shape to a new one is exactly what this prohibits. **Instead: change the format and reset the database.**
