@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { descendantPids, killActiveStages, runStage } from "./gate-stage";
+import { descendantPids, killActiveStages, runStage, TIERS } from "./gate-stage";
 
 let dir: string;
 
@@ -85,6 +85,38 @@ describe("runStage", () => {
     expect(await runStage({ label: "slow cleanup", command, timeoutMs: 500 }, dir)).toBe(false);
     expect(existsSync(marker)).toBe(true);
   }, 20_000);
+});
+
+describe("the merge gate's clippy stage", () => {
+  const gate = readFileSync(join(import.meta.dir, "test-gate.ts"), "utf8");
+  // The call as a statement of its own: a commented-out one doesn't match.
+  const stage = gate.search(/^\s*await run\(TIERS\.rustLint\);$/m);
+
+  test("runs clippy over the whole workspace with warnings as errors", () => {
+    // The version first, so a failing stage's log says whose verdict it is.
+    expect(TIERS.rustLint.command).toBe("cargo clippy --version && bun run rust:lint");
+    const scripts = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).scripts;
+    const [workspace, types] = scripts["rust:lint"].split("&&");
+    expect(workspace).toContain("cargo clippy --all-targets");
+    // No package filter: an error in any crate fails the stage.
+    expect(/\s(-p|--package|--exclude)\s/.test(workspace)).toBe(false);
+    expect(types).toContain("cargo clippy -p nodespace-types --all-targets --features ts");
+    for (const half of [workspace, types]) expect(half).toContain("-D warnings");
+  });
+
+  test("is in merge mode only, and under the machine slot", () => {
+    expect(stage).toBeGreaterThan(-1);
+    // A push exits before it, so it stays lint-of-scripts only and takes seconds.
+    expect(stage).toBeGreaterThan(gate.indexOf('console.log("\\n✓ Push check passed'));
+    expect(gate.indexOf('console.log("\\n✓ Push check passed')).toBeGreaterThan(-1);
+    expect(stage).toBeGreaterThan(gate.indexOf("registerLockRelease(machineSlot)"));
+    expect(gate.indexOf("registerLockRelease(machineSlot)")).toBeGreaterThan(-1);
+  });
+
+  test("names itself, so a failing gate says which stage failed", () => {
+    expect(TIERS.rustLint.label).toContain("rust:lint");
+    expect(TIERS.rustLint.label).toContain("clippy");
+  });
 });
 
 // Last in the file: killActiveStages() marks the module as stopping for good,
