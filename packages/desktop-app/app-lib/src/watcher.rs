@@ -177,7 +177,7 @@ where
                 info!("Node watcher received shutdown signal, exiting");
                 return Ok(());
             }
-            _ = db_changed.changed() => {
+            Ok(()) = db_changed.changed() => {
                 // Active database switched — drop the current stream and re-open
                 // immediately (backoff reset) so the new database streams at once.
                 debug!("Active database switched; re-opening WatchNodes stream");
@@ -209,8 +209,8 @@ where
 
         if pause == Pause::UntilDatabaseChanges {
             // Wait for a database switch or shutdown only. If the client is gone
-            // `changed()` errors at once, so fall through to the backoff sleep
-            // rather than spin.
+            // `changed()` errors at once; fall through to the backoff sleep (whose
+            // `changed()` arm only matches a real switch) rather than spin.
             tokio::select! {
                 _ = cancel_token.cancelled() => {
                     info!("Node watcher cancelled while waiting for a database switch");
@@ -232,7 +232,7 @@ where
                 info!("Node watcher cancelled during backoff");
                 return Ok(());
             }
-            _ = db_changed.changed() => {
+            Ok(()) = db_changed.changed() => {
                 debug!("Active database switched during backoff; reconnecting now");
                 backoff = BACKOFF_START;
             }
@@ -563,6 +563,26 @@ mod tests {
     async fn cancelling_while_waiting_after_a_refusal_exits() {
         let Harness { cancel, task, .. } = run_loop(refusal, |_| {});
         tokio::time::sleep(Duration::from_millis(1)).await;
+        cancel.cancel();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_closed_active_database_channel_backs_off_instead_of_spinning() {
+        let (switch, db_changed) = watch::channel(0u64);
+        drop(switch);
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = attempts.clone();
+        let cancel = CancellationToken::new();
+        let task = tokio::spawn(watch_loop(db_changed, cancel.clone(), move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err::<(), _>(refusal()))
+        }));
+
+        // Attempts at 0, 1 and 3 seconds.
+        tokio::time::sleep(Duration::from_secs(3) + Duration::from_millis(1)).await;
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+
         cancel.cancel();
         task.await.unwrap().unwrap();
     }
