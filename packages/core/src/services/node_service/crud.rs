@@ -3406,7 +3406,7 @@ impl NodeService {
     }
 
     /// Check one value against one field declaration: enum membership, the
-    /// structural `object`/`array<object>` shape, and the scalar types. Null
+    /// structural `object`/`array` shape, and the scalar types. Null
     /// always passes — it clears a field. Returns the rejection message.
     ///
     /// The single definition of "this value satisfies this declaration":
@@ -3431,30 +3431,23 @@ impl NodeService {
                     field.name
                 ));
             };
-            let valid_values: Vec<_> = field
-                .core_values
-                .iter()
-                .flatten()
-                .chain(field.user_values.iter().flatten())
-                .collect();
-            if !valid_values.iter().any(|ev| ev.value == value_str) {
-                let valid_labels: Vec<_> = valid_values
-                    .iter()
-                    .map(|ev| format!("{} ({})", ev.label, ev.value))
-                    .collect();
+            if !Self::is_enum_value(field, value_str) {
                 return Err(format!(
                     "Invalid value '{}' for enum field '{}'. Valid values: {}",
                     value_str,
                     field.name,
-                    valid_labels.join(", ")
+                    Self::enum_value_labels(field)
                 ));
             }
         }
 
-        // Object-shaped fields are validated structurally: a field declared
-        // `object` must hold a JSON object, and a field declared `array` with
-        // `item_type: "object"` must hold an array whose every element is a
-        // JSON object.
+        // Structured fields are validated by shape: a field declared `object`
+        // must hold a JSON object, and a field declared `array` must hold a
+        // JSON array. Where the array declares an `item_type`, every element
+        // must satisfy it: a JSON object for `object`, a JSON array for
+        // `array`, one of the field's declared values for `enum`, and the
+        // scalar rule below for `number`, `boolean`, `date` and `datetime`.
+        // A `text` element, like a `text` field's value, is not type-checked.
         //
         // Nested declarations are validated recursively (ADR-086 §7): where an
         // `object` field declares `fields`, or an array of objects declares
@@ -3473,78 +3466,176 @@ impl NodeService {
                 Self::check_nested_fields(&field.name, nested, object)?;
             }
         }
-        if field.field_type == SchemaFieldType::Array
-            && field.item_type == Some(SchemaFieldType::Object)
-        {
+        if field.field_type == SchemaFieldType::Array {
             let Some(items) = value.as_array() else {
                 return Err(format!(
-                    "Field '{}' is declared as type 'array' (item type 'object') but received {}",
+                    "Field '{}' is declared as type 'array' but received {}",
                     field.name,
-                    crate::schema::json_type_name(value)
+                    Self::describe_received(value)
                 ));
             };
-            if let Some((index, item)) = items.iter().enumerate().find(|(_, i)| !i.is_object()) {
-                return Err(format!(
-                    "Field '{}' is declared as type 'array' with item type 'object', but item {} \
-                     is {}",
-                    field.name,
-                    index,
-                    crate::schema::json_type_name(item)
-                ));
-            }
-            if let Some(nested) = field.item_fields.as_deref() {
-                for (index, item) in items.iter().enumerate() {
-                    if let Some(object) = item.as_object() {
-                        Self::check_nested_fields(
-                            &format!("{}[{}]", field.name, index),
-                            nested,
-                            object,
-                        )?;
+            match field.item_type {
+                Some(SchemaFieldType::Object) => {
+                    if let Some((index, item)) =
+                        items.iter().enumerate().find(|(_, i)| !i.is_object())
+                    {
+                        return Err(format!(
+                            "Field '{}' is declared as type 'array' with item type 'object', but \
+                             item {} is {}",
+                            field.name,
+                            index,
+                            Self::describe_received(item)
+                        ));
+                    }
+                    if let Some(nested) = field.item_fields.as_deref() {
+                        for (index, item) in items.iter().enumerate() {
+                            if let Some(object) = item.as_object() {
+                                Self::check_nested_fields(
+                                    &format!("{}[{}]", field.name, index),
+                                    nested,
+                                    object,
+                                )?;
+                            }
+                        }
                     }
                 }
+                Some(SchemaFieldType::Array) => {
+                    if let Some((index, item)) =
+                        items.iter().enumerate().find(|(_, i)| !i.is_array())
+                    {
+                        return Err(format!(
+                            "Field '{}' is declared as type 'array' with item type 'array', but \
+                             item {} is {}",
+                            field.name,
+                            index,
+                            Self::describe_received(item)
+                        ));
+                    }
+                }
+                // The array field itself declares the values its elements
+                // may take.
+                Some(SchemaFieldType::Enum) => {
+                    if let Some((index, item)) = items
+                        .iter()
+                        .enumerate()
+                        .find(|(_, i)| !i.as_str().is_some_and(|s| Self::is_enum_value(field, s)))
+                    {
+                        return Err(format!(
+                            "Field '{}' is declared as type 'array' with item type 'enum', but \
+                             item {} is {}. Valid values: {}",
+                            field.name,
+                            index,
+                            Self::describe_received(item),
+                            Self::enum_value_labels(field)
+                        ));
+                    }
+                }
+                // A null element is not a cleared field, so it is checked
+                // like any other value.
+                Some(item_type) => {
+                    for (index, item) in items.iter().enumerate() {
+                        if let Some(expected) = Self::scalar_mismatch(item_type, item) {
+                            return Err(format!(
+                                "Field '{}' is declared as type 'array' with item type '{}'{}, \
+                                 but item {} is {}",
+                                field.name,
+                                item_type,
+                                expected,
+                                index,
+                                Self::describe_received(item)
+                            ));
+                        }
+                    }
+                }
+                None => {}
             }
         }
 
-        // Scalar fields: `number` holds a JSON number, `boolean` a JSON bool,
-        // `date` an ISO-8601 date or RFC 3339 date-time string, and
-        // `datetime` an RFC 3339 date-time string. Sorting, `gt`/`lt` query
-        // filters and the CEL date functions all trust the declared type, so
-        // a value that doesn't match it is rejected here rather than misread
-        // later.
-        let check = match field.field_type {
-            SchemaFieldType::Number => Some((value.is_number(), "")),
-            SchemaFieldType::Boolean => Some((value.is_boolean(), "")),
-            SchemaFieldType::Date => Some((
-                value
-                    .as_str()
-                    .is_some_and(crate::schema::is_iso_date_or_datetime),
-                " (a YYYY-MM-DD date or RFC 3339 date-time string)",
-            )),
-            SchemaFieldType::Datetime => Some((
-                value
-                    .as_str()
-                    .is_some_and(crate::schema::is_rfc3339_datetime),
-                " (an RFC 3339 date-time string)",
-            )),
-            // Enum, object and array values are checked above. A text
-            // field's value is not type-checked.
-            SchemaFieldType::Text
-            | SchemaFieldType::Enum
-            | SchemaFieldType::Array
-            | SchemaFieldType::Object => None,
-        };
-        if let Some((false, expected)) = check {
-            let received = match value.as_str() {
-                Some(s) => format!("the string '{}'", s),
-                None => crate::schema::json_type_name(value).to_string(),
-            };
+        if let Some(expected) = Self::scalar_mismatch(field.field_type, value) {
             return Err(format!(
                 "Field '{}' is declared as type '{}'{} but received {}",
-                field.name, field.field_type, expected, received
+                field.name,
+                field.field_type,
+                expected,
+                Self::describe_received(value)
             ));
         }
 
         Ok(())
+    }
+
+    /// The values `field` declares for an enum: its core values, then the
+    /// user-added ones.
+    fn enum_values(
+        field: &crate::models::SchemaField,
+    ) -> impl Iterator<Item = &crate::models::schema::EnumValue> {
+        field
+            .core_values
+            .iter()
+            .flatten()
+            .chain(field.user_values.iter().flatten())
+    }
+
+    fn is_enum_value(field: &crate::models::SchemaField, value: &str) -> bool {
+        Self::enum_values(field).any(|ev| ev.value == value)
+    }
+
+    /// The declared enum values as a rejection message lists them.
+    fn enum_value_labels(field: &crate::models::SchemaField) -> String {
+        Self::enum_values(field)
+            .map(|ev| format!("{} ({})", ev.label, ev.value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// Whether `value` fails the scalar rule for `field_type`, as the
+    /// description of what the type expects (empty where the type name says
+    /// it all). `number` holds a JSON number, `boolean` a JSON bool, `date`
+    /// an ISO-8601 date or RFC 3339 date-time string, and `datetime` an
+    /// RFC 3339 date-time string. Sorting, `gt`/`lt` query filters and the CEL
+    /// date functions all trust the declared type, so a value that doesn't
+    /// match it is rejected on write rather than misread later.
+    ///
+    /// Enum, object and array values have their own checks in
+    /// [`Self::check_field_value`], as a field's value and as an array's
+    /// element, and a text value is not type-checked, so those never mismatch
+    /// here.
+    fn scalar_mismatch(
+        field_type: crate::models::SchemaFieldType,
+        value: &serde_json::Value,
+    ) -> Option<&'static str> {
+        use crate::models::SchemaFieldType;
+
+        let (matches, expected) = match field_type {
+            SchemaFieldType::Number => (value.is_number(), ""),
+            SchemaFieldType::Boolean => (value.is_boolean(), ""),
+            SchemaFieldType::Date => (
+                value
+                    .as_str()
+                    .is_some_and(crate::schema::is_iso_date_or_datetime),
+                " (a YYYY-MM-DD date or RFC 3339 date-time string)",
+            ),
+            SchemaFieldType::Datetime => (
+                value
+                    .as_str()
+                    .is_some_and(crate::schema::is_rfc3339_datetime),
+                " (an RFC 3339 date-time string)",
+            ),
+            SchemaFieldType::Text
+            | SchemaFieldType::Enum
+            | SchemaFieldType::Array
+            | SchemaFieldType::Object => return None,
+        };
+        (!matches).then_some(expected)
+    }
+
+    /// A rejected value as a rejection message names it: a string is quoted,
+    /// anything else is named by its JSON type.
+    fn describe_received(value: &serde_json::Value) -> String {
+        match value.as_str() {
+            Some(s) => format!("the string '{}'", s),
+            None => crate::schema::json_type_name(value).to_string(),
+        }
     }
 
     /// Check an object value against the nested fields its declaration lists
