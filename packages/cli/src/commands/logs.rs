@@ -56,18 +56,29 @@ pub struct LogsArgs {
 /// The desktop app's supervisor writes under the user's home; a Homebrew
 /// service writes under the prefix. Both are real and neither is discoverable
 /// from the other, so the resolution is "first one that exists".
+///
+/// `NODESPACE_HOME` redirects all NodeSpace state, so when it is set its log
+/// is the only candidate: an isolated run must not report another install's
+/// log as its own.
 fn candidate_paths() -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
+    candidate_paths_for(
+        std::env::var_os("NODESPACE_HOME").map(PathBuf::from),
+        // $HOME rather than a `dirs` dependency, matching `uninstall.rs`'s
+        // own home resolution in this crate.
+        std::env::var_os("HOME").map(PathBuf::from),
+    )
+}
 
-    // $HOME rather than a `dirs` dependency, matching `uninstall.rs`'s own
-    // home resolution in this crate.
-    if let Ok(home) = std::env::var("HOME") {
-        candidates.push(
-            PathBuf::from(home)
-                .join(".nodespace")
-                .join("logs")
-                .join("nodespaced.log"),
-        );
+/// [`candidate_paths`] for the given `NODESPACE_HOME` and `HOME` values.
+fn candidate_paths_for(nodespace_home: Option<PathBuf>, home: Option<PathBuf>) -> Vec<PathBuf> {
+    let log_under = |home: PathBuf| home.join(".nodespace").join("logs").join("nodespaced.log");
+    if let Some(nodespace_home) = nodespace_home {
+        return vec![log_under(nodespace_home)];
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(home) = home {
+        candidates.push(log_under(home));
     }
 
     // Homebrew's `var` lives under the prefix, which differs by architecture.
@@ -300,7 +311,7 @@ mod tests {
     /// wrong-path problem it exists to remove.
     #[test]
     fn candidates_cover_both_install_layouts() {
-        let paths: Vec<String> = candidate_paths()
+        let paths: Vec<String> = candidate_paths_for(None, Some(PathBuf::from("/home/user")))
             .iter()
             .map(|p| p.display().to_string())
             .collect();
@@ -313,6 +324,21 @@ mod tests {
         assert!(
             joined.contains("var/log/nodespace/nodespaced.log"),
             "a Homebrew service's log path must be a candidate: {joined}"
+        );
+    }
+
+    /// A redirected NodeSpace home has one log, its own: neither the user's
+    /// home nor a Homebrew prefix is consulted, so an isolated run never
+    /// resolves to another install's log.
+    #[test]
+    fn a_redirected_home_is_the_only_candidate() {
+        let paths = candidate_paths_for(
+            Some(PathBuf::from("/isolated")),
+            Some(PathBuf::from("/home/user")),
+        );
+        assert_eq!(
+            paths,
+            vec![PathBuf::from("/isolated/.nodespace/logs/nodespaced.log")]
         );
     }
 

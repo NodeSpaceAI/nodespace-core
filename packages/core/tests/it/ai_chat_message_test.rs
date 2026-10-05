@@ -213,6 +213,31 @@ async fn a_native_chat_stores_neither_messages_nor_created_nodes() {
 // Structure
 // ---------------------------------------------------------------------------
 
+/// A message refused as a root was never created, so the refusal names no
+/// id for the caller to look up, and reads as a sentence.
+#[tokio::test]
+async fn a_refused_root_message_names_no_id() {
+    let (svc, _tmp) = test_service().await;
+    let orphan = Node::new(MESSAGE.to_string(), "orphan".to_string(), json!({}));
+    let orphan_id = orphan.id.clone();
+
+    let error = svc
+        .create_node(orphan)
+        .await
+        .expect_err("a message cannot be a root")
+        .to_string();
+
+    assert!(!error.contains(&orphan_id), "{error}");
+    assert!(
+        error.contains(&format!("a new {MESSAGE} cannot be a root")),
+        "{error}"
+    );
+    assert!(
+        error.contains(&format!("an {MESSAGE} must have a parent of type")),
+        "{error}"
+    );
+}
+
 #[tokio::test]
 async fn a_message_must_sit_under_a_native_chat() {
     let (svc, _tmp) = test_service().await;

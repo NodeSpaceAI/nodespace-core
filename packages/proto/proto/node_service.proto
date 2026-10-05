@@ -603,8 +603,8 @@ message SkillGuidanceEntry {
   // The skill's procedure as markdown, written for an agent that drives
   // NodeSpace through the CLI. Empty in a listing.
   string instructions = 5;
-  // The skill search's score. Unset in a listing, which ranks nothing, and
-  // in a fetch by name.
+  // The skill search's score, held to 0.0-1.0. Unset in a listing, which
+  // ranks nothing, and in a fetch by name.
   optional double confidence = 6;
   // The CLI command of each registry tool the skill lists in its
   // tool_whitelist or names in its procedure. A tool that records no command

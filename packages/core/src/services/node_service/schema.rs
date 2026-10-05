@@ -330,8 +330,9 @@ impl NodeService {
             .await?
         {
             return Err(NodeServiceError::invalid_update(format!(
-                "Node '{}' is a {} node, not a play",
-                play_id, before.node_type
+                "Node '{}' is {} node, not a play",
+                play_id,
+                crate::utils::with_indefinite_article(&before.node_type)
             )));
         }
 
@@ -394,8 +395,10 @@ impl NodeService {
             .ok_or_else(|| NodeServiceError::node_not_found(id))?;
         if existing.node_type != node_type {
             return Err(NodeServiceError::invalid_update(format!(
-                "Node '{}' is a {} node, not a {} node",
-                id, existing.node_type, node_type
+                "Node '{}' is {} node, not {} node",
+                id,
+                crate::utils::with_indefinite_article(&existing.node_type),
+                crate::utils::with_indefinite_article(node_type)
             )));
         }
         let update = NodeUpdate {

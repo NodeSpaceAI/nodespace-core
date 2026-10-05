@@ -2139,6 +2139,8 @@ async fn test_search_semantic_enumerate_property_filter_finds_schema_nodes_own_f
 
     let mut input = empty_search_input("*", Some(vec!["schema".to_string()]));
     input.property_filters = Some(json!({ "isCore": true }));
+    // Every core schema, so which ones a default page holds is not in play.
+    input.limit = Some(1000);
     let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
 
     let matched_ids: Vec<&str> = output.matched_nodes.iter().map(|n| n.id.as_str()).collect();
@@ -2490,5 +2492,119 @@ async fn test_wildcard_escaping_keeps_literally_matching_rows() -> Result<()> {
         output.matched_nodes.iter().any(|n| n.id == task.id),
         "an underscore is an ordinary character in a search term and must still match literally"
     );
+    Ok(())
+}
+
+/// An enumerate confined to a collection lists the collection's members,
+/// however many other nodes the database holds. The members are fetched by
+/// id: picked out of a capped slice of the whole table, a member created
+/// after enough other nodes was never in the slice, and the listing was empty.
+#[tokio::test]
+async fn test_search_semantic_enumerate_lists_a_collections_members() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let collection = create_root_node(&node_service, "collection", "Research").await?;
+    let member = create_root_node(&node_service, "text", "A member").await?;
+    let other_member = create_root_node(&node_service, "task", "A member task").await?;
+    for id in [&member.id, &other_member.id] {
+        node_service
+            .create_relationship(id, "member_of", &collection.id, json!({}))
+            .await?;
+    }
+    // Created after the members, so the newest-first pages a listing reads
+    // hold none of them.
+    for i in 0..200 {
+        create_root_node(&node_service, "text", &format!("Noise {i}")).await?;
+    }
+
+    let mut input = empty_search_input("", None);
+    input.collection_id = Some(collection.id.clone());
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+    let mut listed: Vec<&str> = output
+        .nodes
+        .iter()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    listed.sort_unstable();
+    let mut members = vec![member.id.as_str(), other_member.id.as_str()];
+    members.sort_unstable();
+    assert_eq!(listed, members);
+
+    // A type narrows the same listing.
+    let mut input = empty_search_input("", Some(vec!["task".to_string()]));
+    input.collection_id = Some(collection.id.clone());
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+    assert_eq!(output.count, 1);
+    assert_eq!(output.nodes[0]["id"], other_member.id);
+    Ok(())
+}
+
+/// A type-only listing of `text` is the user's text. The paragraphs of a
+/// skill are `text` nodes too, but they are the skill's body: they are left
+/// out, and never take the places of the user's own nodes.
+#[tokio::test]
+async fn test_search_semantic_enumerate_leaves_out_a_system_roots_fragments() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let document = create_root_node(&node_service, "text", "My document").await?;
+    let paragraph = create_child_node(&node_service, &document.id, "text", "My paragraph").await?;
+    let skill = Node::new(
+        "skill".to_string(),
+        "A skill".to_string(),
+        json!({ "description": "What the skill is for" }),
+    );
+    node_service.create_node(skill.clone()).await?;
+    // More fragments than a page holds, all newer than the user's nodes.
+    for i in 0..70 {
+        create_child_node(&node_service, &skill.id, "text", &format!("Step {i}")).await?;
+    }
+
+    let output = search_ops::search_semantic(
+        &node_service,
+        &embedding_service,
+        empty_search_input("", Some(vec!["text".to_string()])),
+    )
+    .await?;
+
+    let mut listed: Vec<&str> = output
+        .nodes
+        .iter()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    listed.sort_unstable();
+    let mut own = vec![document.id.as_str(), paragraph.id.as_str()];
+    own.sort_unstable();
+    assert_eq!(listed, own);
+    Ok(())
+}
+
+/// A listing is newest first.
+#[tokio::test]
+async fn test_search_semantic_enumerate_lists_the_newest_first() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let older = create_root_node(&node_service, "invoice", "Older").await?;
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let newer = create_root_node(&node_service, "invoice", "Newer").await?;
+
+    let output = search_ops::search_semantic(
+        &node_service,
+        &embedding_service,
+        empty_search_input("*", Some(vec!["invoice".to_string()])),
+    )
+    .await?;
+
+    let listed: Vec<&str> = output
+        .nodes
+        .iter()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    assert_eq!(listed, vec![newer.id.as_str(), older.id.as_str()]);
     Ok(())
 }

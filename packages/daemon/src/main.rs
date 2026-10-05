@@ -456,10 +456,16 @@ fn main() -> Result<()> {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
+    if args
+        .iter()
+        .skip(1)
+        .any(|a| HELP_FLAGS.contains(&a.as_str()))
+    {
+        print!("{}", usage());
+        return Ok(());
+    }
     if let Some(arg) = first_unrecognized_arg(&args) {
-        eprintln!(
-            "nodespaced: unrecognized argument '{arg}' (supported: {TRAY_FLAG}, {VERSION_FLAG})"
-        );
+        eprintln!("nodespaced: unrecognized argument '{arg}'\n\n{}", usage());
         std::process::exit(UNRECOGNIZED_ARG_EXIT_CODE);
     }
 
@@ -1193,6 +1199,26 @@ mod watch_for_shutdown_signal_tests {
 /// answers it before [`first_unrecognized_arg`] runs, so it is not part of
 /// [`ACCEPTED_ARGS`].
 const VERSION_FLAG: &str = "--version";
+
+/// Command-line flags that print [`usage`] and exit. Like [`VERSION_FLAG`],
+/// `main` answers them before [`first_unrecognized_arg`] runs.
+const HELP_FLAGS: &[&str] = &["--help", "-h"];
+
+/// What `nodespaced` accepts, printed for a help flag and after the complaint
+/// about an argument it does not recognise.
+fn usage() -> String {
+    format!(
+        "Usage: nodespaced [{TRAY_FLAG}]\n\
+         \n\
+         The NodeSpace daemon. Runs headless until it is stopped by a signal.\n\
+         \n\
+         Options:\n\
+         \x20 {TRAY_FLAG:<13}Show the tray icon and run its event loop on the main thread\n\
+         \x20 {VERSION_FLAG:<13}Print the version and exit\n\
+         \x20 {:<13}Print this help and exit\n",
+        HELP_FLAGS.join(", ")
+    )
+}
 
 /// Every argument the daemon acts on once [`VERSION_FLAG`] has been handled.
 const ACCEPTED_ARGS: &[&str] = &[TRAY_FLAG];

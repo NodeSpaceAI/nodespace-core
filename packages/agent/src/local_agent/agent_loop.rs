@@ -1055,11 +1055,12 @@ fn duplicate_entity_refused_result(
             "node_type": entity.node_type,
         },
         "message": format!(
-            "Not executed: \"{}\" already exists as a {} ({id}), so this would create a \
+            "Not executed: \"{}\" already exists as {} ({id}), so this would create a \
              second copy. Call route_clarify to ask the user whether they meant that \
              record or want a second, separate one, offering the existing record's id \
              as an option. Do not call create_node for it again this turn.",
-            entity.title, entity.node_type
+            entity.title,
+            nodespace_core::utils::with_indefinite_article(&entity.node_type)
         ),
     })
 }
@@ -1137,8 +1138,9 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
 
     let done_note = done_this_turn_note(&result.tool_calls_made);
     let question = format!(
-        "\"{title}\" already exists as a {node_type} ({id}). Did you mean that record, or \
-         do you want a second, separate one?{done_note}"
+        "\"{title}\" already exists as {} ({id}). Did you mean that record, or \
+         do you want a second, separate one?{done_note}",
+        nodespace_core::utils::with_indefinite_article(node_type)
     );
     let options = vec![
         format!("Use the existing \"{title}\" ({id})"),

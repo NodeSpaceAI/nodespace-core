@@ -579,8 +579,10 @@ impl GrpcNodeService for NodeServiceImpl {
                 .map_err(|e| Status::internal(format!("Failed to get node: {e}")))?;
             if let Some(node) = node.filter(|n| &n.node_type != expected) {
                 return Err(Status::failed_precondition(format!(
-                    "{} is a {} node, not a {expected}; nothing deleted",
-                    node.id, node.node_type
+                    "{} is {} node, not {}; nothing deleted",
+                    node.id,
+                    nodespace_core::utils::with_indefinite_article(&node.node_type),
+                    nodespace_core::utils::with_indefinite_article(expected)
                 )));
             }
         }
@@ -3011,9 +3013,20 @@ fn skill_guidance_entry(skill: GuidanceSkill) -> SkillGuidanceEntry {
         description: skill.description,
         modified_at: skill.modified_at,
         instructions,
-        confidence: skill.confidence,
+        confidence: skill.confidence.map(wire_confidence),
         tool_commands,
     }
+}
+
+/// A skill search score as the `confidence` an outside agent reads: held to
+/// 0.0–1.0.
+///
+/// The score ranks: it is the peak chunk similarity raised by up to 30% for
+/// the share of the node's chunks that matched, so a strong match scores
+/// above 1.0. Skills arrive best first, so capping the figure loses no
+/// ordering, and a reader is not handed a "confidence" of 1.113.
+fn wire_confidence(score: f64) -> f64 {
+    score.clamp(0.0, 1.0)
 }
 
 /// A fetch's skills and schemas as the wire response. The version is a
@@ -6634,6 +6647,19 @@ mod tests {
                 command: "nodespace node get".to_string(),
             }]
         );
+    }
+
+    /// A search score above 1.0 (a strong match raised by its chunk density)
+    /// is reported as a confidence of 1.0, and a score in range is unchanged.
+    #[test]
+    fn a_score_above_one_is_reported_as_a_confidence_of_one() {
+        let mut skill = fetched_skill("skill-id", "body");
+        skill.confidence = Some(1.113);
+        assert_eq!(skill_guidance_entry(skill).confidence, Some(1.0));
+
+        let mut skill = fetched_skill("skill-id", "body");
+        skill.confidence = Some(0.42);
+        assert_eq!(skill_guidance_entry(skill).confidence, Some(0.42));
     }
 
     /// A built-in skill nobody has edited is served in its CLI form, not as

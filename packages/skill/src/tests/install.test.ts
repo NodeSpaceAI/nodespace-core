@@ -51,12 +51,12 @@ describe('extractResourceRoot', () => {
 
 describe('skipReasonText', () => {
   it('names the plugin marketplace when skipReason is plugin-managed', () => {
-    const text = skipReasonText({ agent: 'claude-code', installed: [], skipReason: 'plugin-managed' });
+    const text = skipReasonText({ agent: 'claude-code', installed: [], changed: false, skipReason: 'plugin-managed' });
     expect(text).toBe('already installed via the Claude Code plugin marketplace, not overwriting');
   });
 
   it('falls back to the generic incomplete-package message otherwise', () => {
-    const text = skipReasonText({ agent: 'codex', installed: [] });
+    const text = skipReasonText({ agent: 'codex', installed: [], changed: false });
     expect(text).toBe('detected but no files to install (package may be incomplete)');
   });
 });

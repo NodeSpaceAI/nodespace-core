@@ -535,7 +535,40 @@ pub async fn resolve_routing(
 /// rewritten to the shared refusal text by [`render_refusal`]. `main` prints
 /// the error and exits non-zero either way.
 pub async fn run(cli: Cli) -> Result<()> {
-    dispatch(cli).await.map_err(render_refusal)
+    dispatch(cli)
+        .await
+        .map_err(render_refusal)
+        .map_err(render_status)
+}
+
+/// Replace a gRPC status in an error's chain with [`status_text`], keeping
+/// the context above it. A status prints its metadata map and details after
+/// its message, which is transport noise to whoever reads the error. An error
+/// with no status in its chain passes through unchanged.
+pub fn render_status(err: anyhow::Error) -> anyhow::Error {
+    let mut contexts: Vec<String> = Vec::new();
+    for cause in err.chain() {
+        if let Some(status) = cause.downcast_ref::<tonic::Status>() {
+            return contexts
+                .into_iter()
+                .rev()
+                .fold(anyhow::anyhow!(status_text(status)), |rendered, context| {
+                    rendered.context(context)
+                });
+        }
+        contexts.push(cause.to_string());
+    }
+    err
+}
+
+/// A gRPC status as the CLI prints it: its code and its message, without the
+/// metadata map and details its `Display` appends.
+pub fn status_text(status: &tonic::Status) -> String {
+    if status.message().is_empty() {
+        format!("{:?}: {}", status.code(), status.code().description())
+    } else {
+        format!("{:?}: {}", status.code(), status.message())
+    }
 }
 
 /// Replace an error that carries the daemon's required-extensions refusal
@@ -749,6 +782,54 @@ mod refusal_tests {
             format!("{err:#}").starts_with("GetNode RPC failed"),
             "{err:#}"
         );
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::{render_status, status_text};
+    use anyhow::Context;
+
+    /// A status carrying metadata prints as its code and message under the
+    /// command's own context; the metadata map and details never reach the
+    /// reader.
+    #[test]
+    fn a_status_is_rendered_without_its_metadata() {
+        let mut status = tonic::Status::not_found("node 'x' not found");
+        status
+            .metadata_mut()
+            .insert("content-type", "application/grpc".parse().unwrap());
+        let err = render_status(
+            Err::<(), _>(status)
+                .context("GetNode RPC failed")
+                .unwrap_err(),
+        );
+
+        let printed = format!("{err:?}");
+        assert!(printed.starts_with("GetNode RPC failed"), "{printed}");
+        assert!(
+            printed.contains("NotFound: node 'x' not found"),
+            "{printed}"
+        );
+        assert!(!printed.contains("MetadataMap"), "{printed}");
+        assert!(!printed.contains("details"), "{printed}");
+    }
+
+    /// A status with no message still says what happened.
+    #[test]
+    fn a_status_without_a_message_falls_back_to_its_code() {
+        let status = tonic::Status::new(tonic::Code::Unavailable, "");
+        assert_eq!(
+            status_text(&status),
+            format!("Unavailable: {}", tonic::Code::Unavailable.description())
+        );
+    }
+
+    /// An error with no status in its chain is returned as it was.
+    #[test]
+    fn an_error_without_a_status_passes_through() {
+        let err = render_status(anyhow::anyhow!("no daemon").context("could not connect"));
+        assert_eq!(format!("{err:#}"), "could not connect: no daemon");
     }
 }
 

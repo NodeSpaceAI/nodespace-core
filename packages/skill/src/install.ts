@@ -36,6 +36,13 @@ export function skipReasonText(result: InstallResult): string {
 }
 
 /**
+ * What follows "✓ agent: " when an install found the agent's skill files
+ * already current and rewrote none. `nodespace skill install` reads it to
+ * report that agent as up to date rather than installed.
+ */
+export const UP_TO_DATE_TEXT = 'already up to date';
+
+/**
  * Pull `--resource-root <path>` out of argv, wherever it appears, and return
  * the remaining positional args separately. Needed for the compiled
  * standalone-binary distribution (see `installer.ts`'s `PACKAGE_ROOT` doc
@@ -158,7 +165,11 @@ Examples:
     const seen = new Set<string>();
     for (const result of results) {
       seen.add(result.agent);
-      if (result.installed.length > 0) {
+      if (result.installed.length > 0 && !result.changed) {
+        // Still a ✓ line, so a caller that reads only the marker counts the
+        // agent as installed; the text after it says nothing was rewritten.
+        console.log(`✓ ${result.agent}: ${UP_TO_DATE_TEXT} (${result.installed.length} file(s))`);
+      } else if (result.installed.length > 0) {
         console.log(`✓ ${result.agent}: installed ${result.installed.length} file(s)`);
         for (const file of result.installed) {
           console.log(`  → ${file}`);

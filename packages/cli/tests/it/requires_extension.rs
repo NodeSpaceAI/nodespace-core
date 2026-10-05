@@ -286,8 +286,90 @@ async fn diagnostics_lists_each_failing_query_when_the_failure_is_not_the_refusa
             "{rpc} is listed: {stdout}"
         );
     }
+    assert!(
+        stdout.contains("  - CountNodes failed: FailedPrecondition: a rule refused\n"),
+        "a failed query is reported by its code and message alone: {stdout}"
+    );
+    assert!(!stdout.contains("MetadataMap"), "{stdout}");
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
         "Error: diagnostics incomplete: 5 query/IO failure(s) — see the Errors section above\n"
     );
+}
+
+/// A failed command prints the daemon's code and message under its own
+/// context, without the status's metadata map or details.
+#[tokio::test]
+async fn a_failed_command_prints_the_status_without_its_metadata() {
+    let daemon = spawn_daemon_with(RefuseByRule).await;
+
+    let out = nodespace(&daemon, &["--database", "other", "node", "get", "anything"]).await;
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("FailedPrecondition: a rule refused"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("MetadataMap"), "{stderr}");
+    assert!(!stderr.contains("details:"), "{stderr}");
+}
+
+/// Diagnostics of a served database lists a refused one with what it needs,
+/// as `database list` does.
+#[tokio::test]
+async fn diagnostics_says_what_a_refused_database_needs() {
+    let daemon = spawn_daemon().await;
+
+    let out = nodespace(&daemon, &["--database", "other", "diagnostics"]).await;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let marked = stdout
+        .lines()
+        .find(|line| line.contains("[requires_extension]"))
+        .unwrap_or_else(|| panic!("the refused database is listed: {stdout}"));
+    assert!(
+        marked.ends_with(&format!("  ({})", extension_names::requirement(&["pro"]))),
+        "{marked}"
+    );
+    let other = stdout
+        .lines()
+        .find(|line| line.contains("other ["))
+        .unwrap();
+    assert!(!other.contains('('), "{other}");
+
+    let out = nodespace(&daemon, &["--json", "--database", "other", "diagnostics"]).await;
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let databases = report["databases"].as_array().unwrap();
+    let marked = databases.iter().find(|d| d["name"] == "marked").unwrap();
+    assert_eq!(marked["unsupported_extensions"], serde_json::json!(["pro"]));
+    assert_eq!(
+        marked["refusal"],
+        serde_json::json!(extension_names::refusal_message(&["pro"]))
+    );
+    let other = databases.iter().find(|d| d["name"] == "other").unwrap();
+    assert_eq!(other["unsupported_extensions"], serde_json::json!([]));
+    assert_eq!(other["refusal"], serde_json::Value::Null);
+}
+
+/// Making a refused database the default succeeds, and warns on stderr that
+/// requests routed to it are refused; any other database draws no warning.
+#[tokio::test]
+async fn database_use_warns_when_the_new_default_is_refused() {
+    let daemon = spawn_daemon().await;
+
+    let out = nodespace(&daemon, &["database", "use", "other"]).await;
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty(), "{:?}", out.stderr);
+
+    let out = nodespace(&daemon, &["--json", "database", "use", "marked"]).await;
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.starts_with(&format!(
+            "Warning: {}.",
+            extension_names::refusal_message(&["pro"])
+        )),
+        "{stderr}"
+    );
+    let info: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(info["status"], "requires_extension");
 }

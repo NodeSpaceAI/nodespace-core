@@ -47,12 +47,14 @@ use crate::NodeClient;
 #[derive(Subcommand, Debug)]
 pub enum SkillAction {
     /// Detect AI-agent harnesses and install the NodeSpace skill into them.
-    /// Safe to re-run: already-installed harnesses are left alone, and a
-    /// harness installed since the last run is picked up.
+    /// Safe to re-run: a harness whose skill files are already current is
+    /// left alone and reported as up to date, one holding an older skill is
+    /// updated, and a harness installed since the last run is picked up.
     Install(InstallArgs),
     /// Remove the NodeSpace skill from detected (or specified) harnesses.
     Uninstall(UninstallArgs),
-    /// Report which harnesses currently have the skill installed.
+    /// Report which harnesses currently have the skill installed, and which
+    /// are present on this machine without it.
     Status,
     /// Fetch the skills that match a task, each with its instructions, the
     /// commands of the tools it names, and the schemas of the types the task
@@ -848,26 +850,47 @@ fn uninstall() -> Result<()> {
 
 fn status() -> Result<()> {
     let installer = resolve_installer()?;
-    let outcome = run_installer_subcommand(&installer, "status")?;
-    for agent in &outcome.installed {
-        println!("✓ {agent}: present");
-    }
-    for skipped in &outcome.skipped {
-        println!("  {}: {}", skipped.agent, skipped.reason);
-    }
-    if outcome.installed.is_empty() && outcome.skipped.is_empty() {
-        println!("No agent harnesses detected.");
+    // Two questions, and the installer answers each with its own subcommand:
+    // where the skill is (`status`), and which harnesses are on this machine
+    // at all (`detect`). Only both tell a harness with no skill installed
+    // apart from a machine with no harness.
+    let present = run_installer_subcommand(&installer, "status")?;
+    let detected = run_installer_subcommand(&installer, "detect")?;
+    for line in status_lines(&present.installed, &detected.installed) {
+        println!("{line}");
     }
     Ok(())
 }
 
+/// What `skill status` prints, given the harnesses that have the skill
+/// (`present`) and the harnesses found on this machine (`detected`).
+fn status_lines(present: &[String], detected: &[String]) -> Vec<String> {
+    let mut lines: Vec<String> = present
+        .iter()
+        .map(|agent| format!("✓ {agent}: present"))
+        .collect();
+    lines.extend(
+        detected
+            .iter()
+            .filter(|agent| !present.contains(agent))
+            .map(|agent| format!("  {agent}: detected, skill not installed")),
+    );
+    if lines.is_empty() {
+        lines.push("No agent harnesses detected.".to_string());
+    }
+    lines
+}
+
 fn report_install_outcome(outcome: &InstallOutcome) {
-    if outcome.installed.is_empty() && outcome.skipped.is_empty() {
+    if outcome.installed.is_empty() && outcome.unchanged.is_empty() && outcome.skipped.is_empty() {
         println!("No supported agent harnesses detected.");
         return;
     }
     for agent in &outcome.installed {
         println!("✓ {agent}: skill installed");
+    }
+    for agent in &outcome.unchanged {
+        println!("✓ {agent}: skill already up to date");
     }
     for skipped in &outcome.skipped {
         println!("⚠ {}: {}", skipped.agent, skipped.reason);
@@ -900,6 +923,9 @@ pub(crate) struct SkippedAgent {
 #[derive(Debug)]
 pub(crate) struct InstallOutcome {
     pub(crate) installed: Vec<String>,
+    /// Agents an install found already holding this skill's files and
+    /// rewrote nothing for. Always empty for every other subcommand.
+    pub(crate) unchanged: Vec<String>,
     pub(crate) skipped: Vec<SkippedAgent>,
 }
 
@@ -1002,6 +1028,11 @@ fn resolve_script_installer() -> Result<Installer> {
     Ok(Installer::Script { path })
 }
 
+/// What the installer prints after "✓ agent: " when an install rewrote none
+/// of that agent's skill files: `UP_TO_DATE_TEXT` in
+/// `packages/skill/src/install.ts`, which must say the same.
+const UP_TO_DATE_TEXT: &str = "already up to date";
+
 /// Runtimes capable of executing the installer script, tried in this order
 /// -- see `skill_setup.rs`'s `INSTALLER_RUNTIMES` for why `bun` is tried
 /// first and `node` second.
@@ -1083,11 +1114,23 @@ fn parse_installer_output(output: std::process::Output) -> Result<InstallOutcome
         }
     }
 
-    let installed: Vec<String> = stdout
+    // A "✓ agent: already up to date (…)" line is an install that rewrote
+    // nothing; every other ✓ line is an agent acted on.
+    let (unchanged, installed): (Vec<&str>, Vec<&str>) = stdout
         .lines()
-        .filter_map(|line| agent_after_marker(line, '✓'))
-        .map(str::to_string)
-        .collect();
+        .filter(|line| agent_after_marker(line, '✓').is_some())
+        .partition(|line| {
+            line.split_once(':')
+                .is_some_and(|(_, detail)| detail.trim_start().starts_with(UP_TO_DATE_TEXT))
+        });
+    let agents = |lines: Vec<&str>| -> Vec<String> {
+        lines
+            .into_iter()
+            .filter_map(|line| agent_after_marker(line, '✓'))
+            .map(str::to_string)
+            .collect()
+    };
+    let (unchanged, installed) = (agents(unchanged), agents(installed));
 
     let skipped: Vec<SkippedAgent> = stdout
         .lines()
@@ -1107,7 +1150,11 @@ fn parse_installer_output(output: std::process::Output) -> Result<InstallOutcome
         })
         .collect();
 
-    Ok(InstallOutcome { installed, skipped })
+    Ok(InstallOutcome {
+        installed,
+        unchanged,
+        skipped,
+    })
 }
 
 #[cfg(test)]
@@ -1934,6 +1981,51 @@ mod tests {
         let outcome = parse_installer_output(output).expect("both agents installed cleanly");
         assert_eq!(outcome.installed, vec!["claude-code", "codex"]);
         assert!(outcome.skipped.is_empty());
+    }
+
+    /// An agent whose files an install left as they were is reported apart
+    /// from one it wrote to.
+    #[test]
+    fn parse_installer_output_separates_agents_already_up_to_date() {
+        let output = fake_output(
+            "'✓ claude-code: already up to date (3 file(s))' '✓ codex: installed 2 file(s)'",
+        );
+        let outcome = parse_installer_output(output).expect("both lines parse");
+        assert_eq!(outcome.unchanged, vec!["claude-code"]);
+        assert_eq!(outcome.installed, vec!["codex"]);
+    }
+
+    /// The text this parser matches is the text the installer prints.
+    #[test]
+    fn the_up_to_date_text_matches_the_installers() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../skill/src/install.ts"),
+        )
+        .expect("read the installer source");
+        assert!(
+            source.contains(&format!("UP_TO_DATE_TEXT = '{UP_TO_DATE_TEXT}'")),
+            "packages/skill/src/install.ts must print {UP_TO_DATE_TEXT:?}"
+        );
+    }
+
+    /// A harness on this machine without the skill is named as such, so a
+    /// machine with harnesses and no skill does not read as one with none.
+    #[test]
+    fn status_names_a_detected_harness_without_the_skill() {
+        let names = |agents: &[&str]| agents.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+
+        assert_eq!(
+            status_lines(&names(&["codex"]), &names(&["claude-code", "codex"])),
+            vec![
+                "✓ codex: present",
+                "  claude-code: detected, skill not installed"
+            ]
+        );
+        assert_eq!(
+            status_lines(&[], &names(&["pi"])),
+            vec!["  pi: detected, skill not installed"]
+        );
+        assert_eq!(status_lines(&[], &[]), vec!["No agent harnesses detected."]);
     }
 
     #[test]

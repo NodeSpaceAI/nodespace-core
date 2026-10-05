@@ -584,15 +584,12 @@ impl NodeService {
         self.ensure_creatable(&node).await?;
         // A type that needs a parent is refused here, before the row is
         // written: the row lands before its parent edge, so no database rule
-        // can see that the edge never came (ADR-089).
+        // can see that the edge never came (ADR-089). The refusal names no
+        // id: the node was never created, so its id leads nowhere.
         if is_root {
-            crate::db::SqliteStore::assert_may_be_root_in_tx(
-                tx.store_tx(),
-                &node.node_type,
-                Some(node.id.as_str()).filter(|id| !id.is_empty()),
-            )
-            .await
-            .map_err(NodeServiceError::from_store)?;
+            crate::db::SqliteStore::assert_may_be_root_in_tx(tx.store_tx(), &node.node_type, None)
+                .await
+                .map_err(NodeServiceError::from_store)?;
         }
         self.validate_templated_content(&node).await?;
 
