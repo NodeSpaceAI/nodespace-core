@@ -728,126 +728,165 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
   }
 }
 
+/**
+ * Runs the plugin's own step of a hook and answers `fallback` when it fails.
+ * Every hook below calls `next` exactly once, outside this, so a failure here
+ * can neither stop the engine's event nor run it twice.
+ */
+async function quietly<T>(fallback: T, step: () => Promise<T>): Promise<T> {
+  try {
+    return await step()
+  } catch {
+    return fallback
+  }
+}
+
+/** What stands before a tool call: a refusal, a note for its result, or nothing. */
+async function beforeTool($: Engine, intervalMs: number): Promise<Verdict> {
+  const held = await read($, session)
+
+  if (!held?.project) {
+    return null
+  }
+
+  const watching = await read($, watch)
+
+  if (watching.blocked) {
+    return { deny: watching.blocked }
+  }
+
+  const now = await $.clock.now()
+
+  if (!watching.item || now - watching.lastCheckedAt < intervalMs) {
+    return null
+  }
+
+  await update($, watch, kept => ({ ...kept, lastCheckedAt: now }))
+
+  return checkItem($, held.database, { ...watching, lastCheckedAt: now })
+}
+
+/** The note for a prompt when the skill list changed since it was last read. */
+async function listChange($: Engine): Promise<string | null> {
+  const held = await current($)
+
+  if (!held.project) {
+    return null
+  }
+
+  const listing = await nodespace($, held.database, ['skill', 'guidance'])
+  const listed = listing.ok ? parse(listing.stdout) : undefined
+  const version = isRecord(listed) ? text(listed.version) : ''
+
+  if (version === '' || version === held.listVersion) {
+    return null
+  }
+
+  const skills = skillsOf(listed)
+  const note = listNote(held.skills, skills, await read($, fetched))
+
+  await update($, session, kept => (kept ? { ...kept, skills, listVersion: version } : kept))
+
+  return note
+}
+
 export const register: Register = (on, options) => {
   const configured = Number(options.watch_interval_seconds)
   const intervalMs =
     (Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_WATCH_INTERVAL_SECONDS) * 1000
 
   on('session.start', async ($, e, next) => {
-    const loaded = await load($, e.cwd)
+    await quietly(undefined, async () => {
+      const loaded = await load($, e.cwd)
 
-    await update($, session, () => loaded)
-    await update($, fetched, () => [])
+      await update($, session, () => loaded)
+      await update($, fetched, () => [])
+    })
 
     return next(e)
-  }).catch(($, e, next) => next(e))
+  })
 
   // A `/clear` ends the session with no `session.start` after it, and a
   // compaction drops what the conversation held: both are read again at the
   // next prompt or system prompt, when the prompt cache is rebuilt anyway.
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
-      await markStale($, 'clear')
+      await quietly(undefined, async () => {
+        await markStale($, 'clear')
+      })
     }
 
     return next(e)
-  }).catch(($, e, next) => next(e))
+  })
 
   on('session.compact', async ($, e, next) => {
     const compacted = await next(e)
 
     if (e.trigger !== 'precompute' && e.agentId === undefined && compacted.skip === undefined) {
-      await markStale($, 'compact')
+      await quietly(undefined, async () => {
+        await markStale($, 'compact')
+      })
     }
 
     return compacted
-  }).catch(($, e, next) => next(e))
+  })
 
   on('prompt.compose', async ($, e, next) => {
     const composed = await next(e)
-    const held = await current($)
+    const section = await quietly(null, async () => (await current($)).section)
 
-    if (!held.section) {
+    if (!section) {
       return composed
     }
 
     return {
       sections: [
-        ...composed.sections.filter(section => section.id !== SECTION_ID),
-        { id: SECTION_ID, text: held.section, scope: 'session' },
+        ...composed.sections.filter(existing => existing.id !== SECTION_ID),
+        { id: SECTION_ID, text: section, scope: 'session' },
       ],
     }
-  }).catch(($, e, next) => next(e))
+  })
 
   on('prompt.submit', async ($, e, next) => {
-    const held = await current($)
-
-    if (!held.project) {
-      return next(e)
-    }
-
     const isUser = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
-
-    if (isUser) {
-      await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
-    }
-
-    const listing = await nodespace($, held.database, ['skill', 'guidance'])
-    const listed = listing.ok ? parse(listing.stdout) : undefined
-    const version = isRecord(listed) ? text(listed.version) : ''
-
-    if (version === '' || version === held.listVersion) {
-      return next(e)
-    }
-
-    const skills = skillsOf(listed)
-    const note = listNote(held.skills, skills, await read($, fetched))
-
-    await update($, session, kept => (kept ? { ...kept, skills, listVersion: version } : kept))
-
-    return next({ ...e, context: [...(e.context ?? []), note] })
-  }).catch(($, e, next) => next(e))
-
-  on('tool.call', async ($, e, next) => {
-    const held = await read($, session)
-
-    if (!held?.project) {
-      return next(e)
-    }
-
-    const watching = await read($, watch)
-
-    if (watching.blocked) {
-      return { deny: watching.blocked }
-    }
-
-    let note: string | undefined
-    const now = await $.clock.now()
-
-    if (watching.item && now - watching.lastCheckedAt >= intervalMs) {
-      await update($, watch, kept => ({ ...kept, lastCheckedAt: now }))
-
-      const verdict = await checkItem($, held.database, { ...watching, lastCheckedAt: now })
-
-      if (verdict && 'deny' in verdict) {
-        return { deny: verdict.deny }
+    const note = await quietly(null, async () => {
+      if (isUser) {
+        await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
       }
 
-      note = verdict?.note
+      return listChange($)
+    })
+
+    return note === null ? next(e) : next({ ...e, context: [...(e.context ?? []), note] })
+  })
+
+  on('tool.call', async ($, e, next) => {
+    const verdict = await quietly(null, () => beforeTool($, intervalMs))
+
+    if (verdict && 'deny' in verdict) {
+      return { deny: verdict.deny }
     }
 
     const ran = await next(e)
 
-    if (e.tool === 'Bash' && ran.deny === undefined) {
-      await learn($, held, nodespaceInvocations(e.command), ran.text ?? '')
-    }
-
-    if (note === undefined || ran.deny !== undefined) {
+    if (ran.deny !== undefined) {
       return ran
     }
 
-    return { ...ran, context: [...(ran.context ?? []), note] }
-  }).catch(($, e, next) => next(e))
+    if (e.tool === 'Bash') {
+      const command = e.command
+
+      await quietly(undefined, async () => {
+        const held = await read($, session)
+
+        if (held?.project) {
+          await learn($, held, nodespaceInvocations(command), ran.text ?? '')
+        }
+      })
+    }
+
+    return verdict ? { ...ran, context: [...(ran.context ?? []), verdict.note] } : ran
+  })
 }
 
 /**
