@@ -20,7 +20,9 @@ const MODEL_FILE = "nomic-embed-text-v1.5.Q8_0.gguf";
 // authoritative integrity gate; the pinned HuggingFace commit stops `main` from
 // moving under us. Rotating the model MUST update BOTH the commit and the digest
 // here AND the matching `EMBEDDING_MODEL_SHA256` in
-// `packages/nlp-engine/src/config.rs`.
+// `packages/nlp-engine/src/config.rs` and in
+// `packages/desktop-app/app-lib/src/bundled_model.rs` (the app's copy of its
+// bundled model).
 const MODEL_HF_COMMIT = "0188c9bf409793f810680a5a431e7b899c46104c";
 const MODEL_SHA256 =
   "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7";

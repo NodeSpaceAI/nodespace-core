@@ -9,8 +9,8 @@
 //!
 //! - Anything already at the target path is kept, even a file that fails
 //!   verification. Deleting it makes the next launch copy again.
-//! - The copy goes to a temporary file in the target directory. It is checked
-//!   against the pinned SHA-256, flushed to disk, then renamed into place, so
+//! - The copy goes to a temporary file in the target directory. It is flushed
+//!   to disk, checked against the pinned SHA-256, then renamed into place, so
 //!   the daemon never finds a partial or unverified model. A failure removes the
 //!   temporary file.
 //! - Nothing writes inside the app bundle. The daemon checks the copy again when
@@ -166,7 +166,7 @@ fn entry_exists(path: &Path) -> io::Result<bool> {
 }
 
 /// Copies `bundled` to `target` through a temporary file in `target`'s
-/// directory: copied, checked against `expected_sha256`, flushed to disk, then
+/// directory: copied and flushed to disk, checked against `expected_sha256`, then
 /// renamed into place. Any failure removes the temporary file, so `target`
 /// either does not exist or holds the verified model.
 ///
@@ -189,8 +189,10 @@ fn copy_verified(bundled: &Path, target: &Path, expected_sha256: &str) -> Result
 }
 
 /// This process's temporary path for `target`: `<file>.tmp-<pid>` beside it.
-/// The pid keeps two app processes, a release and a development build say, off
-/// each other's file.
+/// The pid keeps the names of two concurrent copies (a release and a
+/// development build, say) apart. One copy's stale-file cleanup can still
+/// remove the other's file part-way; that copy then fails with a warning, and
+/// the next launch tries again.
 fn temp_path(target: &Path) -> PathBuf {
     target.with_file_name(format!("{}{}", temp_prefix(), std::process::id()))
 }
@@ -213,10 +215,14 @@ fn remove_stale_temp_files(dir: &Path) {
     }
 }
 
-/// Copies `bundled` to `temp`, checks the copy's digest and flushes it to disk.
+/// Copies `bundled` to `temp`, flushes the copy to disk and checks its digest.
 fn write_verified(bundled: &Path, temp: &Path, expected_sha256: &str) -> Result<()> {
-    fs::copy(bundled, temp)
-        .with_context(|| format!("cannot copy {} to {}", bundled.display(), temp.display()))?;
+    let copied = if cfg!(target_os = "macos") {
+        clone_to_temp(bundled, temp)
+    } else {
+        stream_to_temp(bundled, temp)
+    };
+    copied.with_context(|| format!("cannot copy {} to {}", bundled.display(), temp.display()))?;
     let actual =
         file_sha256(temp).with_context(|| format!("cannot read {} to check it", temp.display()))?;
     if !actual.eq_ignore_ascii_case(expected_sha256) {
@@ -225,11 +231,38 @@ fn write_verified(bundled: &Path, temp: &Path, expected_sha256: &str) -> Result<
             bundled.display()
         );
     }
-    sync_file(temp).with_context(|| format!("cannot flush {} to disk", temp.display()))
+    Ok(())
+}
+
+/// `fs::copy`, which clones the file on APFS, so the copy takes no second
+/// 146 MB of disk. The clone keeps the bundle's mode, which may be read-only,
+/// and Unix flushes through any descriptor, so it is flushed through a
+/// read-only one.
+fn clone_to_temp(bundled: &Path, temp: &Path) -> io::Result<()> {
+    fs::copy(bundled, temp)?;
+    File::open(temp)?.sync_all()
+}
+
+/// Creates `temp` and streams the bytes into it, flushing through the same
+/// handle. Unlike `fs::copy`, this carries over none of the installed file's
+/// attributes: on Windows `CopyFileExW` would copy a read-only attribute, and
+/// Windows flushes only through a handle opened for writing.
+fn stream_to_temp(bundled: &Path, temp: &Path) -> io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(temp)?;
+    io::copy(&mut File::open(bundled)?, &mut file)?;
+    file.sync_all()
 }
 
 /// Renames `temp` to `target` unless something is at `target` by now, then
 /// flushes the directory so the rename itself survives a crash.
+///
+/// The check and the rename are two steps, and the rename replaces an existing
+/// file. Something written to `target` in the microseconds between them would
+/// be replaced. The only writer expected there is another launch's copy of these
+/// same verified bytes.
 fn commit(temp: &Path, target: &Path) -> Result<Provisioned> {
     if entry_exists(target)? {
         return Ok(Provisioned::AlreadyPresent);
@@ -247,19 +280,6 @@ fn file_sha256(path: &Path) -> io::Result<String> {
     let mut hasher = Sha256::new();
     io::copy(&mut File::open(path)?, &mut hasher)?;
     Ok(format!("{:x}", hasher.finalize()))
-}
-
-/// Flushes the file at `path` to disk. Windows flushes only through a handle
-/// opened for writing; Unix flushes through any descriptor, so the file is
-/// opened read-only there and its mode doesn't matter. `cfg!` rather than
-/// `#[cfg]`, so every platform's build type-checks both branches.
-fn sync_file(path: &Path) -> io::Result<()> {
-    let file = if cfg!(windows) {
-        fs::OpenOptions::new().write(true).open(path)?
-    } else {
-        File::open(path)?
-    };
-    file.sync_all()
 }
 
 /// Flushes `dir`'s entries. Best effort: if it fails, a crash can at worst lose
@@ -394,6 +414,28 @@ mod tests {
             entries(target.parent().unwrap()).is_empty(),
             "no temporary file is left behind"
         );
+    }
+
+    /// The copy used off macOS writes a new file instead of copying the
+    /// installed one's attributes, so a read-only bundle still gives a temporary
+    /// file that opens for writing, which Windows needs to flush it.
+    #[test]
+    fn the_streamed_copy_is_writable_even_from_a_read_only_bundle() {
+        let (_resources, bundled) = bundle_with_model();
+        let mut read_only = fs::metadata(&bundled).expect("bundle").permissions();
+        read_only.set_readonly(true);
+        fs::set_permissions(&bundled, read_only).expect("make the bundle read-only");
+        let dir = tempfile::tempdir().expect("dir");
+        let temp = dir.path().join("copy");
+
+        stream_to_temp(&bundled, &temp).expect("stream copy");
+
+        assert_eq!(fs::read(&temp).expect("copy"), PLACEHOLDER);
+        assert!(!fs::metadata(&temp).expect("copy").permissions().readonly());
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&temp)
+            .expect("the copy opens for writing");
     }
 
     /// Temporary files from an earlier copy whose process died are removed by
