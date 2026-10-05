@@ -561,6 +561,12 @@ impl NodeService {
             let moves = scope_owners
                 .iter()
                 .filter_map(|(field, scope_bucket)| {
+                    // Only an enum is declared again by a subtype, which is
+                    // the one case a filter and a sort read there too.
+                    scope_fields.iter().find(|declared| {
+                        declared.name == *field
+                            && declared.field_type == crate::models::SchemaFieldType::Enum
+                    })?;
                     let stored_in = node_owners.get(field).filter(|b| *b != scope_bucket)?;
                     Some((field.clone(), stored_in.clone(), scope_bucket.clone()))
                 })
@@ -791,6 +797,11 @@ mod relocated_fields_tests {
         );
         assert_eq!(
             read(json!({ "ticket": { "rank": 1, "title": "t" }, "bug": {} })),
+            json!({ "ticket": { "title": "t" } })
+        );
+        // A string the scope has no value for is not the node's value there.
+        assert_eq!(
+            read(json!({ "ticket": { "rank": 1, "title": "t" }, "bug": { "rank": "x" } })),
             json!({ "ticket": { "title": "t" } })
         );
     }
