@@ -33,6 +33,10 @@ pub mod daemon_setup;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub mod incompatible_database;
 
+// The bundled embedding model, copied into the daemon's model directory
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+mod bundled_model;
+
 // First-launch skill installer
 pub mod skill_setup;
 
@@ -603,6 +607,10 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
 
                         // Signal the frontend to hold off on gRPC calls until the daemon is ready.
                         window_routing::emit_routed(&app_handle, "daemon-status", "starting", None);
+
+                        // The daemon looks for its embedding model only when it
+                        // starts, so the bundled copy goes in place first.
+                        bundled_model::provision_bundled_model(&app_handle).await;
 
                         match ensure_daemon_running(&app_handle).await {
                             Ok(DaemonStatus::Healthy) => {

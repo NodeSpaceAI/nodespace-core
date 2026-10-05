@@ -41,6 +41,9 @@ thiserror = { workspace = true }
 # compare versions with semver semantics.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 semver = "1"
+# SHA-256 check of the bundled embedding model before it is copied into place
+# (ADR-058's pinned digest).
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"
