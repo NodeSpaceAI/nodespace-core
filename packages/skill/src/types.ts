@@ -5,10 +5,14 @@ export interface AgentConfig {
   detectionDir: string;
   installDir: string;
   /**
-   * The harness plugin installed beside `SKILL.md`, for a harness that loads
-   * one from its skill folder (ADR-093 §5): `dir` is its folder under the
-   * package root, and each of `files`, a path relative to `dir`, installs at
-   * that same path inside `installDir`.
+   * The harness plugin (ADR-093 §5): `dir` is its folder under the package
+   * root, and each of `files`, a path relative to `dir`, installs at that
+   * same path. `shared` names files of `SHARED_PLUGIN_DIR` the plugin
+   * imports, each as `[file, path it installs at]`.
+   *
+   * `installDir` is the folder the harness loads the plugin from. Without
+   * one the plugin installs into the skill folder, beside `SKILL.md`, for a
+   * harness that loads a plugin from there.
    *
    * `SKILL.md` and the skill's `references/*.md` files are not listed
    * anywhere: every agent gets `SKILL.md`, and the installer copies every
@@ -16,7 +20,13 @@ export interface AgentConfig {
    * (`listReferenceFiles`), so adding or dropping a reference is a change to
    * that directory alone.
    */
-  plugin?: { dir: string; files: string[] };
+  plugin?: { dir: string; files: string[]; shared?: Array<[string, string]>; installDir?: string };
+  /**
+   * The harness's user-level instructions file, for a harness with no plugin
+   * (ADR-093 §6). The installer writes one marked block into it, creating the
+   * file when it is absent, and owns nothing else in it.
+   */
+  instructionsFile?: string;
   /**
    * Frontmatter to prepend to `SKILL.md` when installing for this agent.
    *
@@ -34,12 +44,15 @@ export interface AgentConfig {
 
 export interface InstallResult {
   agent: AgentName;
-  /** Every file of the skill now in place, whether or not this run wrote it. */
+  /**
+   * Every file of the skill now in place, whether or not this run wrote it.
+   * The instructions file is among them for a harness that gets the block.
+   */
   installed: string[];
   /**
-   * Whether this run altered the install directory: wrote a file whose
-   * content differed or was missing, or removed one the skill no longer
-   * ships. False for a re-run over an install that is already current, and
+   * Whether this run altered anything on disk: wrote a file whose content
+   * differed or was missing, removed one the skill no longer ships, or
+   * wrote or replaced the instructions block. False for a re-run over an install that is already current, and
    * for an agent nothing was installed for.
    */
   changed: boolean;
@@ -56,4 +69,10 @@ export interface InstallResult {
 export interface UninstallResult {
   agent: AgentName;
   removed: string[];
+}
+
+/** What a harness has beyond the static skill (ADR-093 §5, §6), and whether it is in place. */
+export interface IntegrationStatus {
+  kind: 'plugin' | 'instructions-block';
+  installed: boolean;
 }

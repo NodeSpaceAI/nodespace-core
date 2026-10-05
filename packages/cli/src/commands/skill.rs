@@ -48,14 +48,22 @@ use crate::NodeClient;
 #[derive(Subcommand, Debug)]
 pub enum SkillAction {
     /// Detect AI-agent harnesses and install the NodeSpace skill into them.
-    /// Safe to re-run: a harness whose skill files are already current is
-    /// left alone and reported as up to date, one holding an older skill is
-    /// updated, and a harness installed since the last run is picked up.
+    /// A harness with a plugin system (Claude Code, Pi, OpenCode) also gets
+    /// the NodeSpace plugin, in the folder it loads plugins from. Any other
+    /// (Codex, Antigravity) gets one marked block in its own user-level
+    /// instructions file, which is created when absent; nothing else in that
+    /// file is touched. Safe to re-run: a harness whose files are already
+    /// current is left alone and reported as up to date, one holding an
+    /// older skill is updated, and a harness installed since the last run is
+    /// picked up.
     Install(InstallArgs),
-    /// Remove the NodeSpace skill from detected (or specified) harnesses.
+    /// Remove the NodeSpace skill from detected (or specified) harnesses,
+    /// with the plugin or the instructions block installed beside it. Of an
+    /// instructions file only the marked block is removed.
     Uninstall(UninstallArgs),
     /// Report which harnesses currently have the skill installed, and which
-    /// are present on this machine without it.
+    /// are present on this machine without it. For each that has it, says
+    /// whether its plugin or its instructions block is installed too.
     Status,
     /// Fetch the skills that match a task, each with its instructions, the
     /// commands of the tools it names, and the schemas of the types the task
@@ -964,6 +972,11 @@ fn confirm_install() -> Result<bool> {
         return Ok(true);
     }
 
+    println!(
+        "This installs the NodeSpace skill into each detected agent harness, with a plugin where \
+         the harness loads one (Claude Code, Pi, OpenCode) and otherwise one marked block in your \
+         own instructions file for that harness (Codex, Antigravity)."
+    );
     print!("Install the NodeSpace skill into detected agent harnesses? [Y/n] ");
     use std::io::Write;
     std::io::stdout().flush().ok();
@@ -1000,20 +1013,27 @@ fn status() -> Result<()> {
     // apart from a machine with no harness.
     let present = run_installer_subcommand(&installer, "status")?;
     let detected = run_installer_subcommand(&installer, "detect")?;
-    for line in status_lines(&present.installed, &present.skipped, &detected.installed) {
+    for line in status_lines(&present.details, &present.skipped, &detected.installed) {
         println!("{line}");
     }
     Ok(())
 }
 
 /// What `skill status` prints, given the harnesses that have the skill as
-/// installed files (`present`), the ones that have it some other way, each
-/// with how (`managed`: Claude Code's plugin marketplace), and the harnesses
-/// found on this machine (`detected`).
-fn status_lines(present: &[String], managed: &[SkippedAgent], detected: &[String]) -> Vec<String> {
+/// installed files, each with what the installer said of it (`present`:
+/// "present", and whether its plugin or its instructions block is installed
+/// too), the ones that have it some other way, each with how (`managed`:
+/// Claude Code's plugin marketplace), and the harnesses found on this machine
+/// (`detected`).
+fn status_lines(
+    present: &[(String, String)],
+    managed: &[SkippedAgent],
+    detected: &[String],
+) -> Vec<String> {
+    let has_skill = |agent: &String| present.iter().any(|(name, _)| name == agent);
     let mut lines: Vec<String> = present
         .iter()
-        .map(|agent| format!("✓ {agent}: present"))
+        .map(|(agent, detail)| format!("✓ {agent}: {detail}"))
         .collect();
     lines.extend(
         managed
@@ -1023,7 +1043,7 @@ fn status_lines(present: &[String], managed: &[SkippedAgent], detected: &[String
     lines.extend(
         detected
             .iter()
-            .filter(|agent| !present.contains(agent) && !managed.iter().any(|m| &m.agent == *agent))
+            .filter(|agent| !has_skill(agent) && !managed.iter().any(|m| &m.agent == *agent))
             .map(|agent| format!("  {agent}: detected, skill not installed")),
     );
     if lines.is_empty() {
@@ -1074,6 +1094,9 @@ pub(crate) struct SkippedAgent {
 #[derive(Debug)]
 pub(crate) struct InstallOutcome {
     pub(crate) installed: Vec<String>,
+    /// Every agent on a "✓ agent: detail" line, with that detail as the
+    /// installer printed it.
+    pub(crate) details: Vec<(String, String)>,
     /// Agents an install found already holding this skill's files and
     /// rewrote nothing for. Always empty for every other subcommand.
     pub(crate) unchanged: Vec<String>,
@@ -1230,7 +1253,7 @@ fn run_script_with_runtimes(path: &Path, subcommand: &str) -> Result<InstallOutc
     let Some(output) = output else {
         anyhow::bail!(
             "Neither `bun` nor `node` was found on $PATH. One of them is required to install \
-             NodeSpace's AI-agent integrations (Claude Code, Codex, Gemini CLI, OpenCode). \
+             NodeSpace's AI-agent integrations (Claude Code, Codex, Antigravity, OpenCode, Pi). \
              Install Node from https://nodejs.org (or Bun from https://bun.sh) and re-run."
         );
     };
@@ -1283,6 +1306,15 @@ fn parse_installer_output(output: std::process::Output) -> Result<InstallOutcome
     };
     let (unchanged, installed) = (agents(unchanged), agents(installed));
 
+    let details: Vec<(String, String)> = stdout
+        .lines()
+        .filter_map(|line| {
+            let agent = agent_after_marker(line, '✓')?;
+            let detail = line.split_once(':')?.1.trim();
+            Some((agent.to_string(), detail.to_string()))
+        })
+        .collect();
+
     let skipped: Vec<SkippedAgent> = stdout
         .lines()
         .filter_map(|line| {
@@ -1303,6 +1335,7 @@ fn parse_installer_output(output: std::process::Output) -> Result<InstallOutcome
 
     Ok(InstallOutcome {
         installed,
+        details,
         unchanged,
         skipped,
     })
@@ -2159,9 +2192,10 @@ mod tests {
     #[test]
     fn status_names_a_detected_harness_without_the_skill() {
         let names = |agents: &[&str]| agents.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let present = [("codex".to_string(), "present".to_string())];
 
         assert_eq!(
-            status_lines(&names(&["codex"]), &[], &names(&["claude-code", "codex"])),
+            status_lines(&present, &[], &names(&["claude-code", "codex"])),
             vec![
                 "✓ codex: present",
                 "  claude-code: detected, skill not installed"
@@ -2175,6 +2209,46 @@ mod tests {
             status_lines(&[], &[], &[]),
             vec!["No agent harnesses detected."]
         );
+    }
+
+    /// What the installer says of a harness that has the skill, whether its
+    /// plugin or its instructions block is installed too, is printed as it is.
+    #[test]
+    fn status_says_whether_the_plugin_or_the_instructions_block_is_installed() {
+        let output = fake_output(
+            "'✓ pi: present, plugin installed' '✓ codex: present, instructions block not installed' '  opencode: not present'",
+        );
+        let outcome = parse_installer_output(output).expect("status lines parse");
+
+        assert_eq!(outcome.installed, vec!["pi", "codex"]);
+        assert_eq!(
+            status_lines(&outcome.details, &[], &["opencode".to_string()]),
+            vec![
+                "✓ pi: present, plugin installed",
+                "✓ codex: present, instructions block not installed",
+                "  opencode: detected, skill not installed"
+            ]
+        );
+    }
+
+    /// The installer prints those words: `presentStatusText` in
+    /// `packages/skill/src/install.ts`.
+    #[test]
+    fn the_status_words_are_the_installers() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../skill/src/install.ts"),
+        )
+        .expect("read the installer source");
+        for words in [
+            "'present'",
+            "'instructions block'",
+            "'installed' : 'not installed'",
+        ] {
+            assert!(
+                source.contains(words),
+                "packages/skill/src/install.ts must print {words}"
+            );
+        }
     }
 
     /// A harness that has the skill through its own marketplace is reported

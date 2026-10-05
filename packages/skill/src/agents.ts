@@ -10,6 +10,26 @@ const home = homedir();
 // running Claude Code will actually look for it.
 const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR?.trim() || join(home, '.claude');
 
+/** A path from the environment, with a leading `~` read as the home directory. */
+function fromEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  if (!value) return undefined;
+  return value === '~' || value.startsWith('~/') ? join(home, value.slice(1)) : value;
+}
+
+// Each harness says where its own files live, and each lets the environment
+// move that: Codex's home with `CODEX_HOME`, Pi's agent directory with
+// `PI_CODING_AGENT_DIR`, and OpenCode's configuration with `XDG_CONFIG_HOME`.
+const codexHome = fromEnv('CODEX_HOME') ?? join(home, '.codex');
+const piAgentDir = fromEnv('PI_CODING_AGENT_DIR') ?? join(home, '.pi', 'agent');
+// OpenCode keeps its configuration, plugins and skills in its XDG config
+// directory. `~/.opencode` holds only what its installer puts there.
+const opencodeConfigDir = join(fromEnv('XDG_CONFIG_HOME') ?? join(home, '.config'), 'opencode');
+// Antigravity reads its rules, for every project on the machine, from the
+// configuration directory it shares across its surfaces, not from the
+// command-line tool's own folder.
+const antigravityConfigDir = join(home, '.gemini', 'config');
+
 /**
  * YAML frontmatter prepended to `SKILL.md` at install time.
  *
@@ -73,6 +93,38 @@ export const CLAUDE_CODE_PLUGIN = {
   ],
 };
 
+/**
+ * The folder under the package root holding what the Pi extension and the
+ * OpenCode plugin both import. Each installs its files beside its own.
+ */
+export const SHARED_PLUGIN_DIR = 'plugins/shared';
+
+/** What both do, behind the few things a harness supplies (ADR-093 §5). */
+const SESSION_MODULE = 'nodespace-session.ts';
+
+/**
+ * The Pi extension: Pi loads `extensions/<name>/index.ts` from its agent
+ * directory with no flag, and that file may import the ones beside it.
+ */
+export const PI_PLUGIN = {
+  dir: 'plugins/pi',
+  files: ['index.ts'],
+  shared: [[SESSION_MODULE, SESSION_MODULE]] as Array<[string, string]>,
+  installDir: join(piAgentDir, 'extensions', 'nodespace'),
+};
+
+/**
+ * The OpenCode plugin: OpenCode loads every `.ts` file directly in its
+ * `plugins/` folder and calls each export of one as a plugin. The module the
+ * plugin imports therefore sits one folder down, where OpenCode does not look.
+ */
+export const OPENCODE_PLUGIN = {
+  dir: 'plugins/opencode',
+  files: ['nodespace.ts'],
+  shared: [[SESSION_MODULE, `nodespace/${SESSION_MODULE}`]] as Array<[string, string]>,
+  installDir: join(opencodeConfigDir, 'plugins'),
+};
+
 export const AGENTS: AgentConfig[] = [
   {
     name: 'claude-code',
@@ -83,8 +135,11 @@ export const AGENTS: AgentConfig[] = [
   },
   {
     name: 'codex',
-    detectionDir: join(home, '.codex'),
-    installDir: join(home, '.codex', 'skills', 'nodespace'),
+    detectionDir: codexHome,
+    installDir: join(codexHome, 'skills', 'nodespace'),
+    // Codex reads `AGENTS.md` in its home into every session. An
+    // `AGENTS.override.md` beside it, when the user keeps one, is read instead.
+    instructionsFile: join(codexHome, 'AGENTS.md'),
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
@@ -94,12 +149,16 @@ export const AGENTS: AgentConfig[] = [
     // ~/.gemini/antigravity-cli/, not a separate ~/.antigravity.
     detectionDir: join(home, '.gemini', 'antigravity-cli'),
     installDir: join(home, '.gemini', 'antigravity-cli', 'skills', 'nodespace'),
+    instructionsFile: join(antigravityConfigDir, 'AGENTS.md'),
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
     name: 'opencode',
-    detectionDir: join(home, '.opencode'),
-    installDir: join(home, '.opencode', 'skills', 'nodespace'),
+    detectionDir: opencodeConfigDir,
+    // OpenCode also reads the Claude skills folder. It keeps one skill per
+    // `name`, so the skill installed in both is listed to the agent once.
+    installDir: join(opencodeConfigDir, 'skills', 'nodespace'),
+    plugin: OPENCODE_PLUGIN,
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
@@ -108,8 +167,9 @@ export const AGENTS: AgentConfig[] = [
     // extensions under ~/.pi/agent/ -- not a bare ~/.pi -- per its skills.md
     // and extensions.md docs (skill dirs: ~/.pi/agent/skills/, ~/.agents/skills/;
     // extension dirs: ~/.pi/agent/extensions/*.ts, ~/.pi/agent/extensions/*/index.ts).
-    detectionDir: join(home, '.pi', 'agent'),
-    installDir: join(home, '.pi', 'agent', 'skills', 'nodespace'),
+    detectionDir: piAgentDir,
+    installDir: join(piAgentDir, 'skills', 'nodespace'),
+    plugin: PI_PLUGIN,
     skillFrontmatter: SKILL_FRONTMATTER,
   },
 ];

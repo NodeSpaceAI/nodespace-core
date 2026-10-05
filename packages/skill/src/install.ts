@@ -19,8 +19,9 @@ import {
   checkInstalled,
   detectAgents,
   claudeCodePluginManagedSkillExists,
+  integrationStatus,
 } from './installer.js';
-import type { AgentName, InstallResult } from './types.js';
+import type { AgentName, InstallResult, IntegrationStatus } from './types.js';
 import { AGENTS } from './agents.js';
 import { installMcp, uninstallMcp, checkMcpInstalled } from './mcp-installer.js';
 import type { McpClientName } from './mcp-clients.js';
@@ -53,6 +54,17 @@ export const UP_TO_DATE_TEXT = 'already up to date';
  * through its plugin marketplace rather than as files this installer wrote.
  */
 export const PLUGIN_MANAGED_STATUS_TEXT = 'installed via the Claude Code plugin marketplace';
+
+/**
+ * What `status` prints after "✓ agent: " for an agent that has the skill:
+ * "present", and whether its harness plugin or its instructions block is in
+ * place too. `nodespace skill status` prints this text as it is.
+ */
+export function presentStatusText(integration: IntegrationStatus | undefined): string {
+  if (!integration) return 'present';
+  const what = integration.kind === 'plugin' ? 'plugin' : 'instructions block';
+  return `present, ${what} ${integration.installed ? 'installed' : 'not installed'}`;
+}
 
 /** Whether Claude Code's plugin marketplace has the skill installed. */
 function pluginManaged(): boolean {
@@ -113,11 +125,15 @@ function main(): void {
     console.log(`Usage: bun install.js <command> [agent|client] [--resource-root <path>]
 
 Commands:
-  install [agent]        Install NodeSpace skill for detected (or specified) agents
-  uninstall [agent]      Remove NodeSpace skill from detected (or specified) agents
+  install [agent]        Install NodeSpace skill for detected (or specified) agents:
+                          the skill, the agent's harness plugin where it has
+                          one, and otherwise a marked block in the harness's
+                          own instructions file
+  uninstall [agent]      Remove all of that from detected (or specified) agents
   status [agent]         Report which (of the specified, or every configured) agents
-                          actually have SKILL.md on disk right now -- a pure
-                          filesystem check, no install/uninstall side effects
+                          actually have SKILL.md on disk right now, and whether
+                          the plugin or the instructions block is there too -- a
+                          pure filesystem check, no install/uninstall side effects
   detect [agent]         Report which (of the specified, or every configured)
                           agents are present on this machine at all (their
                           config dir exists), whether or not the skill is
@@ -243,12 +259,14 @@ Examples:
     // "✓ agent: present" reuses the exact marker/format the desktop app's
     // parse_installer_output already parses for the install command's
     // installed-agent lines, so skill_setup.rs's revalidation can share that
-    // same parser instead of needing a second one for this command.
+    // same parser instead of needing a second one for this command. What
+    // follows "present" says whether the plugin or the block is there too.
     const present = new Set(checkInstalled(targetAgents));
     const checked = targetAgents ?? validAgents;
     for (const name of checked) {
       if (present.has(name)) {
-        console.log(`✓ ${name}: present`);
+        const integration = resourceRoot ? integrationStatus(name, resourceRoot) : integrationStatus(name);
+        console.log(`✓ ${name}: ${presentStatusText(integration)}`);
       } else if (name === 'claude-code' && pluginManaged()) {
         // A ⚠ line, as `install` prints for the same state: the skill is
         // there, but not as files this installer wrote, so it is neither

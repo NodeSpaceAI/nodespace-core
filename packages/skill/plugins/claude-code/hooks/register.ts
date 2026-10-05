@@ -24,6 +24,8 @@ const watch = atom({ plugin: 'nodespace', key: 'watch' } as const, {
   item: null,
   lastCheckedAt: 0,
   blocked: null,
+  writesInFlight: 0,
+  ownMoves: 0,
 })
 
 const SECTION_ID = 'nodespace:context'
@@ -444,7 +446,7 @@ async function current($: Engine): Promise<NodespaceSession> {
   const isNew = !held || held.stale === 'clear'
 
   if (isNew) {
-    await update($, watch, () => ({ item: null, lastCheckedAt: 0, blocked: null }))
+    await update($, watch, () => ({ item: null, lastCheckedAt: 0, blocked: null, writesInFlight: 0, ownMoves: 0 }))
   }
 
   const loaded = await load($, await $.session.cwd(), held, isNew)
@@ -762,7 +764,12 @@ async function readItem(
     if (isRecord(entry)) {
       const id = text(entry.id) || text(entry.node_id)
 
-      parts.push({ key: `${kind}:${id}`, label: `${kind} "${labelOf(entry)}"`, stamp: stamp(entry) })
+      // A path's name is graph text too: it is cleaned like any other.
+      parts.push({
+        key: `${kind}:${id}`,
+        label: `${clean(kind, MAX_VALUE_CHARS)} "${labelOf(entry)}"`,
+        stamp: stamp(entry),
+      })
     }
   }
 
@@ -867,6 +874,24 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
   const again = `\`nodespace ${contextArgs(item).join(' ')}\``
 
   if (now.nodeVersion !== item.nodeVersion) {
+    // The engine runs the tool calls of one step together.
+    const latest = await read($, watch)
+
+    // Another check, run alongside this one, has already refused.
+    if (latest.blocked) {
+      return { deny: latest.blocked }
+    }
+
+    // One of the session's own writes has not reported back yet, or reported
+    // back and moved the baseline while this check was reading: the change
+    // may be its doing, and becomes the baseline as it would once that write
+    // reported.
+    if (latest.writesInFlight > 0 || latest.ownMoves !== held.ownMoves) {
+      await update($, watch, kept => ({ ...kept, item: now }))
+
+      return null
+    }
+
     const changes = fieldChanges(item, now)
     const reason = [
       `[NodeSpace] The item this session is working on (${clean(item.id, MAX_VALUE_CHARS)}) changed under it: it went from version ${item.nodeVersion} to ${now.nodeVersion}, and this session's own commands do not account for that.`,
@@ -877,7 +902,7 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
       'Stop here. Tell the user what changed and what you have done so far, and wait for their answer. Tool calls are refused until the user replies.',
     ].join('\n')
 
-    await update($, watch, () => ({ item: now, lastCheckedAt: held.lastCheckedAt, blocked: reason }))
+    await update($, watch, kept => ({ ...kept, item: now, lastCheckedAt: held.lastCheckedAt, blocked: reason }))
 
     return { deny: reason }
   }
@@ -1072,7 +1097,10 @@ export const register: Register = (on, options) => {
     const isUser = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
     const notes = await quietly([], async () => {
       if (isUser) {
-        await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
+        // A write the engine never reported back is over by the next prompt.
+        await update($, watch, kept =>
+          kept.blocked || kept.writesInFlight > 0 ? { ...kept, blocked: null, writesInFlight: 0 } : kept,
+        )
       }
 
       // The list first: it reads the session again when it is stale, and that
@@ -1096,30 +1124,47 @@ export const register: Register = (on, options) => {
       return { deny: verdict.deny }
     }
 
-    const ran = await next(e)
-
-    if (ran.deny !== undefined) {
-      return ran
-    }
-
-    // An answer given through a tool is the user's reply, as a prompt is.
-    if (USER_FACING_TOOLS.includes(tool)) {
-      await quietly(undefined, async () => {
-        await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
-      })
-    }
-
-    if (line !== null) {
-      await quietly(undefined, async () => {
-        const held = await read($, session)
-
-        if (held?.project) {
-          await learn($, held, nodespaceInvocations(line), ran.text ?? '', isWrite)
+    // Counted from here until the call has reported back and the item has
+    // been read again: a write of the session's own is in flight.
+    const inFlight = (by: number) =>
+      quietly(undefined, async () => {
+        if (isWrite) {
+          await update($, watch, kept => ({ ...kept, writesInFlight: Math.max(0, kept.writesInFlight + by) }))
         }
       })
-    }
 
-    return verdict ? { ...ran, context: [...(ran.context ?? []), verdict.note] } : ran
+    await inFlight(1)
+
+    // Released however the call ends, so a call that fails in the engine
+    // cannot leave the watch taking every later change for the session's own.
+    try {
+      const ran = await next(e)
+
+      if (ran.deny !== undefined) {
+        return ran
+      }
+
+      // An answer given through a tool is the user's reply, as a prompt is.
+      if (USER_FACING_TOOLS.includes(tool)) {
+        await quietly(undefined, async () => {
+          await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
+        })
+      }
+
+      if (line !== null) {
+        await quietly(undefined, async () => {
+          const held = await read($, session)
+
+          if (held?.project) {
+            await learn($, held, nodespaceInvocations(line), ran.text ?? '', isWrite)
+          }
+        })
+      }
+
+      return verdict ? { ...ran, context: [...(ran.context ?? []), verdict.note] } : ran
+    } finally {
+      await inFlight(-1)
+    }
   })
 }
 
@@ -1175,6 +1220,11 @@ async function learn(
   if (item) {
     const now = await $.clock.now()
 
-    await update($, watch, kept => ({ ...kept, item, lastCheckedAt: now }))
+    await update($, watch, kept => ({
+      ...kept,
+      item,
+      lastCheckedAt: now,
+      ownMoves: kept.ownMoves + (isWrite ? 1 : 0),
+    }))
   }
 }

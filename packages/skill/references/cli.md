@@ -1334,13 +1334,13 @@ Uninstall NodeSpace: stop daemon, remove binaries and service registration
 
 Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (Claude Code, Codex, Antigravity CLI, OpenCode, Pi) -- the CLI-only equivalent of the desktop app's first-launch skill installer -- and fetch the graph's own skills for a task (`guidance`)
 
-**`nodespace skill install`** — Detect AI-agent harnesses and install the NodeSpace skill into them. Safe to re-run: a harness whose skill files are already current is left alone and reported as up to date, one holding an older skill is updated, and a harness installed since the last run is picked up
+**`nodespace skill install`** — Detect AI-agent harnesses and install the NodeSpace skill into them. A harness with a plugin system (Claude Code, Pi, OpenCode) also gets the NodeSpace plugin, in the folder it loads plugins from. Any other (Codex, Antigravity) gets one marked block in its own user-level instructions file, which is created when absent; nothing else in that file is touched. Safe to re-run: a harness whose files are already current is left alone and reported as up to date, one holding an older skill is updated, and a harness installed since the last run is picked up
 
 - `--yes` — Install without prompting for confirmation. Implied automatically when stdin/stdout isn't a terminal (CI, a script, an agent's non-interactive shell) — mirrors install.sh's `--gui`/`--no-gui` no-TTY default: never hang waiting on a prompt that can't be answered
 
-**`nodespace skill uninstall`** — Remove the NodeSpace skill from detected (or specified) harnesses
+**`nodespace skill uninstall`** — Remove the NodeSpace skill from detected (or specified) harnesses, with the plugin or the instructions block installed beside it. Of an instructions file only the marked block is removed
 
-**`nodespace skill status`** — Report which harnesses currently have the skill installed, and which are present on this machine without it
+**`nodespace skill status`** — Report which harnesses currently have the skill installed, and which are present on this machine without it. For each that has it, says whether its plugin or its instructions block is installed too
 
 **`nodespace skill guidance`** — Fetch the skills that match a task, each with its instructions, the commands of the tools it names, and the schemas of the types the task touches. With no task, list every skill by name and what it is for, with the list's version. Covers the built-in skills, skills a user wrote and skills an installed workflow added. Output is always provenance-marked (a banner in human mode, a `"provenance": "graph-fetched"` envelope in `--json` mode), because it is read from the graph and anyone with write access can edit it
 

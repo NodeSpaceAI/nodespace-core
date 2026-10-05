@@ -22,8 +22,7 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
     if !redirected {
         stop_daemon();
     }
-    remove_bin_dir(&state_dir);
-    remove_sock(&state_dir);
+    // Before the bin directory goes: the skill installer sits in it.
     if redirected {
         println!(
             "NODESPACE_HOME is set: the daemon service and agent skills in your own home were left in place."
@@ -31,6 +30,8 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
     } else {
         report_skill_removal(&mut std::io::stdout(), skill::resolve_installer());
     }
+    remove_bin_dir(&state_dir);
+    remove_sock(&state_dir);
 
     println!(
         "NodeSpace uninstalled. Your data at {} has been preserved.",
@@ -41,9 +42,10 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
 }
 
 /// Remove the NodeSpace skill from every detected agent harness (Claude
-/// Code, Codex, Gemini CLI/Antigravity, OpenCode, Pi) via the same
-/// cross-harness installer `nodespace skill uninstall` uses, rather than
-/// hardcoding a single Claude-Code-specific path. Best-effort and never
+/// Code, Codex, Antigravity, OpenCode, Pi), with the plugin or the
+/// instructions block installed beside it, via the same cross-harness
+/// installer `nodespace skill uninstall` uses, rather than hardcoding a
+/// single Claude-Code-specific path. Best-effort and never
 /// fatal to the rest of the uninstall: a missing or failing installer
 /// (a source checkout with no built sidecar/script, or neither `bun` nor
 /// `node` on `$PATH`) prints a clear, explicit message instead of silently

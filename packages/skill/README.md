@@ -61,20 +61,64 @@ directory — it has no source-relative sibling directory to find
 
 ## Supported Agents
 
-| Agent | Detection | Install path |
-|-------|-----------|--------------|
-| Claude Code | `~/.claude/` exists | `~/.claude/skills/nodespace/SKILL.md` |
-| Codex | `~/.codex/` exists | `~/.codex/skills/nodespace/SKILL.md` |
-| Antigravity CLI | `~/.gemini/antigravity-cli/` exists | `~/.gemini/antigravity-cli/skills/nodespace/SKILL.md` |
-| OpenCode | `~/.opencode/` exists | `~/.opencode/skills/nodespace/SKILL.md` |
-| Pi | `~/.pi/agent/` exists | `~/.pi/agent/skills/nodespace/SKILL.md` |
+| Agent | Detection | Skill | Beyond the skill |
+|-------|-----------|-------|------------------|
+| Claude Code | `~/.claude/` exists (`CLAUDE_CONFIG_DIR` moves it) | `~/.claude/skills/nodespace/SKILL.md` | Plugin, in the skill folder |
+| Codex | `~/.codex/` exists (`CODEX_HOME` moves it) | `~/.codex/skills/nodespace/SKILL.md` | Instructions block in `~/.codex/AGENTS.md` |
+| Antigravity CLI | `~/.gemini/antigravity-cli/` exists | `~/.gemini/antigravity-cli/skills/nodespace/SKILL.md` | Instructions block in `~/.gemini/config/AGENTS.md` |
+| OpenCode | `~/.config/opencode/` exists (`XDG_CONFIG_HOME` moves it) | `~/.config/opencode/skills/nodespace/SKILL.md` | Plugin, in `~/.config/opencode/plugins/` |
+| Pi | `~/.pi/agent/` exists (`PI_CODING_AGENT_DIR` moves it) | `~/.pi/agent/skills/nodespace/SKILL.md` | Extension, in `~/.pi/agent/extensions/nodespace/` |
 
-Each install copies `SKILL.md`, the agent's harness plugin (where it has one)
-and every `references/*.md` file in the package, and writes
-`.nodespace-install.json` beside them listing exactly the files it wrote.
-Uninstall removes the files that record lists, and a reinstall removes any
-listed file the new skill no longer ships. An install from before the record
-existed is cleaned up from the fixed file list the installer wrote back then.
+Each install copies `SKILL.md` and every `references/*.md` file in the package,
+then the agent's harness plugin into the folder that harness loads code from,
+or, for a harness with no plugin, one marked block into its user-level
+instructions file. It writes `.nodespace-install.json` beside `SKILL.md`
+listing exactly what it wrote: the skill's files, the plugin's files where they
+sit in a folder of their own, and the instructions file. Uninstall removes what
+that record lists, and a reinstall removes any listed file the new skill no
+longer ships. An install from before the record existed is cleaned up from the
+fixed file list the installer wrote back then.
+
+A plugin folder may be one the user keeps plugins of their own in. A file
+already there that no install recorded, and that does not hold what this skill
+ships, is not replaced: the plugin is not installed, with a warning naming the
+file. An uninstall with no record removes a plugin file only when it holds
+exactly what this skill ships. An instructions file that is not UTF-8 text is
+left as it is, with a warning.
+
+OpenCode also reads the Claude skills folder. It keeps one skill per `name`, so
+the skill installed in both is listed to its agent once.
+
+`install.js status` reports, per agent, whether the skill is present and
+whether the plugin or the instructions block is installed with it.
+
+## The instructions block
+
+Codex and Antigravity get no plugin. The installer writes one block into the
+harness's own user-level instructions file, between two HTML comment markers,
+creating the file when it is absent. The block holds the same orientation and
+confirmation rules the plugins add, and tells the agent to list the graph's
+skills (`nodespace skill guidance`) before starting work.
+
+The installer owns the bytes from the begin marker to the end marker and
+nothing else in the file. A reinstall replaces the block where it is. An
+uninstall removes it and leaves every other byte as it was; a file the block
+was the whole of is deleted. Codex reads `AGENTS.override.md` instead of
+`AGENTS.md` when a user keeps one, and the block is not read while it exists.
+
+Nothing makes an agent follow the block, so its wording is what is tested. To
+check a change to it, give a model the block (`renderBlock()` in
+`src/instructions-block.ts`) as standing instructions, a `nodespace` command
+that only logs its arguments, and a request to record something; its first
+`nodespace` command must be `skill guidance`, before any write.
+
+## Shipped text
+
+The orientation and the confirmation rules are shipped, never read from the
+graph. `src/shipped-text.ts` is the one source. A plugin is installed as files
+of its own and cannot import it, so each holds a copy: the Claude Code plugin
+in `hooks/register.ts`, the Pi extension and the OpenCode plugin in the module
+they share. `src/tests/shipped-text.test.ts` fails when a copy differs.
 
 ## The Claude Code plugin
 
@@ -118,6 +162,59 @@ bun run --cwd packages/skill test:plugin
 That runs `claude plugin validate` and then `claude plugin test` on the
 folder, and needs the `claude` CLI on `$PATH`. The plugin API is early access
 and changes between Claude Code releases: run it again after an upgrade.
+
+## The Pi extension and the OpenCode plugin
+
+Both do what the Claude Code plugin does, through their own harness's hooks.
+`plugins/shared/nodespace-session.ts` holds the behaviour behind three things a
+harness supplies (a way to run a command, the environment, a clock), and each
+harness file is the hooks around it:
+
+| | Pi (`plugins/pi/index.ts`) | OpenCode (`plugins/opencode/nodespace.ts`) |
+|---|---|---|
+| Session start | `session_start` | `session.created`, or the first hook of a session that was resumed |
+| System prompt | a `nodespace` section, set on every `before_agent_start` | pushed in `experimental.chat.system.transform` on each request |
+| Skill list changed | a message returned from `before_agent_start` | a text part added in `chat.message` |
+| Refusing a tool call | `{ block: true, reason }` from `tool_call` | an error thrown from `tool.execute.before` |
+| A note on a tool result | content appended in `tool_result` | text appended in `tool.execute.after` |
+| Status | a status entry, when the session has a UI | one toast: OpenCode has no status line |
+
+The skill list is read again on each prompt, so the section always holds the
+list as of the latest prompt. `NODESPACE_DATABASE` selects the database for
+every command, and `NODESPACE_WATCH_INTERVAL_SECONDS` (default 60) is how
+often at most a tool call checks the item being worked on.
+
+The installed layout differs from the repository's. Pi loads
+`extensions/nodespace/index.ts` and the shared module sits beside it. OpenCode
+loads every file directly in `plugins/` and calls each export of one as a
+plugin, so only `nodespace.ts` sits there and the shared module is one folder
+down, in `plugins/nodespace/`. In the repository each plugin imports the
+shared module through a one-line re-export at that same relative path
+(`plugins/pi/nodespace-session.ts`, `plugins/opencode/nodespace/nodespace-session.ts`);
+the installer puts the module itself there.
+
+### Testing them
+
+`bun run --cwd packages/skill test` drives both through their hooks over a fake
+`nodespace` command (`src/tests/plugin-session.test.ts`), and
+`bun run --cwd packages/skill quality:check` type-checks each against its
+harness's published types (`tsconfig.plugins.json`). Neither runs a harness.
+
+To see one working in its harness, after changing anything under
+`plugins/pi/`, `plugins/opencode/` or `plugins/shared/`, or after either
+harness changes its plugin API:
+
+1. Point the harness's home at an empty folder (`PI_CODING_AGENT_DIR`, or
+   `XDG_CONFIG_HOME` for OpenCode), create the harness's directory in it, and
+   run `bun packages/skill/src/install.ts install pi` (or `opencode`). Always
+   name the agent: with none, the installer writes to every harness on the
+   machine.
+2. Start the harness in a checkout whose `origin` is a project's `repository`
+   in a running NodeSpace, and send a prompt.
+3. Check that the status (Pi) or the toast (OpenCode) names the project, that
+   the agent can say which skills the graph holds without running a command,
+   and that after `nodespace node context <id>` on a task, changing that task
+   from another terminal makes the agent's next tool call fail with the reason.
 
 ## Prerequisites
 
