@@ -211,12 +211,182 @@ async fn run_query_returns_the_skills_attached_to_the_query() {
         .is_some_and(|body| body.contains("Name things plainly.")));
 }
 
+/// A schema's context paths are declared through `update_schema`, and a
+/// context read then follows them unasked. The read's version is returned
+/// with it, and alone when only it is asked for (ADR-094 §2 and §7).
+#[tokio::test]
+async fn get_node_context_follows_the_types_context_paths_and_returns_a_version() {
+    let (executor, ns, _tmp) = make_executor().await;
+    let fixture = seed(&ns).await;
+
+    let refused = call(
+        &executor,
+        "update_schema",
+        json!({ "schema_id": "task", "add_context_paths": ["sponsor"] }),
+    )
+    .await;
+    assert!(refused.is_error, "{}", refused.result);
+    assert!(
+        refused.result["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("Context path 'sponsor'")),
+        "{}",
+        refused.result
+    );
+    let declared = call(
+        &executor,
+        "update_schema",
+        json!({ "schema_id": "task", "add_context_paths": ["project"] }),
+    )
+    .await;
+    assert!(!declared.is_error, "{}", declared.result);
+    assert_eq!(declared.result["contextPathsAdded"], 1);
+
+    let read = call(&executor, "get_node_context", json!({ "id": fixture.task })).await;
+    assert!(!read.is_error, "{}", read.result);
+    assert_eq!(read.result["paths"][0]["path"], json!(["project"]));
+    assert_eq!(read.result["skills"][0]["name"], "Standards");
+    let version = read.result["version"].as_str().expect("a version");
+    assert!(!version.is_empty());
+
+    let alone = call(
+        &executor,
+        "get_node_context",
+        json!({ "id": fixture.task, "version_only": true }),
+    )
+    .await;
+    assert_eq!(alone.result, json!({ "version": version }));
+
+    // The project changed, so the task's read has moved on.
+    let project = ns.get_node(&fixture.project).await.unwrap().unwrap();
+    ns.update_node(
+        &fixture.project,
+        project.version,
+        nodespace_core::models::NodeUpdate::new().with_content("Apollo 2".to_string()),
+    )
+    .await
+    .unwrap();
+    let after = call(
+        &executor,
+        "get_node_context",
+        json!({ "id": fixture.task, "version_only": true }),
+    )
+    .await;
+    assert_ne!(after.result["version"], json!(version));
+}
+
+/// A run with context returns each item as a context read returns it, with
+/// every skill once: the one attached to the query the item matches, and the
+/// one attached to a node the item's context paths reach (ADR-094 §4).
+#[tokio::test]
+async fn run_query_with_context_returns_each_item_with_its_skills() {
+    let (executor, ns, _tmp) = make_executor().await;
+    let fixture = seed(&ns).await;
+    let second = ns
+        .create_node(Node::new(
+            "task".to_string(),
+            "Review the spec".to_string(),
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    ns.create_relationship(&fixture.project, "tasks", &second, json!({}))
+        .await
+        .unwrap();
+    let queue = ns
+        .create_node(Node::new(
+            "query".to_string(),
+            "All tasks".to_string(),
+            json!({
+                "target_type": "task",
+                "filters": [],
+                "sorting": [{ "field": "created_at", "direction": "asc" }]
+            }),
+        ))
+        .await
+        .unwrap();
+    let procedure = ns
+        .create_node(SkillFields::new("How to work a task.", &[], 2).into_node("Implementing"))
+        .await
+        .unwrap();
+    ns.create_relationship(&procedure, SKILL_ATTACHED_TO, &queue, json!({}))
+        .await
+        .unwrap();
+    let declared = call(
+        &executor,
+        "update_schema",
+        json!({ "schema_id": "task", "add_context_paths": ["project"] }),
+    )
+    .await;
+    assert!(!declared.is_error, "{}", declared.result);
+
+    let run = call(
+        &executor,
+        "run_query",
+        json!({ "query": "All tasks", "with_context": true }),
+    )
+    .await;
+    assert!(!run.is_error, "{}", run.result);
+    assert_eq!(run.result["count"], 2);
+    assert!(run.result.get("nodes").is_none(), "{}", run.result);
+    assert!(run.result.get("limit_reached").is_none(), "{}", run.result);
+
+    let items = run.result["items"].as_array().expect("items");
+    assert_eq!(items[0]["title"], "Write the spec");
+    assert_eq!(items[0]["checkboxes"], json!(["- [ ] Draft it"]));
+    assert_eq!(items[1]["title"], "Review the spec");
+    for item in items {
+        assert_eq!(
+            item["paths"][0]["nodes"][0]["id"],
+            format!("nodespace://{}", fixture.project)
+        );
+        assert!(item["version"].as_str().is_some_and(|v| !v.is_empty()));
+        // An item names its skills and what each was reached through; the
+        // procedures themselves are listed once, below.
+        assert_eq!(
+            item["skills"],
+            json!([
+                {
+                    "id": format!("nodespace://{procedure}"),
+                    "attached_to": [],
+                    "matched_queries": [
+                        { "id": format!("nodespace://{queue}"), "title": "All tasks" }
+                    ]
+                },
+                {
+                    "id": format!("nodespace://{}", fixture.skill),
+                    "attached_to": [format!("nodespace://{}", fixture.project)]
+                }
+            ])
+        );
+    }
+    assert_ne!(items[0]["version"], items[1]["version"]);
+
+    let skills = run.result["skills"].as_array().expect("skills");
+    let names: Vec<&str> = skills.iter().filter_map(|s| s["name"].as_str()).collect();
+    assert_eq!(names, ["Implementing", "Standards"]);
+    assert!(skills[1]["instructions"]
+        .as_str()
+        .is_some_and(|body| body.contains("Name things plainly.")));
+
+    // The limit applies to the items.
+    let one = call(
+        &executor,
+        "run_query",
+        json!({ "query": "All tasks", "with_context": true, "limit": 1 }),
+    )
+    .await;
+    assert_eq!(one.result["count"], 1);
+    assert!(one.result["limit_reached"].is_string(), "{}", one.result);
+}
+
 /// Each tool is in the registry with the command that does the same from a
 /// shell, its seeded node records that command, and a seeded skill offers it.
 #[test]
 fn both_tools_are_registered_seeded_and_offered() {
     for (name, command, is_write) in [
         ("get_node_context", "nodespace node context", false),
+        ("run_query", "nodespace query run", false),
         ("delete_relationship", "nodespace relationship delete", true),
     ] {
         let tool = Tool::from_name(name).unwrap_or_else(|| panic!("{name} is in the registry"));

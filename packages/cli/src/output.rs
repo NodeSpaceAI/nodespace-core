@@ -193,7 +193,9 @@ pub fn print_saved_query_run(response: &RunSavedQueryResponse, json: bool) -> Re
         false,
     )?;
     if response.limit_reached {
-        println!("\nThe run returned as many results as its limit allows; the query may match more.");
+        println!(
+            "\nThe run returned as many results as its limit allows; the query may match more."
+        );
     }
     match tag {
         Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
@@ -220,8 +222,7 @@ pub fn print_saved_query_context_run(response: &RunSavedQueryResponse, json: boo
                             "attached_to": skill.attached_to,
                         });
                         if !skill.matched_queries.is_empty() {
-                            entry["matched_queries"] =
-                                matched_queries_json(&skill.matched_queries);
+                            entry["matched_queries"] = matched_queries_json(&skill.matched_queries);
                         }
                         entry
                     })
@@ -255,7 +256,11 @@ pub fn print_saved_query_context_run(response: &RunSavedQueryResponse, json: boo
     }
     for (idx, item) in response.items.iter().enumerate() {
         println!();
-        println!("--- item {} (context version {}) ---", idx + 1, item.version);
+        println!(
+            "--- item {} (context version {}) ---",
+            idx + 1,
+            item.version
+        );
         if let Some(node) = &item.node {
             write_human_context_node(node);
         }

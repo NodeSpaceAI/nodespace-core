@@ -50,13 +50,13 @@ use crate::nodespace::{
     BatchUpdateFailure, CollectionIdResponse, CollectionIdsResponse, CollectionInfo,
     CollectionListResponse, CollectionMembersRequest, ConflictListResponse,
     ConflictRecord as ConflictRecordProto, ConflictResponse, ConflictsForNodeRequest, ContextItem,
-    ContextItemSkill, ContextNode, CountNodesResponse, CreateCollectionRequest, CreateMentionRequest, CreateNodeRequest,
-    CreateRelationshipRequest, CreateRelationshipResponse, DeleteCollectionRequest,
-    DeleteMentionRequest, DeleteNodeRequest, DeleteNodeResponse, DeleteRelationshipRequest,
-    DeleteRelationshipResponse, Empty, ExecuteQueryRequest, ExportMarkdownRequest,
-    ExportMarkdownResponse, FindCollectionByPathRequest, FindDuplicateRequest,
-    GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest, GetChildrenTreeRequest,
-    GetCollectionByNameRequest, GetConflictRequest, GetDaemonMemoryRequest,
+    ContextItemSkill, ContextNode, CountNodesResponse, CreateCollectionRequest,
+    CreateMentionRequest, CreateNodeRequest, CreateRelationshipRequest, CreateRelationshipResponse,
+    DeleteCollectionRequest, DeleteMentionRequest, DeleteNodeRequest, DeleteNodeResponse,
+    DeleteRelationshipRequest, DeleteRelationshipResponse, Empty, ExecuteQueryRequest,
+    ExportMarkdownRequest, ExportMarkdownResponse, FindCollectionByPathRequest,
+    FindDuplicateRequest, GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest,
+    GetChildrenTreeRequest, GetCollectionByNameRequest, GetConflictRequest, GetDaemonMemoryRequest,
     GetDaemonMemoryResponse, GetDaemonVersionRequest, GetDaemonVersionResponse,
     GetNodeContextRequest, GetNodeContextResponse, GetNodeRelationshipsRequest,
     GetNodeRelationshipsResponse, GetNodeRequest, GetNodesBatchRequest, GetNodesBatchResponse,
@@ -64,23 +64,23 @@ use crate::nodespace::{
     GetSkillRequest, GetWorkflowStateRequest, GetWorkflowStateResponse, InstallMethodologyRequest,
     InstallMethodologyResponse, ListConflictsRequest, ListMethodologiesRequest,
     ListMethodologiesResponse, ListPendingSeedUpdatesRequest, MatchedQuery,
-    MentionAutocompleteRequest,
-    MentionIdsResponse, MentionResponse, MentionTargetRequest, MergeNodesRequest,
-    MergeNodesResponse, Methodology, MoveChildrenToParentRequest, MoveChildrenToParentResponse,
-    MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse,
-    NodeReference, NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
-    OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
-    PathNodes, PendingSeedUpdate, PendingSeedUpdateDetail, PendingSeedUpdateListResponse,
-    PendingSeedUpdateRef, PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest,
-    RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
-    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
-    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
-    ResolvePendingSeedUpdateRequest, ResolvePendingSeedUpdateResponse, RunSavedQueryRequest,
-    RunSavedQueryResponse, SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest,
-    SchemaResponse, SchemaResultResponse, SearchRequest, SeedUpdateChoice,
-    SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse,
-    ToolCommandEntry, UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest,
-    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
+    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
+    MergeNodesRequest, MergeNodesResponse, Methodology, MoveChildrenToParentRequest,
+    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
+    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
+    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
+    OptionalStringClear, OptionalTimestampClear, PathNodes, PendingSeedUpdate,
+    PendingSeedUpdateDetail, PendingSeedUpdateListResponse, PendingSeedUpdateRef,
+    PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest, RelationshipDeletedPayload,
+    RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
+    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
+    ResetSeedNodeResponse, ResolveConflictRequest, ResolvePendingSeedUpdateRequest,
+    ResolvePendingSeedUpdateResponse, RunSavedQueryRequest, RunSavedQueryResponse,
+    SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest, SchemaResponse,
+    SchemaResultResponse, SearchRequest, SeedUpdateChoice, SetLocalPersonIdentityRequest,
+    SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse, ToolCommandEntry,
+    UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
+    UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
     UpdatePlayNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
     UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
     UpdateSkillNodeRequest, UpdateTaskNodeRequest, WatchRequest,
@@ -6607,6 +6607,29 @@ mod tests {
         assert_eq!(wire["properties"], serde_json::json!({}));
         assert_eq!(wire["nodeType"], "schema");
         assert_eq!(wire["id"], "bug");
+        assert!(wire.get("contextPaths").is_none());
+
+        // Context paths likewise: the ancestor's, then the schema's own.
+        for params in [
+            serde_json::json!({ "schema_id": "bug", "add_context_paths": ["child_of"] }),
+            serde_json::json!({ "schema_id": "ticket", "add_context_paths": ["owned_by"] }),
+        ] {
+            nodespace_core::schema::handle_update_schema(&core, params)
+                .await
+                .expect("declaring a context path failed");
+        }
+        let response = svc
+            .get_schema_definition(Request::new(GetSchemaDefinitionRequest {
+                schema_id: "bug".to_string(),
+            }))
+            .await
+            .expect("get_schema_definition should succeed")
+            .into_inner();
+        let wire: serde_json::Value = serde_json::from_str(&response.schema_json).unwrap();
+        assert_eq!(
+            wire["contextPaths"],
+            serde_json::json!([["owned_by"], ["child_of"]])
+        );
     }
 
     /// `get_all_schemas` returns each schema typed, with the relationships

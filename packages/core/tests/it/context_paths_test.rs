@@ -61,7 +61,12 @@ async fn create(service: &NodeService, node_type: &str, content: &str, props: Va
         .unwrap_or_else(|e| panic!("creating the {node_type} '{content}' failed: {e}"))
 }
 
-async fn create_child(service: &NodeService, parent: &str, node_type: &str, content: &str) -> String {
+async fn create_child(
+    service: &NodeService,
+    parent: &str,
+    node_type: &str,
+    content: &str,
+) -> String {
     let id = create(service, node_type, content, json!({})).await;
     service
         .create_relationship(parent, "has_child", &id, json!({}))
@@ -559,7 +564,11 @@ async fn a_node_carries_the_skills_of_the_queries_it_matches() -> Result<()> {
 
     // In neither queue, it carries neither procedure.
     set(&service, &request, json!({ "state": "closed" })).await;
-    assert!(read(&service, &request, &[]).await.attached.skills.is_empty());
+    assert!(read(&service, &request, &[])
+        .await
+        .attached
+        .skills
+        .is_empty());
 
     // Back in the first.
     set(&service, &request, json!({ "state": "new" })).await;
@@ -576,7 +585,10 @@ async fn a_node_carries_the_skills_of_the_queries_it_matches() -> Result<()> {
         skill_names(&context),
         ["Request etiquette", "Handling a request"]
     );
-    assert_eq!(context.attached.skills[0].attached_to, [request.clone()]);
+    assert_eq!(
+        context.attached.skills[0].attached_to,
+        std::slice::from_ref(&request)
+    );
     assert_eq!(context.attached.skills[0].matched_queries[0].id, new_queue);
 
     // An archived node matches no query; an archived query hands nothing
@@ -729,7 +741,11 @@ async fn a_reads_version_follows_what_the_read_returns() -> Result<()> {
         NodeUpdate::new().with_content("New badge, urgently".to_string()),
     )
     .await;
-    moved(&mut current, "the node",version(service.clone(), request.clone()).await);
+    moved(
+        &mut current,
+        "the node",
+        version(service.clone(), request.clone()).await,
+    );
 
     update(
         &service,
@@ -898,7 +914,12 @@ async fn a_query_run_with_context_returns_each_item_whole() -> Result<()> {
         .attached
         .skills
         .iter()
-        .map(|attached| (attached.skill.name.as_str(), attached.attached_to.as_slice()))
+        .map(|attached| {
+            (
+                attached.skill.name.as_str(),
+                attached.attached_to.as_slice(),
+            )
+        })
         .collect();
     assert_eq!(
         once,
@@ -936,9 +957,6 @@ async fn a_query_run_with_context_returns_each_item_whole() -> Result<()> {
     )
     .await;
     assert!(context.items.is_empty());
-    assert_eq!(
-        context.attached.skills[0].skill.name,
-        "Handling a request"
-    );
+    assert_eq!(context.attached.skills[0].skill.name, "Handling a request");
     Ok(())
 }

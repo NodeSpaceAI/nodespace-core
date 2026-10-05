@@ -829,10 +829,18 @@ mod tests {
             }],
             title_template: Some("{status}".to_string()),
             properties_header_summary_template: Some("{status}".to_string()),
+            context_paths: vec![
+                RelationshipPath::from_names(["billed_to"]),
+                "child_of*.project".parse().unwrap(),
+            ],
             ..SchemaNode::new("issue", "Issue")
         };
 
         let wire = serde_json::to_value(&schema).unwrap();
+        assert_eq!(
+            wire["contextPaths"],
+            json!([["billed_to"], [{ "name": "child_of", "open_ended": true }, "project"]])
+        );
         assert_eq!(wire["children"], json!({ "rule": "none" }));
         assert_eq!(
             wire["parent"],
@@ -849,11 +857,13 @@ mod tests {
         assert_eq!(read.relationships, schema.relationships);
         assert_eq!(read.fields.len(), 1);
         assert_eq!(read.title_template, schema.title_template);
+        assert_eq!(read.context_paths, schema.context_paths);
 
-        // `any` is not serialized.
+        // `any` is not serialized, and neither is an empty list of paths.
         let wire = serde_json::to_value(SchemaNode::new("invoice", "Invoice")).unwrap();
         assert!(wire.get("children").is_none());
         assert!(wire.get("parent").is_none());
+        assert!(wire.get("contextPaths").is_none());
     }
 
     #[test]

@@ -3000,10 +3000,7 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
     assert_eq!(run.count, 1);
     assert!(run.nodes.is_empty());
     let item = &run.items[0];
-    assert_eq!(
-        item.node.as_ref().unwrap().node.as_ref().unwrap().id,
-        task
-    );
+    assert_eq!(item.node.as_ref().unwrap().node.as_ref().unwrap().id, task);
     assert_eq!(item.node.as_ref().unwrap().checkboxes.len(), 1);
     assert_eq!(item.paths[0].path, "project");
     assert_eq!(item.version, by_default.version);

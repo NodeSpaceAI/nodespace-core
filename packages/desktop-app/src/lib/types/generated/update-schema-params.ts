@@ -1,6 +1,7 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { FieldRename } from './field-rename';
 import type { FieldValueAddition } from './field-value-addition';
+import type { RelationshipPath } from './relationship-path';
 import type { SchemaChildrenRule } from './schema-children-rule';
 import type { SchemaField } from './schema-field';
 import type { SchemaParentRule } from './schema-parent-rule';
@@ -82,6 +83,20 @@ export type UpdateSchemaParams = {
    * unchanged. Same `{field_name}` syntax, evaluated by the client.
    */
   properties_header_summary_template?: string;
+  /**
+   * Context paths to add (ADR-094 §2): the relationship paths from a node
+   * of this type to the nodes that govern it, which a context read follows
+   * by default. Each is a list of hops, `["spec", "decisions"]`, and is
+   * checked against the schemas as they stand: a name the type does not
+   * declare is refused. Allowed on a core schema.
+   */
+  add_context_paths?: Array<RelationshipPath>;
+  /**
+   * Context paths to remove, each written as it was added. Only a path
+   * this schema itself declares can be removed here: an inherited one is
+   * removed on the schema that declares it.
+   */
+  remove_context_paths?: Array<RelationshipPath>;
   /**
    * Proceed even if active plays would be affected. When false (the
    * default), such an update is refused with the affected plays listed.

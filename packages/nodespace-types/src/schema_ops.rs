@@ -316,9 +316,15 @@ mod tests {
             "schema_id": "invoice",
             "rename_fields": [{ "from": "amt", "to": "amount", "friendlyName": "Amount" }],
             "add_field_values": [{ "field": "status", "values": [{ "value": "void", "label": "Void" }] }],
+            "add_context_paths": [["billed_to"], [{ "name": "child_of", "open_ended": true }]],
             "title_template": "{amount}"
         }))
         .unwrap();
+        assert_eq!(
+            params.add_context_paths.as_ref().unwrap()[1].to_string(),
+            "child_of*"
+        );
+        assert!(params.remove_context_paths.is_none());
         assert_eq!(
             params.rename_fields.as_ref().unwrap()[0]
                 .friendly_name
@@ -335,6 +341,8 @@ mod tests {
         assert!(wire.get("children").is_none());
         assert!(wire.get("extends").is_none());
         assert!(wire.get("add_fields").is_none());
+        assert_eq!(wire["add_context_paths"][0], json!(["billed_to"]));
+        assert!(wire.get("remove_context_paths").is_none());
     }
 
     #[test]

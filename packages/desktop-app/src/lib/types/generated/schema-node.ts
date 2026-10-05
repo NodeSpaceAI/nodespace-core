@@ -1,5 +1,6 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { NodeReference } from './node-reference';
+import type { RelationshipPath } from './relationship-path';
 import type { SchemaChildrenRule } from './schema-children-rule';
 import type { SchemaField } from './schema-field';
 import type { SchemaParentRule } from './schema-parent-rule';
@@ -66,6 +67,14 @@ export type SchemaNode = {
    * on a node.
    */
   propertiesHeaderSummaryTemplate?: string;
+  /**
+   * The paths from a node of this type to the nodes that govern it: what
+   * a context read follows when it is given no paths (ADR-094 §2). The
+   * ones this schema itself declares; a type's context paths are its
+   * ancestors' and then its own, and a read of one schema's definition
+   * reports that set.
+   */
+  contextPaths?: Array<RelationshipPath>;
   id: string;
   nodeType: string;
   content: string;

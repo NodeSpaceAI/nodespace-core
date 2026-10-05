@@ -12,6 +12,8 @@ export type SchemaUpdateOutput = {
   fieldValuesAdded?: number;
   relationshipsAdded?: number;
   relationshipsRemoved?: number;
+  contextPathsAdded?: number;
+  contextPathsRemoved?: number;
   /**
    * Plays affected by the change (present when `force` let it through).
    */

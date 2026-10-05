@@ -5284,17 +5284,16 @@ impl GraphToolExecutor {
         };
         let limit = run.limit;
 
-        let context = match node_context_ops::read_node_contexts(&ns, run.nodes, &run.query_id)
-            .await
-        {
-            Ok(context) => context,
-            // A context path a schema declares that no longer resolves: the
-            // message names the schema to repair.
-            Err(e @ OpsError::InvalidParams(_)) => {
-                return Ok(error_result(tool_call_id, "run_query", &e.to_string()));
-            }
-            Err(e) => return Err(failed(e)),
-        };
+        let context =
+            match node_context_ops::read_node_contexts(&ns, run.nodes, &run.query_id).await {
+                Ok(context) => context,
+                // A context path a schema declares that no longer resolves: the
+                // message names the schema to repair.
+                Err(e @ OpsError::InvalidParams(_)) => {
+                    return Ok(error_result(tool_call_id, "run_query", &e.to_string()));
+                }
+                Err(e) => return Err(failed(e)),
+            };
 
         let mut items = Vec::with_capacity(context.items.len());
         for item in context.items {

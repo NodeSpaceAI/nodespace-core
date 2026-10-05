@@ -11,11 +11,11 @@ use crate::models::schema::SchemaField;
 use crate::models::{schema_node, NodeUpdate, SchemaNode};
 use crate::services::error::NodeServiceError;
 use crate::services::{CreateNodeParams, NodeService};
+use nodespace_types::RelationshipPath;
 pub use nodespace_types::{
     CreateSchemaOutput, CreateSchemaParams, FieldRename, FieldValueAddition, SchemaUpdateOutput,
     UpdateSchemaParams,
 };
-use nodespace_types::RelationshipPath;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -2484,9 +2484,9 @@ async fn validate_context_path_changes(
                 "Context path '{path}' is declared by schema '{owner}', which '{schema_id}' \
                  extends: remove it there."
             ),
-            None if schema.context_paths.is_empty() => format!(
-                "Schema '{schema_id}' declares no context path '{path}': it declares none."
-            ),
+            None if schema.context_paths.is_empty() => {
+                format!("Schema '{schema_id}' declares no context path '{path}': it declares none.")
+            }
             None => format!(
                 "Schema '{schema_id}' declares no context path '{path}'. It declares: {}.",
                 schema
@@ -2527,7 +2527,9 @@ async fn validate_context_path_changes(
                 crate::ops::path_ops::PathResolveError::Lookup { .. } => {
                     MarkdownError::internal_error(format!("Context path '{path}': {e}"))
                 }
-                refused => MarkdownError::invalid_params(format!("Context path '{path}': {refused}")),
+                refused => {
+                    MarkdownError::invalid_params(format!("Context path '{path}': {refused}"))
+                }
             })?;
     }
 
