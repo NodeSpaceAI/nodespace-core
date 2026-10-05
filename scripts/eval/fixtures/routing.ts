@@ -21,6 +21,8 @@
  *   - Mutating-skill gate: borderline schema-creation gated harder than read-only
  *   - Compound request → route_multi; single intent phrased at length → NOT
  *     route_multi (what route_multi's guard clauses defend against)
+ *   - A request for a new kind of record ends with a type created, not only
+ *     with `create_schema` called (`createsType`)
  *
  * Every scenario not expecting route_multi fails if Stage 1 routes multi, so a
  * regression that splits single intents cannot pass on downstream effects alone.
@@ -87,6 +89,12 @@ export interface RoutingScenario extends Scenario {
   mutating?: boolean;
   /** A message that must NOT reach a mutating skill. */
   adversarial?: boolean;
+  /**
+   * The request asks for a new kind of record, so the turn must end with a
+   * type created. Calling `create_schema` is not that: a call the tool refused
+   * leaves nothing behind, and a turn that ended on one was scored as routed.
+   */
+  createsType?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +111,7 @@ const FIXTURES: RoutingScenario[] = [
     scenario: "Direct: create schema (explicit phrasing)",
     prompt: "Create a database for tracking our feature specs",
     expected: { kind: "skill", skill: "Schema Creation" },
+    createsType: true,
   },
   {
     id: "direct-node-search",
@@ -124,6 +133,7 @@ const FIXTURES: RoutingScenario[] = [
       "Indirect: 'start keeping track of the decisions behind each feature' → Schema Creation",
     prompt: "start keeping track of the decisions behind each feature",
     expected: { kind: "skill", skill: "Schema Creation" },
+    createsType: true,
     loadBearing: true,
     mutating: true,
   },
@@ -133,6 +143,7 @@ const FIXTURES: RoutingScenario[] = [
       "Indirect: 'start tracking our planning cycles' → Schema Creation",
     prompt: "start tracking our planning cycles",
     expected: { kind: "skill", skill: "Schema Creation" },
+    createsType: true,
     loadBearing: true,
     mutating: true,
   },
@@ -142,6 +153,7 @@ const FIXTURES: RoutingScenario[] = [
       "Indirect: 'I need a way to log production incidents' → Schema Creation",
     prompt: "I need a way to log production incidents",
     expected: { kind: "skill", skill: "Schema Creation" },
+    createsType: true,
     loadBearing: true,
     mutating: true,
   },
@@ -272,6 +284,7 @@ const FIXTURES: RoutingScenario[] = [
     prompt:
       "Set up a way to track our API deprecations, then separately find what I wrote about rate limiting last year",
     expected: { kind: "multi" },
+    createsType: true,
   },
 
   // ── Single intent phrased at length → NOT route_multi ────────────────────
@@ -415,6 +428,22 @@ function calledSchemaCreate(turns: TurnRecord[]): boolean {
   return turns.some((t) => t.toolsCalled.includes("create_schema"));
 }
 
+/**
+ * Whether the turns created a type: a `create_schema` call the tool did not
+ * refuse. The tool reads the type back from the store before it reports
+ * success, so an accepted call is a type that exists.
+ *
+ * A turn with no per-call outcomes created nothing that can be shown: the
+ * tool's name in `toolsCalled` is the call, not its result.
+ */
+export function createdAType(turns: TurnRecord[]): boolean {
+  return turns.some(
+    (t) =>
+      t.toolCalls?.some((c) => c.name === "create_schema" && !c.isError) ??
+      false,
+  );
+}
+
 /** Stage 1's recorded decision for the scored turn (the last one). */
 function routingDecisionOf(turns: TurnRecord[]): string | undefined {
   return turns.at(-1)?.routingDecision;
@@ -439,6 +468,27 @@ function askedToClarify(turns: TurnRecord[]): boolean {
 }
 
 export function assertFixture(
+  fixture: RoutingScenario,
+  turns: TurnRecord[],
+): Verdict {
+  const routed = assertRouting(fixture, turns);
+  if (!routed.passed || !fixture.createsType || createdAType(turns)) {
+    return routed;
+  }
+  return {
+    passed: false,
+    failure: calledSchemaCreate(turns)
+      ? "Routed as expected, but no type exists after the turn: every create_schema call was refused"
+      : "Routed as expected, but no type exists after the turn: create_schema was not called",
+  };
+}
+
+/**
+ * The verdict on where the turn was routed, before asking what it left
+ * behind. Recorded beside the score (`passedOnRoutingAlone`), so a run shows
+ * which scenarios routed correctly and created nothing.
+ */
+export function assertRouting(
   fixture: RoutingScenario,
   turns: TurnRecord[],
 ): Verdict {
@@ -580,6 +630,9 @@ const fixture: EvalFixture = {
       loadBearing: s.loadBearing ?? false,
       mutating: s.mutating ?? false,
       adversarial: s.adversarial ?? false,
+      createsType: s.createsType ?? false,
+      typeCreated: createdAType(turns),
+      passedOnRoutingAlone: assertRouting(s, turns).passed,
       matchedSkill: skillNameFromTurns(turns),
       clarified: isClarification(turns.map((t) => t.reply).join("\n")),
       toolsCalled: turns.flatMap((t) => t.toolsCalled),
@@ -595,6 +648,15 @@ const fixture: EvalFixture = {
     return [
       `Load-bearing (indirect phrasing + clarification): ${count((e) => e.loadBearing === true)}`,
       `Mutating gate:  ${count((e) => e.mutating === true)}`,
+      `Asked for a new type and created one: ${count((e) => e.createsType === true)}`,
+      `Routed to type creation and created nothing: ${
+        results.filter(
+          (r) =>
+            r.extra?.createsType === true &&
+            r.extra.passedOnRoutingAlone === true &&
+            r.extra.typeCreated === false,
+        ).length
+      }`,
       `Compound → route_multi: ${count((e) => (e.expected as ExpectedOutcome).kind === "multi")}`,
       `Single intent at length (must not route_multi): ${count((e) => e.singleIntentAtLength === true)}`,
       `Stage-1 constant-answer baseline: ${((100 * base.hits) / base.total).toFixed(1)}% (always route_${base.decision}, ${base.hits}/${base.total})`,

@@ -1977,7 +1977,7 @@ fn def_create_schema() -> ToolDefinition {
                             "uniqueCaseInsensitive": { "type": "boolean", "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'uniqueCaseInsensitive' on the same field." },
                             "coreValues": {
                                 "type": "array",
-                                "description": "REQUIRED and must be non-empty when type=\"enum\" — an enum field with no values always fails validation. Array of {value, label} pairs. Use lowercase values (e.g., 'active' not 'Active'). If predefined values aren't known yet, use type=\"text\" instead; values can be added later with update_schema.",
+                                "description": "The field's fixed list of values when type=\"enum\", as {value, label} pairs. Use lowercase values (e.g., 'active' not 'Active'). An enum field sent with no values is created as a text field.",
                                 "items": {
                                     "type": "object",
                                     "properties": {
@@ -2068,7 +2068,7 @@ fn def_update_schema() -> ToolDefinition {
                             "uniqueCaseInsensitive": { "type": "boolean", "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'uniqueCaseInsensitive' on the same field." },
                             "coreValues": {
                                 "type": "array",
-                                "description": "REQUIRED and must be non-empty when type=\"enum\" — an enum field with no values always fails validation. Array of {value, label} pairs.",
+                                "description": "The field's fixed list of values when type=\"enum\", as {value, label} pairs. An enum field sent with no values is added as a text field.",
                                 "items": { "type": "object", "properties": { "value": { "type": "string" }, "label": { "type": "string" } } }
                             }
                         },
@@ -3626,6 +3626,74 @@ pub fn removes_user_data_tool(tool: &str) -> bool {
     Tool::from_name(tool).is_some_and(Tool::removes_user_data)
 }
 
+/// Turn every enum field in `args[key]` that carries no values into a text
+/// field, and return the names of the fields changed.
+///
+/// An enum field without values cannot be stored, and the model sends one
+/// when the request names a field and no values for it. Measured on the
+/// locked model, "start tracking our planning cycles" produced
+/// `{"name": "status", "type": "enum"}` in 3 of 3 reps, and the refusal did not
+/// lead to a call that could succeed in any of them: the model answered it by
+/// calling `update_schema` to add values to the type that had not been
+/// created, and rewording the refusal in this tool's own terms changed
+/// nothing. A result the model has to act on is a plan (ADR-064 rule 4), so
+/// the tool does what its description used to ask of the model. The field is
+/// created as text, and the result says so
+/// ([`with_created_as_text_note`]).
+///
+/// Only this tool boundary is lenient. The CLI's `schema create` and the
+/// stored schema's own validation still refuse an enum without values.
+///
+/// Only that one shape is changed: a value list that is absent, null or
+/// empty, under both `coreValues` and `userValues`. A list that is present
+/// and malformed is the handler's error to report, not a field with no
+/// values.
+fn enum_fields_without_values_as_text(args: &mut Value, key: &str) -> Vec<String> {
+    let mut changed = Vec::new();
+    let Some(fields) = args.get_mut(key).and_then(Value::as_array_mut) else {
+        return changed;
+    };
+    for field in fields.iter_mut().filter_map(Value::as_object_mut) {
+        let is_enum = field.get("type").and_then(Value::as_str) == Some("enum");
+        let lists_nothing = |key: &str| match field.get(key) {
+            None | Some(Value::Null) => true,
+            Some(Value::Array(values)) => values.is_empty(),
+            Some(_) => false,
+        };
+        if is_enum && lists_nothing("coreValues") && lists_nothing("userValues") {
+            field.insert("type".to_string(), json!("text"));
+            field.remove("coreValues");
+            field.remove("userValues");
+            if let Some(name) = field.get("name").and_then(Value::as_str) {
+                changed.push(name.to_string());
+            }
+        }
+    }
+    changed
+}
+
+/// `result` with a note naming the fields
+/// [`enum_fields_without_values_as_text`] changed, when it changed any.
+///
+/// Under `notes`, beside the result's own `warnings`: this is the key and
+/// wording the change was measured with, and a warning there is about a field
+/// name, where this says what the tool did.
+fn with_created_as_text_note(mut result: Value, as_text: &[String]) -> Value {
+    if as_text.is_empty() {
+        return result;
+    }
+    if let Some(object) = result.as_object_mut() {
+        let notes: Vec<String> = as_text
+            .iter()
+            .map(|name| {
+                format!("Field '{name}' was sent as an enum with no values, so it is a text field.")
+            })
+            .collect();
+        object.insert("notes".to_string(), json!(notes));
+    }
+    result
+}
+
 /// All tool definitions for the graph executor, derived from the registry.
 pub fn all_tool_definitions() -> Vec<ToolDefinition> {
     // Force evaluation of the completeness proof; an associated const is only
@@ -4848,12 +4916,19 @@ impl GraphToolExecutor {
     ) -> Result<ToolResult, ToolError> {
         let ns = self.node_service()?;
 
+        let mut args = args;
+        let as_text = enum_fields_without_values_as_text(&mut args, "fields");
+
         // Delegate to the MCP schema handler which handles ID normalization
         // (e.g., "Project" → "project"), field namespacing, and validation.
         let result = handle_create_schema(&ns, args).await;
 
         match result {
-            Ok(value) => Ok(ok_result(tool_call_id, "create_schema", value)),
+            Ok(value) => Ok(ok_result(
+                tool_call_id,
+                "create_schema",
+                with_created_as_text_note(value, &as_text),
+            )),
             Err(e) => {
                 // Return validation errors as tool errors (not ToolError::ExecutionFailed)
                 // so the model sees the message and can self-correct. Formatted with
@@ -4873,10 +4948,17 @@ impl GraphToolExecutor {
         use nodespace_core::schema::handle_update_schema;
         let ns = self.node_service()?;
 
+        let mut args = args;
+        let as_text = enum_fields_without_values_as_text(&mut args, "add_fields");
+
         let result = handle_update_schema(&ns, args).await;
 
         match result {
-            Ok(value) => Ok(ok_result(tool_call_id, "update_schema", value)),
+            Ok(value) => Ok(ok_result(
+                tool_call_id,
+                "update_schema",
+                with_created_as_text_note(value, &as_text),
+            )),
             Err(e) => {
                 // Display rather than Debug — see exec_create_schema.
                 Ok(error_result(tool_call_id, "update_schema", &e.to_string()))
@@ -7218,6 +7300,122 @@ mod tests {
         // delete_node here because it archives the loser node — the same
         // "gone from under the user" shape, reached via a different verb.
         assert_eq!(destructive, vec!["delete_node", "merge_conflict"]);
+    }
+
+    #[test]
+    fn an_enum_field_sent_without_values_becomes_a_text_field() {
+        let mut args = json!({
+            "name": "planning cycle",
+            "fields": [
+                {"name": "status", "friendlyName": "status", "type": "enum"},
+                {"name": "phase", "type": "enum", "coreValues": []},
+                {"name": "stage", "type": "enum", "coreValues": [{"value": "open", "label": "Open"}]},
+                {"name": "owner", "type": "text"},
+            ],
+        });
+        let changed = enum_fields_without_values_as_text(&mut args, "fields");
+        assert_eq!(changed, ["status", "phase"]);
+        assert_eq!(args["fields"][0]["type"], "text");
+        assert_eq!(args["fields"][0]["friendlyName"], "status");
+        assert_eq!(args["fields"][1]["type"], "text");
+        assert!(
+            args["fields"][1].get("coreValues").is_none(),
+            "a text field carries no value list"
+        );
+        assert_eq!(
+            args["fields"][2]["type"], "enum",
+            "an enum with values is left alone"
+        );
+        assert_eq!(args["fields"][3]["type"], "text");
+    }
+
+    #[test]
+    fn an_enum_field_with_any_other_value_list_is_left_for_the_handler() {
+        let mut args = json!({
+            "fields": [
+                // Valid to the stored schema: its values are user values.
+                {"name": "stage", "type": "enum", "userValues": [{"value": "open", "label": "Open"}]},
+                // Malformed: the handler names the key in its own error.
+                {"name": "state", "type": "enum", "coreValues": "open, closed"},
+                {"name": "phase", "type": "enum", "coreValues": [], "userValues": "open"},
+                // Empty under both keys, or null: no values.
+                {"name": "status", "type": "enum", "coreValues": null, "userValues": []},
+            ],
+        });
+        let before = args.clone();
+        let changed = enum_fields_without_values_as_text(&mut args, "fields");
+        assert_eq!(changed, ["status"]);
+        for unchanged in 0..3 {
+            assert_eq!(args["fields"][unchanged], before["fields"][unchanged]);
+        }
+        assert_eq!(args["fields"][3], json!({"name": "status", "type": "text"}));
+    }
+
+    #[test]
+    fn arguments_without_a_field_list_are_left_as_they_are() {
+        for mut args in [
+            json!({"name": "x"}),
+            json!({"fields": "status"}),
+            json!(null),
+        ] {
+            let before = args.clone();
+            assert!(enum_fields_without_values_as_text(&mut args, "fields").is_empty());
+            assert_eq!(args, before);
+        }
+    }
+
+    #[test]
+    fn the_result_names_each_field_created_as_text_and_nothing_otherwise() {
+        let result = json!({"schemaId": "planning_cycle"});
+        assert_eq!(with_created_as_text_note(result.clone(), &[]), result);
+        let noted = with_created_as_text_note(result, &["status".to_string()]);
+        assert_eq!(
+            noted["notes"],
+            json!(["Field 'status' was sent as an enum with no values, so it is a text field."])
+        );
+    }
+
+    /// The request the tool used to refuse: an enum field with no values. The
+    /// type is created, the field is text, and the result says so.
+    #[tokio::test]
+    async fn create_schema_with_a_valueless_enum_field_creates_the_type() {
+        use nodespace_core::db::SqliteStore;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let mut store: Arc<SqliteStore> = Arc::new(SqliteStore::new(db_path).await.unwrap());
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        let executor = GraphToolExecutor {
+            node_service: Some(node_service.clone()),
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        };
+        let result = executor
+            .execute(
+                "create_schema",
+                json!({
+                    "name": "planning cycle",
+                    "fields": [{"name": "status", "friendlyName": "status", "type": "enum"}],
+                    "relationships": [],
+                }),
+            )
+            .await
+            .expect("create_schema must run");
+        assert!(!result.is_error, "got: {}", result.result);
+        assert_eq!(result.result["fields"][0]["type"], "text");
+        assert!(result.result["notes"][0]
+            .as_str()
+            .is_some_and(|note| note.contains("'status'")));
+        assert!(
+            node_service
+                .get_schema_node("planning_cycle")
+                .await
+                .unwrap()
+                .is_some(),
+            "the type must exist after the call"
+        );
     }
 
     #[test]

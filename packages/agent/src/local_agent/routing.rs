@@ -376,6 +376,170 @@ pub fn lookup_retrieval_query(topic: &str) -> String {
     format!("find, look up, or search stored knowledge for {topic}")
 }
 
+/// Whether `query` asks for something to be added: it opens with a verb that
+/// brings something into being and never asks for a removal.
+///
+/// An embedding weighs a request's nouns far above its verb, so an add whose
+/// record is named after another skill's subject is retrieved as that skill's
+/// request. Measured on the locked embedding model, "add cache invalidation
+/// decision to architecture decisions" ranked Node Deletion, Play Workflow
+/// State, Node Merge and Bulk Import first, and Node Creation sixth:
+/// `create_node` was off the surface and `delete_node` was on it. No wording
+/// of either description separated the two, the way none separated "remove
+/// the resolved tickets" from "mark it resolved".
+///
+/// The verb is read here instead, off the query Stage 1 wrote, whose tool
+/// description asks for the action to be kept. It decides no route. It
+/// decides two things about the candidates Stage 2 judges, both in
+/// [`retrieve_candidates`]: no skill that removes user data is among them,
+/// and one that can create a record is.
+///
+/// What is added need not be a record: "add a priority field to the ticket
+/// type" and "add this note to my reading list" open with one of these verbs
+/// too. Neither asks for a removal, so leaving the removing skills out costs
+/// them nothing. The second search can cost one a candidate: when it runs, the
+/// skill it adds leads, and the one that was third is no longer judged. On
+/// the requests of this kind that were measured it does not run, and each
+/// keeps its leader.
+///
+/// English only, and narrow on purpose: "put", "make" and "set" also start
+/// requests to change a record, so they are left out, and a request worded
+/// with one is routed as it was before this existed.
+pub fn is_add_shaped(query: &str) -> bool {
+    const ADDING_VERBS: [&str; 9] = [
+        "add", "create", "log", "record", "file", "insert", "register", "capture", "jot",
+    ];
+    let first_word: String = query
+        .trim()
+        .chars()
+        .take_while(|c| c.is_alphabetic())
+        .flat_map(char::to_lowercase)
+        .collect();
+    ADDING_VERBS.contains(&first_word.as_str())
+}
+
+/// How many candidates retrieval is asked for on a request to add something.
+///
+/// Twice [`RETRIEVAL_FETCH`], so that the ranking is still a full one after
+/// [`without_destructive_skills`] takes the deletion and merge skills out of
+/// it. Asked for [`RETRIEVAL_FETCH`], "add the merge queue decision to our
+/// architecture decisions" was left with two skills to judge.
+pub const ADD_RETRIEVAL_FETCH: usize = 2 * RETRIEVAL_FETCH;
+
+/// The retrieval query for an add that found no skill able to create a
+/// record: the capability, then the request.
+///
+/// The same shape as [`lookup_retrieval_query`], for the same reason. The
+/// wording is the one the creating skill's description carries.
+pub fn create_retrieval_query(query: &str) -> String {
+    format!("create a new record: {query}")
+}
+
+/// Whether a skill can create a record.
+pub fn skill_can_create_a_record(candidate: &SkillCandidate) -> bool {
+    candidate
+        .tools
+        .iter()
+        .any(|t| Tool::from_name(t) == Some(Tool::CreateNode))
+}
+
+/// `ranked` without the skills that can remove user data: the candidates of a
+/// request to add something ([`is_add_shaped`]).
+///
+/// ADR-038 offers a destructive tool only from the skill that won retrieval,
+/// and on an add that winner can be a deletion skill matched on a noun. A
+/// request that opens with an adding verb is not one to remove anything, so
+/// such a skill is not a candidate on it at all: it cannot lead the turn, and
+/// the place it held goes to the next skill.
+///
+/// The skill is left out whole, with the tools it holds that remove nothing.
+/// A skill that can both create and remove is therefore not offered on an
+/// add, including one a chat pins: a pinned skill that can remove user data
+/// needs a retrieval score to clear its bar, and it has none from this query.
+pub fn without_destructive_skills(mut ranked: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
+    ranked.retain(|c| !skill_is_destructive(c));
+    ranked
+}
+
+/// Whether none of the candidates Stage 2 would judge can create a record.
+///
+/// On an add this is the turn that cannot do what was asked: `create_node`
+/// is reachable from two skills, and both missed the bound.
+pub fn lacks_a_creating_skill(ranked: &[SkillCandidate]) -> bool {
+    !select_candidates(ranked.to_vec())
+        .iter()
+        .any(|c| clears_score_gate(c) && skill_can_create_a_record(c))
+}
+
+/// Retrieval's ranking for one routing query, through `retrieve`: a search for
+/// a query, asked for a number of candidates.
+///
+/// A query that is not shaped like an add is one search, returned as it came
+/// back. A request to add something ([`is_add_shaped`]) differs in two ways:
+///
+/// - It is ranked without the skills that can remove user data
+///   ([`without_destructive_skills`]), and asked for
+///   [`ADD_RETRIEVAL_FETCH`] so the ranking is still full without them.
+/// - When none of the candidates Stage 2 would then judge can create a record,
+///   retrieval runs once more on [`create_retrieval_query`], and the best
+///   match that can create and cannot remove joins the ranking with the score
+///   that search gave it. That score is on the second query's scale, which
+///   names the skill's own capability, so the skill usually leads the turn it
+///   was added to. Every other candidate keeps the score it had: the second
+///   search adds one skill to the ranking and removes none from it, though the
+///   skill it adds can take the last place Stage 2 judges.
+///
+/// A second search that fails leaves the first ranking as it was.
+///
+/// `agent_loop`'s `route` and the live retrieval guards both call this, so
+/// what the guards measure is the ranking a turn runs on.
+pub async fn retrieve_candidates<F, Fut, E>(
+    query: &str,
+    retrieve: F,
+) -> Result<Vec<SkillCandidate>, E>
+where
+    F: Fn(String, usize) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<SkillCandidate>, E>>,
+    E: std::fmt::Display,
+{
+    if !is_add_shaped(query) {
+        return retrieve(query.to_string(), RETRIEVAL_FETCH).await;
+    }
+    let mut ranked =
+        without_destructive_skills(retrieve(query.to_string(), ADD_RETRIEVAL_FETCH).await?);
+    if !lacks_a_creating_skill(&ranked) {
+        return Ok(ranked);
+    }
+    // Asked for as many as the first search: only one of them is kept, and a
+    // workspace's own types can fill the first places of a shorter ranking.
+    match retrieve(create_retrieval_query(query), ADD_RETRIEVAL_FETCH).await {
+        Ok(second) => {
+            let creating = without_destructive_skills(second)
+                .into_iter()
+                .find(|c| clears_score_gate(c) && skill_can_create_a_record(c));
+            if let Some(creating) = creating {
+                tracing::debug!(
+                    skill = %creating.name,
+                    score = creating.score,
+                    "an add found no skill that can create a record; added one"
+                );
+                // It may already be ranked, below the bound.
+                ranked.retain(|c| c.id != creating.id);
+                ranked.push(creating);
+                ranked.sort_by(|a, b| b.score.total_cmp(&a.score));
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                query,
+                "retrieval for a skill that can create a record failed; continuing without one"
+            );
+        }
+    }
+    Ok(ranked)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RouteQueryParams {
@@ -1456,6 +1620,309 @@ mod tests {
             schemas_linked: false,
             pinned: false,
         }
+    }
+
+    #[test]
+    fn a_query_that_opens_with_an_adding_verb_is_add_shaped() {
+        for query in [
+            "add cache invalidation decision to architecture decisions",
+            "Add the cache invalidation decision to our architecture decisions.",
+            "  create a task for the removal of the legacy auth module",
+            "log a bug about the merge conflict in the sync engine",
+            "record the decision to drop the v1 API",
+            "file a bug: the conflict journal shows stale entries",
+        ] {
+            assert!(is_add_shaped(query), "{query:?}");
+        }
+    }
+
+    #[test]
+    fn a_query_that_removes_changes_or_looks_up_is_not_add_shaped() {
+        for query in [
+            "delete the cache invalidation decision",
+            "remove all the resolved incidents",
+            "get rid of that old meeting note",
+            "merge the two Sarah Chen records",
+            "mark the incident as resolved",
+            "put the login timeout bug on the release blockers list",
+            "make the launch task high priority",
+            "start tracking planning cycles",
+            "search stored knowledge for the merge gate",
+            // The verb has to be the whole first word.
+            "address the review comments",
+            "logging is too noisy",
+            "",
+        ] {
+            assert!(!is_add_shaped(query), "{query:?}");
+        }
+    }
+
+    /// A retrieval double: the rankings to return, by query, and a record of
+    /// every search asked for.
+    struct Searches {
+        rankings: Vec<(String, Vec<SkillCandidate>)>,
+        asked: std::sync::Mutex<Vec<(String, usize)>>,
+    }
+
+    impl Searches {
+        fn new(rankings: Vec<(&str, Vec<SkillCandidate>)>) -> Self {
+            Self {
+                rankings: rankings
+                    .into_iter()
+                    .map(|(q, r)| (q.to_string(), r))
+                    .collect(),
+                asked: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        async fn run(&self, query: &str) -> Result<Vec<SkillCandidate>, String> {
+            retrieve_candidates(query, |q, limit| async move {
+                self.asked.lock().unwrap().push((q.clone(), limit));
+                let ranking = self
+                    .rankings
+                    .iter()
+                    .find(|(known, _)| *known == q)
+                    .map(|(_, r)| r.clone())
+                    .ok_or_else(|| format!("no ranking for {q:?}"))?;
+                Ok(ranking.into_iter().take(limit).collect())
+            })
+            .await
+        }
+
+        fn asked(&self) -> Vec<(String, usize)> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    const ADD: &str = "add cache invalidation decision to architecture decisions";
+
+    /// The ranking measured for [`ADD`] on the locked embedding model.
+    fn collision_ranking() -> Vec<SkillCandidate> {
+        vec![
+            candidate("Node Deletion", 0.816, &["delete_node", "search_nodes"]),
+            candidate("Play Workflow State", 0.801, &["get_workflow_state"]),
+            candidate("Node Merge", 0.787, &["merge_conflict", "get_conflict"]),
+            candidate("Bulk Import", 0.768, &["create_nodes_from_markdown"]),
+            candidate(
+                "Conflict Journal",
+                0.767,
+                &["list_conflicts", "dismiss_conflict"],
+            ),
+            candidate("Node Creation", 0.763, &["create_node", "update_node"]),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_query_that_is_not_an_add_is_one_search_returned_as_it_came() {
+        let query = "delete the cache invalidation decision";
+        let searches = Searches::new(vec![(query, collision_ranking())]);
+        let ranked = searches.run(query).await.unwrap();
+        assert_eq!(
+            names(&ranked),
+            [
+                "Node Deletion",
+                "Play Workflow State",
+                "Node Merge",
+                "Bulk Import"
+            ],
+            "a removal keeps the skill that removes, in the lead"
+        );
+        assert_eq!(searches.asked(), [(query.to_string(), RETRIEVAL_FETCH)]);
+    }
+
+    #[tokio::test]
+    async fn an_add_is_ranked_without_the_skills_that_remove_user_data() {
+        let searches = Searches::new(vec![(ADD, collision_ranking())]);
+        let ranked = searches.run(ADD).await.unwrap();
+        assert!(
+            !ranked.iter().any(skill_is_destructive),
+            "ranked: {:?}",
+            names(&ranked)
+        );
+        assert!(
+            !stage2_permitted_names(&select_candidates(ranked)).contains("delete_node"),
+            "delete_node must not be offered on an add"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_add_asks_for_enough_to_fill_the_ranking_without_them() {
+        // Node Creation is sixth: asked for RETRIEVAL_FETCH it is never
+        // returned, and the two skills dropped leave two to judge.
+        let searches = Searches::new(vec![(ADD, collision_ranking())]);
+        let ranked = searches.run(ADD).await.unwrap();
+        assert_eq!(searches.asked()[0], (ADD.to_string(), ADD_RETRIEVAL_FETCH));
+        assert_eq!(
+            names(&ranked),
+            [
+                "Play Workflow State",
+                "Bulk Import",
+                "Conflict Journal",
+                "Node Creation"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_add_with_no_creating_skill_among_the_judged_gets_one_from_a_second_search() {
+        let second = create_retrieval_query(ADD);
+        let searches = Searches::new(vec![
+            (ADD, collision_ranking()),
+            (
+                &second,
+                vec![
+                    candidate("Schema Creation", 0.921, &["create_schema"]),
+                    candidate("Node Creation", 0.908, &["create_node", "update_node"]),
+                    candidate("Graph Editing", 0.881, &["update_node", "create_node"]),
+                ],
+            ),
+        ]);
+        let judged = select_candidates(searches.run(ADD).await.unwrap());
+
+        // The best match that can create, not the best match: Schema Creation
+        // leads the second search and holds no create_node.
+        assert_eq!(judged[0].name, "Node Creation");
+        assert_eq!(
+            judged[0].score, 0.908,
+            "it keeps the score its search gave it"
+        );
+        assert_eq!(
+            judged.iter().filter(|c| c.name == "Node Creation").count(),
+            1,
+            "a skill already ranked below the bound is moved, not repeated"
+        );
+        // Everyone else keeps their score, and nobody new arrives with it.
+        // Four are judged: Play Workflow State is a read-only skill that no
+        // longer leads, so the next one that can write is kept too.
+        assert_eq!(
+            names(&judged),
+            [
+                "Node Creation",
+                "Play Workflow State",
+                "Bulk Import",
+                "Conflict Journal"
+            ]
+        );
+        assert_eq!(judged[1].score, 0.801);
+        assert!(stage2_permitted_names(&judged).contains("create_node"));
+        assert_eq!(
+            searches.asked(),
+            [
+                (ADD.to_string(), ADD_RETRIEVAL_FETCH),
+                (second, ADD_RETRIEVAL_FETCH)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_second_search_does_not_bring_back_a_skill_that_removes() {
+        // A skill that can create and delete leads the second search. It was
+        // dropped from the first ranking, and must not return through the
+        // second with a score that leads the turn.
+        let second = create_retrieval_query(ADD);
+        let searches = Searches::new(vec![
+            (ADD, collision_ranking()),
+            (
+                &second,
+                vec![
+                    candidate("Housekeeping", 0.95, &["create_node", "delete_node"]),
+                    candidate("Node Creation", 0.908, &["create_node"]),
+                ],
+            ),
+        ]);
+        let judged = select_candidates(searches.run(ADD).await.unwrap());
+        assert_eq!(judged[0].name, "Node Creation");
+        assert!(
+            !judged.iter().any(skill_is_destructive),
+            "judged: {:?}",
+            names(&judged)
+        );
+        assert!(!stage2_permitted_names(&judged).contains("delete_node"));
+    }
+
+    /// The cost of ranking the added skill on the second query's scale, in a
+    /// compound request: it can outrank the deletion skill the other half
+    /// retrieved, and a removing tool is offered only from the leader.
+    #[tokio::test]
+    async fn in_a_compound_request_the_added_skill_can_outrank_the_other_halfs_deletion() {
+        let removal = "delete the old draft";
+        let second = create_retrieval_query(ADD);
+        let searches = Searches::new(vec![
+            (ADD, collision_ranking()),
+            (
+                &second,
+                vec![candidate("Node Creation", 0.908, &["create_node"])],
+            ),
+            (
+                removal,
+                vec![candidate("Node Deletion", 0.86, &["delete_node"])],
+            ),
+        ]);
+        // The merge `agent_loop`'s `route` makes of a compound request's
+        // queries: every ranking, deduplicated, by score.
+        let mut merged = searches.run(ADD).await.unwrap();
+        merged.extend(searches.run(removal).await.unwrap());
+        merged.sort_by(|a, b| b.score.total_cmp(&a.score));
+        let judged = select_candidates(merged);
+
+        assert_eq!(names(&judged)[..2], ["Node Creation", "Node Deletion"]);
+        let offered = stage2_permitted_names(&judged);
+        assert!(offered.contains("create_node"));
+        assert!(
+            !offered.contains("delete_node"),
+            "the deletion skill is a candidate and does not lead, so its tool is withheld"
+        );
+        assert_eq!(destructive_tools_withheld(&judged), ["delete_node"]);
+    }
+
+    #[tokio::test]
+    async fn an_add_that_already_reaches_a_creating_skill_is_not_searched_twice() {
+        let query = "add a spec for the CSV import pipeline";
+        let searches = Searches::new(vec![(
+            query,
+            vec![
+                candidate("Bulk Import", 0.875, &["create_nodes_from_markdown"]),
+                candidate("Node Creation", 0.791, &["create_node"]),
+                candidate("Schema Creation", 0.780, &["create_schema"]),
+            ],
+        )]);
+        let ranked = searches.run(query).await.unwrap();
+        assert_eq!(
+            names(&ranked),
+            ["Bulk Import", "Node Creation", "Schema Creation"]
+        );
+        assert_eq!(searches.asked().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_second_search_that_fails_leaves_the_first_ranking() {
+        // No ranking is registered for the second query, so that search errs.
+        let searches = Searches::new(vec![(ADD, collision_ranking())]);
+        let ranked = searches.run(ADD).await.unwrap();
+        assert_eq!(searches.asked().len(), 2);
+        assert_eq!(
+            names(&ranked),
+            [
+                "Play Workflow State",
+                "Bulk Import",
+                "Conflict Journal",
+                "Node Creation"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_first_search_that_fails_is_the_callers_error() {
+        let searches = Searches::new(vec![]);
+        assert!(searches.run(ADD).await.is_err());
+    }
+
+    #[test]
+    fn a_creating_skill_below_its_score_bar_does_not_count_as_reached() {
+        let weak = candidate("Node Creation", 0.2, &["create_node"]);
+        assert!(lacks_a_creating_skill(&[weak]));
+        let strong = candidate("Node Creation", 0.8, &["create_node"]);
+        assert!(!lacks_a_creating_skill(&[strong]));
     }
 
     fn tool(name: &str) -> ToolDefinition {

@@ -29,7 +29,9 @@ use std::sync::Arc;
 
 use nodespace_agent::agent_types::SkillCandidate;
 use nodespace_agent::local_agent::routing::{
-    lookup_retrieval_query, select_candidates, RETRIEVAL_FETCH, RETRIEVAL_TOP_K,
+    is_add_shaped, leading_tool_bearing_candidate, lookup_retrieval_query, retrieve_candidates,
+    select_candidates, skill_can_create_a_record, skill_is_destructive, RETRIEVAL_FETCH,
+    RETRIEVAL_TOP_K,
 };
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::db::SqliteStore;
@@ -940,17 +942,33 @@ async fn stage2_candidate_names(
     node_service: &Arc<NodeService>,
     query: &str,
 ) -> Vec<String> {
+    select_candidates(
+        retrieved_candidates(embedding_service, node_service, query, RETRIEVAL_FETCH).await,
+    )
+    .into_iter()
+    .map(|c| c.name)
+    .collect()
+}
+
+/// Retrieval's ranking for `query`, as the candidates `agent_loop`'s `route`
+/// works with.
+async fn retrieved_candidates(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    query: &str,
+    limit: usize,
+) -> Vec<SkillCandidate> {
     let output = find_skills(
         embedding_service,
         node_service,
         FindSkillsInput {
             query: query.to_string(),
-            limit: Some(RETRIEVAL_FETCH),
+            limit: Some(limit),
         },
     )
     .await
     .expect("find_skills must succeed");
-    let ranked: Vec<SkillCandidate> = output
+    output
         .skills
         .iter()
         .map(|s| {
@@ -980,11 +998,25 @@ async fn stage2_candidate_names(
                 pinned: false,
             }
         })
-        .collect();
-    select_candidates(ranked)
-        .into_iter()
-        .map(|c| c.name)
         .collect()
+}
+
+/// The candidates Stage 2 judges for `query`, as `agent_loop`'s `route`
+/// arrives at them for a single query: `routing::retrieve_candidates`, then
+/// `routing::select_candidates`.
+async fn routed_candidates(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    query: &str,
+) -> Vec<SkillCandidate> {
+    let ranked = retrieve_candidates(query, |q, limit| async move {
+        Ok::<_, std::convert::Infallible>(
+            retrieved_candidates(embedding_service, node_service, &q, limit).await,
+        )
+    })
+    .await
+    .unwrap_or_else(|never| match never {});
+    select_candidates(ranked)
 }
 
 /// A request to start tracking something reads, to an embedding, a good deal
@@ -1410,5 +1442,165 @@ async fn control_why_a_rule_has_not_fired_still_routes_play_workflow_state() {
     assert!(
         misses.is_empty(),
         "Play Workflow State lost rank 1 for {misses:?}"
+    );
+}
+
+/// Adds whose record is named after another skill's subject, as Stage 1 words
+/// them: the verb first, then the record. An embedding weighs the noun, so on
+/// retrieval's own ranking each of these is led by the skill that shares it,
+/// and several by one that removes user data.
+const ADDS_NAMING_ANOTHER_SKILLS_SUBJECT: [&str; 10] = [
+    "Add the cache invalidation decision to our architecture decisions.",
+    "add cache invalidation decision to architecture decisions",
+    "add the merge queue decision to our architecture decisions",
+    "log a bug about the merge conflict in the sync engine",
+    "add a spec for the CSV import pipeline",
+    "create a task for the removal of the legacy auth module",
+    "record the decision to drop the v1 API",
+    "add a ticket for duplicate record detection",
+    "add the data purge policy decision to our decisions",
+    "add a task to delete the old log files",
+];
+
+/// An add must reach Stage 2 with a skill that holds `create_node` among its
+/// first [`RETRIEVAL_TOP_K`] candidates, and with no skill that removes user
+/// data among them at all.
+///
+/// "add cache invalidation decision to architecture decisions" is what Stage 1
+/// made of the request in the first entry. Retrieval ranked it Node Deletion
+/// 0.816, Play Workflow State 0.801, Node Merge 0.787, Bulk Import 0.768, and
+/// Node Creation sixth at 0.763: the turn was offered `delete_node` and not
+/// `create_node`, searched twice, and said it could not add the record. No
+/// description wording separates an add from a removal that names the same
+/// thing, so the verb is read off the query (`routing::is_add_shaped`) and the
+/// candidates follow from it (`routing::retrieve_candidates`).
+///
+/// The second search runs for three of these: the two cache-invalidation
+/// wordings, and "add the offline sync decision to our architecture
+/// decisions", which collides with nothing and still ranked Play Authoring,
+/// Schema Creation and Conflict Journal ahead of both skills that can create.
+/// The rest find one once the deletion and merge skills are out of the
+/// ranking.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn adds_naming_another_skills_subject_reach_a_skill_that_can_create() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut misses = Vec::new();
+    for query in ADDS_NAMING_ANOTHER_SKILLS_SUBJECT
+        .into_iter()
+        .chain(["add the offline sync decision to our architecture decisions"])
+    {
+        assert!(is_add_shaped(query), "{query:?} is not shaped like an add");
+        let judged = routed_candidates(&embedding_service, &node_service, query).await;
+        eprintln!(
+            "{query:?}: {:?}",
+            judged
+                .iter()
+                .map(|c| format!("{}={:.3}", c.name, c.score))
+                .collect::<Vec<_>>()
+        );
+        let can_create = judged
+            .iter()
+            .take(RETRIEVAL_TOP_K)
+            .any(skill_can_create_a_record);
+        let destructive = judged.iter().any(skill_is_destructive);
+        let destructive_lead =
+            leading_tool_bearing_candidate(&judged).is_some_and(skill_is_destructive);
+        if !can_create || destructive || destructive_lead {
+            misses.push(query);
+        }
+    }
+    assert!(
+        misses.is_empty(),
+        "no skill holding create_node reached the top-{RETRIEVAL_TOP_K}, or a skill that removes \
+         user data was a candidate, for {misses:?}"
+    );
+}
+
+/// The reason for the guard above, kept measurable: on retrieval's own ranking
+/// the first two adds reach Stage 2 with a skill that removes user data in the
+/// lead and none that can create. If a description change ever fixes that in
+/// retrieval, this fails and the rule in `routing::retrieve_candidates` can be
+/// weighed against the simpler ranking.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn without_the_add_rule_those_adds_lead_with_a_skill_that_removes() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    for query in &ADDS_NAMING_ANOTHER_SKILLS_SUBJECT[..2] {
+        let judged = select_candidates(
+            retrieved_candidates(&embedding_service, &node_service, query, RETRIEVAL_FETCH).await,
+        );
+        assert!(
+            leading_tool_bearing_candidate(&judged).is_some_and(skill_is_destructive)
+                && !judged.iter().any(skill_can_create_a_record),
+            "retrieval alone now serves {query:?}; judged: {:?}",
+            judged.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// The cost side of reading the verb: a request that opens with an adding
+/// verb and belongs to another skill must still reach that skill, in the
+/// place it had. The rule only takes the deletion and merge skills out of the
+/// ranking and adds a creating skill where none was judged, so each of these
+/// is led by the skill that led it on retrieval alone.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn add_shaped_requests_for_another_skill_keep_their_leader() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut moved = Vec::new();
+    for (query, leader) in [
+        ("add a priority field to the ticket type", "Schema Creation"),
+        (
+            "create a database for tracking our feature specs",
+            "Schema Creation",
+        ),
+        (
+            "add a rule to the triage play that assigns new bugs to Priya",
+            "Play Authoring",
+        ),
+        (
+            "record an edge between the rebuild task and the storage decision",
+            "Relationship Management",
+        ),
+        ("create nodes from this markdown document", "Bulk Import"),
+    ] {
+        assert!(is_add_shaped(query), "{query:?} is not shaped like an add");
+        let before = select_candidates(
+            retrieved_candidates(&embedding_service, &node_service, query, RETRIEVAL_FETCH).await,
+        );
+        let after = routed_candidates(&embedding_service, &node_service, query).await;
+        eprintln!(
+            "{query:?}: {:?}",
+            after
+                .iter()
+                .map(|c| format!("{}={:.3}", c.name, c.score))
+                .collect::<Vec<_>>()
+        );
+        let lead = |judged: &[SkillCandidate]| {
+            leading_tool_bearing_candidate(judged).map(|c| c.name.clone())
+        };
+        if lead(&after).as_deref() != Some(leader) || lead(&before) != lead(&after) {
+            moved.push(query);
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "the add rule moved the leader of {moved:?}"
+    );
+
+    // An add to a collection keeps the skill that holds `create_relationship`.
+    let query = "Add this note to my reading list collection";
+    let judged = routed_candidates(&embedding_service, &node_service, query).await;
+    assert!(
+        judged.iter().any(|c| c.name == "Organization"),
+        "Organization must reach Stage 2 for {query:?}; judged: {:?}",
+        judged.iter().map(|c| &c.name).collect::<Vec<_>>()
     );
 }
