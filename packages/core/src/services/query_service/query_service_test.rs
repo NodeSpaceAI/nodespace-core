@@ -7,10 +7,10 @@
 #[cfg(test)]
 mod tests {
     use crate::db::SqliteStore;
-    use crate::models::{Node, Priority};
+    use crate::models::Node;
     use crate::services::node_service::{CreateNodeParams, NodeService};
     use crate::services::query_service::{
-        BoundSql, FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
+        BoundSql, EnumRank, FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
         RelationshipPath, RelativeDate, ResolvedPath, SortConfig, SortDirection,
     };
     use nodespace_types::{HopDirection, ResolvedHop};
@@ -1614,23 +1614,38 @@ mod tests {
             .collect()
     }
 
-    fn priority_query(direction: SortDirection, limit: Option<usize>) -> QueryDefinition {
-        priority_query_for("task", direction, limit)
+    async fn priority_query(
+        node_service: &NodeService,
+        direction: SortDirection,
+        limit: Option<usize>,
+    ) -> QueryDefinition {
+        priority_query_for(node_service, "task", direction, limit).await
     }
 
-    fn priority_query_for(
+    /// A query for `target_type` sorted by `priority`, its sort resolved
+    /// against the schemas as `query_ops` resolves every sort it runs: the
+    /// order an enum sorts in is read from its schema.
+    async fn priority_query_for(
+        node_service: &NodeService,
         target_type: &str,
         direction: SortDirection,
         limit: Option<usize>,
     ) -> QueryDefinition {
-        QueryDefinition {
-            target_type: target_type.to_string(),
-            filters: vec![],
-            sorting: Some(vec![SortConfig {
+        let sorting = crate::ops::query_ops::resolve_sorting(
+            node_service,
+            target_type,
+            vec![SortConfig {
                 field: "priority".to_string(),
                 direction,
                 ..Default::default()
-            }]),
+            }],
+        )
+        .await
+        .unwrap();
+        QueryDefinition {
+            target_type: target_type.to_string(),
+            filters: vec![],
+            sorting: Some(sorting),
             limit,
         }
     }
@@ -1648,7 +1663,7 @@ mod tests {
         .await;
 
         let results = query_service
-            .execute(&priority_query(SortDirection::Ascending, None))
+            .execute(&priority_query(&node_service, SortDirection::Ascending, None).await)
             .await
             .unwrap();
 
@@ -1670,7 +1685,7 @@ mod tests {
         .await;
 
         let results = query_service
-            .execute(&priority_query(SortDirection::Descending, None))
+            .execute(&priority_query(&node_service, SortDirection::Descending, None).await)
             .await
             .unwrap();
 
@@ -1703,8 +1718,8 @@ mod tests {
         .expect("priority is an extensible enum field");
 
         // Both sort after every core value despite "blocker"/"critical"
-        // preceding "low"/"medium" alphabetically, and order lexicographically
-        // against each other.
+        // preceding "low"/"medium" alphabetically, and in the order they
+        // were added to the schema, which is not their alphabetical order.
         create_tasks_with_priorities(
             &node_service,
             &["critical", "low", "highest", "blocker", "medium"],
@@ -1712,15 +1727,14 @@ mod tests {
         .await;
 
         let results = query_service
-            .execute(&priority_query(SortDirection::Ascending, None))
+            .execute(&priority_query(&node_service, SortDirection::Ascending, None).await)
             .await
             .unwrap();
 
         assert_eq!(
             priorities_of(&results),
-            ["highest", "medium", "low", "blocker", "critical"],
-            "user-defined priorities sort after all core values, \
-             lexicographically among themselves"
+            ["highest", "medium", "low", "critical", "blocker"],
+            "user-defined priorities sort after all core values, in declared order"
         );
     }
 
@@ -1741,7 +1755,7 @@ mod tests {
         // two rows alphabetically (`high, highest`) are the same two the rank
         // keeps, so a limit of 2 passes against a text sort as well.
         let results = query_service
-            .execute(&priority_query(SortDirection::Ascending, Some(3)))
+            .execute(&priority_query(&node_service, SortDirection::Ascending, Some(3)).await)
             .await
             .unwrap();
 
@@ -1766,11 +1780,9 @@ mod tests {
         .await;
 
         let results = query_service
-            .execute(&priority_query_for(
-                "project",
-                SortDirection::Ascending,
-                None,
-            ))
+            .execute(
+                &priority_query_for(&node_service, "project", SortDirection::Ascending, None).await,
+            )
             .await
             .unwrap();
 
@@ -1796,11 +1808,10 @@ mod tests {
         .await;
 
         let results = query_service
-            .execute(&priority_query_for(
-                "project",
-                SortDirection::Ascending,
-                Some(3),
-            ))
+            .execute(
+                &priority_query_for(&node_service, "project", SortDirection::Ascending, Some(3))
+                    .await,
+            )
             .await
             .unwrap();
 
@@ -1828,7 +1839,7 @@ mod tests {
         node_service.create_node_with_parent(task).await.unwrap();
 
         let results = query_service
-            .execute(&priority_query(SortDirection::Ascending, None))
+            .execute(&priority_query(&node_service, SortDirection::Ascending, None).await)
             .await
             .unwrap();
 
@@ -1863,7 +1874,7 @@ mod tests {
         // `NULL = 'highest'` is NULL, not true), which would drop this task off
         // the end of an ascending query that should return it first.
         let results = query_service
-            .execute(&priority_query(SortDirection::Ascending, Some(2)))
+            .execute(&priority_query(&node_service, SortDirection::Ascending, Some(2)).await)
             .await
             .unwrap();
 
@@ -1877,53 +1888,65 @@ mod tests {
         assert_eq!(priorities_of(&results[1..]), ["highest"]);
     }
 
+    /// The SQL CASE gives each declared value its position in the list, which
+    /// is what `EnumRank::of` gives it in the Rust re-sort. If the two
+    /// disagreed, results would depend on whether a LIMIT was present.
     #[tokio::test]
-    async fn test_sql_priority_rank_matches_enum_rank() {
+    async fn test_sql_enum_rank_matches_declared_order() {
         let (query_service, _node_service, _temp) = create_test_services().await;
 
-        let sql = order_field(&query_service, "priority", "task", "ASC");
+        let rank = EnumRank {
+            values: vec!["open".into(), "in_progress".into(), "done".into()],
+            scope: None,
+        };
+        let sort = SortConfig {
+            field: "status".to_string(),
+            rank: Some(rank.clone()),
+            ..Default::default()
+        };
+        let mut built = BoundSql::default();
+        let sql = query_service.resolve_order_field(&sort, "task", "ASC", &mut built);
+        let field = "json_extract(properties, '$.task.status')";
 
-        // Pins the SQL CASE to Priority::rank(). If a rank changes on one
-        // side only, the SQL and Rust orderings disagree and results depend on
-        // whether a LIMIT was present.
-        for priority in [
-            Priority::Highest,
-            Priority::High,
-            Priority::Medium,
-            Priority::Low,
-            Priority::Lowest,
-        ] {
-            let arm = format!("= '{}' THEN {}", priority.as_str(), priority.rank());
+        for (position, value) in rank.values.iter().enumerate() {
+            let placeholder = format!("?{}", position + 1);
             assert!(
-                sql.contains(&arm),
-                "ORDER BY expression must rank {} as {}: {sql}",
-                priority.as_str(),
-                priority.rank()
+                sql.contains(&format!("WHEN {field} = {placeholder} THEN {position} ")),
+                "ORDER BY expression must rank {value} as {position}: {sql}"
             );
+            assert!(
+                matches!(&built.params[position], libsql::Value::Text(bound) if bound == value),
+                "{value} must be bound at {placeholder}"
+            );
+            assert_eq!(rank.of(Some(&json!(value))), position as i64);
         }
 
         assert!(
-            sql.contains(&format!("ELSE {} END", Priority::USER_RANK)),
-            "user-defined priorities must fall to USER_RANK: {sql}"
+            sql.contains("ELSE 3 END"),
+            "a value the schema does not list ranks after the declared ones: {sql}"
         );
+        assert_eq!(rank.of(Some(&json!("unlisted"))), 3);
         // A searched CASE with an explicit IS NULL arm, not a simple CASE: the
         // latter compares with `=`, so NULL matches nothing and an absent
-        // priority would be ranked as a user value instead of before the scale.
+        // value would be ranked with the unlisted ones instead of first.
         assert!(
-            sql.contains(&format!("IS NULL THEN {}", Priority::ABSENT_RANK)),
-            "an absent priority must rank ABSENT_RANK via an explicit IS NULL \
-             arm: {sql}"
+            sql.contains(&format!("WHEN {field} IS NULL THEN {} ", EnumRank::ABSENT)),
+            "an absent value must rank first via an explicit IS NULL arm: {sql}"
         );
+        assert_eq!(rank.of(None), EnumRank::ABSENT);
+        assert_eq!(rank.of(Some(&json!(null))), EnumRank::ABSENT);
         assert!(
-            sql.contains("json_extract(properties, '$.task.priority') ASC"),
-            "the raw value must remain as a tiebreaker for user-defined values: {sql}"
+            sql.ends_with(&format!("END ASC, {field} ASC")),
+            "the raw value must remain as a tiebreaker for unlisted values: {sql}"
         );
     }
 
     #[tokio::test]
-    async fn test_resolve_order_field_leaves_non_priority_fields_alone() {
+    async fn test_resolve_order_field_leaves_a_sort_with_no_rank_alone() {
         let (query_service, _node_service, _temp) = create_test_services().await;
 
+        // No rank was resolved for these sorts, so each orders the stored
+        // value: the query service ranks nothing on a field's name.
         assert_eq!(
             order_field(&query_service, "status", "task", "ASC"),
             "json_extract(properties, '$.task.status') ASC"
@@ -1932,8 +1955,6 @@ mod tests {
             order_field(&query_service, "created_at", "task", "DESC"),
             "created_at DESC"
         );
-        // A user-defined type's bare `priority` is its own vocabulary; the
-        // shared rank must not silently apply to it.
         assert_eq!(
             order_field(&query_service, "priority", "venue", "ASC"),
             "json_extract(properties, '$.venue.priority') ASC"
@@ -1941,26 +1962,98 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_wildcard_priority_sort_does_not_apply_task_rank() {
+    async fn test_wildcard_sort_does_not_apply_an_enum_rank() {
         let (query_service, _node_service, _temp) = create_test_services().await;
 
         // A wildcard query resolves the namespace from each row's own
-        // node_type, so a single CASE would rank every type's priority on the
-        // shared scale — including a user-defined type's own vocabulary. The
-        // Rust comparator deliberately ranks only when the target is one of
-        // `Priority::NODE_TYPES`, so ranking here too would make the two
-        // layers disagree, with the winner depending on whether a LIMIT was
-        // present. Rank only where the scale is actually defined.
-        let sql = order_field(&query_service, "priority", "*", "ASC");
+        // node_type, so a single CASE would rank every type's field of that
+        // name by one type's order, a user-defined type's own vocabulary
+        // included. The Rust comparator ranks only for a named target, so
+        // ranking here too would make the two layers disagree, with the
+        // winner depending on whether a LIMIT was present.
+        let sort = SortConfig {
+            field: "priority".to_string(),
+            rank: Some(EnumRank {
+                values: vec!["highest".into(), "high".into()],
+                scope: None,
+            }),
+            ..Default::default()
+        };
+        let sql = query_service.resolve_order_field(&sort, "*", "ASC", &mut BoundSql::default());
 
         assert!(
             !sql.contains("CASE"),
-            "wildcard priority sort must not assume the task scale: {sql}"
+            "a wildcard sort must not assume one type's order: {sql}"
         );
         assert_eq!(
             sql,
             format!("{} ASC", QueryService::own_or_inherited_field("priority")),
             "each row is read at its own type, then its ancestors'"
+        );
+    }
+
+    /// Any enum sorts by its declared order, not only `priority`: a task's
+    /// `status` comes back in the order its schema declares the values,
+    /// where a text sort gives `cancelled, done, in_progress, in_review,
+    /// open`. A limit cuts by that order, in SQL.
+    #[tokio::test]
+    async fn test_sort_by_status_follows_the_declared_order() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        for status in ["done", "open", "cancelled", "in_review", "in_progress"] {
+            let node = CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: format!("task {status}"),
+                parent_id: None,
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({"task": {"status": status}}),
+                lifecycle_status: None,
+            };
+            node_service.create_node_with_parent(node).await.unwrap();
+        }
+        let statuses = |direction: SortDirection, limit: Option<usize>| {
+            let (query_service, node_service) = (&query_service, &node_service);
+            async move {
+                let sorting = crate::ops::query_ops::resolve_sorting(
+                    node_service,
+                    "task",
+                    vec![SortConfig {
+                        field: "status".to_string(),
+                        direction,
+                        ..Default::default()
+                    }],
+                )
+                .await
+                .unwrap();
+                let query = QueryDefinition {
+                    target_type: "task".to_string(),
+                    filters: vec![],
+                    sorting: Some(sorting),
+                    limit,
+                };
+                query_service
+                    .execute(&query)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|n| n.properties["task"]["status"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        let declared = ["open", "in_progress", "in_review", "done", "cancelled"];
+        assert_eq!(statuses(SortDirection::Ascending, None).await, declared);
+        assert_eq!(
+            statuses(SortDirection::Ascending, Some(3)).await,
+            declared[..3]
+        );
+        let mut reversed = declared;
+        reversed.reverse();
+        assert_eq!(statuses(SortDirection::Descending, None).await, reversed);
+        assert_eq!(
+            statuses(SortDirection::Descending, Some(2)).await,
+            reversed[..2]
         );
     }
 

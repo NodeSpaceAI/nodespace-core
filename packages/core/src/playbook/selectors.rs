@@ -76,6 +76,18 @@ pub async fn selector_query(
         ));
     }
 
+    // A rule's selector runs in SQL and selects the same nodes whoever asks.
+    // What a change would be rejected for is the rules' own answer, read at
+    // one moment on one device (ADR-094 §9).
+    if filters.iter().any(|filter| filter.is_permitted()) {
+        return Err(SelectorError::Invalid(
+            "a play's selector cannot use a 'permitted' filter: it asks the rules what they \
+             would reject, and a rule cannot select by that. State the conditions in the \
+             selector's filters or in a rule condition instead."
+                .to_string(),
+        ));
+    }
+
     // Names are checked for shape before they are resolved, so a malformed
     // one is reported as malformed and not as undeclared.
     let mut query = QueryDefinition {

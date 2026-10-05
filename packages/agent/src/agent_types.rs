@@ -623,10 +623,9 @@ impl AgentTurnResult {
         match &self.clarify {
             Some(c) if c.pending_deletions.is_empty() => AiChatTurnOutcome::Clarified,
             Some(_) => AiChatTurnOutcome::Acted,
-            None if self
-                .tool_calls_made
-                .iter()
-                .any(|r| !r.is_error && crate::local_agent::tools::is_write_tool(&r.name)) =>
+            None if self.tool_calls_made.iter().any(|r| {
+                !r.is_error && crate::local_agent::tools::is_write_call(&r.name, &r.args)
+            }) =>
             {
                 AiChatTurnOutcome::Acted
             }

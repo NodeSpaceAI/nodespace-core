@@ -6129,6 +6129,38 @@ mod tests {
             }
         }
 
+        /// A selector cannot use a `permitted` filter, inline or through a
+        /// saved query: it asks the rules what they would reject, which a
+        /// rule cannot select by (ADR-094 §9).
+        #[tokio::test]
+        async fn a_selector_using_a_permitted_filter_is_rejected() {
+            let (svc, _dir) = service().await;
+            let may_start = json!({
+                "type": "permitted", "operator": "equals",
+                "property": "status", "value": "in_progress"
+            });
+            saved_query(
+                &svc,
+                QUERY_ID,
+                json!({ "target_type": "task", "filters": [may_start.clone()] }),
+            )
+            .await;
+
+            for select in [
+                json!({ "target_type": "task", "filters": [may_start] }),
+                json!({ "query_id": QUERY_ID }),
+            ] {
+                let rule = scheduled(select, "node.status == 'open'");
+                let errors = validate_play(&[rule], &svc).await.unwrap_err();
+                assert!(
+                    errors.iter().any(|e| matches!(e,
+                        PlayValidationError::InvalidSelector { message, .. }
+                            if message.contains("cannot use a 'permitted' filter"))),
+                    "{errors:?}"
+                );
+            }
+        }
+
         /// A saved-query selector takes its type from the query: the rule's
         /// conditions are validated against that type, exactly as if the rule
         /// had named it.

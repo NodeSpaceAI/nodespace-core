@@ -41,7 +41,7 @@
 //! ```
 
 use crate::db::SqliteStore;
-use crate::models::{Node, Priority};
+use crate::models::Node;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -50,8 +50,9 @@ use std::sync::Arc;
 // (`nodespace_types::QueryFields`), so a saved query's filters decode straight
 // into the types executed here.
 pub use nodespace_types::{
-    FilterOperator, FilterType, PropertyScope, QueryFilter, RelationshipHop, RelationshipPath,
-    RelativeDate, RelativeDateAnchor, ResolvedPath, SortConfig, SortDirection, SubtypeBucket,
+    EnumRank, FilterOperator, FilterType, PropertyScope, QueryFilter, RelationshipHop,
+    RelationshipPath, RelativeDate, RelativeDateAnchor, ResolvedPath, SortConfig, SortDirection,
+    SubtypeBucket,
 };
 
 /// Structured query definition: what a query selects, for execution
@@ -116,7 +117,7 @@ impl QueryDefinition {
         for sort in self.sorting.iter().flatten() {
             validate_property_path(&sort.field, "sort field")?;
             validate_property_scope(&sort.scope, "sort field scope")?;
-            if let Some(rank_scope) = &sort.rank_scope {
+            if let Some(rank_scope) = sort.rank.as_ref().and_then(|rank| rank.scope.as_ref()) {
                 validate_property_scope(rank_scope, "sort field scope")?;
             }
         }
@@ -237,6 +238,29 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Related filter missing 'filter'"))?;
             validate_filter_identifiers(nested, depth + 1)?;
+        }
+        FilterType::Permitted => {
+            if depth > 0 {
+                anyhow::bail!(
+                    "a 'permitted' filter is asked of the nodes the query selects, not of \
+                     the nodes a related filter reaches"
+                );
+            }
+            if filter.property.is_none() {
+                anyhow::bail!("Permitted filter missing 'property': the field the change sets");
+            }
+            if filter.value.is_none() {
+                anyhow::bail!("Permitted filter missing 'value': the value the change sets");
+            }
+            if filter.operator != FilterOperator::Equals {
+                anyhow::bail!(
+                    "a 'permitted' filter names one change, the property set to the value: \
+                     its operator is 'equals'"
+                );
+            }
+            if filter.path.is_some() || filter.node_id.is_some() || filter.filter.is_some() {
+                anyhow::bail!("a 'permitted' filter takes 'property' and 'value' only");
+            }
         }
         FilterType::Property | FilterType::Content | FilterType::Metadata => {}
     }
@@ -476,17 +500,18 @@ impl QueryService {
                 let val_a = read(a, &sort.scope);
                 let val_b = read(b, &sort.scope);
 
-                // A priority on the shared scale is an enum whose alphabetical
-                // order is meaningless, so rank it. This pass runs after the
-                // SQL and has the final say, so the condition and the value
-                // ranked must match resolve_order_field's exactly, or the SQL
-                // ordering is silently undone here.
-                if Self::ranks_priority(sort, target_type) {
-                    let (rank_a, rank_b) = match &sort.rank_scope {
+                // An enum's alphabetical order is meaningless, so rank it by
+                // its declared order. This pass runs after the SQL and has
+                // the final say, so the condition and the value ranked must
+                // match resolve_order_field's exactly, or the SQL ordering
+                // is silently undone here.
+                if let Some(rank) = Self::enum_rank(sort, target_type) {
+                    let (rank_a, rank_b) = match &rank.scope {
                         Some(rank_scope) => (read(a, rank_scope), read(b, rank_scope)),
                         None => (val_a.clone(), val_b.clone()),
                     };
-                    return self.compare_priority_values(
+                    return Self::compare_ranked_values(
+                        rank,
                         (rank_a.as_ref(), val_a.as_ref()),
                         (rank_b.as_ref(), val_b.as_ref()),
                     );
@@ -497,60 +522,44 @@ impl QueryService {
         }
     }
 
-    /// Whether a sort orders `priority` by urgency rank: the queried type is
-    /// on the shared scale ([`Priority::NODE_TYPES`]), or inherits the field
-    /// from a type that is ([`SortConfig::rank_scope`]). A query over every
-    /// type never ranks: each type's `priority` is its own vocabulary there.
-    fn ranks_priority(sort: &SortConfig, target_type: &str) -> bool {
-        sort.field == "priority"
-            && target_type != "*"
-            && (sort.rank_scope.is_some() || Priority::applies_to(target_type))
+    /// The declared order a sort ranks its enum field by, when it has one.
+    /// A query over every type never ranks: a field of one name is each
+    /// type's own vocabulary there.
+    fn enum_rank<'a>(sort: &'a SortConfig, target_type: &str) -> Option<&'a EnumRank> {
+        sort.rank.as_ref().filter(|_| target_type != "*")
     }
 
-    /// Compare two `priority` values of a [`Priority::NODE_TYPES`] type by
-    /// rank rather than alphabetically
+    /// Compare two values of an enum field by declared order rather than
+    /// alphabetically
     ///
-    /// Ascending yields highest, high, medium, low, lowest, then user-defined
-    /// values ordered lexicographically among themselves — the same ordering
-    /// [`Self::resolve_order_field`] builds in SQL.
+    /// Ascending yields the values in the order the schema declares them,
+    /// core values and then user values, and after them any value the schema
+    /// does not list, ordered lexicographically among themselves: the same
+    /// ordering [`Self::resolve_order_field`] builds in SQL.
     ///
-    /// An absent priority ranks [`Priority::ABSENT_RANK`], before the whole
-    /// scale, so it sorts first ascending — the same position the SQL CASE's
-    /// `IS NULL` arm gives it (`json_extract` yields SQL NULL for a JSON null
-    /// too, so one arm covers both). A non-string value is not a valid priority
-    /// and cannot be ranked, so it takes `USER_RANK`, which is where the `ELSE`
-    /// arm puts it in SQL.
+    /// A node with no value ranks [`EnumRank::ABSENT`], before every value,
+    /// so it sorts first ascending: the position the SQL CASE's `IS NULL`
+    /// arm gives it (`json_extract` yields SQL NULL for a JSON null too, so
+    /// one arm covers both). A non-string value is not a valid enum value
+    /// and takes the rank of an unlisted one, where the `ELSE` arm puts it.
     ///
-    /// Scope of the agreement, stated precisely because the bug this replaced
-    /// hid behind a comment claiming more than it delivered: the **rank**
-    /// matches SQL for every input, and the **tie-break within a rank** matches
-    /// for strings, where both order the raw value. It does not match for
-    /// non-strings — this keys on `to_string()` while SQLite orders integers
-    /// before text — but `priority` is an enum field on every type ranked
-    /// here, and
-    /// `validate_node_with_fields` rejects a non-null non-string on every write
-    /// path, so no such row exists to sort. Agreement matters because SQL
-    /// applies LIMIT before this pass runs, discarding rows it has already
-    /// ordered.
+    /// The rank matches SQL for every input, and the tie-break within a rank
+    /// matches for strings, where both order the raw value. It does not
+    /// match for non-strings (this keys on `to_string()` while SQLite orders
+    /// integers before text), but `validate_node_with_fields` rejects a
+    /// non-null non-string in an enum field on every write path, so no such
+    /// row exists to sort. Agreement matters because SQL applies LIMIT
+    /// before this pass runs, discarding rows it has already ordered.
     ///
     /// Each side is the value the rank is taken from and the value the row
     /// holds, which breaks a tie. They are one value unless the queried type
-    /// inherits the field from a type on the scale and reads it in its own
-    /// vocabulary ([`SortConfig::rank_scope`]).
-    fn compare_priority_values(
-        &self,
+    /// inherits the field and reads it in its own vocabulary
+    /// ([`EnumRank::scope`]).
+    fn compare_ranked_values(
+        rank: &EnumRank,
         a: (Option<&serde_json::Value>, Option<&serde_json::Value>),
         b: (Option<&serde_json::Value>, Option<&serde_json::Value>),
     ) -> std::cmp::Ordering {
-        /// The rank of one JSON value, mirroring the SQL CASE arm that would
-        /// match it.
-        fn rank(value: Option<&serde_json::Value>) -> i16 {
-            match value {
-                None | Some(serde_json::Value::Null) => Priority::ABSENT_RANK as i16,
-                Some(serde_json::Value::String(s)) => Priority::from_value(s).rank() as i16,
-                Some(_) => Priority::USER_RANK as i16,
-            }
-        }
         /// The tie-break key of one JSON value.
         fn key(value: Option<&serde_json::Value>) -> String {
             match value {
@@ -560,10 +569,8 @@ impl QueryService {
             }
         }
 
-        // Ranks tie for two user-defined values; the value string breaks it,
-        // mirroring the SQL tiebreaker.
-        rank(a.0)
-            .cmp(&rank(b.0))
+        rank.of(a.0)
+            .cmp(&rank.of(b.0))
             .then_with(|| key(a.1).cmp(&key(b.1)))
     }
 
@@ -773,7 +780,7 @@ impl QueryService {
     /// [`Self::build_where_clause`], which owns every binding. ORDER BY and
     /// LIMIT, added here, contribute no values of the caller's: an ORDER BY
     /// term binds only the node types and enum values of a resolved
-    /// [`PropertyScope`], which come from the schemas.
+    /// [`PropertyScope`] and [`EnumRank`], which come from the schemas.
     ///
     /// `excluded` leaves out those types and every type extending one of
     /// them; see [`Self::execute_excluding`].
@@ -933,34 +940,32 @@ impl QueryService {
         Self::stored_field(scope, target_type, field, built)
     }
 
-    /// Build one ORDER BY term, ranking priority instead of sorting it as text
+    /// Build one ORDER BY term, ranking an enum by its declared order
+    /// instead of sorting it as text
     ///
-    /// Deliberately separate from [`Self::resolve_field`]. `priority` on the
-    /// [`Priority::NODE_TYPES`] types is a string enum whose alphabetical
-    /// order (`high, highest, low, lowest, medium`) is meaningless, so
-    /// ordering by it needs a rank expression — but `resolve_field`'s output
-    /// must stay byte-for-byte identical to the expression each type's
-    /// priority index (`idx_task_priority`, `idx_project_priority`) is built
-    /// on, or equality filters silently stop using it. Wrapping the CASE in there would trade a working
-    /// filter index for a working sort. So the rank lives here, on the ordering
-    /// path only, and `resolve_field` is left alone.
+    /// Deliberately separate from [`Self::resolve_field`]. An enum's
+    /// alphabetical order (`high, highest, low, lowest, medium`) is
+    /// meaningless, so ordering by it needs a rank expression, but
+    /// `resolve_field`'s output must stay byte-for-byte identical to the
+    /// expression a field's index (`idx_task_priority`, `idx_task_status`)
+    /// is built on, or equality filters silently stop using it. So the rank
+    /// lives here, on the ordering path only.
     ///
-    /// The CASE mirrors [`Priority::rank`]; the two are pinned together by
-    /// `test_sql_priority_rank_matches_enum_rank`. User-defined values all land
-    /// on the same `ELSE` rank, so the raw value is appended as a tiebreaker to
-    /// order them lexicographically among themselves — matching what
-    /// [`Self::compare_priority_values`] does in Rust.
+    /// The CASE gives each declared value its position in
+    /// [`EnumRank::values`], which is what [`EnumRank::of`] gives it in
+    /// Rust. Values the schema does not list all land on the `ELSE` rank, so
+    /// the raw value is appended as a tiebreaker to order them
+    /// lexicographically among themselves, as
+    /// [`Self::compare_ranked_values`] does.
     ///
-    /// The trade this makes: a CASE is not an indexed expression, so the sort
-    /// itself no longer uses the priority index and SQLite builds a transient
-    /// B-tree for it. Equality *filters* on priority still hit the index, which
-    /// is what keeping `resolve_field` untouched buys, and sorting a result set
-    /// is the cheaper half. Revisit if priority sorts ever run over row counts
-    /// where the transient sort shows up in a profile.
+    /// The trade this makes: a CASE is not an indexed expression, so the
+    /// sort itself does not use the field's index and SQLite builds a
+    /// transient B-tree for it. Equality filters still hit the index, and
+    /// sorting a result set is the cheaper half.
     ///
-    /// A type that inherits `priority` from a type on the scale is ranked
-    /// too, on the value as that type reads it ([`SortConfig::rank_scope`]):
-    /// a subtype's own value ranks where the value it maps to does.
+    /// A type that inherits the field is ranked on the value as the type
+    /// that first declares it reads it ([`EnumRank::scope`]): a subtype's
+    /// own value ranks where the value it maps to does.
     fn resolve_order_field(
         &self,
         sort: &SortConfig,
@@ -971,43 +976,35 @@ impl QueryService {
         let field = sort.field.as_str();
         let resolved = self.resolve_sort_field(field, &sort.scope, target_type, built);
 
-        // Scoped to the types that share the scale. A wildcard query resolves
-        // the namespace from each row's own node_type, so ranking there would
-        // impose the shared scale on every type's priority — including a
-        // user-defined type's bare `priority`, which is its own vocabulary —
-        // while compare_priority_values ranks only for these same targets. The
-        // two layers would then disagree, and which one won would depend on
-        // whether a LIMIT was present.
-        if Self::ranks_priority(sort, target_type) {
-            let ranked = match &sort.rank_scope {
-                Some(rank_scope) => Self::stored_field(rank_scope, target_type, field, built),
-                None => resolved.clone(),
-            };
-            // A *searched* CASE, deliberately: a simple `CASE <expr> WHEN ...`
-            // compares with `=`, and `NULL = 'highest'` is NULL rather than
-            // true, so an absent priority would match no arm and fall to ELSE
-            // — ranking it as a user-defined value, at the far end of the scale
-            // from where compare_priority_values puts it. Because LIMIT applies
-            // in SQL before the in-Rust re-sort, that disagreement would drop
-            // unprioritized tasks from a limited ascending query that should
-            // have returned them first.
-            let rank = format!(
-                "CASE WHEN {ranked} IS NULL THEN {} \
-                 WHEN {ranked} = 'highest' THEN {} WHEN {ranked} = 'high' THEN {} \
-                 WHEN {ranked} = 'medium' THEN {} WHEN {ranked} = 'low' THEN {} \
-                 WHEN {ranked} = 'lowest' THEN {} ELSE {} END",
-                Priority::ABSENT_RANK,
-                Priority::Highest.rank(),
-                Priority::High.rank(),
-                Priority::Medium.rank(),
-                Priority::Low.rank(),
-                Priority::Lowest.rank(),
-                Priority::USER_RANK,
-            );
-            return format!("{rank} {direction}, {resolved} {direction}");
+        // Never under a wildcard: the namespace is each row's own type
+        // there, so one type's order would be imposed on every type's field
+        // of that name, and compare_ranked_values ranks only for a named
+        // target. The two layers would disagree, and which one won would
+        // depend on whether a LIMIT was present.
+        let Some(rank) = Self::enum_rank(sort, target_type) else {
+            return format!("{resolved} {direction}");
+        };
+        let ranked = match &rank.scope {
+            Some(rank_scope) => Self::stored_field(rank_scope, target_type, field, built),
+            None => resolved.clone(),
+        };
+        // A *searched* CASE, deliberately: a simple `CASE <expr> WHEN ...`
+        // compares with `=`, and `NULL = 'open'` is NULL rather than true,
+        // so an absent value would match no arm and fall to ELSE, ranking
+        // it with the unlisted values at the far end from where
+        // compare_ranked_values puts it. Because LIMIT applies in SQL
+        // before the in-Rust re-sort, that disagreement would drop nodes
+        // with no value from a limited ascending query that should have
+        // returned them first.
+        let mut arms = format!("WHEN {ranked} IS NULL THEN {} ", EnumRank::ABSENT);
+        for (position, value) in rank.values.iter().enumerate() {
+            let value = built.bind(libsql::Value::Text(value.clone()));
+            arms.push_str(&format!("WHEN {ranked} = {value} THEN {position} "));
         }
-
-        format!("{resolved} {direction}")
+        format!(
+            "CASE {arms}ELSE {} END {direction}, {resolved} {direction}",
+            rank.values.len()
+        )
     }
 
     // ========== Filter Builders ==========
@@ -1032,6 +1029,12 @@ impl QueryService {
             FilterType::Relationship => self.build_relationship_filter(filter, built)?,
             FilterType::Metadata => self.build_metadata_filter(filter, built)?,
             FilterType::Related => self.build_related_filter("id", filter, built)?,
+            // Refused rather than skipped: a statement that left it out
+            // would return nodes the filter exists to keep back.
+            FilterType::Permitted => anyhow::bail!(
+                "a 'permitted' filter is a dry run per node, not a SQL condition: run the \
+                 query through `query_ops`, which evaluates it after the statement"
+            ),
         };
         Ok(if filter.is_negated() {
             format!("({condition}) IS NOT TRUE")

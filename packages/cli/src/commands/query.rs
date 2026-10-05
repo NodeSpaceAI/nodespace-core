@@ -29,7 +29,7 @@ pub struct QueryArgs {
     pub target_type: Option<String>,
     /// JSON array of filter conditions, e.g.
     /// `[{"type":"property","operator":"equals","property":"status","value":"open"}]`.
-    /// Supported types: property, content, metadata, relationship, related.
+    /// Supported types: property, content, metadata, relationship, related, permitted.
     /// A relationship filter names a `path` of relationship names and the
     /// `node_id` it must reach, e.g.
     /// `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`.
@@ -42,9 +42,17 @@ pub struct QueryArgs {
     /// the nested filter". A property may be a path into an object field's
     /// value or a link field's parts: `"property":"repository.url"` is the
     /// `url` of the link field `repository`, and `repository.title` its title.
+    /// A permitted filter keeps the nodes for which setting `property` to
+    /// `value` would not be rejected by a rule, as a dry run of that change
+    /// predicts it, e.g.
+    /// `[{"type":"permitted","operator":"equals","property":"status","value":"in_progress"}]`.
+    /// It is evaluated after the other filters, and sort and limit apply to
+    /// what it keeps.
     #[arg(long)]
     pub filters: Option<String>,
     /// JSON array of sort configs, e.g. `[{"field":"due_date","direction":"desc"}]`.
+    /// An enum field sorts in the order its schema declares its values, not
+    /// alphabetically.
     #[arg(long)]
     pub sorting: Option<String>,
     /// Max results to return (0 = server default of 50).

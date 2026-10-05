@@ -1270,7 +1270,7 @@ fn suppressed_type_listing(
 ) -> Option<Vec<(String, String)>> {
     if executions
         .iter()
-        .any(|r| super::tools::is_write_tool(&r.name))
+        .any(|r| super::tools::is_write_call(&r.name, &r.args))
     {
         return None;
     }
@@ -1437,7 +1437,7 @@ fn cut_off_turn_backstop(
     let calls = &result.tool_calls_made;
     if calls
         .iter()
-        .any(|r| !r.is_error && super::tools::is_write_tool(&r.name))
+        .any(|r| !r.is_error && super::tools::is_write_call(&r.name, &r.args))
     {
         return;
     }

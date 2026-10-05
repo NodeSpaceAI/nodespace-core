@@ -206,6 +206,7 @@ nodespace node update <node-id> --property status=in_progress --property priorit
 - `--property key=value` — repeatable; sets one property, deep-merged into existing properties (properties you don't mention are left untouched). Values are parsed as JSON when possible (numbers, booleans, arrays, objects), otherwise treated as a plain string.
 - `--properties '{json}'` — several properties as one JSON object, deep-merged the same way; each value keeps the type it is written with.
 - `--version <n>` — the node's `version` as you read it. The update is written only if the node is still at that version. Omit it to update whatever is current.
+- `--dry-run` — evaluate the update without making it. See "Asking whether a change is allowed" below.
 
 At least one of `--content`, `--property`, `--properties` or a collection flag is required.
 
@@ -220,6 +221,27 @@ With `--json` the same is printed as `{"error": "version_conflict", "node_id": �
 **After a conflict, read the node again (`nodespace node get <node-id>`) before you do anything else.** Do not retry with the new version number: the node now holds a change you have not seen, and your write may no longer be right. A task you meant to start may already be in progress under another session, in which case you leave it and pick other work.
 
 Joining or leaving a collection does not change a node's version. `--version` on an update that only changes collections is still checked against the node, but it does not stop a second session making the same change: claim work with `set-status`, not with a collection.
+
+**Asking whether a change is allowed:** `--dry-run` on `node update` or `node set-status` evaluates the rules the write would run and reports what they say. Nothing is written and the version does not change.
+
+```bash
+nodespace node set-status <task-id> in_progress --dry-run
+nodespace --json node update <node-id> --property plan_status=approved --dry-run
+```
+
+```
+Dry run: rejected. Rule 'reject-starting-a-blocked-task' (play <play-id>) would reject this change to node <task-id>: This task is blocked by a task that is not finished yet. …
+Nothing was written.
+```
+
+With `--json` the answer is `{"dry_run": true, "node_id": …, "version": …, "allowed": false, "rejected_by": {"play_id": …, "rule_name": …, "message": …}}`; an allowed change is `"allowed": true` with no `rejected_by`. The command exits zero either way: a predicted rejection is the answer, not a failure. A rule that cannot be evaluated is reported under `"unresolved"` with the `reason`, and counts as not allowed, because the write would fail on it too.
+
+- It predicts rejections only. Other things a rule does when the write is made are not carried out and not predicted.
+- It is a prediction, not a reservation. The graph can change before you make the write, and the rule on the write is what decides: still pass `--version` on the write itself.
+- A value the schema refuses, or a stale `--version`, fails the dry run as it fails the write.
+- Collection flags are not evaluated and cannot be combined with `--dry-run`.
+
+You rarely need it before a write: making the write and reading the rejection tells you the same. Use it to answer "can this be started?" without starting it.
 
 **A derived attribute cannot be written.** A checkbox's `checked` is computed from its content (`- [ ] ` / `- [x] `) and is never a property: tick or untick one with `--content`, e.g. `nodespace node update <checkbox-id> --content "- [x] Tests pass"`. `--property checked=true` is refused.
 
@@ -239,6 +261,8 @@ nodespace node set-status <task-id> in_progress --version <n>   # only if the ta
 Dedicated verb for task status transitions. Status must be one of the values the `task` schema's `status` field declares — the four built-ins (`open`, `in_progress`, `done`, `cancelled`) plus any added via `schema update`'s `add_field_values` (see "Adding a value to an existing enum" under Schema inspection and management). Validated against that live vocabulary; an invalid value is rejected with the current list.
 
 `--version <n>` works as it does for `node update` (see "Writing at the version you read" above). Start a task with the version you read it at: of two sessions that both try, one is refused, and it reads the task again and moves on.
+
+`--dry-run` reports whether the rules would reject the change and writes nothing (see "Asking whether a change is allowed" above).
 
 **Output:** Updated node JSON.
 
@@ -317,14 +341,15 @@ nodespace query --type task --filters '[{"type":"property","operator":"gte","pro
 
 **Options:**
 - `--type <type>` — target node type, or `*` for all types
-- `--filters <json>` — array of filter conditions: `{"type":"property"|"content"|"metadata"|"relationship"|"related","operator":"equals"|"contains"|"gt"|"lt"|"gte"|"lte"|"in"|"exists","property":"...","value":...}`
+- `--filters <json>` — array of filter conditions: `{"type":"property"|"content"|"metadata"|"relationship"|"related"|"permitted","operator":"equals"|"contains"|"gt"|"lt"|"gte"|"lte"|"in"|"exists","property":"...","value":...}`
   - A `relationship` filter selects the nodes connected to one node: `{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}` is the children of `<id>` (each matching node reaches `<id>` by following `child_of`).
   - A `related` filter selects by a condition on the connected nodes: `{"type":"related","operator":"equals","path":["project"],"filter":{"type":"property","operator":"equals","property":"status","value":"active"}}` is the tasks whose project is active.
   - `path` lists the relationship names to follow from each candidate node, in order: built-in names (`has_child`, `member_of`, `mentions`), schema-declared names, or the reverse name of either (`child_of`, `mentioned_by`, a declared `reverseName`). `{"name":"child_of","open_ended":true}` in place of a name follows it to every depth (all ancestors). A name the type does not declare is an error naming the ones it does. With `--type '*'` only built-in names resolve.
   - Any filter takes `"negate": true` to keep the nodes it does **not** hold for: `{"type":"property","operator":"equals","property":"status","value":"done","negate":true}` is every task whose status is not `done`, a task with no status included, and a negated `exists` is "has no value". A negated `related` filter is "the path reaches no node matching the nested filter", which a node the path leads nowhere from satisfies; the nested `filter` can be negated too, and the two together say "every node the path reaches matches". Filters are ANDed; there is no OR.
   - A `property` filter may name a field inside an object field's value with a dotted path, and a link field's parts the same way: `"property":"repository.url"` is the `url` of the link field `repository` (`repository.title` is its title). A sort's `field` takes the same. The schema must declare every segment, so the query needs a `--type`; a path it does not declare is an error naming it.
   - A `property` filter on a date field takes `relative_date` in place of `value`, for a date relative to the day the query runs: `{"type":"property","operator":"gte","property":"due_date","relative_date":{"anchor":"today"}}` is due today or later, and `"relative_date":{"anchor":"today","offset_days":7}` is a week from today (negative for the past). The operator is one of `equals`, `gt`, `lt`, `gte`, `lte`. Today is the local date. It works inside a `related` filter's nested `filter` too. In a saved query it is stored as written and resolved each time the query runs, so prefer it to a fixed date when saving a view such as "due this week". A play's selector does not accept it.
-- `--sorting <json>` — array of `{"field":"...","direction":"asc"|"desc"}`
+  - A `permitted` filter keeps the nodes for which a change would not be rejected by a rule: `{"type":"permitted","operator":"equals","property":"status","value":"in_progress"}` is the tasks that can be started now. It is a dry run of that change for each node (see "Asking whether a change is allowed" under Update a node), so the view follows the rules as they stand: switch a rule off or edit it and the result changes with no change to the query. Its operator is `equals`, it names a field the type declares, and it is not accepted inside a `related` filter. It is evaluated after the other filters, and sort and limit apply to what it keeps, so put the cheap filters beside it (`status` is `open`). With `"negate": true` it keeps the nodes the change would be rejected for. A node whose rules cannot be evaluated is left out; only `query run` reports how many were (`permitted_unresolved`), so save the query and run it when that count matters. Setting a field to the value it already has changes nothing and is always permitted, which is why the example pairs it with `status` is `open`: alone, it would also list every task already in progress. Like a dry run it predicts rejections only and guarantees nothing about a later write. A play's selector does not accept it.
+- `--sorting <json>` — array of `{"field":"...","direction":"asc"|"desc"}`. An enum field sorts in the order its schema declares its values, core values first and then the ones a user added, not alphabetically: `status` ascending is `open`, `in_progress`, `in_review`, `done`, `cancelled`, and `priority` ascending is `highest` to `lowest`. A node with no value sorts first ascending. With `--type '*'` an enum sorts as text.
 - `--limit <n>` — max results (0 = server default of 50; server caps at 500 regardless of the value passed)
 
 Worked examples:
@@ -336,6 +361,7 @@ Worked examples:
 - "tasks of an approved spec" → `nodespace query --type task --filters '[{"type":"related","operator":"exists","path":["spec"],"filter":{"type":"property","operator":"equals","property":"spec_status","value":"approved"}}]'`
 - "high priority tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"priority","value":"high"}]'`
 - "tasks that are not done" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"status","value":"done","negate":true}]'`
+- "tasks that can be started now" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"status","value":"open"},{"type":"permitted","operator":"equals","property":"status","value":"in_progress"}]'`
 - "tasks with no unfinished blocker" → `nodespace query --type task --filters '[{"type":"related","operator":"exists","path":["blocked_by"],"negate":true,"filter":{"type":"property","operator":"in","property":"status","value":["done","cancelled"],"negate":true}}]'`
 - "the project for this repository" → `nodespace query --type project --filters '[{"type":"property","operator":"equals","property":"repository.url","value":"<remote url>"}]'` (`repository` is a `link` field on `project`, read by `repository.url` and `repository.title`)
 - "tasks with an unchecked item" → `nodespace query --type task --filters '[{"type":"related","operator":"equals","path":["has_child"],"filter":{"type":"property","operator":"equals","property":"checked","value":false}}]'`. `checked` is a checkbox's derived attribute: computed from its content, named in a `property` filter like a field, and never matched by a node that is not a checkbox.
@@ -366,6 +392,8 @@ It returns the nodes the query matches now, with its stored filters, sorting, li
 - `--with-context` — return each result as `node context` reads it. See "Run with context" below.
 
 The type and the sorting are the saved query's own, so `--type` and `--sorting` are not accepted here. To find the saved queries: `nodespace query --type query`.
+
+A saved query with a `permitted` filter lists what the rules would allow at the moment it runs. When that filter could not evaluate the rules for some candidates, they are left out and the run says how many: `"permitted_unresolved": <n>` with `--json`, a line after the results otherwise.
 
 **Attached skills.** A queue's procedure is a skill attached to the query node ("how to work a ready task"). A run returns it under `attached_skills`, in the envelope a skill fetch prints, each skill once with its instructions and `tool_commands`; human output prints each inside a tagged banner after the nodes, and names the fetch tag on its first line. Follow it for the items the run returned. `"count": 0` there means no skill is attached.
 
@@ -965,12 +993,14 @@ Operate on individual nodes (get, context, create, update, move, delete, childre
 - `--collection-id <ID>` — Collection ID to add the node to (repeatable). Prefer --collection
 - `--remove-collection-id <ID>` — Collection ID to remove the node from (repeatable)
 - `--version <VERSION>` — The node version you read. Updates only if the node is still at it; otherwise nothing is written and the current version is reported. Omit to update whatever is current
+- `--dry-run` — Evaluate the update without making it: prints whether a rule would reject it, and the rule's message if so. Nothing is written and the version does not change. It predicts rejections only, and it is a prediction: the graph can change before you make the write, and the rule on the write is what decides. Collection changes are not evaluated
 
 **`nodespace node set-status`** — Set a task node's status (dedicated verb — do not use `update` for this)
 
 - `<ID>` — Task node ID (required)
 - `<STATUS>` — New status. Must be one of the values the `task` schema's `status` field declares — the built-ins (open, in_progress, in_review, done, cancelled) plus any added since. An invalid value is rejected with the current list (required)
 - `--version <VERSION>` — The task version you read. Sets the status only if the task is still at it; otherwise nothing is written and the current version is reported. Omit to update whatever is current
+- `--dry-run` — Evaluate the change without making it: prints whether a rule would reject it, and the rule's message if so. Nothing is written and the version does not change. It predicts rejections only, and it is a prediction: the graph can change before you make the write, and the rule on the write is what decides
 
 **`nodespace node move`** — Move a node under another parent (or to the root), or change its position among its siblings. The node keeps its ID and everything nested under it
 
@@ -1048,8 +1078,8 @@ Semantic search across the knowledge graph
 Structured property query with comparison operators (equals/contains/gt/lt/gte/lte/in/exists)
 
 - `--type <TARGET_TYPE>` — Target node type ("task", "text", etc.) or "*" for all types (required)
-- `--filters <FILTERS>` — JSON array of filter conditions, e.g. `[{"type":"property","operator":"equals","property":"status","value":"open"}]`. Supported types: property, content, metadata, relationship, related. A relationship filter names a `path` of relationship names and the `node_id` it must reach, e.g. `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`. Supported operators: equals, contains, gt, lt, gte, lte, in, exists. A property filter on a date field takes `relative_date` in place of `value` for a date relative to the day the query runs, e.g. `[{"type":"property","operator":"lte","property":"due_date","relative_date":{"anchor":"today","offset_days":7}}]`. Any filter takes `"negate": true` to keep the nodes it does not hold for; on a related filter that is "the path reaches no node matching the nested filter". A property may be a path into an object field's value or a link field's parts: `"property":"repository.url"` is the `url` of the link field `repository`, and `repository.title` its title
-- `--sorting <SORTING>` — JSON array of sort configs, e.g. `[{"field":"due_date","direction":"desc"}]`
+- `--filters <FILTERS>` — JSON array of filter conditions, e.g. `[{"type":"property","operator":"equals","property":"status","value":"open"}]`. Supported types: property, content, metadata, relationship, related, permitted. A relationship filter names a `path` of relationship names and the `node_id` it must reach, e.g. `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`. Supported operators: equals, contains, gt, lt, gte, lte, in, exists. A property filter on a date field takes `relative_date` in place of `value` for a date relative to the day the query runs, e.g. `[{"type":"property","operator":"lte","property":"due_date","relative_date":{"anchor":"today","offset_days":7}}]`. Any filter takes `"negate": true` to keep the nodes it does not hold for; on a related filter that is "the path reaches no node matching the nested filter". A property may be a path into an object field's value or a link field's parts: `"property":"repository.url"` is the `url` of the link field `repository`, and `repository.title` its title. A permitted filter keeps the nodes for which setting `property` to `value` would not be rejected by a rule, as a dry run of that change predicts it, e.g. `[{"type":"permitted","operator":"equals","property":"status","value":"in_progress"}]`. It is evaluated after the other filters, and sort and limit apply to what it keeps
+- `--sorting <SORTING>` — JSON array of sort configs, e.g. `[{"field":"due_date","direction":"desc"}]`. An enum field sorts in the order its schema declares its values, not alphabetically
 - `--limit <LIMIT>` — Max results to return (0 = server default of 50)
 
 **`nodespace query run`** — Run a saved query node by its id or title, with its stored filters, sorting and limit. The skills attached to the query come back beside its nodes

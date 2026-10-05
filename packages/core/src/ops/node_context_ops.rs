@@ -14,7 +14,7 @@ use crate::ops::path_ops::{resolve_hop, undeclared_message, HopResolution};
 use crate::ops::query_ops::checked_definition;
 use crate::ops::skill_ops::{self, GuidanceSchema, GuidanceSkill, SkillGuidance};
 use crate::ops::OpsError;
-use crate::services::{NodeService, QueryDefinition, QueryService};
+use crate::services::{NodeService, QueryDefinition};
 use nodespace_types::{RelationshipHop, RelationshipPath, ResolvedHop, ResolvedPath};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -209,17 +209,16 @@ impl SkillQueries {
         if self.queries.is_empty() || !governance::participates(node) {
             return Ok(matched);
         }
-        let query_service = QueryService::new(node_service.store().clone());
         for (query, definition) in &self.queries {
-            let is_member = query_service
-                .matches(definition, &node.id)
-                .await
-                .map_err(|e| {
-                    OpsError::Internal(format!(
-                        "Failed to ask whether '{}' matches the saved query '{}': {e}",
-                        node.id, query.id
-                    ))
-                })?;
+            let is_member =
+                crate::ops::query_ops::definition_matches(node_service, definition, node)
+                    .await
+                    .map_err(|e| {
+                        OpsError::Internal(format!(
+                            "Failed to ask whether '{}' matches the saved query '{}': {e}",
+                            node.id, query.id
+                        ))
+                    })?;
             if is_member {
                 matched.push(query.clone());
             }

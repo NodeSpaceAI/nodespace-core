@@ -72,7 +72,7 @@ pub fn is_held_deletion(result: &Value) -> bool {
 /// Whether an execution record is a write that actually changed the graph.
 pub fn landed_write(record: &ToolExecutionRecord) -> bool {
     !record.is_error
-        && super::tools::is_write_tool(&record.name)
+        && super::tools::is_write_call(&record.name, &record.args)
         && !is_held_deletion(&record.result)
 }
 

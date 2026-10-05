@@ -16,7 +16,7 @@
 //! A `reject` action (ADR-060 §2) firing is reported as a distinct
 //! `NodeServiceError::PlayRuleRejected`, not the generic
 //! `InvariantRuleFailed` every other action failure produces — see
-//! `execute_matched_invariant_rules_in_tx`, the shared execution core every
+//! `execute_matched_invariant_rules`, the shared execution core every
 //! synchronous dispatch path (this one and, eventually, `update_node`'s) runs
 //! through.
 //!
@@ -42,6 +42,50 @@
 
 use super::*;
 use crate::playbook::types::{NodeEventType, RelEventType, RuleClass, TriggerKey};
+
+/// How the shared loop treats a matched rule's actions.
+#[derive(Clone, Copy)]
+pub(crate) enum InvariantRun<'a, 't> {
+    /// A write: every action runs inside the write's transaction.
+    Write(&'a NodeServiceTx<'t>),
+    /// A dry run (ADR-094 §9): conditions are evaluated as on a write, and
+    /// of the actions only `reject` is carried out. Nothing is written.
+    ConditionsOnly,
+}
+
+/// What a dry run of an update found (ADR-094 §9).
+///
+/// A prediction, not a guarantee: the graph can change before the write is
+/// made, and the rule on the write is what decides. It covers rejections
+/// only. An action other than `reject` is not carried out, so a failure such
+/// an action would have is not predicted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DryRunVerdict {
+    /// No rule would reject the change.
+    Allowed,
+    /// A rule's `reject` action would fire.
+    Rejected {
+        play_id: String,
+        rule_name: String,
+        /// The rule's own message, with its bindings resolved.
+        message: String,
+    },
+    /// A rule could not be evaluated: its scope, a condition path or its
+    /// rejection message did not resolve. The write would fail the same way,
+    /// so this counts as a rejection.
+    Unresolved {
+        play_id: String,
+        rule_name: String,
+        reason: String,
+    },
+}
+
+impl DryRunVerdict {
+    /// Whether the change would go through as far as the rules are concerned.
+    pub fn is_allowed(&self) -> bool {
+        matches!(self, Self::Allowed)
+    }
+}
 
 impl NodeService {
     /// Dispatch invariant rules matching `node`'s creation, inside `tx`.
@@ -75,7 +119,7 @@ impl NodeService {
     /// Empty in exactly the three no-op cases
     /// `dispatch_invariant_rules_in_tx` documents (non-local write, no
     /// lifecycle handle, no matching rule). Non-invariant rules are dropped
-    /// here rather than left for `execute_matched_invariant_rules_in_tx` to
+    /// here rather than left for `execute_matched_invariant_rules` to
     /// skip, so "empty" means "nothing to run" — a type carrying only
     /// reactive rules costs a bulk create nothing per row. Matching goes
     /// through `lookup_rules`, which fans out to `extends` ancestors
@@ -124,14 +168,14 @@ impl NodeService {
             node_type: node.node_type.clone(),
         };
 
-        self.execute_matched_invariant_rules_in_tx(tx, node, &event, matched)
+        self.execute_matched_invariant_rules(InvariantRun::Write(tx), node, &event, matched)
             .await
     }
 
     /// Dispatch invariant rules matching `node`'s update, inside `tx`. The
     /// `update_node` twin of [`Self::dispatch_invariant_rules_in_tx`] — same
     /// three no-op cases (non-local write, no lifecycle handle, no matching
-    /// rule), same execution core (`execute_matched_invariant_rules_in_tx`),
+    /// rule), same execution core (`execute_matched_invariant_rules`),
     /// different trigger matching: a `property_changed` event, not
     /// `node_created`, and `changed_properties` genuinely drives WHICH rules
     /// match, not just what a condition can read.
@@ -151,6 +195,82 @@ impl NodeService {
     pub(crate) async fn dispatch_invariant_rules_for_update_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
+        node: &Node,
+        changed_properties: &[crate::db::events::PropertyChange],
+    ) -> Result<(), NodeServiceError> {
+        self.run_invariant_rules_for_update(InvariantRun::Write(tx), node, changed_properties)
+            .await
+    }
+
+    /// Evaluate, without writing, the invariant rules an update of `existing`
+    /// by `update` would run (ADR-094 §9).
+    ///
+    /// The proposed node is worked out by [`Self::prepare_update`], the steps
+    /// the write itself takes, and the rules are matched and their conditions
+    /// evaluated by the same loop a write runs
+    /// ([`Self::execute_matched_invariant_rules`]) in its conditions-only
+    /// mode. A rule sees what it sees on a write: the proposed node as the
+    /// trigger node, a property-changed event carrying each stored value as
+    /// old and each proposed value as new, and the committed graph for
+    /// everything it reads beyond the trigger node (a write's rules read
+    /// through the pool too, which does not see the open transaction).
+    ///
+    /// # Errors
+    ///
+    /// Whatever would fail the write before a rule runs: an empty update, a
+    /// value the schema refuses, a retype that is not allowed.
+    pub async fn dry_run_update(
+        &self,
+        existing: &Node,
+        update: NodeUpdate,
+    ) -> Result<DryRunVerdict, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "Update contains no changes",
+            ));
+        }
+        let prepared = self.prepare_update(None, existing, update).await?;
+        let proposed = prepared.into_proposed_node(existing.version + 1);
+        let changed_properties =
+            compute_property_changes(&existing.properties, &proposed.properties);
+
+        match self
+            .run_invariant_rules_for_update(
+                InvariantRun::ConditionsOnly,
+                &proposed,
+                &changed_properties,
+            )
+            .await
+        {
+            Ok(()) => Ok(DryRunVerdict::Allowed),
+            Err(NodeServiceError::PlayRuleRejected {
+                play_id,
+                rule_name,
+                message,
+                ..
+            }) => Ok(DryRunVerdict::Rejected {
+                play_id,
+                rule_name,
+                message,
+            }),
+            Err(NodeServiceError::InvariantRuleFailed {
+                play_id,
+                rule_name,
+                message,
+            }) => Ok(DryRunVerdict::Unresolved {
+                play_id,
+                rule_name,
+                reason: message,
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The matching and execution an update's invariant rules go through,
+    /// for a write and for a dry run alike.
+    async fn run_invariant_rules_for_update(
+        &self,
+        run: InvariantRun<'_, '_>,
         node: &Node,
         changed_properties: &[crate::db::events::PropertyChange],
     ) -> Result<(), NodeServiceError> {
@@ -184,7 +304,7 @@ impl NodeService {
             return Ok(());
         }
 
-        self.execute_matched_invariant_rules_in_tx(tx, node, &event, matched)
+        self.execute_matched_invariant_rules(run, node, &event, matched)
             .await
     }
 
@@ -236,7 +356,7 @@ impl NodeService {
             return Ok(());
         }
 
-        self.execute_matched_invariant_rules_in_tx(tx, source, &event, matched)
+        self.execute_matched_invariant_rules(InvariantRun::Write(tx), source, &event, matched)
             .await
     }
 
@@ -257,9 +377,14 @@ impl NodeService {
     /// every trigger kind an invariant rule can run from, and a single shared
     /// implementation is what makes that true by construction instead of by
     /// convention.
-    pub(crate) async fn execute_matched_invariant_rules_in_tx(
+    ///
+    /// A dry run comes through here too ([`InvariantRun::ConditionsOnly`]),
+    /// so which rules match, how their conditions are read and what a
+    /// rejection reports are decided in one place for a write and for the
+    /// prediction of one.
+    pub(crate) async fn execute_matched_invariant_rules(
         &self,
-        tx: &NodeServiceTx<'_>,
+        run: InvariantRun<'_, '_>,
         node: &Node,
         event: &DomainEvent,
         matched: Vec<crate::playbook::types::OrderedRuleRef>,
@@ -351,7 +476,7 @@ impl NodeService {
                 node,
                 event,
                 &scoped,
-                tx,
+                run,
                 execution_context,
             )
             .await;

@@ -9,8 +9,9 @@ use crate::ops::path_ops::resolve_path;
 use crate::ops::OpsError;
 use crate::services::node_service::NodeService;
 use crate::services::query_service::{
-    FilterOperator, FilterType, PropertyScope, QueryDefinition, QueryFilter, QueryService,
-    RelationshipPath, RelativeDate, SortConfig, SortDirection, SubtypeBucket, NODE_COLUMNS,
+    EnumRank, FilterOperator, FilterType, PropertyScope, QueryDefinition, QueryFilter,
+    QueryService, RelationshipPath, RelativeDate, SortConfig, SortDirection, SubtypeBucket,
+    NODE_COLUMNS,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -35,9 +36,11 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentFilterItem {
-    /// Filter category: "property", "content", "relationship", "metadata".
-    /// Optional — see the type-level note; omitted values are inferred from the
-    /// other fields rather than rejected.
+    /// Filter category: "property", "content", "relationship", "metadata",
+    /// "related", "permitted". Optional — see the type-level note; omitted
+    /// values are inferred from the other fields rather than rejected. A
+    /// "permitted" filter is never inferred: it names a `property` and a
+    /// `value` like a property filter, and means a different question.
     #[serde(rename = "type", default)]
     pub filter_type: Option<String>,
     /// Comparison operator: "equals", "contains", "gt", "lt", "gte", "lte",
@@ -121,9 +124,10 @@ fn parse_filter_type(s: &str) -> Result<FilterType, OpsError> {
         "relationship" => Ok(FilterType::Relationship),
         "metadata" => Ok(FilterType::Metadata),
         "related" => Ok(FilterType::Related),
+        "permitted" => Ok(FilterType::Permitted),
         other => Err(OpsError::InvalidParams(format!(
             "Unknown filter type '{}'. Supported: property, content, relationship, metadata, \
-             related",
+             related, permitted",
             other
         ))),
     }
@@ -220,7 +224,7 @@ impl AgentFilterItem {
     }
 }
 
-/// Whether `s` names one of the four filter categories.
+/// Whether `s` names one of the filter categories.
 ///
 /// Defers to [`parse_filter_type`] rather than re-listing the set, so there is
 /// exactly one authority on what a category is and the two cannot drift apart.
@@ -433,9 +437,8 @@ async fn subtype_buckets(
 /// and check each one that is a path into an object field's value against
 /// the schema, as [`resolve_filters`] does for a property filter.
 ///
-/// A `priority` that `target_type` inherits from a type on the shared
-/// urgency scale also gets the field as that type reads it, which the rank
-/// is taken from.
+/// An enum field also gets the order its values sort in: the order its
+/// schema declares them ([`enum_rank`]).
 pub async fn resolve_sorting(
     node_service: &NodeService,
     target_type: &str,
@@ -467,31 +470,91 @@ async fn resolve_sorting_with(
             "sort field",
         )
         .await?;
-        if sort.field == "priority" && target_type != "*" {
-            let chain = node_service
-                .resolve_type_chain(target_type)
-                .await
-                .map_err(|e| OpsError::Internal(e.to_string()))?;
-            let scale_type = chain
-                .iter()
-                .find(|ancestor| crate::models::Priority::applies_to(ancestor))
-                .filter(|ancestor| ancestor.as_str() != target_type);
-            if let Some(scale_type) = scale_type {
-                sort.rank_scope = Some(PropertyScope {
-                    bucket: Some(scale_type.clone()),
-                    subtypes: subtype_buckets(
-                        node_service,
-                        declared_fields,
-                        scale_type,
-                        &sort.field,
-                    )
-                    .await?,
-                });
-            }
-        }
+        sort.rank = enum_rank(node_service, declared_fields, target_type, &sort.field).await?;
         resolved.push(sort);
     }
     Ok(resolved)
+}
+
+/// The order `field` sorts in on the rows of a query for `target_type`, when
+/// it is an enum: the values its schema declares, core values first and then
+/// the ones a user added, for any enum on any type.
+///
+/// The order is the one declared by the type that first declares the field.
+/// A type that inherits the field, and may have added values of its own, is
+/// ranked on the field as that first type reads it, so an added value sorts
+/// where the value it maps to does.
+///
+/// A query over every type has no one schema and is not ranked, and neither
+/// is a path into an object field's value.
+async fn enum_rank(
+    node_service: &NodeService,
+    declared_fields: &mut DeclaredFields,
+    target_type: &str,
+    field: &str,
+) -> Result<Option<EnumRank>, OpsError> {
+    if target_type == "*" {
+        return Ok(None);
+    }
+    let is_enum = |fields: &[crate::models::SchemaField]| {
+        fields.iter().any(|declared| {
+            declared.name == field && declared.field_type == crate::models::SchemaFieldType::Enum
+        })
+    };
+    if !is_enum(&declared_fields.of(node_service, target_type).await?.fields) {
+        return Ok(None);
+    }
+
+    // The chain is nearest first, so the last type on it that reads the
+    // field as an enum is the one that first declares it.
+    let chain = node_service
+        .resolve_type_chain(target_type)
+        .await
+        .map_err(|e| OpsError::Internal(e.to_string()))?;
+    let mut declaring_type = target_type.to_string();
+    for ancestor in chain {
+        if is_enum(&declared_fields.of(node_service, &ancestor).await?.fields) {
+            declaring_type = ancestor;
+        }
+    }
+
+    let values = enum_values(
+        &declared_fields
+            .of(node_service, &declaring_type)
+            .await?
+            .fields,
+        field,
+    );
+    let scope = if declaring_type == target_type {
+        None
+    } else {
+        Some(PropertyScope {
+            subtypes: subtype_buckets(node_service, declared_fields, &declaring_type, field)
+                .await?,
+            bucket: Some(declaring_type),
+        })
+    };
+    Ok(Some(EnumRank { values, scope }))
+}
+
+/// The values `fields` declares for the enum `field`, in declared order:
+/// the core values, then the ones a user added. Empty when `field` is not an
+/// enum there.
+fn enum_values(fields: &[crate::models::SchemaField], field: &str) -> Vec<String> {
+    fields
+        .iter()
+        .filter(|declared| {
+            declared.name == field && declared.field_type == crate::models::SchemaFieldType::Enum
+        })
+        .flat_map(|declared| {
+            declared
+                .core_values
+                .iter()
+                .flatten()
+                .chain(declared.user_values.iter().flatten())
+        })
+        .map(|value| value.value.clone())
+        .collect()
 }
 
 /// One type's effective fields and the type that declares each one.
@@ -606,6 +669,43 @@ fn resolve_filter<'a>(
                 .await?;
             }
         }
+        if filter.is_permitted() && target_type != "*" {
+            // The change is a write to this field, and a write to a field
+            // the type does not declare fails for every node.
+            let property = filter.property.as_deref().unwrap_or_default();
+            let declared = declared_fields.of(node_service, target_type).await?;
+            if !declared.owners.contains_key(property) {
+                return Err(OpsError::InvalidParams(format!(
+                    "permitted filter: the '{target_type}' schema declares no field '{property}'"
+                )));
+            }
+            // A value the enum does not list can be written to no node the
+            // query returns: said here, once, and not as every candidate
+            // left out. A subtype may have added values of its own, and its
+            // nodes are among the query's rows, so its list counts too.
+            let mut types = vec![target_type.to_string()];
+            types.extend(declared_fields.subtypes(node_service, target_type).await?);
+            let mut values: Vec<String> = Vec::new();
+            for node_type in &types {
+                for value in enum_values(
+                    &declared_fields.of(node_service, node_type).await?.fields,
+                    property,
+                ) {
+                    if !values.contains(&value) {
+                        values.push(value);
+                    }
+                }
+            }
+            if let Some(value) = filter.value.as_ref().and_then(Value::as_str) {
+                if !values.is_empty() && !values.iter().any(|listed| listed == value) {
+                    return Err(OpsError::InvalidParams(format!(
+                        "permitted filter: '{value}' is not a value of '{target_type}.{property}'. \
+                         Its values are: {}",
+                        values.join(", ")
+                    )));
+                }
+            }
+        }
         let Some(path) = &filter.path else {
             return Ok(filter);
         };
@@ -675,12 +775,181 @@ pub async fn execute_query_nodes_excluding(
     excluded: &[crate::models::CoreNodeType],
 ) -> Result<Vec<Node>, OpsError> {
     let query = to_query_definition(node_service, input).await?;
+    Ok(run_definition(node_service, &query, excluded).await?.nodes)
+}
 
+// ============================================================================
+// Running a definition, `permitted` filters included
+// ============================================================================
+
+/// The rows a definition returned.
+#[derive(Debug)]
+pub struct QueryRows {
+    pub nodes: Vec<Node>,
+    /// The candidates a `permitted` filter could not be evaluated for: a
+    /// rule's condition did not resolve, or the change could not be made to
+    /// that node at all. They are left out of `nodes`. Counted up to the
+    /// point the limit was reached; 0 for a query with no such filter.
+    pub unresolved: usize,
+}
+
+/// `query` with its `permitted` filters taken out: the statement the query
+/// service runs, and the filters evaluated per node after it.
+fn split_permitted(query: &QueryDefinition) -> (QueryDefinition, Vec<QueryFilter>) {
+    let (permitted, filters) = query
+        .filters
+        .iter()
+        .cloned()
+        .partition(QueryFilter::is_permitted);
+    (
+        QueryDefinition {
+            target_type: query.target_type.clone(),
+            filters,
+            sorting: query.sorting.clone(),
+            limit: query.limit,
+        },
+        permitted,
+    )
+}
+
+/// What a query's `permitted` filters say about one candidate.
+enum Permission {
+    Kept,
+    Excluded,
+    Unresolved,
+}
+
+/// Ask each `permitted` filter of `node`: a dry run of the change it names
+/// (ADR-094 §9). A negated filter keeps the nodes the change would be
+/// rejected for. A node the dry run cannot answer for is neither: a rule
+/// that does not resolve for it, or a change its own type refuses.
+///
+/// # Errors
+///
+/// A failure that says nothing about the node (the store could not be read)
+/// fails the query, as it fails any other.
+async fn permission(
+    node_service: &NodeService,
+    node: &Node,
+    permitted: &[QueryFilter],
+) -> Result<Permission, OpsError> {
+    use crate::services::NodeServiceError;
+    for filter in permitted {
+        let (Some(property), Some(value)) = (&filter.property, &filter.value) else {
+            return Ok(Permission::Unresolved);
+        };
+        let update = crate::models::NodeUpdate {
+            properties: Some(serde_json::json!({ property: value })),
+            ..Default::default()
+        };
+        let allowed = match node_service.dry_run_update(node, update).await {
+            Ok(crate::services::DryRunVerdict::Allowed) => true,
+            Ok(crate::services::DryRunVerdict::Rejected { .. }) => false,
+            Ok(crate::services::DryRunVerdict::Unresolved {
+                play_id,
+                rule_name,
+                reason,
+            }) => {
+                tracing::warn!(
+                    node_id = %node.id, %play_id, %rule_name, %reason,
+                    "A permitted filter could not evaluate a rule for a node; the node is \
+                     left out"
+                );
+                return Ok(Permission::Unresolved);
+            }
+            // The change is refused for this node by its own type: a
+            // type that does not take the value, say. Any other error fails
+            // the query, so a new variant that is a refusal of one node's
+            // change belongs in this list.
+            Err(
+                e @ (NodeServiceError::ValidationFailed(_)
+                | NodeServiceError::InvalidUpdate(_)
+                | NodeServiceError::UnknownNodeType { .. }),
+            ) => {
+                tracing::warn!(
+                    node_id = %node.id, %property, error = %e,
+                    "A permitted filter's change could not be made to a node; the node is \
+                     left out"
+                );
+                return Ok(Permission::Unresolved);
+            }
+            Err(e) => return Err(OpsError::from(e)),
+        };
+        if allowed == filter.is_negated() {
+            return Ok(Permission::Excluded);
+        }
+    }
+    Ok(Permission::Kept)
+}
+
+/// Run a checked definition. This is how a definition that may hold a
+/// `permitted` filter is run: the query service refuses one, since no SQL
+/// condition answers it.
+///
+/// The statement runs with the query's other filters and its sorting, and
+/// each `permitted` filter is then asked of the candidates in that order
+/// until the limit is filled, so sort and limit apply to what the filter
+/// keeps and a limited query costs no more dry runs than it needs.
+pub async fn run_definition(
+    node_service: &NodeService,
+    query: &QueryDefinition,
+    excluded: &[crate::models::CoreNodeType],
+) -> Result<QueryRows, OpsError> {
     let query_service = QueryService::new(node_service.store().clone());
-    query_service
-        .execute_excluding(&query, excluded)
+    let failed = |e: anyhow::Error| OpsError::Internal(format!("execute_query failed: {e}"));
+    if !query.filters.iter().any(QueryFilter::is_permitted) {
+        return Ok(QueryRows {
+            nodes: query_service
+                .execute_excluding(query, excluded)
+                .await
+                .map_err(failed)?,
+            unresolved: 0,
+        });
+    }
+
+    let (mut statement, permitted) = split_permitted(query);
+    let limit = statement.limit.take();
+    let candidates = query_service
+        .execute_excluding(&statement, excluded)
         .await
-        .map_err(|e| OpsError::Internal(format!("execute_query failed: {}", e)))
+        .map_err(failed)?;
+
+    let mut rows = QueryRows {
+        nodes: Vec::new(),
+        unresolved: 0,
+    };
+    for node in candidates {
+        if limit.is_some_and(|limit| rows.nodes.len() >= limit) {
+            break;
+        }
+        match permission(node_service, &node, &permitted).await? {
+            Permission::Kept => rows.nodes.push(node),
+            Permission::Excluded => {}
+            Permission::Unresolved => rows.unresolved += 1,
+        }
+    }
+    Ok(rows)
+}
+
+/// Whether `node` is one of the rows a checked definition returns: the
+/// query service's membership test, then the definition's `permitted`
+/// filters asked of the node. A node they cannot be evaluated for is not a
+/// member.
+pub async fn definition_matches(
+    node_service: &NodeService,
+    query: &QueryDefinition,
+    node: &Node,
+) -> Result<bool, OpsError> {
+    let (statement, permitted) = split_permitted(query);
+    let is_member = QueryService::new(node_service.store().clone())
+        .matches(&statement, &node.id)
+        .await
+        .map_err(|e| OpsError::Internal(format!("membership query failed: {e}")))?;
+    Ok(is_member
+        && matches!(
+            permission(node_service, node, &permitted).await?,
+            Permission::Kept
+        ))
 }
 
 /// Validate the agent's filter shape and map it to a [`QueryDefinition`].
@@ -814,6 +1083,9 @@ pub struct SavedQueryRun {
     /// for, or the caller's. As many rows as this may not be every match.
     pub limit: usize,
     pub nodes: Vec<Node>,
+    /// The candidates a `permitted` filter could not be evaluated for, which
+    /// the run left out: see [`QueryRows::unresolved`].
+    pub unresolved: usize,
 }
 
 /// The saved query `reference` names: a query node's id, or the title of
@@ -928,16 +1200,14 @@ pub async fn run_saved_query_nodes_excluding(
         Some(limit),
     )
     .await?;
-    let nodes = QueryService::new(node_service.store().clone())
-        .execute_excluding(&query, excluded)
-        .await
-        .map_err(|e| OpsError::Internal(format!("running saved query failed: {e}")))?;
+    let rows = run_definition(node_service, &query, excluded).await?;
 
     Ok(SavedQueryRun {
         query_id: node.id,
         target_type: query.target_type,
         limit,
-        nodes,
+        nodes: rows.nodes,
+        unresolved: rows.unresolved,
     })
 }
 
@@ -949,26 +1219,38 @@ pub async fn run_saved_query_nodes(
     run_saved_query_nodes_excluding(node_service, input, &[]).await
 }
 
-/// [`run_saved_query_nodes_excluding`], returning typed JSON values, the
-/// shape an agent tool call reads, the row limit the run was held to, and the
-/// id of the query node that ran. A result of that many rows may not be every
-/// match.
+/// What [`run_saved_query_excluding`] returns: a saved query's rows as typed
+/// JSON values, the shape an agent tool call reads.
+#[derive(Debug)]
+pub struct SavedQueryOutput {
+    pub output: ExecuteQueryOutput,
+    /// The row limit the run was held to. A result of that many rows may not
+    /// be every match.
+    pub limit: usize,
+    /// The query node that ran.
+    pub query_id: String,
+    /// See [`QueryRows::unresolved`].
+    pub unresolved: usize,
+}
+
+/// [`run_saved_query_nodes_excluding`], returning typed JSON values.
 pub async fn run_saved_query_excluding(
     node_service: &Arc<NodeService>,
     input: RunSavedQueryInput,
     excluded: &[crate::models::CoreNodeType],
-) -> Result<(ExecuteQueryOutput, usize, String), OpsError> {
+) -> Result<SavedQueryOutput, OpsError> {
     let run = run_saved_query_nodes_excluding(node_service, input, excluded).await?;
     let count = run.nodes.len();
-    Ok((
-        ExecuteQueryOutput {
+    Ok(SavedQueryOutput {
+        output: ExecuteQueryOutput {
             nodes: rows_at_scope(node_service, run.nodes, &run.target_type).await?,
             count,
             collection_id: None,
         },
-        run.limit,
-        run.query_id,
-    ))
+        limit: run.limit,
+        query_id: run.query_id,
+        unresolved: run.unresolved,
+    })
 }
 
 /// Count the nodes a structured query matches, without materializing them.
@@ -982,11 +1264,21 @@ pub async fn run_saved_query_excluding(
 /// reaches the SQL, since ordering cannot change a count and a limit would cap
 /// the very total this is asked for. The count is exact for any number of
 /// matches.
+///
+/// A query with a `permitted` filter has no statement that counts it: its
+/// candidates are loaded and the filter asked of each, so the count costs a
+/// dry run per candidate.
 pub async fn count_query(
     node_service: &Arc<NodeService>,
     input: ExecuteQueryInput,
 ) -> Result<i64, OpsError> {
-    let query = to_query_definition(node_service, input).await?;
+    let mut query = to_query_definition(node_service, input).await?;
+    if query.filters.iter().any(QueryFilter::is_permitted) {
+        query.sorting = None;
+        query.limit = None;
+        let rows = run_definition(node_service, &query, &[]).await?;
+        return Ok(rows.nodes.len() as i64);
+    }
 
     let query_service = QueryService::new(node_service.store().clone());
     query_service
@@ -2734,13 +3026,15 @@ mod tests {
             assert_eq!(matching("me_bug", state_is("open")).await, [BUG_OPEN]);
 
             // Sorted and returned at the base type, every row carries the
-            // base type's value in the base type's bucket.
-            let states = |limit: usize| {
+            // base type's value in the base type's bucket. The order is the
+            // base type's declared one, `open` then `done`, and a subtype's
+            // added value sorts where the value it maps to does.
+            let states = |direction: &'static str, limit: usize| {
                 let svc = Arc::clone(&svc);
                 async move {
                     let input: ExecuteQueryInput = serde_json::from_value(json!({
                         "target_type": "me_ticket", "filters": [], "limit": limit,
-                        "sorting": [{ "field": "state", "direction": "asc" }]
+                        "sorting": [{ "field": "state", "direction": direction }]
                     }))
                     .unwrap();
                     let nodes = execute_query_nodes(&svc, input).await.unwrap();
@@ -2749,16 +3043,17 @@ mod tests {
                         .unwrap()
                 }
             };
-            let rows = states(50).await;
+            let rows = states("asc", 50).await;
             let read: Vec<&str> = rows
                 .iter()
                 .map(|n| n.properties["me_ticket"]["state"].as_str().unwrap())
                 .collect();
-            assert_eq!(read, ["done", "done", "open", "open", "open"]);
+            assert_eq!(read, ["open", "open", "open", "done", "done"]);
             assert!(rows.iter().all(|n| n.properties.get("me_bug").is_none()));
-            let mut first_two: Vec<String> = states(2).await.into_iter().map(|n| n.id).collect();
-            first_two.sort();
-            assert_eq!(first_two, [TICKET_DONE, BUG_DONE]);
+            let mut last_two: Vec<String> =
+                states("desc", 2).await.into_iter().map(|n| n.id).collect();
+            last_two.sort();
+            assert_eq!(last_two, [TICKET_DONE, BUG_DONE]);
         }
 
         /// An enum extended at two levels of a chain: a value added at the
@@ -2848,15 +3143,17 @@ mod tests {
             assert!(matching("ml_b", "icebox").await.is_empty());
             assert_eq!(matching("ml_c", "icebox").await, [C_ICEBOX, D_ICEBOX]);
 
-            // Every other row reads as `open` at the top type and as
-            // `backlog` at the middle one, so the one `done` row is first
-            // ascending at the top and first descending at the middle.
-            for (target, direction) in [("ml_a", "asc"), ("ml_b", "desc")] {
+            // The field sorts in the order the top type declares it, `open`
+            // then `done`, at every type that reads it. Every other row
+            // reads as `open` there, so the one `done` row is last
+            // ascending, and first descending, at the top type and at the
+            // middle one alike.
+            for target in ["ml_a", "ml_b"] {
                 let first = ordered_ids(
                     &svc,
                     json!({
                         "target_type": target, "filters": [], "limit": 1,
-                        "sorting": [{ "field": "state", "direction": direction }]
+                        "sorting": [{ "field": "state", "direction": "desc" }]
                     }),
                 )
                 .await;
@@ -2933,6 +3230,323 @@ mod tests {
                 assert_eq!(sorted("asc", 1).await, [id(3)], "{target}");
                 assert_eq!(sorted("desc", 1).await, [id(1)], "{target}");
             }
+        }
+
+        // -- Enum order --
+
+        /// Any enum on any type sorts by the order its schema declares its
+        /// values in, core values first and then the ones a user added,
+        /// ascending and descending, and a limit cuts by that order. A node
+        /// with no value sorts first, and a value the schema does not list
+        /// sorts last.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn sorting_by_any_enum_follows_its_declared_values_core_then_user() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({
+                    "name": "eo_ticket",
+                    "fields": [{
+                        "name": "stage", "type": "enum", "extensible": true,
+                        // Alphabetically: doing, shipped, triage.
+                        "coreValues": [
+                            { "value": "triage", "label": "Triage" },
+                            { "value": "doing", "label": "Doing" },
+                            { "value": "shipped", "label": "Shipped" }
+                        ]
+                    }]
+                }),
+            )
+            .await;
+            crate::schema::handle_update_schema(
+                &svc,
+                json!({
+                    "schema_id": "eo_ticket",
+                    "add_field_values": [{
+                        "field": "stage",
+                        // Alphabetically: archived, blocked.
+                        "values": [
+                            { "value": "blocked", "label": "Blocked" },
+                            { "value": "archived", "label": "Archived" }
+                        ]
+                    }]
+                }),
+            )
+            .await
+            .unwrap();
+
+            let id = |n: u8| format!("a8000000-0000-4000-8000-00000000000{n}");
+            for (n, stage) in [
+                (1, Some("archived")),
+                (2, Some("shipped")),
+                (3, None),
+                (4, Some("triage")),
+                (5, Some("blocked")),
+                (6, Some("doing")),
+            ] {
+                let props = stage.map_or(json!({}), |stage| json!({ "stage": stage }));
+                svc.create_node(node(&id(n), "eo_ticket", props))
+                    .await
+                    .unwrap();
+            }
+            let declared = [id(3), id(4), id(6), id(2), id(5), id(1)];
+
+            let sorted = |direction: &'static str, limit: usize| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    ordered_ids(
+                        &svc,
+                        json!({
+                            "target_type": "eo_ticket", "filters": [], "limit": limit,
+                            "sorting": [{ "field": "stage", "direction": direction }]
+                        }),
+                    )
+                    .await
+                }
+            };
+            assert_eq!(sorted("asc", 50).await, declared);
+            assert_eq!(sorted("asc", 3).await, declared[..3]);
+            let mut reversed = declared.clone();
+            reversed.reverse();
+            assert_eq!(sorted("desc", 50).await, reversed);
+            assert_eq!(sorted("desc", 2).await, reversed[..2]);
+
+            // The order is the schema's, read when the query runs.
+            let rank = resolve_sorting(
+                &svc,
+                "eo_ticket",
+                vec![SortConfig {
+                    field: "stage".to_string(),
+                    ..Default::default()
+                }],
+            )
+            .await
+            .unwrap()
+            .remove(0)
+            .rank
+            .expect("an enum field is ranked");
+            assert_eq!(
+                rank.values,
+                ["triage", "doing", "shipped", "blocked", "archived"]
+            );
+            assert_eq!(rank.scope, None);
+
+            // Two values the schema does not list, written past validation:
+            // after every declared value, ordered between themselves as text.
+            for (n, value) in [(7, "mystery"), (8, "enigma")] {
+                svc.create_node(node(&id(n), "eo_ticket", json!({ "stage": "triage" })))
+                    .await
+                    .unwrap();
+                svc.store()
+                    .write()
+                    .await
+                    .execute(
+                        &format!(
+                            "UPDATE node SET properties = \
+                             json_set(properties, '$.eo_ticket.stage', '{value}') \
+                             WHERE id = '{}'",
+                            id(n)
+                        ),
+                        (),
+                    )
+                    .await
+                    .unwrap();
+            }
+            let mut with_unlisted = declared.to_vec();
+            with_unlisted.extend([id(8), id(7)]);
+            assert_eq!(sorted("asc", 50).await, with_unlisted);
+            assert_eq!(sorted("desc", 2).await, [id(7), id(8)]);
+        }
+
+        /// A field that is not an enum, a path into an object value and a
+        /// query over every type are sorted as stored: only an enum of a
+        /// named type has a declared order.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn only_an_enum_of_a_named_type_is_ranked() {
+            let (svc, _tmp) = make_test_service().await;
+            let rank_of = |target: &'static str, field: &'static str| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    let sort = SortConfig {
+                        field: field.to_string(),
+                        ..Default::default()
+                    };
+                    resolve_sorting(&svc, target, vec![sort])
+                        .await
+                        .unwrap()
+                        .remove(0)
+                        .rank
+                }
+            };
+            let status = rank_of("task", "status").await.expect("task.status");
+            assert_eq!(
+                status.values,
+                ["open", "in_progress", "in_review", "done", "cancelled"]
+            );
+            let priority = rank_of("project", "priority").await.expect("priority");
+            assert_eq!(
+                priority.values,
+                ["highest", "high", "medium", "low", "lowest"]
+            );
+            assert_eq!(rank_of("task", "due_date").await, None);
+            assert_eq!(rank_of("task", "created_at").await, None);
+            assert_eq!(rank_of("*", "status").await, None);
+        }
+
+        // -- Permitted --
+
+        /// A `permitted` filter names one change, a declared field set to a
+        /// value, and is asked of the nodes the query selects. Anything else
+        /// is refused when the query is checked, not answered with nothing.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_permitted_filter_names_one_change_to_a_declared_field() {
+            let (svc, _tmp) = make_test_service().await;
+            let permitted = |extra: serde_json::Value| {
+                let mut filter = json!({ "type": "permitted", "operator": "equals" });
+                for (key, value) in extra.as_object().unwrap() {
+                    filter[key] = value.clone();
+                }
+                filter
+            };
+            for (filter, fragment) in [
+                (
+                    permitted(json!({ "property": "status" })),
+                    "missing 'value'",
+                ),
+                (
+                    permitted(json!({ "value": "in_progress" })),
+                    "missing 'property'",
+                ),
+                (
+                    permitted(json!({
+                        "property": "status", "value": ["in_progress"], "operator": "in"
+                    })),
+                    "its operator is 'equals'",
+                ),
+                (
+                    permitted(json!({ "property": "statsu", "value": "in_progress" })),
+                    "declares no field 'statsu'",
+                ),
+                (
+                    permitted(json!({ "property": "status", "value": "in_progres" })),
+                    "'in_progres' is not a value of 'task.status'",
+                ),
+                (
+                    json!({
+                        "type": "related", "operator": "exists", "path": ["blocked_by"],
+                        "filter": permitted(json!({ "property": "status", "value": "done" }))
+                    }),
+                    "not of the nodes a related filter reaches",
+                ),
+            ] {
+                let input: ExecuteQueryInput = serde_json::from_value(
+                    json!({ "target_type": "task", "filters": [filter.clone()] }),
+                )
+                .unwrap();
+                let err = execute_query_nodes(&svc, input).await.unwrap_err();
+                assert!(
+                    matches!(&err, OpsError::InvalidParams(message) if message.contains(fragment)),
+                    "{filter}: expected '{fragment}', got {err:?}"
+                );
+            }
+        }
+
+        /// A value a subtype added to an inherited enum is not refused on a
+        /// query for the base type: the subtype's nodes are among its rows,
+        /// and the change can be made to them.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_permitted_filter_takes_a_value_a_subtype_added() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({ "name": "pv_issue", "extends": "task", "fields": [] }),
+            )
+            .await;
+            crate::schema::handle_update_schema(
+                &svc,
+                json!({
+                    "schema_id": "pv_issue",
+                    "add_field_values": [{
+                        "field": "status",
+                        "values": [{ "value": "triage", "label": "Triage", "mapsTo": "open" }]
+                    }]
+                }),
+            )
+            .await
+            .unwrap();
+            const ISSUE: &str = "aa000000-0000-4000-8000-000000000001";
+            const TASK: &str = "aa000000-0000-4000-8000-000000000002";
+            svc.create_node(node(ISSUE, "pv_issue", json!({ "status": "open" })))
+                .await
+                .unwrap();
+            svc.create_node(task_node(TASK, "open", None))
+                .await
+                .unwrap();
+
+            let input: ExecuteQueryInput = serde_json::from_value(json!({
+                "target_type": "task",
+                "filters": [{
+                    "type": "permitted", "operator": "equals",
+                    "property": "status", "value": "triage"
+                }]
+            }))
+            .unwrap();
+            let query = to_query_definition(&svc, input).await.unwrap();
+            let rows = run_definition(&svc, &query, &[]).await.unwrap();
+            // The issue takes the value; the plain task's own type does not.
+            let ids: Vec<&str> = rows.nodes.iter().map(|n| n.id.as_str()).collect();
+            assert_eq!(ids, [ISSUE]);
+            assert_eq!(rows.unresolved, 1);
+        }
+
+        /// The query service has no SQL for a `permitted` filter and refuses
+        /// a definition that still holds one, so no caller can run the
+        /// statement without the filter and return what it would have kept
+        /// back. Run through `query_ops`, with no rule to reject anything,
+        /// the filter keeps every candidate.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn the_query_service_refuses_a_permitted_filter_it_cannot_answer() {
+            let (svc, _tmp) = make_test_service().await;
+            svc.create_node(task_node(
+                "a9000000-0000-4000-8000-000000000001",
+                "open",
+                None,
+            ))
+            .await
+            .unwrap();
+            let query = checked_definition(
+                &svc,
+                "task".to_string(),
+                vec![to_query_filter(
+                    serde_json::from_value(json!({
+                        "type": "permitted", "operator": "equals",
+                        "property": "status", "value": "in_progress"
+                    }))
+                    .unwrap(),
+                )
+                .unwrap()],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let query_service = QueryService::new(svc.store().clone());
+            for refused in [
+                query_service.execute(&query).await.map(|_| ()),
+                query_service.count(&query).await.map(|_| ()),
+                query_service
+                    .matches(&query, "a9000000-0000-4000-8000-000000000001")
+                    .await
+                    .map(|_| ()),
+            ] {
+                let message = format!("{:#}", refused.unwrap_err());
+                assert!(message.contains("permitted"), "{message}");
+            }
+
+            let rows = run_definition(&svc, &query, &[]).await.unwrap();
+            assert_eq!(rows.nodes.len(), 1);
+            assert_eq!(rows.unresolved, 0);
         }
 
         // -- Negation --
@@ -3979,7 +4593,10 @@ mod tests {
                 ("Tickets", json!({ "state": "open", "owner": "ann" })),
             ] {
                 let input = serde_json::from_value(json!({ "query": title })).unwrap();
-                let (output, _, _) = run_saved_query_excluding(&svc, input, &[]).await.unwrap();
+                let output = run_saved_query_excluding(&svc, input, &[])
+                    .await
+                    .unwrap()
+                    .output;
                 assert_eq!(shaped_bug_properties(&output), &expected, "{title}");
             }
         }

@@ -381,6 +381,7 @@ async fn create_get_update_children_delete_round_trip() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -3520,6 +3521,7 @@ async fn node_update_sets_properties_and_preserves_content() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -3691,6 +3693,7 @@ async fn node_update_rejects_empty_args() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -3734,6 +3737,7 @@ async fn node_set_status_updates_status_property() {
             id: id.clone(),
             status: "done".into(),
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -3752,6 +3756,169 @@ async fn node_set_status_updates_status_property() {
     let props: serde_json::Value =
         serde_json::from_str(&node.properties).expect("parse properties");
     assert_eq!(props["task"]["status"], "done");
+
+    let _ = shutdown.send(());
+}
+
+#[test]
+fn node_update_and_set_status_take_a_dry_run_flag() {
+    use clap::Parser;
+    let parse = |args: &[&str]| nodespace_cli::Cli::try_parse_from(args);
+
+    assert!(parse(&[
+        "nodespace",
+        "node",
+        "set-status",
+        "t",
+        "in_progress",
+        "--dry-run"
+    ])
+    .is_ok());
+    assert!(parse(&[
+        "nodespace",
+        "node",
+        "set-status",
+        "t",
+        "in_progress",
+        "--dry-run",
+        "--version",
+        "3"
+    ])
+    .is_ok());
+    assert!(parse(&[
+        "nodespace",
+        "node",
+        "update",
+        "t",
+        "--property",
+        "a=1",
+        "--dry-run"
+    ])
+    .is_ok());
+    assert!(parse(&[
+        "nodespace",
+        "node",
+        "update",
+        "t",
+        "--content",
+        "x",
+        "--dry-run"
+    ])
+    .is_ok());
+    // A collection change runs no rule, so a dry run of one is refused.
+    for collection_flag in ["--collection", "--collection-id", "--remove-collection-id"] {
+        assert!(
+            parse(&[
+                "nodespace",
+                "node",
+                "update",
+                "t",
+                "--dry-run",
+                collection_flag,
+                "c"
+            ])
+            .is_err(),
+            "{collection_flag}"
+        );
+    }
+}
+
+/// `--dry-run` on `node update` and `node set-status` asks the daemon what
+/// the rules would say and writes nothing: the node keeps its fields and its
+/// version, and a stale `--version` is refused as on a write.
+#[tokio::test]
+async fn a_dry_run_update_or_set_status_writes_nothing() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let id = raw
+        .create_node(CreateNodeRequest {
+            node_type: "task".into(),
+            content: "a task".into(),
+            parent_id: None,
+            properties: serde_json::json!({"status": "open"}).to_string(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position: None,
+        })
+        .await
+        .expect("seed task")
+        .into_inner()
+        .node_id;
+    let stored = |raw: &mut NodeClient| {
+        let id = id.clone();
+        let mut raw = raw.clone();
+        async move {
+            raw.get_node(GetNodeRequest { node_id: id })
+                .await
+                .expect("get")
+                .into_inner()
+                .node_data
+                .expect("node_data")
+        }
+    };
+    let before = stored(&mut raw).await;
+
+    for json in [false, true] {
+        commands::node::run(
+            &mut client,
+            commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
+                id: id.clone(),
+                status: "in_progress".into(),
+                version: Some(before.version),
+                dry_run: true,
+            }),
+            json,
+        )
+        .await
+        .expect("a dry run answers whichever way the rules go");
+        commands::node::run(
+            &mut client,
+            commands::node::NodeAction::Update(commands::node::UpdateArgs {
+                properties_json: None,
+                id: id.clone(),
+                content: Some("renamed".into()),
+                properties: vec![("status".into(), serde_json::json!("done"))],
+                collections: vec![],
+                collection_ids: vec![],
+                remove_collection_ids: vec![],
+                version: None,
+                dry_run: true,
+            }),
+            json,
+        )
+        .await
+        .expect("a dry run answers whichever way the rules go");
+    }
+    let after = stored(&mut raw).await;
+    assert_eq!(after.version, before.version, "no version changes");
+    assert_eq!(after.content, "a task");
+    assert_eq!(after.properties, before.properties);
+
+    // A stale version is refused, as on the write the dry run stands for.
+    let err = commands::node::run(
+        &mut client,
+        commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
+            id: id.clone(),
+            status: "in_progress".into(),
+            version: Some(before.version + 5),
+            dry_run: true,
+        }),
+        false,
+    )
+    .await
+    .expect_err("the version named is not the node's");
+    assert!(
+        format!("{err:#}").contains("Nothing was written"),
+        "{err:#}"
+    );
 
     let _ = shutdown.send(());
 }
@@ -3792,6 +3959,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
             id: id.clone(),
             status: status.into(),
             version,
+            dry_run: false,
         })
     };
     let update = |content: &str, version| {
@@ -3804,6 +3972,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             version,
+            dry_run: false,
         })
     };
     let assert_refused = |err: anyhow::Error, given: i64, current: i64| {
@@ -3875,6 +4044,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             version,
+            dry_run: false,
         })
     };
     let err = commands::node::run(&mut client, join(Some(1)), false)
@@ -3943,6 +4113,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             version: Some(7),
+            dry_run: false,
         }),
         false,
     )
@@ -4024,6 +4195,7 @@ async fn node_set_status_rejects_invalid_status() {
             id,
             status: "not-a-real-status".into(),
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -4105,6 +4277,7 @@ async fn node_set_status_accepts_schema_extended_status() {
             id: id.clone(),
             status: "backlog".into(),
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -4770,6 +4943,7 @@ async fn node_update_collection_adds_and_removes_membership() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -4797,6 +4971,7 @@ async fn node_update_collection_adds_and_removes_membership() {
             collection_ids: vec![],
             remove_collection_ids: vec![leaf_id.clone()],
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -4876,6 +5051,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
             collection_ids: vec![],
             remove_collection_ids: vec!["ops:oncall".into()],
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -4907,6 +5083,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
             collection_ids: vec![],
             remove_collection_ids: vec![leaf_id],
             version: None,
+            dry_run: false,
         }),
         true,
     )
@@ -5169,6 +5346,7 @@ async fn node_property_sets_reads_and_clears_a_link() {
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![],
+            dry_run: false,
         }),
         true,
     )
@@ -5962,6 +6140,7 @@ async fn play_rules_are_written_and_read_with_their_descriptions() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             version: None,
+            dry_run: false,
         })
     };
 
@@ -6221,6 +6400,7 @@ async fn node_create_and_update_set_a_collection_description() {
             collection_ids: vec![],
             remove_collection_ids: vec![],
             version: None,
+            dry_run: false,
         }),
         true,
     )

@@ -36,8 +36,8 @@ const TASK_NEEDS_CRITERIA: &str = "cannot be marked done without acceptance crit
 const IS_LOCKED: &str = "is locked as the record of what was agreed";
 const CANNOT_BE_REINSTATED: &str = "cannot be reinstated";
 
-struct Harness {
-    service: Arc<NodeService>,
+pub(crate) struct Harness {
+    pub(crate) service: Arc<NodeService>,
     _tmp: TempDir,
     shutdown: watch::Sender<bool>,
     engine: tokio::task::JoinHandle<Result<()>>,
@@ -46,7 +46,7 @@ struct Harness {
 impl Harness {
     /// Open a fresh database and start the engine, so the seeded invariant
     /// rules are live on the write path.
-    async fn start() -> Result<Self> {
+    pub(crate) async fn start() -> Result<Self> {
         let tmp = TempDir::new()?;
         let mut store = Arc::new(SqliteStore::new(tmp.path().join("test.db")).await?);
         let service = Arc::new(NodeService::new(&mut store).await?);
@@ -65,12 +65,12 @@ impl Harness {
         })
     }
 
-    async fn stop(self) {
+    pub(crate) async fn stop(self) {
         let _ = self.shutdown.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(2), self.engine).await;
     }
 
-    async fn try_create(
+    pub(crate) async fn try_create(
         &self,
         node_type: &str,
         content: &str,
@@ -85,24 +85,29 @@ impl Harness {
             .await
     }
 
-    async fn create(&self, node_type: &str, properties: Value) -> Result<String> {
+    pub(crate) async fn create(&self, node_type: &str, properties: Value) -> Result<String> {
         Ok(self
             .try_create(node_type, &format!("A {node_type}"), properties)
             .await?)
     }
 
-    async fn task(&self) -> Result<String> {
+    pub(crate) async fn task(&self) -> Result<String> {
         self.create("task", json!({ "status": "open" })).await
     }
 
     /// A child of `parent`, placed directly under it.
-    async fn child(&self, parent: &str, node_type: &str, content: &str) -> Result<String> {
+    pub(crate) async fn child(
+        &self,
+        parent: &str,
+        node_type: &str,
+        content: &str,
+    ) -> Result<String> {
         let id = self.try_create(node_type, content, json!({})).await?;
         self.link(parent, "has_child", &id).await?;
         Ok(id)
     }
 
-    async fn link(&self, source: &str, name: &str, target: &str) -> Result<()> {
+    pub(crate) async fn link(&self, source: &str, name: &str, target: &str) -> Result<()> {
         self.service
             .create_relationship(source, name, target, json!({}))
             .await?;
@@ -110,7 +115,7 @@ impl Harness {
     }
 
     /// Apply `properties` to `id` with the version just read.
-    async fn set(&self, id: &str, properties: Value) -> Result<Node, NodeServiceError> {
+    pub(crate) async fn set(&self, id: &str, properties: Value) -> Result<Node, NodeServiceError> {
         let node = self.service.get_node(id).await?.expect("node exists");
         self.service
             .update_node(
@@ -121,11 +126,15 @@ impl Harness {
             .await
     }
 
-    async fn set_status(&self, id: &str, status: &str) -> Result<Node, NodeServiceError> {
+    pub(crate) async fn set_status(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> Result<Node, NodeServiceError> {
         self.set(id, json!({ "status": status })).await
     }
 
-    async fn set_content(&self, id: &str, content: &str) -> Result<()> {
+    pub(crate) async fn set_content(&self, id: &str, content: &str) -> Result<()> {
         let node = self.service.get_node(id).await?.expect("node exists");
         self.service
             .update_node(
@@ -137,7 +146,12 @@ impl Harness {
         Ok(())
     }
 
-    async fn field(&self, id: &str, node_type: &str, field: &str) -> Result<Option<Value>> {
+    pub(crate) async fn field(
+        &self,
+        id: &str,
+        node_type: &str,
+        field: &str,
+    ) -> Result<Option<Value>> {
         let node = self.service.get_node(id).await?.expect("node exists");
         Ok(node
             .properties
@@ -148,7 +162,7 @@ impl Harness {
     }
 
     /// A spec with one criterion, approved.
-    async fn approved_spec(&self) -> Result<String> {
+    pub(crate) async fn approved_spec(&self) -> Result<String> {
         let spec = self.create("spec", json!({})).await?;
         self.child(&spec, "checkbox", "- [ ] It works").await?;
         self.set(&spec, json!({ "spec_status": "approved" }))
@@ -159,7 +173,7 @@ impl Harness {
     /// An approved spec, an approved plan against it, and an open task
     /// linked to both: the fully traced starting point each task test
     /// narrows from. The task has no checklist yet.
-    async fn traced_task(&self) -> Result<Lineage> {
+    pub(crate) async fn traced_task(&self) -> Result<Lineage> {
         let spec = self.approved_spec().await?;
         let plan = self.create("plan", json!({})).await?;
         self.link(&plan, "spec", &spec).await?;
@@ -172,10 +186,10 @@ impl Harness {
     }
 }
 
-struct Lineage {
-    spec: String,
-    plan: String,
-    task: String,
+pub(crate) struct Lineage {
+    pub(crate) spec: String,
+    pub(crate) plan: String,
+    pub(crate) task: String,
 }
 
 /// Whether `result` is a refusal by the rule whose message holds `fragment`.

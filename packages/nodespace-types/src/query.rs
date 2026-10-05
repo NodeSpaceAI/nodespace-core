@@ -37,6 +37,12 @@ pub enum FilterType {
     /// project with status active" — rather than by reaching one specific
     /// node. See [`QueryFilter::path`] and [`QueryFilter::filter`].
     Related,
+    /// Keeps the nodes for which setting [`QueryFilter::property`] to
+    /// [`QueryFilter::value`] would not be rejected by a rule, as a dry run
+    /// of that change predicts it (ADR-094 §9). It is evaluated per node,
+    /// after the query's other filters; sort and limit apply to what it
+    /// keeps. A node whose rules cannot be evaluated is left out and counted.
+    Permitted,
 }
 
 /// Comparison operator for filters
@@ -259,6 +265,12 @@ impl QueryFilter {
         self.negate.unwrap_or(false)
     }
 
+    /// Whether this is a [`FilterType::Permitted`] filter, which no SQL
+    /// condition answers.
+    pub fn is_permitted(&self) -> bool {
+        self.filter_type == FilterType::Permitted
+    }
+
     /// Whether this filter, or the filter nested in it, compares against a
     /// [`RelativeDate`].
     pub fn has_relative_date(&self) -> bool {
@@ -300,11 +312,48 @@ pub struct SortConfig {
     /// core's `query_ops` each time the query runs, and never serialized.
     #[serde(skip)]
     pub scope: PropertyScope,
-    /// For a `priority` the queried type inherits from a type on the shared
-    /// urgency scale: the field as that type reads it, which is what the
-    /// rank is taken from. Resolved with [`Self::scope`].
+    /// For an enum field: the order its values sort in. Resolved with
+    /// [`Self::scope`]; a sort without one orders the stored values as text.
     #[serde(skip)]
-    pub rank_scope: Option<PropertyScope>,
+    pub rank: Option<EnumRank>,
+}
+
+/// The order an enum field's values sort in: the order the schema declares
+/// them, not the alphabetical order of the stored strings.
+///
+/// A value's rank is its position in [`Self::values`]. A value the schema
+/// does not list ranks after all of them, and a node with no value ranks
+/// before all of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnumRank {
+    /// The declared values in rank order: the core values, then the values
+    /// a user added. They are the values of the type that first declares the
+    /// field.
+    pub values: Vec<String>,
+    /// Where the value the rank is taken from is read, when the queried type
+    /// inherits the field: the field as the type that first declares it
+    /// reads it, so a value a subtype added ranks where the value it maps to
+    /// does. `None` takes the rank from the value [`SortConfig::scope`]
+    /// reads.
+    pub scope: Option<PropertyScope>,
+}
+
+impl EnumRank {
+    /// The rank of a node with no value for the field.
+    pub const ABSENT: i64 = -1;
+
+    /// The rank of the value a node holds.
+    pub fn of(&self, value: Option<&Value>) -> i64 {
+        match value {
+            None | Some(Value::Null) => Self::ABSENT,
+            Some(Value::String(held)) => self
+                .values
+                .iter()
+                .position(|declared| declared == held)
+                .unwrap_or(self.values.len()) as i64,
+            Some(_) => self.values.len() as i64,
+        }
+    }
 }
 
 /// Who created a saved query — the query schema's `generated_by` enum, which

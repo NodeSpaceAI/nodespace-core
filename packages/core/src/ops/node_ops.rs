@@ -438,6 +438,104 @@ pub async fn update_node(
     })
 }
 
+/// What a dry run of an update found, with the node it was asked of.
+#[derive(Debug)]
+pub struct DryRunUpdateOutput {
+    pub node_id: String,
+    /// The version the node is at. A dry run changes nothing, this included.
+    pub version: i64,
+    pub verdict: crate::services::DryRunVerdict,
+}
+
+impl DryRunUpdateOutput {
+    /// The verdict as the JSON a CLI or an agent tool call reads.
+    pub fn to_json(&self) -> Value {
+        use crate::services::DryRunVerdict;
+        let mut out = serde_json::json!({
+            "dry_run": true,
+            "node_id": self.node_id,
+            "version": self.version,
+            "allowed": self.verdict.is_allowed(),
+        });
+        match &self.verdict {
+            DryRunVerdict::Allowed => {}
+            DryRunVerdict::Rejected {
+                play_id,
+                rule_name,
+                message,
+            } => {
+                out["rejected_by"] = serde_json::json!({
+                    "play_id": play_id, "rule_name": rule_name, "message": message,
+                });
+            }
+            DryRunVerdict::Unresolved {
+                play_id,
+                rule_name,
+                reason,
+            } => {
+                out["unresolved"] = serde_json::json!({
+                    "play_id": play_id, "rule_name": rule_name, "reason": reason,
+                });
+            }
+        }
+        out
+    }
+}
+
+/// Evaluate an update without making it (ADR-094 §9): would a rule reject
+/// this change to the node's content, type or properties? Nothing is written
+/// and no version changes.
+///
+/// A version the caller names is held to as on a write: a node that has moved
+/// past it is a `VersionConflict`. Whatever else would fail the write before
+/// a rule runs (a value the schema refuses, say) fails the dry run the same
+/// way. Collection changes run no invariant rule and are refused here.
+pub async fn dry_run_update_node(
+    node_service: &Arc<NodeService>,
+    input: UpdateNodeInput,
+) -> Result<DryRunUpdateOutput, OpsError> {
+    if !input.add_to_collections.is_empty()
+        || !input.add_to_collection_ids.is_empty()
+        || !input.remove_from_collection_ids.is_empty()
+    {
+        return Err(OpsError::InvalidParams(
+            "A dry run evaluates a change to a node's content, type or properties. Collection \
+             changes are not evaluated: leave them out."
+                .to_string(),
+        ));
+    }
+    let node = node_service
+        .get_node(&input.node_id)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Failed to get node: {}", e)))?
+        .ok_or_else(|| OpsError::NotFound {
+            id: input.node_id.clone(),
+        })?;
+    if let Some(expected) = input.version.filter(|v| *v != node.version) {
+        let actual = node.version;
+        return Err(OpsError::VersionConflict {
+            node_id: input.node_id,
+            expected,
+            actual,
+            current_node: node_to_typed_value(node_service, node).await.ok(),
+        });
+    }
+
+    let update = NodeUpdate {
+        content: input.content,
+        node_type: input.node_type,
+        properties: input.properties,
+        title: None,
+        lifecycle_status: input.lifecycle_status,
+    };
+    let verdict = node_service.dry_run_update(&node, update).await?;
+    Ok(DryRunUpdateOutput {
+        node_id: node.id,
+        version: node.version,
+        verdict,
+    })
+}
+
 /// Delete a node with optional version check.
 pub async fn delete_node(
     node_service: &Arc<NodeService>,

@@ -264,7 +264,8 @@ function filterSubject(node: Node, filter: QueryFilter): unknown {
  *
  * Any other path (`child_of`, `has_child`, a schema-declared relationship,
  * several hops, an open-ended hop) needs graph traversal the node doesn't
- * carry, so it returns false: unverifiable is not the same as matching. The
+ * carry, and a `permitted` filter needs the rules evaluated, so either
+ * returns false: unverifiable is not the same as matching. The
  * caller is
  * deciding whether to *add* a node to a settled result set, and the cost of
  * being wrong is asymmetric — declining leaves the node out until the next
@@ -294,6 +295,11 @@ function filterHolds(node: Node, filter: QueryFilter): boolean | null {
   // A related-node filter is a condition on other nodes, which this node
   // alone cannot answer.
   if (filter.type === 'related') return null;
+
+  // A permitted filter asks the rules whether a change to the node would be
+  // rejected, which only the backend can evaluate. It names a property and a
+  // value like a property filter, and must not be read as one.
+  if (filter.type === 'permitted') return null;
 
   if (filter.type === 'relationship') {
     // A fixed hop travels as its bare name; an open-ended one is an object.

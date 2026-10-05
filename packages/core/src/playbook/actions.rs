@@ -117,6 +117,7 @@ use crate::db::events::{
 use crate::models::{Node, NodeUpdate};
 use crate::playbook::graph_resolver::{declared_collection_type, GraphResolver};
 use crate::playbook::types::{ActionType, IterationPath, ParsedAction};
+use crate::services::node_service::invariants::InvariantRun;
 use crate::services::{NodeService, NodeServiceError};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -2169,12 +2170,18 @@ struct TxCtx<'a> {
 }
 
 /// Tx-scoped twin of [`execute_actions`]. See the module section doc above.
+///
+/// A dry run ([`InvariantRun::ConditionsOnly`], ADR-094 §9) goes through the
+/// same loop and carries out `reject` alone: every other action is skipped
+/// before its bindings are resolved, so nothing is written and nothing an
+/// unexecuted action would have produced is read. A `reject` whose message
+/// binds an earlier action's result therefore fails to resolve in a dry run.
 pub(crate) async fn execute_actions_in_tx(
     actions: &[ParsedAction],
     trigger_node: &Node,
     event: &DomainEvent,
     node_service: &Arc<NodeService>,
-    tx: &crate::services::node_service::NodeServiceTx<'_>,
+    run: InvariantRun<'_, '_>,
     execution_context: PlaybookExecutionContext,
 ) -> ActionResult {
     let play_id = execution_context.source_playbook_id.clone();
@@ -2185,15 +2192,22 @@ pub(crate) async fn execute_actions_in_tx(
     // action's does -- `client_id` and everything else is preserved by
     // `scoped_for_playbook`'s clone-and-set-one-field shape.
     let scoped_service = Arc::new(node_service.scoped_for_playbook(execution_context));
-    let txc = TxCtx {
-        node_service: &scoped_service,
-        tx,
+    let txc = match run {
+        InvariantRun::Write(tx) => Some(TxCtx {
+            node_service: &scoped_service,
+            tx,
+        }),
+        InvariantRun::ConditionsOnly => None,
     };
     let graph_resolver = GraphResolver::new(Arc::clone(node_service));
     let mut ctx = BindingContext::new(trigger_node, event, Some(graph_resolver));
     let rule_id = rule_id_for(&play_id, actions);
 
     for (i, action) in actions.iter().enumerate() {
+        if txc.is_none() && !matches!(action.action_type, ActionType::Reject) {
+            ctx.action_results.push(Value::Null);
+            continue;
+        }
         if let Some(for_each_path) = &action.for_each {
             let collection = match ctx.resolve_binding(for_each_path).await {
                 Ok(Value::Array(items)) => items,
@@ -2241,11 +2255,11 @@ pub(crate) async fn execute_actions_in_tx(
                     }
                 };
 
-                let result = execute_single_action_in_tx(
+                let result = run_invariant_action(
                     i,
                     &action.action_type,
                     &item_params,
-                    &txc,
+                    txc.as_ref(),
                     &rule_id,
                     &ctx.iteration_path,
                     depth,
@@ -2270,17 +2284,17 @@ pub(crate) async fn execute_actions_in_tx(
                 Err(e) => return ActionResult::Failed(e),
             };
 
-            match execute_single_action_in_tx(
+            let result = run_invariant_action(
                 i,
                 &action.action_type,
                 &resolved_params,
-                &txc,
+                txc.as_ref(),
                 &rule_id,
                 &ctx.iteration_path,
                 depth,
             )
-            .await
-            {
+            .await;
+            match result {
                 Ok(result_value) => {
                     ctx.action_results.push(result_value);
                 }
@@ -2293,6 +2307,35 @@ pub(crate) async fn execute_actions_in_tx(
     }
 
     ActionResult::Success
+}
+
+/// One action of an invariant rule: inside the write's transaction, or, in
+/// a dry run (no `txc`), the `reject` that is the only action to get this
+/// far.
+async fn run_invariant_action(
+    action_index: usize,
+    action_type: &ActionType,
+    params: &Value,
+    txc: Option<&TxCtx<'_>>,
+    rule_id: &str,
+    iteration_path: &[String],
+    depth: u8,
+) -> Result<Value, ActionError> {
+    match txc {
+        Some(txc) => {
+            execute_single_action_in_tx(
+                action_index,
+                action_type,
+                params,
+                txc,
+                rule_id,
+                iteration_path,
+                depth,
+            )
+            .await
+        }
+        None => execute_reject(action_index, params),
+    }
 }
 
 async fn execute_single_action_in_tx(
