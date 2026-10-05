@@ -246,14 +246,16 @@ impl NodeService {
     }
 
     /// Refuse `node_type` as the type of a node when it is abstract
-    /// (ADR-086 §6). An abstract type is a real type — queryable, and a valid
-    /// `extends` target — but only its subtypes are ever instantiated. Checked
-    /// here, in the service, so it holds for every surface that creates or
-    /// retypes a node.
+    /// (ADR-086 §6), or another build's subtype whose schema this database
+    /// lacks (see [`Self::ensure_extension_type_has_schema`]). An abstract
+    /// type is a real type — queryable, and a valid `extends` target — but
+    /// only its subtypes are ever instantiated. Checked here, in the service,
+    /// so it holds for every surface that creates or retypes a node.
     pub(crate) async fn ensure_instantiable(
         &self,
         node_type: &str,
     ) -> Result<(), NodeServiceError> {
+        self.ensure_extension_type_has_schema(node_type).await?;
         let is_abstract = self
             .store
             .is_abstract_type(node_type)
@@ -263,6 +265,35 @@ impl NodeService {
             return Err(NodeServiceError::abstract_node_type(node_type));
         }
         Ok(())
+    }
+
+    /// Refuse a type another build registered a behaviour for while this
+    /// database has no schema for it (ADR-082 §2.1). The schema is what makes
+    /// the type a subtype: it places the type under the core type it extends.
+    /// Without it the type's chain is the type alone, so a node of it would
+    /// skip its base's rules and be missing from queries for its base. Checked
+    /// on every create and retype, through [`Self::ensure_instantiable`]. A
+    /// core type, or a type without such a behaviour, is not read at all.
+    async fn ensure_extension_type_has_schema(
+        &self,
+        node_type: &str,
+    ) -> Result<(), NodeServiceError> {
+        if crate::models::CoreNodeType::from_id(node_type).is_some()
+            || self.behaviors.get(node_type).is_none()
+        {
+            return Ok(());
+        }
+        let has_schema = self
+            .store
+            .get_schema(node_type)
+            .await
+            .map_err(NodeServiceError::from_store)?
+            .is_some();
+        if has_schema {
+            Ok(())
+        } else {
+            Err(NodeServiceError::unknown_node_type(node_type))
+        }
     }
 
     /// Refuse a provided id that is not a UUID (ADR-086 §10). Three id forms
@@ -2530,8 +2561,14 @@ impl NodeService {
     /// as a bare shell: no schema means nothing to validate supplied
     /// properties against, so every one of them is silently dropped and the
     /// caller is told the write succeeded.
+    ///
+    /// A behaviour another build registered does not make its type known: a
+    /// subtype is defined by its schema, which places it under the core type
+    /// it extends. Until that schema exists in this database, a node of the
+    /// type would be neither validated as its base nor found by a query for
+    /// it.
     async fn ensure_known_node_type(&self, node_type: &str) -> Result<(), NodeServiceError> {
-        if self.behaviors.get(node_type).is_some() {
+        if crate::models::CoreNodeType::from_id(node_type).is_some() {
             return Ok(());
         }
         let schema_exists = self

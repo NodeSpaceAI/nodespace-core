@@ -2727,7 +2727,11 @@ impl NodeBehaviorRegistry {
 }
 
 /// Why a behaviour could not be registered.
+///
+/// `non_exhaustive`: another build registers behaviours through the
+/// extension API, so a new refusal is a minor change to it.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BehaviorRegistrationError {
     /// The type is in the core registry: its rules are fixed.
     #[error("'{0}' is a core type; its behavior cannot be replaced")]

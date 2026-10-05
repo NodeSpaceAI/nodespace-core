@@ -14,15 +14,51 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use nodespace_core::{NodeService, NodeUpdate, SqliteStore};
+use nodespace_core::behaviors::{BehaviorRegistrationError, CollectionNodeBehavior, NodeBehavior};
+use nodespace_core::extensions::DataExtensionsError;
+use nodespace_core::{
+    Node, NodeService, NodeUpdate, SqliteStore, ValidationError as NodeValidationError,
+};
 use nodespace_daemon::{
     build_shared_services, DaemonExtensions, DaemonExtensionsError, DatabaseManager,
     DatabaseRequiresExtensions, SharedServices,
 };
+use serde_json::json;
 use tempfile::TempDir;
 
 /// The extension id the fixture declares.
 const FIXTURE_ID: &str = "fixture";
+
+/// The fixture's subtype of `collection`.
+const FIXTURE_TYPE: &str = "fixture_collection";
+
+/// The behaviour of `fixture_collection extends collection`: a `max_members`
+/// in its bucket must be at least 1.
+struct FixtureCollectionBehavior;
+
+impl NodeBehavior for FixtureCollectionBehavior {
+    fn type_name(&self) -> &'static str {
+        FIXTURE_TYPE
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        let max_members = node
+            .properties
+            .get(FIXTURE_TYPE)
+            .and_then(|bucket| bucket.get("max_members"))
+            .and_then(serde_json::Value::as_f64);
+        match max_members {
+            Some(n) if n < 1.0 => Err(NodeValidationError::InvalidProperties(
+                "max_members must be at least 1".to_string(),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false
+    }
+}
 
 /// Held by every [`IsolatedDaemonHome`], so tests that share a process (a
 /// plain `cargo test`) take turns with the environment instead of one test
@@ -191,4 +227,83 @@ async fn an_invalid_extension_id_stops_startup() {
         .expect("startup is refused");
 
     assert_eq!(err.downcast_ref::<DaemonExtensionsError>(), Some(&expected));
+}
+
+/// A behaviour handed to `build_shared_services` is registered in every
+/// database the daemon opens: each one's writes are validated by it.
+#[tokio::test]
+async fn a_subtype_behaviour_is_enforced_in_every_database() {
+    let home = IsolatedDaemonHome::new();
+    let extensions = DaemonExtensions::none().behavior(Arc::new(FixtureCollectionBehavior));
+    assert_eq!(extensions.data().check(), Ok(()));
+    assert!(extensions
+        .data()
+        .behavior_registry()
+        .unwrap()
+        .get(FIXTURE_TYPE)
+        .is_some());
+    let shared = shared_services(extensions).await;
+    let manager = DatabaseManager::load(home.path().join("databases.toml"), shared.context)
+        .await
+        .unwrap();
+
+    for name in ["first", "second"] {
+        let path = database_requiring(home.path(), name, &[]).await;
+        let id = manager.register(path).await.unwrap().id;
+        let database = manager.get_or_open(&id).await.unwrap();
+        let node_service = database.node_service_grpc.node_service();
+        nodespace_core::schema::handle_create_schema(
+            &node_service,
+            json!({
+                "name": FIXTURE_TYPE,
+                "extends": "collection",
+                "fields": [
+                    { "name": "max_members", "type": "number", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+
+        let refused = node_service
+            .create_node(Node::new(
+                FIXTURE_TYPE.to_string(),
+                "Team".to_string(),
+                json!({ "max_members": 0 }),
+            ))
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains("max_members must be at least 1")),
+            "{name}: {refused:?}"
+        );
+        node_service
+            .create_node(Node::new(
+                FIXTURE_TYPE.to_string(),
+                "Team".to_string(),
+                json!({ "max_members": 2 }),
+            ))
+            .await
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}
+
+/// A behaviour for a type core defines stops the daemon at startup: another
+/// build may add types, never replace core's rules.
+#[tokio::test]
+async fn a_behaviour_for_a_core_type_stops_startup() {
+    let _home = IsolatedDaemonHome::new();
+    let err =
+        build_shared_services(DaemonExtensions::none().behavior(Arc::new(CollectionNodeBehavior)))
+            .await
+            .err()
+            .expect("startup is refused");
+
+    assert_eq!(
+        err.downcast_ref::<DaemonExtensionsError>(),
+        Some(&DaemonExtensionsError::Data(DataExtensionsError::Behavior(
+            BehaviorRegistrationError::CoreType("collection".to_string())
+        )))
+    );
 }

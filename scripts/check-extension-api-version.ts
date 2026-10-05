@@ -63,6 +63,8 @@ export const WATCHED_PATHS: readonly string[] = [
   "packages/desktop-app/app-lib/tests/it/extension_daemon_profile_test.rs",
   // The daemon extension points, driven through build_shared_services.
   "packages/daemon/tests/it/extension_points_fixture.rs",
+  // The data extension points: a subtype of a core type with its behaviour.
+  "packages/core/src/extensions/fixture_tests.rs",
   // The layout NODESPACE_SKILL_EXTENSIONS accepts.
   "scripts/fixtures/skill-extension/",
 ];

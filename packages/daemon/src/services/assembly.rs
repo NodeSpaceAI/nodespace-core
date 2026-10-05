@@ -408,9 +408,12 @@ pub async fn build_database_services(
             .context("Failed to initialize SqliteStore")?,
     );
 
-    let mut node_service = CoreNodeService::new(&mut store)
-        .await
-        .context("Failed to initialize NodeService")?;
+    // Core's behaviours plus the subtype behaviours the composing build added
+    // (ADR-082 §2.1), registered in this database's own registry.
+    let mut node_service =
+        CoreNodeService::new_with_extensions(&mut store, shared.extensions.data())
+            .await
+            .context("Failed to initialize NodeService")?;
 
     seed_agent_nodes(&mut node_service).await;
 
