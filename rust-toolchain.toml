@@ -1,0 +1,7 @@
+# The one Rust toolchain every machine, the merge gate and the release workflow
+# build and lint with (ADR-047). rustup installs it on the first cargo command.
+# To bump it, see "Rust toolchain" in CLAUDE.md.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

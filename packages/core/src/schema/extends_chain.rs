@@ -136,10 +136,7 @@ pub fn detect_cycle(
             return Some(ExtendsCycle { path });
         }
 
-        match lookup.parent_of(&current) {
-            Some(next) => current = next,
-            None => return None,
-        }
+        current = lookup.parent_of(&current)?;
     }
 }
 

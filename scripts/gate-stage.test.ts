@@ -93,7 +93,7 @@ describe("the merge gate's clippy stage", () => {
   const stage = gate.search(/^\s*await run\(TIERS\.rustLint\);$/m);
 
   test("runs clippy over the whole workspace with warnings as errors", () => {
-    // The version first, so a failing stage's log says whose verdict it is.
+    // The version first, so a failing stage's log shows which clippy ran.
     expect(TIERS.rustLint.command).toBe("cargo clippy --version && bun run rust:lint");
     const scripts = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).scripts;
     const [workspace, types] = scripts["rust:lint"].split("&&");
@@ -116,6 +116,37 @@ describe("the merge gate's clippy stage", () => {
   test("names itself, so a failing gate says which stage failed", () => {
     expect(TIERS.rustLint.label).toContain("rust:lint");
     expect(TIERS.rustLint.label).toContain("clippy");
+  });
+});
+
+// The clippy stage's verdict is the same on every machine only while one exact
+// toolchain is pinned and nothing installs another beside it.
+describe("the Rust toolchain pin", () => {
+  const root = join(import.meta.dir, "..");
+  const pin = Bun.TOML.parse(readFileSync(join(root, "rust-toolchain.toml"), "utf8")) as {
+    toolchain: { channel: string; components: string[] };
+  };
+
+  test("names one exact release, not a channel that moves", () => {
+    // `stable` or `1.97` would resolve to whatever each machine last updated to.
+    expect(pin.toolchain.channel).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  test("installs clippy and rustfmt with it", () => {
+    expect(pin.toolchain.components).toContain("clippy");
+    expect(pin.toolchain.components).toContain("rustfmt");
+  });
+
+  test("the release workflow installs the pinned toolchain in every job that compiles Rust", () => {
+    const workflow = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf8");
+    // An action that installs its own toolchain puts the targets on one cargo
+    // never uses here, so a cross-compile fails for a missing target.
+    expect(workflow).not.toContain("rust-toolchain@");
+    // Each job that compiles Rust has one Rust cache step.
+    const compilingJobs = workflow.match(/uses: swatinem\/rust-cache@/g) ?? [];
+    const installs = workflow.match(/rustup toolchain install\n\s+rustup target add \S+/g) ?? [];
+    expect(compilingJobs.length).toBeGreaterThan(0);
+    expect(installs.length).toBe(compilingJobs.length);
   });
 });
 
