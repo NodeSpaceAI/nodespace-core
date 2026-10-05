@@ -600,9 +600,9 @@ jobs:
               test -x "${bin}" || { echo "::error::${bin} is missing or not executable"; exit 1; }
             done
 
-            # Releases from here on must declare which product the bundle is
-            # (ADR-084 section 5); a later release's installer checks refuse
-            # any installed bundle that lacks the key.
+            # The bundle must declare which product it is (ADR-084 section 5).
+            # Info.product.plist is not the auto-discovered Info.plist name, so
+            # tauri.conf.json bundle.macOS.infoPlist is the only wiring.
             local product
             product="$(plutil -extract NodeSpaceProduct raw -o - /Applications/NodeSpace.app/Contents/Info.plist)" || { echo "::error::/Applications/NodeSpace.app/Contents/Info.plist has no NodeSpaceProduct key"; exit 1; }
             test "${product}" = "community" || { echo "::error::NodeSpaceProduct is '${product}' in the installed Info.plist, expected 'community'"; exit 1; }
