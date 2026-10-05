@@ -534,7 +534,12 @@ fn skill_md_mcp_branch_documents_the_real_dispatch_timeout() {
 /// needing to remember a separate command.
 #[test]
 fn checked_in_skill_md_is_up_to_date() {
-    let status = std::process::Command::new(env!("CARGO"))
+    // `cargo` from PATH, not `env!("CARGO")`: that names the toolchain's own
+    // binary, which skips rustup. rustup then picks a toolchain for each rustc
+    // call by its directory, so dependencies outside the repository compile
+    // with the machine's default instead of the pinned one, and the build
+    // fails on the mix.
+    let status = std::process::Command::new("cargo")
         .args([
             "run",
             "-q",
