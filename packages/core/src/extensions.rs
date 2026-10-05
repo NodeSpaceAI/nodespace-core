@@ -22,7 +22,7 @@ mod edge_fields;
 mod fixture_tests;
 
 pub(crate) use edge_fields::EdgeFieldRegistry;
-pub use edge_fields::{EdgeFieldDeclaration, EdgeFieldValidator, EDGE_FIELD_RELATIONSHIPS};
+pub use edge_fields::{EdgeFieldDeclaration, EDGE_FIELD_RELATIONSHIPS};
 
 /// Whether `id` has the form of an extension id: a lowercase ASCII letter,
 /// then lowercase ASCII letters, digits, `-` or `_`.
@@ -103,8 +103,9 @@ impl DataExtensions {
     /// [`EDGE_FIELD_RELATIONSHIPS`], an extension id that is not one or names
     /// a key core stores on its edges (`order`), a second declaration for one
     /// relationship and id, and a declaration without fields or with a field
-    /// that is unnamed, repeated, not a scalar type, an enum without values,
-    /// or carries a default, an index or a target type.
+    /// that is unnamed, repeated, not a scalar type, an enum without values or
+    /// with a value listed twice, a non-enum with values, or one that carries a
+    /// default, an index or a target type.
     pub fn edge_fields(mut self, declaration: EdgeFieldDeclaration) -> Self {
         self.edge_fields.push(declaration);
         self
@@ -291,7 +292,7 @@ mod tests {
 
     #[test]
     fn an_edge_field_declaration_on_member_of_or_has_role_is_accepted() {
-        for relationship in EDGE_FIELD_RELATIONSHIPS {
+        for &relationship in EDGE_FIELD_RELATIONSHIPS {
             let fields = SchemaFieldType::ALL
                 .into_iter()
                 .filter(|t| {
@@ -358,6 +359,14 @@ mod tests {
             (
                 with(|f| f.field_type = SchemaFieldType::Enum),
                 "an enum field needs its values",
+            ),
+            (
+                with(|f| {
+                    f.field_type = SchemaFieldType::Enum;
+                    f.core_values =
+                        Some(vec![EnumValue::new("a", "A"), EnumValue::new("a", "Again")]);
+                }),
+                "the value 'a' is listed twice",
             ),
             (
                 with(|f| f.core_values = Some(vec![EnumValue::new("a", "A")])),

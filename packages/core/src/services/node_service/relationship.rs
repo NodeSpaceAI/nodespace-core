@@ -2282,8 +2282,9 @@ impl NodeService {
             target_id,
         );
 
-        // Another build's fields on the stored relationship (ADR-082 §2.2),
-        // built-in or declared.
+        // Another build's fields on the stored relationship (ADR-082 §2.2).
+        // Only a built-in relationship can have them; for any other this
+        // finds no declaration and reads nothing.
         self.validate_extension_edge_fields(relationship_name, &properties)?;
 
         if !is_builtin {

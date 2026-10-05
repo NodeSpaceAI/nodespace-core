@@ -21,7 +21,7 @@ use crate::services::NodeService;
 /// one stays until a write replaces the edge's properties. A `has_child` edge
 /// is recreated when its node moves to another parent and a `mentions` edge
 /// follows its node's content, so a bucket on either would be lost.
-pub const EDGE_FIELD_RELATIONSHIPS: [&str; 2] = ["member_of", "has_role"];
+pub const EDGE_FIELD_RELATIONSHIPS: &[&str] = &["member_of", "has_role"];
 
 /// The keys core itself stores in the properties of its relationships
 /// (ADR-083 §2): an extension's bucket may not take one of these names.
@@ -39,7 +39,7 @@ const EDGE_FIELD_TYPES: [SchemaFieldType; 6] = [
 
 /// Checks an extension's bucket once its fields are type-checked, given the
 /// bucket's fields by name. An `Err` refuses the write with its message.
-pub type EdgeFieldValidator = Arc<dyn Fn(&Map<String, Value>) -> Result<(), String> + Send + Sync>;
+type EdgeFieldValidator = Arc<dyn Fn(&Map<String, Value>) -> Result<(), String> + Send + Sync>;
 
 /// Fields another build adds to a core relationship (ADR-082 §2.2), stored in
 /// the build's bucket of the edge's properties: `properties.<extension id>`.
@@ -146,6 +146,9 @@ impl EdgeFieldDeclaration {
             return Some("no fields are declared".to_string());
         }
         for (i, field) in self.fields.iter().enumerate() {
+            if field.name.is_empty() {
+                return Some("a field needs a name".to_string());
+            }
             if let Some(problem) = Self::field_problem(field) {
                 return Some(format!("field '{}': {problem}", field.name));
             }
@@ -157,9 +160,6 @@ impl EdgeFieldDeclaration {
     }
 
     fn field_problem(field: &EdgeField) -> Option<String> {
-        if field.name.is_empty() {
-            return Some("a field needs a name".to_string());
-        }
         if !EDGE_FIELD_TYPES.contains(&field.field_type) {
             return Some(format!(
                 "an edge field cannot be of type '{}'; use one of: {}",
@@ -168,8 +168,18 @@ impl EdgeFieldDeclaration {
             ));
         }
         if field.field_type == SchemaFieldType::Enum {
-            if field.core_values.as_ref().is_none_or(Vec::is_empty) {
+            let values = field.core_values.as_deref().unwrap_or_default();
+            if values.is_empty() {
                 return Some("an enum field needs its values".to_string());
+            }
+            let repeated = values.iter().enumerate().find_map(|(i, v)| {
+                values[..i]
+                    .iter()
+                    .any(|earlier| earlier.value == v.value)
+                    .then_some(&v.value)
+            });
+            if let Some(repeated) = repeated {
+                return Some(format!("the value '{repeated}' is listed twice"));
             }
         } else if field.core_values.is_some() {
             return Some("only an enum field takes values".to_string());
@@ -306,5 +316,77 @@ impl EdgeFieldRegistry {
             .iter()
             .filter(|d| d.relationship == relationship)
             .try_for_each(|d| d.validate(properties))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::schema::EnumValue;
+    use serde_json::json;
+
+    fn declaration(field_type: SchemaFieldType) -> EdgeFieldDeclaration {
+        EdgeFieldDeclaration::new(
+            "member_of",
+            "fixture",
+            vec![EdgeField {
+                name: "value".to_string(),
+                field_type,
+                core_values: (field_type == SchemaFieldType::Enum)
+                    .then(|| vec![EnumValue::new("yes", "Yes")]),
+                indexed: None,
+                required: None,
+                default: None,
+                target_type: None,
+                description: None,
+            }],
+        )
+    }
+
+    fn bucket(value: Value) -> Map<String, Value> {
+        json!({ "fixture": { "value": value } })
+            .as_object()
+            .cloned()
+            .unwrap()
+    }
+
+    /// Each scalar type admits its values and refuses another JSON type, the
+    /// way a node field of that type does; null always clears the field.
+    #[test]
+    fn each_field_type_admits_its_values_and_refuses_others() {
+        let cases = [
+            (SchemaFieldType::Text, json!("words"), json!(5)),
+            (SchemaFieldType::Number, json!(2.5), json!("2.5")),
+            (SchemaFieldType::Boolean, json!(true), json!("true")),
+            (
+                SchemaFieldType::Date,
+                json!("2026-10-05"),
+                json!("yesterday"),
+            ),
+            (
+                SchemaFieldType::Datetime,
+                json!("2026-10-05T12:00:00Z"),
+                json!("2026-10-05"),
+            ),
+            (SchemaFieldType::Enum, json!("yes"), json!("no")),
+        ];
+        for (field_type, admitted, refused) in cases {
+            let d = declaration(field_type);
+            assert_eq!(d.problem(), None, "{field_type:?}");
+            assert_eq!(
+                d.validate(&bucket(admitted.clone())),
+                Ok(()),
+                "{field_type:?} {admitted}"
+            );
+            assert_eq!(
+                d.validate(&bucket(Value::Null)),
+                Ok(()),
+                "{field_type:?} null"
+            );
+            assert!(
+                d.validate(&bucket(refused.clone())).is_err(),
+                "{field_type:?} refuses {refused}"
+            );
+        }
     }
 }
