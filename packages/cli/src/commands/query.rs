@@ -40,7 +40,8 @@ pub struct QueryArgs {
     /// Any filter takes `"negate": true` to keep the nodes it does not hold
     /// for; on a related filter that is "the path reaches no node matching
     /// the nested filter". A property may be a path into an object field's
-    /// value, e.g. `"property":"repository.url"`.
+    /// value or a link field's parts: `"property":"repository.url"` is the
+    /// `url` of the link field `repository`, and `repository.title` its title.
     #[arg(long)]
     pub filters: Option<String>,
     /// JSON array of sort configs, e.g. `[{"field":"due_date","direction":"desc"}]`.

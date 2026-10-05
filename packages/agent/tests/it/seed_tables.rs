@@ -1,18 +1,16 @@
 //! The seed tables, taken together.
 //!
 //! Every node NodeSpace seeds is defined by a table row with a fixed literal
-//! UUID (ADR-086 §10): agent guidance, the built-in skills and tools, the core
-//! plays, and each bundled playbook's plays, skills and saved views. A seeded
-//! node's identity is its id, so the ids must be real node ids and no two rows
-//! anywhere may share one. The tables live in two crates; this is the one
-//! place that sees them all.
+//! UUID (ADR-086 §10): agent guidance, the built-in skills and tools, and the
+//! core plays. A seeded node's identity is its id, so the ids must be real node
+//! ids and no two rows anywhere may share one. The tables live in two crates;
+//! this is the one place that sees them all.
 
 use std::collections::HashMap;
 
 use nodespace_agent::local_agent::tools::Tool;
 use nodespace_agent::prompt_assembler::{PromptAssembler, GUIDANCE_SEEDS};
 use nodespace_agent::skill_pipeline::{seed_skill_nodes, seed_tool_nodes, SKILL_SEEDS};
-use nodespace_core::methodology::all_playbooks;
 use nodespace_core::playbook::core_plays::CORE_PLAY_IDS;
 use nodespace_core::services::node_service::is_valid_node_id;
 
@@ -35,28 +33,18 @@ fn every_seed_id() -> Vec<(String, String)> {
     for id in CORE_PLAY_IDS {
         push("core plays", id, id);
     }
-    for playbook in all_playbooks() {
-        for play in &playbook.plays {
-            push(&format!("{} plays", playbook.id), play.name, play.play_id);
-        }
-        for skill in playbook.skills.iter().chain([&playbook.overview]) {
-            push(&format!("{} skills", playbook.id), skill.title, skill.id);
-        }
-        for view in &playbook.views {
-            push(&format!("{} views", playbook.id), view.name, view.view_id);
-        }
-    }
     ids
 }
 
 #[test]
 fn every_seeded_id_is_a_uuid() {
     let ids = every_seed_id();
-    assert!(
-        ids.len() > 50,
-        "expected every table, got {} ids",
-        ids.len()
-    );
+    for table in ["agent guidance", "skills", "tools", "core plays"] {
+        assert!(
+            ids.iter().any(|(row, _)| row.starts_with(table)),
+            "expected the {table} table to contribute ids"
+        );
+    }
     for (row, id) in ids {
         assert!(
             uuid::Uuid::parse_str(&id).is_ok(),

@@ -365,6 +365,7 @@ describe('TaskNodeHelpers', () => {
     it('identifies core statuses', () => {
       expect(TaskNodeHelpers.isCoreStatus('open')).toBe(true);
       expect(TaskNodeHelpers.isCoreStatus('in_progress')).toBe(true);
+      expect(TaskNodeHelpers.isCoreStatus('in_review')).toBe(true);
       expect(TaskNodeHelpers.isCoreStatus('done')).toBe(true);
       expect(TaskNodeHelpers.isCoreStatus('cancelled')).toBe(true);
     });
@@ -394,6 +395,7 @@ describe('TaskNodeHelpers', () => {
     it('returns display names for core statuses', () => {
       expect(TaskNodeHelpers.getStatusDisplayName('open')).toBe('Open');
       expect(TaskNodeHelpers.getStatusDisplayName('in_progress')).toBe('In Progress');
+      expect(TaskNodeHelpers.getStatusDisplayName('in_review')).toBe('In Review');
       expect(TaskNodeHelpers.getStatusDisplayName('done')).toBe('Done');
       expect(TaskNodeHelpers.getStatusDisplayName('cancelled')).toBe('Cancelled');
     });

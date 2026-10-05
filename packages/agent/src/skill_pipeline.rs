@@ -120,8 +120,8 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         //
         // Ends at the question forms on purpose. A closing "Explain,
         // describe, or summarize a topic." added nothing a routed
-        // question needed and cost a write: with the Linear playbook
-        // installed it put this skill 0.002 above Relationship
+        // question needed and cost a write: measured with a workspace's own
+        // guidance skills beside the built-in ones, it put this skill 0.002 above Relationship
         // Management on "point rebuild task at the decision it has to
         // respect", taking that skill's place in the top 3 and
         // `create_relationship` with it. Without the sentence the
@@ -135,8 +135,7 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `lookups_route_research_and_search`,
         // `unrouted_find_requests_still_route_research_and_search`,
         // `lookups_naming_another_skills_subject_still_reach_research_and_search`,
-        // `research_and_search_does_not_displace_write_skills`, and
-        // `linear_playbook_skills_do_not_displace_built_ins`.
+        // and `research_and_search_does_not_displace_write_skills`.
         id: "3e9a7c14-5d28-4b61-8f0c-6a2d9e4b7c01",
         title: "Research & Search",
         description: "Find, look up, locate, list, or search for nodes, records, notes, and documents of any type that are already stored. Search stored knowledge to answer a question: how does something work, how is it applied, what is it, what does it do, why was it chosen.",

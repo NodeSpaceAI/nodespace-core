@@ -139,6 +139,24 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     });
     expect(cleared.priority == null).toBe(true);
     expect(cleared.status).toBe('in_progress');
+
+    // The delivery links: a link and a list of links, each cleared by null.
+    const pullRequest = { title: 'Add review status', url: 'https://example.com/pr/1' };
+    const commits = [{ title: 'abc123', url: 'https://example.com/c/abc123' }];
+    const delivered = await h.adapter.updateTaskNode(id, cleared.version, {
+      status: 'in_review',
+      pullRequest,
+      commits,
+    });
+    expect(delivered.status).toBe('in_review');
+    expect(delivered.pullRequest).toEqual(pullRequest);
+    expect(delivered.commits).toEqual(commits);
+    const undelivered = await h.adapter.updateTaskNode(id, delivered.version, {
+      pullRequest: null,
+      commits: null,
+    });
+    expect(undelivered.pullRequest == null).toBe(true);
+    expect(undelivered.commits == null).toBe(true);
   });
 
   it('create → typed person update → read back carries typed fields and the templated title', async () => {
@@ -187,6 +205,72 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     });
     expect(updated.status).toBe('active');
     expect(updated.startDate).toBe('2026-03-01');
+    expect(updated.properties).toEqual({});
+
+    // A link field is set whole and null clears it.
+    const repository = { title: 'nodespace-core', url: 'https://example.com/nodespace-core' };
+    const linked = await h.adapter.updateProjectNode(id, updated.version, { repository });
+    expect(linked.repository).toEqual(repository);
+    const unlinked = await h.adapter.updateProjectNode(id, linked.version, { repository: null });
+    expect(unlinked.repository).toBeUndefined();
+  });
+
+  it('create → typed spec update → read back carries typed fields', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({ id, nodeType: 'spec', content: 'Contract Spec' });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { specStatus?: string }).specStatus).toBe('draft');
+
+    // A spec is approved only once it has a criterion: a checkbox directly
+    // under it. Without one the seeded rule refuses the approval.
+    await expect(
+      h.adapter.updateSpecNode(id, created!.version, { specStatus: 'approved' })
+    ).rejects.toThrow(/success criteria/);
+    await h.adapter.createNode({
+      id: crypto.randomUUID(),
+      nodeType: 'checkbox',
+      content: '- [ ] It works',
+      parentId: id
+    });
+
+    const updated = await h.adapter.updateSpecNode(id, created!.version, {
+      objective: 'Track work',
+      specStatus: 'approved',
+    });
+    expect(updated.objective).toBe('Track work');
+    expect(updated.specStatus).toBe('approved');
+    expect(updated.properties).toEqual({});
+
+    // null clears a text field.
+    const cleared = await h.adapter.updateSpecNode(id, updated.version, { objective: null });
+    expect(cleared.objective).toBeUndefined();
+  });
+
+  it('create → typed plan update → read back carries typed fields', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({ id, nodeType: 'plan', content: 'Contract Plan' });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { planStatus?: string }).planStatus).toBe('draft');
+
+    const updated = await h.adapter.updatePlanNode(id, created!.version, {
+      approach: 'Two steps',
+      risks: 'None',
+    });
+    expect(updated.approach).toBe('Two steps');
+    expect(updated.risks).toBe('None');
+    expect(updated.properties).toEqual({});
+  });
+
+  it('create → typed decision update → read back carries the typed status', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({ id, nodeType: 'decision', content: 'Contract Decision' });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { decisionStatus?: string }).decisionStatus).toBe('proposed');
+
+    const updated = await h.adapter.updateDecisionNode(id, created!.version, {
+      decisionStatus: 'accepted',
+    });
+    expect(updated.decisionStatus).toBe('accepted');
     expect(updated.properties).toEqual({});
   });
 

@@ -56,6 +56,9 @@ describe('createSchemaInstance', () => {
     // of '' always failed validation; they must get a type-identifying placeholder.
     const cases: Array<[string, string]> = [
       ['project', 'Untitled Project'],
+      ['spec', 'Untitled Spec'],
+      ['plan', 'Untitled Plan'],
+      ['decision', 'Untitled Decision'],
       ['skill', 'Untitled Skill'],
       ['collection', 'Untitled Collection'],
       ['agent-guidance', 'Untitled Agent Guidance'],

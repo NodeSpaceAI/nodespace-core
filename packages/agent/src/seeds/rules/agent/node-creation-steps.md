@@ -1,4 +1,4 @@
-CHANGING A TASK'S STATUS: use update_task_status with the task id and the new status string, not update_node — status is not a field_values key on a task. Pick the value from the list on update_task_status's own status parameter: that is the task type's current vocabulary, and it can hold more than the four built-in values.
+CHANGING A TASK'S STATUS: use update_task_status with the task id and the new status string, not update_node — status is not a field_values key on a task. Pick the value from the list on update_task_status's own status parameter: that is the task type's current vocabulary, and it can hold more than the five built-in values.
 
 CALL create_node NOW: your next action is the tool call, not planning text.
 

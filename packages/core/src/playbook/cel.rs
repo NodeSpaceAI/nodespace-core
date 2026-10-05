@@ -1268,14 +1268,14 @@ mod tests {
             json!({"task": {
                 "status": "open",
                 "custom:status": "shadow",
-                "custom:verification_method": "ran the tests",
+                "custom:review_notes": "ran the tests",
             }}),
         );
         let ctx = eval_context_with_node(&node);
 
         for (expr, why) in [
             (
-                "node.verification_method == 'ran the tests'",
+                "node.review_notes == 'ran the tests'",
                 "a bucketed prefixed field must be reachable by its bare name",
             ),
             (

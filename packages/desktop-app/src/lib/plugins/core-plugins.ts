@@ -151,7 +151,14 @@ export const taskNodePlugin: PluginDefinition = {
 
     // Map task status to NodeState expected by TaskNode component
     let taskState: 'pending' | 'inProgress' | 'completed' = 'pending';
-    if (status === 'IN_PROGRESS' || status === 'in_progress') {
+    // A task in review has been started and is not yet finished, so it shows
+    // as in progress; the status itself is carried alongside.
+    if (
+      status === 'IN_PROGRESS' ||
+      status === 'in_progress' ||
+      status === 'IN_REVIEW' ||
+      status === 'in_review'
+    ) {
       taskState = 'inProgress';
     } else if (status === 'DONE' || status === 'done') {
       taskState = 'completed';
@@ -645,10 +652,11 @@ export const personNodePlugin: PluginDefinition = {
  * `person` and every user-defined type through the sidenav's type view, the chat types through
  * their own dedicated sidebar section.
  *
- * `project` therefore has no plugin here at all. If you are here because `/project` seems
- * to be "missing", it is absent by decision, not by oversight. Note that `project` renders
- * as a read-only entity row regardless — that follows from having no inline node component
- * (see `rendersAsEntityRow`), independent of registration.
+ * `project`, `spec`, `plan` and `decision` therefore have no plugin here at all. If you are
+ * here because `/project` or `/spec` seems to be "missing", it is absent by decision, not by
+ * oversight. Each renders as a read-only entity row regardless — that follows from having no
+ * inline node component (see `rendersAsEntityRow`), independent of registration — and opens
+ * in the generic viewer with the schema-driven properties form.
  */
 export const corePlugins = [
   textNodePlugin,

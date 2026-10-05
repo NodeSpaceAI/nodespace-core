@@ -35,7 +35,16 @@ import { isUserVisibleField } from '$lib/utils/schema-field-visibility';
  * default alone does not make a tool creatable via "+New"; it keeps the content
  * rule uniform across the family.
  */
-const NAME_AS_CONTENT_TYPES = ['project', 'skill', 'collection', 'agent-guidance', 'tool'] as const;
+const NAME_AS_CONTENT_TYPES = [
+  'project',
+  'spec',
+  'plan',
+  'decision',
+  'skill',
+  'collection',
+  'agent-guidance',
+  'tool'
+] as const;
 
 /**
  * The seed `content` a fresh instance of `typeId` starts with — shared by the

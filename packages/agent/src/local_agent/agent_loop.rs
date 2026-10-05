@@ -176,6 +176,9 @@ const fn stage1_core_type_words(
         T::Date => Some(&["date"]),
         T::Task => Some(&["task"]),
         T::Project => Some(&["project"]),
+        T::Spec => Some(&["spec"]),
+        T::Plan => Some(&["plan"]),
+        T::Decision => Some(&["decision"]),
         T::Person => Some(&["person", "people"]),
         T::Collection => Some(&["collection"]),
         T::Query => Some(&["query"]),
@@ -15209,7 +15212,7 @@ mod tests {
         );
         assert_eq!(
             stage1_type_names(user_types(), "show the Release Plans and feature writeups"),
-            ["Feature Writeup", "release_plan"]
+            ["plan", "Feature Writeup", "release_plan"]
         );
         assert_eq!(
             stage1_type_names(["Company".to_string()], "how many companies do we have?"),

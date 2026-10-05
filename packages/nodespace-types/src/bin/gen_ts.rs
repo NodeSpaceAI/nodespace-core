@@ -100,6 +100,16 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         ProjectNode,
         ProjectNodeUpdate,
         ProjectStatus,
+        // spec, plan, decision
+        SpecStatus,
+        SpecNode,
+        SpecNodeUpdate,
+        PlanStatus,
+        PlanNode,
+        PlanNodeUpdate,
+        DecisionStatus,
+        DecisionNode,
+        DecisionNodeUpdate,
         // collection, skill, database-settings
         CollectionNode,
         CollectionNodeUpdate,

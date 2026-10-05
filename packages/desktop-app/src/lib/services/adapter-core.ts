@@ -22,11 +22,15 @@ import type {
   CollectionNodeUpdate,
   DatabaseSettingsNode,
   DatabaseSettingsNodeUpdate,
+  DecisionNode,
+  DecisionNodeUpdate,
   Node,
   NodeReference,
   NodeWithChildren,
   PersonNode,
   PersonNodeUpdate,
+  PlanNode,
+  PlanNodeUpdate,
   PlayNode,
   PlayNodeUpdate,
   ProjectNode,
@@ -35,6 +39,8 @@ import type {
   QueryNodeUpdate,
   SkillNode,
   SkillNodeUpdate,
+  SpecNode,
+  SpecNodeUpdate,
   TaskNode,
   TaskNodeUpdate
 } from '$lib/types';
@@ -160,6 +166,13 @@ export interface BackendAdapter {
     update: CollectionNodeUpdate
   ): Promise<CollectionNode>;
   updateSkillNode(id: string, version: number, update: SkillNodeUpdate): Promise<SkillNode>;
+  updateSpecNode(id: string, version: number, update: SpecNodeUpdate): Promise<SpecNode>;
+  updatePlanNode(id: string, version: number, update: PlanNodeUpdate): Promise<PlanNode>;
+  updateDecisionNode(
+    id: string,
+    version: number,
+    update: DecisionNodeUpdate
+  ): Promise<DecisionNode>;
   updateDatabaseSettingsNode(
     id: string,
     version: number,
@@ -306,12 +319,27 @@ export interface TaskNodeUpdatePatch {
   dueDate: ClearableField<string>;
   startedAt: ClearableField<string>;
   completedAt: ClearableField<string>;
+  pullRequest: OptionalJsonClear | undefined;
+  commits: OptionalJsonClear | undefined;
 }
 
 function clearable(value: string | null | undefined): ClearableField<string> {
   if (value === undefined) return undefined;
   if (value === null) return { clear: true };
   return { clear: false, value };
+}
+
+/**
+ * A structured value (a link, a list of links) as the daemon's JSON wrapper
+ * (`OptionalJsonClear`): `clear` empties the field, otherwise `valueJson` is the
+ * JSON-encoded value. Absent stays absent.
+ */
+export type OptionalJsonClear = { clear: boolean; valueJson: string };
+
+function jsonClearable<T>(value: T | null | undefined): OptionalJsonClear | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return { clear: true, valueJson: '' };
+  return { clear: false, valueJson: JSON.stringify(value) };
 }
 
 /**
@@ -325,7 +353,9 @@ const TYPED_UPDATE_FIELDS = {
     priority: true,
     dueDate: true,
     startedAt: true,
-    completedAt: true
+    completedAt: true,
+    pullRequest: true,
+    commits: true
   } satisfies Record<keyof TaskNodeUpdate, true>,
   person: {
     firstName: true,
@@ -336,7 +366,8 @@ const TYPED_UPDATE_FIELDS = {
     status: true,
     priority: true,
     startDate: true,
-    endDate: true
+    endDate: true,
+    repository: true
   } satisfies Record<keyof ProjectNodeUpdate, true>
 } as const;
 
@@ -374,6 +405,8 @@ export function buildTaskNodeUpdatePatch(update: TaskNodeUpdate): TaskNodeUpdate
     dueDate: clearable(update.dueDate),
     startedAt: clearable(update.startedAt),
     completedAt: clearable(update.completedAt),
+    pullRequest: jsonClearable(update.pullRequest),
+    commits: jsonClearable(update.commits),
   };
 }
 
@@ -397,6 +430,7 @@ export interface ProjectNodeUpdatePatch {
   priority: ClearableField<string>;
   startDate: ClearableField<string>;
   endDate: ClearableField<string>;
+  repository: OptionalJsonClear | undefined;
 }
 
 /** `ProjectNodeUpdate` → tri-state wire patch. See `buildTaskNodeUpdatePatch`. */
@@ -406,6 +440,7 @@ export function buildProjectNodeUpdatePatch(update: ProjectNodeUpdate): ProjectN
     priority: clearable(update.priority),
     startDate: clearable(update.startDate),
     endDate: clearable(update.endDate),
+    repository: jsonClearable(update.repository),
   };
 }
 
@@ -518,6 +553,9 @@ export const HTTP_ROUTES = {
   updatePlayNode: (id: string) => `/api/plays/${encodeURIComponent(id)}`,
   updateCollectionNode: (id: string) => `/api/collections/${encodeURIComponent(id)}`,
   updateSkillNode: (id: string) => `/api/skills/${encodeURIComponent(id)}`,
+  updateSpecNode: (id: string) => `/api/specs/${encodeURIComponent(id)}`,
+  updatePlanNode: (id: string) => `/api/plans/${encodeURIComponent(id)}`,
+  updateDecisionNode: (id: string) => `/api/decisions/${encodeURIComponent(id)}`,
   updateDatabaseSettingsNode: (id: string) => `/api/database-settings/${encodeURIComponent(id)}`,
   moveNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}/parent`,
   moveChildrenToParent: (parentId: string) => `/api/nodes/${encodeURIComponent(parentId)}/move-children`,
@@ -562,6 +600,9 @@ export const HTTP_ROUTE_PATTERNS = {
   updatePlayNode: /^\/api\/plays\/([^/]+)$/,
   updateCollectionNode: /^\/api\/collections\/([^/]+)$/,
   updateSkillNode: /^\/api\/skills\/([^/]+)$/,
+  updateSpecNode: /^\/api\/specs\/([^/]+)$/,
+  updatePlanNode: /^\/api\/plans\/([^/]+)$/,
+  updateDecisionNode: /^\/api\/decisions\/([^/]+)$/,
   updateDatabaseSettingsNode: /^\/api\/database-settings\/([^/]+)$/,
   moveNode: /^\/api\/nodes\/([^/]+)\/parent$/,
   moveChildrenToParent: /^\/api\/nodes\/([^/]+)\/move-children$/,

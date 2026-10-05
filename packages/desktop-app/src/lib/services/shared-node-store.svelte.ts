@@ -32,11 +32,14 @@ import type { NodeReference } from '$lib/types/node';
 import type {
   CollectionNodeUpdate,
   DatabaseSettingsNodeUpdate,
+  DecisionNodeUpdate,
   PersonNodeUpdate,
+  PlanNodeUpdate,
   PlayNodeUpdate,
   ProjectNodeUpdate,
   QueryNodeUpdate,
   SkillNodeUpdate,
+  SpecNodeUpdate,
   TaskNodeUpdate
 } from '$lib/types';
 import {
@@ -815,6 +818,9 @@ export type TypedNodeType =
   | 'person'
   | 'project'
   | 'collection'
+  | 'spec'
+  | 'plan'
+  | 'decision'
   | 'skill'
   | 'database-settings'
   | 'query'
@@ -855,6 +861,12 @@ const TYPED_UPDATERS: Record<
     backendAdapter.updateProjectNode(nodeId, version, payload as ProjectNodeUpdate),
   collection: (nodeId, version, payload) =>
     backendAdapter.updateCollectionNode(nodeId, version, payload as CollectionNodeUpdate),
+  spec: (nodeId, version, payload) =>
+    backendAdapter.updateSpecNode(nodeId, version, payload as SpecNodeUpdate),
+  plan: (nodeId, version, payload) =>
+    backendAdapter.updatePlanNode(nodeId, version, payload as PlanNodeUpdate),
+  decision: (nodeId, version, payload) =>
+    backendAdapter.updateDecisionNode(nodeId, version, payload as DecisionNodeUpdate),
   skill: (nodeId, version, payload) =>
     backendAdapter.updateSkillNode(nodeId, version, payload as SkillNodeUpdate),
   'database-settings': (nodeId, version, payload) =>
@@ -3677,6 +3689,42 @@ export class SharedNodeStore {
     source: UpdateSource
   ): void {
     this.updateTypedNode(nodeId, 'collection', { ...update }, source);
+  }
+
+  /**
+   * Update a spec's typed fields (objective, boundaries, specStatus). See
+   * `updateTypedNode()` for the write path.
+   */
+  updateSpecNode(
+    nodeId: string,
+    update: import('$lib/types').SpecNodeUpdate,
+    source: UpdateSource
+  ): void {
+    this.updateTypedNode(nodeId, 'spec', { ...update }, source);
+  }
+
+  /**
+   * Update a plan's typed fields (approach, risks, planStatus). See
+   * `updateTypedNode()` for the write path.
+   */
+  updatePlanNode(
+    nodeId: string,
+    update: import('$lib/types').PlanNodeUpdate,
+    source: UpdateSource
+  ): void {
+    this.updateTypedNode(nodeId, 'plan', { ...update }, source);
+  }
+
+  /**
+   * Update a decision's typed field (decisionStatus). See `updateTypedNode()`
+   * for the write path.
+   */
+  updateDecisionNode(
+    nodeId: string,
+    update: import('$lib/types').DecisionNodeUpdate,
+    source: UpdateSource
+  ): void {
+    this.updateTypedNode(nodeId, 'decision', { ...update }, source);
   }
 
   /**

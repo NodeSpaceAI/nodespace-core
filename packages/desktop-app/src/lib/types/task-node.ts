@@ -30,7 +30,7 @@ export type { TaskNode, TaskNodeUpdate, Priority, TaskStatus } from './generated
  * Core task status values (protected, cannot be removed)
  * Users can extend with additional values via schema userValues
  */
-export type CoreTaskStatus = 'open' | 'in_progress' | 'done' | 'cancelled';
+export type CoreTaskStatus = 'open' | 'in_progress' | 'in_review' | 'done' | 'cancelled';
 
 /**
  * Core task priority values (user-extensible)
@@ -190,7 +190,7 @@ export const TaskNodeHelpers = {
    * Check if status is a core (protected) status
    */
   isCoreStatus(status: TaskStatus): status is CoreTaskStatus {
-    return ['open', 'in_progress', 'done', 'cancelled'].includes(status as string);
+    return ['open', 'in_progress', 'in_review', 'done', 'cancelled'].includes(status as string);
   },
 
   /**
@@ -207,6 +207,7 @@ export const TaskNodeHelpers = {
     const coreDisplayNames: Record<CoreTaskStatus, string> = {
       open: 'Open',
       in_progress: 'In Progress',
+      in_review: 'In Review',
       done: 'Done',
       cancelled: 'Cancelled'
     };

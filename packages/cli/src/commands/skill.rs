@@ -100,8 +100,8 @@ pub struct UninstallArgs {}
 
 #[derive(Args, Debug)]
 pub struct GuidanceArgs {
-    /// The task at hand, in your own words (e.g. "add an issue to the
-    /// current cycle", "define a new type with an enum field"). Matched by
+    /// The task at hand, in your own words (e.g. "add a task to the
+    /// spec", "define a new type with an enum field"). Matched by
     /// meaning against every skill's name and description, ranked the way
     /// the in-app agent ranks skills. Omit it, or pass an empty string, to
     /// list every skill by name and description without its instructions.

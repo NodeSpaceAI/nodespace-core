@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The daemon's default database was created by a different version of
-/// NodeSpace and its tables do not match this version's schema. NodeSpace does
+/// NodeSpace and does not match this version's schema. NodeSpace does
 /// not migrate databases, so the only way forward is to move the file aside
 /// and start with a fresh one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 pub struct IncompatibleDatabase {
     /// Absolute path of the database file the daemon refused to open.
     pub database_path: String,
-    /// Which tables differ and how, for logs and support. Not meant to be
-    /// shown to a user as the headline.
+    /// Which tables or core types differ and how, for logs and support. Not
+    /// meant to be shown to a user as the headline.
     pub detail: String,
     /// When the daemon refused the database, RFC 3339.
     pub detected_at: String,

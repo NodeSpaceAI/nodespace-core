@@ -22,8 +22,7 @@ use nodespace_agent::local_agent::tools::Tool;
 use nodespace_agent::skill_pipeline::{seed_skill_nodes, seed_tool_nodes, SKILL_SEEDS};
 use nodespace_core::db::SqliteStore;
 use nodespace_core::markdown::prepare_nodes_from_template;
-use nodespace_core::methodology::{install_playbook, playbook_by_id};
-use nodespace_core::models::SkillFields;
+use nodespace_core::models::{SkillFields, SKILL_APPLIES_TO};
 use nodespace_core::ops::search_ops::{search_semantic, SearchSemanticInput};
 use nodespace_core::ops::skill_ops::{find_skill_guidance, find_skills, FindSkillsInput};
 use nodespace_core::schema::handle_create_schema;
@@ -36,8 +35,8 @@ use tempfile::TempDir;
 
 /// A database seeded with the built-in skills and tools and every queued root
 /// embedded. With `with_workspace_types` it is also a workspace with types of
-/// its own: the Linear-style setup (its skills linked to `issue` and
-/// `cycle`), and two user-defined types no skill is linked to. Returns `None`
+/// its own: a ticket domain (two skills linked to `ticket` and `sprint`), and
+/// two user-defined types no skill is linked to. Returns `None`
 /// when the embedding model is not on disk, so the test skips.
 async fn seeded_and_embedded(
     with_workspace_types: bool,
@@ -75,9 +74,7 @@ async fn seeded_and_embedded(
         .expect("seeding the built-in skills and tools must succeed");
 
     if with_workspace_types {
-        let playbook = playbook_by_id("linear").expect("the linear playbook ships");
-        let report = install_playbook(&node_service, &playbook).await;
-        assert!(report.success, "the linear playbook must install");
+        install_ticket_domain(&node_service).await;
 
         // Two types of the user's own, with no skill linked to either.
         for params in [
@@ -115,6 +112,80 @@ async fn seeded_and_embedded(
     }
 
     Some((embedding_service, node_service, temp_dir))
+}
+
+/// A domain of the workspace's own, built from the primitives a user has: a
+/// `ticket` type that extends `task` (so it inherits `status`), a `sprint`
+/// type, and a skill for each linked to the types it is about.
+async fn install_ticket_domain(node_service: &Arc<NodeService>) {
+    for params in [
+        json!({
+            "name": "Sprint",
+            "description": "A fixed period of work",
+            "fields": [
+                { "name": "start_date", "type": "date" },
+                { "name": "end_date", "type": "date" }
+            ]
+        }),
+        json!({
+            "name": "Ticket",
+            "description": "A unit of work planned into a sprint",
+            "extends": "task",
+            "fields": [{ "name": "severity", "type": "number" }],
+            "relationships": [{
+                "name": "in_sprint",
+                "direction": "out",
+                "targetType": "sprint",
+                "cardinality": "one",
+                "reverseName": "tickets",
+                "reverseCardinality": "many"
+            }]
+        }),
+    ] {
+        handle_create_schema(node_service, params)
+            .await
+            .expect("schema must create");
+    }
+
+    for (title, description, procedure, schemas) in [
+        (
+            "Creating a Ticket",
+            "Create a ticket, a unit of work with a severity, and plan it into the current sprint.",
+            "Create the ticket, then link it to its sprint with in_sprint.",
+            &["ticket", "sprint"][..],
+        ),
+        (
+            "Working with Sprints",
+            "Start a sprint, add tickets to the current sprint, and review what remains in it.",
+            "A sprint has a start date and an end date. Its tickets are the ones linked to it.",
+            &["sprint", "ticket"][..],
+        ),
+    ] {
+        let skill = SkillFields::new(description, &[], 3).into_node(title);
+        let skill_id = skill.id.clone();
+        node_service
+            .create_node(skill)
+            .await
+            .expect("the skill must create");
+        node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: procedure.to_string(),
+                parent_id: Some(skill_id.clone()),
+                position: InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .expect("the procedure must create");
+        for schema_id in schemas {
+            node_service
+                .create_relationship(&skill_id, SKILL_APPLIES_TO, schema_id, json!({}))
+                .await
+                .expect("the skill must link to its type");
+        }
+    }
 }
 
 fn input(query: &str, limit: usize) -> FindSkillsInput {
@@ -199,7 +270,7 @@ async fn a_fetch_ranks_skills_as_the_in_app_skill_search_does() {
     for task in [
         "remove the resolved tickets",
         "mark the outage report done",
-        "add an issue to the current cycle",
+        "add a ticket to the current sprint",
         "point the rebuild task at the decision it has to respect",
     ] {
         let in_app = find_skills(&embedding_service, &node_service, input(task, 5))
@@ -231,7 +302,7 @@ async fn a_fetch_ranks_skills_as_the_in_app_skill_search_does() {
     }
 }
 
-/// On a workspace with the Linear-style setup, a task in that domain returns
+/// On a workspace with a ticket domain, a task in that domain returns
 /// the domain's own skills and the schemas of the types it touches.
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
@@ -243,13 +314,13 @@ async fn a_task_in_an_installed_domain_returns_its_skills_and_its_schemas() {
     let guidance = find_skill_guidance(
         &embedding_service,
         &node_service,
-        input("add an issue to the current cycle", 3),
+        input("add a ticket to the current sprint", 3),
     )
     .await
     .expect("the fetch must succeed");
 
     let skills: Vec<&str> = guidance.skills.iter().map(|s| s.name.as_str()).collect();
-    for expected in ["Creating an Issue", "Sprints and Cycles"] {
+    for expected in ["Creating a Ticket", "Working with Sprints"] {
         assert!(
             skills.contains(&expected),
             "the domain skill {expected:?} was not returned: {skills:?}"
@@ -257,26 +328,26 @@ async fn a_task_in_an_installed_domain_returns_its_skills_and_its_schemas() {
     }
 
     let schemas: Vec<&str> = guidance.schemas.iter().map(|s| s.id.as_str()).collect();
-    for expected in ["issue", "cycle"] {
+    for expected in ["ticket", "sprint"] {
         assert!(
             schemas.contains(&expected),
             "the `{expected}` schema was not returned: {schemas:?}"
         );
     }
 
-    let issue = guidance
+    let ticket = guidance
         .schemas
         .iter()
-        .find(|s| s.id == "issue")
-        .expect("issue schema");
-    let fields = issue.definition["fields"]
+        .find(|s| s.id == "ticket")
+        .expect("ticket schema");
+    let fields = ticket.definition["fields"]
         .as_array()
         .expect("a schema carries its fields");
-    assert!(!fields.is_empty(), "{}", issue.definition);
+    assert!(!fields.is_empty(), "{}", ticket.definition);
     let status = fields
         .iter()
         .find(|f| f["name"] == "status")
-        .expect("issue carries the status field it inherits from task");
+        .expect("ticket carries the status field it inherits from task");
     assert!(
         status["enum_values"]
             .as_array()
@@ -284,11 +355,11 @@ async fn a_task_in_an_installed_domain_returns_its_skills_and_its_schemas() {
         "the status field must list its allowed values: {status}"
     );
     assert!(
-        issue.definition["relationships"]
+        ticket.definition["relationships"]
             .as_array()
             .is_some_and(|r| !r.is_empty()),
         "a schema carries its relationships: {}",
-        issue.definition
+        ticket.definition
     );
 }
 
@@ -352,7 +423,7 @@ async fn a_fetch_returns_the_unlinked_types_a_task_is_about_and_no_others() {
         "import this markdown document",
         "merge two duplicate records into one",
         "define a new type with an enum field",
-        "add an issue to the current cycle",
+        "add a ticket to the current sprint",
         "what did we decide about the retry budget",
     ] {
         assert_eq!(

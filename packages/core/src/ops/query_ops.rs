@@ -3031,7 +3031,7 @@ mod tests {
 
         fn no_unapproved_plan() -> serde_json::Value {
             json!({
-                "type": "related", "operator": "exists", "path": ["plan"], "negate": true,
+                "type": "related", "operator": "exists", "path": ["work_plan"], "negate": true,
                 "filter": {
                     "type": "property", "operator": "equals", "property": "plan_status",
                     "value": "approved", "negate": true
@@ -3051,7 +3051,7 @@ mod tests {
                         "targetType": "task",
                         "direction": "out",
                         "cardinality": "many",
-                        "reverseName": "plan",
+                        "reverseName": "work_plan",
                         "reverseCardinality": "many"
                     }]
                 }),

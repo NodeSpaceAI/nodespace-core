@@ -1483,6 +1483,36 @@ pub(crate) async fn rule_processor_loop(
                         rule_ref.rule.name, rule_ref.play_id,
                     );
                 }
+                // An invariant rule of another Play vetoed this rule's
+                // write. That is the graph declining the action, not this
+                // rule failing: a roll-up that would complete a parent whose
+                // checklist is unfinished is refused each time, and stays
+                // ready for the parent it may complete. The Play keeps
+                // running.
+                //
+                // Logged as a warning with the refusing rule: a rule whose
+                // write can never be accepted is declined on every firing,
+                // and this line is what makes it findable.
+                crate::playbook::actions::ActionResult::Failed(
+                    crate::playbook::actions::ActionError::RefusedByInvariant {
+                        message,
+                        refused_by_play,
+                        refused_by_rule,
+                        ..
+                    },
+                ) => {
+                    warn!(
+                        play_id = %rule_ref.play_id,
+                        rule = %rule_ref.rule.name,
+                        rule_index = rule_ref.rule_index,
+                        trigger_node_id = %work_item.trigger_node.id,
+                        error_type = "refused_by_invariant",
+                        refused_by_play = %refused_by_play,
+                        refused_by_rule = %refused_by_rule,
+                        "Rule's write was refused by an invariant rule; the action is declined: {}",
+                        message
+                    );
+                }
                 crate::playbook::actions::ActionResult::Failed(err) => {
                     // A `reject` action (ADR-060 §2) is only meaningful on an
                     // `Invariant`-class rule — `validate_reject_action_class`

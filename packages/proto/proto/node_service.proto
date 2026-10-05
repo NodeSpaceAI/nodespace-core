@@ -95,6 +95,9 @@ service NodeService {
   rpc UpdateTaskNode(UpdateTaskNodeRequest) returns (NodeResponse);
   rpc UpdatePersonNode(UpdatePersonNodeRequest) returns (NodeResponse);
   rpc UpdateProjectNode(UpdateProjectNodeRequest) returns (NodeResponse);
+  rpc UpdateSpecNode(UpdateSpecNodeRequest) returns (NodeResponse);
+  rpc UpdatePlanNode(UpdatePlanNodeRequest) returns (NodeResponse);
+  rpc UpdateDecisionNode(UpdateDecisionNodeRequest) returns (NodeResponse);
   rpc UpdateQueryNode(UpdateQueryNodeRequest) returns (NodeResponse);
   rpc UpdatePlayNode(UpdatePlayNodeRequest) returns (NodeResponse);
   rpc UpdateCollectionNode(UpdateCollectionNodeRequest) returns (NodeResponse);
@@ -129,17 +132,6 @@ service NodeService {
   rpc GetSchemaDefinition(GetSchemaDefinitionRequest) returns (SchemaResponse);
   rpc CreateSchema(SchemaParamsRequest) returns (SchemaResultResponse);
   rpc UpdateSchema(SchemaParamsRequest) returns (SchemaResultResponse);
-
-  // Methodologies
-  //
-  // Install a first-party work-tracking playbook (schemas, vocabulary
-  // extensions, Plays and guidance skills) in one call. One RPC rather than
-  // the caller driving CreateSchema/UpdateSchema/CreateNode itself, because
-  // the steps are ordered and a collision on any id has to re-key every later
-  // reference to it — logic that belongs beside the playbook, not duplicated
-  // into each client.
-  rpc ListMethodologies(ListMethodologiesRequest) returns (ListMethodologiesResponse);
-  rpc InstallMethodology(InstallMethodologyRequest) returns (InstallMethodologyResponse);
 
   // Structured queries
   rpc ExecuteQuery(ExecuteQueryRequest) returns (NodeListResponse);
@@ -1259,6 +1251,14 @@ message OptionalTimestampClear {
   string value = 2;
 }
 
+// A structured field value (a link, a list of links), JSON encoded.
+message OptionalJsonClear {
+  // true = clear the field (write None on the server)
+  bool clear = 1;
+  // The JSON-encoded value; used only when clear=false
+  string value_json = 2;
+}
+
 // The task schema's fields and nothing else: content and extension fields
 // (`custom:…`) are written through UpdateNode. status has no clear path (the
 // task schema requires it).
@@ -1270,6 +1270,10 @@ message UpdateTaskNodeRequest {
   optional OptionalTimestampClear due_date = 5;
   optional OptionalTimestampClear started_at = 7;
   optional OptionalTimestampClear completed_at = 8;
+  // A JSON-encoded link: {"title": "...", "url": "..."}.
+  optional OptionalJsonClear pull_request = 9;
+  // A JSON-encoded list of links, replaced whole.
+  optional OptionalJsonClear commits = 10;
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,6 +1297,33 @@ message UpdateProjectNodeRequest {
   optional OptionalStringClear priority = 4;
   optional OptionalTimestampClear start_date = 5;
   optional OptionalTimestampClear end_date = 6;
+  // A JSON-encoded link: {"title": "...", "url": "..."}.
+  optional OptionalJsonClear repository = 7;
+}
+
+// The JSON-encoded SpecNodeUpdate (camelCase keys), like
+// UpdateQueryNodeRequest: an absent key is no change, `null` clears a text
+// field, a value sets. `specStatus` can be set but not cleared.
+message UpdateSpecNodeRequest {
+  string node_id = 1;
+  int64 version = 2;
+  string update_json = 3;
+}
+
+// The JSON-encoded PlanNodeUpdate (camelCase keys), as for
+// UpdateSpecNodeRequest. `planStatus` can be set but not cleared.
+message UpdatePlanNodeRequest {
+  string node_id = 1;
+  int64 version = 2;
+  string update_json = 3;
+}
+
+// The JSON-encoded DecisionNodeUpdate (camelCase keys), as for
+// UpdateSpecNodeRequest. `decisionStatus` can be set but not cleared.
+message UpdateDecisionNodeRequest {
+  string node_id = 1;
+  int64 version = 2;
+  string update_json = 3;
 }
 
 // A saved query's fields are mostly structured JSON (filters, sorting,
@@ -1387,41 +1418,6 @@ message SchemaParamsRequest {
   // JSON-encoded CreateSchemaParams (CreateSchema) or UpdateSchemaParams
   // (UpdateSchema). Top-level keys are snake_case; an unknown key is refused.
   string params_json = 1;
-}
-
-message ListMethodologiesRequest {}
-
-message ListMethodologiesResponse {
-  repeated Methodology methodologies = 1;
-}
-
-// A playbook on offer, for a picker to render. Carries no steps: a client
-// chooses by id and the daemon executes, so the step sequence never crosses
-// the wire and cannot be edited in flight.
-message Methodology {
-  string id = 1;           // stable key, e.g. "linear"
-  string name = 2;         // display name, e.g. "Linear-style"
-  string description = 3;  // one paragraph on what installing it sets up
-}
-
-message InstallMethodologyRequest {
-  // Which playbook to install, by `Methodology.id`. An unknown id is
-  // NOT_FOUND rather than a silent no-op.
-  string methodology_id = 1;
-}
-
-message InstallMethodologyResponse {
-  // JSON-encoded InstallReport: per-step label and outcome, plus `success`.
-  //
-  // A step whose id was taken reports `suffixed` with both the requested and
-  // created ids, which the caller is expected to surface — installation
-  // re-keys rather than adopting or overwriting, and that must never be
-  // silent.
-  //
-  // A failed step is reported in here, not on the Status channel: the
-  // install is partial by then, and the report says how far it got. A
-  // Status would discard exactly that.
-  string report_json = 1;
 }
 
 message SchemaResultResponse {

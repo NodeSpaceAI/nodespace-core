@@ -112,6 +112,33 @@ export const CORE_NODE_TYPES = [
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
   {
+    id: 'spec',
+    parent: null,
+    abstract: false,
+    mentionable: true,
+    excludedFromDefaultQueries: false,
+    typedUpdate: true,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
+    id: 'plan',
+    parent: null,
+    abstract: false,
+    mentionable: true,
+    excludedFromDefaultQueries: false,
+    typedUpdate: true,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
+    id: 'decision',
+    parent: null,
+    abstract: false,
+    mentionable: true,
+    excludedFromDefaultQueries: false,
+    typedUpdate: true,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
     id: 'person',
     parent: null,
     abstract: false,

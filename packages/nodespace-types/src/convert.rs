@@ -4,13 +4,17 @@ use crate::ai_chat::{AiChatMessageNode, AiChatNativeNode, AiChatPtyNode};
 use crate::collection::CollectionNode;
 use crate::core_type::CoreNodeType;
 use crate::database_settings::DatabaseSettingsNode;
+use crate::decision::DecisionNode;
 use crate::node::{Node, NodeEnvelope};
 use crate::person::PersonNode;
+use crate::plan::PlanNode;
 use crate::play::{PlayFields, PlayNode};
 use crate::priority::priority_prop;
 use crate::project::{ProjectNode, ProjectStatus};
 use crate::query::{QueryFields, QueryNode};
+use crate::schema::LinkValue;
 use crate::skill::{SkillFields, SkillNode};
+use crate::spec::SpecNode;
 use crate::task::{TaskNode, TaskStatus};
 
 fn normalize_date_field(s: &str) -> String {
@@ -62,6 +66,9 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         Some(CoreNodeType::AiChatMessage) => ai_chat_message_node_to_value(node),
         Some(CoreNodeType::Person) => person_node_to_value(node),
         Some(CoreNodeType::Project) => project_node_to_value(node),
+        Some(CoreNodeType::Spec) => spec_node_to_value(node),
+        Some(CoreNodeType::Plan) => plan_node_to_value(node),
+        Some(CoreNodeType::Decision) => decision_node_to_value(node),
         Some(CoreNodeType::Collection) => collection_node_to_value(node),
         Some(CoreNodeType::Skill) => skill_node_to_value(node),
         Some(CoreNodeType::DatabaseSettings) => database_settings_node_to_value(node),
@@ -324,6 +331,8 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::date("due_date", "dueDate"),
                     F::date("started_at", "startedAt"),
                     F::date("completed_at", "completedAt"),
+                    F::new("pull_request", "pullRequest", Object),
+                    F::new("commits", "commits", Array),
                 ]
             }
         }
@@ -343,9 +352,29 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::text("priority", "priority"),
                     F::date("start_date", "startDate"),
                     F::date("end_date", "endDate"),
+                    F::new("repository", "repository", Object),
                 ]
             }
         }
+        CoreNodeType::Spec => {
+            const {
+                &[
+                    F::text("objective", "objective"),
+                    F::text("boundaries", "boundaries"),
+                    F::text("spec_status", "specStatus"),
+                ]
+            }
+        }
+        CoreNodeType::Plan => {
+            const {
+                &[
+                    F::text("approach", "approach"),
+                    F::text("risks", "risks"),
+                    F::text("plan_status", "planStatus"),
+                ]
+            }
+        }
+        CoreNodeType::Decision => const { &[F::text("decision_status", "decisionStatus")] },
         CoreNodeType::Collection => const { &[F::text("description", "description")] },
         CoreNodeType::Skill => {
             const {
@@ -530,6 +559,17 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         .and_then(|v| v.as_str())
         .map(normalize_date_field);
 
+    let pull_request = link_prop(props, "pull_request");
+    let commits = props
+        .get("commits")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| LinkValue::from_json(item).ok())
+                .collect()
+        });
+
     let task = TaskNode {
         envelope: extension_envelope(node, CoreNodeType::Task),
         status,
@@ -537,6 +577,8 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         due_date,
         started_at,
         completed_at,
+        pull_request,
+        commits,
     };
 
     serde_json::to_value(&task).map_err(|e| format!("Failed to serialize task node: {}", e))
@@ -552,6 +594,68 @@ fn extension_envelope(node: Node, core: CoreNodeType) -> NodeEnvelope {
 
 fn string_prop(props: &serde_json::Value, key: &str) -> Option<String> {
     props.get(key).and_then(|v| v.as_str()).map(str::to_string)
+}
+
+/// A stored link field. A stored value that is not a link reads as absent:
+/// writes are checked by the schema, so this only meets a row written around
+/// the service layer.
+fn link_prop(props: &serde_json::Value, key: &str) -> Option<LinkValue> {
+    props.get(key).and_then(|v| LinkValue::from_json(v).ok())
+}
+
+/// A stored closed-enum field. A missing or unknown value reads as the
+/// schema default, which the enum's `Default` is pinned to.
+fn closed_enum_prop<T: serde::de::DeserializeOwned + Default>(
+    props: &serde_json::Value,
+    key: &str,
+) -> T {
+    props
+        .get(key)
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+fn spec_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let props = &node.properties;
+    let objective = string_prop(props, "objective");
+    let boundaries = string_prop(props, "boundaries");
+    let spec_status = closed_enum_prop(props, "spec_status");
+
+    let spec = SpecNode {
+        envelope: extension_envelope(node, CoreNodeType::Spec),
+        objective,
+        boundaries,
+        spec_status,
+    };
+
+    serde_json::to_value(&spec).map_err(|e| format!("Failed to serialize spec node: {}", e))
+}
+
+fn plan_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let props = &node.properties;
+    let approach = string_prop(props, "approach");
+    let risks = string_prop(props, "risks");
+    let plan_status = closed_enum_prop(props, "plan_status");
+
+    let plan = PlanNode {
+        envelope: extension_envelope(node, CoreNodeType::Plan),
+        approach,
+        risks,
+        plan_status,
+    };
+
+    serde_json::to_value(&plan).map_err(|e| format!("Failed to serialize plan node: {}", e))
+}
+
+fn decision_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let decision_status = closed_enum_prop(&node.properties, "decision_status");
+
+    let decision = DecisionNode {
+        envelope: extension_envelope(node, CoreNodeType::Decision),
+        decision_status,
+    };
+
+    serde_json::to_value(&decision).map_err(|e| format!("Failed to serialize decision node: {}", e))
 }
 
 fn person_node_to_value(node: Node) -> Result<serde_json::Value, String> {
@@ -587,12 +691,15 @@ fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         .and_then(|v| v.as_str())
         .map(normalize_date_field);
 
+    let repository = link_prop(props, "repository");
+
     let project = ProjectNode {
         envelope: extension_envelope(node, CoreNodeType::Project),
         status,
         priority,
         start_date,
         end_date,
+        repository,
     };
 
     serde_json::to_value(&project).map_err(|e| format!("Failed to serialize project node: {}", e))

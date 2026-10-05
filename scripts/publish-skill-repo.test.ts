@@ -29,15 +29,12 @@ const REPO_ROOT = join(dirname(new URL(import.meta.url).pathname), "..");
 // shares them with Rust builds), and a timeout here would eject an unrelated PR.
 setDefaultTimeout(30_000);
 
-// Every reference file under packages/skill/references/, spelled out. The three
-// playbooks were not published until the file list came from the directory
-// instead of each agent's `shims`, so naming them here pins that change.
+// Every reference file under packages/skill/references/, spelled out. The file
+// list comes from the directory rather than each agent's `shims`, so a file
+// added or dropped there is a deliberate change to this list.
 const REFERENCES = [
   "references/cli.md",
   "references/graph-authored-guidance.md",
-  "references/jira-playbook.md",
-  "references/linear-playbook.md",
-  "references/spec-driven-playbook.md",
 ];
 
 describe("normalizeVersion", () => {

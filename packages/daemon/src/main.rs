@@ -1405,6 +1405,153 @@ mod open_default_database_tests {
             "the refusal ends the daemon with exit status 0"
         );
     }
+
+    /// A closed database at `path` that this build created, with `changes`
+    /// then applied to it by hand: today's tables, holding what an earlier
+    /// build left in them.
+    async fn database_changed_by_hand(path: &std::path::Path, changes: &[&str]) {
+        {
+            let mut store = Arc::new(SqliteStore::new(path.to_path_buf()).await.unwrap());
+            NodeService::new(&mut store).await.unwrap();
+        }
+        {
+            let db = libsql::Builder::new_local(path).build().await.unwrap();
+            let conn = db.connect().unwrap();
+            for change in changes {
+                conn.execute(change, ()).await.unwrap();
+            }
+        }
+        assert!(
+            !std::path::PathBuf::from(format!("{}-wal", path.display())).exists(),
+            "the fixture closed cleanly"
+        );
+    }
+
+    /// A default database an earlier build created can have today's tables
+    /// and still not be today's database: its core types are the ones that
+    /// build seeded. Two shapes of that, each refused like a table mismatch:
+    /// before any DDL, seeding or write, with the marker written, the file
+    /// byte-identical and the startup error the one that ends the daemon with
+    /// exit status 0.
+    ///
+    /// - A schema a user or an installer created under an id that is now a
+    ///   core type's (`spec`).
+    /// - A core schema as the earlier build seeded it: `task` whose `status`
+    ///   has no `in_review` value.
+    #[tokio::test]
+    async fn a_default_holding_an_earlier_builds_core_types_is_refused_and_left_unchanged() {
+        use nodespace_core::db::core_type_shape::CoreTypeDifference;
+        use nodespace_core::db::schema::SchemaMismatch;
+
+        // `task` as an earlier build seeded it: `status` without the
+        // `in_review` value. SQLite's JSON functions, so the fixture is one
+        // statement.
+        const EARLIER_TASK: &str = "UPDATE node SET properties = json_set(properties, '$.fields', (
+                SELECT json_group_array(json(
+                    CASE WHEN json_extract(field.value, '$.name') = 'status'
+                    THEN json_set(field.value, '$.coreValues', (
+                        SELECT json_group_array(json(core.value))
+                        FROM json_each(field.value, '$.coreValues') AS core
+                        WHERE json_extract(core.value, '$.value') != 'in_review'))
+                    ELSE field.value END))
+                FROM json_each(node.properties, '$.fields') AS field))
+            WHERE id = 'task'";
+        // Whether a schema is core is fixed when it is created, so the
+        // installer's `spec` replaces the core one rather than editing it.
+        const DROP_CORE_SPEC: &str = "DELETE FROM node WHERE id = 'spec'";
+        const SPEC_FROM_AN_INSTALLER: &str = "INSERT INTO node
+                (id, node_type, content, properties, title, created_at, modified_at)
+            VALUES ('spec', 'schema', 'Spec',
+                '{\"isCore\":false,\"schemaVersion\":1,\"fields\":[{\"name\":\"success_criteria\",\"friendlyName\":\"Success criteria\",\"type\":\"text\",\"protection\":\"user\",\"indexed\":false}]}',
+                'Spec', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')";
+
+        let fixtures: [(&[&str], &str); 2] = [
+            (&[DROP_CORE_SPEC, SPEC_FROM_AN_INSTALLER], "spec"),
+            (&[EARLIER_TASK], "task"),
+        ];
+        for (changes, type_id) in fixtures {
+            let dir = tempfile::tempdir().unwrap();
+            let db_path = dir.path().join("default.sqlite");
+            database_changed_by_hand(&db_path, changes).await;
+            let before = sha256(&db_path);
+            let marker = dir.path().join("incompatible-database.json");
+
+            let err = match open_default_database(
+                dir.path().join("databases.toml"),
+                &marker,
+                &db_path,
+                test_context(dir.path()),
+            )
+            .await
+            {
+                Ok(_) => panic!("an earlier build's `{type_id}` must stop startup"),
+                Err(e) => e,
+            };
+
+            let mismatch = SchemaMismatch::find_in(&err)
+                .unwrap_or_else(|| panic!("expected a SchemaMismatch, got: {err:#}"));
+            assert!(mismatch.missing_tables.is_empty(), "{mismatch:?}");
+            assert!(mismatch.unexpected_tables.is_empty(), "{mismatch:?}");
+            assert!(mismatch.tables.is_empty(), "{mismatch:?}");
+            assert_eq!(mismatch.core_types.len(), 1, "{mismatch:?}");
+            assert_eq!(mismatch.core_types[0].type_id, type_id);
+            match (&mismatch.core_types[0].difference, type_id) {
+                (CoreTypeDifference::NotCore, "spec") => {}
+                (
+                    CoreTypeDifference::Fields {
+                        missing,
+                        unexpected,
+                        changed,
+                    },
+                    "task",
+                ) => {
+                    assert!(missing.is_empty(), "{missing:?}");
+                    assert!(unexpected.is_empty(), "{unexpected:?}");
+                    assert_eq!(changed, &["status"]);
+                }
+                other => panic!("unexpected difference for `{type_id}`: {other:?}"),
+            }
+
+            let recorded: nodespace_types::IncompatibleDatabase =
+                serde_json::from_slice(&std::fs::read(&marker).expect("the marker is written"))
+                    .unwrap();
+            assert_eq!(
+                std::fs::canonicalize(&recorded.database_path).unwrap(),
+                std::fs::canonicalize(&db_path).unwrap()
+            );
+            assert_eq!(recorded.detail, mismatch.to_string());
+            assert!(recorded.detail.contains(type_id), "{}", recorded.detail);
+            assert_eq!(
+                sha256(&db_path),
+                before,
+                "the refused default is byte-identical"
+            );
+            assert!(
+                incompatible_database::stop_cleanly_on_incompatible_database(Err(err)).is_ok(),
+                "the refusal ends the daemon with exit status 0"
+            );
+        }
+    }
+
+    /// The same database, untouched, opens: the check refuses an earlier
+    /// build's core types, not this build's own.
+    #[tokio::test]
+    async fn a_default_this_build_created_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("default.sqlite");
+        database_changed_by_hand(&db_path, &[]).await;
+        let marker = dir.path().join("incompatible-database.json");
+
+        open_default_database(
+            dir.path().join("databases.toml"),
+            &marker,
+            &db_path,
+            test_context(dir.path()),
+        )
+        .await
+        .expect("this build's own database opens");
+        assert!(!marker.exists());
+    }
 }
 
 #[cfg(test)]

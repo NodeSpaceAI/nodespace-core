@@ -121,6 +121,7 @@ const DOC_SCALARS: Record<string, string> = {
   datetime: "datetime",
   enum: "enum",
   object: "object",
+  link: "link",
 };
 
 /** The cells of a table row, or null when the line isn't one. */

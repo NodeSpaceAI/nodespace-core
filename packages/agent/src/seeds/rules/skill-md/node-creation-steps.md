@@ -1,4 +1,4 @@
-CHANGING A TASK'S STATUS: run `nodespace node set-status <task-id> <status>`, not `nodespace node update` — a task's status has its own command, which checks the value against the task type's current list. That list can hold more than the four built-in values.
+CHANGING A TASK'S STATUS: run `nodespace node set-status <task-id> <status>`, not `nodespace node update` — a task's status has its own command, which checks the value against the task type's current list. That list can hold more than the five built-in values.
 
 THE TYPE: pass `--type` the type's id, copied exactly from `nodespace schema list`. Read its fields first with `nodespace schema get <type>`.
 

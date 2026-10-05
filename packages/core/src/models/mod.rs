@@ -67,13 +67,17 @@ pub use nodespace_types::{
 // Defined once in nodespace-types so the Tauri command layer deserializes the
 // same struct the service consumes.
 pub use nodespace_types::{
-    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, PersonNodeUpdate, ProjectNodeUpdate,
-    QueryNodeUpdate, SkillNodeUpdate, TaskNodeUpdate,
+    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, DecisionNodeUpdate, PersonNodeUpdate,
+    PlanNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate, SkillNodeUpdate, SpecNodeUpdate,
+    TaskNodeUpdate,
 };
 
 // The vocabularies of the task and project fields: each type's own status,
 // and the priority scale the two share.
 pub use nodespace_types::{Priority, ProjectStatus, TaskStatus};
+
+// The closed status vocabularies of the spec, plan and decision types.
+pub use nodespace_types::{DecisionStatus, PlanStatus, SpecStatus};
 
 // The stored query's typed fields — the only reader of a query node's
 // properties (see `QueryDefinition::from_fields` for the execution mapping).

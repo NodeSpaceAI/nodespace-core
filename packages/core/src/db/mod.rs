@@ -1,3 +1,4 @@
+pub mod core_type_shape;
 mod error;
 pub mod events;
 pub mod fractional_ordering;

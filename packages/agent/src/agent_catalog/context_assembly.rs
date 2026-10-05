@@ -46,27 +46,6 @@ const SKILL_CLI_REFERENCE: &str = include_str!("../../../skill/references/cli.md
 const SKILL_GRAPH_AUTHORED_GUIDANCE: &str =
     include_str!("../../../skill/references/graph-authored-guidance.md");
 
-/// `packages/skill/references/linear-playbook.md`, embedded for the same reason
-/// as [`SKILL_MD`].
-///
-/// SKILL.md links to this when asked to set a workspace up for Linear-style
-/// work tracking — it is the CLI-verb form of the playbook the desktop app
-/// installs in-process, generated from `nodespace_core::methodology::linear`.
-/// Embedding it too means a PTY session gets the whole skill rather than a
-/// body pointing at a file that was never written next to it.
-const SKILL_LINEAR_PLAYBOOK: &str = include_str!("../../../skill/references/linear-playbook.md");
-
-/// `packages/skill/references/spec-driven-playbook.md`, embedded for the same
-/// reason as [`SKILL_LINEAR_PLAYBOOK`], generated from
-/// `nodespace_core::methodology::spec_driven`.
-const SKILL_SPEC_DRIVEN_PLAYBOOK: &str =
-    include_str!("../../../skill/references/spec-driven-playbook.md");
-
-/// `packages/skill/references/jira-playbook.md`, embedded for the same reason
-/// as [`SKILL_LINEAR_PLAYBOOK`], generated from
-/// `nodespace_core::methodology::jira`.
-const SKILL_JIRA_PLAYBOOK: &str = include_str!("../../../skill/references/jira-playbook.md");
-
 /// Default token budget when none is specified by the caller.
 const DEFAULT_TOKEN_BUDGET: u32 = 50_000;
 
@@ -448,13 +427,6 @@ async fn write_skill_md(session_dir: &Path) -> Result<(), ContextError> {
     let references = session_dir.join("references");
     tokio::fs::create_dir_all(&references).await?;
     tokio::fs::write(references.join("cli.md"), SKILL_CLI_REFERENCE).await?;
-    tokio::fs::write(references.join("linear-playbook.md"), SKILL_LINEAR_PLAYBOOK).await?;
-    tokio::fs::write(
-        references.join("spec-driven-playbook.md"),
-        SKILL_SPEC_DRIVEN_PLAYBOOK,
-    )
-    .await?;
-    tokio::fs::write(references.join("jira-playbook.md"), SKILL_JIRA_PLAYBOOK).await?;
     tokio::fs::write(
         references.join("graph-authored-guidance.md"),
         SKILL_GRAPH_AUTHORED_GUIDANCE,

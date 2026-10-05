@@ -27,10 +27,9 @@ pub enum MarkdownError {
     /// `create_schema`).
     ///
     /// Structured so a caller that needs to distinguish "this id is taken"
-    /// from every other rejection — the methodology installer's collision
-    /// re-keying, for one — can match the variant instead of substring-testing
-    /// `Display`'s text, which breaks the moment some unrelated rejection
-    /// grows the same phrase. `message` carries the full, agent-facing
+    /// from every other rejection can match the variant instead of
+    /// substring-testing `Display`'s text, which breaks the moment some
+    /// unrelated rejection grows the same phrase. `message` carries the full, agent-facing
     /// explanation (e.g. the existing schema's rendered definition); `id` is
     /// the exact, structured signal.
     AlreadyExists { id: String, message: String },

@@ -78,10 +78,13 @@ describe('schemasStore.builtInSchemas — sidenav core types', () => {
     expect(schemasStore.customSchemas.map((s) => s.id)).toContain('project');
   });
 
-  it('includes core person and agent-guidance schemas, excludes other core types', () => {
+  it('includes core spec, plan, decision, person and agent-guidance schemas, excludes other core types', () => {
     schemasStore.schemas = [
       makeSchema('task', true),
       makeSchema('project', true),
+      makeSchema('spec', true),
+      makeSchema('plan', true),
+      makeSchema('decision', true),
       makeSchema('skill', true),
       makeSchema('person', true),
       makeSchema('agent-guidance', true),
@@ -106,9 +109,18 @@ describe('schemasStore.builtInSchemas — sidenav core types', () => {
     const ids = schemasStore.builtInSchemas.map((s) => s.id);
 
     expect(ids).toEqual(
-      expect.arrayContaining(['task', 'project', 'skill', 'person', 'agent-guidance'])
+      expect.arrayContaining([
+        'task',
+        'project',
+        'spec',
+        'plan',
+        'decision',
+        'skill',
+        'person',
+        'agent-guidance'
+      ])
     );
-    expect(ids).toHaveLength(5);
+    expect(ids).toHaveLength(8);
   });
 });
 

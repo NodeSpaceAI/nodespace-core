@@ -8,14 +8,28 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'priority', wire: 'priority' },
     { storage: 'due_date', wire: 'dueDate', date: true },
     { storage: 'started_at', wire: 'startedAt', date: true },
-    { storage: 'completed_at', wire: 'completedAt', date: true }
+    { storage: 'completed_at', wire: 'completedAt', date: true },
+    { storage: 'pull_request', wire: 'pullRequest', structured: 'object' },
+    { storage: 'commits', wire: 'commits', structured: 'array' }
   ],
   project: [
     { storage: 'status', wire: 'status' },
     { storage: 'priority', wire: 'priority' },
     { storage: 'start_date', wire: 'startDate', date: true },
-    { storage: 'end_date', wire: 'endDate', date: true }
+    { storage: 'end_date', wire: 'endDate', date: true },
+    { storage: 'repository', wire: 'repository', structured: 'object' }
   ],
+  spec: [
+    { storage: 'objective', wire: 'objective' },
+    { storage: 'boundaries', wire: 'boundaries' },
+    { storage: 'spec_status', wire: 'specStatus' }
+  ],
+  plan: [
+    { storage: 'approach', wire: 'approach' },
+    { storage: 'risks', wire: 'risks' },
+    { storage: 'plan_status', wire: 'planStatus' }
+  ],
+  decision: [{ storage: 'decision_status', wire: 'decisionStatus' }],
   person: [
     { storage: 'first_name', wire: 'firstName' },
     { storage: 'last_name', wire: 'lastName' },
@@ -91,6 +105,9 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
 export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   task: { status: 'open' },
   project: { status: 'planning' },
+  spec: { specStatus: 'draft' },
+  plan: { planStatus: 'draft' },
+  decision: { decisionStatus: 'proposed' },
   skill: { description: '', maxIterations: 2, toolWhitelist: [] },
   'database-settings': { requiredExtensions: [] },
   query: { executionCount: 0, filters: [], generatedBy: 'user', targetType: '*' },

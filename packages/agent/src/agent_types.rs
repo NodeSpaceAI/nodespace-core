@@ -816,8 +816,8 @@ pub trait AgentToolExecutor: Send + Sync {
 
     /// `task.status`'s currently-declared values (`core_values` +
     /// `user_values`), used to keep `update_task_status`'s parameter `enum`
-    /// in step with a vocabulary ADR-076 lets a methodology bundle extend at
-    /// install time.
+    /// in step with a vocabulary ADR-076 lets a user extend at
+    /// any time.
     ///
     /// The default returns `None`, meaning "no live vocabulary available" —
     /// the tool definition then keeps the static `enum` from

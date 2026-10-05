@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use nodespace_core::agent_params::{SearchNodesParams, SearchSemanticParams};
 use nodespace_core::behaviors::ToolOrigin;
 use nodespace_core::models::conflict::{ConflictKind, ConflictStatus, Resolution};
-use nodespace_core::models::CoreNodeType;
+use nodespace_core::models::{CoreNodeType, TaskStatus};
 use nodespace_core::ops::{node_context_ops, node_ops, query_ops, rel_ops, search_ops, OpsError};
 use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
@@ -1477,6 +1477,15 @@ fn json_schema_type_for_field(field_type: &str) -> &'static str {
     }
 }
 
+/// The JSON Schema of a `link` value: an object with a `title` and a `url`.
+fn link_shape() -> Value {
+    json!({
+        "type": "object",
+        "properties": { "title": { "type": "string" }, "url": { "type": "string" } },
+        "required": ["title", "url"]
+    })
+}
+
 /// Build the `field_values` sub-property declarations for one or more
 /// retrieved entity types.
 ///
@@ -1553,13 +1562,17 @@ fn declared_field_values_properties(
             }
             entry.insert("enum".to_string(), json!(merged));
         }
-        // A link has one shape, so it is declared whole.
+        // A link has one shape, so it is declared whole, and so is each
+        // element of a list of links.
         if fields.iter().all(|f| f.field_type == "link") {
-            entry.insert(
-                "properties".to_string(),
-                json!({ "title": { "type": "string" }, "url": { "type": "string" } }),
-            );
-            entry.insert("required".to_string(), json!(["title", "url"]));
+            if let Value::Object(shape) = link_shape() {
+                entry.extend(shape);
+            }
+        } else if fields
+            .iter()
+            .all(|f| f.field_type == "array" && f.item_type.as_deref() == Some("link"))
+        {
+            entry.insert("items".to_string(), link_shape());
         }
         properties.insert(name.to_string(), Value::Object(entry));
     }
@@ -1620,7 +1633,7 @@ pub(crate) fn with_declared_field_values(
 /// value list in both descriptions — from the vocabulary `task.status`
 /// actually declares right now.
 ///
-/// `def_update_task_status` can only state the four seed values, because
+/// `def_update_task_status` can only state the core values, because
 /// [`Tool::definition`] is synchronous and has no database access. Left at
 /// that, the JSON Schema `enum` is a hard stop: a model cannot emit
 /// `backlog` after an ADR-076 `add_field_values` install, even though the
@@ -2630,10 +2643,13 @@ fn def_update_play() -> ToolDefinition {
 }
 
 fn def_update_task_status() -> ToolDefinition {
+    let statuses: Vec<&str> = TaskStatus::CORE.iter().map(TaskStatus::as_str).collect();
     ToolDefinition {
         name: "update_task_status".into(),
-        description: "Update a task's status. Valid statuses: open, in_progress, done, cancelled."
-            .into(),
+        description: format!(
+            "Update a task's status. Valid statuses: {}.",
+            statuses.join(", ")
+        ),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -2643,7 +2659,7 @@ fn def_update_task_status() -> ToolDefinition {
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["open", "in_progress", "done", "cancelled"],
+                    "enum": statuses,
                     "description": "New status value"
                 },
                 "version": VERSION_PARAMETER.clone()
@@ -4883,10 +4899,10 @@ impl GraphToolExecutor {
 
         // Validate `status` against the schema's LIVE vocabulary
         // (`core_values` + `user_values`) rather than a hardcoded list of the
-        // four seed values. `task.status` is declared `extensible: Some(true)`
-        // (`core_schemas.rs`), and ADR-076's `add_field_values` lets a
-        // methodology bundle append real values to it at install time
-        // (`backlog`, `in_review`, ...). A literal match here would reject
+        // core values. `task.status` is declared `extensible: Some(true)`
+        // (`core_schemas.rs`), and ADR-076's `add_field_values` lets a user
+        // append their own values to it at any time (`backlog`, ...). A
+        // literal match here would reject
         // exactly those values while the service layer (the update
         // pipeline's enum check) accepts them —
         // leaving the agent unable to write a status the schema declares
@@ -5657,8 +5673,8 @@ impl GraphToolExecutor {
     /// `user_values` an ADR-076 `add_field_values` call has appended.
     ///
     /// Read from the stored schema on every call rather than cached: a
-    /// methodology bundle can extend the vocabulary at any point in a session's
-    /// lifetime, and a value cached before that install would reject a status
+    /// user can extend the vocabulary at any point in a session's
+    /// lifetime, and a value cached before that extension would reject a status
     /// the schema now declares valid — the same staleness this function exists
     /// to remove. The read is a single indexed lookup by schema id.
     async fn valid_task_statuses(&self, ns: &NodeService) -> Result<Vec<String>, ToolError> {
@@ -10975,6 +10991,7 @@ mod tests {
                 EntityFieldDescriptor {
                     name: "status".to_string(),
                     field_type: "enum".to_string(),
+                    item_type: None,
                     enum_values: vec![
                         "ready_for_dev".to_string(),
                         "in_dev".to_string(),
@@ -10986,6 +11003,7 @@ mod tests {
                 EntityFieldDescriptor {
                     name: "assignee".to_string(),
                     field_type: "text".to_string(),
+                    item_type: None,
                     enum_values: vec![],
                     required: false,
                     description: None,
@@ -11004,6 +11022,7 @@ mod tests {
                 EntityFieldDescriptor {
                     name: "status".to_string(),
                     field_type: "enum".to_string(),
+                    item_type: None,
                     enum_values: vec!["cut".to_string(), "shipped".to_string()],
                     required: true,
                     description: None,
@@ -11011,6 +11030,7 @@ mod tests {
                 EntityFieldDescriptor {
                     name: "build".to_string(),
                     field_type: "text".to_string(),
+                    item_type: None,
                     enum_values: vec![],
                     required: false,
                     description: None,
@@ -11044,6 +11064,7 @@ mod tests {
             fields: vec![EntityFieldDescriptor {
                 name: "website".to_string(),
                 field_type: "link".to_string(),
+                item_type: None,
                 enum_values: vec![],
                 required: false,
                 description: None,
@@ -11056,6 +11077,37 @@ mod tests {
         assert_eq!(website["type"], "object");
         assert_eq!(website["required"], json!(["title", "url"]));
         assert_eq!(website["properties"]["url"]["type"], "string");
+    }
+
+    /// A list of links is declared with its element's shape, so the model
+    /// does not learn that shape from a validation error. A list of anything
+    /// else stays a bare array.
+    #[test]
+    fn with_declared_field_values_declares_a_list_of_links_with_its_item_shape() {
+        let array_of = |name: &str, item_type: &str| EntityFieldDescriptor {
+            name: name.to_string(),
+            field_type: "array".to_string(),
+            item_type: Some(item_type.to_string()),
+            enum_values: vec![],
+            required: false,
+            description: None,
+        };
+        let descriptor = EntityTypeDescriptor {
+            fields: vec![array_of("commits", "link"), array_of("labels", "text")],
+            ..ticket_descriptor()
+        };
+        let tool = with_declared_field_values(Tool::CreateNode.definition(), &[descriptor]);
+        let properties = &tool.parameters_schema["properties"]["field_values"]["properties"];
+
+        let commits = &properties["commits"];
+        assert_eq!(commits["type"], "array");
+        assert_eq!(commits["items"]["type"], "object");
+        assert_eq!(commits["items"]["required"], json!(["title", "url"]));
+        assert_eq!(commits["items"]["properties"]["url"]["type"], "string");
+        assert_eq!(commits["items"]["properties"]["title"]["type"], "string");
+
+        assert_eq!(properties["labels"]["type"], "array");
+        assert!(properties["labels"].get("items").is_none());
     }
 
     /// `dev-unseen-schema.toml` (packages/agent/goldens/) is the case built
@@ -11325,7 +11377,7 @@ mod tests {
                         found.len() < 3,
                         "{name} hardcodes task.status's value list — {found:?} appear together \
                          in one passage:\n\n  {}\n\nThat list goes stale the moment a \
-                         methodology bundle extends the vocabulary via add_field_values \
+                         user extends the vocabulary via add_field_values \
                          (ADR-076), and a stale list is worse than none because the agent \
                          trusts it. Point at update_task_status's own status enum instead — \
                          with_live_task_statuses rewrites it from the stored schema each turn.",
@@ -11405,6 +11457,7 @@ mod tests {
                 nodespace_core::ops::entity_types_block::EntityFieldDescriptor {
                     name: "amount".to_string(),
                     field_type: "number".to_string(),
+                    item_type: None,
                     enum_values: vec![],
                     required: false,
                     description: None,
@@ -11420,6 +11473,7 @@ mod tests {
                 nodespace_core::ops::entity_types_block::EntityFieldDescriptor {
                     name: "amount".to_string(),
                     field_type: "text".to_string(),
+                    item_type: None,
                     enum_values: vec![],
                     required: false,
                     description: None,
@@ -11455,6 +11509,7 @@ mod tests {
                     nodespace_core::ops::entity_types_block::EntityFieldDescriptor {
                         name: "priority".to_string(),
                         field_type: "enum".to_string(),
+                        item_type: None,
                         enum_values: vec![
                             "low".to_string(),
                             "medium".to_string(),
@@ -11475,6 +11530,7 @@ mod tests {
                     nodespace_core::ops::entity_types_block::EntityFieldDescriptor {
                         name: "priority".to_string(),
                         field_type: "text".to_string(),
+                        item_type: None,
                         enum_values: vec![],
                         required: false,
                         description: None,

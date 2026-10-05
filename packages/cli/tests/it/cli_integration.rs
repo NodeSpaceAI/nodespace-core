@@ -750,8 +750,91 @@ async fn skill_listing_carries_a_version_that_changes_with_the_skills() {
     let _ = shutdown.send(());
 }
 
+/// A domain of the workspace's own, built from the primitives a user has: a
+/// `ticket` type that extends `task`, a `sprint` type, and a skill for each
+/// linked to the types it is about.
+async fn install_ticket_domain(node_service: &Arc<CoreNodeService>) {
+    use nodespace_core::models::{SkillFields, SKILL_APPLIES_TO};
+    use nodespace_core::schema::handle_create_schema;
+    use nodespace_core::services::{CreateNodeParams, InsertPositionOwned};
+
+    for params in [
+        serde_json::json!({
+            "name": "Sprint",
+            "description": "A fixed period of work",
+            "fields": [
+                { "name": "start_date", "type": "date" },
+                { "name": "end_date", "type": "date" }
+            ]
+        }),
+        serde_json::json!({
+            "name": "Ticket",
+            "description": "A unit of work planned into a sprint",
+            "extends": "task",
+            "fields": [{ "name": "severity", "type": "number" }],
+            "relationships": [{
+                "name": "in_sprint",
+                "direction": "out",
+                "targetType": "sprint",
+                "cardinality": "one",
+                "reverseName": "tickets",
+                "reverseCardinality": "many"
+            }]
+        }),
+    ] {
+        handle_create_schema(node_service, params)
+            .await
+            .expect("schema must create");
+    }
+
+    for (title, description, procedure, schemas) in [
+        (
+            "Creating a Ticket",
+            "Create a ticket, a unit of work with a severity, and plan it into the current sprint.",
+            "Create the ticket, then link it to its sprint with in_sprint.",
+            &["ticket", "sprint"][..],
+        ),
+        (
+            "Working with Sprints",
+            "Start a sprint, add tickets to the current sprint, and review what remains in it.",
+            "A sprint has a start date and an end date. Its tickets are the ones linked to it.",
+            &["sprint", "ticket"][..],
+        ),
+    ] {
+        let skill = SkillFields::new(description, &[], 3).into_node(title);
+        let skill_id = skill.id.clone();
+        node_service
+            .create_node(skill)
+            .await
+            .expect("the skill must create");
+        node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: procedure.to_string(),
+                parent_id: Some(skill_id.clone()),
+                position: InsertPositionOwned::End,
+                properties: serde_json::json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .expect("the procedure must create");
+        for schema_id in schemas {
+            node_service
+                .create_relationship(
+                    &skill_id,
+                    SKILL_APPLIES_TO,
+                    schema_id,
+                    serde_json::json!({}),
+                )
+                .await
+                .expect("the skill must link to its type");
+        }
+    }
+}
+
 /// A daemon serving a database seeded as a real one is — built-in skills,
-/// the Linear-style setup — with a real embedding model behind it and every
+/// a ticket domain of its own — with a real embedding model behind it and every
 /// queued root embedded. `None` when the model is not on disk.
 async fn spawn_embedded_daemon() -> Option<(
     PathBuf,
@@ -801,10 +884,7 @@ async fn spawn_embedded_daemon() -> Option<(
         .seed_nodes_from_templates(groups)
         .await
         .expect("initial seed must succeed");
-    let playbook =
-        nodespace_core::methodology::playbook_by_id("linear").expect("the linear playbook ships");
-    let report = nodespace_core::methodology::install_playbook(&node_service, &playbook).await;
-    assert!(report.success, "the linear playbook must install");
+    install_ticket_domain(&node_service).await;
 
     // Embed what the write paths queued, as the processor would.
     for id in store
@@ -924,32 +1004,32 @@ async fn skill_guidance_fetches_skills_and_schemas_end_to_end() {
     // A task in an installed domain returns that domain's skills and the
     // schemas of the types it touches.
     let domain = client
-        .get_skill_guidance(fetch("add an issue to the current cycle"))
+        .get_skill_guidance(fetch("add a ticket to the current sprint"))
         .await
         .expect("a task must fetch")
         .into_inner();
     let skills: Vec<&str> = domain.skills.iter().map(|s| s.name.as_str()).collect();
-    for expected in ["Creating an Issue", "Sprints and Cycles"] {
+    for expected in ["Creating a Ticket", "Working with Sprints"] {
         assert!(skills.contains(&expected), "{expected:?} not in {skills:?}");
     }
     let schemas: Vec<&str> = domain.schemas.iter().map(|s| s.id.as_str()).collect();
-    for expected in ["issue", "cycle"] {
+    for expected in ["ticket", "sprint"] {
         assert!(
             schemas.contains(&expected),
             "{expected:?} not in {schemas:?}"
         );
     }
-    let issue: serde_json::Value = serde_json::from_str(
+    let ticket: serde_json::Value = serde_json::from_str(
         &domain
             .schemas
             .iter()
-            .find(|s| s.id == "issue")
-            .expect("issue schema")
+            .find(|s| s.id == "ticket")
+            .expect("ticket schema")
             .definition,
     )
     .expect("a schema's definition is JSON");
-    assert!(issue["fields"].as_array().is_some_and(|f| !f.is_empty()));
-    assert!(issue["relationships"]
+    assert!(ticket["fields"].as_array().is_some_and(|f| !f.is_empty()));
+    assert!(ticket["relationships"]
         .as_array()
         .is_some_and(|r| !r.is_empty()));
 
@@ -1006,7 +1086,7 @@ async fn skill_guidance_fetches_skills_and_schemas_end_to_end() {
         commands::skill::run_guidance(
             &mut client,
             commands::skill::GuidanceArgs {
-                query: "add an issue to the current cycle".into(),
+                query: "add a ticket to the current sprint".into(),
                 limit: 3,
             },
             json,

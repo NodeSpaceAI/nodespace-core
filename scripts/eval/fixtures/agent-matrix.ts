@@ -1046,7 +1046,7 @@ const GROUPS: MatrixScenario[][] = [
       // The read-side half of the same root cause. Observed: the model asked
       // the user to confirm that `status` was the field and `open` a legal
       // value — both defined on the core task schema (status is required, with
-      // core values open / in_progress / done / cancelled).
+      // core values open / in_progress / in_review / done / cancelled).
       //
       // `noRetry` rather than `toolOnce`: an empty or narrowing result may
       // legitimately prompt one follow-up search, so a hard count of 1 would

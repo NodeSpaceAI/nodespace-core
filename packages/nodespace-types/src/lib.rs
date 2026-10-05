@@ -33,10 +33,12 @@ mod collection;
 mod convert;
 mod core_type;
 mod database_settings;
+mod decision;
 mod helpers;
 mod incompatible_database;
 mod node;
 mod person;
+mod plan;
 mod play;
 mod priority;
 mod project;
@@ -45,6 +47,7 @@ mod relationship_path;
 mod schema;
 mod schema_ops;
 mod skill;
+mod spec;
 mod task;
 
 pub use ai_chat::{
@@ -65,6 +68,7 @@ pub use core_type::{
     TypeCategory, WireShape,
 };
 pub use database_settings::{DatabaseSettingsNode, DatabaseSettingsNodeUpdate};
+pub use decision::{DecisionNode, DecisionNodeUpdate, DecisionStatus};
 pub use helpers::{is_valid_lifecycle_status, LIFECYCLE_STATUSES};
 pub use incompatible_database::IncompatibleDatabase;
 pub use node::{
@@ -72,6 +76,7 @@ pub use node::{
     ValidationError,
 };
 pub use person::{PersonNode, PersonNodeUpdate};
+pub use plan::{PlanNode, PlanNodeUpdate, PlanStatus};
 pub use play::{
     Action, ActionType, AddRelationshipParams, CreateNodeParams, GraphEventType, InlineSelector,
     PlayFields, PlayNode, PlayNodeUpdate, PlaySuspensionReason, RejectParams,
@@ -103,4 +108,5 @@ pub use skill::{
     SkillFields, SkillNode, SkillNodeUpdate, DEFAULT_SKILL_MAX_ITERATIONS, SKILL_APPLIES_TO,
     SKILL_ATTACHED_TO, SKILL_NODE_TYPE,
 };
+pub use spec::{SpecNode, SpecNodeUpdate, SpecStatus};
 pub use task::{TaskNode, TaskNodeUpdate, TaskStatus};

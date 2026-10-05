@@ -341,6 +341,8 @@ describe("parseDocType", () => {
     expect(parseDocType("datetime, system")).toEqual({ type: "datetime" });
     expect(parseDocType("object (JSON Schema): nesting depth ≤ 9")).toEqual({ type: "object" });
     expect(parseDocType("string[]")).toEqual({ type: "array", itemType: "text" });
+    expect(parseDocType("link, optional")).toEqual({ type: "link" });
+    expect(parseDocType("link[]; replaced whole")).toEqual({ type: "array", itemType: "link" });
     expect(parseDocType("`QueryFilter[]`")).toEqual({ type: "array", itemType: "object" });
   });
 

@@ -322,7 +322,7 @@ nodespace query --type task --filters '[{"type":"property","operator":"gte","pro
   - A `related` filter selects by a condition on the connected nodes: `{"type":"related","operator":"equals","path":["project"],"filter":{"type":"property","operator":"equals","property":"status","value":"active"}}` is the tasks whose project is active.
   - `path` lists the relationship names to follow from each candidate node, in order: built-in names (`has_child`, `member_of`, `mentions`), schema-declared names, or the reverse name of either (`child_of`, `mentioned_by`, a declared `reverseName`). `{"name":"child_of","open_ended":true}` in place of a name follows it to every depth (all ancestors). A name the type does not declare is an error naming the ones it does. With `--type '*'` only built-in names resolve.
   - Any filter takes `"negate": true` to keep the nodes it does **not** hold for: `{"type":"property","operator":"equals","property":"status","value":"done","negate":true}` is every task whose status is not `done`, a task with no status included, and a negated `exists` is "has no value". A negated `related` filter is "the path reaches no node matching the nested filter", which a node the path leads nowhere from satisfies; the nested `filter` can be negated too, and the two together say "every node the path reaches matches". Filters are ANDed; there is no OR.
-  - A `property` filter may name a field inside an object field's value with a dotted path: `"property":"repository.url"` is the `url` inside `repository`. A sort's `field` takes the same. The schema must declare every segment, so the query needs a `--type`; a path it does not declare is an error naming it.
+  - A `property` filter may name a field inside an object field's value with a dotted path, and a link field's parts the same way: `"property":"repository.url"` is the `url` of the link field `repository` (`repository.title` is its title). A sort's `field` takes the same. The schema must declare every segment, so the query needs a `--type`; a path it does not declare is an error naming it.
   - A `property` filter on a date field takes `relative_date` in place of `value`, for a date relative to the day the query runs: `{"type":"property","operator":"gte","property":"due_date","relative_date":{"anchor":"today"}}` is due today or later, and `"relative_date":{"anchor":"today","offset_days":7}` is a week from today (negative for the past). The operator is one of `equals`, `gt`, `lt`, `gte`, `lte`. Today is the local date. It works inside a `related` filter's nested `filter` too. In a saved query it is stored as written and resolved each time the query runs, so prefer it to a fixed date when saving a view such as "due this week". A play's selector does not accept it.
 - `--sorting <json>` — array of `{"field":"...","direction":"asc"|"desc"}`
 - `--limit <n>` — max results (0 = server default of 50; server caps at 500 regardless of the value passed)
@@ -333,11 +333,11 @@ Worked examples:
 - "tasks due tomorrow" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"due_date","value":"<YYYY-MM-DD>"}]' --sorting '[{"field":"due_date","direction":"asc"}]'`
 - "tasks due this week" → `nodespace query --type task --filters '[{"type":"property","operator":"gte","property":"due_date","value":"<week start>"},{"type":"property","operator":"lte","property":"due_date","value":"<week end>"}]'`
 - "overdue tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"lt","property":"due_date","relative_date":{"anchor":"today"}}]'`
-- "issues in the current cycle" → `nodespace query --type issue --filters '[{"type":"related","operator":"exists","path":["cycle"],"filter":{"type":"property","operator":"lte","property":"start_date","relative_date":{"anchor":"today"}}},{"type":"related","operator":"exists","path":["cycle"],"filter":{"type":"property","operator":"gte","property":"end_date","relative_date":{"anchor":"today"}}}]'`
+- "tasks of an approved spec" → `nodespace query --type task --filters '[{"type":"related","operator":"exists","path":["spec"],"filter":{"type":"property","operator":"equals","property":"spec_status","value":"approved"}}]'`
 - "high priority tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"priority","value":"high"}]'`
 - "tasks that are not done" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"status","value":"done","negate":true}]'`
 - "tasks with no unfinished blocker" → `nodespace query --type task --filters '[{"type":"related","operator":"exists","path":["blocked_by"],"negate":true,"filter":{"type":"property","operator":"in","property":"status","value":["done","cancelled"],"negate":true}}]'`
-- "the project for this repository" → `nodespace query --type project --filters '[{"type":"property","operator":"equals","property":"repository.url","value":"<remote url>"}]'` (when the `project` schema declares a `repository` object field with a `url` inside it)
+- "the project for this repository" → `nodespace query --type project --filters '[{"type":"property","operator":"equals","property":"repository.url","value":"<remote url>"}]'` (`repository` is a `link` field on `project`, read by `repository.url` and `repository.title`)
 - "tasks with an unchecked item" → `nodespace query --type task --filters '[{"type":"related","operator":"equals","path":["has_child"],"filter":{"type":"property","operator":"equals","property":"checked","value":false}}]'`. `checked` is a checkbox's derived attribute: computed from its content, named in a `property` filter like a field, and never matched by a node that is not a checkbox.
 
 Date format for all date properties: **YYYY-MM-DD**.
@@ -634,7 +634,7 @@ A skill you write is read exactly as stored by both audiences: the in-app agent,
 ### Fetching skills
 
 ```bash
-nodespace skill guidance "add an issue to the current cycle"   # the skills matching a task
+nodespace skill guidance "add a task to the spec"   # the skills matching a task
 nodespace skill guidance                                        # every skill, with the list's version
 nodespace skill get "Node Deletion"                             # one skill, by exact name or id
 ```
@@ -969,7 +969,7 @@ Operate on individual nodes (get, context, create, update, move, delete, childre
 **`nodespace node set-status`** — Set a task node's status (dedicated verb — do not use `update` for this)
 
 - `<ID>` — Task node ID (required)
-- `<STATUS>` — New status. Must be one of the values the `task` schema's `status` field declares — the four built-ins (open, in_progress, done, cancelled) plus any added since. An invalid value is rejected with the current list (required)
+- `<STATUS>` — New status. Must be one of the values the `task` schema's `status` field declares — the built-ins (open, in_progress, in_review, done, cancelled) plus any added since. An invalid value is rejected with the current list (required)
 - `--version <VERSION>` — The task version you read. Sets the status only if the task is still at it; otherwise nothing is written and the current version is reported. Omit to update whatever is current
 
 **`nodespace node move`** — Move a node under another parent (or to the root), or change its position among its siblings. The node keeps its ID and everything nested under it
@@ -1048,7 +1048,7 @@ Semantic search across the knowledge graph
 Structured property query with comparison operators (equals/contains/gt/lt/gte/lte/in/exists)
 
 - `--type <TARGET_TYPE>` — Target node type ("task", "text", etc.) or "*" for all types (required)
-- `--filters <FILTERS>` — JSON array of filter conditions, e.g. `[{"type":"property","operator":"equals","property":"status","value":"open"}]`. Supported types: property, content, metadata, relationship, related. A relationship filter names a `path` of relationship names and the `node_id` it must reach, e.g. `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`. Supported operators: equals, contains, gt, lt, gte, lte, in, exists. A property filter on a date field takes `relative_date` in place of `value` for a date relative to the day the query runs, e.g. `[{"type":"property","operator":"lte","property":"due_date","relative_date":{"anchor":"today","offset_days":7}}]`. Any filter takes `"negate": true` to keep the nodes it does not hold for; on a related filter that is "the path reaches no node matching the nested filter". A property may be a path into an object field's value, e.g. `"property":"repository.url"`
+- `--filters <FILTERS>` — JSON array of filter conditions, e.g. `[{"type":"property","operator":"equals","property":"status","value":"open"}]`. Supported types: property, content, metadata, relationship, related. A relationship filter names a `path` of relationship names and the `node_id` it must reach, e.g. `[{"type":"relationship","operator":"equals","path":["child_of"],"node_id":"<id>"}]`. Supported operators: equals, contains, gt, lt, gte, lte, in, exists. A property filter on a date field takes `relative_date` in place of `value` for a date relative to the day the query runs, e.g. `[{"type":"property","operator":"lte","property":"due_date","relative_date":{"anchor":"today","offset_days":7}}]`. Any filter takes `"negate": true` to keep the nodes it does not hold for; on a related filter that is "the path reaches no node matching the nested filter". A property may be a path into an object field's value or a link field's parts: `"property":"repository.url"` is the `url` of the link field `repository`, and `repository.title` its title
 - `--sorting <SORTING>` — JSON array of sort configs, e.g. `[{"field":"due_date","direction":"desc"}]`
 - `--limit <LIMIT>` — Max results to return (0 = server default of 50)
 
@@ -1306,7 +1306,7 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 
 **`nodespace skill guidance`** — Fetch the skills that match a task, each with its instructions, the commands of the tools it names, and the schemas of the types the task touches. With no task, list every skill by name and description, with the list's version. Covers the built-in skills, skills a user wrote and skills an installed workflow added. Output is always provenance-marked (a banner in human mode, a `"provenance": "graph-fetched"` envelope in `--json` mode), because it is read from the graph and anyone with write access can edit it
 
-- `<QUERY>` — The task at hand, in your own words (e.g. "add an issue to the current cycle", "define a new type with an enum field"). Matched by meaning against every skill's name and description, ranked the way the in-app agent ranks skills. Omit it, or pass an empty string, to list every skill by name and description without its instructions
+- `<QUERY>` — The task at hand, in your own words (e.g. "add a task to the spec", "define a new type with an enum field"). Matched by meaning against every skill's name and description, ranked the way the in-app agent ranks skills. Omit it, or pass an empty string, to list every skill by name and description without its instructions
 - `--limit <LIMIT>` — Maximum number of skills to return for a task. The daemon returns at most 10 whatever is asked for. Ignored when listing
 
 **`nodespace skill get`** — Fetch one skill by its exact name or its id, with what `guidance` returns for a matched skill: its instructions, the commands of the tools it names and the schemas it is linked to, provenance-marked the same way. Use it when you already know which skill you need, from the list or from an earlier fetch. Fails when no skill has that name

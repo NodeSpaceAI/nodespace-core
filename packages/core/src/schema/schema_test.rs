@@ -4105,7 +4105,7 @@ async fn test_add_field_values_appends_to_extensible_core_field() {
         .collect();
     assert_eq!(
         core_values,
-        vec!["open", "in_progress", "done", "cancelled"]
+        vec!["open", "in_progress", "in_review", "done", "cancelled"]
     );
 }
 
@@ -4317,7 +4317,7 @@ async fn test_add_field_values_does_not_require_namespace_prefix_on_core_type() 
             "schema_id": "task",
             "add_field_values": [{
                 "field": "status",
-                "values": [{"value": "in_review", "label": "In Review"}]
+                "values": [{"value": "triage", "label": "Triage"}]
             }]
         }),
     )

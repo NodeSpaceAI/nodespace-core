@@ -175,7 +175,7 @@ impl NodeService {
     }
 
     /// Update a project node's core fields (`status`, `priority`,
-    /// `start_date`, `end_date`) with optimistic concurrency control. See
+    /// `start_date`, `end_date`, `repository`) with optimistic concurrency control. See
     /// [`Self::update_person_node`] for why this delegates to the generic
     /// pipeline; `status`/`priority` are validated there against the
     /// schema's declared vocabulary (core + user values).
@@ -193,6 +193,66 @@ impl NodeService {
         self.update_typed_fields(
             id,
             "project",
+            expected_version,
+            update.to_properties_patch(),
+        )
+        .await
+    }
+
+    /// Update a spec's core fields (`objective`, `boundaries`, `spec_status`)
+    /// with optimistic concurrency control. See [`Self::update_person_node`]
+    /// for why this delegates to the generic pipeline: the status is checked
+    /// there against the schema's closed vocabulary, and the seeded rules
+    /// that guard approval and lock a superseded spec run on this write as on
+    /// any other.
+    pub async fn update_spec_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::SpecNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "SpecNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(id, "spec", expected_version, update.to_properties_patch())
+            .await
+    }
+
+    /// Update a plan's core fields (`approach`, `risks`, `plan_status`) with
+    /// optimistic concurrency control. See [`Self::update_spec_node`].
+    pub async fn update_plan_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::PlanNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "PlanNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(id, "plan", expected_version, update.to_properties_patch())
+            .await
+    }
+
+    /// Update a decision's core field (`decision_status`) with optimistic
+    /// concurrency control. See [`Self::update_spec_node`].
+    pub async fn update_decision_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::DecisionNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "DecisionNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(
+            id,
+            "decision",
             expected_version,
             update.to_properties_patch(),
         )

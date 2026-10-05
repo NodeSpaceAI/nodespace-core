@@ -170,6 +170,7 @@ impl NodeService {
                 .field_ownership_in_batch(&node.node_type, &mut ownership_by_type)
                 .await?;
             self.rebucket_and_validate_with(node, ownership, false)?;
+            self.stamp_task_started(None, node).await?;
             // A new play carries no suspension, on this create path as on
             // the single-node one (ADR-087 §5).
             if self
@@ -596,6 +597,7 @@ impl NodeService {
                 .await?;
             let ownership = &ownership_by_type[&node.node_type];
             self.rebucket_and_validate_with(&mut node, ownership, false)?;
+            self.stamp_task_started(None, &mut node).await?;
             nodes_normalized.push((
                 node.id,
                 node.node_type,
@@ -729,6 +731,7 @@ impl NodeService {
                 .await?;
             let ownership = &ownership_by_type[&node.node_type];
             self.rebucket_and_validate_behaviors(&mut node, ownership, false)?;
+            self.stamp_task_started(None, &mut node).await?;
             nodes_normalized.push((
                 node.id,
                 node.node_type,
@@ -975,6 +978,8 @@ impl NodeService {
                 Self::patch_enables_play(update.properties.as_ref()),
             )
             .await?;
+            self.stamp_task_started(Some(existing), &mut updated)
+                .await?;
 
             let changed_properties =
                 super::compute_property_changes(&old_props, &updated.properties);
