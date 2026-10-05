@@ -11,6 +11,7 @@
 
 mod agent_session_grpc;
 mod database_service_e2e;
+mod extension_points_fixture;
 mod golden_reassignment_restore_real_pipeline;
 mod golden_scenario6_real_pipeline;
 mod grpc_round_trip;

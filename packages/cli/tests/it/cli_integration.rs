@@ -179,6 +179,7 @@ fn routing_test_context() -> SharedContext {
                 .expect("nodespace dir")
                 .join("daemon.toml"),
         ),
+        extensions: nodespace_daemon::DaemonExtensions::none(),
     }
 }
 

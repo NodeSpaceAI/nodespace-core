@@ -46,8 +46,8 @@ use nodespace_daemon::tray::layer::TrayMetricsLayer;
 use nodespace_daemon::{
     build_base_router, build_shared_services, create_dir_owner_only, incompatible_database,
     resolve_db_path, shared_model_load_in_flight, tray, unrouted_services_if_default_refused,
-    BaseServices, DatabaseManager, DatabaseServiceImpl, DatabaseServices, DbManagerLayer,
-    SharedContext,
+    BaseServices, DaemonExtensions, DatabaseManager, DatabaseServiceImpl, DatabaseServices,
+    DbManagerLayer, SharedContext,
 };
 use nodespace_nlp_engine::EmbeddingService;
 use nodespace_proto::socket::TRAY_FLAG;
@@ -1323,6 +1323,7 @@ mod open_default_database_tests {
             scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
             subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
             local_agent: nodespace_daemon::SharedLocalAgent::new(home.join("daemon.toml")),
+            extensions: DaemonExtensions::none(),
         }
     }
 
@@ -1674,7 +1675,7 @@ async fn serve_headless() -> Result<()> {
 
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
-    let (shared, _model_task) = build_shared_services().await?;
+    let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
     let (manager, bundle) = open_default_database(
         DatabaseManager::default_registry_path()?,
         &incompatible_database::marker_path()?,
@@ -1754,7 +1755,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
     let signal_shutdown =
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
-    let (shared, _model_task) = build_shared_services().await?;
+    let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
     let (manager, bundle) = open_default_database(
         DatabaseManager::default_registry_path()?,
         &incompatible_database::marker_path()?,
@@ -1892,7 +1893,7 @@ async fn serve_headless() -> Result<()> {
 
     let shutdown = install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
-    let (shared, _model_task) = build_shared_services().await?;
+    let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
     let (manager, bundle) = open_default_database(
         DatabaseManager::default_registry_path()?,
         &incompatible_database::marker_path()?,
@@ -2004,7 +2005,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
     let signal_shutdown =
         install_shutdown_handler().context("Failed to install signal handlers")?;
     // _model_task: dropping a JoinHandle does not cancel the task in tokio — it detaches.
-    let (shared, _model_task) = build_shared_services().await?;
+    let (shared, _model_task) = build_shared_services(DaemonExtensions::none()).await?;
     let (manager, bundle) = open_default_database(
         DatabaseManager::default_registry_path()?,
         &incompatible_database::marker_path()?,

@@ -24,6 +24,7 @@ pub mod agent_params;
 pub mod behaviors;
 pub mod conflict_sweep;
 pub mod db;
+pub mod extensions;
 pub mod governance;
 pub mod markdown;
 pub mod models;

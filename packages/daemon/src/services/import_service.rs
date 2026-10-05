@@ -1621,7 +1621,7 @@ mod tests {
                     .expect("nodespace dir")
                     .join("daemon.toml"),
             ),
-            supported_extensions: Vec::new(),
+            extensions: crate::DaemonExtensions::none(),
         }
     }
 

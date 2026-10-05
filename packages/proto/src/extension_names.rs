@@ -3,10 +3,11 @@
 //! ADR-084 §1).
 //!
 //! A database's settings node lists, in `required_extensions`, the extensions
-//! a reader needs in order to read it correctly. This build supports none, so
-//! the daemon refuses to open a database that lists any. The daemon, the CLI,
-//! the tray and the desktop app all render that refusal from this module, so
-//! every surface says the same thing.
+//! a reader needs in order to read it correctly. Core's daemon supports none,
+//! unless the build composing it declares some (ADR-082 §5), so it refuses to
+//! open a database that lists any other. The daemon, the CLI, the tray and the
+//! desktop app all render that refusal from this module, so every surface says
+//! the same thing.
 //!
 //! This is the one file in the repository that may name the paid product
 //! (ADR-081 §8): it holds the display name of the `pro` extension id, used

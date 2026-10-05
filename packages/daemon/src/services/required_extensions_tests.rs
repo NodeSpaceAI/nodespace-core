@@ -1,8 +1,8 @@
 //! The required-extensions guard (ADR-083 §2) through the daemon's open and
 //! listing paths.
 //!
-//! These live inside the crate because the daemon's supported set is fixed and
-//! empty outside it; only a unit test can give a context a fixture set.
+//! A context here supports the ids a test names, as a build composing the
+//! daemon declares them through `DaemonExtensions::supported_extension`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,7 +37,11 @@ pub(crate) fn context(supported: &[&str]) -> SharedContext {
                 .expect("nodespace dir")
                 .join("daemon.toml"),
         ),
-        supported_extensions: supported.iter().map(ToString::to_string).collect(),
+        extensions: supported
+            .iter()
+            .fold(crate::DaemonExtensions::none(), |extensions, id| {
+                extensions.supported_extension(*id)
+            }),
     }
 }
 

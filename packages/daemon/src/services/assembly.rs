@@ -23,6 +23,7 @@ use nodespace_core::{NodeService as CoreNodeService, PlaybookEngine, SqliteStore
 use nodespace_nlp_engine::EmbeddingService;
 use tokio::sync::{watch, RwLock};
 
+use super::extensions::DaemonExtensions;
 use super::terminal_summary::LocalModelSummarizer;
 use super::{
     AgentSessionHandler, EmbeddingReady, EmbeddingsServiceImpl, ImportServiceImpl,
@@ -85,32 +86,10 @@ pub struct SharedContext {
     /// What each database keeps is the graph-bound half: its own tool executor,
     /// prompt assembler, in-flight turns, and ai-chat event watcher.
     pub local_agent: Arc<SharedLocalAgent>,
-    /// Test-only: the extension ids this context supports, so a test inside
-    /// this crate can open a database that requires one. Absent outside this
-    /// crate's own unit tests; see [`SharedContext::supported_extensions`].
-    #[cfg(test)]
-    pub(crate) supported_extensions: Vec<String>,
-}
-
-impl SharedContext {
-    /// The extension ids this daemon supports. A database whose settings node
-    /// lists any other id in `required_extensions` is refused when opened
-    /// (ADR-083 §2).
-    ///
-    /// Empty: core supports no extension. It is fixed here rather than taken
-    /// from [`build_shared_services`]'s caller until a composing build gets a
-    /// versioned hook to declare its own (ADR-082 §5, §8). This crate's unit
-    /// tests set a fixture set through the test-only field.
-    pub(crate) fn supported_extensions(&self) -> &[String] {
-        #[cfg(test)]
-        {
-            &self.supported_extensions
-        }
-        #[cfg(not(test))]
-        {
-            &[]
-        }
-    }
+    /// What the build composing this daemon added to it (ADR-082 §5), as
+    /// [`build_shared_services`] received and checked it.
+    /// [`DaemonExtensions::none`] for core's own daemon.
+    pub extensions: DaemonExtensions,
 }
 
 /// The refusal of a database whose settings node lists, in
@@ -199,7 +178,7 @@ pub(crate) async fn unsupported_required_extensions(
 ) -> Result<Vec<String>> {
     let required =
         nodespace_core::db::required_extensions::read_required_extensions(db_path).await?;
-    let supported = shared.supported_extensions();
+    let supported = shared.extensions.supported_extensions();
     Ok(required
         .into_iter()
         .filter(|id| !supported.contains(id))
@@ -305,8 +284,21 @@ impl DatabaseServices {
 /// is loaded once in the background and published over a watch channel so each
 /// database's embedding wiring can await it. Returns the shared set plus the
 /// model-load task handle (`None` when no model file exists).
-pub async fn build_shared_services() -> Result<(SharedServices, Option<tokio::task::JoinHandle<()>>)>
-{
+///
+/// `extensions` is what a build composing the daemon adds to it (ADR-082 §5):
+/// [`DaemonExtensions::none`] for core's own daemon. Every database the daemon
+/// opens gets it through [`SharedContext::extensions`].
+///
+/// # Errors
+///
+/// `extensions` is checked first, before anything is built or read, and a
+/// [`DaemonExtensionsError`](super::extensions::DaemonExtensionsError) stops
+/// startup.
+pub async fn build_shared_services(
+    extensions: DaemonExtensions,
+) -> Result<(SharedServices, Option<tokio::task::JoinHandle<()>>)> {
+    extensions.check()?;
+
     let pty_manager = Arc::new(PtySessionManager::new());
     let settings = SettingsServiceImpl::with_default_path()
         .map_err(|e| anyhow::anyhow!("Failed to initialize SettingsService: {}", e))?;
@@ -352,8 +344,7 @@ pub async fn build_shared_services() -> Result<(SharedServices, Option<tokio::ta
                 subtree_gate_factory: Arc::new(OnceLock::new()),
                 scheduler,
                 local_agent,
-                #[cfg(test)]
-                supported_extensions: Vec::new(),
+                extensions,
             },
         },
         model_task,
