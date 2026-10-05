@@ -54,24 +54,25 @@ use crate::nodespace::{
     ContextItemSkill, ContextNode, CountNodesResponse, CreateCollectionRequest,
     CreateMentionRequest, CreateNodeRequest, CreateRelationshipRequest, CreateRelationshipResponse,
     DeleteCollectionRequest, DeleteMentionRequest, DeleteNodeRequest, DeleteNodeResponse,
-    DeleteRelationshipRequest, DeleteRelationshipResponse, Empty, ExecuteQueryRequest,
-    ExportMarkdownRequest, ExportMarkdownResponse, FindCollectionByPathRequest,
-    FindDuplicateRequest, GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest,
-    GetChildrenTreeRequest, GetCollectionByNameRequest, GetConflictRequest, GetDaemonMemoryRequest,
-    GetDaemonMemoryResponse, GetDaemonVersionRequest, GetDaemonVersionResponse,
-    GetNodeContextRequest, GetNodeContextResponse, GetNodeRelationshipsRequest,
-    GetNodeRelationshipsResponse, GetNodeRequest, GetNodesBatchRequest, GetNodesBatchResponse,
-    GetRelatedNodesRequest, GetRelatedNodesResponse, GetRootsRequest, GetSchemaDefinitionRequest,
-    GetSkillRequest, GetWorkflowStateRequest, GetWorkflowStateResponse, ListConflictsRequest,
-    ListPendingSeedUpdatesRequest, MatchedQuery, MentionAutocompleteRequest, MentionIdsResponse,
-    MentionResponse, MentionTargetRequest, MergeNodesRequest, MergeNodesResponse,
-    MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
-    NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse, NodeReference,
-    NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
-    OptionalConflictResponse, OptionalJsonClear, OptionalNodeResponse, OptionalStringClear,
-    OptionalTimestampClear, PathNodes, PendingSeedUpdate, PendingSeedUpdateDetail,
-    PendingSeedUpdateListResponse, PendingSeedUpdateRef, PreviewMergeRequest, PreviewMergeResponse,
-    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
+    DeleteRelationshipRequest, DeleteRelationshipResponse, DryRunUpdateResponse, Empty,
+    ExecuteQueryRequest, ExportMarkdownRequest, ExportMarkdownResponse,
+    FindCollectionByPathRequest, FindDuplicateRequest, GetAllCollectionsRequest,
+    GetAllSchemasRequest, GetChildrenRequest, GetChildrenTreeRequest, GetCollectionByNameRequest,
+    GetConflictRequest, GetDaemonMemoryRequest, GetDaemonMemoryResponse, GetDaemonVersionRequest,
+    GetDaemonVersionResponse, GetNodeContextRequest, GetNodeContextResponse,
+    GetNodeRelationshipsRequest, GetNodeRelationshipsResponse, GetNodeRequest,
+    GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest, GetRelatedNodesResponse,
+    GetRootsRequest, GetSchemaDefinitionRequest, GetSkillRequest, GetWorkflowStateRequest,
+    GetWorkflowStateResponse, ListConflictsRequest, ListPendingSeedUpdatesRequest, MatchedQuery,
+    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
+    MergeNodesRequest, MergeNodesResponse, MoveChildrenToParentRequest,
+    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
+    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
+    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalJsonClear,
+    OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear, PathNodes,
+    PendingSeedUpdate, PendingSeedUpdateDetail, PendingSeedUpdateListResponse,
+    PendingSeedUpdateRef, PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest,
+    RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
     RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
     ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
     ResolvePendingSeedUpdateRequest, ResolvePendingSeedUpdateResponse, RunSavedQueryRequest,
@@ -606,6 +607,67 @@ impl GrpcNodeService for NodeServiceImpl {
             node_id: output.node_id,
             node_type,
             node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
+        }))
+    }
+
+    async fn dry_run_update_node(
+        &self,
+        request: Request<UpdateNodeRequest>,
+    ) -> Result<Response<DryRunUpdateResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let properties = match req.properties.as_deref() {
+            Some(s) => Some(parse_properties(s).map_err(properties_error)?),
+            None => None,
+        };
+
+        if let (true, Some(patch)) = (req.typed_client, properties.as_ref()) {
+            this.node_service
+                .ensure_no_typed_core_fields(&req.node_id, req.node_type.as_deref(), patch)
+                .await
+                .map_err(service_error_to_status)?;
+        }
+
+        let input = node_ops::UpdateNodeInput {
+            node_id: req.node_id,
+            version: req.version,
+            node_type: req.node_type,
+            content: req.content,
+            properties,
+            add_to_collections: req.add_to_collections,
+            add_to_collection_ids: req.add_to_collection_ids,
+            remove_from_collection_ids: req.remove_from_collection_ids,
+            lifecycle_status: req.lifecycle_status,
+        };
+
+        let output = node_ops::dry_run_update_node(&this.node_service, input)
+            .await
+            .map_err(ops_error_to_status)?;
+
+        use nodespace_core::services::DryRunVerdict;
+        let allowed = output.verdict.is_allowed();
+        let (play_id, rule_name, message, unresolved) = match output.verdict {
+            DryRunVerdict::Allowed => Default::default(),
+            DryRunVerdict::Rejected {
+                play_id,
+                rule_name,
+                message,
+            } => (play_id, rule_name, message, false),
+            DryRunVerdict::Unresolved {
+                play_id,
+                rule_name,
+                reason,
+            } => (play_id, rule_name, reason, true),
+        };
+        Ok(Response::new(DryRunUpdateResponse {
+            node_id: output.node_id,
+            version: output.version,
+            allowed,
+            play_id,
+            rule_name,
+            message,
+            unresolved,
         }))
     }
 
@@ -1384,6 +1446,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(ops_error_to_status)?;
         let limit_reached = run.nodes.len() >= run.limit;
+        let permitted_unresolved = run.unresolved as i32;
 
         if req.with_context {
             // Each item is read by its id, as a context read reads it: at its
@@ -1418,6 +1481,7 @@ impl GrpcNodeService for NodeServiceImpl {
                 schemas,
                 items,
                 limit_reached,
+                permitted_unresolved,
             }));
         }
 
@@ -1447,6 +1511,7 @@ impl GrpcNodeService for NodeServiceImpl {
             schemas,
             items: Vec::new(),
             limit_reached,
+            permitted_unresolved,
         }))
     }
 
@@ -3911,6 +3976,221 @@ mod tests {
         assert_eq!(state["scope"], serde_json::json!(["local"]));
         assert_eq!(state["rules"].as_array().unwrap().len(), 1);
         assert_eq!(state["rules"][0]["all_conditions_satisfied"], true);
+    }
+
+    /// A service with the seeded task-blockers Play live on the write path,
+    /// and two open tasks, the first blocking the second.
+    async fn make_service_with_a_blocked_task() -> (NodeServiceImpl, String, String, TempDir) {
+        use nodespace_core::playbook::core_plays::TASK_BLOCKERS_PLAY_ID;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store = Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let core_svc = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
+
+        let lifecycle = Arc::new(std::sync::RwLock::new(
+            nodespace_core::playbook::PlaybookLifecycleManager::new(),
+        ));
+        let play = core_svc
+            .get_node(TASK_BLOCKERS_PLAY_ID)
+            .await
+            .unwrap()
+            .expect("the task-blockers play is seeded");
+        lifecycle.write().unwrap().activate_play(&play).unwrap();
+        core_svc.set_playbook_lifecycle(lifecycle.clone());
+
+        let mut tasks = Vec::new();
+        for title in ["Blocker", "Blocked"] {
+            tasks.push(
+                core_svc
+                    .create_node(nodespace_core::models::Node::new(
+                        "task".to_string(),
+                        title.to_string(),
+                        serde_json::json!({ "status": "open" }),
+                    ))
+                    .await
+                    .unwrap(),
+            );
+        }
+        core_svc
+            .create_relationship(&tasks[0], "blocks", &tasks[1], serde_json::json!({}))
+            .await
+            .unwrap();
+
+        let svc = NodeServiceImpl::new(
+            core_svc,
+            Arc::new(tokio::sync::RwLock::new(None)),
+            Arc::new(EmbeddingScheduler::new()),
+        )
+        .with_playbook_lifecycle(lifecycle);
+        let blocked = tasks.pop().unwrap();
+        let blocker = tasks.pop().unwrap();
+        (svc, blocker, blocked, tmp)
+    }
+
+    fn start_request(node_id: &str) -> crate::nodespace::UpdateNodeRequest {
+        crate::nodespace::UpdateNodeRequest {
+            node_id: node_id.to_string(),
+            content: None,
+            node_type: None,
+            properties: Some(r#"{"status":"in_progress"}"#.to_string()),
+            version: None,
+            add_to_collections: Vec::new(),
+            add_to_collection_ids: Vec::new(),
+            remove_from_collection_ids: Vec::new(),
+            lifecycle_status: None,
+            typed_client: false,
+        }
+    }
+
+    /// DryRunUpdateNode answers with the rule that would refuse the write,
+    /// or that none would, and writes nothing either way: the node keeps its
+    /// status and its version. The UpdateNode it predicts is then refused by
+    /// that rule, with that message.
+    #[tokio::test]
+    async fn dry_run_update_node_reports_the_rejecting_rule_and_writes_nothing() {
+        use nodespace_core::playbook::core_plays::TASK_BLOCKERS_PLAY_ID;
+        let (svc, blocker, blocked, _tmp) = make_service_with_a_blocked_task().await;
+        let before = svc.node_service.get_node(&blocked).await.unwrap().unwrap();
+
+        let rejected = svc
+            .dry_run_update_node(Request::new(start_request(&blocked)))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!rejected.allowed);
+        assert!(!rejected.unresolved);
+        assert_eq!(rejected.node_id, blocked);
+        assert_eq!(rejected.version, before.version);
+        assert_eq!(rejected.play_id, TASK_BLOCKERS_PLAY_ID);
+        assert_eq!(rejected.rule_name, "reject-starting-a-blocked-task");
+        assert!(
+            rejected
+                .message
+                .contains("blocked by a task that is not finished"),
+            "{}",
+            rejected.message
+        );
+        assert_eq!(
+            svc.node_service.get_node(&blocked).await.unwrap().unwrap(),
+            before,
+            "a dry run writes nothing"
+        );
+
+        let refused = svc
+            .update_node(Request::new(start_request(&blocked)))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+        assert!(refused.message().contains(&rejected.message), "{refused:?}");
+
+        let allowed = svc
+            .dry_run_update_node(Request::new(start_request(&blocker)))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(allowed.allowed);
+        assert!(allowed.play_id.is_empty() && allowed.message.is_empty());
+        let unchanged = svc.node_service.get_node(&blocker).await.unwrap().unwrap();
+        assert_eq!(unchanged.version, allowed.version);
+        assert_eq!(unchanged.properties["task"]["status"], "open");
+    }
+
+    /// A dry run holds to a version the caller names, as the write does, and
+    /// refuses a request that names a collection change, which no rule is
+    /// asked about.
+    #[tokio::test]
+    async fn dry_run_update_node_checks_the_version_and_refuses_collection_changes() {
+        let (svc, blocker, _blocked, _tmp) = make_service_with_a_blocked_task().await;
+        let version = svc
+            .node_service
+            .get_node(&blocker)
+            .await
+            .unwrap()
+            .unwrap()
+            .version;
+
+        let stale = svc
+            .dry_run_update_node(Request::new(crate::nodespace::UpdateNodeRequest {
+                version: Some(version + 1),
+                ..start_request(&blocker)
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(stale.code(), tonic::Code::Aborted);
+        assert!(stale.metadata().get("x-version-conflict").is_some());
+
+        let current = svc
+            .dry_run_update_node(Request::new(crate::nodespace::UpdateNodeRequest {
+                version: Some(version),
+                ..start_request(&blocker)
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(current.allowed);
+
+        let with_collection = svc
+            .dry_run_update_node(Request::new(crate::nodespace::UpdateNodeRequest {
+                add_to_collections: vec!["work".to_string()],
+                ..start_request(&blocker)
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(with_collection.code(), tonic::Code::InvalidArgument);
+        assert!(
+            with_collection
+                .message()
+                .contains("Collection changes are not evaluated"),
+            "{with_collection:?}"
+        );
+    }
+
+    /// A saved query with a `permitted` filter returns what the rules would
+    /// let through, over RunSavedQuery and ExecuteQuery alike, and CountQuery
+    /// agrees.
+    #[tokio::test]
+    async fn a_permitted_filter_runs_over_the_query_rpcs() {
+        let (svc, blocker, _blocked, _tmp) = make_service_with_a_blocked_task().await;
+        let filters = serde_json::json!([
+            { "type": "property", "operator": "equals", "property": "status", "value": "open" },
+            { "type": "permitted", "operator": "equals", "property": "status", "value": "in_progress" }
+        ]);
+        svc.node_service
+            .create_node(nodespace_core::models::Node::new(
+                "query".to_string(),
+                "Ready tasks".to_string(),
+                serde_json::json!({ "target_type": "task", "filters": filters }),
+            ))
+            .await
+            .unwrap();
+
+        let run = svc
+            .run_saved_query(Request::new(crate::nodespace::RunSavedQueryRequest {
+                query: "Ready tasks".to_string(),
+                filters_json: None,
+                limit: 0,
+                with_context: false,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let ids: Vec<&str> = run.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, [blocker.as_str()]);
+        assert_eq!(run.permitted_unresolved, 0);
+
+        let request = || {
+            Request::new(ExecuteQueryRequest {
+                target_type: "task".to_string(),
+                filters_json: Some(filters.to_string()),
+                sorting_json: None,
+                limit: 0,
+            })
+        };
+        let executed = svc.execute_query(request()).await.unwrap().into_inner();
+        let ids: Vec<&str> = executed.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, [blocker.as_str()]);
+        let counted = svc.count_query(request()).await.unwrap().into_inner();
+        assert_eq!(counted.count, 1);
     }
 
     /// The FindDuplicate RPC surfaces an existing node on a

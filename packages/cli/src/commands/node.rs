@@ -163,6 +163,17 @@ pub struct UpdateArgs {
     /// Omit to update whatever is current.
     #[arg(long)]
     pub version: Option<i64>,
+    /// Evaluate the update without making it: prints whether a rule would
+    /// reject it, and the rule's message if so. Nothing is written and the
+    /// version does not change. It predicts rejections only, and it is a
+    /// prediction: the graph can change before you make the write, and the
+    /// rule on the write is what decides. Collection changes are not
+    /// evaluated.
+    #[arg(
+        long = "dry-run",
+        conflicts_with_all = ["collections", "collection_ids", "remove_collection_ids"]
+    )]
+    pub dry_run: bool,
 }
 
 /// Parses a `key=value` CLI arg into (key, JSON value). `value` is parsed as
@@ -219,6 +230,13 @@ pub struct SetStatusArgs {
     /// reported. Omit to update whatever is current.
     #[arg(long)]
     pub version: Option<i64>,
+    /// Evaluate the change without making it: prints whether a rule would
+    /// reject it, and the rule's message if so. Nothing is written and the
+    /// version does not change. It predicts rejections only, and it is a
+    /// prediction: the graph can change before you make the write, and the
+    /// rule on the write is what decides.
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]
@@ -423,25 +441,42 @@ async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result
 
     let properties = merge_properties(args.properties_json, args.properties);
 
+    let request = UpdateNodeRequest {
+        node_id: args.id,
+        version: args.version, // unset: the server reads the current version
+        node_type: None,
+        content: args.content,
+        properties,
+        add_to_collections: args.collections,
+        add_to_collection_ids: args.collection_ids,
+        remove_from_collection_ids: args.remove_collection_ids,
+        lifecycle_status: None,
+        typed_client: false,
+    };
+    if args.dry_run {
+        return dry_run(client, request, json).await;
+    }
+
     let response = client
-        .update_node(UpdateNodeRequest {
-            node_id: args.id,
-            version: args.version, // unset: the server reads the current version
-            node_type: None,
-            content: args.content,
-            properties,
-            add_to_collections: args.collections,
-            add_to_collection_ids: args.collection_ids,
-            remove_from_collection_ids: args.remove_collection_ids,
-            lifecycle_status: None,
-            typed_client: false,
-        })
+        .update_node(request)
         .await
         .map_err(|status| write_refused(status, "UpdateNode", json))?
         .into_inner();
 
     let node = response.node_data.context("daemon returned no node_data")?;
     output::print_node(&node, json)
+}
+
+/// Ask the daemon what the rules would say to `request`, and print it. The
+/// command succeeds whichever way the answer goes: a predicted rejection is
+/// the answer asked for, not a failure.
+async fn dry_run(client: &mut NodeClient, request: UpdateNodeRequest, json: bool) -> Result<()> {
+    let response = client
+        .dry_run_update_node(request)
+        .await
+        .map_err(|status| write_refused(status, "DryRunUpdateNode", json))?
+        .into_inner();
+    output::print_dry_run(&response, json)
 }
 
 async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) -> Result<()> {
@@ -453,19 +488,24 @@ async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) ->
     // list (the update pipeline's enum check).
     let properties = json!({ "status": args.status }).to_string();
 
+    let request = UpdateNodeRequest {
+        node_id: args.id,
+        version: args.version, // unset: the server reads the current version
+        node_type: None,
+        content: None,
+        properties: Some(properties),
+        add_to_collections: Vec::new(),
+        add_to_collection_ids: Vec::new(),
+        remove_from_collection_ids: Vec::new(),
+        lifecycle_status: None,
+        typed_client: false,
+    };
+    if args.dry_run {
+        return dry_run(client, request, json).await;
+    }
+
     let response = client
-        .update_node(UpdateNodeRequest {
-            node_id: args.id,
-            version: args.version, // unset: the server reads the current version
-            node_type: None,
-            content: None,
-            properties: Some(properties),
-            add_to_collections: Vec::new(),
-            add_to_collection_ids: Vec::new(),
-            remove_from_collection_ids: Vec::new(),
-            lifecycle_status: None,
-            typed_client: false,
-        })
+        .update_node(request)
         .await
         .map_err(|status| write_refused(status, "UpdateNode", json))?
         .into_inner();

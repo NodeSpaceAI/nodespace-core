@@ -406,6 +406,12 @@ describe('matchesFilter', () => {
         negate: true
       })
     ).toBe(false);
+    // A permitted filter is the rules' to answer. It is never read as a
+    // comparison of the property with the value: read that way, the first
+    // would match the invoice's own status and the second its negation.
+    const permitted: QueryFilter = { type: 'permitted', operator: 'equals', property: 'status' };
+    expect(matchesFilter(invoice, { ...permitted, value: 'open' })).toBe(false);
+    expect(matchesFilter(invoice, { ...permitted, value: 'paid', negate: true })).toBe(false);
     // A single mentions hop is answered from the node, so its negation is too.
     const mentioning = node('n4', { mentions: ['m1'] });
     const mentionsM1: QueryFilter = {

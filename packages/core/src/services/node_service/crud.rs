@@ -30,6 +30,31 @@ pub(crate) enum VersionCheckedUpdateOutcome {
     },
 }
 
+/// Result of [`NodeService::prepare_update`]: the node an update would store,
+/// short of the version and timestamp the store assigns.
+pub(crate) struct PreparedUpdate {
+    /// The stored node with the patch applied. Its `title` is still the
+    /// stored one; `title_update` carries what the write sets it to.
+    pub(crate) updated: Node,
+    pub(crate) content_changed: bool,
+    pub(crate) title_update: Option<Option<String>>,
+    pub(crate) lifecycle_status: Option<String>,
+}
+
+impl PreparedUpdate {
+    /// The node the update would store at `version`: what a dry run
+    /// evaluates in place of the row a write reads back.
+    pub(crate) fn into_proposed_node(self, version: i64) -> Node {
+        let mut proposed = self.updated;
+        if let Some(title) = self.title_update {
+            proposed.title = title;
+        }
+        proposed.version = version;
+        proposed.modified_at = chrono::Utc::now();
+        proposed
+    }
+}
+
 impl NodeService {
     /// Refuse an update that changes whether a node is a core schema.
     ///
@@ -1763,37 +1788,19 @@ impl NodeService {
         Ok(Some(*updated_node))
     }
 
-    /// Tx-scoped twin of [`Self::update_with_version_check_returning_node`]
-    /// (ADR-060 §2). Same validation/normalization/title pipeline as before,
-    /// but reading `existing` and writing the version-checked update through
-    /// `tx` instead of the pooled reader / the store's own transaction —
-    /// which is what makes it possible to run synchronous invariant-rule
-    /// dispatch (`dispatch_invariant_rules_for_update_in_tx`) inside the
-    /// SAME transaction as the write, after it lands but before
-    /// `with_transaction` commits: a rejecting invariant rule returns `Err`
-    /// here, which rolls back the version-checked update above it AND
-    /// discards the `NodeUpdated` event buffered by `emit_event` below
-    /// (never flushed on rollback — see `NodeService::with_transaction`'s
-    /// own doc) — no partial write, no broadcast, for a rejected update.
+    /// What a version-checked update writes: the stored node with the patch
+    /// merged, normalized, validated and titled. Reads only, so a dry run
+    /// ([`Self::dry_run_update`]) works out the proposed node through the same
+    /// steps the write does, and the two cannot disagree about what a patch
+    /// turns a node into.
     ///
-    /// Returns [`VersionCheckedUpdateOutcome::VersionConflict`] on an OCC
-    /// mismatch rather than an `Err` — an expected, common outcome the
-    /// caller maps to `NodeServiceError::VersionConflict` itself (mirrors
-    /// `update_node_with_version_check_in_tx`'s own `Ok(Err(actual_version))`
-    /// convention, ADR-069 §2a: a version mismatch is not a transaction
-    /// failure).
-    pub(crate) async fn update_with_version_check_returning_node_in_tx(
+    /// `tx` is the write's transaction; a dry run has none.
+    pub(crate) async fn prepare_update(
         &self,
-        tx: &NodeServiceTx<'_>,
-        id: &str,
-        expected_version: i64,
+        tx: Option<&NodeServiceTx<'_>>,
+        existing: &Node,
         update: NodeUpdate,
-    ) -> Result<VersionCheckedUpdateOutcome, NodeServiceError> {
-        let existing = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
-            .await
-            .map_err(NodeServiceError::from_store)?
-            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
-
+    ) -> Result<PreparedUpdate, NodeServiceError> {
         // Build updated node state
         let mut updated = existing.clone();
         let mut content_changed = false;
@@ -1839,10 +1846,9 @@ impl NodeService {
         }
 
         // Step 1: Core behavior validation (PROTECTED)
-        Self::ensure_schema_core_status_unchanged(&existing, &updated)?;
-        Self::ensure_schema_structure_unchanged(&existing, &updated)?;
-        self.ensure_retype_allowed(Some(tx), &existing, &updated)
-            .await?;
+        Self::ensure_schema_core_status_unchanged(existing, &updated)?;
+        Self::ensure_schema_structure_unchanged(existing, &updated)?;
+        self.ensure_retype_allowed(tx, existing, &updated).await?;
 
         // Step 2: Behavior and schema validation (USER-EXTENSIBLE)
         // Every type that declares a schema is validated, user-defined types
@@ -1857,9 +1863,9 @@ impl NodeService {
         self.rebucket_and_validate(&mut updated, false).await?;
 
         let play_rules_changed = self
-            .settle_play_update(&existing, &mut updated, enables_play)
+            .settle_play_update(existing, &mut updated, enables_play)
             .await?;
-        self.stamp_task_started(Some(&existing), &mut updated)
+        self.stamp_task_started(Some(existing), &mut updated)
             .await?;
 
         // Synchronous play validation gate — reject invalid rule changes
@@ -1892,6 +1898,58 @@ impl NodeService {
             None
         };
 
+        // Last, so every check above saw the node at its stored lifecycle,
+        // as it does when the store applies the change on the write.
+        if let Some(status) = update.lifecycle_status.clone() {
+            updated.lifecycle_status = status;
+        }
+
+        Ok(PreparedUpdate {
+            updated,
+            content_changed,
+            title_update,
+            lifecycle_status: update.lifecycle_status,
+        })
+    }
+
+    /// Tx-scoped twin of [`Self::update_with_version_check_returning_node`]
+    /// (ADR-060 §2). Same validation/normalization/title pipeline as before,
+    /// but reading `existing` and writing the version-checked update through
+    /// `tx` instead of the pooled reader / the store's own transaction —
+    /// which is what makes it possible to run synchronous invariant-rule
+    /// dispatch (`dispatch_invariant_rules_for_update_in_tx`) inside the
+    /// SAME transaction as the write, after it lands but before
+    /// `with_transaction` commits: a rejecting invariant rule returns `Err`
+    /// here, which rolls back the version-checked update above it AND
+    /// discards the `NodeUpdated` event buffered by `emit_event` below
+    /// (never flushed on rollback — see `NodeService::with_transaction`'s
+    /// own doc) — no partial write, no broadcast, for a rejected update.
+    ///
+    /// Returns [`VersionCheckedUpdateOutcome::VersionConflict`] on an OCC
+    /// mismatch rather than an `Err` — an expected, common outcome the
+    /// caller maps to `NodeServiceError::VersionConflict` itself (mirrors
+    /// `update_node_with_version_check_in_tx`'s own `Ok(Err(actual_version))`
+    /// convention, ADR-069 §2a: a version mismatch is not a transaction
+    /// failure).
+    pub(crate) async fn update_with_version_check_returning_node_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        id: &str,
+        expected_version: i64,
+        update: NodeUpdate,
+    ) -> Result<VersionCheckedUpdateOutcome, NodeServiceError> {
+        let existing = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
+            .await
+            .map_err(NodeServiceError::from_store)?
+            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
+
+        let PreparedUpdate {
+            updated,
+            content_changed,
+            title_update,
+            lifecycle_status,
+        } = self.prepare_update(Some(tx), &existing, update).await?;
+
         // Create node update
         // Pass through lifecycle_status if provided
         let node_update = crate::models::NodeUpdate {
@@ -1899,7 +1957,7 @@ impl NodeService {
             content: Some(updated.content.clone()),
             properties: Some(updated.properties.clone()),
             title: title_update,
-            lifecycle_status: update.lifecycle_status,
+            lifecycle_status,
         };
 
         // Perform atomic update with version check, tx-scoped.

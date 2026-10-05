@@ -3,4 +3,5 @@
 /**
  * Filter type category
  */
-export type FilterType = 'property' | 'content' | 'relationship' | 'metadata' | 'related';
+export type FilterType =
+  'property' | 'content' | 'relationship' | 'metadata' | 'related' | 'permitted';

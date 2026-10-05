@@ -49,10 +49,13 @@ pub(crate) mod schema;
 pub mod seed_updates;
 
 #[cfg(test)]
+mod dry_run_tests;
+#[cfg(test)]
 mod inherited_behavior_rule_tests;
 
 pub use conflicts::deterministic_conflict_id;
 pub use hierarchy::render_subtree_markdown;
+pub use invariants::DryRunVerdict;
 pub use relationship::{CreatedRelationship, NewRelationship, StoredEdge};
 pub use seed_updates::{shipped_seed_aspect_text, SeedUpdateComparison};
 

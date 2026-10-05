@@ -280,6 +280,10 @@ parameters_schema:
       "description": "New title text (optional). Only when the user is renaming the node.",
       "type": "string"
     },
+    "dry_run": {
+      "description": "Optional. true evaluates the update without making it: the result says whether a rule would reject it and gives the rule's message. Nothing is written. Use it only when asked whether a change is allowed; it predicts rejections only, and the real write can still be refused.",
+      "type": "boolean"
+    },
     "field_values": {
       "description": "The change itself: field keys to new values, e.g. {\"status\": \"done\"}, required whenever the request changes the node's state rather than its title. Do not invent a key from the user's wording — if no defined key covers the request, call get_node to see the full list before concluding one does not exist. When a field lists allowed values, use one of those values exactly — never a paraphrase of the user's wording, never a capitalised or spaced form of the value. Send only the keys that change, with their new values, not the unchanged ones.",
       "properties": {

@@ -1,9 +1,10 @@
 //! Priority scale shared by the core node types that carry a `priority` field
 //!
 //! `task.priority` and `project.priority` use one vocabulary, so one enum
-//! backs both: their typed wire fields, their `core_values`, the rank the
-//! query service sorts them by, and the drift guard in core's
-//! `core_schemas.rs` that keeps the three in step.
+//! backs both: their typed wire fields, their `core_values`, and the drift
+//! guard in core's `core_schemas.rs` that keeps the two in step. A sort by
+//! priority follows the order the schema declares the values in, like a sort
+//! by any other enum.
 
 use serde::{Deserialize, Serialize};
 
@@ -45,11 +46,8 @@ impl Priority {
 
     /// The core node types whose `priority` field uses this scale.
     ///
-    /// The query service ranks `priority` by [`Self::rank`] only when the
-    /// query targets one of these types; any other type's `priority` (a
-    /// user-defined type's bare field, say) is its own vocabulary and sorts as
-    /// plain text. Every type listed here must declare `priority` with exactly
-    /// this enum's core values, which
+    /// Every type listed here must declare `priority` with exactly this
+    /// enum's core values, in this enum's order, which
     /// `test_priority_variants_match_core_values_bidirectionally` in core's
     /// `core_schemas.rs` checks for each of them.
     pub const NODE_TYPES: [CoreNodeType; 2] = [CoreNodeType::Task, CoreNodeType::Project];
@@ -69,40 +67,6 @@ impl Priority {
             Self::User(s) => s.as_str(),
         }
     }
-
-    /// Rank of this priority for ordering purposes (0 = most urgent)
-    ///
-    /// Ascending rank yields highest, high, medium, low, lowest — the semantic
-    /// urgency order, not the lexicographic one the raw strings would give.
-    ///
-    /// User-defined priorities all share [`Self::USER_RANK`], one past the core
-    /// scale, so they sort after every core value. Since the rank alone cannot
-    /// separate two user values, callers must break that tie on the value
-    /// string to keep the ordering total; see `QueryService::resolve_order_field`
-    /// and `QueryService::compare_priority_values`, which both do exactly that.
-    pub fn rank(&self) -> u8 {
-        match self {
-            Self::Highest => 0,
-            Self::High => 1,
-            Self::Medium => 2,
-            Self::Low => 3,
-            Self::Lowest => 4,
-            Self::User(_) => Self::USER_RANK,
-        }
-    }
-
-    /// Rank assigned to every user-defined priority — one past the core scale,
-    /// so user values sort after all core values.
-    pub const USER_RANK: u8 = 5;
-
-    /// Rank for an absent priority, before the whole scale.
-    ///
-    /// Signed because it sits below [`Self::Highest`]'s 0; the SQL side needs a
-    /// literal it can order against the other ranks, and an absent value sorts
-    /// first ascending. This is not a variant of the enum — a missing priority
-    /// has no `Priority` at all — so it lives here as the shared constant
-    /// both ordering paths rank it by.
-    pub const ABSENT_RANK: i8 = -1;
 }
 
 impl Serialize for Priority {

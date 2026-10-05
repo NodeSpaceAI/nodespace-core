@@ -6,8 +6,8 @@
 
 use anyhow::{Context, Result};
 use nodespace_daemon::nodespace::{
-    ConflictRecord as ConflictRecordProto, ContextNode, DeleteNodeResponse, GetNodeContextResponse,
-    MergeNodesResponse, NodeListResponse, PathNodes, RunSavedQueryResponse,
+    ConflictRecord as ConflictRecordProto, ContextNode, DeleteNodeResponse, DryRunUpdateResponse,
+    GetNodeContextResponse, MergeNodesResponse, NodeListResponse, PathNodes, RunSavedQueryResponse,
 };
 
 use crate::commands::skill::{
@@ -178,6 +178,7 @@ pub fn print_saved_query_run(response: &RunSavedQueryResponse, json: bool) -> Re
         if response.limit_reached {
             value["limit_reached"] = json!(true);
         }
+        note_permitted_unresolved_json(&mut value, response);
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
@@ -197,10 +198,95 @@ pub fn print_saved_query_run(response: &RunSavedQueryResponse, json: bool) -> Re
             "\nThe run returned as many results as its limit allows; the query may match more."
         );
     }
+    note_permitted_unresolved(response);
     match tag {
         Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
         None => Ok(()),
     }
+}
+
+/// Say how many candidates a run's `permitted` filter left out because it
+/// could not evaluate the rules for them. Silent when there were none.
+fn note_permitted_unresolved(response: &RunSavedQueryResponse) {
+    if response.permitted_unresolved > 0 {
+        println!(
+            "\n{} node(s) were left out: the query's permitted filter could not evaluate the \
+             rules for them.",
+            response.permitted_unresolved
+        );
+    }
+}
+
+/// [`note_permitted_unresolved`] for `--json`: set only when there were some.
+fn note_permitted_unresolved_json(value: &mut Value, response: &RunSavedQueryResponse) {
+    if response.permitted_unresolved > 0 {
+        value["permitted_unresolved"] = json!(response.permitted_unresolved);
+    }
+}
+
+/// What a dry run of an update found: allowed, or the rule that would refuse
+/// the write and its message.
+pub fn print_dry_run(response: &DryRunUpdateResponse, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&dry_run_json(response))?);
+    } else {
+        println!("{}", dry_run_text(response));
+    }
+    Ok(())
+}
+
+/// A dry run's verdict in the CLI's JSON shape. `rejected_by` is set when a
+/// rule would reject the change, and `unresolved` when a rule could not be
+/// evaluated; neither is set when the change is allowed.
+pub fn dry_run_json(response: &DryRunUpdateResponse) -> Value {
+    let mut value = json!({
+        "dry_run": true,
+        "node_id": response.node_id,
+        "version": response.version,
+        "allowed": response.allowed,
+    });
+    if !response.allowed {
+        let rule = json!({
+            "play_id": response.play_id,
+            "rule_name": response.rule_name,
+        });
+        if response.unresolved {
+            value["unresolved"] = rule;
+            value["unresolved"]["reason"] = json!(response.message);
+        } else {
+            value["rejected_by"] = rule;
+            value["rejected_by"]["message"] = json!(response.message);
+        }
+    }
+    value
+}
+
+/// A dry run's verdict as a person reads it, ending with the reminder that
+/// nothing was written.
+pub fn dry_run_text(response: &DryRunUpdateResponse) -> String {
+    let node = sanitize_for_terminal(&response.node_id);
+    let verdict = if response.allowed {
+        format!(
+            "Dry run: allowed. No rule would reject this change to node {node} (version {}).",
+            response.version
+        )
+    } else {
+        let rule = sanitize_for_terminal(&response.rule_name);
+        let play = sanitize_for_terminal(&response.play_id);
+        let message = sanitize_for_terminal(&response.message);
+        if response.unresolved {
+            format!(
+                "Dry run: rejected. Rule '{rule}' (play {play}) could not be evaluated for \
+                 node {node}, and the write would fail the same way: {message}"
+            )
+        } else {
+            format!(
+                "Dry run: rejected. Rule '{rule}' (play {play}) would reject this change to \
+                 node {node}: {message}"
+            )
+        }
+    };
+    format!("{verdict}\nNothing was written.")
 }
 
 /// A saved query's result with each item's context: the item, what its
@@ -243,6 +329,7 @@ pub fn print_saved_query_context_run(response: &RunSavedQueryResponse, json: boo
         if response.limit_reached {
             value["limit_reached"] = json!(true);
         }
+        note_permitted_unresolved_json(&mut value, response);
         println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
@@ -292,6 +379,7 @@ pub fn print_saved_query_context_run(response: &RunSavedQueryResponse, json: boo
     if response.limit_reached {
         println!("\nThe run returned as many items as its limit allows; the query may match more.");
     }
+    note_permitted_unresolved(response);
     match tag {
         Some(tag) => write_attached_skills(out, &response.skills, &response.schemas, &tag),
         None => Ok(()),
@@ -1074,6 +1162,74 @@ pub fn print_merge_outcome(response: &MergeNodesResponse, json: bool) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dry_run(allowed: bool, unresolved: bool) -> DryRunUpdateResponse {
+        DryRunUpdateResponse {
+            node_id: "task-1".into(),
+            version: 4,
+            allowed,
+            play_id: if allowed {
+                String::new()
+            } else {
+                "play-9".into()
+            },
+            rule_name: if allowed {
+                String::new()
+            } else {
+                "reject-starting-a-blocked-task".into()
+            },
+            message: if allowed {
+                String::new()
+            } else {
+                "finish the blocker first".into()
+            },
+            unresolved,
+        }
+    }
+
+    /// A dry run says which way it went, names the rule and its message on a
+    /// rejection, and always says nothing was written.
+    #[test]
+    fn a_dry_run_is_printed_as_allowed_or_with_the_rule_that_rejects() {
+        let allowed = dry_run(true, false);
+        assert_eq!(
+            dry_run_json(&allowed),
+            json!({ "dry_run": true, "node_id": "task-1", "version": 4, "allowed": true })
+        );
+        let text = dry_run_text(&allowed);
+        assert!(text.starts_with("Dry run: allowed."), "{text}");
+        assert!(text.ends_with("Nothing was written."), "{text}");
+
+        let rejected = dry_run(false, false);
+        assert_eq!(
+            dry_run_json(&rejected),
+            json!({
+                "dry_run": true, "node_id": "task-1", "version": 4, "allowed": false,
+                "rejected_by": {
+                    "play_id": "play-9",
+                    "rule_name": "reject-starting-a-blocked-task",
+                    "message": "finish the blocker first"
+                }
+            })
+        );
+        let text = dry_run_text(&rejected);
+        for part in [
+            "Dry run: rejected.",
+            "'reject-starting-a-blocked-task'",
+            "play play-9",
+            "finish the blocker first",
+            "Nothing was written.",
+        ] {
+            assert!(text.contains(part), "missing {part:?}: {text}");
+        }
+
+        let unresolved = dry_run(false, true);
+        let value = dry_run_json(&unresolved);
+        assert_eq!(value["allowed"], false);
+        assert_eq!(value["unresolved"]["reason"], "finish the blocker first");
+        assert!(value.get("rejected_by").is_none());
+        assert!(dry_run_text(&unresolved).contains("could not be evaluated"));
+    }
 
     fn sample_node() -> NodeData {
         NodeData {

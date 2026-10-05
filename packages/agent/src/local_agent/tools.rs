@@ -134,6 +134,10 @@ struct AgentUpdateNodeParams {
     /// changed since.
     #[serde(default)]
     pub version: Option<i64>,
+    /// Evaluate the update without making it: the result says whether a rule
+    /// would reject it. Nothing is written.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// Parameters for the agent's get_node tool (includes optional format field)
@@ -1436,7 +1440,11 @@ fn def_update_node() -> ToolDefinition {
                     "type": "object",
                     "description": "The change itself: field keys to new values, e.g. {\"status\": \"done\"}, required whenever the request changes the node's state rather than its title. Do not invent a key from the user's wording — if no defined key covers the request, call get_node to see the full list before concluding one does not exist. When a field lists allowed values, use one of those values exactly — never a paraphrase of the user's wording, never a capitalised or spaced form of the value. Send only the keys that change, with their new values, not the unchanged ones."
                 },
-                "version": VERSION_PARAMETER.clone()
+                "version": VERSION_PARAMETER.clone(),
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Optional. true evaluates the update without making it: the result says whether a rule would reject it and gives the rule's message. Nothing is written. Use it only when asked whether a change is allowed; it predicts rejections only, and the real write can still be refused."
+                }
             },
             "required": ["id"]
         }),
@@ -3601,6 +3609,31 @@ pub fn is_write_tool(tool: &str) -> bool {
     Tool::from_name(tool).is_some_and(Tool::is_write)
 }
 
+/// Say on a `run_query` result how many nodes the query's `permitted` filter
+/// left out because the rules could not be evaluated for them, so the result
+/// is not read as every node the change is allowed for.
+fn note_permitted_unresolved(result: &mut Value, unresolved: usize) {
+    if unresolved > 0 {
+        result["permitted_unresolved"] = json!(format!(
+            "{unresolved} node(s) were left out: the query's permitted filter could not \
+             evaluate the rules for them."
+        ));
+    }
+}
+
+/// Whether a tool call changes graph state: a write tool, not asked for as a
+/// dry run. A dry run of a write evaluates the rules and writes nothing, so
+/// it is no evidence that the turn acted.
+///
+/// Only `update_node` has a dry run. On any other write tool a `dry_run`
+/// argument is not a parameter, the call is attempted as the write it names,
+/// and it counts as one.
+pub fn is_write_call(tool: &str, args: &Value) -> bool {
+    let dry_run = matches!(Tool::from_name(tool), Some(Tool::UpdateNode))
+        && args.get("dry_run").and_then(Value::as_bool) == Some(true);
+    is_write_tool(tool) && !dry_run
+}
+
 /// Whether a tool's successful result can surface a concrete graph node, by
 /// wire name. Computed from the registry.
 ///
@@ -4563,7 +4596,14 @@ impl GraphToolExecutor {
         // Collect any flat (unknown) keys and promote them into field_values.
         let flat_extras = unknown_top_level_keys(
             &args,
-            &["id", "node_id", "content", "field_values", "version"],
+            &[
+                "id",
+                "node_id",
+                "content",
+                "field_values",
+                "version",
+                "dry_run",
+            ],
         );
 
         let params: AgentUpdateNodeParams =
@@ -4671,6 +4711,26 @@ impl GraphToolExecutor {
             remove_from_collection_ids: Vec::new(),
             lifecycle_status: None,
         };
+
+        if params.dry_run {
+            let output = node_ops::dry_run_update_node(&ns, input)
+                .await
+                .map_err(|e| ops_error_to_tool(e, "update_node"))?;
+            // Worded so the result cannot be echoed as a confirmation: it
+            // names no update, and says outright that the node is unchanged.
+            let mut result = output.to_json();
+            let obj = result.as_object_mut().expect("to_json returns an object");
+            obj.insert("id".into(), json!(node_uri(&output.node_id)));
+            obj.remove("node_id");
+            obj.insert(
+                "note".into(),
+                json!(
+                    "This was a dry run. Nothing was written and the node is exactly as it \
+                     was. It predicts rule rejections only; the real write can still be refused."
+                ),
+            );
+            return Ok(ok_result(tool_call_id, "update_node", result));
+        }
 
         let output = node_ops::update_node(&ns, input)
             .await
@@ -5234,7 +5294,12 @@ impl GraphToolExecutor {
         }
         let ns = self.node_service()?;
 
-        let (output, limit, query_id) = match query_ops::run_saved_query_excluding(
+        let query_ops::SavedQueryOutput {
+            output,
+            limit,
+            query_id,
+            unresolved,
+        } = match query_ops::run_saved_query_excluding(
             &ns,
             query_ops::RunSavedQueryInput {
                 query: strip_node_uri(&params.query).to_string(),
@@ -5278,6 +5343,7 @@ impl GraphToolExecutor {
                  Do not report {limit} as the total."
             ));
         }
+        note_permitted_unresolved(&mut result, unresolved);
         Ok(ok_result(tool_call_id, "run_query", result))
     }
 
@@ -5381,6 +5447,7 @@ impl GraphToolExecutor {
             Err(e) => return Err(failed(e)),
         };
         let limit = run.limit;
+        let unresolved = run.unresolved;
 
         let context =
             match node_context_ops::read_node_contexts(&ns, run.nodes, &run.query_id).await {
@@ -5429,6 +5496,7 @@ impl GraphToolExecutor {
                  Do not report {limit} as the total."
             ));
         }
+        note_permitted_unresolved(&mut result, unresolved);
         Ok(ok_result(tool_call_id, "run_query", result))
     }
 
@@ -9737,6 +9805,122 @@ mod tests {
             }
             other => panic!("Expected ExecutionFailed, got {:?}", other),
         }
+    }
+
+    /// `update_node` with `dry_run` reports what the rules would say and
+    /// writes nothing: a rejection carries the rule's message, play and
+    /// name, the node keeps its fields and version, and the call is not
+    /// counted as a write the turn made. The flag is the tool's own
+    /// parameter, never promoted into the node's fields.
+    #[tokio::test]
+    async fn update_node_dry_run_reports_the_rules_verdict_and_writes_nothing() {
+        use nodespace_core::db::SqliteStore;
+        use nodespace_core::models::Node;
+        use nodespace_core::playbook::core_plays::TASK_BLOCKERS_PLAY_ID;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let mut store: Arc<SqliteStore> =
+            Arc::new(SqliteStore::new(tmp.path().join("test.db")).await.unwrap());
+        let ns = Arc::new(NodeService::new(&mut store).await.unwrap());
+        // The seeded task-blockers Play, live on the write path.
+        let lifecycle = Arc::new(std::sync::RwLock::new(
+            nodespace_core::playbook::PlaybookLifecycleManager::new(),
+        ));
+        let play = ns.get_node(TASK_BLOCKERS_PLAY_ID).await.unwrap().unwrap();
+        lifecycle.write().unwrap().activate_play(&play).unwrap();
+        ns.set_playbook_lifecycle(lifecycle);
+
+        let task = |title: &str| {
+            Node::new(
+                "task".to_string(),
+                title.to_string(),
+                json!({ "status": "open" }),
+            )
+        };
+        let blocker = ns.create_node(task("blocker")).await.unwrap();
+        let blocked = ns.create_node(task("blocked")).await.unwrap();
+        ns.create_relationship(&blocker, "blocks", &blocked, json!({}))
+            .await
+            .unwrap();
+        let executor = GraphToolExecutor {
+            node_service: Some(ns.clone()),
+            embedding_service: Arc::new(RwLock::new(None)),
+            inference_engine: None,
+            playbook_lifecycle: None,
+        };
+        let start = |id: &str| json!({ "id": id, "field_values": { "status": "in_progress" }, "dry_run": true });
+
+        let rejected = executor
+            .execute("update_node", start(&blocked))
+            .await
+            .expect("a predicted rejection is an answer, not a failure");
+        assert!(!rejected.is_error);
+        assert_eq!(rejected.result["dry_run"], true);
+        assert_eq!(rejected.result["allowed"], false);
+        assert_eq!(rejected.result["id"], node_uri(&blocked));
+        assert_eq!(
+            rejected.result["rejected_by"]["play_id"],
+            TASK_BLOCKERS_PLAY_ID
+        );
+        assert_eq!(
+            rejected.result["rejected_by"]["rule_name"],
+            "reject-starting-a-blocked-task"
+        );
+        assert!(rejected.result["rejected_by"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("blocked by a task that is not finished"));
+        // Nothing in the result reads as a completed update.
+        assert!(rejected.result.get("updated").is_none());
+        assert!(rejected.result["note"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing was written"));
+
+        let allowed = executor
+            .execute("update_node", start(&blocker))
+            .await
+            .unwrap();
+        assert_eq!(allowed.result["allowed"], true);
+        assert!(allowed.result.get("rejected_by").is_none());
+
+        for id in [&blocker, &blocked] {
+            let node = ns.get_node(id).await.unwrap().unwrap();
+            assert_eq!(node.version, 1, "a dry run changes no version");
+            assert_eq!(node.properties["task"]["status"], "open");
+            assert!(
+                node.properties["task"].get("dry_run").is_none(),
+                "dry_run is not a field: {}",
+                node.properties
+            );
+        }
+
+        // A dry run is no evidence that the turn wrote anything.
+        assert!(!is_write_call("update_node", &start(&blocker)));
+        assert!(is_write_call(
+            "update_node",
+            &json!({ "id": blocker, "field_values": { "status": "in_progress" } })
+        ));
+        assert!(is_write_call(
+            "update_node",
+            &json!({ "id": blocker, "content": "x", "dry_run": false })
+        ));
+        assert!(!is_write_call("get_node", &json!({ "id": blocker })));
+        // The flag is update_node's alone: on another write tool it is a
+        // stray argument, and the call is the write it names.
+        assert!(is_write_call(
+            "create_node",
+            &json!({ "node_type": "task", "content": "x", "dry_run": true })
+        ));
+
+        let def = Tool::UpdateNode.definition();
+        assert_eq!(
+            def.parameters_schema["properties"]["dry_run"]["type"],
+            "boolean"
+        );
+        let required = def.parameters_schema["required"].as_array().unwrap();
+        assert!(!required.contains(&json!("dry_run")));
     }
 
     /// `update_node` and `update_task_status` write only at the version the

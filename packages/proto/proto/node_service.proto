@@ -30,6 +30,14 @@ service NodeService {
   // and the skills attached to any node returned.
   rpc GetNodeContext(GetNodeContextRequest) returns (GetNodeContextResponse);
   rpc UpdateNode(UpdateNodeRequest) returns (NodeResponse);
+  // Evaluate an UpdateNode request without making it: the invariant rules
+  // the write would run are evaluated against the proposed change, and the
+  // response says whether it would be rejected. Nothing is written and no
+  // version changes. It predicts rejections only: an action other than
+  // `reject` is not carried out. The graph can change before the write is
+  // made, and the rule on the write is what decides. Collection changes are
+  // not evaluated, and a request that names any is refused.
+  rpc DryRunUpdateNode(UpdateNodeRequest) returns (DryRunUpdateResponse);
   rpc DeleteNode(DeleteNodeRequest) returns (DeleteNodeResponse);
   // Explicitly discard a seeded node's user-modified config and/or guidance
   // aspect, restoring it to the currently-compiled template (ADR-072). It
@@ -545,6 +553,25 @@ message UpdateNodeRequest {
 
 // UpdateNode returns NodeResponse.
 
+message DryRunUpdateResponse {
+  string node_id = 1;
+  // The version the node is at, which the dry run left unchanged.
+  int64 version = 2;
+  // True when no rule would reject the change.
+  bool allowed = 3;
+  // Set when `allowed` is false: the play and rule that would refuse the
+  // write, and why.
+  string play_id = 4;
+  string rule_name = 5;
+  // The rule's own rejection message, or, when `unresolved` is set, why the
+  // rule could not be evaluated.
+  string message = 6;
+  // True when the rule could not be evaluated (its scope, a condition path
+  // or its message did not resolve). The write would fail the same way, so
+  // this is reported as not allowed.
+  bool unresolved = 7;
+}
+
 // ---------------------------------------------------------------------------
 // DeleteNode
 // ---------------------------------------------------------------------------
@@ -1002,6 +1029,10 @@ message RunSavedQueryResponse {
   repeated SchemaGuidanceEntry schemas = 4;
   // The run's results with their context, when asked for.
   repeated ContextItem items = 5;
+  // For a query with a `permitted` filter: the candidates the filter could
+  // not be evaluated for (a rule's condition did not resolve, or the change
+  // could not be made to the node). They are left out of the results.
+  int32 permitted_unresolved = 7;
   // True when the run returned as many results as its limit allows: the
   // query may match more.
   bool limit_reached = 6;
