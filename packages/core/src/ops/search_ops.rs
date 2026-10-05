@@ -40,8 +40,8 @@ pub fn normalize_enumerate_query(query: &str) -> Option<String> {
 /// Whether an explicit `node_types` filter replaces the default `Knowledge`
 /// scope's allowlist (`KNOWLEDGE_CORE_TYPES`, plus user-defined types).
 ///
-/// This is how a search for `node_types: ["schema"]` finds schemas, which the
-/// default scope leaves out.
+/// This is how a search for `node_types: ["schema"]` finds the built-in
+/// schemas, which the default scope leaves out.
 ///
 /// Naming the types is a more specific statement of intent than the default
 /// scope: a search for `node_types: ["skill"]` asks for skills, and dropping
@@ -754,8 +754,7 @@ pub async fn search_semantic(
     let filtered_results: Vec<_> = results
         .into_iter()
         .filter(|(node, _)| {
-            if !skip_scope_filter
-                && !NodeEmbeddingService::matches_scope(&node.node_type, &scope, &user_types)
+            if !skip_scope_filter && !NodeEmbeddingService::matches_scope(node, &scope, &user_types)
             {
                 return false;
             }

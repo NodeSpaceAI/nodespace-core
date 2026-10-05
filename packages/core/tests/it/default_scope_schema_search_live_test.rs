@@ -1,13 +1,14 @@
 //! Live, real-embedding-model test: a search that names no type answers with
-//! the user's notes, not with schemas.
+//! the user's notes, not with the built-in schemas.
 //!
 //! Every schema is embedded (its name and its fields) so that skill and schema
 //! retrieval can find a type by meaning. Those vectors sit in the same index
-//! general search queries, and a type name or field label is close to many
-//! ordinary queries, so with `schema` in the default scope a search for a note
-//! came back as a list of type definitions with the note last. The default
-//! scope leaves schemas out; naming the `schema` type, and skill retrieval,
-//! still find them.
+//! general search queries, and a built-in type's name or field label
+//! ("Checkbox", "Horizontal Line") is close to many ordinary queries, so with
+//! the built-in schemas in the default scope a search for a note came back as
+//! a list of type definitions. The default scope leaves the built-in schemas
+//! out and keeps user-defined ones; naming the `schema` type, and skill
+//! retrieval, still find them all.
 //!
 //! Ignored by default: it loads the real embedding model from the standard
 //! NodeSpace catalog path and skips when the model is not on disk. Run it
@@ -105,9 +106,14 @@ fn ranked(nodes: &[Node]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+/// Whether `node` is one of the schemas core seeds.
+fn is_built_in_schema(node: &Node) -> bool {
+    node.node_type == "schema" && node.properties["isCore"] == true
+}
+
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
-async fn untyped_search_leaves_schemas_out_while_naming_or_fetching_finds_them() {
+async fn untyped_search_leaves_built_in_schemas_out_and_keeps_user_schemas() {
     let Some((embedding_service, node_service, _temp_dir)) = test_env().await else {
         return;
     };
@@ -164,7 +170,7 @@ async fn untyped_search_leaves_schemas_out_while_naming_or_fetching_finds_them()
     .await;
 
     // A search that names no type: the note it is about comes first, and no
-    // schema is returned at all.
+    // built-in schema is returned.
     for (text, expected) in [("Hall Nine", &hall_nine), ("marketing budget", &budget)] {
         let output = search_semantic(&node_service, &embedding_service, query(text, None))
             .await
@@ -177,12 +183,31 @@ async fn untyped_search_leaves_schemas_out_while_naming_or_fetching_finds_them()
             "{text:?} must rank the user's note first, got {results:?}"
         );
         assert!(
-            output.matched_nodes.iter().all(|n| n.node_type != "schema"),
-            "a search that names no type must return no schema, got {results:?}"
+            !output.matched_nodes.iter().any(is_built_in_schema),
+            "a search that names no type must return no built-in schema, got {results:?}"
         );
     }
 
-    // A search that names `schema` gets schemas, core and user-defined.
+    // A user-defined schema stays in the default scope and is found by meaning.
+    let output = search_semantic(
+        &node_service,
+        &embedding_service,
+        query("venue capacity", None),
+    )
+    .await
+    .expect("search must succeed");
+    let results = ranked(&output.matched_nodes);
+    eprintln!("untyped \"venue capacity\": {results:?}");
+    assert!(
+        output.matched_nodes.iter().any(|n| n.id == venue_schema),
+        "a search that names no type must still return the user-defined Venue schema, got {results:?}"
+    );
+    assert!(
+        !output.matched_nodes.iter().any(is_built_in_schema),
+        "a search that names no type must return no built-in schema, got {results:?}"
+    );
+
+    // A search that names `schema` gets schemas, built-in and user-defined.
     for (text, expected) in [
         ("checkbox", "checkbox"),
         ("venue capacity", venue_schema.as_str()),
@@ -207,12 +232,14 @@ async fn untyped_search_leaves_schemas_out_while_naming_or_fetching_finds_them()
     }
 
     // Skill and schema retrieval, the fetch-by-task path, still finds the
-    // user-defined type by meaning.
+    // user-defined type by meaning. The query does not name the type, so its
+    // name-match backstop cannot be what finds it.
     let output = find_skills(
         &embedding_service,
         &node_service,
         FindSkillsInput {
-            query: "book a venue for the offsite and check how many people it holds".to_string(),
+            query: "find a place to hold the team offsite and check how many people it holds"
+                .to_string(),
             limit: Some(5),
         },
     )

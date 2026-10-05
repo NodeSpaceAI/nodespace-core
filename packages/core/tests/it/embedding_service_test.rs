@@ -2117,8 +2117,8 @@ async fn test_search_semantic_enumerate_property_filter_finds_inherited_field() 
 /// node's properties has no `"schema"` bucket at all. Before this PR,
 /// `matches`'s flat top-level lookup found this by coincidence; a naive
 /// namespace-bucket-only lookup would regress it. The default scope leaves
-/// `schema` out, so this is reachable only through an explicit
-/// `node_types: ["schema"]`.
+/// the built-in schemas out, so an `isCore: true` match is reachable only
+/// through an explicit `node_types: ["schema"]`.
 #[tokio::test]
 async fn test_search_semantic_enumerate_property_filter_finds_schema_nodes_own_flat_field(
 ) -> Result<()> {
@@ -2156,16 +2156,17 @@ async fn test_search_semantic_enumerate_property_filter_finds_schema_nodes_own_f
     Ok(())
 }
 
-/// A search that names no type leaves schemas out, and one that names
-/// `schema` returns them. Every schema is embedded for skill and schema
-/// retrieval, so with `schema` in the default scope an ordinary search
-/// answered with type definitions ahead of the user's notes.
+/// A search that names no type leaves the built-in schemas out and keeps
+/// user-defined ones; a search that names `schema` returns both. Every schema
+/// is embedded for skill and schema retrieval, and with the built-in schemas
+/// in the default scope an ordinary search answered with type definitions
+/// ("Checkbox", "Horizontal Line") ahead of the user's notes.
 ///
 /// This runs through the enumerate path, which applies the same scope filter
 /// as a query and needs no embedding model. The ranking of a real query over
 /// embedded schemas is pinned by `default_scope_schema_search_live_test`.
 #[tokio::test]
-async fn test_search_semantic_default_scope_leaves_schemas_out_and_naming_schema_finds_them(
+async fn test_search_semantic_default_scope_leaves_core_schemas_out_and_keeps_user_schemas(
 ) -> Result<()> {
     let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
     let node_service = Arc::new(node_service);
@@ -2176,6 +2177,7 @@ async fn test_search_semantic_default_scope_leaves_schemas_out_and_naming_schema
         .await?
         .expect("core checkbox schema is seeded");
     assert_eq!(checkbox.node_type, "schema");
+    assert_eq!(checkbox.properties["isCore"], true);
     let created = nodespace_core::schema::handle_create_schema(
         &node_service,
         json!({ "name": "Venue", "fields": [{ "name": "capacity", "type": "number" }] }),
@@ -2187,19 +2189,24 @@ async fn test_search_semantic_default_scope_leaves_schemas_out_and_naming_schema
     let mut untyped = empty_search_input("*", None);
     untyped.limit = Some(1000);
     let output = search_ops::search_semantic(&node_service, &embedding_service, untyped).await?;
+    let ids: Vec<&str> = output.matched_nodes.iter().map(|n| n.id.as_str()).collect();
     assert!(
-        output.matched_nodes.iter().any(|n| n.id == note.id),
+        ids.contains(&note.id.as_str()),
         "the user's note is in the default scope"
     );
-    let schemas: Vec<&str> = output
+    assert!(
+        ids.contains(&venue_schema_id.as_str()),
+        "a user-defined schema stays in the default scope, got {ids:?}"
+    );
+    let core_schemas: Vec<&str> = output
         .matched_nodes
         .iter()
-        .filter(|n| n.node_type == "schema")
+        .filter(|n| n.node_type == "schema" && n.properties["isCore"] == true)
         .map(|n| n.id.as_str())
         .collect();
     assert!(
-        schemas.is_empty(),
-        "a search that names no type must return no schema, got {schemas:?}"
+        core_schemas.is_empty(),
+        "a search that names no type must return no built-in schema, got {core_schemas:?}"
     );
 
     let mut typed = empty_search_input("*", Some(vec!["schema".to_string()]));
@@ -2208,7 +2215,7 @@ async fn test_search_semantic_default_scope_leaves_schemas_out_and_naming_schema
     let ids: Vec<&str> = output.matched_nodes.iter().map(|n| n.id.as_str()).collect();
     assert!(
         ids.contains(&checkbox.id.as_str()) && ids.contains(&venue_schema_id.as_str()),
-        "naming `schema` returns core and user-defined schemas, got {ids:?}"
+        "naming `schema` returns built-in and user-defined schemas, got {ids:?}"
     );
     assert!(
         output.matched_nodes.iter().all(|n| n.node_type == "schema"),
