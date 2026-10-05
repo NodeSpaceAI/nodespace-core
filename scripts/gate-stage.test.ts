@@ -89,16 +89,19 @@ describe("runStage", () => {
 
 describe("the merge gate's clippy stage", () => {
   const gate = readFileSync(join(import.meta.dir, "test-gate.ts"), "utf8");
-  const stage = gate.indexOf("run(TIERS.rustLint)");
+  // The call as a statement of its own: a commented-out one doesn't match.
+  const stage = gate.search(/^\s*await run\(TIERS\.rustLint\);$/m);
 
   test("runs clippy over the whole workspace with warnings as errors", () => {
-    expect(TIERS.rustLint.command).toBe("bun run rust:lint");
+    // The version first, so a failing stage's log says whose verdict it is.
+    expect(TIERS.rustLint.command).toBe("cargo clippy --version && bun run rust:lint");
     const scripts = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")).scripts;
-    const [workspace] = scripts["rust:lint"].split("&&");
+    const [workspace, types] = scripts["rust:lint"].split("&&");
     expect(workspace).toContain("cargo clippy --all-targets");
-    expect(workspace).toContain("-D warnings");
     // No package filter: an error in any crate fails the stage.
     expect(/\s(-p|--package|--exclude)\s/.test(workspace)).toBe(false);
+    expect(types).toContain("cargo clippy -p nodespace-types --all-targets --features ts");
+    for (const half of [workspace, types]) expect(half).toContain("-D warnings");
   });
 
   test("is in merge mode only, and under the machine slot", () => {
