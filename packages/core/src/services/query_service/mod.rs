@@ -50,8 +50,8 @@ use std::sync::Arc;
 // (`nodespace_types::QueryFields`), so a saved query's filters decode straight
 // into the types executed here.
 pub use nodespace_types::{
-    FilterOperator, FilterType, QueryFilter, RelationshipHop, RelationshipPath, RelativeDate,
-    RelativeDateAnchor, ResolvedPath, SortConfig, SortDirection,
+    FilterOperator, FilterType, PropertyScope, QueryFilter, RelationshipHop, RelationshipPath,
+    RelativeDate, RelativeDateAnchor, ResolvedPath, SortConfig, SortDirection, SubtypeBucket,
 };
 
 /// Structured query definition: what a query selects, for execution
@@ -97,7 +97,8 @@ impl QueryDefinition {
     /// (`repository.url`): it is split on its dots and every segment is held
     /// to the same rule, so the dots that reach the text are the path's own
     /// separators and nothing else. Whether the schema declares such a path
-    /// is `query_ops`'s check, which needs the schemas.
+    /// is `query_ops`'s check, which needs the schemas. The buckets a resolved
+    /// [`PropertyScope`] names are path segments too, and held to the rule.
     /// `*` is accepted only as the target type, where it means "all types" and
     /// never reaches the text.
     ///
@@ -114,9 +115,25 @@ impl QueryDefinition {
         }
         for sort in self.sorting.iter().flatten() {
             validate_property_path(&sort.field, "sort field")?;
+            validate_property_scope(&sort.scope, "sort field scope")?;
+            if let Some(rank_scope) = &sort.rank_scope {
+                validate_property_scope(rank_scope, "sort field scope")?;
+            }
         }
         Ok(())
     }
+}
+
+/// Check the buckets a resolved [`PropertyScope`] names. Its node types and
+/// values are bound, never formatted into the statement.
+fn validate_property_scope(scope: &PropertyScope, label: &str) -> Result<()> {
+    if let Some(bucket) = &scope.bucket {
+        validate_identifier(bucket, label)?;
+    }
+    for subtype in &scope.subtypes {
+        validate_identifier(&subtype.bucket, label)?;
+    }
+    Ok(())
 }
 
 /// Check a property filter's `property` or a sort's `field`: one identifier,
@@ -167,9 +184,7 @@ fn validate_filter_identifiers(filter: &QueryFilter, depth: usize) -> Result<()>
     if let Some(property) = &filter.property {
         validate_property_path(property, "filter property")?;
     }
-    if let Some(scope) = &filter.property_scope {
-        validate_identifier(scope, "filter property scope")?;
-    }
+    validate_property_scope(&filter.property_scope, "filter property scope")?;
     if let Some(path) = &filter.path {
         if path.is_empty() {
             anyhow::bail!("filter path must name at least one relationship");
@@ -307,6 +322,14 @@ pub struct QueryService {
     store: Arc<SqliteStore>,
 }
 
+/// The node columns a sort or a metadata filter names directly. A sort field
+/// of one of these names reads the column, never a property.
+pub(crate) const NODE_COLUMNS: [&str; 5] =
+    ["created_at", "modified_at", "content", "node_type", "title"];
+
+/// Each node type's chain of types, itself first and then its ancestors.
+type TypeChains = std::collections::HashMap<String, Vec<String>>;
+
 impl QueryService {
     /// Create a new QueryService
     pub fn new(store: Arc<SqliteStore>) -> Self {
@@ -356,7 +379,15 @@ impl QueryService {
         // Re-apply sorting in Rust to guarantee sort order
         // This ensures consistent sorting even if database ordering behaves unexpectedly
         if let Some(sorting) = &query.sorting {
-            self.sort_nodes(&mut nodes, sorting, &query.target_type);
+            // A query over every type reads each row's own bucket and then
+            // its ancestors', so the re-sort needs each row's type chain.
+            let chains = if query.target_type == "*" && !sorting.is_empty() {
+                let types: Vec<&str> = nodes.iter().map(|n| n.node_type.as_str()).collect();
+                crate::services::resolve_type_chains_from_store(&self.store, types).await?
+            } else {
+                TypeChains::new()
+            };
+            self.sort_nodes(&mut nodes, sorting, &query.target_type, &chains);
         }
 
         Ok(nodes)
@@ -367,14 +398,24 @@ impl QueryService {
     /// `target_type` is the query's own target, not each node's type: it
     /// selects the same ordering rules [`Self::resolve_order_field`] used when
     /// building the SQL, so both passes agree.
-    fn sort_nodes(&self, nodes: &mut [Node], sorting: &[SortConfig], target_type: &str) {
+    ///
+    /// `chains` is each row's type chain, nearest first, for a query over
+    /// every type; a query for one type reads through each sort's scope and
+    /// needs none.
+    fn sort_nodes(
+        &self,
+        nodes: &mut [Node],
+        sorting: &[SortConfig],
+        target_type: &str,
+        chains: &TypeChains,
+    ) {
         if sorting.is_empty() {
             return;
         }
 
         nodes.sort_by(|a, b| {
             for sort_config in sorting {
-                let ordering = self.compare_nodes_by_field(a, b, &sort_config.field, target_type);
+                let ordering = self.compare_nodes_by_field(a, b, sort_config, target_type, chains);
                 let ordering = match sort_config.direction {
                     SortDirection::Ascending => ordering,
                     SortDirection::Descending => ordering.reverse(),
@@ -388,13 +429,15 @@ impl QueryService {
     }
 
     /// Compare two nodes by a specific field (Namespaced property access)
-    fn compare_nodes_by_field<'a>(
+    fn compare_nodes_by_field(
         &self,
-        a: &'a Node,
-        b: &'a Node,
-        field: &str,
+        a: &Node,
+        b: &Node,
+        sort: &SortConfig,
         target_type: &str,
+        chains: &TypeChains,
     ) -> std::cmp::Ordering {
+        let field = sort.field.as_str();
         match field {
             // Metadata fields
             "created_at" => a.created_at.cmp(&b.created_at),
@@ -402,44 +445,66 @@ impl QueryService {
             "content" => a.content.cmp(&b.content),
             "node_type" => a.node_type.cmp(&b.node_type),
             "title" => a.title.cmp(&b.title),
-            // Type-specific properties, read from the same bucket the SQL
-            // ordering reads (`resolve_field`): the target type's. A query
-            // for `task` also returns `issue` rows (ADR-078), whose inherited
-            // `status` and `priority` stay in the `task` bucket, so reading
-            // each row's own-type bucket would sort every subtype row as
-            // having no value. A wildcard query has no one bucket, so each
-            // row is read at its own type, as the SQL does.
+            // Type-specific properties, read where the SQL ordering reads
+            // them (`resolve_sort_field`). A node keeps a field in the bucket
+            // of the type that declares it, which for a row of a query for
+            // one type is what the sort's scope names. A wildcard query has
+            // no one bucket, so each row is read at its own type and then at
+            // its ancestors, as the SQL does.
             _ => {
-                let bucket = |node: &'a Node| {
-                    let scope = if target_type == "*" {
-                        node.node_type.as_str()
-                    } else {
-                        target_type
-                    };
-                    // A dotted field is a path into an object value, walked
-                    // one segment at a time as the SQL JSON path walks it.
-                    nodespace_types::property_segments(field)
-                        .into_iter()
-                        .try_fold(node.properties.get(scope)?, |value, segment| {
-                            value.get(segment)
-                        })
+                let read = |node: &Node, scope: &PropertyScope| {
+                    if target_type != "*" {
+                        return scope
+                            .read(node, target_type, field)
+                            .map(std::borrow::Cow::into_owned);
+                    }
+                    let own = std::slice::from_ref(&node.node_type);
+                    let chain = chains.get(&node.node_type).map_or(own, Vec::as_slice);
+                    chain.iter().find_map(|bucket| {
+                        // A dotted field is a path into an object value,
+                        // walked one segment at a time as the SQL JSON path
+                        // walks it.
+                        nodespace_types::property_segments(field)
+                            .into_iter()
+                            .try_fold(node.properties.get(bucket)?, |value, segment| {
+                                value.get(segment)
+                            })
+                            .filter(|value| !value.is_null())
+                            .cloned()
+                    })
                 };
-                let val_a = bucket(a);
-                let val_b = bucket(b);
+                let val_a = read(a, &sort.scope);
+                let val_b = read(b, &sort.scope);
 
-                // A task's or project's priority is an enum whose alphabetical
-                // order is meaningless, so rank it. This pass runs after the SQL
-                // and has the final say, so the condition must match
-                // resolve_order_field's exactly — including its
-                // `Priority::NODE_TYPES`-only scope — or the SQL ordering is
-                // silently undone here.
-                if field == "priority" && Priority::applies_to(target_type) {
-                    return self.compare_priority_values(val_a, val_b);
+                // A priority on the shared scale is an enum whose alphabetical
+                // order is meaningless, so rank it. This pass runs after the
+                // SQL and has the final say, so the condition and the value
+                // ranked must match resolve_order_field's exactly, or the SQL
+                // ordering is silently undone here.
+                if Self::ranks_priority(sort, target_type) {
+                    let (rank_a, rank_b) = match &sort.rank_scope {
+                        Some(rank_scope) => (read(a, rank_scope), read(b, rank_scope)),
+                        None => (val_a.clone(), val_b.clone()),
+                    };
+                    return self.compare_priority_values(
+                        (rank_a.as_ref(), val_a.as_ref()),
+                        (rank_b.as_ref(), val_b.as_ref()),
+                    );
                 }
 
-                self.compare_json_values(val_a, val_b)
+                self.compare_json_values(val_a.as_ref(), val_b.as_ref())
             }
         }
+    }
+
+    /// Whether a sort orders `priority` by urgency rank: the queried type is
+    /// on the shared scale ([`Priority::NODE_TYPES`]), or inherits the field
+    /// from a type that is ([`SortConfig::rank_scope`]). A query over every
+    /// type never ranks: each type's `priority` is its own vocabulary there.
+    fn ranks_priority(sort: &SortConfig, target_type: &str) -> bool {
+        sort.field == "priority"
+            && target_type != "*"
+            && (sort.rank_scope.is_some() || Priority::applies_to(target_type))
     }
 
     /// Compare two `priority` values of a [`Priority::NODE_TYPES`] type by
@@ -467,30 +532,39 @@ impl QueryService {
     /// path, so no such row exists to sort. Agreement matters because SQL
     /// applies LIMIT before this pass runs, discarding rows it has already
     /// ordered.
+    ///
+    /// Each side is the value the rank is taken from and the value the row
+    /// holds, which breaks a tie. They are one value unless the queried type
+    /// inherits the field from a type on the scale and reads it in its own
+    /// vocabulary ([`SortConfig::rank_scope`]).
     fn compare_priority_values(
         &self,
-        a: Option<&serde_json::Value>,
-        b: Option<&serde_json::Value>,
+        a: (Option<&serde_json::Value>, Option<&serde_json::Value>),
+        b: (Option<&serde_json::Value>, Option<&serde_json::Value>),
     ) -> std::cmp::Ordering {
-        /// Rank and sort key for one JSON value, mirroring the SQL CASE arm
-        /// that would match it.
-        fn key(value: Option<&serde_json::Value>) -> (i16, String) {
+        /// The rank of one JSON value, mirroring the SQL CASE arm that would
+        /// match it.
+        fn rank(value: Option<&serde_json::Value>) -> i16 {
             match value {
-                None | Some(serde_json::Value::Null) => {
-                    (Priority::ABSENT_RANK as i16, String::new())
-                }
-                Some(serde_json::Value::String(s)) => {
-                    (Priority::from_value(s).rank() as i16, s.clone())
-                }
-                Some(other) => (Priority::USER_RANK as i16, other.to_string()),
+                None | Some(serde_json::Value::Null) => Priority::ABSENT_RANK as i16,
+                Some(serde_json::Value::String(s)) => Priority::from_value(s).rank() as i16,
+                Some(_) => Priority::USER_RANK as i16,
+            }
+        }
+        /// The tie-break key of one JSON value.
+        fn key(value: Option<&serde_json::Value>) -> String {
+            match value {
+                None | Some(serde_json::Value::Null) => String::new(),
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
             }
         }
 
-        let (rank_a, value_a) = key(a);
-        let (rank_b, value_b) = key(b);
         // Ranks tie for two user-defined values; the value string breaks it,
         // mirroring the SQL tiebreaker.
-        rank_a.cmp(&rank_b).then_with(|| value_a.cmp(&value_b))
+        rank(a.0)
+            .cmp(&rank(b.0))
+            .then_with(|| key(a.1).cmp(&key(b.1)))
     }
 
     /// Compare two JSON values for sorting
@@ -697,7 +771,9 @@ impl QueryService {
     ///
     /// Filter values are bound rather than interpolated — see
     /// [`Self::build_where_clause`], which owns every binding. ORDER BY and
-    /// LIMIT, added here, contribute no values.
+    /// LIMIT, added here, contribute no values of the caller's: an ORDER BY
+    /// term binds only the node types and enum values of a resolved
+    /// [`PropertyScope`], which come from the schemas.
     ///
     /// `excluded` leaves out those types and every type extending one of
     /// them; see [`Self::execute_excluding`].
@@ -712,7 +788,6 @@ impl QueryService {
         // Add sorting (pass target_type for namespaced property access)
         if let Some(sorting) = &query.sorting {
             if !sorting.is_empty() {
-                built.sql.push_str(" ORDER BY ");
                 let clauses: Vec<String> = sorting
                     .iter()
                     .map(|s| {
@@ -720,9 +795,10 @@ impl QueryService {
                             SortDirection::Ascending => "ASC",
                             SortDirection::Descending => "DESC",
                         };
-                        self.resolve_order_field(&s.field, &query.target_type, direction)
+                        self.resolve_order_field(s, &query.target_type, direction, &mut built)
                     })
                     .collect();
+                built.sql.push_str(" ORDER BY ");
                 built.sql.push_str(&clauses.join(", "));
             }
         }
@@ -751,7 +827,7 @@ impl QueryService {
     /// column would answer a different question than the caller asked. Do not
     /// "unify" the two without changing that contract first.
     fn resolve_field(&self, field: &str, target_type: &str) -> String {
-        if ["created_at", "modified_at", "content", "node_type", "title"].contains(&field) {
+        if NODE_COLUMNS.contains(&field) {
             field.to_string()
         } else if target_type == "*" {
             // Properties are namespaced per node type, so a wildcard query has
@@ -760,13 +836,101 @@ impl QueryService {
             // is structurally NULL for EVERY row, which SQL then happily
             // ORDERs by and LIMITs on, cutting the real matches before the
             // in-Rust re-sort below ever sees them.
-            format!(
-                "json_extract(properties, '$.' || node_type || '.{}')",
-                field
-            )
+            Self::own_or_inherited_field(field)
         } else {
             format!("json_extract(properties, '$.{}.{}')", target_type, field)
         }
+    }
+
+    /// The expression a query over rows of more than one type reads a field
+    /// with: the row's own bucket, then its ancestors', nearest first.
+    ///
+    /// A row of a subtype keeps an inherited field in the bucket of the
+    /// ancestor that declares it, so when the row's own bucket has no value
+    /// its ancestors' are read. Without that an inherited field reads as
+    /// absent, which a negated filter turns into a match and a sort puts
+    /// first.
+    fn own_or_inherited_field(field: &str) -> String {
+        format!(
+            "COALESCE(json_extract(node.properties, '$.' || node.node_type || '.{field}'), \
+             (SELECT json_extract(node.properties, '$.' || a.ancestor || '.{field}') \
+                FROM {ancestry} a \
+               WHERE a.node_type = node.node_type AND a.depth > 0 \
+                 AND json_extract(node.properties, '$.' || a.ancestor || '.{field}') IS NOT NULL \
+               ORDER BY a.depth LIMIT 1))",
+            ancestry = crate::db::schema::TYPE_ANCESTRY_TABLE,
+        )
+    }
+
+    /// The expression a query for `target_type` reads a stored field with:
+    /// the bucket `scope` names for the row.
+    ///
+    /// For the queried type's own field with no subtype holding it elsewhere
+    /// this is the one literal path an index is built on. A row of a subtype
+    /// that declares the field itself is read from that subtype's bucket, and
+    /// a value the queried type does not have is read as the value it maps to
+    /// (ADR-078). Those rows are picked by their type, not by which bucket
+    /// has a value: a node whose type was changed keeps the old type's bucket.
+    fn stored_field(
+        scope: &PropertyScope,
+        target_type: &str,
+        field: &str,
+        built: &mut BoundSql,
+    ) -> String {
+        let bucket = scope.bucket.as_deref().unwrap_or(target_type);
+        let own = format!("json_extract(properties, '$.{bucket}.{field}')");
+        if scope.subtypes.is_empty() {
+            return own;
+        }
+        let mut arms = String::new();
+        for SubtypeBucket {
+            bucket,
+            node_types,
+            values,
+        } in &scope.subtypes
+        {
+            let types: Vec<String> = node_types
+                .iter()
+                .map(|node_type| built.bind(libsql::Value::Text(node_type.clone())))
+                .collect();
+            let stored = format!("json_extract(properties, '$.{bucket}.{field}')");
+            let read = if values.is_empty() {
+                stored
+            } else {
+                let mut mapped = String::new();
+                for (value, reads_as) in values {
+                    let value = built.bind(libsql::Value::Text(value.clone()));
+                    let reads_as = match reads_as {
+                        Some(reads_as) => built.bind(libsql::Value::Text(reads_as.clone())),
+                        None => "NULL".to_string(),
+                    };
+                    mapped.push_str(&format!("WHEN {value} THEN {reads_as} "));
+                }
+                format!("CASE {stored} {mapped}ELSE {stored} END")
+            };
+            arms.push_str(&format!(
+                "WHEN node_type IN ({}) THEN {read} ",
+                types.join(", ")
+            ));
+        }
+        format!("CASE {arms}ELSE {own} END")
+    }
+
+    /// The expression one sort reads its field with: a metadata column, each
+    /// row's own chain under a wildcard, or the bucket its resolved scope
+    /// names. A sort with no resolved scope reads [`Self::resolve_field`]'s
+    /// expression unchanged.
+    fn resolve_sort_field(
+        &self,
+        field: &str,
+        scope: &PropertyScope,
+        target_type: &str,
+        built: &mut BoundSql,
+    ) -> String {
+        if target_type == "*" || *scope == PropertyScope::default() {
+            return self.resolve_field(field, target_type);
+        }
+        Self::stored_field(scope, target_type, field, built)
     }
 
     /// Build one ORDER BY term, ranking priority instead of sorting it as text
@@ -793,8 +957,19 @@ impl QueryService {
     /// is what keeping `resolve_field` untouched buys, and sorting a result set
     /// is the cheaper half. Revisit if priority sorts ever run over row counts
     /// where the transient sort shows up in a profile.
-    fn resolve_order_field(&self, field: &str, target_type: &str, direction: &str) -> String {
-        let resolved = self.resolve_field(field, target_type);
+    ///
+    /// A type that inherits `priority` from a type on the scale is ranked
+    /// too, on the value as that type reads it ([`SortConfig::rank_scope`]):
+    /// a subtype's own value ranks where the value it maps to does.
+    fn resolve_order_field(
+        &self,
+        sort: &SortConfig,
+        target_type: &str,
+        direction: &str,
+        built: &mut BoundSql,
+    ) -> String {
+        let field = sort.field.as_str();
+        let resolved = self.resolve_sort_field(field, &sort.scope, target_type, built);
 
         // Scoped to the types that share the scale. A wildcard query resolves
         // the namespace from each row's own node_type, so ranking there would
@@ -803,7 +978,11 @@ impl QueryService {
         // while compare_priority_values ranks only for these same targets. The
         // two layers would then disagree, and which one won would depend on
         // whether a LIMIT was present.
-        if field == "priority" && Priority::applies_to(target_type) {
+        if Self::ranks_priority(sort, target_type) {
+            let ranked = match &sort.rank_scope {
+                Some(rank_scope) => Self::stored_field(rank_scope, target_type, field, built),
+                None => resolved.clone(),
+            };
             // A *searched* CASE, deliberately: a simple `CASE <expr> WHEN ...`
             // compares with `=`, and `NULL = 'highest'` is NULL rather than
             // true, so an absent priority would match no arm and fall to ELSE
@@ -813,10 +992,10 @@ impl QueryService {
             // unprioritized tasks from a limited ascending query that should
             // have returned them first.
             let rank = format!(
-                "CASE WHEN {resolved} IS NULL THEN {} \
-                 WHEN {resolved} = 'highest' THEN {} WHEN {resolved} = 'high' THEN {} \
-                 WHEN {resolved} = 'medium' THEN {} WHEN {resolved} = 'low' THEN {} \
-                 WHEN {resolved} = 'lowest' THEN {} ELSE {} END",
+                "CASE WHEN {ranked} IS NULL THEN {} \
+                 WHEN {ranked} = 'highest' THEN {} WHEN {ranked} = 'high' THEN {} \
+                 WHEN {ranked} = 'medium' THEN {} WHEN {ranked} = 'low' THEN {} \
+                 WHEN {ranked} = 'lowest' THEN {} ELSE {} END",
                 Priority::ABSENT_RANK,
                 Priority::Highest.rank(),
                 Priority::High.rank(),
@@ -882,30 +1061,14 @@ impl QueryService {
         // because its metadata shortcut would make a user field called
         // `title` silently query the title column instead.
         //
-        // Under a wildcard the namespace segment differs row by row, so it is
-        // taken from the row's own node_type: a fixed '$.<field>' is
-        // structurally NULL for EVERY row and matches nothing. A row of a
-        // subtype keeps an inherited field in the bucket of the ancestor that
-        // declares it, so when the row's own bucket has no value its
-        // ancestors' are read, nearest first. Without that an inherited
-        // field reads as absent, which a negated filter turns into a match.
-        //
-        // With a target type the bucket is one literal: the type's own, or
-        // the declaring ancestor's when `query_ops` resolved the field as
-        // inherited.
+        // Under a wildcard the namespace segment differs row by row, so each
+        // row is read at its own type and then at its ancestors. With a
+        // target type the bucket is the one the filter's resolved scope
+        // names for the row.
         let field = if target_type == "*" {
-            format!(
-                "COALESCE(json_extract(node.properties, '$.' || node.node_type || '.{property}'), \
-                 (SELECT json_extract(node.properties, '$.' || a.ancestor || '.{property}') \
-                    FROM {ancestry} a \
-                   WHERE a.node_type = node.node_type AND a.depth > 0 \
-                     AND json_extract(node.properties, '$.' || a.ancestor || '.{property}') IS NOT NULL \
-                   ORDER BY a.depth LIMIT 1))",
-                ancestry = crate::db::schema::TYPE_ANCESTRY_TABLE,
-            )
+            Self::own_or_inherited_field(property)
         } else {
-            let scope = filter.property_scope.as_deref().unwrap_or(target_type);
-            format!("json_extract(properties, '$.{}.{}')", scope, property)
+            Self::stored_field(&filter.property_scope, target_type, property, built)
         };
         let field = Self::derived_or_stored(property, field);
         self.build_filter_condition(&field, &filter.operator, filter, built)
@@ -969,9 +1132,7 @@ impl QueryService {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Metadata filter missing property"))?;
 
-        if !["created_at", "modified_at", "node_type", "content", "title"]
-            .contains(&property.as_str())
-        {
+        if !NODE_COLUMNS.contains(&property.as_str()) {
             anyhow::bail!("Invalid metadata field: {}", property);
         }
 

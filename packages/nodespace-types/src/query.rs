@@ -60,10 +60,11 @@ pub enum FilterOperator {
 }
 
 /// Sort direction
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(rename_all = "lowercase")]
 pub enum SortDirection {
+    #[default]
     #[serde(rename = "asc")]
     Ascending,
     #[serde(rename = "desc")]
@@ -169,12 +170,87 @@ pub struct QueryFilter {
     /// populate it without a `NodeService` in hand.
     #[serde(skip)]
     pub resolved_path: Option<ResolvedPath>,
-    /// The type whose property bucket holds [`Self::property`], when that is
-    /// not the type the filter is evaluated against: a field the type
-    /// inherits is stored under the ancestor that declares it. Resolved with
-    /// the paths, in core's `query_ops`, and never serialized.
+    /// Where [`Self::property`] is stored on the rows the filter is
+    /// evaluated against. Resolved with the paths, in core's `query_ops`, and
+    /// never serialized.
     #[serde(skip)]
-    pub property_scope: Option<String>,
+    pub property_scope: PropertyScope,
+}
+
+/// Where the rows of a query for one type keep a field (ADR-078), resolved
+/// against the schemas each time the query runs.
+///
+/// A node keeps a field in the bucket of the type that declares it. For the
+/// queried type that is its own bucket or an ancestor's. A subtype that
+/// extends an inherited enum declares the field itself, so its rows keep the
+/// field in the subtype's bucket, and may hold a value the queried type does
+/// not have.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PropertyScope {
+    /// The ancestor whose bucket holds the field, when the queried type
+    /// inherits it. `None` is the queried type's own bucket.
+    pub bucket: Option<String>,
+    /// The subtypes whose rows keep the field in a bucket of their own.
+    pub subtypes: Vec<SubtypeBucket>,
+}
+
+/// The rows of a query that keep a field in a subtype's bucket: see
+/// [`PropertyScope`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubtypeBucket {
+    /// The subtype that declares the field, whose bucket holds it.
+    pub bucket: String,
+    /// The node types whose rows keep the field there: the subtype and the
+    /// types extending it that do not declare the field again.
+    pub node_types: Vec<String>,
+    /// Each stored value that reads differently at the queried type, with
+    /// what it reads as there (its `maps_to`). `None` is a value with no
+    /// meaning at the queried type, read as absent. A value not listed reads
+    /// as stored.
+    pub values: Vec<(String, Option<String>)>,
+}
+
+impl PropertyScope {
+    /// The value a node holds for `field`, read as the query for
+    /// `target_type` reads it. A dotted field is a path into an object
+    /// value. A JSON null is no value.
+    pub fn read<'a>(
+        &'a self,
+        node: &'a Node,
+        target_type: &str,
+        field: &str,
+    ) -> Option<std::borrow::Cow<'a, Value>> {
+        let walk = |bucket: &str| {
+            property_segments(field)
+                .into_iter()
+                .try_fold(node.properties.get(bucket)?, |value, segment| {
+                    value.get(segment)
+                })
+                .filter(|value| !value.is_null())
+        };
+        let Some(subtype) = self
+            .subtypes
+            .iter()
+            .find(|subtype| subtype.node_types.contains(&node.node_type))
+        else {
+            let bucket = self.bucket.as_deref().unwrap_or(target_type);
+            return walk(bucket).map(std::borrow::Cow::Borrowed);
+        };
+        let stored = walk(&subtype.bucket)?;
+        let mapped = stored.as_str().and_then(|stored| {
+            subtype
+                .values
+                .iter()
+                .find(|(value, _)| value == stored)
+                .map(|(_, reads_as)| reads_as)
+        });
+        match mapped {
+            None => Some(std::borrow::Cow::Borrowed(stored)),
+            Some(reads_as) => reads_as
+                .clone()
+                .map(|value| std::borrow::Cow::Owned(Value::String(value))),
+        }
+    }
 }
 
 impl QueryFilter {
@@ -209,7 +285,7 @@ pub fn property_segments(name: &str) -> Vec<&str> {
 ///
 /// A nested stored value, like [`QueryFilter`]: snake_case keys, one spelling,
 /// unknown keys rejected.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[serde(deny_unknown_fields)]
 pub struct SortConfig {
@@ -220,6 +296,15 @@ pub struct SortConfig {
     pub field: String,
     /// Sort direction
     pub direction: SortDirection,
+    /// Where [`Self::field`] is stored on the rows being sorted. Resolved in
+    /// core's `query_ops` each time the query runs, and never serialized.
+    #[serde(skip)]
+    pub scope: PropertyScope,
+    /// For a `priority` the queried type inherits from a type on the shared
+    /// urgency scale: the field as that type reads it, which is what the
+    /// rank is taken from. Resolved with [`Self::scope`].
+    #[serde(skip)]
+    pub rank_scope: Option<PropertyScope>,
 }
 
 /// Who created a saved query — the query schema's `generated_by` enum, which

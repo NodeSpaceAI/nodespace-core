@@ -9,8 +9,8 @@ use crate::ops::path_ops::resolve_path;
 use crate::ops::OpsError;
 use crate::services::node_service::NodeService;
 use crate::services::query_service::{
-    FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipPath,
-    RelativeDate, SortConfig, SortDirection,
+    FilterOperator, FilterType, PropertyScope, QueryDefinition, QueryFilter, QueryService,
+    RelationshipPath, RelativeDate, SortConfig, SortDirection, SubtypeBucket, NODE_COLUMNS,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -270,7 +270,7 @@ fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
         path: item.path.filter(|_| walks),
         filter,
         resolved_path: None,
-        property_scope: None,
+        property_scope: PropertyScope::default(),
     })
 }
 
@@ -284,40 +284,36 @@ fn to_query_filter(item: AgentFilterItem) -> Result<QueryFilter, OpsError> {
 /// declared in the one before it. A wildcard query has no schema to check
 /// against, so a path is refused there.
 ///
-/// Returns the type whose property bucket holds the field, when it is an
-/// ancestor of `target_type`: an inherited field is stored under the schema
-/// that declares it, on a node of any type in the chain.
+/// Returns where the rows of a query for `target_type` keep the field: an
+/// inherited field is stored under the schema that declares it, on a node of
+/// any type in the chain, and a subtype that declares the field again keeps
+/// it in its own bucket (see [`subtype_buckets`]).
 async fn resolve_property(
     node_service: &NodeService,
     declared_fields: &mut DeclaredFields,
     target_type: &str,
     name: &str,
     label: &str,
-) -> Result<Option<String>, OpsError> {
+) -> Result<PropertyScope, OpsError> {
     let segments = nodespace_types::property_segments(name);
     if target_type == "*" {
         if segments.len() < 2 {
-            return Ok(None);
+            return Ok(PropertyScope::default());
         }
         return Err(OpsError::InvalidParams(format!(
             "{label} '{name}' is a path into a field's value, which is checked against a \
              type's schema: name the type the query selects instead of every type"
         )));
     }
-    if !declared_fields.contains_key(target_type) {
-        let (fields, owners, _) = node_service
-            .resolve_field_owners(target_type)
-            .await
-            .map_err(|e| OpsError::Internal(e.to_string()))?;
-        declared_fields.insert(target_type.to_string(), (fields, owners));
-    }
-    let (fields, owners) = &declared_fields[target_type];
-    let scope = owners
+    let TypeFields { fields, owners } = declared_fields.of(node_service, target_type).await?;
+    let bucket = owners
         .get(segments[0])
         .filter(|owner| owner.as_str() != target_type)
         .cloned();
     if segments.len() < 2 {
-        return Ok(scope);
+        // An enum has no path into it, so a path has no subtype buckets.
+        let subtypes = subtype_buckets(node_service, declared_fields, target_type, name).await?;
+        return Ok(PropertyScope { bucket, subtypes });
     }
 
     let mut declared: &[crate::models::SchemaField] = fields;
@@ -342,43 +338,196 @@ async fn resolve_property(
             }
         };
     }
-    Ok(scope)
+    Ok(PropertyScope {
+        bucket,
+        subtypes: Vec::new(),
+    })
 }
 
-/// Check every sort field that is a path into an object field's value
-/// against the schema, as [`resolve_filters`] checks a property filter's.
-pub async fn check_sorting(
+/// The subtypes of `target_type` whose rows keep `field` in a bucket of
+/// their own, with what each stored value reads as at `target_type`
+/// (ADR-078).
+///
+/// A subtype that adds values to an inherited enum declares the field
+/// itself, so its nodes, and those of the types extending it, store the
+/// field under it. A query for the base type still reads the field on those
+/// rows, each added value as the base value it maps to. A field
+/// `target_type` does not declare has none: a base-type query does not see a
+/// subtype's own field.
+async fn subtype_buckets(
     node_service: &NodeService,
+    declared_fields: &mut DeclaredFields,
     target_type: &str,
-    sorting: &[SortConfig],
-) -> Result<(), OpsError> {
-    let mut declared_fields = DeclaredFields::new();
-    for sort in sorting {
-        // A plain sort field is not checked, and nothing reads its scope.
-        if nodespace_types::property_segments(&sort.field).len() < 2 {
+    field: &str,
+) -> Result<Vec<SubtypeBucket>, OpsError> {
+    let target = declared_fields.of(node_service, target_type).await?;
+    let Some(owner) = target.owners.get(field).cloned() else {
+        return Ok(Vec::new());
+    };
+    // Only an enum takes added values, so only an enum is declared again by
+    // a subtype: any other field needs no read of the subtypes' schemas.
+    let is_enum = target.fields.iter().any(|declared| {
+        declared.name == field && declared.field_type == crate::models::SchemaFieldType::Enum
+    });
+    if !is_enum {
+        return Ok(Vec::new());
+    }
+    let target_fields = target.fields.clone();
+
+    let mut buckets: Vec<SubtypeBucket> = Vec::new();
+    for subtype in declared_fields.subtypes(node_service, target_type).await? {
+        let TypeFields { fields, owners } = declared_fields.of(node_service, &subtype).await?;
+        let Some(bucket) = owners.get(field).filter(|bucket| **bucket != owner) else {
+            continue;
+        };
+        if let Some(known) = buckets.iter_mut().find(|known| known.bucket == *bucket) {
+            known.node_types.push(subtype);
             continue;
         }
-        resolve_property(
+        let values = fields
+            .iter()
+            .filter(|declared| declared.name == field)
+            .flat_map(|declared| {
+                declared
+                    .core_values
+                    .iter()
+                    .flatten()
+                    .chain(declared.user_values.iter().flatten())
+            })
+            .filter_map(|value| {
+                let reads_as = crate::schema::extends_chain::resolve_value_at_scope(
+                    field,
+                    &value.value,
+                    fields,
+                    &target_fields,
+                );
+                (reads_as.as_deref() != Some(value.value.as_str()))
+                    .then(|| (value.value.clone(), reads_as))
+            })
+            .collect();
+        buckets.push(SubtypeBucket {
+            bucket: bucket.clone(),
+            node_types: vec![subtype],
+            values,
+        });
+    }
+    Ok(buckets)
+}
+
+/// Resolve where each sort field is stored on the rows of `target_type`,
+/// and check each one that is a path into an object field's value against
+/// the schema, as [`resolve_filters`] does for a property filter.
+///
+/// A `priority` that `target_type` inherits from a type on the shared
+/// urgency scale also gets the field as that type reads it, which the rank
+/// is taken from.
+pub async fn resolve_sorting(
+    node_service: &NodeService,
+    target_type: &str,
+    sorting: Vec<SortConfig>,
+) -> Result<Vec<SortConfig>, OpsError> {
+    let mut declared_fields = DeclaredFields::default();
+    resolve_sorting_with(node_service, &mut declared_fields, target_type, sorting).await
+}
+
+/// [`resolve_sorting`], reading the schemas through `declared_fields`.
+async fn resolve_sorting_with(
+    node_service: &NodeService,
+    declared_fields: &mut DeclaredFields,
+    target_type: &str,
+    sorting: Vec<SortConfig>,
+) -> Result<Vec<SortConfig>, OpsError> {
+    let mut resolved = Vec::with_capacity(sorting.len());
+    for mut sort in sorting {
+        // A node column is read as the column, whatever a schema declares.
+        if NODE_COLUMNS.contains(&sort.field.as_str()) {
+            resolved.push(sort);
+            continue;
+        }
+        sort.scope = resolve_property(
             node_service,
-            &mut declared_fields,
+            declared_fields,
             target_type,
             &sort.field,
             "sort field",
         )
         .await?;
+        if sort.field == "priority" && target_type != "*" {
+            let chain = node_service
+                .resolve_type_chain(target_type)
+                .await
+                .map_err(|e| OpsError::Internal(e.to_string()))?;
+            let scale_type = chain
+                .iter()
+                .find(|ancestor| crate::models::Priority::applies_to(ancestor))
+                .filter(|ancestor| ancestor.as_str() != target_type);
+            if let Some(scale_type) = scale_type {
+                sort.rank_scope = Some(PropertyScope {
+                    bucket: Some(scale_type.clone()),
+                    subtypes: subtype_buckets(
+                        node_service,
+                        declared_fields,
+                        scale_type,
+                        &sort.field,
+                    )
+                    .await?,
+                });
+            }
+        }
+        resolved.push(sort);
     }
-    Ok(())
+    Ok(resolved)
 }
 
-/// Each type's effective fields and the type that declares each one, read
-/// once per type while one query's names are resolved.
-type DeclaredFields = std::collections::HashMap<
-    String,
-    (
-        Vec<crate::models::SchemaField>,
-        std::collections::HashMap<String, String>,
-    ),
->;
+/// One type's effective fields and the type that declares each one.
+struct TypeFields {
+    fields: Vec<crate::models::SchemaField>,
+    owners: std::collections::HashMap<String, String>,
+}
+
+/// What the schemas say about the types one query's names are resolved
+/// against, each read once.
+#[derive(Default)]
+struct DeclaredFields {
+    types: std::collections::HashMap<String, TypeFields>,
+    /// Each type's subtypes, itself left out.
+    subtypes: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl DeclaredFields {
+    async fn of(
+        &mut self,
+        node_service: &NodeService,
+        node_type: &str,
+    ) -> Result<&TypeFields, OpsError> {
+        if !self.types.contains_key(node_type) {
+            let (fields, owners, _) = node_service
+                .resolve_field_owners(node_type)
+                .await
+                .map_err(|e| OpsError::Internal(e.to_string()))?;
+            self.types
+                .insert(node_type.to_string(), TypeFields { fields, owners });
+        }
+        Ok(&self.types[node_type])
+    }
+
+    async fn subtypes(
+        &mut self,
+        node_service: &NodeService,
+        node_type: &str,
+    ) -> Result<Vec<String>, OpsError> {
+        if !self.subtypes.contains_key(node_type) {
+            let mut subtypes = node_service
+                .store()
+                .get_subtype_closure(node_type)
+                .await
+                .map_err(|e| OpsError::Internal(e.to_string()))?;
+            subtypes.retain(|subtype| subtype != node_type);
+            self.subtypes.insert(node_type.to_string(), subtypes);
+        }
+        Ok(self.subtypes[node_type].clone())
+    }
+}
 
 /// Resolve the paths of `filters` against the schemas, so the query service
 /// can compile them, and check each property filter's path into an object
@@ -400,11 +549,20 @@ pub async fn resolve_filters(
     target_type: &str,
     filters: Vec<QueryFilter>,
 ) -> Result<Vec<QueryFilter>, OpsError> {
-    let mut declared_fields = DeclaredFields::new();
+    let mut declared_fields = DeclaredFields::default();
+    resolve_filters_with(node_service, &mut declared_fields, target_type, filters).await
+}
+
+/// [`resolve_filters`], reading the schemas through `declared_fields`.
+async fn resolve_filters_with(
+    node_service: &NodeService,
+    declared_fields: &mut DeclaredFields,
+    target_type: &str,
+    filters: Vec<QueryFilter>,
+) -> Result<Vec<QueryFilter>, OpsError> {
     let mut resolved = Vec::with_capacity(filters.len());
     for filter in filters {
-        resolved
-            .push(resolve_filter(node_service, &mut declared_fields, target_type, filter).await?);
+        resolved.push(resolve_filter(node_service, declared_fields, target_type, filter).await?);
     }
     Ok(resolved)
 }
@@ -524,6 +682,7 @@ async fn to_query_definition(
             .map(|s| SortConfig {
                 field: s.field,
                 direction: parse_sort_direction(s.direction.as_deref().unwrap_or("asc")),
+                ..Default::default()
             })
             .collect()
     });
@@ -542,8 +701,9 @@ async fn to_query_definition(
 const DEFAULT_QUERY_LIMIT: usize = 50;
 
 /// The definition the query service runs, with everything that needs the
-/// schemas done first: relationship paths resolved, and each path into an
-/// object field's value checked, in the filters and the sorting alike.
+/// schemas done first: relationship paths resolved, each path into an object
+/// field's value checked, and where each field is stored resolved, in the
+/// filters and the sorting alike.
 async fn checked_definition(
     node_service: &NodeService,
     target_type: String,
@@ -571,13 +731,16 @@ async fn checked_definition(
         sorting,
         limit,
     } = query;
-    let filters = resolve_filters(node_service, &target_type, filters).await?;
-    check_sorting(
-        node_service,
-        &target_type,
-        sorting.as_deref().unwrap_or(&[]),
-    )
-    .await?;
+    // One read of each schema serves the filters and the sorting.
+    let mut declared_fields = DeclaredFields::default();
+    let filters =
+        resolve_filters_with(node_service, &mut declared_fields, &target_type, filters).await?;
+    let sorting = match sorting {
+        Some(sorting) => Some(
+            resolve_sorting_with(node_service, &mut declared_fields, &target_type, sorting).await?,
+        ),
+        None => None,
+    };
     Ok(QueryDefinition {
         target_type,
         filters,
@@ -1091,10 +1254,10 @@ mod tests {
                     path: None,
                     filter: None,
                     resolved_path: None,
-                    property_scope: None,
+                    property_scope: PropertyScope::default(),
                 })),
                 resolved_path: None,
-                property_scope: None,
+                property_scope: PropertyScope::default(),
             },
             QueryFilter {
                 filter_type: FilterType::Relationship,
@@ -1108,7 +1271,7 @@ mod tests {
                 path: Some(serde_json::from_value(json!(["mentions"])).unwrap()),
                 filter: None,
                 resolved_path: None,
-                property_scope: None,
+                property_scope: PropertyScope::default(),
             },
             QueryFilter {
                 filter_type: FilterType::Property,
@@ -1131,6 +1294,7 @@ mod tests {
             let sort = SortConfig {
                 field: "due_date".to_string(),
                 direction,
+                ..Default::default()
             };
             let item: AgentSortItem =
                 serde_json::from_value(serde_json::to_value(&sort).unwrap()).unwrap();
@@ -2289,6 +2453,452 @@ mod tests {
 
             assert_eq!(ranks("asc").await, ["a", "m", "z"]);
             assert_eq!(ranks("desc").await, ["z", "m", "a"]);
+        }
+
+        /// The ids a query returns, in the order it returns them.
+        async fn ordered_ids(svc: &Arc<NodeService>, input: serde_json::Value) -> Vec<String> {
+            let input: ExecuteQueryInput = serde_json::from_value(input).unwrap();
+            execute_query_nodes(svc, input)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|n| n.id)
+                .collect()
+        }
+
+        /// A query for a subtype sorts by a field the subtype inherits, read
+        /// from the bucket of the type that declares it, and a limit keeps
+        /// the first rows of that order.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn sorting_a_subtype_query_orders_by_an_inherited_field() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({
+                    "name": "si_ticket",
+                    "fields": [
+                        { "name": "rank", "type": "text" },
+                        { "name": "repository", "type": "object", "fields": [
+                            { "name": "url", "type": "text" }
+                        ] }
+                    ]
+                }),
+            )
+            .await;
+            create_schema(
+                &svc,
+                json!({ "name": "si_bug", "extends": "si_ticket", "fields": [
+                    { "name": "severity", "type": "text" }
+                ] }),
+            )
+            .await;
+            // Created out of order, with the url order the reverse of the
+            // rank order.
+            let id = |n: u8| format!("a4000000-0000-4000-8000-00000000000{n}");
+            for (n, rank, url) in [
+                (1, "c", "d.git"),
+                (2, "f", "a.git"),
+                (3, "a", "f.git"),
+                (4, "e", "b.git"),
+                (5, "b", "e.git"),
+                (6, "d", "c.git"),
+            ] {
+                svc.create_node(node(
+                    &id(n),
+                    "si_bug",
+                    json!({ "rank": rank, "severity": "low", "repository": { "url": url } }),
+                ))
+                .await
+                .unwrap();
+            }
+            let by_rank = [id(3), id(5), id(1), id(6), id(4), id(2)];
+            let reversed: Vec<String> = by_rank.iter().rev().cloned().collect();
+
+            let bugs = |field: &'static str, direction: &'static str, limit: usize| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    ordered_ids(
+                        &svc,
+                        json!({
+                            "target_type": "si_bug", "filters": [], "limit": limit,
+                            "sorting": [{ "field": field, "direction": direction }]
+                        }),
+                    )
+                    .await
+                }
+            };
+            assert_eq!(bugs("rank", "asc", 50).await, by_rank);
+            assert_eq!(bugs("rank", "desc", 50).await, reversed);
+            assert_eq!(bugs("rank", "asc", 2).await, by_rank[..2]);
+            assert_eq!(bugs("rank", "desc", 2).await, reversed[..2]);
+
+            // A path into an inherited object field.
+            assert_eq!(bugs("repository.url", "asc", 50).await, reversed);
+            assert_eq!(bugs("repository.url", "desc", 2).await, by_rank[..2]);
+
+            // A query over every type reads each row's own bucket and then
+            // its ancestors'.
+            let every_type = ordered_ids(
+                &svc,
+                json!({
+                    "target_type": "*", "filters": [], "limit": 3,
+                    "sorting": [{ "field": "rank", "direction": "desc" }]
+                }),
+            )
+            .await;
+            assert_eq!(every_type, reversed[..3]);
+
+            // The inherited field is read from the declaring type's bucket;
+            // a type's own field keeps the expression it always had.
+            let scope_of = |target: &'static str| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    let sort = SortConfig {
+                        field: "rank".to_string(),
+                        ..Default::default()
+                    };
+                    resolve_sorting(&svc, target, vec![sort])
+                        .await
+                        .unwrap()
+                        .remove(0)
+                        .scope
+                }
+            };
+            assert_eq!(
+                scope_of("si_bug").await.bucket.as_deref(),
+                Some("si_ticket")
+            );
+            assert_eq!(scope_of("si_ticket").await, PropertyScope::default());
+        }
+
+        /// A subtype of a type on the shared urgency scale sorts its
+        /// inherited `priority` by rank, not alphabetically, and a limit
+        /// cuts by that rank.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn sorting_a_subtype_by_an_inherited_priority_ranks_it() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({ "name": "sp_bug", "extends": "task", "fields": [] }),
+            )
+            .await;
+            let id = |n: u8| format!("a5000000-0000-4000-8000-00000000000{n}");
+            for (n, priority) in [(1, "low"), (2, "highest"), (3, "medium"), (4, "high")] {
+                svc.create_node(node(&id(n), "sp_bug", json!({ "priority": priority })))
+                    .await
+                    .unwrap();
+            }
+            let by_urgency = [id(2), id(4), id(3), id(1)];
+
+            let bugs = |direction: &'static str, limit: usize| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    ordered_ids(
+                        &svc,
+                        json!({
+                            "target_type": "sp_bug", "filters": [], "limit": limit,
+                            "sorting": [{ "field": "priority", "direction": direction }]
+                        }),
+                    )
+                    .await
+                }
+            };
+            assert_eq!(bugs("asc", 50).await, by_urgency);
+            assert_eq!(bugs("asc", 2).await, by_urgency[..2]);
+            assert_eq!(bugs("desc", 1).await, [id(1)]);
+        }
+
+        /// A subtype that adds values to an inherited enum keeps the field in
+        /// its own bucket. A query for the base type still reads it on those
+        /// rows, each added value as the base value it maps to: in a filter,
+        /// in a sort and in the row it returns. A query for the subtype reads
+        /// the value as stored.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_base_type_query_reads_a_subtypes_added_enum_value_as_the_base_value() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({
+                    "name": "me_ticket",
+                    "fields": [{
+                        "name": "state", "type": "enum", "extensible": true,
+                        "coreValues": [
+                            { "value": "open", "label": "Open" },
+                            { "value": "done", "label": "Done" }
+                        ]
+                    }]
+                }),
+            )
+            .await;
+            create_schema(
+                &svc,
+                json!({ "name": "me_bug", "extends": "me_ticket", "fields": [] }),
+            )
+            .await;
+            crate::schema::handle_update_schema(
+                &svc,
+                json!({
+                    "schema_id": "me_bug",
+                    "add_field_values": [{
+                        "field": "state",
+                        "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
+                    }]
+                }),
+            )
+            .await
+            .unwrap();
+
+            const TICKET_OPEN: &str = "a6000000-0000-4000-8000-000000000001";
+            const TICKET_DONE: &str = "a6000000-0000-4000-8000-000000000002";
+            const BUG_BACKLOG: &str = "a6000000-0000-4000-8000-000000000003";
+            const BUG_OPEN: &str = "a6000000-0000-4000-8000-000000000004";
+            const BUG_DONE: &str = "a6000000-0000-4000-8000-000000000005";
+            for (id, node_type, state) in [
+                (TICKET_OPEN, "me_ticket", "open"),
+                (TICKET_DONE, "me_ticket", "done"),
+                (BUG_BACKLOG, "me_bug", "backlog"),
+                (BUG_OPEN, "me_bug", "open"),
+                (BUG_DONE, "me_bug", "done"),
+            ] {
+                svc.create_node(node(id, node_type, json!({ "state": state })))
+                    .await
+                    .unwrap();
+            }
+            // The subtype's rows hold the field under the subtype.
+            let stored = svc.get_node(BUG_OPEN).await.unwrap().unwrap();
+            assert_eq!(stored.properties["me_bug"]["state"], "open");
+
+            let matching = |target: &'static str, filter: Value| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    matching_ids(&svc, json!({ "target_type": target, "filters": [filter] })).await
+                }
+            };
+            let state_is = |value: &str| json!({ "type": "property", "operator": "equals", "property": "state", "value": value });
+            assert_eq!(
+                matching("me_ticket", state_is("open")).await,
+                [TICKET_OPEN, BUG_BACKLOG, BUG_OPEN]
+            );
+            let mut not_open = state_is("open");
+            not_open["negate"] = json!(true);
+            assert_eq!(
+                matching("me_ticket", not_open).await,
+                [TICKET_DONE, BUG_DONE]
+            );
+            assert_eq!(
+                matching(
+                    "me_ticket",
+                    json!({ "type": "property", "operator": "in", "property": "state", "value": ["done"] })
+                )
+                .await,
+                [TICKET_DONE, BUG_DONE]
+            );
+            // The base type has no `backlog`.
+            assert!(matching("me_ticket", state_is("backlog")).await.is_empty());
+            // At its own type the subtype's value is read as stored.
+            assert_eq!(matching("me_bug", state_is("backlog")).await, [BUG_BACKLOG]);
+            assert_eq!(matching("me_bug", state_is("open")).await, [BUG_OPEN]);
+
+            // Sorted and returned at the base type, every row carries the
+            // base type's value in the base type's bucket.
+            let states = |limit: usize| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    let input: ExecuteQueryInput = serde_json::from_value(json!({
+                        "target_type": "me_ticket", "filters": [], "limit": limit,
+                        "sorting": [{ "field": "state", "direction": "asc" }]
+                    }))
+                    .unwrap();
+                    let nodes = execute_query_nodes(&svc, input).await.unwrap();
+                    svc.project_nodes_to_scope(nodes, Some("me_ticket"))
+                        .await
+                        .unwrap()
+                }
+            };
+            let rows = states(50).await;
+            let read: Vec<&str> = rows
+                .iter()
+                .map(|n| n.properties["me_ticket"]["state"].as_str().unwrap())
+                .collect();
+            assert_eq!(read, ["done", "done", "open", "open", "open"]);
+            assert!(rows.iter().all(|n| n.properties.get("me_bug").is_none()));
+            let mut first_two: Vec<String> = states(2).await.into_iter().map(|n| n.id).collect();
+            first_two.sort();
+            assert_eq!(first_two, [TICKET_DONE, BUG_DONE]);
+        }
+
+        /// An enum extended at two levels of a chain: a value added at the
+        /// lower level reads through both mappings at the top type and
+        /// through one at the middle type, and a type that extends the
+        /// lowest one without adding values keeps the field in its bucket.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_enum_extended_at_two_levels_reads_at_each_type_above() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({
+                    "name": "ml_a",
+                    "fields": [{
+                        "name": "state", "type": "enum", "extensible": true,
+                        "coreValues": [
+                            { "value": "open", "label": "Open" },
+                            { "value": "done", "label": "Done" }
+                        ]
+                    }]
+                }),
+            )
+            .await;
+            for (name, extends) in [("ml_b", "ml_a"), ("ml_c", "ml_b"), ("ml_d", "ml_c")] {
+                create_schema(
+                    &svc,
+                    json!({ "name": name, "extends": extends, "fields": [] }),
+                )
+                .await;
+            }
+            for (schema, value, maps_to) in
+                [("ml_b", "backlog", "open"), ("ml_c", "icebox", "backlog")]
+            {
+                crate::schema::handle_update_schema(
+                    &svc,
+                    json!({
+                        "schema_id": schema,
+                        "add_field_values": [{
+                            "field": "state",
+                            "values": [{ "value": value, "label": value, "mapsTo": maps_to }]
+                        }]
+                    }),
+                )
+                .await
+                .unwrap();
+            }
+
+            const A_OPEN: &str = "a8000000-0000-4000-8000-000000000001";
+            const B_BACKLOG: &str = "a8000000-0000-4000-8000-000000000002";
+            const C_ICEBOX: &str = "a8000000-0000-4000-8000-000000000003";
+            const D_ICEBOX: &str = "a8000000-0000-4000-8000-000000000004";
+            const D_DONE: &str = "a8000000-0000-4000-8000-000000000005";
+            for (id, node_type, state) in [
+                (A_OPEN, "ml_a", "open"),
+                (B_BACKLOG, "ml_b", "backlog"),
+                (C_ICEBOX, "ml_c", "icebox"),
+                (D_ICEBOX, "ml_d", "icebox"),
+                (D_DONE, "ml_d", "done"),
+            ] {
+                svc.create_node(node(id, node_type, json!({ "state": state })))
+                    .await
+                    .unwrap();
+            }
+
+            let matching = |target: &'static str, value: &'static str| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    matching_ids(
+                        &svc,
+                        json!({ "target_type": target, "filters": [{
+                            "type": "property", "operator": "equals",
+                            "property": "state", "value": value
+                        }] }),
+                    )
+                    .await
+                }
+            };
+            assert_eq!(
+                matching("ml_a", "open").await,
+                [A_OPEN, B_BACKLOG, C_ICEBOX, D_ICEBOX]
+            );
+            assert_eq!(matching("ml_a", "done").await, [D_DONE]);
+            assert_eq!(
+                matching("ml_b", "backlog").await,
+                [B_BACKLOG, C_ICEBOX, D_ICEBOX]
+            );
+            assert!(matching("ml_b", "icebox").await.is_empty());
+            assert_eq!(matching("ml_c", "icebox").await, [C_ICEBOX, D_ICEBOX]);
+
+            // Every other row reads as `open` at the top type and as
+            // `backlog` at the middle one, so the one `done` row is first
+            // ascending at the top and first descending at the middle.
+            for (target, direction) in [("ml_a", "asc"), ("ml_b", "desc")] {
+                let first = ordered_ids(
+                    &svc,
+                    json!({
+                        "target_type": target, "filters": [], "limit": 1,
+                        "sorting": [{ "field": "state", "direction": direction }]
+                    }),
+                )
+                .await;
+                assert_eq!(first, [D_DONE], "{target}");
+            }
+
+            // The row returned carries the value the queried type reads.
+            let icebox = svc.get_node(D_ICEBOX).await.unwrap().unwrap();
+            for (scope, reads_as) in [("ml_a", "open"), ("ml_b", "backlog"), ("ml_c", "icebox")] {
+                let projected = svc
+                    .project_nodes_to_scope(vec![icebox.clone()], Some(scope))
+                    .await
+                    .unwrap();
+                let read = projected[0]
+                    .properties
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .find_map(|bucket| bucket.get("state"))
+                    .and_then(Value::as_str);
+                assert_eq!(read, Some(reads_as), "{scope}");
+            }
+        }
+
+        /// A subtype that adds its own values to an inherited `priority`
+        /// still sorts by urgency: each added value ranks where the value it
+        /// maps to does.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn sorting_by_a_priority_a_subtype_added_values_to_ranks_what_they_map_to() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({ "name": "su_issue", "extends": "task", "fields": [] }),
+            )
+            .await;
+            crate::schema::handle_update_schema(
+                &svc,
+                json!({
+                    "schema_id": "su_issue",
+                    "add_field_values": [{
+                        "field": "priority",
+                        "values": [
+                            { "value": "urgent", "label": "Urgent", "mapsTo": "highest" },
+                            { "value": "none", "label": "No priority", "mapsTo": "lowest" }
+                        ]
+                    }]
+                }),
+            )
+            .await
+            .unwrap();
+            let id = |n: u8| format!("a7000000-0000-4000-8000-00000000000{n}");
+            for (n, priority) in [(1, "none"), (2, "medium"), (3, "urgent"), (4, "high")] {
+                svc.create_node(node(&id(n), "su_issue", json!({ "priority": priority })))
+                    .await
+                    .unwrap();
+            }
+            let by_urgency = [id(3), id(4), id(2), id(1)];
+
+            for target in ["su_issue", "task"] {
+                let sorted = |direction: &'static str, limit: usize| {
+                    let svc = Arc::clone(&svc);
+                    async move {
+                        ordered_ids(
+                            &svc,
+                            json!({
+                                "target_type": target, "filters": [], "limit": limit,
+                                "sorting": [{ "field": "priority", "direction": direction }]
+                            }),
+                        )
+                        .await
+                    }
+                };
+                assert_eq!(sorted("asc", 50).await, by_urgency, "{target}");
+                assert_eq!(sorted("asc", 1).await, [id(3)], "{target}");
+                assert_eq!(sorted("desc", 1).await, [id(1)], "{target}");
+            }
         }
 
         // -- Negation --

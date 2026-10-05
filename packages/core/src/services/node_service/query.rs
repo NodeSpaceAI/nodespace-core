@@ -58,6 +58,70 @@ impl ScopeContext {
     }
 }
 
+/// The fields a queried scope declares that one subtype's nodes store outside
+/// the scope's buckets (ADR-078), for [`NodeService::project_nodes_to_scope`].
+struct RelocatedFields {
+    /// The subtype's effective fields, where its `maps_to` declarations live.
+    node_fields: Vec<crate::models::SchemaField>,
+    /// Each field, the subtype bucket that holds it, and the scope's bucket
+    /// for it.
+    moves: Vec<(String, String, String)>,
+}
+
+impl RelocatedFields {
+    /// Put each field into `projected`, in the scope's bucket, read from
+    /// `stored` as the scope reads it: an enum value the scope does not have
+    /// is the value it maps to. A field with no value there, or a value with
+    /// no meaning at the scope, is absent from the row, as it is for a filter
+    /// and a sort: a value the scope's bucket still holds from before the
+    /// node's type was changed is not the node's value.
+    fn read_into(
+        &self,
+        projected: &mut serde_json::Value,
+        stored: &serde_json::Value,
+        scope_fields: &[crate::models::SchemaField],
+    ) {
+        let Some(projected) = projected.as_object_mut() else {
+            return;
+        };
+        for (field, stored_in, scope_bucket) in &self.moves {
+            let value = stored
+                .get(stored_in)
+                .and_then(|bucket| bucket.get(field))
+                .filter(|value| !value.is_null())
+                .and_then(|value| match value.as_str() {
+                    Some(raw) => crate::schema::extends_chain::resolve_value_at_scope(
+                        field,
+                        raw,
+                        &self.node_fields,
+                        scope_fields,
+                    )
+                    .map(serde_json::Value::String),
+                    None => Some(value.clone()),
+                });
+            match value {
+                Some(value) => {
+                    if let Some(bucket) = projected
+                        .entry(scope_bucket.clone())
+                        .or_insert_with(|| serde_json::json!({}))
+                        .as_object_mut()
+                    {
+                        bucket.insert(field.clone(), value);
+                    }
+                }
+                None => {
+                    if let Some(bucket) = projected
+                        .get_mut(scope_bucket)
+                        .and_then(|bucket| bucket.as_object_mut())
+                    {
+                        bucket.remove(field);
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl NodeService {
     /// Query nodes with filtering
     ///
@@ -451,7 +515,10 @@ impl NodeService {
     ///
     /// Returns each node with its properties reduced to the buckets visible at
     /// `node_type`'s scope, so a `task`-scoped query yields rows carrying
-    /// task's fields and nothing else, whatever their concrete type. Querying
+    /// task's fields and nothing else, whatever their concrete type. A field
+    /// of the scope that a subtype's node stores in the subtype's own bucket
+    /// (an inherited enum the subtype added values to) is carried into the
+    /// scope's bucket, read as the scope reads it. Querying
     /// a type that extends nothing, or with no type filter, returns the nodes
     /// untouched.
     ///
@@ -477,8 +544,38 @@ impl NodeService {
         // subtype. Note this is the queried type's ancestry, not the matched
         // node's: projecting a bug at ticket scope means keeping ticket's
         // buckets, and ticket's chain is what names them.
-        let chain = self.resolve_type_chain(nt).await?;
+        let (scope_fields, scope_owners, chain) = self.resolve_field_owners(nt).await?;
         let scopes: Vec<&str> = chain.iter().map(String::as_str).collect();
+
+        // A field the scope declares is not always in one of the scope's
+        // buckets: a subtype that extends an inherited enum declares the
+        // field itself, and its nodes store it under the subtype. Those are
+        // found once per subtype in the results, not per row.
+        let mut relocated: std::collections::HashMap<String, RelocatedFields> =
+            std::collections::HashMap::new();
+        for node in &nodes {
+            if node.node_type == nt || relocated.contains_key(&node.node_type) {
+                continue;
+            }
+            let (node_fields, node_owners, _) = self.resolve_field_owners(&node.node_type).await?;
+            let moves = scope_owners
+                .iter()
+                .filter_map(|(field, scope_bucket)| {
+                    // Only an enum is declared again by a subtype, which is
+                    // the one case a filter and a sort read there too.
+                    scope_fields.iter().find(|declared| {
+                        declared.name == *field
+                            && declared.field_type == crate::models::SchemaFieldType::Enum
+                    })?;
+                    let stored_in = node_owners.get(field).filter(|b| *b != scope_bucket)?;
+                    Some((field.clone(), stored_in.clone(), scope_bucket.clone()))
+                })
+                .collect();
+            relocated.insert(
+                node.node_type.clone(),
+                RelocatedFields { node_fields, moves },
+            );
+        }
 
         Ok(nodes
             .into_iter()
@@ -488,7 +585,12 @@ impl NodeService {
                 // the rebuild rather than reallocate every row of an
                 // unextended query.
                 if node.node_type != nt {
-                    node.properties = Self::project_properties_to_scope(&node.properties, &scopes);
+                    let mut projected =
+                        Self::project_properties_to_scope(&node.properties, &scopes);
+                    if let Some(fields) = relocated.get(&node.node_type) {
+                        fields.read_into(&mut projected, &node.properties, &scope_fields);
+                    }
+                    node.properties = projected;
                 }
                 node
             })
@@ -666,6 +768,42 @@ impl NodeService {
             .mention_autocomplete(query, limit.map(|l| l as i64))
             .await
             .map_err(NodeServiceError::from_store)
+    }
+}
+
+#[cfg(test)]
+mod relocated_fields_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A node changed from the base type to a subtype that declares the field
+    /// keeps the old value in the base bucket. The row read at the base type
+    /// carries the subtype bucket's value, or no value when that has none.
+    #[test]
+    fn a_value_left_in_the_scope_bucket_is_not_the_nodes_value() {
+        let relocated = RelocatedFields {
+            node_fields: Vec::new(),
+            moves: vec![("rank".into(), "bug".into(), "ticket".into())],
+        };
+        let read = |stored: serde_json::Value| {
+            let mut projected = json!({ "ticket": stored["ticket"].clone() });
+            relocated.read_into(&mut projected, &stored, &[]);
+            projected
+        };
+
+        assert_eq!(
+            read(json!({ "ticket": { "rank": 1, "title": "t" }, "bug": { "rank": 2 } })),
+            json!({ "ticket": { "rank": 2, "title": "t" } })
+        );
+        assert_eq!(
+            read(json!({ "ticket": { "rank": 1, "title": "t" }, "bug": {} })),
+            json!({ "ticket": { "title": "t" } })
+        );
+        // A string the scope has no value for is not the node's value there.
+        assert_eq!(
+            read(json!({ "ticket": { "rank": 1, "title": "t" }, "bug": { "rank": "x" } })),
+            json!({ "ticket": { "title": "t" } })
+        );
     }
 }
 

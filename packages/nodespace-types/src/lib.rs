@@ -83,9 +83,9 @@ pub use play::{
 pub use priority::Priority;
 pub use project::{ProjectNode, ProjectNodeUpdate, ProjectStatus};
 pub use query::{
-    property_segments, FilterOperator, FilterType, QueryFields, QueryFilter, QueryGeneratedBy,
-    QueryNode, QueryNodeUpdate, RelativeDate, RelativeDateAnchor, SortConfig, SortDirection,
-    ALL_TYPES_TARGET, QUERY_NODE_TYPE,
+    property_segments, FilterOperator, FilterType, PropertyScope, QueryFields, QueryFilter,
+    QueryGeneratedBy, QueryNode, QueryNodeUpdate, RelativeDate, RelativeDateAnchor, SortConfig,
+    SortDirection, SubtypeBucket, ALL_TYPES_TARGET, QUERY_NODE_TYPE,
 };
 pub use relationship_path::{
     HopDirection, RelationshipHop, RelationshipPath, ResolvedHop, ResolvedPath,
