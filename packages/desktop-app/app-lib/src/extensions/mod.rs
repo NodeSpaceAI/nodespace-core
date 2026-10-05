@@ -49,7 +49,7 @@ mod fixture_tests;
 /// A breaking change to the API bumps the major number and an additive change
 /// bumps the minor number. The TypeScript host API carries the same value, and
 /// the two must stay equal.
-pub const EXTENSION_API_VERSION: (u32, u32) = (2, 2);
+pub const EXTENSION_API_VERSION: (u32, u32) = (2, 3);
 
 /// Core's own Tauri plugins, in the order they are registered.
 ///

@@ -194,6 +194,41 @@ describe('nodes', () => {
   });
 });
 
+describe('nodes.updateNode', () => {
+  it('writes through the node store, so a reactive read sees it at once', () => {
+    sharedNodeStore.setNode(node('u1', 'before'), { type: 'database', reason: 'test' }, true);
+    const update = vi.spyOn(sharedNodeStore, 'updateNode');
+    const content = track(() => nodes.getNode('u1')?.content ?? null);
+    try {
+      nodes.updateNode('u1', { content: 'after' });
+      flushSync();
+
+      expect(update).toHaveBeenCalledWith(
+        'u1',
+        { content: 'after' },
+        { type: 'viewer', viewerId: 'extension-api' }
+      );
+      expect(content.seen).toEqual(['before', 'after']);
+    } finally {
+      content.stop();
+    }
+  });
+
+  it('passes on only content and properties, whatever an untyped caller sends', () => {
+    const update = vi.spyOn(sharedNodeStore, 'updateNode').mockImplementation(() => undefined);
+    const untyped = { content: 'c', nodeType: 'task', version: 99 } as never;
+
+    nodes.updateNode('u2', untyped);
+
+    expect(update).toHaveBeenCalledWith('u2', { content: 'c' }, expect.anything());
+  });
+
+  it('leaves a node the store does not hold alone', () => {
+    expect(() => nodes.updateNode('not-in-store', { content: 'x' })).not.toThrow();
+    expect(nodes.getNode('not-in-store')).toBeUndefined();
+  });
+});
+
 describe('re-exports', () => {
   it("are core's own functions and values", () => {
     expect(api.onDaemonReconnect).toBe(daemonStatus.onDaemonReconnect);

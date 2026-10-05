@@ -8,6 +8,7 @@
  * process-wide singleton with the fixture extension, unregistered after each test.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { setTypeResolver } from '$lib/types/core-node-types';
 
 const log = vi.hoisted(() => ({
   debug: vi.fn(),
@@ -494,6 +495,37 @@ describe('UiExtensionRegistry lookups', () => {
     expect(keysOf(registry.viewerTabsFor('collection'))).toEqual(['a/for-collection']);
     expect(keysOf(registry.viewerTabsFor('text'))).toEqual(['a/for-text']);
     expect(registry.viewerTabsFor('date')).toEqual([]);
+  });
+
+  describe('viewer tabs of a subtype', () => {
+    afterEach(() => setTypeResolver(() => undefined));
+
+    function declareBoardExtendsCollection(): void {
+      setTypeResolver((id) => (id === 'board' ? ({ extends: 'collection' } as never) : undefined));
+    }
+
+    it("includes the tabs of the type's ancestors", () => {
+      declareBoardExtendsCollection();
+      registry.register(ext('a', { viewerTabs: [tab('for-collection')] }));
+
+      expect(keysOf(registry.viewerTabsFor('board'))).toEqual(['a/for-collection']);
+      expect(keysOf(registry.viewerTabsFor('text'))).toEqual([]);
+    });
+
+    it("puts the subtype's own tabs before its ancestors', whatever their priority", () => {
+      declareBoardExtendsCollection();
+      registry.register(
+        ext('a', {
+          viewerTabs: [
+            tab('for-collection', { priority: 9 }),
+            tab('for-board', { nodeType: 'board' })
+          ]
+        })
+      );
+
+      expect(keysOf(registry.viewerTabsFor('board'))).toEqual(['a/for-board', 'a/for-collection']);
+      expect(keysOf(registry.viewerTabsFor('collection'))).toEqual(['a/for-collection']);
+    });
   });
 
   it('keys each contribution as <extension id>/<contribution id> and carries the extension id', () => {

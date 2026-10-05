@@ -31,12 +31,6 @@
   // contributed tab's key (`<extension id>/<contribution id>`).
   let activeView = $state<string>('contents');
 
-  // Registry-contributed tabs whose `when()` currently holds. Empty when nothing
-  // contributes, so the tab strip never appears. A selected tab that stops being
-  // contributed falls back to Contents.
-  const tabs = $derived(getActiveViewerTabs('collection'));
-  const activeTab = $derived(tabs.find((t) => t.key === activeView));
-
   const log = createLogger('CollectionNodeViewer');
 
   // Props using Svelte 5 runes mode - unified NodeViewerProps interface.
@@ -50,6 +44,14 @@
   // Local state
   let collection: CollectionNode | null = $state(null);
   let members: Node[] = $state([]);
+
+  // Registry-contributed tabs whose `when()` currently holds, for the loaded
+  // collection's own type: a subtype of `collection` shows its own tabs and then
+  // `collection`'s. Empty when nothing contributes, so the tab strip never appears.
+  // A selected tab that stops being contributed falls back to Contents.
+  const tabs = $derived.by(() => getActiveViewerTabs(collection?.nodeType ?? 'collection'));
+  const activeTab = $derived(tabs.find((t) => t.key === activeView));
+
   let loading = $state(true);
   let error: string | null = $state(null);
 

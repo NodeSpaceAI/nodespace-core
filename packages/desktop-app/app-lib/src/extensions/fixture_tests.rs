@@ -113,8 +113,8 @@ fn invoke(app: &App<MockRuntime>, command: &str) -> Result<String, serde_json::V
 }
 
 #[test]
-fn extension_api_version_is_two_two() {
-    assert_eq!(EXTENSION_API_VERSION, (2, 2));
+fn extension_api_version_is_two_three() {
+    assert_eq!(EXTENSION_API_VERSION, (2, 3));
 }
 
 /// The fixture naming a daemon of its own. `run` installs the profile into

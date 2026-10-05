@@ -1,7 +1,7 @@
 {
   "version": {
     "major": 2,
-    "minor": 2
+    "minor": 3
   },
   "entries": {
     "index": [
@@ -14,6 +14,7 @@
       "EXTENSION_API_VERSION",
       "ExtensionDatabases",
       "ExtensionLifecycle",
+      "ExtensionNodeChanges",
       "NodeComponent",
       "NodeComponentProps",
       "NodeTypeContribution",
@@ -80,5 +81,5 @@
       "focusTrap"
     ]
   },
-  "typesHash": "3f99ab6682dfb1f4604812ea95063171178de36428ccd34208999a22c1395667"
+  "typesHash": "968968b825b878543c37a26e4686eef61a13585f4c904213bb464384447e160d"
 }
