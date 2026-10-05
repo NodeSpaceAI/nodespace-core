@@ -436,7 +436,9 @@ export function awaitSkillIndex(
     `Confirm the embedding worker is running and the database is the seeded one:\n` +
       `    sqlite3 <db> "SELECT n.node_type, COUNT(DISTINCT e.node_id) FROM node n\n` +
       `      LEFT JOIN embedding e ON e.node_id=n.id WHERE n.node_type='skill' GROUP BY 1"\n` +
-      `  An empty embedding table with 8 skill rows means the worker never ran.`,
+      `  An empty embedding table with 8 skill rows means the worker never ran. An\n` +
+      `  isolated daemon loads no embedding model unless NODESPACED_MODEL_PATH names\n` +
+      `  one: its log then says "NLP model not found".`,
   );
 }
 
@@ -594,8 +596,10 @@ export function preflight(
         `  This eval creates schemas, chat nodes, and instances; running it here would ` +
         `write test data into live user data.`,
       `Isolate the daemon with NODESPACE_HOME (not NODESPACED_DB_PATH, which the\n` +
-        `  database registry overrides):\n` +
+        `  database registry overrides). The embedding model follows NODESPACE_HOME\n` +
+        `  too, so name your own copy for skill retrieval:\n` +
         `    NODESPACE_HOME=/tmp/nodespaced-test \\\n` +
+        `      NODESPACED_MODEL_PATH=$HOME/.nodespace/models/nomic-embed-text-v1.5.Q8_0.gguf \\\n` +
         `      NODESPACED_SOCKET=${env.socket} target/release/nodespaced\n` +
         `  Then confirm with: grep served_db_path <daemon log>`,
     );

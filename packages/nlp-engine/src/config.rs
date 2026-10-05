@@ -295,9 +295,16 @@ impl Default for EmbeddingConfig {
 }
 
 impl EmbeddingConfig {
-    /// Get the model path, resolving it from ~/.nodespace/models/
+    /// Get the model path.
     ///
-    /// Uses centralized data directory pattern:
+    /// An explicit `model_path` is authoritative: it is returned when the file
+    /// exists and is `NotFound` when it does not, never swapped for another
+    /// file. The daemon always passes one, resolved under its own NodeSpace
+    /// home (which follows `NODESPACE_HOME`), so an isolated daemon whose model
+    /// has gone missing gets no model rather than the real user's.
+    ///
+    /// Without one, the model is looked up in the user's home directory, the
+    /// default for a standalone caller such as a live test:
     /// - macOS/Linux: ~/.nodespace/models/nomic-embed-text-v1.5.Q8_0.gguf
     /// - Windows: %USERPROFILE%\.nodespace\models\nomic-embed-text-v1.5.Q8_0.gguf
     ///
@@ -312,6 +319,10 @@ impl EmbeddingConfig {
             if path.exists() {
                 return Ok(path.clone());
             }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Model not found at {}", path.display()),
+            ));
         }
 
         // Use centralized ~/.nodespace/models/ directory
@@ -583,6 +594,49 @@ mod tests {
 
         // The subsequent load-time check must then be a cache hit too.
         assert!(verify_file_sha256_cached(&path, &digest).is_ok());
+    }
+
+    /// A missing explicit `model_path` is `NotFound`, never the user's
+    /// `~/.nodespace/models` copy. `HOME` points at a home holding a placeholder
+    /// model (standing in for the real one) for the one synchronous call, then
+    /// is restored; nothing else in this crate's unit tests reads it.
+    #[test]
+    fn test_missing_explicit_model_path_does_not_fall_back_to_home() {
+        let user_home = tempfile::tempdir().unwrap();
+        let home_models = user_home.path().join(".nodespace").join("models");
+        std::fs::create_dir_all(&home_models).unwrap();
+        std::fs::write(
+            home_models.join("nomic-embed-text-v1.5.Q8_0.gguf"),
+            b"placeholder",
+        )
+        .unwrap();
+        let isolated = tempfile::tempdir().unwrap();
+        let config = EmbeddingConfig {
+            model_path: Some(isolated.path().join("models").join("absent.gguf")),
+            ..Default::default()
+        };
+
+        let saved_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", user_home.path());
+        let resolved = config.resolve_model_path();
+        match saved_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+
+        let err = resolved.expect_err("a missing explicit path must not resolve");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn test_existing_explicit_model_path_is_chosen() {
+        let (_dir, path) = temp_model_file(b"placeholder");
+        let config = EmbeddingConfig {
+            model_path: Some(path.clone()),
+            ..Default::default()
+        };
+
+        assert_eq!(config.resolve_model_path().unwrap(), path);
     }
 
     #[test]

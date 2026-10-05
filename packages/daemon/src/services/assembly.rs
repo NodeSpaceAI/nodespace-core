@@ -740,24 +740,19 @@ async fn seed_agent_nodes(node_service: &mut CoreNodeService) {
 
 /// Resolve the NLP model path without loading it. Returns `None` when absent.
 ///
-/// Always `~/.nodespace/models` by default, reading the REAL home rather than
-/// [`crate::nodespace_dir`] — deliberately unlike the config path above.
-///
-/// That directory is the shared model store: read-only, and large enough that
-/// sharing is the whole point (a dev machine mid-evaluation held 9 GGUFs
-/// totalling 39 GB). An isolated daemon should reuse them, not start from an
-/// empty directory and re-download. `NODESPACED_MODEL_PATH` overrides it for a
-/// run that genuinely needs a different file.
-///
-/// The config path is not analogous: `daemon.toml` is WRITTEN to (the routing
-/// probe caches verdicts there), so resolving it against the real home let an
-/// isolated run mutate the user's own configuration.
+/// `NODESPACED_MODEL_PATH` when set, else `models/` under
+/// [`crate::nodespace_dir`], so the model follows `NODESPACE_HOME` exactly as
+/// the database, the registry and `daemon.toml` do. An isolated daemon finds no
+/// model unless one is placed under its own home or named explicitly. Reading
+/// the real home instead made every isolated run load the user's model and
+/// start GPU work nobody asked it for. A run that wants the user's model (an
+/// agent eval, say) points `NODESPACED_MODEL_PATH` at it.
 fn resolve_model_path() -> Option<std::path::PathBuf> {
     let p = if let Ok(custom) = std::env::var("NODESPACED_MODEL_PATH") {
         std::path::PathBuf::from(custom)
     } else {
-        let home = dirs::home_dir()?;
-        home.join(".nodespace")
+        crate::nodespace_dir()
+            .ok()?
             .join("models")
             .join("nomic-embed-text-v1.5.Q8_0.gguf")
     };
@@ -906,4 +901,70 @@ async fn wire_database_embeddings_bg(
         processor,
     });
     tracing::info!("Embedding processor wired for database — semantic search now available");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    const MODEL_FILE: &str = "nomic-embed-text-v1.5.Q8_0.gguf";
+
+    /// `resolve_model_path` with `NODESPACE_HOME` at `nodespace_home`, `HOME` at
+    /// `user_home` and `NODESPACED_MODEL_PATH` unset, every variable restored
+    /// afterwards. The environment is process-global: nextest runs each test in
+    /// its own process, and the window is the one synchronous call regardless.
+    fn resolve_with(nodespace_home: &Path, user_home: &Path) -> Option<PathBuf> {
+        const VARS: [&str; 3] = ["NODESPACE_HOME", "HOME", "NODESPACED_MODEL_PATH"];
+        let saved: Vec<_> = VARS.iter().map(std::env::var_os).collect();
+        std::env::set_var("NODESPACE_HOME", nodespace_home);
+        std::env::set_var("HOME", user_home);
+        std::env::remove_var("NODESPACED_MODEL_PATH");
+        let resolved = resolve_model_path();
+        for (var, value) in VARS.iter().zip(saved) {
+            match value {
+                Some(value) => std::env::set_var(var, value),
+                None => std::env::remove_var(var),
+            }
+        }
+        resolved
+    }
+
+    /// A home directory holding a placeholder model file at
+    /// `.nodespace/models/`. Path resolution only checks that the file exists,
+    /// so it is never a real model and nothing loads it.
+    fn home_with_model() -> tempfile::TempDir {
+        let home = tempfile::tempdir().expect("home tempdir");
+        let models = home.path().join(".nodespace").join("models");
+        std::fs::create_dir_all(&models).expect("models dir");
+        std::fs::write(models.join(MODEL_FILE), b"placeholder").expect("placeholder model");
+        home
+    }
+
+    /// An isolated home with no model finds none, even when the user's home
+    /// (`HOME`, standing in for the real `~/.nodespace/models`) holds one.
+    #[test]
+    fn empty_nodespace_home_finds_no_model_even_when_the_user_home_has_one() {
+        let user_home = home_with_model();
+        let isolated = tempfile::tempdir().expect("isolated home");
+
+        assert_eq!(resolve_with(isolated.path(), user_home.path()), None);
+    }
+
+    /// A model under the isolated home is the one chosen, not the user's.
+    #[test]
+    fn model_under_nodespace_home_is_chosen_over_the_user_home() {
+        let user_home = home_with_model();
+        let isolated = home_with_model();
+        let expected = isolated
+            .path()
+            .join(".nodespace")
+            .join("models")
+            .join(MODEL_FILE);
+
+        assert_eq!(
+            resolve_with(isolated.path(), user_home.path()),
+            Some(expected)
+        );
+    }
 }
