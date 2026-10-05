@@ -475,6 +475,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "content".to_string(),
                 direction: SortDirection::Descending,
+                ..Default::default()
             }]),
             limit: None,
         };
@@ -733,6 +734,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "content".to_string(),
                 direction: SortDirection::Ascending,
+                ..Default::default()
             }]),
             limit: None,
         };
@@ -975,6 +977,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "content".to_string(),
                 direction: SortDirection::Ascending,
+                ..Default::default()
             }]),
             limit: Some(2),
         };
@@ -1142,6 +1145,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "created_at".to_string(),
                 direction: SortDirection::Descending,
+                ..Default::default()
             }]),
             limit: None,
         };
@@ -1186,6 +1190,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "node_type".to_string(),
                 direction: SortDirection::Ascending,
+                ..Default::default()
             }]),
             limit: None,
         };
@@ -1362,6 +1367,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "content".to_string(),
                 direction: SortDirection::Ascending,
+                ..Default::default()
             }]),
             limit: None,
         };
@@ -1404,6 +1410,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "status".to_string(),
                 direction: SortDirection::Ascending,
+                ..Default::default()
             }]),
             limit: None,
         };
@@ -1441,6 +1448,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "modified_at".to_string(),
                 direction: SortDirection::Descending,
+                ..Default::default()
             }]),
             limit: None,
         };
@@ -1482,10 +1490,12 @@ mod tests {
                 SortConfig {
                     field: "status".to_string(),
                     direction: SortDirection::Ascending,
+                    ..Default::default()
                 },
                 SortConfig {
                     field: "content".to_string(),
                     direction: SortDirection::Ascending,
+                    ..Default::default()
                 },
             ]),
             limit: None,
@@ -1619,6 +1629,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "priority".to_string(),
                 direction,
+                ..Default::default()
             }]),
             limit,
         }
@@ -1870,7 +1881,7 @@ mod tests {
     async fn test_sql_priority_rank_matches_enum_rank() {
         let (query_service, _node_service, _temp) = create_test_services().await;
 
-        let sql = query_service.resolve_order_field("priority", "task", "ASC");
+        let sql = order_field(&query_service, "priority", "task", "ASC");
 
         // Pins the SQL CASE to Priority::rank(). If a rank changes on one
         // side only, the SQL and Rust orderings disagree and results depend on
@@ -1914,17 +1925,17 @@ mod tests {
         let (query_service, _node_service, _temp) = create_test_services().await;
 
         assert_eq!(
-            query_service.resolve_order_field("status", "task", "ASC"),
+            order_field(&query_service, "status", "task", "ASC"),
             "json_extract(properties, '$.task.status') ASC"
         );
         assert_eq!(
-            query_service.resolve_order_field("created_at", "task", "DESC"),
+            order_field(&query_service, "created_at", "task", "DESC"),
             "created_at DESC"
         );
         // A user-defined type's bare `priority` is its own vocabulary; the
         // shared rank must not silently apply to it.
         assert_eq!(
-            query_service.resolve_order_field("priority", "venue", "ASC"),
+            order_field(&query_service, "priority", "venue", "ASC"),
             "json_extract(properties, '$.venue.priority') ASC"
         );
     }
@@ -1940,16 +1951,25 @@ mod tests {
         // `Priority::NODE_TYPES`, so ranking here too would make the two
         // layers disagree, with the winner depending on whether a LIMIT was
         // present. Rank only where the scale is actually defined.
-        let sql = query_service.resolve_order_field("priority", "*", "ASC");
+        let sql = order_field(&query_service, "priority", "*", "ASC");
 
         assert!(
             !sql.contains("CASE"),
             "wildcard priority sort must not assume the task scale: {sql}"
         );
-        assert_eq!(
-            sql,
-            "json_extract(properties, '$.' || node_type || '.priority') ASC"
+        assert!(
+            sql.contains("json_extract(node.properties, '$.' || node.node_type || '.priority')"),
+            "each row is read at its own type: {sql}"
         );
+    }
+
+    /// One ORDER BY term for a sort nothing resolved a scope for.
+    fn order_field(query_service: &QueryService, field: &str, target: &str, dir: &str) -> String {
+        let sort = SortConfig {
+            field: field.to_string(),
+            ..Default::default()
+        };
+        query_service.resolve_order_field(&sort, target, dir, &mut BoundSql::default())
     }
 
     // =========================================================================
@@ -2306,6 +2326,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "priority".to_string(),
                 direction: SortDirection::Descending,
+                ..Default::default()
             }]),
             limit: None,
         };
@@ -2447,6 +2468,7 @@ mod tests {
             sorting: Some(vec![SortConfig {
                 field: "created_at".to_string(),
                 direction: SortDirection::Descending,
+                ..Default::default()
             }]),
             limit: Some(1),
         };
@@ -2891,6 +2913,7 @@ mod tests {
                 vec![SortConfig {
                     field: f.to_string(),
                     direction: SortDirection::Ascending,
+                    ..Default::default()
                 }]
             }),
             limit: None,

@@ -515,6 +515,7 @@ fn test_query_serialization_round_trip() {
         sorting: Some(vec![SortConfig {
             field: "created_at".to_string(),
             direction: SortDirection::Descending,
+            ..Default::default()
         }]),
         limit: Some(50),
     };
@@ -536,6 +537,7 @@ fn test_sort_config_serialization() {
     let config = SortConfig {
         field: "modified_at".to_string(),
         direction: SortDirection::Ascending,
+        ..Default::default()
     };
 
     let json = serde_json::to_value(&config).unwrap();

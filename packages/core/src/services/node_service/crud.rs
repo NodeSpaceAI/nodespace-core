@@ -2708,10 +2708,10 @@ impl NodeService {
         crate::ops::query_ops::resolve_filters(self, &fields.target_type, fields.filters)
             .await
             .map_err(to_service_error)?;
-        crate::ops::query_ops::check_sorting(
+        crate::ops::query_ops::resolve_sorting(
             self,
             &fields.target_type,
-            fields.sorting.as_deref().unwrap_or(&[]),
+            fields.sorting.unwrap_or_default(),
         )
         .await
         .map_err(to_service_error)?;
