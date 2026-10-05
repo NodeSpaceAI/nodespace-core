@@ -30,7 +30,8 @@ notes. Two traps, both of which have bitten before:
    (ADR-053)". Observed behavior: the daemon still served the real DB.
 
 **`NODESPACE_HOME` is the correct lever.** It relocates the whole state
-directory — database, registry, models — in one variable.
+directory — database, registry, embedding model — in one variable. Chat models
+still load from `$HOME`.
 
 ## Launch sequence
 
@@ -67,8 +68,13 @@ Caused by: path must be shorter than SUN_LEN
 So: **database** under the scratchpad (isolated), **socket** under `/tmp/nsd`
 (short). They do not have to be co-located.
 
-Wait for readiness with an `until` loop, not a fixed sleep — first boot loads an
-embedding model and seeds ~37 agent roots:
+The isolated home holds no embedding model, so the daemon starts with semantic
+search off and puts nothing on the GPU. To check a change that needs semantic
+search, add `NODESPACED_MODEL_PATH=$HOME/.nodespace/models/nomic-embed-text-v1.5.Q8_0.gguf`,
+which loads the model onto the GPU.
+
+Wait for readiness with an `until` loop, not a fixed sleep — first boot seeds
+~37 agent roots:
 
 ```bash
 until [ -S /tmp/nsd/d.sock ] || grep -qiE "^Error|panic" <scratchpad>/daemon.log; do sleep 1; done

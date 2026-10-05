@@ -8047,12 +8047,7 @@ model = "model-b"
     /// Mutating `$HOME` is process-global, so this is deliberately narrow: the
     /// window is exactly the synchronous `SharedLocalAgent::new` call (it
     /// performs no `.await`, so no other task can interleave before `$HOME` is
-    /// restored), and a repo-wide audit confirms no other test in this crate's
-    /// unit-test binary reads `$HOME` — `SettingsServiceImpl::
-    /// with_default_path` and `assembly::build_shared_services`'s
-    /// `dirs::home_dir()` calls are only reached from real daemon startup
-    /// (`main.rs`) and from separate integration-test *binaries* (their own
-    /// OS processes, unaffected by an env mutation in this one).
+    /// restored), and nextest runs each test in its own process.
     #[tokio::test]
     async fn shared_local_agent_new_survives_a_real_model_manager_init_failure() {
         let fake_home = tempfile::TempDir::new().expect("fake home tempdir");
