@@ -14,16 +14,34 @@
 
 import { readFileSync, writeFileSync } from "fs";
 import path from "path";
+import {
+  compareVersions,
+  formatVersion,
+  parseRustVersion,
+  RUST_VERSION_FILE,
+  type ApiVersion
+} from "./check-extension-api-version";
 
 const OWNER = "NodeSpaceAI";
 const REPO = "nodespace-core";
 
 interface ReleaseConfig {
   version: string;
+  /** What the generated notes' "Extension API" section reports. */
+  extensionApi: ExtensionApiRelease;
   title?: string;
   notes?: string;
   draft?: boolean;
   prerelease?: boolean;
+}
+
+/** The extension API's version at this release and at the one before it (ADR-082 section 8). */
+interface ExtensionApiRelease {
+  version: ApiVersion;
+  /** The previous release's tag and its version (null if it declared none); null when there is no earlier tag. */
+  previous: { tag: string; version: ApiVersion | null } | null;
+  /** Subjects of the commits since the previous release that changed the version, oldest first. */
+  changes: string[];
 }
 
 /**
@@ -127,8 +145,14 @@ function validateVersion(version: string): boolean {
  * touches once; the actual change list now comes from GitHub itself via
  * `--generate-notes` (see buildReleaseCreateArgs), which derives it from
  * real merged-PR history each time, so it can never go stale here.
+ *
+ * The "Extension API" section is how an app built on core learns whether
+ * core's extension API changed in this release (ADR-082 section 8). It is
+ * derived from git the same way, never written by hand (see
+ * readExtensionApiRelease), and operator-supplied notes get it too (see
+ * withExtensionApiSection).
  */
-function generateReleaseNotes(version: string): string {
+function generateReleaseNotes(version: string, extensionApi: ExtensionApiRelease): string {
   const v = version.replace(/^v/, "");
   return `## NodeSpace ${version}
 
@@ -143,7 +167,74 @@ function generateReleaseNotes(version: string): string {
 ### Installation
 
 Download the appropriate file for your platform from the assets below.
-`;
+
+${extensionApiSection(extensionApi)}`;
+}
+
+/** The release notes' "Extension API" section: the version, and what changed it since the previous release. */
+function extensionApiSection(api: ExtensionApiRelease): string {
+  const now = `\`EXTENSION_API_VERSION\` is ${formatVersion(api.version)}`;
+  const lines = ["### Extension API", ""];
+  const was = api.previous?.version ?? null;
+  if (api.previous === null) {
+    lines.push(`${now}.`);
+  } else if (was !== null && compareVersions(was, api.version) === 0) {
+    lines.push(`${now}, unchanged since ${api.previous.tag}.`);
+  } else {
+    const before = was === null ? `${api.previous.tag} had none` : `${api.previous.tag} had ${formatVersion(was)}`;
+    lines.push(`${now} (${before}).`);
+    if (was !== null && was.major !== api.version.major) {
+      lines.push("", `A major change: an extension written for ${was.major} needs updating.`);
+    }
+    if (api.changes.length > 0) lines.push("", "Changed by:", "", ...api.changes.map((subject) => `- ${subject}`));
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * `notes` with the "Extension API" section appended, unless they already have
+ * a heading of that name: notes passed with --notes/--notes-file replace the
+ * generated template, and the section must not go with it.
+ */
+function withExtensionApiSection(notes: string, extensionApi: ExtensionApiRelease): string {
+  if (/^#{1,6} Extension API\s*$/m.test(notes)) return notes;
+  return `${notes.trimEnd()}\n\n${extensionApiSection(extensionApi)}`;
+}
+
+/** Runs git in `cwd`; null when it fails. */
+function gitOutput(cwd: string, args: string[]): string | null {
+  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  return result.exitCode === 0 ? result.stdout.toString() : null;
+}
+
+/**
+ * The extension API's version now and at the last release tag before HEAD,
+ * other than `releaseTag`, with the commits between them that changed it.
+ * `releaseTag` is excluded because a re-run release (after a failed publish,
+ * say) finds its own tag already on HEAD. Throws when the current version
+ * can't be read, so a release never ships without the section.
+ */
+function readExtensionApiRelease(releaseTag: string, cwd: string = process.cwd()): ExtensionApiRelease {
+  const version = parseRustVersion(readFileSync(path.join(cwd, RUST_VERSION_FILE), "utf-8"));
+  if (version === null) throw new Error(`No EXTENSION_API_VERSION declaration in ${RUST_VERSION_FILE}`);
+  const tag = gitOutput(cwd, ["describe", "--tags", "--abbrev=0", "--match", "v*", "--exclude", releaseTag, "HEAD"])?.trim();
+  if (!tag) return { version, previous: null, changes: [] };
+  const source = gitOutput(cwd, ["show", `${tag}:${RUST_VERSION_FILE}`]);
+  const changes = gitOutput(cwd, [
+    "log",
+    "--reverse",
+    "--format=%s",
+    "-G",
+    "pub const EXTENSION_API_VERSION:",
+    `${tag}..HEAD`,
+    "--",
+    RUST_VERSION_FILE
+  ]);
+  return {
+    version,
+    previous: { tag, version: source === null ? null : parseRustVersion(source) },
+    changes: (changes ?? "").split("\n").filter((subject) => subject.trim() !== "")
+  };
 }
 
 /**
@@ -157,7 +248,9 @@ Download the appropriate file for your platform from the assets below.
 function buildReleaseCreateArgs(config: ReleaseConfig): string[] {
   const version = config.version.startsWith("v") ? config.version : `v${config.version}`;
   const title = config.title || `NodeSpace ${version}`;
-  const notes = config.notes || generateReleaseNotes(version);
+  const notes = config.notes
+    ? withExtensionApiSection(config.notes, config.extensionApi)
+    : generateReleaseNotes(version, config.extensionApi);
 
   const args = ["gh", "release", "create", version, "--title", title, "--notes", notes];
 
@@ -393,6 +486,7 @@ async function main() {
   bun run release v0.1.0 --title "Custom Title"
   bun run release v0.1.0 --notes "Custom release notes"
   bun run release v0.1.0 --notes-file CHANGELOG.md
+                                      # (an "Extension API" section is appended unless the notes have one)
   bun run release v0.1.0 --skip-perf  # Skip the performance benchmarks
 
   Creating a release first runs the performance benchmarks (test:perf) on
@@ -452,7 +546,10 @@ async function main() {
           process.exit(1);
         }
 
-        const config: ReleaseConfig = { version };
+        // Read before anything else: a release must not start without its
+        // notes' "Extension API" section, generated or appended to --notes.
+        const releaseTag = version.startsWith("v") ? version : `v${version}`;
+        const config: ReleaseConfig = { version, extensionApi: readExtensionApiRelease(releaseTag) };
 
         // Parse flags
         if (args.includes("--draft")) config.draft = true;
@@ -551,5 +648,7 @@ export {
   updateVersion,
   failingBenchmarks,
   generateReleaseNotes,
-  buildReleaseCreateArgs
+  buildReleaseCreateArgs,
+  readExtensionApiRelease,
+  type ExtensionApiRelease
 };
