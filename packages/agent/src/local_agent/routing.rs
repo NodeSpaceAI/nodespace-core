@@ -376,8 +376,8 @@ pub fn lookup_retrieval_query(topic: &str) -> String {
     format!("find, look up, or search stored knowledge for {topic}")
 }
 
-/// Whether `query` asks for something new to be added: it opens with a verb
-/// whose only reading is bringing a record into being.
+/// Whether `query` asks for something to be added: it opens with a verb that
+/// brings something into being and never asks for a removal.
 ///
 /// An embedding weighs a request's nouns far above its verb, so an add whose
 /// record is named after another skill's subject is retrieved as that skill's
@@ -393,6 +393,11 @@ pub fn lookup_retrieval_query(topic: &str) -> String {
 /// decides two things about the candidates Stage 2 judges, both in
 /// [`retrieve_candidates`]: no skill that removes user data is among them,
 /// and one that can create a record is.
+///
+/// What is added need not be a record: "add a priority field to the ticket
+/// type" and "add this note to my reading list" open with one of these verbs
+/// too. Both rules are safe on those. Neither asks for a removal, and the
+/// skill they belong to keeps its place.
 ///
 /// English only, and narrow on purpose: "put", "make" and "set" also start
 /// requests to change a record, so they are left out, and a request worded
@@ -443,6 +448,11 @@ pub fn skill_can_create_a_record(candidate: &SkillCandidate) -> bool {
 /// request that opens with an adding verb is not one to remove anything, so
 /// such a skill is not a candidate on it at all: it cannot lead the turn, and
 /// the place it held goes to the next skill.
+///
+/// The skill is left out whole, with the tools it holds that remove nothing.
+/// A skill that can both create and remove is therefore not offered on an
+/// add, including one a chat pins: a pinned skill that can remove user data
+/// needs a retrieval score to clear its bar, and it has none here.
 pub fn without_destructive_skills(mut ranked: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
     ranked.retain(|c| !skill_is_destructive(c));
     ranked
@@ -469,8 +479,8 @@ pub fn lacks_a_creating_skill(ranked: &[SkillCandidate]) -> bool {
 ///   [`ADD_RETRIEVAL_FETCH`] so the ranking is still full without them.
 /// - When none of the candidates Stage 2 would then judge can create a record,
 ///   retrieval runs once more on [`create_retrieval_query`], and the best
-///   match that can create joins the ranking with the score that search gave
-///   it. That score is on the second query's scale, which names the skill's
+///   match that can create and cannot remove joins the ranking with the score
+///   that search gave it. That score is on the second query's scale, which names the skill's
 ///   own capability, so the skill usually leads the turn it was added to.
 ///   Every other candidate keeps the score it had: the second search adds one
 ///   skill and removes none.
@@ -496,9 +506,11 @@ where
     if !lacks_a_creating_skill(&ranked) {
         return Ok(ranked);
     }
-    match retrieve(create_retrieval_query(query), RETRIEVAL_FETCH).await {
+    // Asked for as many as the first search: only one of them is kept, and a
+    // workspace's own types can fill the first places of a shorter ranking.
+    match retrieve(create_retrieval_query(query), ADD_RETRIEVAL_FETCH).await {
         Ok(second) => {
-            let creating = second
+            let creating = without_destructive_skills(second)
                 .into_iter()
                 .find(|c| clears_score_gate(c) && skill_can_create_a_record(c));
             if let Some(creating) = creating {
@@ -1793,9 +1805,35 @@ mod tests {
             searches.asked(),
             [
                 (ADD.to_string(), ADD_RETRIEVAL_FETCH),
-                (second, RETRIEVAL_FETCH)
+                (second, ADD_RETRIEVAL_FETCH)
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn the_second_search_does_not_bring_back_a_skill_that_removes() {
+        // A skill that can create and delete leads the second search. It was
+        // dropped from the first ranking, and must not return through the
+        // second with a score that leads the turn.
+        let second = create_retrieval_query(ADD);
+        let searches = Searches::new(vec![
+            (ADD, collision_ranking()),
+            (
+                &second,
+                vec![
+                    candidate("Housekeeping", 0.95, &["create_node", "delete_node"]),
+                    candidate("Node Creation", 0.908, &["create_node"]),
+                ],
+            ),
+        ]);
+        let judged = select_candidates(searches.run(ADD).await.unwrap());
+        assert_eq!(judged[0].name, "Node Creation");
+        assert!(
+            !judged.iter().any(skill_is_destructive),
+            "judged: {:?}",
+            names(&judged)
+        );
+        assert!(!stage2_permitted_names(&judged).contains("delete_node"));
     }
 
     #[tokio::test]

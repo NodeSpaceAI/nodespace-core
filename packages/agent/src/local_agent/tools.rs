@@ -3643,6 +3643,11 @@ pub fn removes_user_data_tool(tool: &str) -> bool {
 ///
 /// Only this tool boundary is lenient. The CLI's `schema create` and the
 /// stored schema's own validation still refuse an enum without values.
+///
+/// Only that one shape is changed: a value list that is absent, null or
+/// empty, under both `coreValues` and `userValues`. A list that is present
+/// and malformed is the handler's error to report, not a field with no
+/// values.
 fn enum_fields_without_values_as_text(args: &mut Value, key: &str) -> Vec<String> {
     let mut changed = Vec::new();
     let Some(fields) = args.get_mut(key).and_then(Value::as_array_mut) else {
@@ -3650,13 +3655,15 @@ fn enum_fields_without_values_as_text(args: &mut Value, key: &str) -> Vec<String
     };
     for field in fields.iter_mut().filter_map(Value::as_object_mut) {
         let is_enum = field.get("type").and_then(Value::as_str) == Some("enum");
-        let has_values = field
-            .get("coreValues")
-            .and_then(Value::as_array)
-            .is_some_and(|values| !values.is_empty());
-        if is_enum && !has_values {
+        let lists_nothing = |key: &str| match field.get(key) {
+            None | Some(Value::Null) => true,
+            Some(Value::Array(values)) => values.is_empty(),
+            Some(_) => false,
+        };
+        if is_enum && lists_nothing("coreValues") && lists_nothing("userValues") {
             field.insert("type".to_string(), json!("text"));
             field.remove("coreValues");
+            field.remove("userValues");
             if let Some(name) = field.get("name").and_then(Value::as_str) {
                 changed.push(name.to_string());
             }
@@ -3667,6 +3674,10 @@ fn enum_fields_without_values_as_text(args: &mut Value, key: &str) -> Vec<String
 
 /// `result` with a note naming the fields
 /// [`enum_fields_without_values_as_text`] changed, when it changed any.
+///
+/// Under `notes`, beside the result's own `warnings`: this is the key and
+/// wording the change was measured with, and a warning there is about a field
+/// name, where this says what the tool did.
 fn with_created_as_text_note(mut result: Value, as_text: &[String]) -> Value {
     if as_text.is_empty() {
         return result;
@@ -7316,6 +7327,28 @@ mod tests {
             "an enum with values is left alone"
         );
         assert_eq!(args["fields"][3]["type"], "text");
+    }
+
+    #[test]
+    fn an_enum_field_with_any_other_value_list_is_left_for_the_handler() {
+        let mut args = json!({
+            "fields": [
+                // Valid to the stored schema: its values are user values.
+                {"name": "stage", "type": "enum", "userValues": [{"value": "open", "label": "Open"}]},
+                // Malformed: the handler names the key in its own error.
+                {"name": "state", "type": "enum", "coreValues": "open, closed"},
+                {"name": "phase", "type": "enum", "coreValues": [], "userValues": "open"},
+                // Empty under both keys, or null: no values.
+                {"name": "status", "type": "enum", "coreValues": null, "userValues": []},
+            ],
+        });
+        let before = args.clone();
+        let changed = enum_fields_without_values_as_text(&mut args, "fields");
+        assert_eq!(changed, ["status"]);
+        for unchanged in 0..3 {
+            assert_eq!(args["fields"][unchanged], before["fields"][unchanged]);
+        }
+        assert_eq!(args["fields"][3], json!({"name": "status", "type": "text"}));
     }
 
     #[test]

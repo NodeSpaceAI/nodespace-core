@@ -433,14 +433,14 @@ function calledSchemaCreate(turns: TurnRecord[]): boolean {
  * refuse. The tool reads the type back from the store before it reports
  * success, so an accepted call is a type that exists.
  *
- * A turn recorded before per-call outcomes were kept is read by tool name, as
- * it was scored then.
+ * A turn with no per-call outcomes created nothing that can be shown: the
+ * tool's name in `toolsCalled` is the call, not its result.
  */
 export function createdAType(turns: TurnRecord[]): boolean {
-  return turns.some((t) =>
-    t.toolCalls
-      ? t.toolCalls.some((c) => c.name === "create_schema" && !c.isError)
-      : t.toolsCalled.includes("create_schema"),
+  return turns.some(
+    (t) =>
+      t.toolCalls?.some((c) => c.name === "create_schema" && !c.isError) ??
+      false,
   );
 }
 

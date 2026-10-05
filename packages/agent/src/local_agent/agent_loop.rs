@@ -14586,6 +14586,8 @@ mod tests {
     async fn retrieval_runs_as_a_system_step_on_stage1s_query() {
         // ADR-038: retrieval is a deterministic system step, not a model tool
         // call. The model supplies the query; the system issues the retrieval.
+        // The query opens with no adding verb: an add that reaches no skill
+        // able to create is searched for twice.
         let engine = routed_engine(
             "find billing notes",
             "search_nodes",
@@ -14669,6 +14671,59 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn each_query_of_a_compound_request_is_read_by_itself() {
+        // The add half is ranked without the deletion skill. The delete half
+        // is not, so the skill is still a candidate on the turn and its tool
+        // is offered when it leads the merged ranking, as on any turn.
+        let engine = RecordingEngine::new(multi_routed_engine(
+            &["add a decision", "delete the old draft"],
+            "search_nodes",
+            r#"{"query":"x"}"#,
+            "Done.",
+        ));
+        let tool_names = engine.tool_names_handle();
+        let registry = MockToolExecutor::new()
+            .with_tool("search_nodes", json!({}), json!({"nodes": []}))
+            .with_tool("create_node", json!({}), json!({}))
+            .with_tool("delete_node", json!({}), json!({}));
+        let exec = RoutingToolExecutor::new(
+            registry,
+            vec![
+                skill_candidate("deletion", 0.9, &["delete_node", "search_nodes"]),
+                skill_candidate("creation", 0.8, &["create_node"]),
+            ],
+        );
+        let queries = exec.queries_handle();
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+        let mut session = new_session();
+        loop_
+            .run_turn(
+                &mut session,
+                "Add a decision, then delete the old draft.",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            queries.lock().unwrap().as_slice(),
+            &[
+                "add a decision".to_string(),
+                "delete the old draft".to_string()
+            ],
+            "the add half reaches a skill that can create, so it is searched once"
+        );
+        let stage2_tools = tool_names.lock().unwrap()[1].clone();
+        assert!(
+            stage2_tools.contains(&"delete_node".to_string())
+                && stage2_tools.contains(&"create_node".to_string()),
+            "the delete half keeps its skill: {stage2_tools:?}"
+        );
+    }
+
     /// A model that calls `route_multi` at Stage 1 with `queries`, then the
     /// given tool.
     fn multi_routed_engine(
@@ -14736,6 +14791,7 @@ mod tests {
         // queries — asserted here via Stage 2's actual injected prompt, not
         // just that the turn completes, since a failure to dedup would still
         // let the turn succeed on a duplicated candidate set.
+        // Neither query opens with an adding verb, so each is one search.
         let engine = RecordingEngine::new(multi_routed_engine(
             &["track an expense", "remind me Friday"],
             "search_nodes",

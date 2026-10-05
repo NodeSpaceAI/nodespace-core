@@ -173,11 +173,12 @@ describe("type-creating scenarios are scored on the type", () => {
     expect(assertFixture(s, [createdToo]).passed).toBe(true);
   });
 
-  test("a turn recorded without per-call outcomes is read by tool name", () => {
+  test("a call with no recorded outcome is not a type created", () => {
     const s = byId("direct-schema-create");
     const turns = [turn({ routingDecision: "query", toolsCalled: ["create_schema"] })];
-    expect(createdAType(turns)).toBe(true);
-    expect(assertFixture(s, turns).passed).toBe(true);
+    expect(createdAType(turns)).toBe(false);
+    expect(assertRouting(s, turns).passed).toBe(true);
+    expect(assertFixture(s, turns).passed).toBe(false);
   });
 
   test("a scenario that asks for no type is not held to one", () => {
