@@ -164,4 +164,8 @@ describe('withLocalTime', () => {
     expect(withLocalTime(raw, '')).toBeUndefined();
     expect(withLocalTime(raw, '9')).toBeUndefined();
   });
+
+  it('reports no change for a stored value it cannot read, rather than moving it to today', () => {
+    expect(withLocalTime('garbage', '14:45')).toBeUndefined();
+  });
 });

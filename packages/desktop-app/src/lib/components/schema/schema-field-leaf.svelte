@@ -15,6 +15,7 @@
   - enum    → Select (coreValues + userValues)
   - date    → Popover + Calendar
   - datetime → Popover + Calendar for the day, a time input beside it
+               (one instant, shown in local time)
   - number → number Input
   - boolean → checkbox
   - string/text → text Input
@@ -145,9 +146,11 @@
       aria-label={`${labelForField(field)} time`}
       value={dateTimeLocalTime(rawValue)}
       onchange={(e) => {
-        // An emptied time is not a value to store: the day picker clears the field.
+        // An emptied time is not a value to store: the day picker clears the
+        // field. Nothing is written, so the input goes back to the stored time.
         const next = withLocalTime(rawValue, e.currentTarget.value);
-        if (next !== undefined) onChange(next);
+        if (next === undefined) e.currentTarget.value = dateTimeLocalTime(rawValue);
+        else onChange(next);
       }}
     />
   </div>

@@ -95,13 +95,16 @@ export function withLocalDay(raw: string | null | undefined, day: DateValue | un
 
 /**
  * The stored date-time moved to the entered local time (`HH:mm`), keeping its
- * day (today when there was no value yet). An incomplete time changes nothing,
- * reported as undefined.
+ * day (today when there was no value yet). The input holds hours and minutes,
+ * so the result is on the whole minute. An incomplete time changes nothing,
+ * reported as undefined, and neither does a stored value that can't be read:
+ * its day is unknown, and today would replace it.
  */
 export function withLocalTime(raw: string | null | undefined, time: string): string | undefined {
   const match = time.match(/^(\d{2}):(\d{2})/);
   if (!match) return undefined;
-  const instant = parseDateTime(raw) ?? new Date();
+  const instant = raw ? parseDateTime(raw) : new Date();
+  if (!instant) return undefined;
   return formatDateTimeForStorage(
     new Date(
       instant.getFullYear(),

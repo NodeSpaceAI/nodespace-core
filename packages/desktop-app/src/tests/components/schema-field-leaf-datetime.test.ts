@@ -67,13 +67,15 @@ describe('SchemaFieldLeaf — datetime', () => {
     expect(onChange).toHaveBeenCalledWith(stored(2026, 2, 1, 14, 45));
   });
 
-  it('writes nothing when the time is emptied', async () => {
+  it('writes nothing when the time is emptied, and shows the stored time again', async () => {
     const onChange = vi.fn();
     const { getByLabelText } = render(SchemaFieldLeaf, {
       props: { field: visitedAt, value: stored(2026, 2, 1, 9, 30), onChange, fieldId: 'f' }
     });
-    await fireEvent.change(getByLabelText('Visited at time'), { target: { value: '' } });
+    const time = getByLabelText('Visited at time') as HTMLInputElement;
+    await fireEvent.change(time, { target: { value: '' } });
     expect(onChange).not.toHaveBeenCalled();
+    expect(time.value).toBe('09:30');
   });
 
   it('writes one RFC 3339 date-time when the day changes, keeping the time', async () => {
