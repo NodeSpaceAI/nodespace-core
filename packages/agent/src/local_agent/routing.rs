@@ -555,8 +555,14 @@ pub fn score_bar_for(candidate: &SkillCandidate) -> f32 {
 /// A skill the chat pins clears it without a score (ADR-090 §5). The score
 /// stands for evidence that the request is about the skill, and a pin is
 /// that evidence already: the chat was created for it.
+///
+/// Not a destructive skill. A pin says what the chat is for, not that this
+/// message asks to remove something, and ADR-038 biases against the
+/// expensive error: a pinned skill that can remove user data still has to
+/// clear its own bar.
 pub fn clears_score_gate(candidate: &SkillCandidate) -> bool {
-    candidate.pinned || candidate.score >= score_bar_for(candidate)
+    (candidate.pinned && !skill_is_destructive(candidate))
+        || candidate.score >= score_bar_for(candidate)
 }
 
 /// The candidates Stage 2 judges in a chat that pins skills: `selected`, with
@@ -2902,8 +2908,6 @@ mod tests {
         assert_eq!(listed_once, ["invoice", "issue", "bug", "task"]);
     }
 
-    /// Linked metadata that names no type would make an `enum` nothing
-    /// satisfies, so it yields no set rather than an empty one.
     fn pinned(mut candidate: SkillCandidate) -> SkillCandidate {
         candidate.pinned = true;
         candidate.score = 0.0;
@@ -3018,6 +3022,25 @@ mod tests {
         assert_eq!(offered_types(&with_unlinked), None);
     }
 
+    /// A pin does not stand in for the destructive bar: a skill that can
+    /// remove user data is offered only when retrieval scored the request as
+    /// one for it, pinned or not.
+    #[test]
+    fn a_pin_does_not_clear_the_destructive_bar() {
+        let deletion = pinned(candidate("deletion", 0.0, &["delete_node"]));
+        assert!(skill_is_destructive(&deletion));
+        assert!(!clears_score_gate(&deletion));
+        assert!(stage2_permitted_names(std::slice::from_ref(&deletion)).is_empty());
+
+        let scored = SkillCandidate {
+            score: DESTRUCTIVE_SKILL_SCORE_BAR,
+            ..deletion
+        };
+        assert!(clears_score_gate(&scored));
+    }
+
+    /// Linked metadata that names no type would make an `enum` nothing
+    /// satisfies, so it yields no set rather than an empty one.
     #[test]
     fn linked_metadata_naming_no_type_yields_no_set() {
         assert_eq!(

@@ -95,10 +95,12 @@ pub async fn create_play_edit_chat(
     let title = display_title(&play).unwrap_or_else(|| "Untitled play".to_string());
 
     let mut properties = serde_json::json!({ "agent": NODESPACE_AGENT });
-    if let Some(provider) = model.provider {
+    // A blank value is no value: the schema's default stands.
+    let given = |value: Option<String>| value.filter(|v| !v.trim().is_empty());
+    if let Some(provider) = given(model.provider) {
         properties["provider"] = serde_json::json!(provider);
     }
-    if let Some(model) = model.model {
+    if let Some(model) = given(model.model) {
         properties["model"] = serde_json::json!(model);
     }
     let chat = CreateNodeParams {
@@ -110,7 +112,8 @@ pub async fn create_play_edit_chat(
         properties,
         lifecycle_status: None,
     };
-    let pins = [PLAY_AUTHORING_SKILL_ID, play.id.as_str()]
+    let pinned = [PLAY_AUTHORING_SKILL_ID, play.id.as_str()];
+    let pins = pinned
         .into_iter()
         .map(|target| NewRelationship {
             name: AI_CHAT_PINS.to_string(),
@@ -123,10 +126,12 @@ pub async fn create_play_edit_chat(
         .create_node_with_relationships(chat, pins)
         .await?;
     if !unpinned.is_empty() {
+        let missing: Vec<&str> = unpinned.iter().map(|index| pinned[*index]).collect();
         tracing::warn!(
             chat_id,
             play_id,
-            "a play's edit chat was created without its skill pin: the play-authoring skill is missing"
+            ?missing,
+            "a play's edit chat was created without a pin: its node does not exist"
         );
     }
 
@@ -149,6 +154,10 @@ pub async fn create_play_edit_chat(
 
 /// Delete a chat whose opening message could not be written. Best-effort: a
 /// failure here leaves an empty chat the user can delete.
+///
+/// No test reaches this: a message create that fails just after its chat's
+/// create succeeded needs a store that fails on demand, which the service
+/// has no seam for.
 async fn remove_chat(node_service: &NodeService, chat_id: &str) {
     let version = match node_service.get_node(chat_id).await {
         Ok(Some(chat)) => chat.version,
@@ -322,6 +331,29 @@ mod tests {
         let chat =
             AiChatNativeNode::from_node(svc.get_node(&chat_id).await.unwrap().unwrap()).unwrap();
         assert_eq!(chat.base.model.as_deref(), Some("gemma-4-e4b"));
+    }
+
+    /// A blank provider or model is none given: the chat gets the default.
+    #[tokio::test]
+    async fn a_blank_model_is_no_model() {
+        let (svc, _dir) = test_service().await;
+        let play_id = play(&svc, "Close finished parents").await;
+
+        let chat_id = create_play_edit_chat(
+            &svc,
+            &play_id,
+            ChatModel {
+                provider: Some(String::new()),
+                model: Some("  ".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        let chat =
+            AiChatNativeNode::from_node(svc.get_node(&chat_id).await.unwrap().unwrap()).unwrap();
+        assert_eq!(chat.base.model, None);
+        assert_eq!(chat.provider, Default::default());
     }
 
     /// With no play-authoring skill in the database the chat is still

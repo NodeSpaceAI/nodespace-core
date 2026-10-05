@@ -792,6 +792,13 @@ pub async fn get_node_relationships(
             }
         }
         let related = kept;
+        // A relationship that targets any node is declared toward every type,
+        // so an empty group for it would sit on every node in the graph. It
+        // is listed on the nodes it reaches: a chat's `pins` shows as
+        // `pinned_in` on a node some chat pins, and nowhere else.
+        if rel.target_type.is_none() && related.is_empty() {
+            continue;
+        }
         // Emit the group even with no edges yet — symmetric with the outbound
         // branch above — so a type reached only through a derived inbound
         // relationship (e.g. `task`, whose `project` link is declared outbound on

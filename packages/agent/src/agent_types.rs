@@ -727,7 +727,6 @@ pub struct SkillCandidate {
     /// Whether the chat pins this skill (ADR-090 §5). A pinned skill is a
     /// candidate on every routed turn of its chat, whatever retrieval scored
     /// it: the pin, not the score, is what makes it eligible.
-    #[serde(default)]
     pub pinned: bool,
 }
 

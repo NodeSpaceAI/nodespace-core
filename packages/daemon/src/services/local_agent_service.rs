@@ -850,7 +850,9 @@ impl LocalAgentServiceImpl {
         // What the chat pins (ADR-090 §4). The nodes it is about are stated
         // last, next to the message they are read against, on every turn:
         // unlike what a turn looked up, they do not age out of the
-        // conversation. Its skills go to routing, below.
+        // conversation. (Within one long turn the record can still be folded
+        // into a history summary with everything else; the next turn states
+        // it again.) Its skills go to routing, below.
         let pins = chat_pins::load_chat_pins(&self.inner.node_service, &node_id).await;
         prior_history.extend(chat_pins::pinned_nodes_message(&pins.nodes));
 
@@ -4732,6 +4734,41 @@ mod tests {
                 response: "Which rule?".to_string(),
             }]
         );
+    }
+
+    /// A chat's pinned skill reaches the turn: read from the chat's `pins`
+    /// edge, handed to the session, and put in front of the model. A chat
+    /// that pins no skill is sent none.
+    #[tokio::test]
+    async fn a_chats_pinned_skill_is_put_in_front_of_the_model() {
+        const GUIDANCE: &str = "Describe the change, then ask before writing the rules.";
+        let (svc, node_service, _tempdir) = test_service().await;
+        let fields = nodespace_core::models::SkillFields::new(GUIDANCE, &["search_nodes"], 5);
+        node_service
+            .create_node(Node::new_with_id(
+                nodespace_agent::skill_pipeline::PLAY_AUTHORING_SKILL_ID.to_string(),
+                "skill".to_string(),
+                "Play Authoring".to_string(),
+                fields.properties(),
+            ))
+            .await
+            .expect("seed the skill");
+        let (_play_id, chat_id, requests) =
+            play_edit_chat_on_a_recording_engine(&svc, &node_service).await;
+        let unpinned_chat =
+            create_processing_node_with_user_message(&node_service, "Change a condition").await;
+
+        send_user_message(&node_service, &chat_id, "Change a condition").await;
+        svc.maybe_handle_ai_chat_node(&chat_id).await;
+        svc.maybe_handle_ai_chat_node(&unpinned_chat).await;
+
+        let requests = requests.lock().unwrap();
+        let system_prompt = |request: &Vec<ChatMessage>| request[0].content.clone();
+        let pinned_turn = system_prompt(&requests[0]);
+        assert!(pinned_turn.contains("Play Authoring"), "{pinned_turn}");
+        assert!(pinned_turn.contains(GUIDANCE), "{pinned_turn}");
+        let unpinned_turn = system_prompt(requests.last().unwrap());
+        assert!(!unpinned_turn.contains(GUIDANCE), "{unpinned_turn}");
     }
 
     /// A pinned node is stated on every turn. It is not one of the entities a

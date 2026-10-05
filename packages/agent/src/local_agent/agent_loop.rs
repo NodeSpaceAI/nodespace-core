@@ -5299,6 +5299,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         "stage-1 routing failed; continuing unrouted"
                     );
                     span.set_attribute(KeyValue::new("routing.failed", true));
+                    // As when routing is unavailable: a pinned skill needs
+                    // neither Stage 1 nor retrieval.
+                    outcome.candidates = routing::with_pinned_skills(
+                        Vec::new(),
+                        &session.pinned_skills,
+                        &std::collections::HashMap::new(),
+                    );
                     return outcome;
                 }
             },

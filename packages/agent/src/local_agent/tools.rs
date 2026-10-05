@@ -699,8 +699,6 @@ fn play_value(node: &nodespace_core::models::Node) -> (nodespace_core::models::P
     (fields, play)
 }
 
-/// Prefix a bare node ID with `nodespace://` so the model sees the URI format
-/// it should use when referencing nodes in responses.
 /// A skill as `skill_ops` returns it, as the candidate routing judges.
 fn skill_candidate_from(s: &serde_json::Value) -> SkillCandidate {
     let text = |key: &str| {
@@ -754,6 +752,8 @@ pub async fn pinned_skill_candidates(
         .collect())
 }
 
+/// Prefix a bare node ID with `nodespace://` so the model sees the URI format
+/// it should use when referencing nodes in responses.
 pub(crate) fn node_uri(id: &str) -> String {
     if id.is_empty() || id.starts_with("nodespace://") {
         id.to_string()
