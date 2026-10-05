@@ -311,8 +311,7 @@ async fn resolve_property(
         .filter(|owner| owner.as_str() != target_type)
         .cloned();
     if segments.len() < 2 {
-        // Only an enum is declared again by a subtype, and an enum has no
-        // path into it, so a path has no subtype buckets to find.
+        // An enum has no path into it, so a path has no subtype buckets.
         let subtypes = subtype_buckets(node_service, declared_fields, target_type, name).await?;
         return Ok(PropertyScope { bucket, subtypes });
     }
@@ -365,6 +364,14 @@ async fn subtype_buckets(
     let Some(owner) = target.owners.get(field).cloned() else {
         return Ok(Vec::new());
     };
+    // Only an enum takes added values, so only an enum is declared again by
+    // a subtype: any other field needs no read of the subtypes' schemas.
+    let is_enum = target.fields.iter().any(|declared| {
+        declared.name == field && declared.field_type == crate::models::SchemaFieldType::Enum
+    });
+    if !is_enum {
+        return Ok(Vec::new());
+    }
     let target_fields = target.fields.clone();
 
     let mut buckets: Vec<SubtypeBucket> = Vec::new();
@@ -420,6 +427,16 @@ pub async fn resolve_sorting(
     sorting: Vec<SortConfig>,
 ) -> Result<Vec<SortConfig>, OpsError> {
     let mut declared_fields = DeclaredFields::default();
+    resolve_sorting_with(node_service, &mut declared_fields, target_type, sorting).await
+}
+
+/// [`resolve_sorting`], reading the schemas through `declared_fields`.
+async fn resolve_sorting_with(
+    node_service: &NodeService,
+    declared_fields: &mut DeclaredFields,
+    target_type: &str,
+    sorting: Vec<SortConfig>,
+) -> Result<Vec<SortConfig>, OpsError> {
     let mut resolved = Vec::with_capacity(sorting.len());
     for mut sort in sorting {
         // A node column is read as the column, whatever a schema declares.
@@ -429,7 +446,7 @@ pub async fn resolve_sorting(
         }
         sort.scope = resolve_property(
             node_service,
-            &mut declared_fields,
+            declared_fields,
             target_type,
             &sort.field,
             "sort field",
@@ -449,7 +466,7 @@ pub async fn resolve_sorting(
                     bucket: Some(scale_type.clone()),
                     subtypes: subtype_buckets(
                         node_service,
-                        &mut declared_fields,
+                        declared_fields,
                         scale_type,
                         &sort.field,
                     )
@@ -533,10 +550,19 @@ pub async fn resolve_filters(
     filters: Vec<QueryFilter>,
 ) -> Result<Vec<QueryFilter>, OpsError> {
     let mut declared_fields = DeclaredFields::default();
+    resolve_filters_with(node_service, &mut declared_fields, target_type, filters).await
+}
+
+/// [`resolve_filters`], reading the schemas through `declared_fields`.
+async fn resolve_filters_with(
+    node_service: &NodeService,
+    declared_fields: &mut DeclaredFields,
+    target_type: &str,
+    filters: Vec<QueryFilter>,
+) -> Result<Vec<QueryFilter>, OpsError> {
     let mut resolved = Vec::with_capacity(filters.len());
     for filter in filters {
-        resolved
-            .push(resolve_filter(node_service, &mut declared_fields, target_type, filter).await?);
+        resolved.push(resolve_filter(node_service, declared_fields, target_type, filter).await?);
     }
     Ok(resolved)
 }
@@ -705,9 +731,14 @@ async fn checked_definition(
         sorting,
         limit,
     } = query;
-    let filters = resolve_filters(node_service, &target_type, filters).await?;
+    // One read of each schema serves the filters and the sorting.
+    let mut declared_fields = DeclaredFields::default();
+    let filters =
+        resolve_filters_with(node_service, &mut declared_fields, &target_type, filters).await?;
     let sorting = match sorting {
-        Some(sorting) => Some(resolve_sorting(node_service, &target_type, sorting).await?),
+        Some(sorting) => Some(
+            resolve_sorting_with(node_service, &mut declared_fields, &target_type, sorting).await?,
+        ),
         None => None,
     };
     Ok(QueryDefinition {
@@ -2694,6 +2725,126 @@ mod tests {
             let mut first_two: Vec<String> = states(2).await.into_iter().map(|n| n.id).collect();
             first_two.sort();
             assert_eq!(first_two, [TICKET_DONE, BUG_DONE]);
+        }
+
+        /// An enum extended at two levels of a chain: a value added at the
+        /// lower level reads through both mappings at the top type and
+        /// through one at the middle type, and a type that extends the
+        /// lowest one without adding values keeps the field in its bucket.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn an_enum_extended_at_two_levels_reads_at_each_type_above() {
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({
+                    "name": "ml_a",
+                    "fields": [{
+                        "name": "state", "type": "enum", "extensible": true,
+                        "coreValues": [
+                            { "value": "open", "label": "Open" },
+                            { "value": "done", "label": "Done" }
+                        ]
+                    }]
+                }),
+            )
+            .await;
+            for (name, extends) in [("ml_b", "ml_a"), ("ml_c", "ml_b"), ("ml_d", "ml_c")] {
+                create_schema(
+                    &svc,
+                    json!({ "name": name, "extends": extends, "fields": [] }),
+                )
+                .await;
+            }
+            for (schema, value, maps_to) in
+                [("ml_b", "backlog", "open"), ("ml_c", "icebox", "backlog")]
+            {
+                crate::schema::handle_update_schema(
+                    &svc,
+                    json!({
+                        "schema_id": schema,
+                        "add_field_values": [{
+                            "field": "state",
+                            "values": [{ "value": value, "label": value, "mapsTo": maps_to }]
+                        }]
+                    }),
+                )
+                .await
+                .unwrap();
+            }
+
+            const A_OPEN: &str = "a8000000-0000-4000-8000-000000000001";
+            const B_BACKLOG: &str = "a8000000-0000-4000-8000-000000000002";
+            const C_ICEBOX: &str = "a8000000-0000-4000-8000-000000000003";
+            const D_ICEBOX: &str = "a8000000-0000-4000-8000-000000000004";
+            const D_DONE: &str = "a8000000-0000-4000-8000-000000000005";
+            for (id, node_type, state) in [
+                (A_OPEN, "ml_a", "open"),
+                (B_BACKLOG, "ml_b", "backlog"),
+                (C_ICEBOX, "ml_c", "icebox"),
+                (D_ICEBOX, "ml_d", "icebox"),
+                (D_DONE, "ml_d", "done"),
+            ] {
+                svc.create_node(node(id, node_type, json!({ "state": state })))
+                    .await
+                    .unwrap();
+            }
+
+            let matching = |target: &'static str, value: &'static str| {
+                let svc = Arc::clone(&svc);
+                async move {
+                    matching_ids(
+                        &svc,
+                        json!({ "target_type": target, "filters": [{
+                            "type": "property", "operator": "equals",
+                            "property": "state", "value": value
+                        }] }),
+                    )
+                    .await
+                }
+            };
+            assert_eq!(
+                matching("ml_a", "open").await,
+                [A_OPEN, B_BACKLOG, C_ICEBOX, D_ICEBOX]
+            );
+            assert_eq!(matching("ml_a", "done").await, [D_DONE]);
+            assert_eq!(
+                matching("ml_b", "backlog").await,
+                [B_BACKLOG, C_ICEBOX, D_ICEBOX]
+            );
+            assert!(matching("ml_b", "icebox").await.is_empty());
+            assert_eq!(matching("ml_c", "icebox").await, [C_ICEBOX, D_ICEBOX]);
+
+            // Every other row reads as `open` at the top type and as
+            // `backlog` at the middle one, so the one `done` row is first
+            // ascending at the top and first descending at the middle.
+            for (target, direction) in [("ml_a", "asc"), ("ml_b", "desc")] {
+                let first = ordered_ids(
+                    &svc,
+                    json!({
+                        "target_type": target, "filters": [], "limit": 1,
+                        "sorting": [{ "field": "state", "direction": direction }]
+                    }),
+                )
+                .await;
+                assert_eq!(first, [D_DONE], "{target}");
+            }
+
+            // The row returned carries the value the queried type reads.
+            let icebox = svc.get_node(D_ICEBOX).await.unwrap().unwrap();
+            for (scope, reads_as) in [("ml_a", "open"), ("ml_b", "backlog"), ("ml_c", "icebox")] {
+                let projected = svc
+                    .project_nodes_to_scope(vec![icebox.clone()], Some(scope))
+                    .await
+                    .unwrap();
+                let read = projected[0]
+                    .properties
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .find_map(|bucket| bucket.get("state"))
+                    .and_then(Value::as_str);
+                assert_eq!(read, Some(reads_as), "{scope}");
+            }
         }
 
         /// A subtype that adds its own values to an inherited `priority`

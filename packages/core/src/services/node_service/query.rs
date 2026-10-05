@@ -71,43 +71,52 @@ struct RelocatedFields {
 impl RelocatedFields {
     /// Put each field into `projected`, in the scope's bucket, read from
     /// `stored` as the scope reads it: an enum value the scope does not have
-    /// is the value it maps to. A value with no meaning at the scope is left
-    /// out, as it is for a filter.
+    /// is the value it maps to. A field with no value there, or a value with
+    /// no meaning at the scope, is absent from the row, as it is for a filter
+    /// and a sort: a value the scope's bucket still holds from before the
+    /// node's type was changed is not the node's value.
     fn read_into(
         &self,
         projected: &mut serde_json::Value,
         stored: &serde_json::Value,
         scope_fields: &[crate::models::SchemaField],
     ) {
+        let Some(projected) = projected.as_object_mut() else {
+            return;
+        };
         for (field, stored_in, scope_bucket) in &self.moves {
-            let Some(value) = stored
+            let value = stored
                 .get(stored_in)
                 .and_then(|bucket| bucket.get(field))
                 .filter(|value| !value.is_null())
-            else {
-                continue;
-            };
-            let value = match value.as_str() {
-                Some(raw) => match crate::schema::extends_chain::resolve_value_at_scope(
-                    field,
-                    raw,
-                    &self.node_fields,
-                    scope_fields,
-                ) {
-                    Some(resolved) => serde_json::Value::String(resolved),
-                    None => continue,
-                },
-                None => value.clone(),
-            };
-            let Some(projected) = projected.as_object_mut() else {
-                return;
-            };
-            if let Some(bucket) = projected
-                .entry(scope_bucket.clone())
-                .or_insert_with(|| serde_json::json!({}))
-                .as_object_mut()
-            {
-                bucket.insert(field.clone(), value);
+                .and_then(|value| match value.as_str() {
+                    Some(raw) => crate::schema::extends_chain::resolve_value_at_scope(
+                        field,
+                        raw,
+                        &self.node_fields,
+                        scope_fields,
+                    )
+                    .map(serde_json::Value::String),
+                    None => Some(value.clone()),
+                });
+            match value {
+                Some(value) => {
+                    if let Some(bucket) = projected
+                        .entry(scope_bucket.clone())
+                        .or_insert_with(|| serde_json::json!({}))
+                        .as_object_mut()
+                    {
+                        bucket.insert(field.clone(), value);
+                    }
+                }
+                None => {
+                    if let Some(bucket) = projected
+                        .get_mut(scope_bucket)
+                        .and_then(|bucket| bucket.as_object_mut())
+                    {
+                        bucket.remove(field);
+                    }
+                }
             }
         }
     }
@@ -753,6 +762,37 @@ impl NodeService {
             .mention_autocomplete(query, limit.map(|l| l as i64))
             .await
             .map_err(NodeServiceError::from_store)
+    }
+}
+
+#[cfg(test)]
+mod relocated_fields_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A node changed from the base type to a subtype that declares the field
+    /// keeps the old value in the base bucket. The row read at the base type
+    /// carries the subtype bucket's value, or no value when that has none.
+    #[test]
+    fn a_value_left_in_the_scope_bucket_is_not_the_nodes_value() {
+        let relocated = RelocatedFields {
+            node_fields: Vec::new(),
+            moves: vec![("rank".into(), "bug".into(), "ticket".into())],
+        };
+        let read = |stored: serde_json::Value| {
+            let mut projected = json!({ "ticket": stored["ticket"].clone() });
+            relocated.read_into(&mut projected, &stored, &[]);
+            projected
+        };
+
+        assert_eq!(
+            read(json!({ "ticket": { "rank": 1, "title": "t" }, "bug": { "rank": 2 } })),
+            json!({ "ticket": { "rank": 2, "title": "t" } })
+        );
+        assert_eq!(
+            read(json!({ "ticket": { "rank": 1, "title": "t" }, "bug": {} })),
+            json!({ "ticket": { "title": "t" } })
+        );
     }
 }
 

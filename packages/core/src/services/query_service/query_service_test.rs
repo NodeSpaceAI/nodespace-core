@@ -1957,9 +1957,10 @@ mod tests {
             !sql.contains("CASE"),
             "wildcard priority sort must not assume the task scale: {sql}"
         );
-        assert!(
-            sql.contains("json_extract(node.properties, '$.' || node.node_type || '.priority')"),
-            "each row is read at its own type: {sql}"
+        assert_eq!(
+            sql,
+            format!("{} ASC", QueryService::own_or_inherited_field("priority")),
+            "each row is read at its own type, then its ancestors'"
         );
     }
 
