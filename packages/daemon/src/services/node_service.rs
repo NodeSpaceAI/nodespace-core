@@ -3011,6 +3011,11 @@ async fn confirmed_delete(
     }
 }
 
+/// The largest `x-version-conflict` header sent with the current node in it.
+/// HTTP/2 clients cap a response's header list (hyper's default is 16 KB) and
+/// fail the stream past it, so this stays well under.
+const MAX_VERSION_CONFLICT_HEADER_BYTES: usize = 8 * 1024;
+
 /// `value` as JSON text in ASCII: every character outside it is written as a
 /// `\u` escape (a surrogate pair above the basic plane). Such characters
 /// occur only inside JSON strings, where the escape means the same thing.
@@ -3046,18 +3051,28 @@ pub(crate) fn ops_error_to_status(err: OpsError) -> Status {
                 "Version conflict on {}: expected {}, got {}",
                 node_id, expected, actual
             );
-            let payload = serde_json::json!({
-                "node_id": node_id,
-                "expected": expected,
-                "actual": actual,
-                "current_node": current_node,
-            });
+            let payload = |current_node: &Option<serde_json::Value>| {
+                ascii_json(&serde_json::json!({
+                    "node_id": node_id,
+                    "expected": expected,
+                    "actual": actual,
+                    "current_node": current_node,
+                }))
+            };
             let mut status = Status::new(tonic::Code::Aborted, message);
             // The header is ASCII, and a client reads it as a string: text
             // outside ASCII is sent as JSON `\u` escapes, or the client would
             // find no conflict at all for a node holding any.
-            if let Ok(val) = ascii_json(&payload)
-                .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+            //
+            // A client also caps the headers it accepts, and drops the whole
+            // response past the cap. A node too large to send safely is left
+            // out: the versions still arrive, and the client reads the node.
+            let mut header = payload(&current_node);
+            if header.len() > MAX_VERSION_CONFLICT_HEADER_BYTES {
+                header = payload(&None);
+            }
+            if let Ok(val) =
+                header.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
             {
                 status.metadata_mut().insert("x-version-conflict", val);
             }

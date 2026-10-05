@@ -2789,6 +2789,87 @@ async fn update_and_set_status_write_only_at_the_version_named() {
         .await
         .expect("no version: as before");
 
+    // A version named on an update that only changes collections is held to
+    // too, and a refused one joins nothing.
+    let join = |version| {
+        commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            id: id.clone(),
+            content: None,
+            properties: vec![],
+            collections: vec!["claimed".into()],
+            collection_ids: vec![],
+            remove_collection_ids: vec![],
+            version,
+        })
+    };
+    let err = commands::node::run(&mut client, join(Some(1)), false)
+        .await
+        .expect_err("version 1 is stale");
+    assert_refused(err, 1, 4);
+    let collections = raw
+        .query_nodes_simple(nodespace_daemon::nodespace::QueryNodesSimpleRequest {
+            include_archived: false,
+            id: None,
+            mentioned_by: None,
+            content_contains: None,
+            title_contains: None,
+            node_type: Some("collection".into()),
+            limit: 0,
+            offset: 0,
+            order_by: nodespace_daemon::nodespace::NodeSortOrder::Unspecified as i32,
+        })
+        .await
+        .expect("query collections")
+        .into_inner();
+    assert!(
+        collections.nodes.iter().all(|c| c.content != "claimed"),
+        "a refused update must not create or join a collection"
+    );
+    commands::node::run(&mut client, join(Some(4)), false)
+        .await
+        .expect("version 4 is current");
+
+    // A node too large for the conflict header to carry is still reported
+    // as a conflict, with its versions, across the socket.
+    let large = raw
+        .create_node(CreateNodeRequest {
+            node_type: "text".into(),
+            content: "日本語のノート ".repeat(4_000),
+            parent_id: None,
+            properties: String::new(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position: None,
+        })
+        .await
+        .expect("seed large node")
+        .into_inner()
+        .node_id;
+    let err = commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            id: large.clone(),
+            content: Some("short".into()),
+            properties: vec![],
+            collections: vec![],
+            collection_ids: vec![],
+            remove_collection_ids: vec![],
+            version: Some(7),
+        }),
+        false,
+    )
+    .await
+    .expect_err("version 7 was never this node's");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains(&large)
+            && message.contains("version 7 was given")
+            && message.contains("now at version 1"),
+        "{message}"
+    );
+
     // The structured form `--json` prints carries the same three facts.
     let status = raw
         .update_node(nodespace_daemon::nodespace::UpdateNodeRequest {

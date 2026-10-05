@@ -308,13 +308,27 @@ pub async fn update_node(
     // NodeUpdate would be rejected with "Update contains no changes". Collection
     // operations below are still applied.
     let current_node = if update.is_empty() {
-        node_service
+        let node = node_service
             .get_node(&input.node_id)
             .await
             .map_err(|e| OpsError::Internal(format!("Failed to get node: {}", e)))?
             .ok_or_else(|| OpsError::NotFound {
                 id: input.node_id.clone(),
-            })?
+            })?;
+        // A version the caller named holds for the collection changes below
+        // too: they are refused when the node has moved past it. This is a
+        // check ahead of them, not a lock: a membership change does not
+        // advance the node's version.
+        if let Some(expected) = input.version.filter(|v| *v != node.version) {
+            let actual = node.version;
+            return Err(OpsError::VersionConflict {
+                node_id: input.node_id,
+                expected,
+                actual,
+                current_node: node_to_typed_value(node_service, node).await.ok(),
+            });
+        }
+        node
     } else {
         // Auto-fetch version if not provided
         let version = match input.version {

@@ -158,6 +158,49 @@ async fn a_condition_reads_checked_on_checkbox_children() -> Result<()> {
     Ok(())
 }
 
+/// On an item whose type derives no `checked`, the attribute is `null` inside
+/// a comprehension. `== false` and `== true` therefore answer for the
+/// checkboxes alone, while `all` and `!=` count the other items too: "every
+/// checkbox is checked" is written as no checkbox being unchecked.
+#[tokio::test]
+async fn a_comprehension_reads_null_on_items_that_derive_nothing() -> Result<()> {
+    use nodespace_core::db::events::DomainEvent;
+    use nodespace_core::playbook::cel::{evaluate_conditions, CompiledCondition, ConditionResult};
+    use nodespace_core::playbook::graph_resolver::GraphResolver;
+
+    let (service, _tmp) = create_test_service().await?;
+    // Two checked checkboxes and a note.
+    let task = create(&service, "task", "all checked, with a note").await?;
+    create_child(&service, &task, "checkbox", "- [x] first").await?;
+    create_child(&service, &task, "text", "a note").await?;
+    create_child(&service, &task, "checkbox", "- [x] second").await?;
+    let node = service.get_node(&task).await?.expect("the task");
+    let event = DomainEvent::NodeCreated {
+        node_id: node.id.clone(),
+        node_type: node.node_type.clone(),
+    };
+
+    for (expr, holds) in [
+        ("node.has_child.exists(c, c.checked == false)", false),
+        ("!node.has_child.exists(c, c.checked == false)", true),
+        ("node.has_child.exists(c, c.checked == true)", true),
+        // The note is neither checked nor unchecked.
+        ("node.has_child.all(c, c.checked == true)", false),
+        ("node.has_child.exists(c, c.checked != true)", true),
+        ("node.has_child.exists(c, c.checked == null)", true),
+    ] {
+        let conditions = [CompiledCondition::compile(expr).expect("valid CEL")];
+        let mut resolver = GraphResolver::new(Arc::clone(&service));
+        let result = evaluate_conditions(&conditions, &node, &event, Some(&mut resolver)).await;
+        assert_eq!(
+            matches!(result, ConditionResult::Pass),
+            holds,
+            "{expr}: {result:?}"
+        );
+    }
+    Ok(())
+}
+
 /// Nothing is stored: editing the checkbox's prefix changes what the
 /// condition sees on the next evaluation.
 #[tokio::test]
