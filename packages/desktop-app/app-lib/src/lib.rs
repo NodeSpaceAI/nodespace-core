@@ -25,6 +25,10 @@ pub mod watcher;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub mod daemon_profile;
 
+// Which NodeSpace home the daemon serves: the user's registered service, or a child process
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+mod daemon_home;
+
 // Daemon lifecycle: launchd (macOS), systemd (Linux), direct spawn (Windows)
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub mod daemon_setup;

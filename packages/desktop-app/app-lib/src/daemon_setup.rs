@@ -51,6 +51,12 @@
 //!   - If already healthy: no-op.
 //!   - If service is registered but daemon crashed: restart it.
 //!   - If service is missing (e.g. clean install): re-run first-launch setup.
+//!
+//! Every path above is under the NodeSpace home the daemon serves
+//! ([`DaemonHome`]), which `NODESPACE_HOME` can move. For another home than the
+//! user's, step 3 registers nothing: the app starts the daemon as its own child
+//! process, headless, and the product check boots nothing out. A run against
+//! another home therefore never touches the user's service registration.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -64,6 +70,7 @@ use tokio::time::timeout;
 use tokio_util::sync::CancellationToken;
 use tonic::Request;
 
+use crate::daemon_home::DaemonHome;
 use crate::daemon_profile::{self, DaemonProfile};
 use crate::services::GrpcClient;
 #[cfg(windows)]
@@ -142,12 +149,11 @@ fn plist_filename() -> String {
 /// extraction and restart afterward.
 #[cfg(unix)]
 pub fn kill_stale_daemon_sync() {
-    let home = match home_dir() {
-        Some(h) => h,
-        None => return,
+    let Some(daemon_home) = DaemonHome::current() else {
+        return;
     };
-    let bin_dir = home.join(DAEMON_BIN_DIR);
-    let socket_path = home.join(daemon_socket_relative());
+    let bin_dir = daemon_home.path().join(DAEMON_BIN_DIR);
+    let socket_path = managed_socket_path(&daemon_home);
     let installed = bin_dir.join(daemon_binary_name());
 
     let bundled_size = match resolve_sidecar_path_sync() {
@@ -306,9 +312,12 @@ fn process_argv0_matches(pid: i32, expected_path: &str) -> bool {
 /// unconditional — they're what the tests below exercise.
 #[cfg(unix)]
 pub fn signal_daemon_to_stop() {
-    let Some(home) = home_dir() else { return };
-    let socket_path = home.join(daemon_socket_relative());
-    let installed = home
+    let Some(daemon_home) = DaemonHome::current() else {
+        return;
+    };
+    let socket_path = managed_socket_path(&daemon_home);
+    let installed = daemon_home
+        .path()
         .join(DAEMON_BIN_DIR)
         .join(daemon_binary_name())
         .to_string_lossy()
@@ -334,14 +343,26 @@ pub fn signal_daemon_to_stop() {
 /// one: the daemon's `shutdown_all`/GPU-release drain does not run.
 #[cfg(windows)]
 pub fn signal_daemon_to_stop() {
-    let image_name = daemon_profile::active().image_name();
+    let Some(args) = windows_stop_args() else {
+        return;
+    };
     #[cfg(not(test))]
     {
-        let _ = std::process::Command::new("taskkill")
-            .args(["/F", "/IM", &image_name])
-            .output();
+        let _ = std::process::Command::new("taskkill").args(&args).output();
     }
-    tracing::info!(%image_name, "Sent taskkill to nodespaced on app quit");
+    tracing::info!(?args, "Sent taskkill to nodespaced on app quit");
+}
+
+/// The `taskkill` arguments that stop this app's daemon, for the home it
+/// serves ([`crate::daemon_home::windows_stop_args`]).
+#[cfg(windows)]
+fn windows_stop_args() -> Option<Vec<String>> {
+    let home = DaemonHome::current()?;
+    crate::daemon_home::windows_stop_args(
+        &home,
+        &daemon_profile::active().image_name(),
+        crate::daemon_home::child_pid(),
+    )
 }
 
 /// Filename [`ui_pid_relative`]'s callers write/read, scoped by this
@@ -637,12 +658,17 @@ fn boot_out_service_registration() {
 /// boot-out and keeps its socket, and the daemon registered afterwards then
 /// exits on the single-instance lock; the app keeps using the survivor.
 ///
+/// For another home than the user's ([`DaemonHome::Other`]) a mismatch evicts
+/// nothing: no service registration serves that home, and the only one
+/// `boot_out` could remove is the user's own.
+///
 /// `boot_out` is a parameter so a test can stand in for the service manager.
 #[cfg(unix)]
 async fn evict_if_other_product(
     socket_path: &Path,
     reported: Option<&str>,
     profile: &DaemonProfile,
+    home: &DaemonHome,
     exit_grace: Duration,
     boot_out: impl FnOnce() + Send + 'static,
 ) -> bool {
@@ -650,6 +676,16 @@ async fn evict_if_other_product(
         ProductCheck::Match => false,
         ProductCheck::Unknown => {
             tracing::warn!("could not tell which daemon is running; leaving it in place");
+            false
+        }
+        ProductCheck::Mismatch if home.is_other() => {
+            tracing::warn!(
+                reported = reported.unwrap_or_default(),
+                expected = profile.binary_name,
+                home = %home.path().display(),
+                "the running daemon is not this app's daemon, but no service registration \
+                 serves this NodeSpace home; leaving it in place"
+            );
             false
         }
         ProductCheck::Mismatch => {
@@ -677,7 +713,11 @@ async fn evict_if_other_product(
 /// The client's channel may still hold a connection to an evicted daemon; it
 /// dials again on its next call, as it does after any other daemon restart.
 #[cfg(unix)]
-async fn evict_other_product_daemon(app: &AppHandle, socket_path: &Path) -> bool {
+async fn evict_other_product_daemon(
+    app: &AppHandle,
+    socket_path: &Path,
+    home: &DaemonHome,
+) -> bool {
     use tauri::Manager;
 
     let dialed = crate::services::grpc_client::resolve_socket_path();
@@ -700,6 +740,7 @@ async fn evict_other_product_daemon(app: &AppHandle, socket_path: &Path) -> bool
         socket_path,
         reported.as_deref(),
         daemon_profile::active(),
+        home,
         EVICTION_EXIT_GRACE,
         boot_out_service_registration,
     )
@@ -711,7 +752,8 @@ async fn evict_other_product_daemon(app: &AppHandle, socket_path: &Path) -> bool
 /// Call this from the Tauri setup block. It is non-fatal: logs errors
 /// and returns them so the caller can emit an appropriate UI error state.
 pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
-    let home = home_dir().context("Cannot resolve home directory")?;
+    let daemon_home = DaemonHome::current().context("Cannot resolve home directory")?;
+    let home = daemon_home.path();
     let bin_dir = home.join(DAEMON_BIN_DIR);
     let log_dir = home.join(DAEMON_LOG_DIR);
     let db_dir = home.join(DAEMON_DB_DIR);
@@ -719,7 +761,7 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     // check_daemon_socket and wait_for_daemon both dispatch on cfg(windows) so they
     // probe the pipe correctly as long as we pass the right path here.
     #[cfg(unix)]
-    let socket_path = home.join(daemon_socket_relative());
+    let socket_path = managed_socket_path(&daemon_home);
     #[cfg(windows)]
     let socket_path = PathBuf::from(crate::services::grpc_client::resolve_pipe_name());
     let daemon_bin = sidecar_install_path(&bin_dir, daemon_binary_name());
@@ -744,7 +786,7 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     // A daemon that answers but runs another binary is not ours to use, however
     // healthy it looks. Windows has no second binary to tell apart.
     #[cfg(unix)]
-    let evicted = evict_other_product_daemon(app, &socket_path).await;
+    let evicted = evict_other_product_daemon(app, &socket_path, &daemon_home).await;
     #[cfg(not(unix))]
     let evicted = false;
 
@@ -818,36 +860,15 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     // is still incompatible.
     crate::incompatible_database::clear_stale_marker();
 
-    // Register and/or start the daemon user service.
-    #[cfg(target_os = "macos")]
-    {
-        let plist_path = launch_agents_dir(&home).join(plist_filename());
-        write_plist(&home, &plist_path, &daemon_bin, daemon_profile::active())
-            .context("Failed to write launchd plist")?;
-        bootstrap_launchd_agent(&plist_path)?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let service_path = systemd_user_service_dir(&home).join(SYSTEMD_SERVICE_NAME);
-        write_systemd_service(&home, &service_path, &daemon_bin)
-            .context("Failed to write systemd service file")?;
-        enable_systemd_service()?;
-    }
-
-    // Windows: spawn the daemon process directly and register it in HKCU autorun
-    // so it restarts automatically on next login. Full SCM registration requires
-    // elevation which a normal user app cannot assume — direct spawn is used instead.
-    // stdout/stderr are routed to log files in log_dir (mirroring launchd's
-    // StandardOutPath/StandardErrorPath on macOS and systemd's StandardOutput=/
-    // StandardError=append: on Linux) rather than Stdio::null() — otherwise any
-    // diagnostic the daemon writes to stdout/stderr (tracing's default writer,
-    // or an eprintln!-based diagnostic) is silently discarded.
-    #[cfg(windows)]
-    {
-        spawn_daemon_windows(&daemon_bin, &log_dir).context("Failed to spawn daemon on Windows")?;
-        register_autorun_windows(&daemon_bin);
-    }
+    // Register and/or start the daemon user service, or for another home start
+    // the daemon as this app's own child.
+    start_daemon(
+        &daemon_home,
+        |home| register_user_service(home, &daemon_bin),
+        |home| {
+            crate::daemon_home::spawn_child(&daemon_bin, home, &socket_path, &log_dir).map(|_| ())
+        },
+    )?;
 
     // The daemon loads the embedding model before binding the socket (~9s on an M2 Mac).
     // 30s covers cold-start model load on slower machines.
@@ -858,6 +879,60 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     )
     .await;
     Ok(status)
+}
+
+/// Starts the daemon for `home`: `register` registers it as the user's service
+/// for the user's home, and `spawn_child` starts it as this app's child for
+/// another home, which registers nothing.
+///
+/// The two are parameters so a test can stand in for the service manager.
+fn start_daemon(
+    home: &DaemonHome,
+    register: impl FnOnce(&Path) -> Result<()>,
+    spawn_child: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
+    match home {
+        DaemonHome::User(home) => register(home),
+        DaemonHome::Other(home) => spawn_child(home),
+    }
+}
+
+/// Registers and starts `daemon_bin` as the user's service, for `home`, the
+/// user's home: the launchd job (macOS), the systemd user unit (Linux), or a
+/// direct spawn plus the HKCU Run value (Windows).
+fn register_user_service(home: &Path, daemon_bin: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let plist_path = launch_agents_dir(home).join(plist_filename());
+        write_plist(home, &plist_path, daemon_bin, daemon_profile::active())
+            .context("Failed to write launchd plist")?;
+        bootstrap_launchd_agent(&plist_path)?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let service_path = systemd_user_service_dir(home).join(SYSTEMD_SERVICE_NAME);
+        write_systemd_service(home, &service_path, daemon_bin)
+            .context("Failed to write systemd service file")?;
+        enable_systemd_service()?;
+    }
+
+    // Windows: spawn the daemon process directly and register it in HKCU autorun
+    // so it restarts automatically on next login. Full SCM registration requires
+    // elevation which a normal user app cannot assume — direct spawn is used instead.
+    // stdout/stderr are routed to log files in the log directory (mirroring launchd's
+    // StandardOutPath/StandardErrorPath on macOS and systemd's StandardOutput=/
+    // StandardError=append: on Linux) rather than Stdio::null() — otherwise any
+    // diagnostic the daemon writes to stdout/stderr (tracing's default writer,
+    // or an eprintln!-based diagnostic) is silently discarded.
+    #[cfg(windows)]
+    {
+        spawn_daemon_windows(daemon_bin, &home.join(DAEMON_LOG_DIR))
+            .context("Failed to spawn daemon on Windows")?;
+        register_autorun_windows(daemon_bin);
+    }
+
+    Ok(())
 }
 
 /// Send SIGTERM to the process listening on the socket and wait for it to exit.
@@ -931,18 +1006,21 @@ async fn wait_for_socket_release(socket_path: &Path, exit_grace: Duration) {
 /// Targets the active profile's image name (`DaemonProfile::image_name`)
 /// rather than a hardcoded literal — a daemon whose binary is not the
 /// community one would otherwise never be matched and killed before launching
-/// the updated binary.
+/// the updated binary. Another home's daemon is the exception: it is stopped
+/// by the process id this app started it under, never by name
+/// ([`crate::daemon_home::windows_stop_args`]).
 #[cfg(windows)]
 async fn kill_running_daemon(socket_path: &Path) {
     if !should_attempt_kill(&check_daemon_socket(socket_path).await) {
         return;
     }
 
-    let image_name = daemon_profile::active().image_name();
-    let _ = std::process::Command::new("taskkill")
-        .args(["/F", "/IM", &image_name])
-        .output();
-    tracing::info!(%image_name, "Sent taskkill to daemon");
+    let Some(args) = windows_stop_args() else {
+        tracing::warn!("no daemon this app started serves this NodeSpace home; not stopping it");
+        return;
+    };
+    let _ = std::process::Command::new("taskkill").args(&args).output();
+    tracing::info!(?args, "Sent taskkill to daemon");
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while tokio::time::Instant::now() < deadline {
@@ -1345,8 +1423,25 @@ pub(crate) fn set_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The NodeSpace home this app's daemon serves ([`DaemonHome`]): the user's home
+/// directory, or the one `NODESPACE_HOME` names. The daemon's binaries, logs,
+/// socket and the UI pid file are all under it.
 fn home_dir() -> Option<PathBuf> {
-    dirs::home_dir()
+    DaemonHome::current().map(|home| home.path().to_path_buf())
+}
+
+/// The socket of the daemon this app starts and stops.
+///
+/// For the user's home, the shared identity's socket under it, whichever socket
+/// the client dials (`NODESPACED_SOCKET` can point the client elsewhere). For
+/// another home, the socket the client dials, which is under that home unless
+/// `NODESPACED_SOCKET` names another: the app starts that home's daemon there.
+#[cfg(unix)]
+fn managed_socket_path(home: &DaemonHome) -> PathBuf {
+    match home {
+        DaemonHome::User(home) => home.join(daemon_socket_relative()),
+        DaemonHome::Other(_) => crate::services::grpc_client::resolve_socket_path(),
+    }
 }
 
 // ── macOS: launchd ────────────────────────────────────────────────────────────
@@ -1801,7 +1896,7 @@ const WINDOWS_AUTORUN_VALUE: &str = "NodeSpaceDaemon";
 /// `rotate_daemon_logs` calls it on every platform to find the files it may
 /// need to roll, and it can be exercised by an ordinary `#[test]` on any
 /// development machine.
-fn daemon_log_paths(log_dir: &Path) -> (PathBuf, PathBuf) {
+pub(crate) fn daemon_log_paths(log_dir: &Path) -> (PathBuf, PathBuf) {
     (
         log_dir.join("nodespaced.log"),
         log_dir.join("nodespaced-error.log"),
@@ -1818,7 +1913,6 @@ fn daemon_log_paths(log_dir: &Path) -> (PathBuf, PathBuf) {
 /// `StandardOutput=`/`StandardError=` in `write_systemd_service`.
 ///
 /// Pure `std::fs` — no Windows-specific API — so it's directly testable here.
-#[cfg(any(windows, test))]
 fn open_daemon_log(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new()
         .create(true)
@@ -2007,9 +2101,16 @@ fn should_restart_for_log_rotation(oversized: bool, status: &DaemonStatus) -> bo
 /// same platform-specific (re)register/spawn `ensure_daemon_running` runs.
 /// No new IPC and no change to how the daemon owns (or rather, does not own)
 /// its stdio.
+///
+/// Another home's daemon is never restarted here: that restart would register
+/// it as the user's service. Its logs roll at its next start.
 #[cfg(windows)]
 async fn check_and_rotate_live_logs(app: &AppHandle) -> Result<()> {
-    let home = home_dir().context("Cannot resolve home directory")?;
+    let daemon_home = DaemonHome::current().context("Cannot resolve home directory")?;
+    if daemon_home.is_other() {
+        return Ok(());
+    }
+    let home = daemon_home.path();
     let log_dir = home.join(DAEMON_LOG_DIR);
     let (stdout_log, stderr_log) = daemon_log_paths(&log_dir);
     let oversized = log_file_oversized(&stdout_log) || log_file_oversized(&stderr_log);
@@ -2130,8 +2231,10 @@ pub fn spawn_log_rotation_watcher(app: AppHandle, cancel_token: CancellationToke
 /// service from running (the app only ever writes the plist/unit text; the
 /// service manager owns opening the log), so treating it as fatal here would
 /// be a Windows-only regression relative to that behavior.
-#[cfg(windows)]
-fn daemon_log_stdio(path: &Path) -> std::process::Stdio {
+///
+/// Also the stdio of the daemon the app starts as its child for another
+/// NodeSpace home, on every platform (`daemon_home::spawn_child`).
+pub(crate) fn daemon_log_stdio(path: &Path) -> std::process::Stdio {
     match open_daemon_log(path) {
         Ok(f) => std::process::Stdio::from(f),
         Err(e) => {
@@ -2710,6 +2813,76 @@ mod macos_plist_keepalive_tests {
         assert!(
             plutil_lints(&plist_path),
             "written plist must be valid XML/plist"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The whole registration for the user's home, byte for byte, at the paths
+    /// the launcher derives from that home. Any change to the user's own
+    /// service, its location or its contents, has to change this text too.
+    #[test]
+    fn the_user_home_plist_is_unchanged_byte_for_byte() {
+        let home = scratch_dir("golden");
+        let plist_path = super::launch_agents_dir(&home).join(super::plist_filename());
+        let daemon_bin = super::sidecar_install_path(
+            &home.join(super::DAEMON_BIN_DIR),
+            super::DAEMON_BINARY_NAME,
+        );
+
+        write_plist(&home, &plist_path, &daemon_bin, &DaemonProfile::community())
+            .expect("write_plist should succeed");
+        let contents = std::fs::read_to_string(&plist_path).expect("plist should be written");
+
+        let (label, socket) = if cfg!(debug_assertions) {
+            ("app.nodespace.daemon.dev", "daemon-dev.sock")
+        } else {
+            ("app.nodespace.daemon", "daemon.sock")
+        };
+        let ui_binary = std::env::current_exe()
+            .expect("current_exe")
+            .canonicalize()
+            .expect("canonicalize");
+        let h = home.display();
+        let expected = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{h}/.nodespace/bin/nodespaced</string>
+        <string>--tray</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>NODESPACED_SOCKET</key>
+        <string>{h}/.nodespace/{socket}</string>
+        <key>NODESPACE_UI_BINARY</key>
+        <string>{ui}</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>{h}/.nodespace/logs/nodespaced.log</string>
+    <key>StandardErrorPath</key>
+    <string>{h}/.nodespace/logs/nodespaced-error.log</string>
+</dict>
+</plist>
+"#,
+            ui = ui_binary.display(),
+        );
+        assert_eq!(contents, expected);
+        assert_eq!(
+            plist_path,
+            home.join(format!("Library/LaunchAgents/{label}.plist"))
         );
 
         let _ = std::fs::remove_dir_all(&home);
@@ -3973,6 +4146,7 @@ mod product_check_tests {
 #[cfg(all(test, unix))]
 mod product_eviction_tests {
     use super::{boot_out_command, evict_if_other_product};
+    use crate::daemon_home::DaemonHome;
     use crate::daemon_profile::DaemonProfile;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
@@ -3994,6 +4168,42 @@ mod product_eviction_tests {
         })
     }
 
+    fn user_home() -> DaemonHome {
+        DaemonHome::User(PathBuf::from("/Users/me"))
+    }
+
+    /// For another NodeSpace home no registration serves the daemon, so the only
+    /// one a boot-out could remove is the user's: a mismatch evicts nothing and
+    /// leaves the socket to the daemon on it.
+    #[tokio::test]
+    async fn another_homes_mismatch_never_boots_out() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = socket_in(&dir);
+        let _serving = UnixListener::bind(&socket).expect("bind test socket");
+
+        for reported in [Some("/opt/bin/custom-daemon"), Some("")] {
+            let (booted_out, boot_out) = counter();
+
+            let evicted = evict_if_other_product(
+                &socket,
+                reported,
+                &DaemonProfile::community(),
+                &DaemonHome::Other(dir.path().to_path_buf()),
+                GRACE,
+                boot_out,
+            )
+            .await;
+
+            assert!(!evicted, "{reported:?}");
+            assert_eq!(
+                booted_out.load(Ordering::SeqCst),
+                0,
+                "no boot-out for {reported:?}"
+            );
+            assert!(socket.exists(), "{reported:?}");
+        }
+    }
+
     #[tokio::test]
     async fn a_matching_daemon_is_left_alone() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -4005,6 +4215,7 @@ mod product_eviction_tests {
             &socket,
             Some("/Users/me/.nodespace/bin/nodespaced"),
             &DaemonProfile::community(),
+            &user_home(),
             GRACE,
             boot_out,
         )
@@ -4022,9 +4233,15 @@ mod product_eviction_tests {
         let _serving = UnixListener::bind(&socket).expect("bind test socket");
         let (booted_out, boot_out) = counter();
 
-        let evicted =
-            evict_if_other_product(&socket, None, &DaemonProfile::community(), GRACE, boot_out)
-                .await;
+        let evicted = evict_if_other_product(
+            &socket,
+            None,
+            &DaemonProfile::community(),
+            &user_home(),
+            GRACE,
+            boot_out,
+        )
+        .await;
 
         assert!(!evicted);
         assert_eq!(booted_out.load(Ordering::SeqCst), 0, "no boot-out");
@@ -4049,6 +4266,7 @@ mod product_eviction_tests {
                 &socket,
                 reported,
                 &DaemonProfile::community(),
+                &user_home(),
                 Duration::from_secs(5),
                 boot_out,
             )
@@ -4076,6 +4294,7 @@ mod product_eviction_tests {
             &socket,
             Some("/opt/bin/custom-daemon"),
             &DaemonProfile::community(),
+            &user_home(),
             GRACE,
             boot_out,
         )
@@ -4124,5 +4343,216 @@ mod product_eviction_tests {
 
         assert_eq!(program, "systemctl");
         assert_eq!(args, ["--user", "stop", "nodespace.service"]);
+    }
+}
+
+/// Which way [`start_daemon`] goes for each home. The service manager and the
+/// child spawn are stood in for by closures that record the home they get.
+#[cfg(test)]
+mod start_daemon_tests {
+    use super::start_daemon;
+    use crate::daemon_home::DaemonHome;
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    /// The homes passed to the registration and to the child spawn.
+    fn started(home: &DaemonHome) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let registered = RefCell::new(Vec::new());
+        let spawned = RefCell::new(Vec::new());
+        start_daemon(
+            home,
+            |home| {
+                registered.borrow_mut().push(home.to_path_buf());
+                Ok(())
+            },
+            |home| {
+                spawned.borrow_mut().push(home.to_path_buf());
+                Ok(())
+            },
+        )
+        .expect("start_daemon");
+        (registered.into_inner(), spawned.into_inner())
+    }
+
+    #[test]
+    fn only_the_users_home_is_registered_with_the_service_manager() {
+        assert_eq!(
+            started(&DaemonHome::User(PathBuf::from("/Users/me"))),
+            (vec![PathBuf::from("/Users/me")], vec![]),
+            "the user's home registers its service and starts no child"
+        );
+        assert_eq!(
+            started(&DaemonHome::Other(PathBuf::from("/scratch/home"))),
+            (vec![], vec![PathBuf::from("/scratch/home")]),
+            "another home starts a child and registers nothing"
+        );
+    }
+}
+
+/// A start for another NodeSpace home, end to end short of a real daemon: `HOME`
+/// points at a scratch directory standing in for the user's home, and
+/// `NODESPACE_HOME` at a second one. The registration is a counting closure, so
+/// no service manager runs; the child is `/usr/bin/env`, which prints the
+/// environment it was given into the daemon's log. The environment is
+/// process-global: nextest runs each test in its own process, and the guard
+/// restores every variable it changed.
+#[cfg(all(test, unix))]
+mod other_home_tests {
+    use super::{
+        daemon_log_paths, daemon_socket_relative, managed_socket_path, start_daemon,
+        write_own_ui_pid_file, DAEMON_LOG_DIR,
+    };
+    use crate::daemon_home::DaemonHome;
+    use std::ffi::OsString;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    /// Sets or removes variables, and puts them back as they were on drop.
+    struct EnvGuard(Vec<(&'static str, Option<OsString>)>);
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, Option<&Path>)]) -> Self {
+            let saved = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var_os(name)))
+                .collect();
+            for (name, value) in vars {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            Self(saved)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in &self.0 {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    /// Every file under `dir`, at any depth.
+    fn files(dir: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(files(&path));
+            } else {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    fn marker_in(home: &Path) -> PathBuf {
+        home.join(nodespace_proto::socket::STATE_DIR).join(
+            nodespace_proto::socket::incompatible_database_name(cfg!(debug_assertions)),
+        )
+    }
+
+    fn write(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("create_dir_all");
+        std::fs::write(path, contents).expect("write");
+    }
+
+    /// Reads `path` until it holds `needle`, or gives up after a few seconds.
+    fn read_until(path: &Path, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            if text.contains(needle) || Instant::now() >= deadline {
+                return text;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn another_home_never_touches_the_users_home() {
+        let user = tempfile::tempdir().expect("user home");
+        let other = tempfile::tempdir().expect("other home");
+        // A refusal the user's daemon recorded, which a start for another home
+        // must leave alone, and a stale one in the other home, which it clears.
+        let user_marker = marker_in(user.path());
+        write(&user_marker, "{}");
+        let other_marker = marker_in(other.path());
+        write(&other_marker, "{}");
+
+        let _env = EnvGuard::set(&[
+            ("HOME", Some(user.path())),
+            ("NODESPACE_HOME", Some(other.path())),
+            ("NODESPACED_SOCKET", None),
+        ]);
+
+        let home = DaemonHome::current().expect("a home");
+        assert_eq!(home, DaemonHome::Other(other.path().to_path_buf()));
+        let socket = managed_socket_path(&home);
+        assert_eq!(socket, other.path().join(daemon_socket_relative()));
+        assert_eq!(
+            crate::services::grpc_client::resolve_socket_path(),
+            socket,
+            "the app dials the socket it starts the other home's daemon on"
+        );
+
+        crate::incompatible_database::clear_stale_marker();
+        write_own_ui_pid_file();
+        let log_dir = other.path().join(DAEMON_LOG_DIR);
+        std::fs::create_dir_all(&log_dir).expect("log dir");
+        let registered = AtomicUsize::new(0);
+        start_daemon(
+            &home,
+            |_| {
+                registered.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            |home| {
+                crate::daemon_home::spawn_child(Path::new("/usr/bin/env"), home, &socket, &log_dir)
+                    .map(|_| ())
+            },
+        )
+        .expect("start the other home's daemon");
+
+        let (stdout_log, _) = daemon_log_paths(&log_dir);
+        let printed = read_until(&stdout_log, "NODESPACED_SOCKET=");
+        assert!(
+            printed
+                .lines()
+                .any(|line| line == format!("NODESPACE_HOME={}", other.path().display())),
+            "the child serves the other home: {printed}"
+        );
+        assert!(
+            printed
+                .lines()
+                .any(|line| line == format!("NODESPACED_SOCKET={}", socket.display())),
+            "the child binds the socket the app dials: {printed}"
+        );
+        assert_eq!(
+            registered.load(Ordering::SeqCst),
+            0,
+            "no service registration"
+        );
+        assert!(
+            !other_marker.exists(),
+            "the other home's stale marker is cleared"
+        );
+        assert!(other
+            .path()
+            .join(nodespace_proto::socket::ui_pid_relative(cfg!(
+                debug_assertions
+            )))
+            .exists());
+        assert_eq!(
+            files(user.path()),
+            vec![user_marker],
+            "nothing in the user's home changes: no launch agent, binary, log, pid file or marker"
+        );
     }
 }

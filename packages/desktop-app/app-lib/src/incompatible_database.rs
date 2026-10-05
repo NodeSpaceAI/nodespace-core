@@ -36,8 +36,10 @@ fn marker_path_in(home: &Path) -> PathBuf {
     )
 }
 
+/// The marker under the NodeSpace home the daemon serves, which follows
+/// `NODESPACE_HOME` as the daemon's state directory does.
 fn marker_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|home| marker_path_in(&home))
+    crate::daemon_home::DaemonHome::current().map(|home| marker_path_in(home.path()))
 }
 
 /// The refusal recorded at `marker`, if any. A marker that cannot be parsed

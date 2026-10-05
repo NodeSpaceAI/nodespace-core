@@ -571,42 +571,48 @@ pub(crate) fn resolve_socket_path() -> std::path::PathBuf {
     default_socket_path()
 }
 
-/// The socket this build dials when `NODESPACED_SOCKET` is absent. Reads no
-/// environment, so a test can compare it with another path without racing the
-/// tests that set the variable.
+/// The socket this build dials when `NODESPACED_SOCKET` is absent: this
+/// build's socket under the NodeSpace home the daemon serves
+/// (`daemon_home::DaemonHome`), which `NODESPACE_HOME` can move.
 #[cfg(unix)]
 pub(crate) fn default_socket_path() -> std::path::PathBuf {
-    default_socket_path_for(cfg!(debug_assertions))
+    let home = crate::daemon_home::DaemonHome::current()
+        .map(|home| home.path().to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    default_socket_path_for(&home, cfg!(debug_assertions))
 }
 
 /// The socket [`resolve_socket_path`] falls back to when `NODESPACED_SOCKET` is
-/// absent, for an arbitrary build flavour rather than this binary's own.
+/// absent, under `home` and for an arbitrary build flavour rather than this
+/// binary's own.
 ///
 /// Two things are deliberate here. It takes the flavour as a parameter because
 /// a compiled app is only ever one flavour, so this is the only way an ordinary
 /// `#[test]` can check that the app dials, for both flavours, the socket the
 /// daemon binds. And it reads no environment at all: `cargo test` runs the whole
 /// binary in one process on a thread pool, so a test of an env-reading resolver
-/// races every other test that touches the same variable. Keeping the override
-/// in the caller leaves this half deterministic and testable, and leaves the
-/// override itself covered by a single test that owns the variable.
+/// races every other test that touches the same variable. Keeping the home and
+/// the override in the caller leaves this half deterministic and testable.
 #[cfg(unix)]
-pub(crate) fn default_socket_path_for(is_debug: bool) -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join(nodespace_proto::socket::daemon_socket_relative(is_debug))
+pub(crate) fn default_socket_path_for(
+    home: &std::path::Path,
+    is_debug: bool,
+) -> std::path::PathBuf {
+    home.join(nodespace_proto::socket::daemon_socket_relative(is_debug))
 }
 
 /// Resolve the Named Pipe name used on Windows.
 ///
 /// Checks `NODESPACED_SOCKET` env var first (mirrors Unix override convention),
-/// then falls back to `\\.\pipe\nodespace-daemon`.
+/// then falls back to `\\.\pipe\nodespace-daemon`, or for another NodeSpace
+/// home than the user's to a pipe of that home's own
+/// (`daemon_home::default_pipe_name`).
 #[cfg(windows)]
 pub(crate) fn resolve_pipe_name() -> String {
     if let Ok(p) = std::env::var(nodespace_proto::socket::SOCKET_ENV_VAR) {
         return p;
     }
-    nodespace_proto::socket::DAEMON_PIPE_NAME.to_string()
+    crate::daemon_home::default_pipe_name(crate::daemon_home::DaemonHome::current().as_ref())
 }
 
 /// On Windows, return the pipe name as a `PathBuf` so callers that take a `Path`
@@ -764,13 +770,13 @@ mod tests {
     /// `default_socket_path_for`'s doc comment.
     #[test]
     fn each_flavour_dials_the_socket_its_daemon_binds() {
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        let home = std::path::Path::new("/Users/someone");
         for (is_debug, expected) in [
             (false, ".nodespace/daemon.sock"),
             (true, ".nodespace/daemon-dev.sock"),
         ] {
             assert_eq!(
-                super::default_socket_path_for(is_debug),
+                super::default_socket_path_for(home, is_debug),
                 home.join(expected),
                 "flavour (debug={is_debug}) must dial {expected}"
             );
