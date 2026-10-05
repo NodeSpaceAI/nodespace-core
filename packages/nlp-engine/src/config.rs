@@ -13,8 +13,11 @@ pub const GPU_OFFLOAD_ALL_LAYERS: u32 = 99;
 /// `0188c9bf409793f810680a5a431e7b899c46104c`), lowercase hex.
 ///
 /// This is the load-time half of the model-integrity gate (ADR-058); the
-/// build-time download in `scripts/download-models.ts` pins the SAME digest.
-/// Rotating the model MUST update both constants in the same change.
+/// build-time download in `scripts/download-models.ts` pins the SAME digest,
+/// and so does the desktop app's copy of its bundled model
+/// (`packages/desktop-app/app-lib/src/bundled_model.rs`). Rotating the model
+/// MUST update all three in the same change; the app's tests fail on a
+/// mismatch.
 pub const EMBEDDING_MODEL_SHA256: &str =
     "3e24342164b3d94991ba9692fdc0dd08e3fd7362e0aacc396a9a5c54a544c3b7";
 
