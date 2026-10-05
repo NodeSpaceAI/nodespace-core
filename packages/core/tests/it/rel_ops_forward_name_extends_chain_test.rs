@@ -515,3 +515,70 @@ async fn reverse_name_narrowing_includes_a_subtype_of_the_declaring_schema() -> 
     );
     Ok(())
 }
+
+/// A related node of an extending type comes back with the fields it
+/// inherits beside its own: an inherited field is stored under the type that
+/// declares it, and the row is converted with the chain folded into one
+/// bucket.
+#[tokio::test]
+async fn a_related_subtype_node_carries_its_inherited_fields() -> Result<()> {
+    const TARGET: &str = "c3000000-0000-4000-8000-000000000001";
+    const SUB: &str = "c3000000-0000-4000-8000-000000000002";
+
+    let (svc, _t) = create_test_service().await?;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "rel_ops_ext_shape_target", "fields": [] }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("target schema: {e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "rel_ops_ext_shape_base",
+            "fields": [{ "name": "owner", "type": "text" }],
+            "relationships": [{
+                "name": "story",
+                "targetType": "rel_ops_ext_shape_target",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "tasks",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("base schema: {e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "rel_ops_ext_shape_sub",
+            "extends": "rel_ops_ext_shape_base",
+            "fields": [{ "name": "severity", "type": "text" }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("subtype schema: {e}"))?;
+
+    make_node(&svc, TARGET, "rel_ops_ext_shape_target").await?;
+    svc.create_node(Node::new_with_id(
+        SUB.to_string(),
+        "rel_ops_ext_shape_sub".to_string(),
+        format!("{SUB} content"),
+        json!({ "rel_ops_ext_shape_sub": { "owner": "ann", "severity": "low" } }),
+    ))
+    .await?;
+    let stored = svc.get_node(SUB).await?.expect("the subtype node exists");
+    assert_eq!(stored.properties["rel_ops_ext_shape_base"]["owner"], "ann");
+    svc.create_relationship(SUB, "story", TARGET, json!({}))
+        .await?;
+
+    let out = rel_ops::get_related_nodes(&svc, get(TARGET, "tasks", "out")).await?;
+    assert_eq!(out.count, 1);
+    assert_eq!(out.related_nodes[0]["id"], SUB);
+    assert_eq!(
+        out.related_nodes[0]["properties"],
+        json!({ "owner": "ann", "severity": "low" })
+    );
+    Ok(())
+}

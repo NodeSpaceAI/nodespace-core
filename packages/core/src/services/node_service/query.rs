@@ -562,8 +562,9 @@ impl NodeService {
     /// the fields outside its read scope — and there are such callers
     /// (`skill_updater` round-trips a node it queried). Projection belongs at
     /// a boundary where results are leaving for a client and cannot be written
-    /// back, so it is offered here and applied by the daemon's read RPCs
-    /// rather than imposed on every internal query.
+    /// back, so it is offered here and applied by the daemon's read RPCs and
+    /// by the ops that return a query's rows as typed values, rather than
+    /// imposed on every internal query.
     pub async fn project_nodes_to_scope(
         &self,
         nodes: Vec<Node>,

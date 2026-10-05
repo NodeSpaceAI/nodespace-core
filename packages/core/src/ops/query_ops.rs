@@ -628,8 +628,23 @@ fn resolve_filter<'a>(
     })
 }
 
-fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<Value>, OpsError> {
-    crate::models::nodes_to_typed_values(nodes).map_err(OpsError::Internal)
+/// The rows of a query for `target_type`, in the shape an agent tool call
+/// reads: projected to the queried type's scope, then converted with each
+/// row's remaining chain folded into its own bucket (ADR-078).
+///
+/// The order matters. Projection drops the buckets outside the scope, and
+/// the collapse then folds what is left, so a base-type query returns a
+/// subtype's row with the base type's fields only. A query over every type
+/// (`*`) has no scope, and each row keeps its whole chain's fields.
+async fn rows_at_scope(
+    node_service: &NodeService,
+    nodes: Vec<Node>,
+    target_type: &str,
+) -> Result<Vec<Value>, OpsError> {
+    let projected = node_service
+        .project_nodes_to_scope(nodes, Some(target_type))
+        .await?;
+    crate::ops::node_ops::nodes_to_typed_values(node_service, projected).await
 }
 
 // ============================================================================
@@ -947,7 +962,7 @@ pub async fn run_saved_query_excluding(
     let count = run.nodes.len();
     Ok((
         ExecuteQueryOutput {
-            nodes: nodes_to_typed_values(run.nodes)?,
+            nodes: rows_at_scope(node_service, run.nodes, &run.target_type).await?,
             count,
             collection_id: None,
         },
@@ -982,8 +997,9 @@ pub async fn count_query(
 
 /// Execute a structured property query, returning typed JSON values.
 ///
-/// Thin wrapper over [`execute_query_nodes`] for callers (agent tool call)
-/// that want the typed-value shape rather than raw `Node`s.
+/// For callers (agent tool call) that want the typed-value shape rather than
+/// raw `Node`s. Unlike [`execute_query_nodes`], each row is projected to
+/// `target_type`'s scope and carries the fields that type reads (ADR-078).
 pub async fn execute_query(
     node_service: &Arc<NodeService>,
     input: ExecuteQueryInput,
@@ -998,9 +1014,10 @@ pub async fn execute_query_excluding(
     input: ExecuteQueryInput,
     excluded: &[crate::models::CoreNodeType],
 ) -> Result<ExecuteQueryOutput, OpsError> {
+    let target_type = input.target_type.clone();
     let nodes = execute_query_nodes_excluding(node_service, input, excluded).await?;
     let count = nodes.len();
-    let typed_nodes = nodes_to_typed_values(nodes)?;
+    let typed_nodes = rows_at_scope(node_service, nodes, &target_type).await?;
 
     Ok(ExecuteQueryOutput {
         nodes: typed_nodes,
@@ -3773,6 +3790,197 @@ mod tests {
                         "{property:?} must be refused as the caller's error, got {err:?}"
                     );
                 }
+            }
+        }
+
+        // -- Row shape: the fields a returned row carries (ADR-078) --
+
+        const SHAPED_BUG: &str = "a9000000-0000-4000-8000-000000000001";
+
+        /// `rs_bug` extends `rs_ticket`, adding a field of its own and a
+        /// value to the inherited enum; one bug holds a value in each.
+        async fn seed_shaped_bug(svc: &Arc<NodeService>) {
+            create_schema(
+                svc,
+                json!({
+                    "name": "rs_ticket",
+                    "fields": [
+                        {
+                            "name": "state", "type": "enum", "extensible": true,
+                            "coreValues": [
+                                { "value": "open", "label": "Open" },
+                                { "value": "done", "label": "Done" }
+                            ]
+                        },
+                        { "name": "owner", "type": "text" }
+                    ]
+                }),
+            )
+            .await;
+            create_schema(
+                svc,
+                json!({
+                    "name": "rs_bug", "extends": "rs_ticket",
+                    "fields": [{ "name": "severity", "type": "text" }]
+                }),
+            )
+            .await;
+            crate::schema::handle_update_schema(
+                svc,
+                json!({
+                    "schema_id": "rs_bug",
+                    "add_field_values": [{
+                        "field": "state",
+                        "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
+                    }]
+                }),
+            )
+            .await
+            .unwrap();
+            svc.create_node(node(
+                SHAPED_BUG,
+                "rs_bug",
+                json!({ "state": "backlog", "owner": "ann", "severity": "low" }),
+            ))
+            .await
+            .unwrap();
+            // The inherited field is stored under the type that declares it,
+            // which is what a single-bucket conversion drops.
+            let stored = svc.get_node(SHAPED_BUG).await.unwrap().unwrap();
+            assert_eq!(stored.properties["rs_ticket"]["owner"], "ann");
+        }
+
+        /// The one row's flat properties, as an agent tool call reads them.
+        fn shaped_bug_properties(output: &ExecuteQueryOutput) -> &Value {
+            assert_eq!(output.count, 1);
+            assert_eq!(output.nodes[0]["id"], SHAPED_BUG);
+            &output.nodes[0]["properties"]
+        }
+
+        async fn shaped_bug_at(svc: &Arc<NodeService>, input: Value) -> ExecuteQueryOutput {
+            execute_query(svc, serde_json::from_value(input).unwrap())
+                .await
+                .unwrap()
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_subtype_query_returns_inherited_fields_with_its_own() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_shaped_bug(&svc).await;
+
+            let output = shaped_bug_at(&svc, json!({ "target_type": "rs_bug" })).await;
+            assert_eq!(
+                shaped_bug_properties(&output),
+                &json!({ "state": "backlog", "owner": "ann", "severity": "low" })
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_base_type_query_returns_a_subtype_row_with_the_base_fields_only() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_shaped_bug(&svc).await;
+
+            // The subtype's added `backlog` reads as the `open` it maps to,
+            // and the subtype's own `severity` is not a field of the base.
+            let output = shaped_bug_at(&svc, json!({ "target_type": "rs_ticket" })).await;
+            assert_eq!(
+                shaped_bug_properties(&output),
+                &json!({ "state": "open", "owner": "ann" })
+            );
+        }
+
+        /// A type extending the core `task`: its row carries the inherited
+        /// `priority` and the defaulted `status` at both scopes, and its own
+        /// field at its own scope only.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_subtype_of_a_core_type_returns_the_core_fields_it_inherits() {
+            const BUG: &str = "a9000000-0000-4000-8000-000000000004";
+            let (svc, _tmp) = make_test_service().await;
+            create_schema(
+                &svc,
+                json!({
+                    "name": "rs_task_bug", "extends": "task",
+                    "fields": [{ "name": "severity", "type": "text" }]
+                }),
+            )
+            .await;
+            svc.create_node(node(
+                BUG,
+                "rs_task_bug",
+                json!({ "priority": "high", "severity": "low" }),
+            ))
+            .await
+            .unwrap();
+
+            for (target_type, severity) in [("rs_task_bug", Some("low")), ("task", None)] {
+                let output = shaped_bug_at(
+                    &svc,
+                    json!({ "target_type": target_type, "filters": [{
+                        "type": "content", "operator": "contains", "value": BUG
+                    }] }),
+                )
+                .await;
+                assert_eq!(output.count, 1, "{target_type}");
+                let properties = &output.nodes[0]["properties"];
+                assert_eq!(properties["priority"], "high", "{target_type}");
+                assert!(properties["status"].is_string(), "{target_type}");
+                assert_eq!(
+                    properties.get("severity").and_then(Value::as_str),
+                    severity,
+                    "{target_type}"
+                );
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_query_over_every_type_returns_the_whole_chain() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_shaped_bug(&svc).await;
+
+            let output = shaped_bug_at(
+                &svc,
+                json!({ "target_type": "*", "filters": [{
+                    "type": "content", "operator": "contains", "value": SHAPED_BUG
+                }] }),
+            )
+            .await;
+            assert_eq!(
+                shaped_bug_properties(&output),
+                &json!({ "state": "backlog", "owner": "ann", "severity": "low" })
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_saved_query_run_returns_rows_in_the_same_shape() {
+            let (svc, _tmp) = make_test_service().await;
+            seed_shaped_bug(&svc).await;
+            for (id, title, target_type) in [
+                ("a9000000-0000-4000-8000-000000000002", "Bugs", "rs_bug"),
+                (
+                    "a9000000-0000-4000-8000-000000000003",
+                    "Tickets",
+                    "rs_ticket",
+                ),
+            ] {
+                save_query(
+                    &svc,
+                    id,
+                    title,
+                    json!({ "target_type": target_type, "filters": [] }),
+                )
+                .await;
+            }
+
+            for (title, expected) in [
+                (
+                    "Bugs",
+                    json!({ "state": "backlog", "owner": "ann", "severity": "low" }),
+                ),
+                ("Tickets", json!({ "state": "open", "owner": "ann" })),
+            ] {
+                let input = serde_json::from_value(json!({ "query": title })).unwrap();
+                let (output, _, _) = run_saved_query_excluding(&svc, input, &[]).await.unwrap();
+                assert_eq!(shaped_bug_properties(&output), &expected, "{title}");
             }
         }
     }
