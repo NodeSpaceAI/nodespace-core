@@ -23,7 +23,6 @@
   import type { Node, CollectionNode } from '$lib/types';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { createLogger } from '$lib/utils/logger';
-  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { getActiveViewerTabs } from '$lib/plugins/ui-extensions.svelte';
   import ExtensionOutlet from '$lib/plugins/extension-outlet.svelte';
 
@@ -42,18 +41,17 @@
     nodeId: string;
   } = $props();
 
-  // Registry-contributed tabs whose `when()` currently holds. A subtype of `collection`
-  // shows its own tabs and then `collection`'s. Empty when nothing contributes, so the
-  // tab strip never appears. A selected tab that stops being contributed falls back to
-  // Contents.
-  const tabs = $derived(
-    getActiveViewerTabs(sharedNodeStore.getNode(nodeId)?.nodeType ?? 'collection')
-  );
-  const activeTab = $derived(tabs.find((t) => t.key === activeView));
-
   // Local state
   let collection: CollectionNode | null = $state(null);
   let members: Node[] = $state([]);
+
+  // Registry-contributed tabs whose `when()` currently holds, for the loaded
+  // collection's own type: a subtype of `collection` shows its own tabs and then
+  // `collection`'s. Empty when nothing contributes, so the tab strip never appears.
+  // A selected tab that stops being contributed falls back to Contents.
+  const tabs = $derived.by(() => getActiveViewerTabs(collection?.nodeType ?? 'collection'));
+  const activeTab = $derived(tabs.find((t) => t.key === activeView));
+
   let loading = $state(true);
   let error: string | null = $state(null);
 

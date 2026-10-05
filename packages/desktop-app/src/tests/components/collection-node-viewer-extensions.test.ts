@@ -21,7 +21,7 @@ vi.mock('$lib/services/navigation-service', async () =>
 import CollectionNodeViewer from '$lib/components/viewers/collection-node-viewer.svelte';
 import { uiExtensionRegistry } from '$lib/plugins/ui-extensions';
 import { setTypeResolver } from '$lib/types/core-node-types';
-import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import { collectionService } from '$lib/services/collection-service';
 import {
   TEST_EXTENSION_ID,
   createTestExtension,
@@ -47,21 +47,16 @@ describe('CollectionNodeViewer extension tabs', () => {
 
   it("shows a collection's tabs on a node of a type that extends collection", async () => {
     setTypeResolver((id) => (id === 'board' ? ({ extends: 'collection' } as never) : undefined));
-    sharedNodeStore.setNode(
-      {
-        id: COLLECTION_ID,
-        nodeType: 'board',
-        content: COLLECTION_NAME,
-        properties: {},
-        mentions: [],
-        createdAt: '',
-        modifiedAt: '',
-        version: 1,
-        lifecycleStatus: 'active'
-      },
-      { type: 'database', reason: 'test' },
-      true
-    );
+    const loadBoard = vi.spyOn(collectionService, 'getCollectionByName').mockResolvedValue({
+      id: COLLECTION_ID,
+      nodeType: 'board',
+      content: COLLECTION_NAME,
+      properties: {},
+      createdAt: '',
+      modifiedAt: '',
+      version: 1,
+      lifecycleStatus: 'active'
+    } as never);
     try {
       const fixture = createTestExtension();
       uiExtensionRegistry.register({
@@ -88,7 +83,7 @@ describe('CollectionNodeViewer extension tabs', () => {
       ]);
     } finally {
       setTypeResolver(() => undefined);
-      sharedNodeStore.clearAll();
+      loadBoard.mockRestore();
     }
   });
 
