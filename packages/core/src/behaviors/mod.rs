@@ -337,6 +337,11 @@ const MAX_AGGREGATION_DEPTH: usize = 20;
 /// by the full contents of its subtree, before its next sibling is visited.
 /// Limits depth to prevent runaway traversal on deeply nested trees.
 ///
+/// Each child's behaviour is resolved through the accessor's
+/// [`NodeAccessor::behavior_registry`], the database's own registry, so a
+/// behaviour another build registered for a subtype of a core type decides
+/// that node's contribution (ADR-082 §2.1).
+///
 /// Never spans an access boundary (ADR-059 §7). A non-person descendant filed
 /// into a collection of its own (holding a `member_of` edge) breaks ADR-059
 /// §2 and is a defect: it is logged, and it and its subtree are left out. It is
@@ -347,12 +352,9 @@ const MAX_AGGREGATION_DEPTH: usize = 20;
 /// node out of the vector index (ADR-087 §2), and for a child that index is
 /// its root's vector.
 ///
-/// Used by text and header behaviors for `get_aggregated_content()`.
-async fn aggregate_children_content(
-    node: &Node,
-    accessor: &dyn NodeAccessor,
-    registry: &NodeBehaviorRegistry,
-) -> Option<String> {
+/// Used by the text, header and schema behaviors for `get_aggregated_content()`.
+async fn aggregate_children_content(node: &Node, accessor: &dyn NodeAccessor) -> Option<String> {
+    let registry = accessor.behavior_registry();
     let boundaries = match accessor.access_boundaries_under(&node.id).await {
         Ok(b) => b,
         Err(e) => {
@@ -499,10 +501,7 @@ impl NodeBehavior for TextNodeBehavior {
         node: &'a Node,
         accessor: &'a dyn NodeAccessor,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
-        Box::pin(async move {
-            let registry = NodeBehaviorRegistry::new();
-            aggregate_children_content(node, accessor, &registry).await
-        })
+        Box::pin(aggregate_children_content(node, accessor))
     }
 }
 
@@ -550,10 +549,7 @@ impl NodeBehavior for HeaderNodeBehavior {
         node: &'a Node,
         accessor: &'a dyn NodeAccessor,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
-        Box::pin(async move {
-            let registry = NodeBehaviorRegistry::new();
-            aggregate_children_content(node, accessor, &registry).await
-        })
+        Box::pin(aggregate_children_content(node, accessor))
     }
 }
 
@@ -1524,10 +1520,7 @@ impl NodeBehavior for SchemaNodeBehavior {
         node: &'a Node,
         accessor: &'a dyn NodeAccessor,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
-        Box::pin(async move {
-            let registry = NodeBehaviorRegistry::new();
-            aggregate_children_content(node, accessor, &registry).await
-        })
+        Box::pin(aggregate_children_content(node, accessor))
     }
 }
 
@@ -5725,15 +5718,18 @@ mod tests {
     /// Minimal `NodeAccessor` test double. `with_children` registers a
     /// parent's children in the exact sibling order `get_children` should
     /// return them (already sorted by fractional order at the real
-    /// accessor), so this mock never has to reorder anything itself.
+    /// accessor), so this mock never has to reorder anything itself. Its
+    /// behaviour registry is core's.
     struct MockNodeAccessor {
         children: HashMap<String, Vec<Node>>,
+        registry: NodeBehaviorRegistry,
     }
 
     impl MockNodeAccessor {
         fn new() -> Self {
             Self {
                 children: HashMap::new(),
+                registry: NodeBehaviorRegistry::new(),
             }
         }
 
@@ -5778,6 +5774,10 @@ mod tests {
             node_type: &str,
         ) -> Result<Vec<String>, crate::services::error::NodeServiceError> {
             Ok(vec![node_type.to_string()])
+        }
+
+        fn behavior_registry(&self) -> &NodeBehaviorRegistry {
+            &self.registry
         }
     }
 
@@ -5832,9 +5832,7 @@ mod tests {
             .with_children("a", vec![a1, a2])
             .with_children("b", vec![b1]);
 
-        let registry = NodeBehaviorRegistry::new();
-
-        let result = aggregate_children_content(&root, &accessor, &registry)
+        let result = aggregate_children_content(&root, &accessor)
             .await
             .expect("expected aggregated content for a tree with content-bearing children");
 
@@ -5891,6 +5889,10 @@ mod tests {
                     other => vec![other.to_string()],
                 })
             }
+
+            fn behavior_registry(&self) -> &NodeBehaviorRegistry {
+                self.0.behavior_registry()
+            }
         }
 
         let node = |id: &str, node_type: &str, content: &str| {
@@ -5921,7 +5923,7 @@ mod tests {
                 .with_children("after", vec![node("below", "text", "Below")]),
         );
 
-        let result = aggregate_children_content(&root, &accessor, &NodeBehaviorRegistry::new())
+        let result = aggregate_children_content(&root, &accessor)
             .await
             .expect("the page's own lines still aggregate");
 
@@ -5932,6 +5934,146 @@ mod tests {
         assert!(
             !result.contains("Kept in the"),
             "a chat's children are their own embedding roots: {result}"
+        );
+    }
+
+    // --- aggregate_children_content: the database's behaviour registry ---
+
+    /// A fixture `extends` subtype of `text`, added the way another build adds
+    /// one (ADR-082 §2.1).
+    const FIXTURE_NOTE: &str = "fixture_note";
+
+    /// The behaviour of `fixture_note extends text`. Its embedding rule
+    /// differs from text's: it contributes to its parent's embedding with a
+    /// label.
+    struct FixtureNoteBehavior;
+
+    impl NodeBehavior for FixtureNoteBehavior {
+        fn type_name(&self) -> &'static str {
+            FIXTURE_NOTE
+        }
+
+        fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+            Ok(())
+        }
+
+        fn supports_markdown(&self) -> bool {
+            TextNodeBehavior.supports_markdown()
+        }
+
+        fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+            Some(format!("Fixture note: {}", node.content))
+        }
+    }
+
+    /// A node service over a fresh database built with `extensions`, holding
+    /// the schemas of `fixture_note extends text` and `chore extends task`.
+    async fn service_with(
+        extensions: &crate::extensions::DataExtensions,
+    ) -> (Arc<crate::services::NodeService>, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut store = Arc::new(
+            crate::db::SqliteStore::new(tmp.path().join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let svc = Arc::new(
+            crate::services::NodeService::new_with_extensions(&mut store, extensions)
+                .await
+                .unwrap(),
+        );
+        for (name, base) in [(FIXTURE_NOTE, "text"), ("chore", "task")] {
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({ "name": name, "extends": base, "fields": [] }),
+            )
+            .await
+            .unwrap();
+        }
+        (svc, tmp)
+    }
+
+    async fn create_under(
+        svc: &crate::services::NodeService,
+        node_type: &str,
+        content: &str,
+        parent: Option<&str>,
+    ) -> String {
+        svc.create_node_with_parent(crate::services::CreateNodeParams {
+            id: None,
+            node_type: node_type.to_string(),
+            content: content.to_string(),
+            parent_id: parent.map(str::to_string),
+            position: crate::services::InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        })
+        .await
+        .unwrap()
+    }
+
+    /// What `behavior` aggregates for the node `id`, with the node service as
+    /// the accessor, as the embedding service calls it.
+    async fn aggregate_with(
+        behavior: &dyn NodeBehavior,
+        svc: &crate::services::NodeService,
+        id: &str,
+    ) -> Option<String> {
+        let node = svc.get_node(id).await.unwrap().unwrap();
+        behavior.get_aggregated_content(&node, svc).await
+    }
+
+    /// A subtype's behaviour decides its embedding (ADR-082 §2.1), including
+    /// what its node contributes to an aggregating parent: a text or header
+    /// parent aggregates a `fixture_note` child as `FixtureNoteBehavior` says,
+    /// not as text's behaviour would.
+    #[tokio::test]
+    async fn a_subtype_child_contributes_to_its_parent_as_its_registered_behaviour_says() {
+        let extensions =
+            crate::extensions::DataExtensions::none().behavior(Arc::new(FixtureNoteBehavior));
+        let (svc, _tmp) = service_with(&extensions).await;
+
+        let page = create_under(&svc, "text", "Page", None).await;
+        create_under(&svc, "text", "Plain line", Some(&page)).await;
+        create_under(&svc, FIXTURE_NOTE, "Kept aside", Some(&page)).await;
+        let heading = create_under(&svc, "header", "## Heading", None).await;
+        create_under(&svc, FIXTURE_NOTE, "Under a heading", Some(&heading)).await;
+
+        assert_eq!(
+            aggregate_with(&TextNodeBehavior, &svc, &page)
+                .await
+                .as_deref(),
+            Some("Plain line\n\nFixture note: Kept aside")
+        );
+        assert_eq!(
+            aggregate_with(&HeaderNodeBehavior, &svc, &heading)
+                .await
+                .as_deref(),
+            Some("Fixture note: Under a heading")
+        );
+    }
+
+    /// With no extension, aggregation is what core's own behaviours give: a
+    /// subtype with no behaviour of its own contributes as the type it
+    /// extends (`fixture_note` as text; `chore` as task, which contributes
+    /// nothing), and the tree reads in document order.
+    #[tokio::test]
+    async fn aggregation_with_no_extension_is_unchanged() {
+        let (svc, _tmp) = service_with(&crate::extensions::DataExtensions::none()).await;
+
+        let page = create_under(&svc, "text", "Page", None).await;
+        let line = create_under(&svc, "text", "Plain line", Some(&page)).await;
+        create_under(&svc, "text", "Nested line", Some(&line)).await;
+        create_under(&svc, "header", "## Section", Some(&page)).await;
+        create_under(&svc, "task", "A task", Some(&page)).await;
+        create_under(&svc, "chore", "A chore", Some(&page)).await;
+        create_under(&svc, FIXTURE_NOTE, "A note", Some(&page)).await;
+
+        assert_eq!(
+            aggregate_with(&TextNodeBehavior, &svc, &page)
+                .await
+                .as_deref(),
+            Some("Plain line\n\nNested line\n\n## Section\n\nA note")
         );
     }
 }

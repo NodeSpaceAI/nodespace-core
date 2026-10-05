@@ -1423,10 +1423,12 @@ mod tests {
     // Behavior-Driven Embedding Decision Tests
     // =========================================================================
 
-    /// Mock NodeAccessor for testing extract_content_for_embedding without a database.
+    /// Mock NodeAccessor for testing extract_content_for_embedding without a
+    /// database. Its behaviour registry is core's.
     struct MockNodeAccessor {
         nodes: std::collections::HashMap<String, Node>,
         children: std::collections::HashMap<String, Vec<Node>>,
+        registry: NodeBehaviorRegistry,
     }
 
     impl MockNodeAccessor {
@@ -1434,6 +1436,7 @@ mod tests {
             Self {
                 nodes: std::collections::HashMap::new(),
                 children: std::collections::HashMap::new(),
+                registry: NodeBehaviorRegistry::new(),
             }
         }
 
@@ -1484,6 +1487,10 @@ mod tests {
             node_type: &str,
         ) -> Result<Vec<String>, crate::services::error::NodeServiceError> {
             Ok(vec![node_type.to_string()])
+        }
+
+        fn behavior_registry(&self) -> &NodeBehaviorRegistry {
+            &self.registry
         }
     }
 

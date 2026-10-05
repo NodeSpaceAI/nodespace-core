@@ -2996,6 +2996,10 @@ impl NodeAccessor for NodeService {
             .await
             .map_err(NodeServiceError::from_store)
     }
+
+    fn behavior_registry(&self) -> &NodeBehaviorRegistry {
+        &self.behaviors
+    }
 }
 
 #[cfg(test)]
