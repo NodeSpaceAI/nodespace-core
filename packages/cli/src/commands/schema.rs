@@ -88,7 +88,7 @@ pub async fn run(client: &mut NodeClient, action: SchemaAction, json: bool) -> R
     }
 }
 
-async fn create(client: &mut NodeClient, args: SchemaParamsArgs, _json: bool) -> Result<()> {
+async fn create(client: &mut NodeClient, args: SchemaParamsArgs, json: bool) -> Result<()> {
     let params_json = args.resolve()?;
     let response = client
         .create_schema(SchemaParamsRequest { params_json })
@@ -96,10 +96,10 @@ async fn create(client: &mut NodeClient, args: SchemaParamsArgs, _json: bool) ->
         .context("CreateSchema RPC failed")?
         .into_inner();
 
-    print_schema_result(&response.result_json)
+    output::print_schema_created(&response.result_json, json)
 }
 
-async fn update(client: &mut NodeClient, args: SchemaParamsArgs, _json: bool) -> Result<()> {
+async fn update(client: &mut NodeClient, args: SchemaParamsArgs, json: bool) -> Result<()> {
     let params_json = args.resolve()?;
     let response = client
         .update_schema(SchemaParamsRequest { params_json })
@@ -107,17 +107,7 @@ async fn update(client: &mut NodeClient, args: SchemaParamsArgs, _json: bool) ->
         .context("UpdateSchema RPC failed")?
         .into_inner();
 
-    print_schema_result(&response.result_json)
-}
-
-/// Schema create/update results (schema_id, fields, relationships, warnings)
-/// are structured data either way — human and JSON modes render identically,
-/// so this takes no `json` flag (unlike other print_* helpers in this file).
-fn print_schema_result(result_json: &str) -> Result<()> {
-    let value: serde_json::Value =
-        serde_json::from_str(result_json).context("daemon returned malformed result_json")?;
-    println!("{}", serde_json::to_string_pretty(&value)?);
-    Ok(())
+    output::print_schema_updated(&response.result_json, json)
 }
 
 async fn list(client: &mut NodeClient, _args: SchemaListArgs, json: bool) -> Result<()> {

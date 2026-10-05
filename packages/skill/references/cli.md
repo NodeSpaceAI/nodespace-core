@@ -17,18 +17,6 @@ Every key shown below is present on every node, so parse against these names
 and nothing else. `relationship get` may additionally include `title`,
 `mentions` and `mentioned_in`.
 
-**Schema JSON shape.** `schema get` and `schema list` return schemas rather
-than nodes; `schema list` wraps them as `{"count": N, "schemas": [...]}`. A
-schema is read under the keys `schema create` and `schema update` write it
-with: `fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
-`title_template` and `properties_header_summary_template`, next to `id`,
-`content` (the type's name), `is_core` and `schema_version`. There is no
-`properties` key. `extends`, `abstract`, `children`, `parent` and the two
-templates are omitted when the type doesn't declare them. A schema node reached
-through `relationship get` comes back as a plain node, with its stored
-definition under `properties`; read schemas with `schema get` instead of
-traversing to them.
-
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -51,6 +39,41 @@ keys are not part of the output. A node with no properties set returns `{}`.
 Values of any JSON type round-trip, nested objects included — `--property
 address='{"city":"Berlin"}'` reads back as `.properties.address.city`.
 
+**Schema JSON shape.** `schema get` and `schema list` return schemas rather
+than nodes; `schema list` wraps them as `{"count": N, "schemas": [...]}`. A
+schema is read under the keys `schema create` and `schema update` write it
+with: `fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
+`title_template` and `properties_header_summary_template`, next to `id`,
+`content` (the type's name), `is_core` and `schema_version`. There is no
+`properties` key. `extends`, `abstract`, `children`, `parent` and the two
+templates are omitted when the type doesn't declare them. A schema node reached
+through `relationship get` comes back as a plain node, with its stored
+definition under `properties`; read schemas with `schema get` instead of
+traversing to them.
+
+`schema create --json` returns what it created under the same names: `id`,
+`is_core`, `schema_version`, `fields` and `relationships`, plus the
+`description` it wrote, `extends` when the type has a base, and `warnings` when
+there are any. `schema update --json` returns `id` and `success`, a count for
+each kind of change it made (`fields_added`, `fields_removed`,
+`fields_renamed`, `field_values_added`, `relationships_added`,
+`relationships_removed`) and `affected_plays` when a forced update touched
+any. Without `--json` both print a short summary instead.
+
+**Two ways to set properties**, on `node create` and `node update` alike:
+
+- `--property key=value`, repeatable, one property each. The value is parsed as
+  JSON when it can be, so `estimate=3` is the *number* 3 and `done=true` a
+  boolean. A text or enum field whose value looks like a number needs the JSON
+  quotes kept through the shell: `--property 'estimate="3"'`. Without them the
+  write is rejected as the wrong type.
+- `--properties '{"key":"value"}'`, one JSON object carrying several properties.
+  Every value keeps the type it is written with (`{"estimate":"3"}` is a
+  string), which makes it the simpler form for nested values and for anything
+  copied from JSON output.
+
+Both may be given together; `--property` wins for a key set both ways.
+
 
 **Selecting a database.** A single daemon can serve several local databases. The data commands that read or write a database (`node`, `query`, `search`, `mention`, `schema`, `relationship`, `import`, `diagnostics`) accept a global `--database <name|id>` flag that routes the request to a specific database; the `NODESPACE_DATABASE` environment variable sets the same target when the flag is absent. Without either, requests go to the daemon's default database. Model management (`nodespace model`) is daemon-global — the loaded inference model is shared across all databases, so the flag is accepted but has no effect there. Manage the set of databases with the `nodespace database` subcommands (below).
 
@@ -71,8 +94,9 @@ nodespace node create --type text --content "Meeting notes" --parent <parent-id>
 - `--type <type>` — node type: `text`, `task`, `date`, or any schema-defined type
 - `--content <text>` — the text content of the node
 - `--parent <id>` — optional parent node ID (creates a child node)
+- `--property key=value` / `--properties '{json}'` — set properties (see *Two ways to set properties* above)
 
-**Output:** JSON with `id`, `node_type`, `content`, `parent_id`, `created_at`
+**Output:** the created node, in the node JSON shape above. It carries no parent id: the node is under the `--parent` you gave, or is a root node when you gave none.
 
 **Creating an instance of a custom type:** read the schema first (`nodespace schema get <type>`) so you know its fields. Use the field name exactly as it appears in the schema's `fields[].name` — do not add namespace prefixes when setting properties on instances (prefixes like `custom:` are part of a *field's name* at schema-authoring time, not something a caller adds — see Schema fields below). If the schema has a `title_template`, `--content` only needs a brief descriptive label — the display title is generated from properties. If there's no `title_template`, set `--content` to the best human-readable name available.
 
@@ -122,9 +146,10 @@ nodespace node update <node-id> --property status=in_progress --property priorit
 **Options:**
 - `--content <text>` — replaces the node's content/title. Omit to leave content unchanged.
 - `--property key=value` — repeatable; sets one property, deep-merged into existing properties (properties you don't mention are left untouched). Values are parsed as JSON when possible (numbers, booleans, arrays, objects), otherwise treated as a plain string.
+- `--properties '{json}'` — several properties as one JSON object, deep-merged the same way; each value keeps the type it is written with.
 - `--version <n>` — the node's `version` as you read it. The update is written only if the node is still at that version. Omit it to update whatever is current.
 
-At least one of `--content` or `--property` is required.
+At least one of `--content`, `--property`, `--properties` or a collection flag is required.
 
 **Writing at the version you read:** every node has a `version`, printed by `node get` and by every write. Pass it back with `--version` when the change depends on what you read: starting a task, ticking a checklist item, editing text you just fetched. If someone else changed the node in between, nothing is written and the command exits non-zero:
 
@@ -762,6 +787,7 @@ Operate on individual nodes (get, create, update, delete, children, query, expor
 - `--content <CONTENT>` — Content (plain text or markdown). Omit for a type with a title template (e.g. `person`): its name comes from the template's fields, set with `--property`, and content is rejected
 - `--parent <PARENT>` — Parent node ID (omit to create a root node)
 - `--property <PROPERTIES>` — Set one or more properties: `--property key=value` (repeatable). Values are parsed as JSON when possible (numbers, booleans, `null`, arrays, objects), otherwise treated as a plain string. Required this way for any schema field that is `required` with no default — validation runs at create time, so there is no way to supply it afterward via `update`
+- `--properties <JSON>` — Set several properties at once from one JSON object: `--properties '{"key":"value"}'`. Each value keeps the JSON type it is written with, so this is the form for nested values and for a string that reads as a number (`{"estimate":"3"}`). May be combined with `--property`, which wins for a key given both ways
 - `--collection <PATH>` — Collection path to file the node under, `:`-delimited for hierarchy (e.g. `docs:rust`) — the same syntax `import` and `search` take. Missing segments are created. Repeatable to join several collections in one call. Mutually exclusive with --collection-id
 - `--collection-id <ID>` — Collection ID to file the node under (repeatable). Prefer --collection, which takes a readable path and needs no lookup
 
@@ -770,6 +796,7 @@ Operate on individual nodes (get, create, update, delete, children, query, expor
 - `<ID>` — Node ID to update (required)
 - `--content <CONTENT>` — New content. Omit to leave content unchanged (e.g. when only setting properties)
 - `--property <PROPERTIES>` — Set one or more properties: `--property key=value` (repeatable). Values are parsed as JSON when possible (numbers, booleans, `null`, arrays, objects), otherwise treated as a plain string. Deep-merged into the node's existing properties (unspecified keys are left untouched). Do NOT use this to change a task's status; use `node set-status` instead
+- `--properties <JSON>` — Set several properties at once from one JSON object: `--properties '{"key":"value"}'`, deep-merged like `--property`. Each value keeps the JSON type it is written with. May be combined with `--property`, which wins for a key given both ways
 - `--collection <PATH>` — Collection path to add the node to, `:`-delimited for hierarchy (e.g. `docs:rust`). Missing segments are created. Repeatable. Mutually exclusive with --collection-id
 - `--collection-id <ID>` — Collection ID to add the node to (repeatable). Prefer --collection
 - `--remove-collection-id <ID>` — Collection ID to remove the node from (repeatable)
