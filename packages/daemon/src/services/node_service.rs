@@ -49,37 +49,38 @@ use crate::nodespace::{
     AddNodeToCollectionByPathRequest, AddNodeToCollectionRequest, AttachedSkillEntry,
     BatchUpdateFailure, CollectionIdResponse, CollectionIdsResponse, CollectionInfo,
     CollectionListResponse, CollectionMembersRequest, ConflictListResponse,
-    ConflictRecord as ConflictRecordProto, ConflictResponse, ConflictsForNodeRequest, ContextNode,
-    CountNodesResponse, CreateCollectionRequest, CreateMentionRequest, CreateNodeRequest,
-    CreateRelationshipRequest, CreateRelationshipResponse, DeleteCollectionRequest,
-    DeleteMentionRequest, DeleteNodeRequest, DeleteNodeResponse, DeleteRelationshipRequest,
-    DeleteRelationshipResponse, Empty, ExecuteQueryRequest, ExportMarkdownRequest,
-    ExportMarkdownResponse, FindCollectionByPathRequest, FindDuplicateRequest,
-    GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest, GetChildrenTreeRequest,
-    GetCollectionByNameRequest, GetConflictRequest, GetDaemonMemoryRequest,
+    ConflictRecord as ConflictRecordProto, ConflictResponse, ConflictsForNodeRequest, ContextItem,
+    ContextItemSkill, ContextNode, CountNodesResponse, CreateCollectionRequest,
+    CreateMentionRequest, CreateNodeRequest, CreateRelationshipRequest, CreateRelationshipResponse,
+    DeleteCollectionRequest, DeleteMentionRequest, DeleteNodeRequest, DeleteNodeResponse,
+    DeleteRelationshipRequest, DeleteRelationshipResponse, Empty, ExecuteQueryRequest,
+    ExportMarkdownRequest, ExportMarkdownResponse, FindCollectionByPathRequest,
+    FindDuplicateRequest, GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest,
+    GetChildrenTreeRequest, GetCollectionByNameRequest, GetConflictRequest, GetDaemonMemoryRequest,
     GetDaemonMemoryResponse, GetDaemonVersionRequest, GetDaemonVersionResponse,
     GetNodeContextRequest, GetNodeContextResponse, GetNodeRelationshipsRequest,
     GetNodeRelationshipsResponse, GetNodeRequest, GetNodesBatchRequest, GetNodesBatchResponse,
     GetRelatedNodesRequest, GetRelatedNodesResponse, GetRootsRequest, GetSchemaDefinitionRequest,
     GetSkillRequest, GetWorkflowStateRequest, GetWorkflowStateResponse, InstallMethodologyRequest,
     InstallMethodologyResponse, ListConflictsRequest, ListMethodologiesRequest,
-    ListMethodologiesResponse, ListPendingSeedUpdatesRequest, MentionAutocompleteRequest,
-    MentionIdsResponse, MentionResponse, MentionTargetRequest, MergeNodesRequest,
-    MergeNodesResponse, Methodology, MoveChildrenToParentRequest, MoveChildrenToParentResponse,
-    MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse,
-    NodeReference, NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
-    OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
-    PathNodes, PendingSeedUpdate, PendingSeedUpdateDetail, PendingSeedUpdateListResponse,
-    PendingSeedUpdateRef, PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest,
-    RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
-    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
-    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
-    ResolvePendingSeedUpdateRequest, ResolvePendingSeedUpdateResponse, RunSavedQueryRequest,
-    RunSavedQueryResponse, SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest,
-    SchemaResponse, SchemaResultResponse, SearchRequest, SeedUpdateChoice,
-    SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse,
-    ToolCommandEntry, UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest,
-    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
+    ListMethodologiesResponse, ListPendingSeedUpdatesRequest, MatchedQuery,
+    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
+    MergeNodesRequest, MergeNodesResponse, Methodology, MoveChildrenToParentRequest,
+    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
+    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
+    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
+    OptionalStringClear, OptionalTimestampClear, PathNodes, PendingSeedUpdate,
+    PendingSeedUpdateDetail, PendingSeedUpdateListResponse, PendingSeedUpdateRef,
+    PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest, RelationshipDeletedPayload,
+    RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
+    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
+    ResetSeedNodeResponse, ResolveConflictRequest, ResolvePendingSeedUpdateRequest,
+    ResolvePendingSeedUpdateResponse, RunSavedQueryRequest, RunSavedQueryResponse,
+    SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest, SchemaResponse,
+    SchemaResultResponse, SearchRequest, SeedUpdateChoice, SetLocalPersonIdentityRequest,
+    SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse, ToolCommandEntry,
+    UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
+    UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
     UpdatePlayNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
     UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
     UpdateSkillNodeRequest, UpdateTaskNodeRequest, WatchRequest,
@@ -369,18 +370,16 @@ impl GrpcNodeService for NodeServiceImpl {
         .await
         .map_err(ops_error_to_status)?;
 
-        let mut paths = Vec::with_capacity(context.paths.len());
-        for reached in context.paths {
-            let mut nodes = Vec::with_capacity(reached.nodes.len());
-            for node in reached.nodes {
-                nodes.push(context_node_to_proto(&this.node_service, node).await?);
-            }
-            paths.push(PathNodes {
-                path: reached.path.to_string(),
-                nodes,
-                limit_reached: reached.limit_reached,
-            });
+        // The version is of the whole read, so the read is made either way;
+        // asking for it alone spares the caller the content.
+        if req.version_only {
+            return Ok(Response::new(GetNodeContextResponse {
+                version: context.version,
+                ..Default::default()
+            }));
         }
+
+        let paths = path_nodes_to_proto(&this.node_service, context.paths).await?;
         let (skills, schemas) = attached_skills_to_proto(context.attached);
 
         Ok(Response::new(GetNodeContextResponse {
@@ -388,6 +387,7 @@ impl GrpcNodeService for NodeServiceImpl {
             paths,
             skills,
             schemas,
+            version: context.version,
         }))
     }
 
@@ -1371,13 +1371,55 @@ impl GrpcNodeService for NodeServiceImpl {
             query: req.query,
             filters,
             limit: (req.limit != 0).then_some(req.limit as usize),
-            // A stored limit is capped like a requested one.
-            max_rows: Some(MAX_ROW_LIMIT),
+            // A stored limit is capped like a requested one. An item read
+            // with its context is a read of its own, so fewer come back.
+            max_rows: Some(if req.with_context {
+                node_context_ops::MAX_CONTEXT_ITEMS
+            } else {
+                MAX_ROW_LIMIT
+            }),
         };
 
         let run = query_ops::run_saved_query_nodes(&this.node_service, input)
             .await
             .map_err(ops_error_to_status)?;
+        let limit_reached = run.nodes.len() >= run.limit;
+
+        if req.with_context {
+            // Each item is read by its id, as a context read reads it: at its
+            // own type's scope, with what its type's context paths reach.
+            let context =
+                node_context_ops::read_node_contexts(&this.node_service, run.nodes, &run.query_id)
+                    .await
+                    .map_err(ops_error_to_status)?;
+            let mut items = Vec::with_capacity(context.items.len());
+            for item in context.items {
+                items.push(ContextItem {
+                    node: Some(context_node_to_proto(&this.node_service, item.node).await?),
+                    paths: path_nodes_to_proto(&this.node_service, item.paths).await?,
+                    skills: item
+                        .attached
+                        .skills
+                        .into_iter()
+                        .map(|attached| ContextItemSkill {
+                            skill_id: attached.skill.id,
+                            attached_to: attached.attached_to,
+                            matched_queries: matched_queries_to_proto(attached.matched_queries),
+                        })
+                        .collect(),
+                    version: item.version,
+                });
+            }
+            let (skills, schemas) = attached_skills_to_proto(context.attached);
+            return Ok(Response::new(RunSavedQueryResponse {
+                nodes: Vec::new(),
+                count: items.len() as i32,
+                skills,
+                schemas,
+                items,
+                limit_reached,
+            }));
+        }
 
         // Projected to the query's own type's scope, as `execute_query` does.
         let nodes = this
@@ -1403,6 +1445,8 @@ impl GrpcNodeService for NodeServiceImpl {
             count,
             skills,
             schemas,
+            items: Vec::new(),
+            limit_reached,
         }))
     }
 
@@ -2266,6 +2310,16 @@ impl GrpcNodeService for NodeServiceImpl {
                     .await
                     .map_err(service_error_to_status)?
                     .0;
+                // And the context paths: a type's are its ancestors' and
+                // then its own, which is what a context read follows.
+                schema.context_paths = this
+                    .node_service
+                    .resolve_context_paths(&req.schema_id)
+                    .await
+                    .map_err(service_error_to_status)?
+                    .into_iter()
+                    .map(|(path, _)| path)
+                    .collect();
                 schema
             }
             None => {
@@ -3122,6 +3176,7 @@ fn attached_skills_to_proto(
         .map(|attached| AttachedSkillEntry {
             skill: Some(skill_guidance_entry(attached.skill)),
             attached_to: attached.attached_to,
+            matched_queries: matched_queries_to_proto(attached.matched_queries),
         })
         .collect();
     let schemas = attached
@@ -3130,6 +3185,36 @@ fn attached_skills_to_proto(
         .map(schema_guidance_entry)
         .collect();
     (skills, schemas)
+}
+
+fn matched_queries_to_proto(queries: Vec<node_context_ops::MatchedQuery>) -> Vec<MatchedQuery> {
+    queries
+        .into_iter()
+        .map(|query| MatchedQuery {
+            id: query.id,
+            title: query.title,
+        })
+        .collect()
+}
+
+/// What each path of a context read reached, as wire nodes.
+async fn path_nodes_to_proto(
+    service: &Arc<CoreNodeService>,
+    paths: Vec<node_context_ops::PathNodes>,
+) -> Result<Vec<PathNodes>, Status> {
+    let mut wire = Vec::with_capacity(paths.len());
+    for reached in paths {
+        let mut nodes = Vec::with_capacity(reached.nodes.len());
+        for node in reached.nodes {
+            nodes.push(context_node_to_proto(service, node).await?);
+        }
+        wire.push(PathNodes {
+            path: reached.path.to_string(),
+            nodes,
+            limit_reached: reached.limit_reached,
+        });
+    }
+    Ok(wire)
 }
 
 /// A context read's node with its checkbox children, as wire nodes.
@@ -6522,6 +6607,29 @@ mod tests {
         assert_eq!(wire["properties"], serde_json::json!({}));
         assert_eq!(wire["nodeType"], "schema");
         assert_eq!(wire["id"], "bug");
+        assert!(wire.get("contextPaths").is_none());
+
+        // Context paths likewise: the ancestor's, then the schema's own.
+        for params in [
+            serde_json::json!({ "schema_id": "bug", "add_context_paths": ["child_of"] }),
+            serde_json::json!({ "schema_id": "ticket", "add_context_paths": ["owned_by"] }),
+        ] {
+            nodespace_core::schema::handle_update_schema(&core, params)
+                .await
+                .expect("declaring a context path failed");
+        }
+        let response = svc
+            .get_schema_definition(Request::new(GetSchemaDefinitionRequest {
+                schema_id: "bug".to_string(),
+            }))
+            .await
+            .expect("get_schema_definition should succeed")
+            .into_inner();
+        let wire: serde_json::Value = serde_json::from_str(&response.schema_json).unwrap();
+        assert_eq!(
+            wire["contextPaths"],
+            serde_json::json!([["owned_by"], ["child_of"]])
+        );
     }
 
     /// `get_all_schemas` returns each schema typed, with the relationships

@@ -687,6 +687,7 @@ mod tests {
 
         SchemaNode {
             envelope: SchemaNode::new("invoice".to_string(), "Invoice".to_string()).envelope,
+            context_paths: Vec::new(),
             extends: None,
             is_core: false,
             is_abstract: false,

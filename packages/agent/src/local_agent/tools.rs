@@ -262,6 +262,8 @@ struct RunQueryParams {
     pub filters: Vec<query_ops::AgentFilterItem>,
     #[serde(default)]
     pub limit: Option<usize>,
+    #[serde(default)]
+    pub with_context: bool,
 }
 
 /// Parameters for the get_node_context tool
@@ -272,6 +274,8 @@ struct GetNodeContextParams {
     pub id: String,
     #[serde(default)]
     pub paths: Vec<nodespace_core::services::RelationshipPath>,
+    #[serde(default)]
+    pub version_only: bool,
 }
 
 /// Parameters for the delete_relationship tool
@@ -862,20 +866,64 @@ async fn context_node_summary(
     Ok(summary)
 }
 
-/// A skill attached to a node a read returned: what it is, the returned nodes
-/// it is attached to, and its procedure as stored.
+/// What a skill was reached through, on a row that already names the skill:
+/// the returned nodes it is attached to and, where there are any, the saved
+/// queries it is attached to that the node read matches.
+fn put_skill_sources(row: &mut Value, attached: &node_context_ops::AttachedSkill) {
+    row["attached_to"] = attached
+        .attached_to
+        .iter()
+        .map(|id| json!(node_uri(id)))
+        .collect();
+    if !attached.matched_queries.is_empty() {
+        row["matched_queries"] = attached
+            .matched_queries
+            .iter()
+            .map(|query| json!({ "id": node_uri(&query.id), "title": query.title }))
+            .collect();
+    }
+}
+
+/// A skill a read hands over: what it is, what it was reached through, and
+/// its procedure as stored.
 fn attached_skill_summary(attached: &node_context_ops::AttachedSkill) -> Value {
-    json!({
+    let mut summary = json!({
         "id": node_uri(&attached.skill.id),
         "name": attached.skill.name,
         "description": attached.skill.description,
-        "attached_to": attached
-            .attached_to
-            .iter()
-            .map(|id| node_uri(id))
-            .collect::<Vec<_>>(),
-        "instructions": attached.skill.instructions,
-    })
+    });
+    put_skill_sources(&mut summary, attached);
+    summary["instructions"] = json!(attached.skill.instructions);
+    summary
+}
+
+/// What each path of a context read reached, as groups of search rows.
+async fn context_paths_summary(
+    node_service: &NodeService,
+    paths: Vec<node_context_ops::PathNodes>,
+) -> Result<Vec<Value>, OpsError> {
+    let mut groups = Vec::with_capacity(paths.len());
+    for reached in paths {
+        let mut nodes = Vec::with_capacity(reached.nodes.len());
+        for node in reached.nodes {
+            nodes.push(context_node_summary(node_service, node).await?);
+        }
+        let mut group = json!({
+            "path": reached.path,
+            "count": nodes.len(),
+            "nodes": nodes,
+        });
+        // A full page is not every node: said on the group, so its count is
+        // not reported as how many nodes the path reaches.
+        if reached.limit_reached {
+            group["limit_reached"] = json!(format!(
+                "These are the first {} nodes this path reaches; it reaches more.",
+                node_context_ops::MAX_NODES_PER_PATH
+            ));
+        }
+        groups.push(group);
+    }
+    Ok(groups)
 }
 
 /// `resolve_query`'s answer for the one node a request resolved to, built from
@@ -2095,6 +2143,16 @@ fn def_update_schema() -> ToolDefinition {
                     "type": "array",
                     "description": "Relationship names to remove",
                     "items": { "type": "string" }
+                },
+                "add_context_paths": {
+                    "type": "array",
+                    "description": "Context paths to add: what get_node_context returns with a node of this type without being asked. Each path is relationship names joined by '.', followed from the node: \"project\" reaches its project, \"spec.decisions\" the decisions of its spec. Each name must already be a relationship of the type it is followed from (or that relationship's reverse name); a path that is not is rejected, and nothing is changed.",
+                    "items": { "type": "string" }
+                },
+                "remove_context_paths": {
+                    "type": "array",
+                    "description": "Context paths to remove, written as they were added (e.g. \"spec.decisions\").",
+                    "items": { "type": "string" }
                 }
             },
             "required": ["schema_id"]
@@ -2346,7 +2404,8 @@ fn def_run_query() -> ToolDefinition {
             and never changes the saved query. An error naming several ids means more than one \
             saved query has that title: run the one you want by its id. A 'skills' entry in \
             the result is a procedure attached to the query: follow it when working on the \
-            nodes returned. Read-only."
+            nodes returned. Set 'with_context' to get each node as get_node_context returns \
+            it, in one call: use it to pick up the next piece of work from a queue. Read-only."
             .into(),
         parameters_schema: json!({
             "type": "object",
@@ -2363,6 +2422,10 @@ fn def_run_query() -> ToolDefinition {
                 "limit": {
                     "type": "integer",
                     "description": "Return at most this many nodes. It can lower the saved query's own limit, not raise it."
+                },
+                "with_context": {
+                    "type": "boolean",
+                    "description": "Set true to return each node under 'items' with what governs it: the related nodes its type's context paths reach, its checkbox items, the ids of the skills that apply to it, and a 'version' to compare later with get_node_context. Each skill is listed once, under 'skills'. At most 50 items come back."
                 }
             },
             "required": ["query"]
@@ -2373,11 +2436,15 @@ fn def_run_query() -> ToolDefinition {
 fn def_get_node_context() -> ToolDefinition {
     ToolDefinition {
         name: "get_node_context".into(),
-        description: "Read one node together with the nodes related to it and the skills \
-            attached to any of them. 'paths' names what to follow from the node; each returned \
-            node comes with its fields and its checkbox items. A skill in 'skills' is a \
-            procedure or a standard someone attached to the node it lists under 'attached_to': \
-            follow it when working on that node. Use get_node for a node on its own. Read-only."
+        description: "Read one node together with what governs it: the related nodes its type's \
+            context paths reach, and the skills that apply to it. 'paths' names more to follow \
+            from the node; each returned node comes with its fields and its checkbox items. A \
+            skill in 'skills' is a procedure or a standard: it is attached to a node listed \
+            under 'attached_to', or to a saved query the node currently matches, listed under \
+            'matched_queries'. Follow it when working on the node. 'version' changes when the \
+            node, a returned node or one of those skills changes: read again with \
+            'version_only' to learn whether anything moved. Use get_node for a node on its \
+            own. Read-only."
             .into(),
         parameters_schema: json!({
             "type": "object",
@@ -2388,11 +2455,15 @@ fn def_get_node_context() -> ToolDefinition {
                 },
                 "paths": {
                     "type": "array",
-                    "description": "Relationship paths to follow from the node. Each path is an array of relationship names walked in order: [\"project\"] reaches the node's project, [\"project\", \"tasks\"] the tasks of that project. A name is one the type of the node it is followed from declares, that relationship's reverse name, or a built-in one: has_child, child_of, member_of, mentions. A name that does not apply is rejected with an error listing the ones that do. Omit to read the node with the skills attached to it alone.",
+                    "description": "Relationship paths to follow from the node. Each path is an array of relationship names walked in order: [\"project\"] reaches the node's project, [\"project\", \"tasks\"] the tasks of that project. A name is one the type of the node it is followed from declares, that relationship's reverse name, or a built-in one: has_child, child_of, member_of, mentions. A name that does not apply is rejected with an error listing the ones that do. Omit to follow the type's context paths alone.",
                     "items": {
                         "type": "array",
                         "items": { "type": "string" }
                     }
+                },
+                "version_only": {
+                    "type": "boolean",
+                    "description": "Set true to get the read's 'version' and nothing else, to compare with the version an earlier read returned. Pass the same 'paths' as that earlier read: a read with other paths has another version."
                 }
             },
             "required": ["id"]
@@ -5060,6 +5131,9 @@ impl GraphToolExecutor {
                 tool: "run_query".to_string(),
                 reason: e.to_string(),
             })?;
+        if params.with_context {
+            return self.run_query_with_context(tool_call_id, params).await;
+        }
         let ns = self.node_service()?;
 
         let (output, limit, query_id) = match query_ops::run_saved_query_excluding(
@@ -5146,34 +5220,20 @@ impl GraphToolExecutor {
             Err(e) => return Err(ops_error_to_tool(e, "get_node_context")),
         };
 
+        if params.version_only {
+            return Ok(ok_result(
+                tool_call_id,
+                "get_node_context",
+                json!({ "version": context.version }),
+            ));
+        }
+
         let node = context_node_summary(&ns, context.node)
             .await
             .map_err(|e| ops_error_to_tool(e, "get_node_context"))?;
-        let mut paths = Vec::with_capacity(context.paths.len());
-        for reached in context.paths {
-            let mut nodes = Vec::with_capacity(reached.nodes.len());
-            for node in reached.nodes {
-                nodes.push(
-                    context_node_summary(&ns, node)
-                        .await
-                        .map_err(|e| ops_error_to_tool(e, "get_node_context"))?,
-                );
-            }
-            let mut group = json!({
-                "path": reached.path,
-                "count": nodes.len(),
-                "nodes": nodes,
-            });
-            // A full page is not every node: said on the group, so its
-            // count is not reported as how many nodes the path reaches.
-            if reached.limit_reached {
-                group["limit_reached"] = json!(format!(
-                    "These are the first {} nodes this path reaches; it reaches more.",
-                    node_context_ops::MAX_NODES_PER_PATH
-                ));
-            }
-            paths.push(group);
-        }
+        let paths = context_paths_summary(&ns, context.paths)
+            .await
+            .map_err(|e| ops_error_to_tool(e, "get_node_context"))?;
         let skills: Vec<Value> = context
             .attached
             .skills
@@ -5184,8 +5244,94 @@ impl GraphToolExecutor {
         Ok(ok_result(
             tool_call_id,
             "get_node_context",
-            json!({ "node": node, "paths": paths, "skills": skills }),
+            json!({
+                "node": node,
+                "paths": paths,
+                "skills": skills,
+                "version": context.version,
+            }),
         ))
+    }
+
+    /// `run_query` with context: each node the saved query returns, read as
+    /// `get_node_context` reads it, with every skill listed once (ADR-094 §4).
+    async fn run_query_with_context(
+        &self,
+        tool_call_id: &str,
+        params: RunQueryParams,
+    ) -> Result<ToolResult, ToolError> {
+        let ns = self.node_service()?;
+        let failed = |e| ops_error_to_tool(e, "run_query");
+
+        let run = match query_ops::run_saved_query_nodes_excluding(
+            &ns,
+            query_ops::RunSavedQueryInput {
+                query: strip_node_uri(&params.query).to_string(),
+                filters: params.filters,
+                limit: params.limit.filter(|limit| *limit > 0),
+                // Each item is a context read of its own.
+                max_rows: Some(node_context_ops::MAX_CONTEXT_ITEMS),
+            },
+            CONVERSATION_TYPES,
+        )
+        .await
+        {
+            Ok(run) => run,
+            Err(e @ (OpsError::NotFound { .. } | OpsError::InvalidParams(_))) => {
+                return Ok(error_result(tool_call_id, "run_query", &e.to_string()));
+            }
+            Err(e) => return Err(failed(e)),
+        };
+        let limit = run.limit;
+
+        let context =
+            match node_context_ops::read_node_contexts(&ns, run.nodes, &run.query_id).await {
+                Ok(context) => context,
+                // A context path a schema declares that no longer resolves: the
+                // message names the schema to repair.
+                Err(e @ OpsError::InvalidParams(_)) => {
+                    return Ok(error_result(tool_call_id, "run_query", &e.to_string()));
+                }
+                Err(e) => return Err(failed(e)),
+            };
+
+        let mut items = Vec::with_capacity(context.items.len());
+        for item in context.items {
+            let mut row = context_node_summary(&ns, item.node).await.map_err(failed)?;
+            row["paths"] = json!(context_paths_summary(&ns, item.paths)
+                .await
+                .map_err(failed)?);
+            row["skills"] = item
+                .attached
+                .skills
+                .iter()
+                .map(|attached| {
+                    let mut skill = json!({ "id": node_uri(&attached.skill.id) });
+                    put_skill_sources(&mut skill, attached);
+                    skill
+                })
+                .collect();
+            row["version"] = json!(item.version);
+            items.push(row);
+        }
+
+        let count = items.len();
+        let mut result = json!({ "count": count, "items": items });
+        if !context.attached.skills.is_empty() {
+            result["skills"] = context
+                .attached
+                .skills
+                .iter()
+                .map(attached_skill_summary)
+                .collect();
+        }
+        if count >= limit {
+            result["limit_reached"] = json!(format!(
+                "These are the first {limit} matches; the saved query may match more. \
+                 Do not report {limit} as the total."
+            ));
+        }
+        Ok(ok_result(tool_call_id, "run_query", result))
     }
 
     async fn exec_delete_relationship(

@@ -2466,6 +2466,26 @@ impl SqliteStore {
         Ok(sources)
     }
 
+    /// Every node a `relationship_type` edge arrives at, each once, in the
+    /// order its first such edge was written.
+    pub async fn get_edge_target_ids(&self, relationship_type: &str) -> Result<Vec<String>> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                "SELECT out_node FROM relationship WHERE relationship_type = ?1 \
+                 GROUP BY out_node ORDER BY MIN(rowid)",
+                libsql::params![relationship_type.to_string()],
+            )
+            .await
+            .context("Failed to query the targets of a relationship type")?;
+        let mut targets = Vec::new();
+        while let Some(row) = rows.next().await? {
+            targets.push(row.get(0)?);
+        }
+        Ok(targets)
+    }
+
     /// How many edges join `a` and `b`, in either direction and under any
     /// relationship name.
     pub async fn count_edges_between(&self, a: &str, b: &str) -> Result<i64> {

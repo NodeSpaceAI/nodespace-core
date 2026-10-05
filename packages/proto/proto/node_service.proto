@@ -327,9 +327,12 @@ message GetNodeContextRequest {
   // JSON-encoded array of relationship paths (RelationshipPath[]), each an
   // array of hops: a relationship name, or
   // {"name": ..., "open_ended": true}. A name may be one the node's type
-  // declares, a declared reverse name, or a built-in one. Unset or "[]"
-  // follows none, and returns the node with the skills attached to it.
+  // declares, a declared reverse name, or a built-in one. They are followed
+  // in addition to the context paths the node's type declares; unset or "[]"
+  // follows those alone.
   optional string paths_json = 2;
+  // Return the read's version and nothing else.
+  bool version_only = 3;
 }
 
 // A node as a context read returns it: its fields, and its direct checkbox
@@ -352,24 +355,61 @@ message PathNodes {
   bool limit_reached = 3;
 }
 
-// A skill attached, through the skill schema's attached_to relationship, to
-// one or more of the nodes a response returned.
+// A saved query a node currently matches.
+message MatchedQuery {
+  string id = 1;
+  string title = 2;
+}
+
+// A skill a response hands over, with what it was reached through: the
+// returned nodes it is attached to, and the saved queries it is attached to
+// that the node read currently matches.
 message AttachedSkillEntry {
   // The skill as GetSkill returns it.
   SkillGuidanceEntry skill = 1;
   // The ids of the returned nodes it is attached to.
   repeated string attached_to = 2;
+  // The saved queries it is attached to that the node read matches.
+  repeated MatchedQuery matched_queries = 3;
 }
 
 message GetNodeContextResponse {
+  // Unset when only the version was asked for.
   ContextNode node = 1;
-  // One entry per path asked for, in the order asked.
+  // One entry per path followed: the context paths the node's type declares,
+  // then the paths asked for that are not among them.
   repeated PathNodes paths = 2;
-  // The skills attached to the node and to every node a path reached, each
-  // once. An archived skill is left out.
+  // The node's applicable skills, each once: those attached to the node, to
+  // a saved query it currently matches, and to a node a path reached. An
+  // archived skill is left out.
   repeated AttachedSkillEntry skills = 3;
   // The schemas those skills are linked to through applies_to.
   repeated SchemaGuidanceEntry schemas = 4;
+  // Changes when the node, a node the read returned, the content of an
+  // applicable skill, or the set of nodes or skills returned changes. Two
+  // reads with no such change between them carry the same version.
+  string version = 5;
+}
+
+// What one item of a saved query run carries of a skill: the skill is in the
+// response's `skills`, once, by this id.
+message ContextItemSkill {
+  string skill_id = 1;
+  // The ids of the item's returned nodes the skill is attached to.
+  repeated string attached_to = 2;
+  // The saved queries it is attached to that the item matches.
+  repeated MatchedQuery matched_queries = 3;
+}
+
+// One item of a saved query run, read with its context.
+message ContextItem {
+  ContextNode node = 1;
+  // What the context paths the item's type declares reach.
+  repeated PathNodes paths = 2;
+  // The item's applicable skills.
+  repeated ContextItemSkill skills = 3;
+  // The version a context read of the item returns.
+  string version = 4;
 }
 
 message FindDuplicateRequest {
@@ -949,16 +989,30 @@ message RunSavedQueryRequest {
   // raise it. 0 = the stored limit; a query with none returns every match,
   // up to the server's row cap.
   uint32 limit = 3;
+  // Return each result with its context: the nodes its type's context paths
+  // reach and its applicable skills. The limit applies to the items, and a
+  // run with context returns at most 50.
+  bool with_context = 4;
 }
 
 message RunSavedQueryResponse {
+  // The run's results. Empty when they were asked for with their context:
+  // they are `items` then.
   repeated NodeData nodes = 1;
+  // How many results the run returned, as `nodes` or as `items`.
   int32 count = 2;
-  // The skills attached to the query node that ran, each once. An archived
-  // skill is left out.
+  // The skills attached to the query node that ran, each once. With context,
+  // also every skill an item carries, each once: `attached_to` names the
+  // query that ran where the skill is attached to it, and each item says
+  // what the skill reaches it through. An archived skill is left out.
   repeated AttachedSkillEntry skills = 3;
   // The schemas those skills are linked to through applies_to.
   repeated SchemaGuidanceEntry schemas = 4;
+  // The run's results with their context, when asked for.
+  repeated ContextItem items = 5;
+  // True when the run returned as many results as its limit allows: the
+  // query may match more.
+  bool limit_reached = 6;
 }
 
 // ---------------------------------------------------------------------------

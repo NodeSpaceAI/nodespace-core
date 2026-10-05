@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core_type::{ChildrenRule, CoreNodeType, ParentRule};
 use crate::node::NodeEnvelope;
+use crate::relationship_path::RelationshipPath;
 
 fn default_schema_version() -> u32 {
     1
@@ -693,6 +694,14 @@ pub struct SchemaNode {
     /// on a node.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties_header_summary_template: Option<String>,
+    /// The paths from a node of this type to the nodes that govern it: what
+    /// a context read follows when it is given no paths (ADR-094 §2). The
+    /// ones this schema itself declares; a type's context paths are its
+    /// ancestors' and then its own, and a read of one schema's definition
+    /// reports that set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts", ts(optional = nullable))]
+    pub context_paths: Vec<RelationshipPath>,
 }
 
 impl SchemaNode {
@@ -716,6 +725,7 @@ impl SchemaNode {
             relationships: Vec::new(),
             title_template: None,
             properties_header_summary_template: None,
+            context_paths: Vec::new(),
         }
     }
 
@@ -819,10 +829,18 @@ mod tests {
             }],
             title_template: Some("{status}".to_string()),
             properties_header_summary_template: Some("{status}".to_string()),
+            context_paths: vec![
+                RelationshipPath::from_names(["billed_to"]),
+                "child_of*.project".parse().unwrap(),
+            ],
             ..SchemaNode::new("issue", "Issue")
         };
 
         let wire = serde_json::to_value(&schema).unwrap();
+        assert_eq!(
+            wire["contextPaths"],
+            json!([["billed_to"], [{ "name": "child_of", "open_ended": true }, "project"]])
+        );
         assert_eq!(wire["children"], json!({ "rule": "none" }));
         assert_eq!(
             wire["parent"],
@@ -839,11 +857,13 @@ mod tests {
         assert_eq!(read.relationships, schema.relationships);
         assert_eq!(read.fields.len(), 1);
         assert_eq!(read.title_template, schema.title_template);
+        assert_eq!(read.context_paths, schema.context_paths);
 
-        // `any` is not serialized.
+        // `any` is not serialized, and neither is an empty list of paths.
         let wire = serde_json::to_value(SchemaNode::new("invoice", "Invoice")).unwrap();
         assert!(wire.get("children").is_none());
         assert!(wire.get("parent").is_none());
+        assert!(wire.get("contextPaths").is_none());
     }
 
     #[test]

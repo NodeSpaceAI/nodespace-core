@@ -505,6 +505,13 @@ description: Modify an existing schema type: add/remove/rename fields, relabel a
 parameters_schema:
 {
   "properties": {
+    "add_context_paths": {
+      "description": "Context paths to add: what get_node_context returns with a node of this type without being asked. Each path is relationship names joined by '.', followed from the node: \"project\" reaches its project, \"spec.decisions\" the decisions of its spec. Each name must already be a relationship of the type it is followed from (or that relationship's reverse name); a path that is not is rejected, and nothing is changed.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
     "add_field_values": {
       "description": "Append new choices to an EXISTING enum field's vocabulary (e.g. a 'backlog' status on task). This is NOT add_fields — add_fields declares a new field and leaves the existing one's choices unchanged. Only a field declared extensible: true AND type 'enum' can be extended. Do not try to pre-verify that — no tool here reports a field's extensible flag — just make the call; a rejection names the exact reason and nothing is partially applied. New values go to user_values; core_values is never written. The call is rejected outright — nothing merged or overwritten — if the field is missing, not extensible, not an enum, or if any value string already exists in core_values or user_values. Collision is checked on 'value', never 'label' (two values may share a label).",
       "items": {
@@ -680,6 +687,13 @@ parameters_schema:
     "description": {
       "description": "New description of the SCHEMA TYPE ITSELF, not of any one field — a summary of what this entity type represents. Optional.",
       "type": "string"
+    },
+    "remove_context_paths": {
+      "description": "Context paths to remove, written as they were added (e.g. \"spec.decisions\").",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "remove_fields": {
       "description": "Field names to remove",

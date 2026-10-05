@@ -1365,6 +1365,7 @@ mod tests {
         use crate::models::schema::SchemaField;
         crate::models::SchemaNode {
             envelope: SchemaNode::new(id.to_string(), display_name.to_string()).envelope,
+            context_paths: Vec::new(),
             extends: None,
             is_core: false,
             is_abstract: false,

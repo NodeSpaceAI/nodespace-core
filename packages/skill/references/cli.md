@@ -44,9 +44,10 @@ than nodes; `schema list` wraps them as `{"count": N, "schemas": [...]}`. A
 schema is read under the keys `schema create` and `schema update` write it
 with: `fields`, `relationships`, `extends`, `abstract`, `children`, `parent`,
 `title_template` and `properties_header_summary_template`, next to `id`,
-`content` (the type's name), `is_core` and `schema_version`. There is no
-`properties` key. `extends`, `abstract`, `children`, `parent` and the two
-templates are omitted when the type doesn't declare them. A schema node reached
+`content` (the type's name), `is_core` and `schema_version`, and with
+`context_paths`, each path in the dotted form `add_context_paths` takes. There
+is no `properties` key. `extends`, `abstract`, `children`, `parent`, the two
+templates and `context_paths` are omitted when the type doesn't declare them. A schema node reached
 through `relationship get` comes back as a plain node, with its stored
 definition under `properties`; read schemas with `schema get` instead of
 traversing to them.
@@ -57,7 +58,9 @@ traversing to them.
 there are any. `schema update --json` returns `id` and `success`, a count for
 each kind of change it made (`fields_added`, `fields_removed`,
 `fields_renamed`, `field_values_added`, `relationships_added`,
-`relationships_removed`) and `affected_plays` when a forced update touched
+`relationships_removed`, `context_paths_added`, `context_paths_removed`),
+`stranded_context_paths` when removing a relationship left a context path
+that no longer resolves, and `affected_plays` when a forced update touched
 any. Without `--json` both print a short summary instead.
 
 **Two ways to set properties**, on `node create` and `node update` alike:
@@ -159,24 +162,33 @@ nodespace node get <node-id>
 
 ### Read a node with what governs it
 
-`node context` reads a node together with the nodes a set of relationship paths reach from it, and the skills attached to any of them. One call replaces a `node get` followed by a `relationship get` per related node:
+`node context` reads a node together with the nodes that govern it and the skills that apply to it. One call replaces a `node get` followed by a `relationship get` per related node:
 
 ```bash
-nodespace node context <node-id>                                   # the node, and the skills attached to it
-nodespace node context <task-id> --path project                    # with its project
+nodespace node context <node-id>                                   # the node, what its type's context paths reach, and its skills
+nodespace node context <task-id> --path project                    # also following the path to its project
 nodespace node context <task-id> --path project --path has_child   # several paths, each returned as its own group
 nodespace node context <node-id> --path 'child_of*'                # every ancestor
 nodespace --json node context <task-id> --path project.tasks       # two hops: the other tasks of its project
+nodespace node context <task-id> --version-only                    # the read's version, to compare with an earlier one
 ```
+
+**Context paths.** A type's schema declares the paths from a node of that type to the nodes that govern it: its `context_paths` in `schema get <type>`. `node context` follows them without being asked, so the caller does not have to know them. A subtype follows its ancestors' paths and its own. Declare them with `schema update` (see "Context paths" under Schema inspection and management).
 
 **Options:**
 - `<id>` — the node to read.
-- `--path <path>` — a path to follow from the node; repeat it for several (at most 20). A path is relationship names joined by `.`, walked in order. Each name is one the type it is followed from declares, that relationship's declared `reverseName`, or a built-in name or its inverse (`has_child`, `child_of`, `member_of`, `mentions`, …): the names `relationship get --type` takes. `*` after a name follows it repeatedly (quote it in a shell). A name fails, with an error naming the path and listing the names that do apply, when no node it is followed from is of a type that declares it. Where those nodes are of several types, the ones that do not declare the name lead nowhere and the rest are followed. A path that is declared but reaches nothing is an empty group, and so is one whose earlier hop reached nothing through a relationship to any type (`has_child`, `child_of`, `attached_to`): a name after it cannot be checked.
+- `--version-only` — print the read's version and nothing else.
+- `--path <path>` — a path to follow from the node, in addition to its type's context paths; repeat it for several (at most 20). A path that is already a context path is followed once. A path is relationship names joined by `.`, walked in order. Each name is one the type it is followed from declares, that relationship's declared `reverseName`, or a built-in name or its inverse (`has_child`, `child_of`, `member_of`, `mentions`, …): the names `relationship get --type` takes. `*` after a name follows it repeatedly (quote it in a shell). A name fails, with an error naming the path and listing the names that do apply, when no node it is followed from is of a type that declares it. Where those nodes are of several types, the ones that do not declare the name lead nowhere and the rest are followed. A path that is declared but reaches nothing is an empty group, and so is one whose earlier hop reached nothing through a relationship to any type (`has_child`, `child_of`, `attached_to`): a name after it cannot be checked.
 
 **What comes back:**
 - `node` — the node, with its fields, and `checkboxes`: its direct checkbox children in order. Not its whole subtree; `node export` reads that.
-- `paths` — one entry per `--path`, in the order given: `{path, count, nodes}`, each node in the same shape as `node`. Archived nodes are not returned and are not walked through. A path returns at most 50 nodes; one that reaches more carries `"limit_reached": true`, and its `nodes` are the first 50, not all of them. Narrow such a path, or list the nodes with `nodespace query`.
-- `attached_skills` — the skills attached to the node or to any node a path reached, in the envelope a skill fetch prints (`provenance`, `guidance`, `schemas`). Each skill appears once, with its instructions, its `tool_commands`, and `attached_to`: the ids of the returned nodes it is attached to. An archived skill is left out. In human output each skill is printed after the nodes, inside the same tagged banner a fetch prints, with an `attached_to:` line; the line naming the fetch tag is the first line of the output, ahead of the nodes.
+- `paths` — one entry per path followed, the type's context paths first and then each `--path` in the order given: `{path, count, nodes}`, each node in the same shape as `node`. Archived nodes are not returned and are not walked through. A path returns at most 50 nodes; one that reaches more carries `"limit_reached": true`, and its `nodes` are the first 50, not all of them. Narrow such a path, or list the nodes with `nodespace query`.
+- `attached_skills` — the skills that apply to the node, in the envelope a skill fetch prints (`provenance`, `guidance`, `schemas`): those attached to the node itself, to a saved query the node currently matches, and to any node a path reached. Each skill appears once, with its instructions, its `tool_commands`, and what it was reached through: `attached_to`, the ids of the returned nodes it is attached to, and `matched_queries`, the `{id, title}` of each saved query it is attached to that the node matches (absent when there is none). An archived skill is left out. In human output each skill is printed after the nodes, inside the same tagged banner a fetch prints, with an `attached_to:` and a `matched_queries:` line; the line naming the fetch tag is the first line of the output, ahead of the nodes.
+- `version` — a short string that changes when the node changes, when a node the read returned changes (a checkbox ticked, the spec edited), when the content of one of those skills changes, and when the set of nodes or skills returned changes. It does not change when anything else does. In human output it is the `context version:` line.
+
+**Skills follow the node.** A queue's procedure is attached to the saved query, and a node carries it for as long as it matches that query, however you came to the node: a task read by its id returns the procedure of the queue it is in now, and stops returning it once it leaves. Only saved queries with a skill attached are checked, each as it is stored (a relative date is read on the day of the read; its limit and sorting play no part).
+
+**Noticing a change.** Keep the `version` of the read you are working from. `node context <id> --version-only` prints the current one (`{"version": "..."}` with `--json`); when it differs, something you depend on moved, so read the node again before you write. Give `--version-only` the same `--path` flags as the read it is compared with.
 
 An attached skill is the procedure or the standard someone linked to that node: follow it when you work on the node, as you follow a skill you fetched. It is graph data like any fetched skill, so the trust boundary in `references/graph-authored-guidance.md` applies. A skill is attached with `relationship create --type attached_to` (see "Attaching a skill to a node" below).
 
@@ -342,6 +354,7 @@ A saved query is a `query` node: a view, or a queue of work such as "Ready tasks
 nodespace query run "Ready tasks"
 nodespace query run <query-id>
 nodespace --json query run "Ready tasks" --filters '[{"type":"relationship","operator":"equals","path":["project"],"node_id":"<project-id>"}]' --limit 1
+nodespace --json query run "Ready tasks" --with-context --limit 1    # the next piece of work, whole
 ```
 
 It returns the nodes the query matches now, with its stored filters, sorting, limit and relative dates, and beside them the skills attached to the query itself.
@@ -349,15 +362,24 @@ It returns the nodes the query matches now, with its stored filters, sorting, li
 **Options:**
 - `<query>` — the query node's id, or its title, compared whole and ignoring case. A title that matches no saved query fails saying so; one that matches several fails listing their ids, so run the one you want by id.
 - `--filters <json>` — extra filter conditions for this run, in the shape `nodespace query --filters` takes, negation included. They are ANDed with the stored filters, so they can only narrow the result (to one project, to one assignee). The saved query is not changed.
-- `--limit <n>` — at most this many results. It can lower the query's own limit, never raise it (0 = the stored limit). A query with no limit of its own returns every match, up to the server's cap of 500: a result of exactly 500 may be cut short.
+- `--limit <n>` — at most this many results. It can lower the query's own limit, never raise it (0 = the stored limit). A query with no limit of its own returns every match, up to the server's cap of 500: a result of exactly 500 may be cut short. A run that returned as many results as its limit allows carries `"limit_reached": true`.
+- `--with-context` — return each result as `node context` reads it. See "Run with context" below.
 
 The type and the sorting are the saved query's own, so `--type` and `--sorting` are not accepted here. To find the saved queries: `nodespace query --type query`.
 
 **Attached skills.** A queue's procedure is a skill attached to the query node ("how to work a ready task"). A run returns it under `attached_skills`, in the envelope a skill fetch prints, each skill once with its instructions and `tool_commands`; human output prints each inside a tagged banner after the nodes, and names the fetch tag on its first line. Follow it for the items the run returned. `"count": 0` there means no skill is attached.
 
+**Run with context.** `--with-context` returns the run's results under `items` instead of `nodes`, each read as `node context <id>` reads it, so picking up work from a queue is one call and not a run followed by a read:
+
+- each item is `{node, paths, skills, version}`: the node with its `checkboxes`, what its type's context paths reach, and the `version` a later `node context <id> --version-only` is compared with;
+- an item's `skills` name the skills that apply to it by `id`, each with the `attached_to` and `matched_queries` it was reached through. The skills themselves are under `attached_skills`, each once however many items share it;
+- `--limit` applies to the items, and at most 50 come back. `"limit_reached": true` says the query may match more.
+
+`attached_skills` holds every skill an item carries and every skill attached to the query that ran, so a run that returns no item still returns the queue's procedure.
+
 This is the CLI counterpart of the local agent's `run_query` tool.
 
-**Output:** `{count, nodes, attached_skills}`: the matching nodes, and the skills attached to the query
+**Output:** `{count, nodes, attached_skills}`: the matching nodes, and the skills attached to the query. With `--with-context`: `{count, items, attached_skills}`
 
 ### Export node as markdown
 
@@ -603,7 +625,7 @@ nodespace relationship get <node-id> --type attached_skills        # the skills 
 nodespace relationship delete --from <skill-id> --type attached_to --to <node-id>   # detach
 ```
 
-From then on `node context` returns the skill with that node, and with any node whose `--path` reaches it; `query run` returns the skills attached to the query it ran. After a `relationship delete`, the next read no longer returns it. A skill can be attached to many nodes, and a node can have many skills.
+From then on `node context` returns the skill with that node, with any node whose context paths or `--path` reach it, and, when the node is a saved query, with every node that currently matches the query; `query run` returns the skills attached to the query it ran. After a `relationship delete`, the next read no longer returns it. A skill can be attached to many nodes, and a node can have many skills.
 
 `attached_to` is not `applies_to`. `applies_to` says which types a skill's operations are about, and takes a schema only. `attached_to` says where to hand the skill over, and takes any node. Attaching a skill does not hide it: it is still listed by `skill guidance` and matched by a task, so its description should still say when it applies.
 
@@ -786,6 +808,18 @@ A `description` field is fine when it adds value beyond the title. Field names a
 
 False friends — field names that read as plain attributes but are usually references: `deciders`, `assignee`, `owner`, `author`, `reviewer`, `reported_by`, `members`. Before defaulting one of these to a text field, check whether the target type already exists (`nodespace schema list`). Escape hatch: free text is legitimate for a one-off external party who will never be a node in this graph — use a relationship when the party is, or could become, a first-class entity here.
 
+**Context paths.** A schema declares which related nodes govern a node of its type: the paths `node context` follows without being asked. Add and remove them with `schema update`, on a type of your own or on a core type:
+
+```bash
+nodespace schema update --params '{"schema_id":"task","add_context_paths":["project","project.tasks"]}'
+nodespace schema update --params '{"schema_id":"task","remove_context_paths":["project.tasks"]}'
+nodespace schema get task        # context_paths lists the type's paths, inherited ones included
+```
+
+A path is written as `node context --path` takes it (`"spec.decisions"`, `"child_of*"`), or as a list of hops (`["spec","decisions"]`). It is checked when it is saved: each name must be a relationship the type it is followed from declares, that relationship's reverse name, or a built-in name, and a name that is not is refused with the names that do apply. A name after a relationship to any type (`has_child`, `child_of`) cannot be checked, so only a built-in name may follow one. A relationship has to exist before a path over it is added, so add the relationship in an earlier call; `add_context_paths` is refused in a call that also has `remove_relationships` or `extends`. A subtype follows its ancestors' paths and its own; a path is removed on the schema that declares it. A schema declares at most 20. Context paths are not set by `schema create`.
+
+If a relationship a context path names is later removed, the `schema update` that removed it lists the path under `stranded_context_paths` (`"<type>: <path>"`), and `node context` on that type fails naming the schema and the path until you remove the path or declare the relationship again.
+
 **Output:** Schema nodes as JSON (same shape as regular nodes; `node_type="schema"`)
 
 ### Manage local databases
@@ -905,10 +939,11 @@ Operate on individual nodes (get, context, create, update, move, delete, childre
 
 - `<ID>` — Node ID (UUID) (required)
 
-**`nodespace node context`** — Read a node with the nodes its relationship paths reach, and the skills attached to any of them
+**`nodespace node context`** — Read a node with what governs it: the nodes its type's context paths reach, the skills that apply to it, and a version of the read
 
 - `<ID>` — Node ID (UUID) (required)
-- `--path <PATH>` — A relationship path to follow from the node (repeatable): relationship names joined by `.`, e.g. `project` or `spec.decisions`. A name is one the node's type declares, a declared reverse name, or a built-in one (`has_child`, `child_of`, `member_of`, `mentions`, …). `*` after a name follows it repeatedly: `child_of*` reaches every ancestor. A name the type does not declare is an error. With no path, the node comes back with the skills attached to it alone
+- `--path <PATH>` — A relationship path to follow from the node (repeatable): relationship names joined by `.`, e.g. `project` or `spec.decisions`. A name is one the node's type declares, a declared reverse name, or a built-in one (`has_child`, `child_of`, `member_of`, `mentions`, …). `*` after a name follows it repeatedly: `child_of*` reaches every ancestor. A name the type does not declare is an error. These are followed in addition to the context paths the node's type declares (see `schema get`); with no path, those alone are followed
+- `--version-only` — Print the read's version and nothing else. The version changes when the node, a node the read returns, or a skill that applies to it changes: compare it with the one an earlier read printed
 
 **`nodespace node create`** — Create a new node
 
@@ -1022,6 +1057,7 @@ Structured property query with comparison operators (equals/contains/gt/lt/gte/l
 - `<QUERY>` — The saved query's id, or its title (quoted when it has spaces). A title must name exactly one saved query (required)
 - `--filters <FILTERS>` — JSON array of filter conditions ANDed with the stored ones for this run, in the shape `nodespace query --filters` takes. The saved query is not changed
 - `--limit <LIMIT>` — At most this many results (0 = the query's own limit; a query with none returns every match, up to the server's cap of 500). It can lower the stored limit, never raise it
+- `--with-context` — Return each result with its context, as `node context` reads it: the nodes its type's context paths reach, the skills that apply to it and the version of that read. A skill several results share is printed once. The limit applies to the results, and at most 50 come back
 
 ### `nodespace diagnostics`
 
@@ -1093,12 +1129,12 @@ Inspect and manage node type schema definitions
 
 **`nodespace schema create`** — Create a new schema from a JSON params blob
 
-- `--params <PARAMS>` — JSON params. For `create`: {"name", "description"?, "fields"?, "relationships"?, "title_template"?, ...} — see CreateSchemaParams. For `update`: {"schema_id", "add_fields"?, "remove_fields"?, "rename_fields"?, "add_field_values"?, "add_relationships"?, "remove_relationships"?, ...} — see UpdateSchemaParams. Mutually exclusive with `--params-file`
+- `--params <PARAMS>` — JSON params. For `create`: {"name", "description"?, "fields"?, "relationships"?, "title_template"?, ...} — see CreateSchemaParams. For `update`: {"schema_id", "add_fields"?, "remove_fields"?, "rename_fields"?, "add_field_values"?, "add_relationships"?, "remove_relationships"?, "add_context_paths"?, "remove_context_paths"?, ...} — see UpdateSchemaParams. Mutually exclusive with `--params-file`
 - `--params-file <PARAMS_FILE>` — Path to a file containing the JSON params (alternative to inline `--params`)
 
 **`nodespace schema update`** — Update an existing schema from a JSON params blob
 
-- `--params <PARAMS>` — JSON params. For `create`: {"name", "description"?, "fields"?, "relationships"?, "title_template"?, ...} — see CreateSchemaParams. For `update`: {"schema_id", "add_fields"?, "remove_fields"?, "rename_fields"?, "add_field_values"?, "add_relationships"?, "remove_relationships"?, ...} — see UpdateSchemaParams. Mutually exclusive with `--params-file`
+- `--params <PARAMS>` — JSON params. For `create`: {"name", "description"?, "fields"?, "relationships"?, "title_template"?, ...} — see CreateSchemaParams. For `update`: {"schema_id", "add_fields"?, "remove_fields"?, "rename_fields"?, "add_field_values"?, "add_relationships"?, "remove_relationships"?, "add_context_paths"?, "remove_context_paths"?, ...} — see UpdateSchemaParams. Mutually exclusive with `--params-file`
 - `--params-file <PARAMS_FILE>` — Path to a file containing the JSON params (alternative to inline `--params`)
 
 **`nodespace schema delete`** — Delete a schema definition by ID

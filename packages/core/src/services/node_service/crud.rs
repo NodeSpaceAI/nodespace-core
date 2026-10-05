@@ -143,6 +143,17 @@ impl NodeService {
                 )));
             }
         }
+        // Context paths are checked against the schemas when `update_schema`
+        // saves them (ADR-094 §2), so they have the same one write path.
+        let paths = crate::models::schema_node::CONTEXT_PATHS_KEY;
+        if existing.properties.get(paths) != updated.properties.get(paths) {
+            return Err(NodeServiceError::invalid_update(format!(
+                "The context paths of schema '{}' can only be changed with update_schema \
+                 (add_context_paths, remove_context_paths), which checks each path against \
+                 the schemas.",
+                existing.id
+            )));
+        }
         Ok(())
     }
 
@@ -540,7 +551,8 @@ impl NodeService {
         Ok(node.id)
     }
 
-    /// Refuse creating a core schema through the service.
+    /// Refuse creating a core schema through the service, and creating any
+    /// schema with context paths already on it.
     ///
     /// Core schemas are seeded straight into the store at startup; nothing
     /// else may mint one. Since whether a schema is core is fixed at creation
@@ -550,6 +562,21 @@ impl NodeService {
         if crate::models::schema_node::is_core_schema(node) {
             return Err(NodeServiceError::invalid_update(format!(
                 "schema_is_core: schema '{}' cannot be created as a core type; core schemas are built in",
+                node.id
+            )));
+        }
+        // A schema is created before its relationships are declared, so a
+        // context path given here has nothing to be checked against.
+        if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type)
+            && node
+                .properties
+                .get(crate::models::schema_node::CONTEXT_PATHS_KEY)
+                .is_some()
+        {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Schema '{}' cannot be created with context paths: add them with update_schema \
+                 (add_context_paths) once its relationships are declared, so each path is \
+                 checked against the schemas.",
                 node.id
             )));
         }
@@ -2798,9 +2825,14 @@ impl NodeService {
     }
 
     /// The schema properties that are stored only when they say something:
-    /// `abstract` when true, a structural rule when it is not `any`.
-    pub(crate) const OPTIONAL_SCHEMA_DEFINITION_KEYS: [&'static str; 3] =
-        ["abstract", "children", "parent"];
+    /// `abstract` when true, a structural rule when it is not `any`, the
+    /// context paths when there are any.
+    pub(crate) const OPTIONAL_SCHEMA_DEFINITION_KEYS: [&'static str; 4] = [
+        "abstract",
+        "children",
+        "parent",
+        crate::models::schema_node::CONTEXT_PATHS_KEY,
+    ];
 
     /// Merge a schema-definition write into a schema node's stored
     /// properties.

@@ -734,7 +734,7 @@ const DEFAULT_QUERY_LIMIT: usize = 50;
 /// schemas done first: relationship paths resolved, each path into an object
 /// field's value checked, and where each field is stored resolved, in the
 /// filters and the sorting alike.
-async fn checked_definition(
+pub(crate) async fn checked_definition(
     node_service: &NodeService,
     target_type: String,
     filters: Vec<QueryFilter>,

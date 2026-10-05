@@ -74,6 +74,12 @@ pub struct RunArgs {
     /// lower the stored limit, never raise it.
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u32).range(0..))]
     pub limit: u32,
+    /// Return each result with its context, as `node context` reads it: the
+    /// nodes its type's context paths reach, the skills that apply to it and
+    /// the version of that read. A skill several results share is printed
+    /// once. The limit applies to the results, and at most 50 come back.
+    #[arg(long = "with-context")]
+    pub with_context: bool,
 }
 
 pub async fn run(client: &mut NodeClient, args: QueryArgs, json: bool) -> Result<()> {
@@ -84,10 +90,14 @@ pub async fn run(client: &mut NodeClient, args: QueryArgs, json: bool) -> Result
                     query: run.query,
                     filters_json: run.filters,
                     limit: run.limit,
+                    with_context: run.with_context,
                 })
                 .await
                 .context("RunSavedQuery RPC failed")?
                 .into_inner();
+            if run.with_context {
+                return output::print_saved_query_context_run(&response, json);
+            }
             return output::print_saved_query_run(&response, json);
         }
         None => client

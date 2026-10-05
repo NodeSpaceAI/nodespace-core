@@ -174,19 +174,30 @@ the saved query is not changed. Any filter, here or in `nodespace query`, takes
 "has no unfinished blocker"). `references/cli.md` has the filter shapes.
 
 **Reading a node with what governs it.** `node context` returns a node with the
-nodes its relationship paths reach and the skills attached to any of them, in
-one call:
+nodes that govern it, the skills that apply to it and a `version`, in one call.
+It follows the context paths the node's type declares (`context_paths` in
+`schema get`); `--path` follows more:
 
 ```bash
+nodespace node context <task-id>
 nodespace node context <task-id> --path project
+nodespace query run "Ready tasks" --with-context --limit 1   # the next item, read the same way
 ```
 
-A skill attached to a node is the procedure or the standard for working there:
-a queue's procedure is attached to its saved query and comes back from
-`query run`; a project's standards come back with a task read with the path to
-its project. Follow an attached skill as you follow one you fetched. Attach one
-with `nodespace relationship create --from <skill-id> --type attached_to --to
-<node-id>`; `relationship delete` with the same arguments detaches it.
+`query run --with-context` returns each item that way, with every skill printed
+once. A skill that comes back is the procedure or the standard for working
+there: it is attached to the node, to a saved query the node matches now (a
+queue's procedure follows a task for as long as the task is in that queue), or
+to a node a path reached (a project's standards). Follow it as you follow one
+you fetched. Attach one with `nodespace relationship create --from <skill-id>
+--type attached_to --to <node-id>`; `relationship delete` with the same
+arguments detaches it.
+
+**Noticing that your work moved.** Keep the `version` of the read you work
+from. `nodespace node context <id> --version-only`, with the same `--path`
+flags as that read, prints the current one; when it differs, the node,
+something it returned or one of its skills changed, so read it again before
+you write.
 
 **Setting up a work-tracking workflow.** When the user asks for one (Linear-style
 issues and cycles, spec-driven development, Jira-style sprints), first run

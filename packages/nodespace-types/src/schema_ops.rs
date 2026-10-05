@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::relationship_path::RelationshipPath;
 use crate::schema::{
     EnumValue, SchemaChildrenRule, SchemaField, SchemaParentRule, SchemaRelationship,
 };
@@ -205,6 +206,18 @@ pub struct UpdateSchemaParams {
     /// unchanged. Same `{field_name}` syntax, evaluated by the client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub properties_header_summary_template: Option<String>,
+    /// Context paths to add (ADR-094 §2): the relationship paths from a node
+    /// of this type to the nodes that govern it, which a context read follows
+    /// by default. Each is a list of hops, `["spec", "decisions"]`, and is
+    /// checked against the schemas as they stand: a name the type does not
+    /// declare is refused. Allowed on a core schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub add_context_paths: Option<Vec<RelationshipPath>>,
+    /// Context paths to remove, each written as it was added. Only a path
+    /// this schema itself declares can be removed here: an inherited one is
+    /// removed on the schema that declares it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove_context_paths: Option<Vec<RelationshipPath>>,
     /// Proceed even if active plays would be affected. When false (the
     /// default), such an update is refused with the affected plays listed.
     #[serde(default)]
@@ -232,6 +245,17 @@ pub struct SchemaUpdateOutput {
     pub relationships_added: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relationships_removed: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_paths_added: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_paths_removed: Option<usize>,
+    /// Every context path, on any schema, that names a relationship that no
+    /// longer resolves, each as `"<schema id>: <path>"`. Looked for after an
+    /// update that took a relationship away, and present when there is one. A
+    /// context read of that type fails until the path is removed or the
+    /// relationship is declared again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stranded_context_paths: Option<Vec<String>>,
     /// Plays affected by the change (present when `force` let it through).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub affected_plays: Option<Vec<String>>,
@@ -299,9 +323,15 @@ mod tests {
             "schema_id": "invoice",
             "rename_fields": [{ "from": "amt", "to": "amount", "friendlyName": "Amount" }],
             "add_field_values": [{ "field": "status", "values": [{ "value": "void", "label": "Void" }] }],
+            "add_context_paths": [["billed_to"], [{ "name": "child_of", "open_ended": true }]],
             "title_template": "{amount}"
         }))
         .unwrap();
+        assert_eq!(
+            params.add_context_paths.as_ref().unwrap()[1].to_string(),
+            "child_of*"
+        );
+        assert!(params.remove_context_paths.is_none());
         assert_eq!(
             params.rename_fields.as_ref().unwrap()[0]
                 .friendly_name
@@ -318,6 +348,8 @@ mod tests {
         assert!(wire.get("children").is_none());
         assert!(wire.get("extends").is_none());
         assert!(wire.get("add_fields").is_none());
+        assert_eq!(wire["add_context_paths"][0], json!(["billed_to"]));
+        assert!(wire.get("remove_context_paths").is_none());
     }
 
     #[test]
@@ -348,6 +380,9 @@ mod tests {
             field_values_added: None,
             relationships_added: None,
             relationships_removed: None,
+            context_paths_added: None,
+            context_paths_removed: None,
+            stranded_context_paths: None,
             affected_plays: None,
         })
         .unwrap();

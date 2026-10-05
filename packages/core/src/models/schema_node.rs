@@ -19,6 +19,10 @@ use crate::models::schema::{
     is_type_system_relationship, SchemaField, SchemaRelationship, EXTENDS_RELATIONSHIP,
 };
 use crate::models::{CoreNodeType, Node, NodeEnvelope, SchemaNode, ValidationError};
+use nodespace_types::RelationshipPath;
+
+/// The key a schema node's row stores its context paths under.
+pub const CONTEXT_PATHS_KEY: &str = "contextPaths";
 
 /// Assemble a schema from its node row and its declaration edges.
 ///
@@ -88,6 +92,24 @@ pub fn from_storage(
     let title_template = text("titleTemplate");
     let properties_header_summary_template = text("propertiesHeaderSummaryTemplate");
 
+    // Unreadable paths read back as none, logged for the same reason an
+    // unreadable field list is.
+    let context_paths: Vec<RelationshipPath> = node
+        .properties
+        .get(CONTEXT_PATHS_KEY)
+        .and_then(|v| match serde_json::from_value(v.clone()) {
+            Ok(paths) => Some(paths),
+            Err(e) => {
+                tracing::warn!(
+                    schema_id = %node.id,
+                    error = %e,
+                    "Failed to parse a schema's context paths; reading them as none"
+                );
+                None
+            }
+        })
+        .unwrap_or_default();
+
     let (type_system, relationships): (Vec<_>, Vec<_>) = declarations
         .into_iter()
         .partition(|rel| is_type_system_relationship(&rel.name));
@@ -111,6 +133,7 @@ pub fn from_storage(
         relationships,
         title_template,
         properties_header_summary_template,
+        context_paths,
     })
 }
 
@@ -179,6 +202,11 @@ pub fn to_properties(schema: &SchemaNode) -> serde_json::Value {
         properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(template.clone());
     }
 
+    // No paths declares nothing, so nothing is stored.
+    if !schema.context_paths.is_empty() {
+        properties[CONTEXT_PATHS_KEY] = serde_json::json!(schema.context_paths);
+    }
+
     properties
 }
 
@@ -224,6 +252,7 @@ mod tests {
                 "parent": { "rule": "must_have_parent_of", "types": ["project"] },
                 "titleTemplate": "{status}",
                 "propertiesHeaderSummaryTemplate": "{status}",
+                "contextPaths": [["project"], [{ "name": "child_of", "open_ended": true }]],
                 "fields": [{
                     "name": "status",
                     "friendlyName": "Status",
@@ -276,6 +305,14 @@ mod tests {
         );
         assert_eq!(schema.fields.len(), 1);
         assert_eq!(schema.title_template.as_deref(), Some("{status}"));
+        assert_eq!(
+            schema
+                .context_paths
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["project", "child_of*"]
+        );
         assert!(schema.relationships.is_empty());
         assert!(schema.extends.is_none());
     }

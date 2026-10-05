@@ -231,6 +231,7 @@ fn fixture_schema_ticket() -> nodespace_core::models::SchemaNode {
         relationships: Vec::new(),
         title_template: Some("{title}".to_string()),
         properties_header_summary_template: None,
+        context_paths: Vec::new(),
     }
 }
 
@@ -258,6 +259,7 @@ fn fixture_schema_adr() -> nodespace_core::models::SchemaNode {
         relationships: Vec::new(),
         title_template: None,
         properties_header_summary_template: None,
+        context_paths: Vec::new(),
     }
 }
 
@@ -281,6 +283,7 @@ fn fixture_schema_release() -> nodespace_core::models::SchemaNode {
         relationships: Vec::new(),
         title_template: None,
         properties_header_summary_template: None,
+        context_paths: Vec::new(),
     }
 }
 

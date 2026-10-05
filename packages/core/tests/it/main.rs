@@ -18,6 +18,7 @@ mod collection_membership_test;
 mod collection_name_convergence_test;
 mod concurrent_schema_creation_test;
 mod conflict_reconciliation_test;
+mod context_paths_test;
 mod core_task_link_relationships_test;
 mod core_type_registry_test;
 mod create_node_property_persistence_test;
