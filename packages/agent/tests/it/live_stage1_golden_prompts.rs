@@ -31,7 +31,8 @@ use nodespace_agent::local_agent::agent_loop::{
 };
 use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::routing::{
-    asks_about_the_message_first, parse_route_decision, stage1_tool_definitions, RouteDecision,
+    asks_about_the_message_first, decision_on_the_message_alone, parse_route_decision,
+    stage1_tool_definitions, RouteDecision,
 };
 use nodespace_nlp_engine::chat::ChatConfig;
 
@@ -67,10 +68,17 @@ fn load_engine() -> LlamaChatInferenceEngine {
 }
 
 /// Run the exact Stage-1 request `agent_loop.rs::route` sends for `message`,
-/// with no prior turns. Returns the raw generated tool-call arguments so a
-/// caller can inspect the reformulated query verbatim, not just the decision.
+/// with no prior turns, and return the decision the loop takes from it: the
+/// model's, read the way the loop reads a decision made on the message alone
+/// (`routing::decision_on_the_message_alone`). A caller can inspect the
+/// reformulated query verbatim, not just the decision.
 async fn run_stage1(engine: &LlamaChatInferenceEngine, message: &str) -> Option<RouteDecision> {
-    run_stage1_with_history(engine, &[], message).await
+    let generated = run_stage1_with_history(engine, &[], message).await;
+    let decision = decision_on_the_message_alone(message, generated.clone());
+    if decision != generated {
+        println!("STAGE1 {message:?}: generated {generated:?}, read as {decision:?}");
+    }
+    decision
 }
 
 /// Same as `run_stage1`, but blends `prior_turns` into the routing query the
@@ -326,6 +334,12 @@ async fn stage1_reformulation_for_scenario_6_update() {
 /// be worded as a search caught most of them and missed the ones that read as
 /// an action: a "How do we decide which …?" question came back as a query
 /// that opened with "decide which".
+///
+/// Those still do, from the model: "How do we onboard a new reviewer?" is
+/// generated as `route_query("onboard a new reviewer")`. They are lookups
+/// here because the loop reads a query for a question about the workspace as
+/// one (`routing::decision_on_the_message_alone`), which `run_stage1` applies
+/// and prints when it changes the decision.
 #[tokio::test]
 #[ignore = "requires the locked native GGUF on disk"]
 async fn stage1_routes_a_knowledge_question_as_a_lookup() {
@@ -346,6 +360,9 @@ async fn stage1_routes_a_knowledge_question_as_a_lookup() {
         "How do we decide which cycle a slipped spec moves into?",
         "How do we handle a spec that loses its sign-off?",
         "How do we onboard a new sponsor?",
+        "How do we onboard a new reviewer?",
+        "How do we onboard a new maintainer?",
+        "How do we offboard a contractor?",
         "Who approves a change to a cycle's capacity?",
         "When did we sign off Kestrel?",
         "Who owns the billing service?",
@@ -563,6 +580,12 @@ async fn route_stage1_as_the_loop_does(
     prior_turns: &[&str],
     message: &str,
 ) -> (Option<RouteDecision>, &'static str) {
+    // A chat's first message gets one pass, on the message by itself.
+    if prior_turns.is_empty() {
+        // The loop logs that pass as "blended": with nothing ahead of the
+        // message, the blended view is the message.
+        return (run_stage1(engine, message).await, "blended");
+    }
     let blended =
         nodespace_agent::local_agent::agent_loop::stage1_query_from_turns(prior_turns, message);
     if asks_about_the_message_first(&blended, message, false) {
@@ -604,6 +627,9 @@ async fn stage1_routes_a_question_as_a_lookup_after_unrelated_turns() {
         "How do we decide which cycle a slipped spec moves into?",
         "How do we handle a spec that loses its sign-off?",
         "How do we onboard a new sponsor?",
+        "How do we onboard a new reviewer?",
+        "How do we onboard a new maintainer?",
+        "How do we offboard a contractor?",
         "How does our retry policy for failed uploads work?",
         "What is the rollout plan for the billing change?",
         "When did we sign off Kestrel?",
@@ -825,6 +851,22 @@ fn words(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The words of each query that carry the request: every word but the
+/// articles and "that", which a query can gain or lose and still say the same
+/// thing to retrieval.
+fn content_words(queries: &[String]) -> Vec<Vec<String>> {
+    const DROPPED: [&str; 4] = ["a", "an", "the", "that"];
+    queries
+        .iter()
+        .map(|query| {
+            words(query)
+                .into_iter()
+                .filter(|w| !DROPPED.contains(&w.as_str()))
+                .collect()
+        })
+        .collect()
+}
+
 /// The type words in `queries` that `message` does not use: a type the
 /// prompt listed, or could have, that Stage 1 worked into what retrieval
 /// will embed. A plural in "s" counts as its singular.
@@ -870,7 +912,10 @@ fn type_words_added(message: &str, queries: &[String]) -> Vec<String> {
 ///   every rep;
 /// - every [`Group::Unrelated`] case with an expectation meets it on every
 ///   rep, with the query it wrote without the line: a type's name read as a
-///   record type shows as a reworded query;
+///   record type shows as a reworded query. The two are compared by the words
+///   that carry the request ([`content_words`]): with the line, a long
+///   request came back as the same query with its articles dropped ("create
+///   task to move notifications service…"), on every rep;
 /// - no [`Group::Unrelated`] query mentions a type the message did not
 ///   ([`type_words_added`]), which is what listing a type the message does
 ///   not name does.
@@ -1018,7 +1063,7 @@ async fn stage1_type_line_routes_requests_that_name_a_known_type() {
                 }
             }
             runs += 1;
-            if wrote[0] != wrote[1] {
+            if content_words(&wrote[0]) != content_words(&wrote[1]) {
                 reworded[index] += 1;
             }
             // A case's first run without the line follows the previous case's

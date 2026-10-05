@@ -246,14 +246,134 @@ pub fn asks_about_the_message_first(
     !answering_a_clarification && blended_query != message && is_lookup_shaped(message)
 }
 
+/// Whether `message` asks about what the workspace holds: a question that
+/// opens with a question word and is not about the assistant.
+///
+/// "How do we onboard a new reviewer?" is one. Four things are not, each for
+/// a reason:
+///
+/// - a message that does not end in a question mark. "When the review is
+///   done, mark it signed off" and "Which reminds me, add a note about the
+///   offsite" open with the same words and ask for a write;
+/// - a suggestion: "How about a task for that?", "What about adding Harbour
+///   as a planning cycle?", "What if we moved it?", "Why not close it?",
+///   "Why don't we close it?";
+/// - a question about the assistant, whether it says "you" ("Which skills do
+///   you have?") or names what the assistant has ("What skills are
+///   available?"). Nothing the user stored answers it, and the routing tools
+///   send it elsewhere;
+/// - a request that only ends in a question mark ("Could you add a task?"),
+///   which opens with no question word.
+///
+/// English only, and narrower than [`is_lookup_shaped`] on purpose, because
+/// this one does decide a route (see [`decision_on_the_message_alone`]). A
+/// message it leaves out is routed as Stage 1 routed it.
+///
+/// Each test is of the words, not of what they mean, so it leaves out
+/// questions that are about the workspace: one typed without its question
+/// mark ("how do we onboard a new reviewer"), and one whose subject is a
+/// skill, a tool or an assistant the user keeps records of ("Which tool do we
+/// use for deploys?").
+///
+/// What it lets through that is not about the workspace is a general
+/// question ("What's the weather like in Tokyo today?"), where a query from
+/// Stage 1 becomes a lookup: the turn searches, finds nothing, and says so,
+/// which is the outcome ADR-038 gives a request nothing stored can answer.
+pub fn asks_what_the_workspace_holds(message: &str) -> bool {
+    const QUESTION_WORDS: [&str; 7] = ["how", "what", "why", "when", "where", "who", "which"];
+    // "How about …?", "What if …?", "Why not …?", "Why don't we …?": the
+    // second word of a suggestion. "don" is what "don't" splits to.
+    const SUGGESTING: [&str; 4] = ["about", "if", "not", "don"];
+    const THE_ASSISTANT: [&str; 9] = [
+        "you",
+        "your",
+        "yours",
+        "yourself",
+        "skill",
+        "skills",
+        "tool",
+        "tools",
+        "assistant",
+    ];
+    // The full-width form is what a CJK keyboard types.
+    if !message.trim_end().ends_with(['?', '？']) {
+        return false;
+    }
+    let lowered = message.to_lowercase();
+    let mut words = lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty());
+    if !words
+        .next()
+        .is_some_and(|first| QUESTION_WORDS.contains(&first))
+    {
+        return false;
+    }
+    let mut rest = words.peekable();
+    if rest
+        .peek()
+        .is_some_and(|second| SUGGESTING.contains(second))
+    {
+        return false;
+    }
+    !rest.any(|w| THE_ASSISTANT.contains(&w))
+}
+
+/// The decision for a message Stage 1 was asked about by itself, with no
+/// turns ahead of it blended in.
+///
+/// A question about how something is done names an action, and Stage 1 reads
+/// the action. Measured on the locked model, each three times in three: "How
+/// do we onboard a new reviewer?" came back as `route_query("onboard a new
+/// reviewer")`, and so did the same question about a sponsor, about
+/// offboarding a contractor, and about deciding which cycle a slipped spec
+/// moves into. Retrieval then matched the skills that write, and the reply
+/// was that nothing could be done.
+///
+/// No wording of the routing tools held. Telling Stage 1 in its prompt that
+/// asking how is looking up sent questions about the assistant to a lookup
+/// and stopped a compound request being split. Adding "how something is done"
+/// to `route_lookup`'s description fixed all four and turned "find the record
+/// for the Lisbon offsite" into a query; naming a record on that side put it
+/// back and stopped the compound split again.
+///
+/// So the question is read off the message, as its shape already is
+/// ([`asks_about_the_message_first`]): a query for a message that
+/// [`asks_what_the_workspace_holds`] is a lookup, of the message itself. Every
+/// other decision stands, a clarification and a split included.
+pub fn decision_on_the_message_alone(
+    message: &str,
+    decision: Option<RouteDecision>,
+) -> Option<RouteDecision> {
+    match decision {
+        Some(RouteDecision::Query(_)) if asks_what_the_workspace_holds(message) => {
+            let topic = message.trim().trim_end_matches(['?', '？']).trim_end();
+            Some(RouteDecision::Lookup(topic.to_string()))
+        }
+        other => other,
+    }
+}
+
 /// The retrieval query for a lookup: the capability, then the topic.
 ///
 /// A topic alone embeds nearest whichever skill shares a noun with it ("the
 /// debounce logic" retrieved Node Deletion and Node Merge). Naming the
 /// capability ahead of it is what puts the search skill first, and the
 /// wording is the one that skill's description carries.
+///
+/// It carries the description's opening verbs as well as "search stored
+/// knowledge". With that phrase alone, a topic that is a record's name and one
+/// of its fields led with the search skill by 0.009 ("Kestrel Gateway sign off
+/// date") or lost to Node Deletion by 0.001 ("Kestrel Sync sign off date"),
+/// and a lookup that leads with the deletion skill is offered `delete_node`.
+/// No wording of the search skill's description closed that without lifting
+/// it on requests that are not lookups: naming a date or an owner there put it
+/// ahead of Schema Creation on a request to start tracking something. The
+/// prefix is on lookups only, and with the verbs those two lead by 0.032 and
+/// 0.024; over the lookups measured beside them the smallest lead went from
+/// -0.001 to 0.024.
 pub fn lookup_retrieval_query(topic: &str) -> String {
-    format!("search stored knowledge for {topic}")
+    format!("find, look up, or search stored knowledge for {topic}")
 }
 
 #[derive(Debug, Deserialize)]
@@ -2028,10 +2148,110 @@ mod tests {
     }
 
     #[test]
+    fn a_question_about_the_workspace_opens_with_a_question_word_and_is_not_about_the_assistant() {
+        for message in [
+            "How do we onboard a new reviewer?",
+            "  how do we decide which cycle a slipped spec moves into？ ",
+            "Who approves a change to a cycle's capacity?",
+            "When did we sign off Kestrel?",
+            "What's the weather like in Tokyo today?",
+        ] {
+            assert!(asks_what_the_workspace_holds(message), "{message:?}");
+        }
+        for message in [
+            // About the assistant.
+            "Which skills do you have?",
+            "what can you do?",
+            "which of your skills would I use to delete something?",
+            "What are you able to do, yourself?",
+            "What skills are available?",
+            "Which tools are there for deleting something?",
+            "How does this assistant work?",
+            // Suggestions.
+            "How about a task for that?",
+            "What about adding Harbour as a planning cycle?",
+            "What if we moved the review to Friday?",
+            "Why not close the Q4 cycle?",
+            "Why don't we close the Q4 cycle?",
+            // A skill, a tool or an assistant the user keeps records of:
+            // left out by the word, and routed as Stage 1 routes it.
+            "Which tool do we use for deploys?",
+            // A question word, and no question.
+            "When the review is done, mark it signed off",
+            "Which reminds me, add a note about the offsite",
+            "What I need is a new task to call the vendor",
+            "how do we decide which cycle a slipped spec moves into",
+            // No question word.
+            "Could you add Harbour as a planning cycle?",
+            "find the record for the Lisbon offsite",
+            "mark it booked",
+            "?",
+            "",
+        ] {
+            assert!(!asks_what_the_workspace_holds(message), "{message:?}");
+        }
+    }
+
+    #[test]
+    fn a_query_for_a_question_about_the_workspace_is_a_lookup_of_the_message() {
+        assert_eq!(
+            decision_on_the_message_alone(
+                " How do we onboard a new reviewer? ",
+                Some(RouteDecision::Query("onboard a new reviewer".to_string())),
+            ),
+            Some(RouteDecision::Lookup(
+                "How do we onboard a new reviewer".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn every_other_decision_on_the_message_alone_stands() {
+        let query = Some(RouteDecision::Query("describe your own skills".to_string()));
+        assert_eq!(
+            decision_on_the_message_alone("Which skills do you have?", query.clone()),
+            query,
+            "a question about the assistant stays a query"
+        );
+        let write = Some(RouteDecision::Query("add a planning cycle".to_string()));
+        assert_eq!(
+            decision_on_the_message_alone(
+                "Could you add Harbour as a planning cycle?",
+                write.clone()
+            ),
+            write,
+            "a request that only ends in a question mark stays a query"
+        );
+        let lookup = Some(RouteDecision::Lookup("the merge gate".to_string()));
+        assert_eq!(
+            decision_on_the_message_alone("What is the merge gate?", lookup.clone()),
+            lookup
+        );
+        let split = Some(RouteDecision::Multi(vec![
+            "track deprecations".to_string(),
+            "find notes on rate limiting".to_string(),
+        ]));
+        assert_eq!(
+            decision_on_the_message_alone("How do we do both?", split.clone()),
+            split
+        );
+        assert_eq!(
+            decision_on_the_message_alone("How do we do it?", None),
+            None
+        );
+        let suggestion = Some(RouteDecision::Query("add a task".to_string()));
+        assert_eq!(
+            decision_on_the_message_alone("How about a task for that?", suggestion.clone()),
+            suggestion,
+            "a suggestion that opens with a question word stays a query"
+        );
+    }
+
+    #[test]
     fn a_lookup_is_retrieved_as_the_capability_then_the_topic() {
         assert_eq!(
             lookup_retrieval_query("the merge gate"),
-            "search stored knowledge for the merge gate"
+            "find, look up, or search stored knowledge for the merge gate"
         );
     }
 
