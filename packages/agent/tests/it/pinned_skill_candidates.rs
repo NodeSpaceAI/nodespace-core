@@ -62,6 +62,9 @@ async fn the_pinned_play_authoring_skill_carries_its_instructions_and_schema() {
     assert!(!authoring.instructions.trim().is_empty());
     assert!(authoring.schemas_linked);
 
+    // A pin does not clear a destructive skill's bar, so a data-removing tool
+    // on this skill's whitelist would unbind every play edit chat.
+    assert!(!routing::skill_is_destructive(authoring));
     assert!(routing::clears_score_gate(authoring));
     assert_eq!(
         routing::offered_types(&candidates),

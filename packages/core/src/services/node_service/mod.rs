@@ -9936,6 +9936,61 @@ mod tests {
         assert!(on_other.is_empty());
     }
 
+    /// The rule above is the chat's, not every any-target relationship's: a
+    /// user schema's untyped relationship is still listed on a node with no
+    /// edge yet, so the first one can be added from that side.
+    #[tokio::test]
+    async fn test_a_user_schemas_untyped_relationship_is_listed_when_empty() {
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+        service
+            .store()
+            .create_node(
+                Node::new_with_id(
+                    "gadget".to_string(),
+                    "schema".to_string(),
+                    "Gadget".to_string(),
+                    json!({ "fields": [] }),
+                ),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let declarations: Vec<crate::models::schema::SchemaRelationship> =
+            serde_json::from_value(json!([{
+                "name": "about",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "gadgets_about",
+                "reverseCardinality": "many"
+            }]))
+            .unwrap();
+        service
+            .set_schema_relationships("gadget", &declarations)
+            .await
+            .unwrap();
+        let note_id = service
+            .create_node(Node::new(
+                "text".to_string(),
+                "A note".to_string(),
+                json!({}),
+            ))
+            .await
+            .unwrap();
+
+        let groups = crate::ops::rel_ops::get_node_relationships(&service, &note_id)
+            .await
+            .unwrap()
+            .groups;
+        let about: Vec<_> = groups
+            .iter()
+            .filter(|g| g.direction == "in" && g.source_type == "gadget")
+            .collect();
+        assert_eq!(about.len(), 1);
+        assert_eq!(about[0].count, 0);
+    }
+
     #[tokio::test]
     async fn test_create_second_database_settings_is_noop() {
         let (service, _temp) = create_test_service().await;
