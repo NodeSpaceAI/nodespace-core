@@ -118,7 +118,8 @@
   // for the chat family (a chat can be retyped in place, so the pane swaps
   // viewers when it changes), the tab's own type otherwise. A type with no viewer
   // of its own takes its nearest ancestor's (an `extends` subtype of `collection`
-  // opens in the collection viewer).
+  // opens in the collection viewer). Viewers register at startup, so a viewer registered
+  // later is not picked up until the tab's type or the schemas change.
   const viewerNodeType = $derived.by(() => {
     const tabType = activeTab?.content?.nodeType ?? 'text';
     const nodeId = activeTab?.content?.nodeId;

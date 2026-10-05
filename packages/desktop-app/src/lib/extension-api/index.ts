@@ -150,7 +150,7 @@ interface ExtensionNodes {
   /**
    * Updates a node through the app's node-update path: the change shows in
    * `getNode` at once and is saved to the daemon in the background. `properties`
-   * is merged into the node's existing properties, not substituted for them. It
+   * is merged into the node's existing properties, not substituted for them, so a key cannot be removed through it. It
    * returns nothing, so it neither waits for the save nor reports a failed one:
    * a failure surfaces through core's conflict notifications. A node the store
    * does not hold is left alone and logged.
@@ -168,7 +168,17 @@ export const nodes: ExtensionNodes = {
   getNode: (id) => sharedNodeStore.getNode(id),
   fetchNode: (id) => backendAdapter.getNode(id),
   createNode: (input) => backendAdapter.createNode(input),
-  updateNode: (id, changes) => sharedNodeStore.updateNode(id, changes, EXTENSION_UPDATE_SOURCE)
+  // Picks the two fields at runtime: the type is only a compile-time guard, and
+  // the store would also apply a type conversion or a version from an untyped caller.
+  updateNode: (id, { content, properties }) =>
+    sharedNodeStore.updateNode(
+      id,
+      {
+        ...(content !== undefined && { content }),
+        ...(properties !== undefined && { properties })
+      },
+      EXTENSION_UPDATE_SOURCE
+    )
 };
 
 // --- Collections and schemas ----------------------------------------------------

@@ -214,6 +214,15 @@ describe('nodes.updateNode', () => {
     }
   });
 
+  it('passes on only content and properties, whatever an untyped caller sends', () => {
+    const update = vi.spyOn(sharedNodeStore, 'updateNode').mockImplementation(() => undefined);
+    const untyped = { content: 'c', nodeType: 'task', version: 99 } as never;
+
+    nodes.updateNode('u2', untyped);
+
+    expect(update).toHaveBeenCalledWith('u2', { content: 'c' }, expect.anything());
+  });
+
   it('leaves a node the store does not hold alone', () => {
     expect(() => nodes.updateNode('not-in-store', { content: 'x' })).not.toThrow();
     expect(nodes.getNode('not-in-store')).toBeUndefined();
