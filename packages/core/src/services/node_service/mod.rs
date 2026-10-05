@@ -2253,6 +2253,17 @@ impl NodeService {
                 seed["guidance_modified"] = guidance_modified.clone();
             }
         }
+        // Write only the fields that differ. A field the node already holds
+        // at the shipped value is left out of the patch, so naming it in a
+        // template carries no side effect of its own: a play's `enabled:
+        // true` clears a suspension when it turns a play back on, never
+        // merely because the play's description changed.
+        let stored = existing_node
+            .properties
+            .get(existing_node.node_type.as_str());
+        if let (Some(patch), Some(stored)) = (properties.as_object_mut(), stored) {
+            patch.retain(|key, value| key.starts_with('_') || stored.get(key) != Some(value));
+        }
         let update = crate::models::NodeUpdate {
             content: (existing_node.content != template_root.content)
                 .then(|| template_root.content.clone()),

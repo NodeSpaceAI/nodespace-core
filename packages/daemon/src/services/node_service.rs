@@ -3859,6 +3859,72 @@ mod tests {
     /// SAME seeded PersonNode a direct core query sees — proves the proto
     /// conversion (node_to_proto / OptionalNodeResponse) round-trips, not
     /// just the already-covered core logic.
+    /// A pending update reports whether this build holds its shipped version:
+    /// true for a seed in a compiled table, false for one in none, which can
+    /// then only be kept.
+    #[tokio::test]
+    async fn pending_seed_updates_report_whether_the_shipped_version_is_compiled_in() {
+        use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate};
+        use nodespace_core::models::{SeedAspect, SkillFields};
+        use nodespace_core::playbook::core_plays::PARENT_TASK_COMPLETION_PLAY_ID;
+
+        let (svc, _tmp) = make_service().await;
+        let uncompiled_id = "3d2b7c1e-5f4a-4e8b-9c6d-1a2b3c4d5e6f";
+        let uncompiled = NodeTemplate::skill(
+            uncompiled_id,
+            "A Workflow's Overview",
+            SkillFields::default(),
+            "Body.",
+        );
+        svc.node_service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&uncompiled).unwrap()])
+            .await
+            .unwrap();
+        for (node_id, aspect) in [
+            (PARENT_TASK_COMPLETION_PLAY_ID, SeedAspect::Config),
+            (uncompiled_id, SeedAspect::Guidance),
+        ] {
+            svc.node_service
+                .store()
+                .record_pending_seed_update(node_id, aspect, "a-newer-fingerprint")
+                .await
+                .unwrap();
+        }
+
+        let updates = svc
+            .list_pending_seed_updates(Request::new(ListPendingSeedUpdatesRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .updates;
+        let available = |node_id: &str| {
+            updates
+                .iter()
+                .find(|u| u.node_id == node_id)
+                .unwrap_or_else(|| panic!("{node_id} is pending: {updates:?}"))
+                .shipped_available
+        };
+        assert!(available(PARENT_TASK_COMPLETION_PLAY_ID));
+        assert!(!available(uncompiled_id));
+
+        // Showing or taking it is refused; keeping it is not.
+        let show = svc
+            .get_pending_seed_update(Request::new(PendingSeedUpdateRef {
+                node_id: uncompiled_id.to_string(),
+                aspect: "guidance".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(show.code(), tonic::Code::FailedPrecondition);
+        svc.resolve_pending_seed_update(Request::new(ResolvePendingSeedUpdateRequest {
+            node_id: uncompiled_id.to_string(),
+            aspect: "guidance".to_string(),
+            choice: SeedUpdateChoice::KeepMine as i32,
+        }))
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn get_local_person_rpc_resolves_the_seeded_owner() {
         let (svc, _tmp) = make_service().await;

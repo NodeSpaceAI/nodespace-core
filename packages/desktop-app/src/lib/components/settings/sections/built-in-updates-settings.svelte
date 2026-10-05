@@ -67,6 +67,10 @@
       }
     } catch (e) {
       error = toError(e).message;
+      // The store re-reads the list after a failed choice. Stop comparing a
+      // row that turns out to be gone, as when it was settled from the CLI.
+      reviewingKey = null;
+      detail = null;
     } finally {
       working = false;
     }

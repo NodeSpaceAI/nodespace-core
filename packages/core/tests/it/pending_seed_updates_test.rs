@@ -336,6 +336,35 @@ async fn an_edited_play_is_kept_and_its_shipped_change_can_be_taken() -> Result<
     Ok(())
 }
 
+/// A shipped change that leaves a play's rules alone does not put a
+/// suspended play back in service: the template naming `enabled` is not a
+/// write of it while the play is already on.
+#[tokio::test]
+async fn a_shipped_description_change_leaves_a_suspended_play_suspended() -> Result<()> {
+    let (service, _temp) = create_test_service().await?;
+    seed(&service, &play("Shipped description, first version.")).await?;
+    service
+        .record_play_suspension(
+            PLAY_ID,
+            nodespace_core::models::PlaySuspensionReason::ActionFailed,
+            "boom",
+        )
+        .await?;
+
+    seed(&service, &play("Shipped description, second version.")).await?;
+
+    let stored = service.get_node(PLAY_ID).await?.unwrap();
+    assert_eq!(
+        stored.properties["play"]["description"],
+        "Shipped description, second version."
+    );
+    assert_eq!(
+        stored.properties["play"]["suspended_reason"],
+        "action_failed"
+    );
+    Ok(())
+}
+
 /// A shipped change to a play's rules reaches a database whose play nobody
 /// edited, and the default a reset restores moves with it.
 #[tokio::test]
