@@ -254,6 +254,14 @@ describe("renderPluginFiles", () => {
     }
   });
 
+  // The plugin's own tests run inside Claude Code, outside the gate. This is
+  // the gate's one read of the module: a file that does not parse never ships.
+  test("the hooks module parses", () => {
+    const module = renderPluginFiles("v0.2.2").find((f) => f.relPath === "hooks/register.ts")!;
+    const js = new Bun.Transpiler({ loader: "ts" }).transformSync(module.content);
+    expect(js).toContain("register");
+  });
+
   test("the hooks file names a module that is published", () => {
     const files = renderPluginFiles("v0.2.2");
     const hooks = JSON.parse(files.find((f) => f.relPath === "hooks/hooks.json")!.content) as { modules: string[] };

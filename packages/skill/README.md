@@ -96,6 +96,15 @@ environment selects the database for every command it runs. The one option,
 `watch_interval_seconds` (default 60), is how often at most a tool call checks
 the item being worked on.
 
+The item being worked on is the node of the session's latest context read
+(`nodespace node context <id>`, or a `query run --with-context` that returned
+one item), whatever its type: reading another node's context moves the watch
+to that node. The plugin reads the agent's shell lines to learn this, and to
+tell the session's own writes from someone else's. A write made where it
+cannot see one (inside a script, or by a command left running in the
+background) is read as someone else's and stops the session until the user
+replies.
+
 ### Testing the plugin
 
 The plugin's tests run inside Claude Code's own engine, so they are not part of

@@ -12,7 +12,6 @@ export type NodespaceSkill = {
  * kept, not rebuilt, so the prompt stays the same until the next read.
  */
 export type NodespaceSession = {
-  reach: 'ok' | 'no-cli' | 'unreachable'
   /** `NODESPACE_DATABASE` as the session's environment held it at the read. */
   database: string | null
   project: { id: string; title: string } | null

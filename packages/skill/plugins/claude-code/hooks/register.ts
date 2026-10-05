@@ -110,7 +110,7 @@ function list(value: unknown): unknown[] {
 function clean(value: string, max: number): string {
   const flat = value
     .replace(/\s+/g, ' ')
-    .replaceAll(GRAPH_MARKER, 'nodespace graph data')
+    .replace(/nodespace-graph-data/gi, 'nodespace graph data')
     .trim()
 
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
@@ -152,8 +152,9 @@ function skillsOf(listing: unknown): NodespaceSkill[] {
     .filter(skill => skill.id !== '')
 }
 
-function buildSection(project: { title: string }, skills: readonly NodespaceSkill[]): string {
-  const shown = skills.slice(0, MAX_LISTED_SKILLS)
+/** `skills` is `null` when the list could not be read. */
+function buildSection(project: { title: string }, skills: readonly NodespaceSkill[] | null): string {
+  const shown = (skills ?? []).slice(0, MAX_LISTED_SKILLS)
   const lines = [
     ORIENTATION,
     '',
@@ -166,7 +167,11 @@ function buildSection(project: { title: string }, skills: readonly NodespaceSkil
     '',
     `Project for this checkout: ${clean(project.title, MAX_DESCRIPTION_CHARS)}`,
     '',
-    ...(shown.length === 0 ? ['(the graph holds no skills)'] : []),
+    ...(skills === null
+      ? ['(the skill list could not be read: `nodespace skill guidance` lists it)']
+      : shown.length === 0
+        ? ['(the graph holds no skills)']
+        : []),
     ...shown.map(
       skill =>
         `- ${clean(skill.title, MAX_DESCRIPTION_CHARS)}: ${clean(skill.description, MAX_DESCRIPTION_CHARS)}`,
@@ -175,7 +180,7 @@ function buildSection(project: { title: string }, skills: readonly NodespaceSkil
     '',
   ]
 
-  if (skills.length > shown.length) {
+  if (skills !== null && skills.length > shown.length) {
     lines.push(
       `${skills.length - shown.length} more skills are not shown. \`nodespace skill guidance\` lists every one.`,
     )
@@ -195,7 +200,6 @@ function buildSection(project: { title: string }, skills: readonly NodespaceSkil
 async function load($: Engine, cwd: string): Promise<NodespaceSession> {
   const database = (await $.env.get('NODESPACE_DATABASE')) || null
   const empty: NodespaceSession = {
-    reach: 'ok',
     database,
     project: null,
     section: null,
@@ -209,7 +213,7 @@ async function load($: Engine, cwd: string): Promise<NodespaceSession> {
   if (!version.ok) {
     $.ui.status('NodeSpace: the nodespace command was not found')
 
-    return { ...empty, reach: 'no-cli' }
+    return empty
   }
 
   const diagnostics = await nodespace($, database, ['diagnostics'])
@@ -217,7 +221,7 @@ async function load($: Engine, cwd: string): Promise<NodespaceSession> {
   if (!diagnostics.ok) {
     $.ui.status(`NodeSpace: unreachable (${diagnostics.detail || 'the daemon did not answer'})`)
 
-    return { ...empty, reach: 'unreachable' }
+    return empty
   }
 
   const project = await findProject($, database, cwd)
@@ -239,7 +243,7 @@ async function load($: Engine, cwd: string): Promise<NodespaceSession> {
     project,
     skills,
     listVersion: isRecord(listed) ? text(listed.version) : '',
-    section: buildSection(project, skills),
+    section: buildSection(project, isRecord(listed) ? skills : null),
   }
 }
 
@@ -701,10 +705,11 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
   if (now.nodeVersion !== item.nodeVersion) {
     const changes = fieldChanges(item, now)
     const reason = [
-      `[NodeSpace] The item this session is working on changed under it: "${item.title}" (${item.id}) went from version ${item.nodeVersion} to ${now.nodeVersion}, and this session did not make that change.`,
-      ...(changes.length > 0
-        ? [`<${GRAPH_MARKER}>`, ...changes.map(change => `- ${clean(change, 200)}`), `</${GRAPH_MARKER}>`]
-        : []),
+      `[NodeSpace] The item this session is working on (${clean(item.id, MAX_VALUE_CHARS)}) changed under it: it went from version ${item.nodeVersion} to ${now.nodeVersion}, and this session's own commands do not account for that.`,
+      `<${GRAPH_MARKER}>`,
+      `- title: ${now.title}`,
+      ...changes.map(change => `- ${clean(change, 200)}`),
+      `</${GRAPH_MARKER}>`,
       'Stop here. Tell the user what changed and what you have done so far, and wait for their answer. Tool calls are refused until the user replies.',
     ].join('\n')
 
@@ -719,8 +724,9 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
 
   return {
     note: [
-      `[NodeSpace] What governs the item you are working on ("${item.title}", ${item.id}) changed since you read it. The item itself did not.`,
+      `[NodeSpace] What governs the item you are working on (${clean(item.id, MAX_VALUE_CHARS)}) changed since you read it. The item itself did not.`,
       `<${GRAPH_MARKER}>`,
+      `- title: ${now.title}`,
       ...(changes.length > 0 ? changes.map(change => `- ${change}`) : ['- its context changed']),
       `</${GRAPH_MARKER}>`,
       `Read it again with ${again} before your next write, and carry on.`,
@@ -741,8 +747,46 @@ async function quietly<T>(fallback: T, step: () => Promise<T>): Promise<T> {
   }
 }
 
-/** What stands before a tool call: a refusal, a note for its result, or nothing. */
-async function beforeTool($: Engine, intervalMs: number): Promise<Verdict> {
+/** The tools a session reaches the user with: never refused, so a stop can be reported. */
+const USER_FACING_TOOLS = ['AskUserQuestion', 'SendUserMessage']
+
+/**
+ * The shell line a tool call runs `nodespace` with: Bash's own command, or the
+ * `nodespace` passthrough tool's argument list read as one. `null` for any
+ * other tool.
+ */
+function shellLine(tool: string, input: Record<string, unknown>): string | null {
+  if (tool === 'Bash') {
+    return text(input.command)
+  }
+
+  return tool.endsWith('__nodespace') && typeof input.args === 'string' ? `nodespace ${input.args}` : null
+}
+
+/**
+ * Whether a shell line may write to NodeSpace: it holds a command that is not
+ * a known read, or it names `nodespace` in a way this module cannot read
+ * (inside backticks, behind `xargs`, in a script's arguments). Erring toward
+ * "may write" costs one extra read; erring the other way stops the session
+ * over its own change.
+ */
+export function mayWrite(line: string): boolean {
+  const invocations = nodespaceInvocations(line)
+
+  if (invocations.length > 0) {
+    return !invocations.every(isRead)
+  }
+
+  return /(?:^|[\s`'"(;|&=])nodespace\s+[a-z-]/.test(line)
+}
+
+/**
+ * What stands before a tool call: a refusal, a note for its result, or
+ * nothing. The item is compared at most once per interval, and always before
+ * a command that may write, since that command's own change becomes the new
+ * baseline afterwards and would otherwise hide one made by someone else.
+ */
+async function beforeTool($: Engine, intervalMs: number, tool: string, isWrite: boolean): Promise<Verdict> {
   const held = await read($, session)
 
   if (!held?.project) {
@@ -752,18 +796,24 @@ async function beforeTool($: Engine, intervalMs: number): Promise<Verdict> {
   const watching = await read($, watch)
 
   if (watching.blocked) {
-    return { deny: watching.blocked }
+    return USER_FACING_TOOLS.includes(tool) ? null : { deny: watching.blocked }
   }
 
-  const now = await $.clock.now()
-
-  if (!watching.item || now - watching.lastCheckedAt < intervalMs) {
+  if (!watching.item) {
     return null
   }
 
-  await update($, watch, kept => ({ ...kept, lastCheckedAt: now }))
+  // Claimed in one write, so two tool calls dispatched together run one check.
+  const now = await $.clock.now()
+  let isClaimed = false
 
-  return checkItem($, held.database, { ...watching, lastCheckedAt: now })
+  await update($, watch, kept => {
+    isClaimed = kept.item !== null && (isWrite || now - kept.lastCheckedAt >= intervalMs)
+
+    return isClaimed ? { ...kept, lastCheckedAt: now } : kept
+  })
+
+  return isClaimed ? checkItem($, held.database, { ...watching, lastCheckedAt: now }) : null
 }
 
 /** The note for a prompt when the skill list changed since it was last read. */
@@ -791,16 +841,23 @@ async function listChange($: Engine): Promise<string | null> {
 }
 
 export const register: Register = (on, options) => {
-  const configured = Number(options.watch_interval_seconds)
+  const configured = options.watch_interval_seconds
   const intervalMs =
-    (Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_WATCH_INTERVAL_SECONDS) * 1000
+    (typeof configured === 'number' && Number.isFinite(configured) && configured >= 0
+      ? configured
+      : DEFAULT_WATCH_INTERVAL_SECONDS) * 1000
 
   on('session.start', async ($, e, next) => {
+    // This also fires when the module reloads mid-session. What was read then
+    // still stands: reading again would rewrite the system prompt and forget
+    // what the conversation has fetched.
     await quietly(undefined, async () => {
-      const loaded = await load($, e.cwd)
+      if ((await read($, session)) === null) {
+        const loaded = await load($, e.cwd)
 
-      await update($, session, () => loaded)
-      await update($, fetched, () => [])
+        await update($, session, () => loaded)
+        await update($, fetched, () => [])
+      }
     })
 
     return next(e)
@@ -861,7 +918,10 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', async ($, e, next) => {
-    const verdict = await quietly(null, () => beforeTool($, intervalMs))
+    const tool = String(e.tool)
+    const line = shellLine(tool, e)
+    const isWrite = line !== null && mayWrite(line)
+    const verdict = await quietly(null, () => beforeTool($, intervalMs, tool, isWrite))
 
     if (verdict && 'deny' in verdict) {
       return { deny: verdict.deny }
@@ -873,14 +933,12 @@ export const register: Register = (on, options) => {
       return ran
     }
 
-    if (e.tool === 'Bash') {
-      const command = e.command
-
+    if (line !== null) {
       await quietly(undefined, async () => {
         const held = await read($, session)
 
         if (held?.project) {
-          await learn($, held, nodespaceInvocations(command), ran.text ?? '')
+          await learn($, held, nodespaceInvocations(line), ran.text ?? '', isWrite)
         }
       })
     }
@@ -891,24 +949,26 @@ export const register: Register = (on, options) => {
 
 /**
  * What the session's own NodeSpace commands say about its work: the item it
- * read with its context is the one it is working on, a skill printed in full
- * has been fetched, and after a command that may have written, the item is
- * read again so the session's own change is the new baseline.
+ * read with its context is the one it is working on (the latest such read,
+ * whatever node it names), a skill printed in full has been fetched, and
+ * after a command that may have written, the item is read again so the
+ * session's own change is the new baseline.
  */
 async function learn(
   $: Engine,
   held: NodespaceSession,
   invocations: readonly string[][],
   output: string,
+  isWrite: boolean,
 ): Promise<void> {
-  if (invocations.length === 0) {
-    return
-  }
-
+  // A listing names every skill and hands over none: no task follows
+  // `guidance`, only flags, their numeric values or an empty string.
   const isListing = (words: readonly string[]) =>
-    words[0] === 'skill' && words[1] === 'guidance' && words.slice(2).every(word => word.startsWith('-'))
+    words[0] === 'skill' &&
+    words[1] === 'guidance' &&
+    words.slice(2).every(word => word === '' || word.startsWith('-') || /^\d+$/.test(word))
 
-  if (!invocations.every(isListing)) {
+  if (invocations.length > 0 && !invocations.every(isListing)) {
     const ids = skillsIn(output, held.skills)
 
     if (ids.length > 0) {
@@ -926,7 +986,7 @@ async function learn(
 
   const watching = await read($, watch)
 
-  if (!target && watching.item && !invocations.every(isRead)) {
+  if (!target && watching.item && isWrite) {
     target = watching.item
   }
 
