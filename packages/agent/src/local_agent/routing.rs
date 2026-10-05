@@ -2387,6 +2387,7 @@ mod tests {
                 .map(|(name, field_type)| EntityFieldDescriptor {
                     name: name.to_string(),
                     field_type: field_type.to_string(),
+                    item_type: None,
                     enum_values: Vec::new(),
                     required: false,
                     description: None,

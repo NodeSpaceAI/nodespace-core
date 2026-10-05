@@ -3,12 +3,10 @@
 //!
 //! The relationship is declared on the `skill` schema with schema nodes as its
 //! target, so it is written and read like any other declared relationship,
-//! from either end. Bundled Playbooks create the edges when they install.
+//! from either end.
 
 use anyhow::Result;
 use nodespace_core::db::SqliteStore;
-use nodespace_core::methodology::skills::PlaybookSkill;
-use nodespace_core::methodology::{all_playbooks, install_playbook, playbook_by_id};
 use nodespace_core::models::{Node, SkillFields, SKILL_APPLIES_TO};
 use nodespace_core::ops::rel_ops;
 use nodespace_core::schema::handle_create_schema;
@@ -54,11 +52,6 @@ async fn related(
         .collect();
     ids.sort();
     ids
-}
-
-/// The schema ids `skill` links to.
-async fn applies_to(service: &Arc<NodeService>, skill: &PlaybookSkill) -> Vec<String> {
-    related(service, skill.id, SKILL_APPLIES_TO).await
 }
 
 /// The edge runs from a skill to a schema node, custom or core, and reads
@@ -146,104 +139,5 @@ async fn a_linked_schema_can_still_be_deleted() -> Result<()> {
     service.delete_node("invoice", schema.version).await?;
 
     assert!(related(&service, &skill, "applies_to").await.is_empty());
-    Ok(())
-}
-
-/// Installing a Playbook links each of its skills to the schemas its table
-/// row names, the bundle-level skill included.
-#[tokio::test]
-async fn every_playbook_links_its_skills_to_their_schemas_at_install() -> Result<()> {
-    for playbook in all_playbooks() {
-        let (service, _tmp) = test_service().await?;
-        let report = install_playbook(&service, &playbook).await;
-        assert!(
-            report.success,
-            "{}: first failure: {:?}",
-            playbook.id,
-            report.failure()
-        );
-
-        for skill in playbook.skills.iter().chain([&playbook.overview]) {
-            assert!(
-                !skill.applies_to.is_empty(),
-                "{}: `{}` names no schema it is about",
-                playbook.id,
-                skill.title
-            );
-            let mut expected: Vec<String> =
-                skill.applies_to.iter().map(|s| s.to_string()).collect();
-            expected.sort();
-            assert_eq!(
-                applies_to(&service, skill).await,
-                expected,
-                "{}: `{}`",
-                playbook.id,
-                skill.title
-            );
-        }
-    }
-    Ok(())
-}
-
-/// The headline links the issue names, pinned by name so a table edit that
-/// drops one fails here.
-#[tokio::test]
-async fn the_named_playbook_skills_link_to_their_own_types() -> Result<()> {
-    for (playbook_id, title, schema) in [
-        ("spec-driven", "Writing a Spec", "spec"),
-        ("linear", "Creating an Issue", "issue"),
-        ("jira", "Working with Sprints", "sprint"),
-    ] {
-        let (service, _tmp) = test_service().await?;
-        let playbook = playbook_by_id(playbook_id).expect("the playbook ships");
-        let report = install_playbook(&service, &playbook).await;
-        assert!(report.success, "{playbook_id}: {:?}", report.failure());
-
-        let skill = playbook
-            .skills
-            .iter()
-            .find(|s| s.title == title)
-            .unwrap_or_else(|| panic!("{playbook_id} has no skill titled {title}"));
-        assert!(
-            applies_to(&service, skill)
-                .await
-                .contains(&schema.to_string()),
-            "{playbook_id}: `{title}` must link to `{schema}`"
-        );
-    }
-    Ok(())
-}
-
-/// When the Playbook's own id for a schema is taken, the schema is created
-/// under another id, and the skill links to that one: never to the unrelated
-/// schema that already held the name.
-#[tokio::test]
-async fn a_skill_links_to_a_re_keyed_schema_under_the_id_it_landed_on() -> Result<()> {
-    let (service, _tmp) = test_service().await?;
-    handle_create_schema(
-        &service,
-        json!({
-            "name": "Cycle",
-            "description": "A bicycle in the shed",
-            "fields": [{ "name": "colour", "type": "text", "protection": "user" }],
-        }),
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("pre-existing schema: {e}"))?;
-
-    let playbook = playbook_by_id("linear").expect("the linear playbook ships");
-    let report = install_playbook(&service, &playbook).await;
-    assert!(report.success, "first failure: {:?}", report.failure());
-    let landed = report.suffixed()[0].1.to_string();
-    assert_ne!(landed, "cycle");
-
-    let sprints = playbook
-        .skills
-        .iter()
-        .find(|s| s.title == "Sprints and Cycles")
-        .expect("the linear playbook has a Sprints and Cycles skill");
-    let mut expected = vec![landed, "issue".to_string()];
-    expected.sort();
-    assert_eq!(applies_to(&service, sprints).await, expected);
     Ok(())
 }

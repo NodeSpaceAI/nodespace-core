@@ -3204,7 +3204,7 @@ pub async fn update_schema(
             // Collision check on `.value` (the machine-comparable stored
             // string), across BOTH core_values and existing user_values —
             // never on `.label`, which is display text and may legitimately
-            // repeat. Two independently-authored methodology bundles adding
+            // repeat. Two independently-authored extensions adding
             // the same bare value with different intended semantics must
             // fail loudly rather than silently merge or shadow one another.
             let mut existing_values: std::collections::HashSet<String> = field

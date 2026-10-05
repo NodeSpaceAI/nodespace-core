@@ -18,9 +18,10 @@ use nodespace_agent::local_agent::tools::Tool;
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::ChildPlacement;
 use nodespace_core::models::{
-    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, Node, NodeQuery, NodeUpdate, OrderBy,
-    PersonNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate,
-    SkillNodeUpdate, TaskNodeUpdate, TaskStatus,
+    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, DecisionNodeUpdate, Node, NodeQuery,
+    NodeUpdate, OrderBy, PersonNodeUpdate, PlanNodeUpdate, PlayNodeUpdate, Priority,
+    ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate, SkillNodeUpdate, SpecNodeUpdate,
+    TaskNodeUpdate, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -61,29 +62,28 @@ use crate::nodespace::{
     GetNodeContextRequest, GetNodeContextResponse, GetNodeRelationshipsRequest,
     GetNodeRelationshipsResponse, GetNodeRequest, GetNodesBatchRequest, GetNodesBatchResponse,
     GetRelatedNodesRequest, GetRelatedNodesResponse, GetRootsRequest, GetSchemaDefinitionRequest,
-    GetSkillRequest, GetWorkflowStateRequest, GetWorkflowStateResponse, InstallMethodologyRequest,
-    InstallMethodologyResponse, ListConflictsRequest, ListMethodologiesRequest,
-    ListMethodologiesResponse, ListPendingSeedUpdatesRequest, MatchedQuery,
-    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
-    MergeNodesRequest, MergeNodesResponse, Methodology, MoveChildrenToParentRequest,
-    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
-    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
-    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
-    OptionalStringClear, OptionalTimestampClear, PathNodes, PendingSeedUpdate,
-    PendingSeedUpdateDetail, PendingSeedUpdateListResponse, PendingSeedUpdateRef,
-    PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest, RelationshipDeletedPayload,
-    RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
-    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
-    ResetSeedNodeResponse, ResolveConflictRequest, ResolvePendingSeedUpdateRequest,
-    ResolvePendingSeedUpdateResponse, RunSavedQueryRequest, RunSavedQueryResponse,
-    SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest, SchemaResponse,
-    SchemaResultResponse, SearchRequest, SeedUpdateChoice, SetLocalPersonIdentityRequest,
-    SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse, ToolCommandEntry,
-    UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateNodeRequest,
-    UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdatePersonNodeRequest,
+    GetSkillRequest, GetWorkflowStateRequest, GetWorkflowStateResponse, ListConflictsRequest,
+    ListPendingSeedUpdatesRequest, MatchedQuery, MentionAutocompleteRequest, MentionIdsResponse,
+    MentionResponse, MentionTargetRequest, MergeNodesRequest, MergeNodesResponse,
+    MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
+    NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse, NodeReference,
+    NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
+    OptionalConflictResponse, OptionalJsonClear, OptionalNodeResponse, OptionalStringClear,
+    OptionalTimestampClear, PathNodes, PendingSeedUpdate, PendingSeedUpdateDetail,
+    PendingSeedUpdateListResponse, PendingSeedUpdateRef, PreviewMergeRequest, PreviewMergeResponse,
+    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
+    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
+    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
+    ResolvePendingSeedUpdateRequest, ResolvePendingSeedUpdateResponse, RunSavedQueryRequest,
+    RunSavedQueryResponse, SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest,
+    SchemaResponse, SchemaResultResponse, SearchRequest, SeedUpdateChoice,
+    SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse,
+    ToolCommandEntry, UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest,
+    UpdateDecisionNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
+    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdatePlanNodeRequest,
     UpdatePlayNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
     UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
-    UpdateSkillNodeRequest, UpdateTaskNodeRequest, WatchRequest,
+    UpdateSkillNodeRequest, UpdateSpecNodeRequest, UpdateTaskNodeRequest, WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -1861,6 +1861,10 @@ impl GrpcNodeService for NodeServiceImpl {
                 .map_err(Status::invalid_argument)?,
             completed_at: parse_optional_timestamp(req.completed_at, "completed_at")
                 .map_err(Status::invalid_argument)?,
+            pull_request: optional_json_clear(req.pull_request, "pull_request")
+                .map_err(Status::invalid_argument)?,
+            commits: optional_json_clear(req.commits, "commits")
+                .map_err(Status::invalid_argument)?,
         };
 
         match this
@@ -1910,11 +1914,73 @@ impl GrpcNodeService for NodeServiceImpl {
                 .map_err(Status::invalid_argument)?,
             end_date: parse_optional_timestamp(req.end_date, "end_date")
                 .map_err(Status::invalid_argument)?,
+            repository: optional_json_clear(req.repository, "repository")
+                .map_err(Status::invalid_argument)?,
         };
 
         match this
             .node_service
             .update_project_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_spec_node(
+        &self,
+        request: Request<UpdateSpecNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: SpecNodeUpdate = serde_json::from_str(&req.update_json)
+            .map_err(|e| Status::invalid_argument(format!("Invalid spec update: {e}")))?;
+
+        match this
+            .node_service
+            .update_spec_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_plan_node(
+        &self,
+        request: Request<UpdatePlanNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: PlanNodeUpdate = serde_json::from_str(&req.update_json)
+            .map_err(|e| Status::invalid_argument(format!("Invalid plan update: {e}")))?;
+
+        match this
+            .node_service
+            .update_plan_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_decision_node(
+        &self,
+        request: Request<UpdateDecisionNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: DecisionNodeUpdate = serde_json::from_str(&req.update_json)
+            .map_err(|e| Status::invalid_argument(format!("Invalid decision update: {e}")))?;
+
+        match this
+            .node_service
+            .update_decision_node(&req.node_id, req.version, update)
             .await
         {
             Ok(node) => Ok(Response::new(node_response(node))),
@@ -2362,51 +2428,6 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(SchemaResultResponse {
             result_json: serde_json::to_string(&output).map_err(schema_encode_error)?,
         }))
-    }
-
-    async fn list_methodologies(
-        &self,
-        _request: Request<ListMethodologiesRequest>,
-    ) -> Result<Response<ListMethodologiesResponse>, Status> {
-        // Compiled-in content, so no routing or store access is needed to
-        // answer what is on offer.
-        let methodologies = nodespace_core::methodology::all_playbooks()
-            .into_iter()
-            .map(|r| Methodology {
-                id: r.id.to_string(),
-                name: r.name.to_string(),
-                description: r.description.to_string(),
-            })
-            .collect();
-
-        Ok(Response::new(ListMethodologiesResponse { methodologies }))
-    }
-
-    async fn install_methodology(
-        &self,
-        request: Request<InstallMethodologyRequest>,
-    ) -> Result<Response<InstallMethodologyResponse>, Status> {
-        let this = self.route(&request).await?;
-        let req = request.into_inner();
-
-        let playbook = nodespace_core::methodology::playbook_by_id(&req.methodology_id)
-            .ok_or_else(|| {
-                Status::not_found(format!(
-                    "unknown methodology '{}' — call ListMethodologies for what this build ships",
-                    req.methodology_id
-                ))
-            })?;
-
-        // A partial install returns Ok with `success: false`. The report is
-        // the only record of how far it got, and a Status would throw that
-        // away at exactly the moment the caller needs it most.
-        let report =
-            nodespace_core::methodology::install_playbook(&this.node_service, &playbook).await;
-
-        let report_json = serde_json::to_string(&report)
-            .map_err(|e| Status::internal(format!("failed to encode install report: {e}")))?;
-
-        Ok(Response::new(InstallMethodologyResponse { report_json }))
     }
 
     async fn update_schema(
@@ -3687,6 +3708,23 @@ fn node_response(node: Node) -> NodeResponse {
 /// otherwise set.
 fn optional_string_clear(wrapper: Option<OptionalStringClear>) -> Option<Option<String>> {
     wrapper.map(|w| if w.clear { None } else { Some(w.value) })
+}
+
+/// A clearable structured field (a link, a list of links): unset is no
+/// change, `clear` clears it, and otherwise `value_json` decodes to the value.
+/// The shared update pipeline checks the value against the schema; this only
+/// refuses JSON that is not the field's shape at all.
+fn optional_json_clear<T: serde::de::DeserializeOwned>(
+    wrapper: Option<OptionalJsonClear>,
+    field_name: &str,
+) -> Result<Option<Option<T>>, String> {
+    match wrapper {
+        None => Ok(None),
+        Some(w) if w.clear => Ok(Some(None)),
+        Some(w) => serde_json::from_str(&w.value_json)
+            .map(|value| Some(Some(value)))
+            .map_err(|e| format!("Invalid value for {field_name}: {e}")),
+    }
 }
 
 /// [`optional_string_clear`] for a `priority` field on the shared scale.
@@ -5219,6 +5257,8 @@ mod tests {
             due_date: None,
             started_at: None,
             completed_at: None,
+            pull_request: None,
+            commits: None,
         });
 
         let err = svc
@@ -5300,6 +5340,8 @@ mod tests {
                 due_date: None,
                 started_at: None,
                 completed_at: None,
+                pull_request: None,
+                commits: None,
             }))
             .await
             .expect("typed task update succeeds")
@@ -5357,6 +5399,8 @@ mod tests {
             due_date: None,
             started_at: None,
             completed_at: None,
+            pull_request: None,
+            commits: None,
         }))
         .await
         .expect("typed task update succeeds");
@@ -5463,6 +5507,7 @@ mod tests {
                     value: "next tuesday".to_string(),
                 }),
                 end_date: None,
+                repository: None,
             }))
             .await
             .expect_err("malformed date must be rejected");
@@ -5613,6 +5658,246 @@ mod tests {
             .expect("x-version-conflict header missing");
         let json: serde_json::Value = serde_json::from_str(header.to_str().unwrap()).unwrap();
         json["current_node"].clone()
+    }
+
+    /// UpdateTaskNode and UpdateProjectNode carry the link fields: set from
+    /// their JSON, cleared, and refused when the JSON is not the field's
+    /// shape.
+    #[tokio::test]
+    async fn update_task_and_project_nodes_write_and_clear_their_links() {
+        let (svc, _tmp) = make_service().await;
+        let task_id = "a4b2c3d4-e5f6-7890-abcd-ef1234567890";
+        let project_id = "a5b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(create_typed_request(task_id, "task", "Ship it", "{}"))
+            .await
+            .unwrap();
+        svc.create_node(create_typed_request(project_id, "project", "Apollo", "{}"))
+            .await
+            .unwrap();
+        let json = |value: &str| {
+            Some(crate::nodespace::OptionalJsonClear {
+                clear: false,
+                value_json: value.to_string(),
+            })
+        };
+        let clear = || {
+            Some(crate::nodespace::OptionalJsonClear {
+                clear: true,
+                value_json: String::new(),
+            })
+        };
+        let task_request =
+            |version: i64,
+             pull_request: Option<crate::nodespace::OptionalJsonClear>,
+             commits: Option<crate::nodespace::OptionalJsonClear>| {
+                Request::new(crate::nodespace::UpdateTaskNodeRequest {
+                    node_id: task_id.to_string(),
+                    version,
+                    status: None,
+                    priority: None,
+                    due_date: None,
+                    started_at: None,
+                    completed_at: None,
+                    pull_request,
+                    commits,
+                })
+            };
+        let project_request =
+            |version: i64, repository: Option<crate::nodespace::OptionalJsonClear>| {
+                Request::new(crate::nodespace::UpdateProjectNodeRequest {
+                    node_id: project_id.to_string(),
+                    version,
+                    status: None,
+                    priority: None,
+                    start_date: None,
+                    end_date: None,
+                    repository,
+                })
+            };
+        let typed = |id: &'static str| {
+            let svc = svc.clone();
+            async move {
+                let node = svc.node_service.get_node(id).await.unwrap().unwrap();
+                nodespace_core::models::node_to_typed_value(node).unwrap()
+            }
+        };
+
+        svc.update_task_node(task_request(
+            1,
+            json(r#"{"title":"PR 7","url":"https://example.com/pull/7"}"#),
+            json(r#"[{"title":"abc123","url":"https://example.com/commit/abc123"}]"#),
+        ))
+        .await
+        .expect("setting a task's links succeeds");
+        let task = typed(task_id).await;
+        assert_eq!(task["pullRequest"]["url"], "https://example.com/pull/7");
+        assert_eq!(task["commits"][0]["title"], "abc123");
+
+        svc.update_task_node(task_request(2, clear(), clear()))
+            .await
+            .expect("clearing a task's links succeeds");
+        let task = typed(task_id).await;
+        assert!(task.get("pullRequest").is_none());
+        assert!(task.get("commits").is_none());
+
+        // JSON that is not a link never reaches the service.
+        for bad in [
+            r#""https://example.com/pull/7""#,
+            r#"{"url":"x","state":1}"#,
+        ] {
+            let err = svc
+                .update_task_node(task_request(3, json(bad), None))
+                .await
+                .expect_err("a value that is not a link must be rejected");
+            assert_eq!(err.code(), tonic::Code::InvalidArgument, "{bad}");
+        }
+
+        svc.update_project_node(project_request(
+            1,
+            json(r#"{"title":"core","url":"https://github.com/acme/core"}"#),
+        ))
+        .await
+        .expect("setting a project's repository succeeds");
+        assert_eq!(
+            typed(project_id).await["repository"],
+            serde_json::json!({ "title": "core", "url": "https://github.com/acme/core" })
+        );
+        svc.update_project_node(project_request(2, clear()))
+            .await
+            .expect("clearing a project's repository succeeds");
+        assert!(typed(project_id).await.get("repository").is_none());
+    }
+
+    /// UpdateSpecNode, UpdatePlanNode and UpdateDecisionNode write the typed
+    /// fields, embed the typed current node in a stale version's conflict
+    /// header, and refuse an update that is not their update.
+    #[tokio::test]
+    async fn update_spec_plan_and_decision_nodes_write_and_conflict_with_the_typed_node() {
+        let (svc, _tmp) = make_service().await;
+        let spec_id = "a6b2c3d4-e5f6-7890-abcd-ef1234567890";
+        let plan_id = "a7b2c3d4-e5f6-7890-abcd-ef1234567890";
+        let decision_id = "a8b2c3d4-e5f6-7890-abcd-ef1234567890";
+        for (id, node_type, content) in [
+            (spec_id, "spec", "Offline mode"),
+            (plan_id, "plan", "Queue writes"),
+            (decision_id, "decision", "Use SQLite"),
+        ] {
+            svc.create_node(create_typed_request(id, node_type, content, "{}"))
+                .await
+                .unwrap();
+        }
+        let typed = |id: &'static str| {
+            let svc = svc.clone();
+            async move {
+                let node = svc.node_service.get_node(id).await.unwrap().unwrap();
+                assert_eq!(node.version, 2);
+                nodespace_core::models::node_to_typed_value(node).unwrap()
+            }
+        };
+
+        // spec
+        let spec = |version: i64, update_json: &str| {
+            Request::new(crate::nodespace::UpdateSpecNodeRequest {
+                node_id: spec_id.to_string(),
+                version,
+                update_json: update_json.to_string(),
+            })
+        };
+        let resp = svc
+            .update_spec_node(spec(1, r#"{"objective": "Work without a network"}"#))
+            .await
+            .expect("typed spec update succeeds")
+            .into_inner();
+        assert_eq!(resp.node_id, spec_id);
+        let stored = typed(spec_id).await;
+        assert_eq!(stored["objective"], "Work without a network");
+        assert_eq!(stored["specStatus"], "draft");
+        let err = svc
+            .update_spec_node(spec(1, r#"{"objective": null}"#))
+            .await
+            .expect_err("stale version must conflict");
+        let current = conflict_current_node(&err);
+        assert_eq!(current["objective"], "Work without a network");
+        assert_eq!(current["content"], "Offline mode");
+        for bad in [
+            r#"{"content": "Renamed"}"#,
+            r#"{"spec_status": "approved"}"#,
+            r#"{"specStatus": null}"#,
+            r#"{"specStatus": "done"}"#,
+        ] {
+            let err = svc
+                .update_spec_node(spec(2, bad))
+                .await
+                .expect_err("an update that is not a spec update must be rejected");
+            assert_eq!(err.code(), tonic::Code::InvalidArgument, "{bad}");
+        }
+
+        // plan
+        let plan = |version: i64, update_json: &str| {
+            Request::new(crate::nodespace::UpdatePlanNodeRequest {
+                node_id: plan_id.to_string(),
+                version,
+                update_json: update_json.to_string(),
+            })
+        };
+        svc.update_plan_node(plan(
+            1,
+            r#"{"approach": "A local log", "risks": "Ordering"}"#,
+        ))
+        .await
+        .expect("typed plan update succeeds");
+        let stored = typed(plan_id).await;
+        assert_eq!(stored["approach"], "A local log");
+        assert_eq!(stored["planStatus"], "draft");
+        let err = svc
+            .update_plan_node(plan(1, r#"{"risks": null}"#))
+            .await
+            .expect_err("stale version must conflict");
+        assert_eq!(conflict_current_node(&err)["risks"], "Ordering");
+        let err = svc
+            .update_plan_node(plan(2, r#"{"objective": "Not a plan field"}"#))
+            .await
+            .expect_err("an unknown key must be rejected");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // decision
+        let decision = |version: i64, update_json: &str| {
+            Request::new(crate::nodespace::UpdateDecisionNodeRequest {
+                node_id: decision_id.to_string(),
+                version,
+                update_json: update_json.to_string(),
+            })
+        };
+        svc.update_decision_node(decision(1, r#"{"decisionStatus": "accepted"}"#))
+            .await
+            .expect("typed decision update succeeds");
+        assert_eq!(typed(decision_id).await["decisionStatus"], "accepted");
+        let err = svc
+            .update_decision_node(decision(1, r#"{"decisionStatus": "superseded"}"#))
+            .await
+            .expect_err("stale version must conflict");
+        assert_eq!(conflict_current_node(&err)["decisionStatus"], "accepted");
+        let err = svc
+            .update_decision_node(decision(2, r#"{"decisionStatus": "approved"}"#))
+            .await
+            .expect_err("a value outside the vocabulary must be rejected");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        // A typed update is for its own type only.
+        let err = svc
+            .update_spec_node(Request::new(crate::nodespace::UpdateSpecNodeRequest {
+                node_id: plan_id.to_string(),
+                version: 2,
+                update_json: r#"{"objective": "Wrong type"}"#.to_string(),
+            }))
+            .await
+            .expect_err("a plan is not a spec");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        assert!(
+            err.message().contains("not a spec node"),
+            "{}",
+            err.message()
+        );
     }
 
     /// UpdateCollectionNode writes the description, and on a stale version
@@ -5787,6 +6072,7 @@ mod tests {
                 priority: None,
                 start_date: None,
                 end_date: None,
+                repository: None,
             }))
             .await
             .expect_err("stale version must conflict");

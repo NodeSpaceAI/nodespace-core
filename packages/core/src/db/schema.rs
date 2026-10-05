@@ -28,6 +28,11 @@
 //! or to an index or trigger body, is not detected, since `IF NOT EXISTS`
 //! leaves an existing index or trigger as it was.
 //!
+//! A database with the right tables is then held to this build's core types
+//! ([`super::core_type_shape`]): a core type's schema is seeded once and never
+//! rewritten, so a database an earlier build created keeps that build's core
+//! types, which is a difference in shape the tables do not show.
+//!
 //! Connection-level PRAGMAs (`journal_mode`, `foreign_keys`, `synchronous`,
 //! `busy_timeout`) are deliberately absent: they are per-connection session
 //! settings rather than persisted schema state, and SQLite forbids changing
@@ -38,6 +43,8 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use anyhow::{Context, Result};
+
+use super::core_type_shape::{find_core_type_mismatches, CoreTypeMismatch};
 
 /// Every table and index, in dependency order. Virtual tables and triggers are
 /// created separately in [`create_schema`] — their bodies contain semicolons,
@@ -1134,6 +1141,10 @@ async fn table_columns(conn: &libsql::Connection, table: &str) -> Result<Vec<Str
 /// tables the database also holds (see [`expected_shape`]). So a newer build's
 /// ordinary table named that way would go unnoticed; any other unknown table is
 /// reported.
+///
+/// A database whose tables match is then compared core type by core type
+/// ([`find_core_type_mismatches`]). The core types are only read once the
+/// tables are known to be this build's, since they are read from `node`.
 async fn find_shape_mismatch(
     conn: &libsql::Connection,
     expected: &ExpectedShape,
@@ -1157,12 +1168,22 @@ async fn find_shape_mismatch(
         actual.difference(&expected.table_names).cloned().collect();
     let tables = find_column_mismatches(conn, &expected.tables, &actual).await?;
     if missing_tables.is_empty() && unexpected_tables.is_empty() && tables.is_empty() {
-        return Ok(None);
+        let core_types = find_core_type_mismatches(conn).await?;
+        if core_types.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(SchemaMismatch {
+            missing_tables,
+            unexpected_tables,
+            tables,
+            core_types,
+        }));
     }
     Ok(Some(SchemaMismatch {
         missing_tables,
         unexpected_tables,
         tables,
+        core_types: Vec::new(),
     }))
 }
 
@@ -1224,8 +1245,8 @@ pub struct TableShapeMismatch {
 }
 
 /// The database was created by a different build of NodeSpace: it lacks a
-/// table this build's DDL creates, holds one it does not, or has a table whose
-/// columns differ.
+/// table this build's DDL creates, holds one it does not, has a table whose
+/// columns differ, or holds a core type that is not the one this build ships.
 ///
 /// There is no migration path by design (see the module docs). The database
 /// can only be moved aside and replaced with a fresh one, so callers treat
@@ -1239,6 +1260,10 @@ pub struct SchemaMismatch {
     /// Every existing table whose columns differ, in [`SCHEMA_SQL`]'s
     /// table-name order.
     pub tables: Vec<TableShapeMismatch>,
+    /// Every core type the database holds that differs from this build's.
+    /// Only read when the tables match, so it is empty whenever one of the
+    /// other three is not.
+    pub core_types: Vec<CoreTypeMismatch>,
 }
 
 impl SchemaMismatch {
@@ -1255,8 +1280,8 @@ impl fmt::Display for SchemaMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "this database was created by a different version of NodeSpace and its tables \
-             do not match this version's schema"
+            "this database was created by a different version of NodeSpace and does not \
+             match this version's schema"
         )?;
         let mut details = Vec::new();
         if !self.missing_tables.is_empty() {
@@ -1281,6 +1306,7 @@ impl fmt::Display for SchemaMismatch {
             }
             details.push(format!("{}: {}", table.table, parts.join("; ")));
         }
+        details.extend(self.core_types.iter().map(ToString::to_string));
         if !details.is_empty() {
             write!(f, " ({})", details.join("; "))?;
         }
@@ -1362,6 +1388,7 @@ mod tests {
                     missing_columns: vec!["reverse_relationship_type".to_string()],
                     unexpected_columns: vec![],
                 }],
+                core_types: vec![],
             }
         );
         let message = err.to_string();
@@ -1407,6 +1434,7 @@ mod tests {
                     missing_columns: vec![],
                     unexpected_columns: vec!["retired_field".to_string()],
                 }],
+                core_types: vec![],
             }
         );
     }
@@ -1471,6 +1499,7 @@ mod tests {
                 missing_tables: vec!["structural_rule".to_string(), "type_ancestry".to_string()],
                 unexpected_tables: vec![],
                 tables: vec![],
+                core_types: vec![],
             }
         );
         let message = err.to_string();
@@ -1503,6 +1532,7 @@ mod tests {
                 missing_tables: vec![],
                 unexpected_tables: vec!["retired_table".to_string()],
                 tables: vec![],
+                core_types: vec![],
             }
         );
         assert!(err.to_string().contains("unexpected tables retired_table"));

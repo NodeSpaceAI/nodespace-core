@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::helpers::deserialize_clearable;
 use crate::node::NodeEnvelope;
 use crate::priority::Priority;
+use crate::schema::LinkValue;
 use crate::task::flexible_date;
 
 /// Where a project stands.
@@ -77,9 +78,9 @@ impl<'de> Deserialize<'de> for ProjectStatus {
 /// Wire shape for project nodes sent to the frontend.
 ///
 /// Produced by `node_to_typed_value` for `node_type == "project"`. The project
-/// schema's core fields (`status`, `priority`, `start_date`, `end_date`) are
-/// promoted to the top level; they map directly to the TypeScript
-/// `ProjectNode` interface.
+/// schema's core fields (`status`, `priority`, `start_date`, `end_date`,
+/// `repository`) are promoted to the top level; they map directly to the
+/// TypeScript `ProjectNode` interface.
 ///
 /// `status` is the project's own vocabulary; `priority` is the scale `task`
 /// shares. Both are user-extensible, and the service layer validates a write
@@ -100,6 +101,10 @@ pub struct ProjectNode {
     pub start_date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_date: Option<String>,
+    /// The project's source repository. A client binds a checkout to the
+    /// project by comparing the checkout's remote with it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<LinkValue>,
 }
 
 /// Partial update for a project's core fields, received from the frontend.
@@ -133,6 +138,12 @@ pub struct ProjectNodeUpdate {
         deserialize_with = "flexible_date::deserialize_with_null"
     )]
     pub end_date: Option<Option<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_clearable"
+    )]
+    pub repository: Option<Option<LinkValue>>,
 }
 
 impl ProjectNodeUpdate {
@@ -142,6 +153,7 @@ impl ProjectNodeUpdate {
             && self.priority.is_none()
             && self.start_date.is_none()
             && self.end_date.is_none()
+            && self.repository.is_none()
     }
 
     /// The flat, bare-key properties patch this update writes (`{"status":
@@ -162,6 +174,9 @@ impl ProjectNodeUpdate {
             if let Some(value) = value {
                 patch.insert(key.to_string(), serde_json::json!(value));
             }
+        }
+        if let Some(repository) = &self.repository {
+            patch.insert("repository".to_string(), serde_json::json!(repository));
         }
         serde_json::Value::Object(patch)
     }
@@ -210,6 +225,27 @@ mod tests {
         assert_eq!(
             update.to_properties_patch(),
             serde_json::json!({ "priority": "highest" })
+        );
+    }
+
+    #[test]
+    fn repository_is_set_and_cleared() {
+        let update: ProjectNodeUpdate = serde_json::from_str(
+            r#"{"repository": {"title": "core", "url": "https://github.com/a/core"}}"#,
+        )
+        .unwrap();
+        assert!(!update.is_empty());
+        assert_eq!(
+            update.to_properties_patch(),
+            serde_json::json!({
+                "repository": { "title": "core", "url": "https://github.com/a/core" }
+            })
+        );
+        let cleared: ProjectNodeUpdate = serde_json::from_str(r#"{"repository": null}"#).unwrap();
+        assert_eq!(cleared.repository, Some(None));
+        assert_eq!(
+            cleared.to_properties_patch(),
+            serde_json::json!({ "repository": null })
         );
     }
 

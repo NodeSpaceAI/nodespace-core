@@ -631,6 +631,8 @@ impl NodeService {
             node.title = self.compute_title(&node, Some(is_root)).await?;
         }
 
+        self.stamp_task_started(None, &mut node).await?;
+
         if self
             .type_is_a(&node.node_type, crate::models::CoreNodeType::Play)
             .await?
@@ -1270,6 +1272,8 @@ impl NodeService {
 
         self.settle_play_update(&existing, &mut updated, enables_play)
             .await?;
+        self.stamp_task_started(Some(&existing), &mut updated)
+            .await?;
 
         // Sync title when content, node_type, or properties change
         // Schema-driven title_template — also trigger on properties_changed
@@ -1388,6 +1392,8 @@ impl NodeService {
             .await?;
 
         self.settle_play_update(&existing, &mut updated, enables_play)
+            .await?;
+        self.stamp_task_started(Some(&existing), &mut updated)
             .await?;
 
         if content_changed || node_type_changed {
@@ -1524,6 +1530,8 @@ impl NodeService {
             .await?;
 
         self.settle_play_update(&existing, &mut updated, enables_play)
+            .await?;
+        self.stamp_task_started(Some(&existing), &mut updated)
             .await?;
 
         if content_changed || node_type_changed {
@@ -1819,6 +1827,8 @@ impl NodeService {
 
         let play_rules_changed = self
             .settle_play_update(&existing, &mut updated, enables_play)
+            .await?;
+        self.stamp_task_started(Some(&existing), &mut updated)
             .await?;
 
         // Synchronous play validation gate — reject invalid rule changes
@@ -2609,6 +2619,67 @@ impl NodeService {
             }
         }
         Ok(rules_changed)
+    }
+
+    /// Record when work on a task began: a write that moves a task into a
+    /// started status (`in_progress`, or `in_review`, which is work already
+    /// done) sets `started_at` to today when the task has none (ADR-092 §5).
+    /// Every write pipeline that creates or updates a node calls this once
+    /// the properties are re-bucketed. `existing` is `None` on a create.
+    ///
+    /// Only the first start is recorded: a task that already has a
+    /// `started_at`, or whose write sets one, keeps it. A node that is not a
+    /// task is left alone.
+    ///
+    /// The fields are read in the `task` bucket, the one storage shape a
+    /// task's fields have. A batch create handed properties outside it stores
+    /// them as given, and such a node has no status here to read.
+    pub(crate) async fn stamp_task_started(
+        &self,
+        existing: Option<&Node>,
+        updated: &mut Node,
+    ) -> Result<(), NodeServiceError> {
+        use crate::models::{CoreNodeType, TaskStatus};
+        const STATUS: &str = "status";
+        const STARTED_AT: &str = "started_at";
+
+        if !self
+            .type_is_a(&updated.node_type, CoreNodeType::Task)
+            .await?
+        {
+            return Ok(());
+        }
+        let bucket = CoreNodeType::Task.as_str();
+        let stored = |node: &Node, field: &str| -> Option<serde_json::Value> {
+            node.properties
+                .get(bucket)
+                .and_then(|b| b.get(field))
+                .filter(|v| !v.is_null())
+                .cloned()
+        };
+        let status_of = |node: &Node| {
+            stored(node, STATUS)
+                .as_ref()
+                .and_then(|v| v.as_str())
+                .map(TaskStatus::from_value)
+        };
+
+        let Some(status) = status_of(updated) else {
+            return Ok(());
+        };
+        let moved = existing.and_then(status_of).as_ref() != Some(&status);
+        if !status.is_started() || !moved || stored(updated, STARTED_AT).is_some() {
+            return Ok(());
+        }
+        if let Some(fields) = updated
+            .properties
+            .get_mut(bucket)
+            .and_then(|b| b.as_object_mut())
+        {
+            let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
+            fields.insert(STARTED_AT.to_string(), serde_json::json!(today.to_string()));
+        }
+        Ok(())
     }
 
     /// A new play carries no suspension: only the engine records one.

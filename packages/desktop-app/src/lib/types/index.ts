@@ -60,6 +60,15 @@ export { isPersonNode, nodeToPersonNode } from './person-node';
 export type { ProjectNode, ProjectNodeUpdate, ProjectStatus } from './project-node';
 export { isProjectNode, nodeToProjectNode } from './project-node';
 
+export type { SpecNode, SpecNodeUpdate, SpecStatus } from './spec-node';
+export { isSpecNode, nodeToSpecNode } from './spec-node';
+
+export type { PlanNode, PlanNodeUpdate, PlanStatus } from './plan-node';
+export { isPlanNode, nodeToPlanNode } from './plan-node';
+
+export type { DecisionNode, DecisionNodeUpdate, DecisionStatus } from './decision-node';
+export { isDecisionNode, nodeToDecisionNode } from './decision-node';
+
 export type { QueryNode, QueryNodeUpdate, QueryGeneratedBy } from './query';
 export { nodeToQueryNode } from './query';
 

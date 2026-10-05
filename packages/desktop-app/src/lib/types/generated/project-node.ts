@@ -1,4 +1,5 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
+import type { LinkValue } from './link-value';
 import type { NodeReference } from './node-reference';
 import type { Priority } from './priority';
 import type { ProjectStatus } from './project-status';
@@ -7,9 +8,9 @@ import type { ProjectStatus } from './project-status';
  * Wire shape for project nodes sent to the frontend.
  *
  * Produced by `node_to_typed_value` for `node_type == "project"`. The project
- * schema's core fields (`status`, `priority`, `start_date`, `end_date`) are
- * promoted to the top level; they map directly to the TypeScript
- * `ProjectNode` interface.
+ * schema's core fields (`status`, `priority`, `start_date`, `end_date`,
+ * `repository`) are promoted to the top level; they map directly to the
+ * TypeScript `ProjectNode` interface.
  *
  * `status` is the project's own vocabulary; `priority` is the scale `task`
  * shares. Both are user-extensible, and the service layer validates a write
@@ -20,6 +21,11 @@ export type ProjectNode = {
   priority?: Priority;
   startDate?: string;
   endDate?: string;
+  /**
+   * The project's source repository. A client binds a checkout to the
+   * project by comparing the checkout's remote with it.
+   */
+  repository?: LinkValue;
   id: string;
   nodeType: string;
   content: string;

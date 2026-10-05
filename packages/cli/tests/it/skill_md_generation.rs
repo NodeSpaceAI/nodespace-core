@@ -347,7 +347,7 @@ fn skill_md_teaches_the_fetch_and_restates_no_procedure() {
         "More instructions live there than this file carries",
         "How to operate NodeSpace itself",
         "How this workspace works",
-        "Issues and Cycles",
+        "a team's own record types",
         "fetch them before you work in one of its domains",
     ] {
         assert!(body.contains(needle), "SKILL.md must say: {needle:?}");
@@ -596,71 +596,5 @@ fn every_schema_rule_reaches_the_skill() {
          Include each in packages/agent/src/seeds/skill-md/schema-rules.md, \
          then regenerate.",
         missing.join(", ")
-    );
-}
-
-/// Every `bash` block in each generated playbook doc must survive POSIX word
-/// splitting.
-///
-/// The doc exists to be copy-pasted by an external agent, and its Play blocks
-/// embed CEL conditions carrying single-quoted string literals
-/// (`node.status == 'done'`) inside a single-quoted `--params` argument. An
-/// unescaped quote there closes the argument early: the agent gets a mangled
-/// command rather than a parse error it could notice.
-///
-/// Checked against the rendered artifact rather than the generator, because
-/// `--check` only proves the doc matches its source — a broken generator and a
-/// broken doc stay happily in sync. This is what notices that they are both
-/// wrong.
-#[test]
-fn generated_playbook_docs_emit_parseable_shell() {
-    // Derived from the shipped playbooks rather than listed, so a playbook
-    // added without its CLI reference doc fails here instead of shipping
-    // undocumented for external agents.
-    for playbook in nodespace_core::methodology::all_playbooks() {
-        assert_playbook_doc_emits_parseable_shell(&format!("{}-playbook.md", playbook.id));
-    }
-}
-
-fn assert_playbook_doc_emits_parseable_shell(file: &str) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../skill/references")
-        .join(file);
-    let doc = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-
-    let mut blocks = 0;
-    let mut rest = doc.as_str();
-    while let Some(start) = rest.find("```bash\n") {
-        let after = &rest[start + 8..];
-        let Some(end) = after.find("```") else { break };
-        let block = &after[..end];
-        rest = &after[end..];
-        blocks += 1;
-
-        // Join shell line-continuations, then split the whole block the way a
-        // shell would.
-        let joined = block.replace("\\\n", " ");
-        let words = shell_words::split(&joined).unwrap_or_else(|e| {
-            panic!(
-                "{file}: generated bash block {blocks} does not parse as a shell command \
-                 ({e}). A CEL string literal's quote is almost certainly \
-                 terminating the surrounding --params argument; see \
-                 `compact_json` in gen_skill_md.rs.\n\n{block}"
-            )
-        });
-
-        assert_eq!(
-            words.first().map(String::as_str),
-            Some("nodespace"),
-            "block {blocks} should invoke nodespace, got {:?}",
-            words.first()
-        );
-    }
-
-    assert!(
-        blocks >= 4,
-        "expected the playbook doc to carry several command blocks, found {blocks} — \
-         if the doc's shape changed, update this test rather than dropping the check"
     );
 }

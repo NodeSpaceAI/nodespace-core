@@ -2,6 +2,9 @@ import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
 import { nodeToPersonNode } from '$lib/types/person-node';
 import { nodeToProjectNode } from '$lib/types/project-node';
+import { nodeToSpecNode } from '$lib/types/spec-node';
+import { nodeToPlanNode } from '$lib/types/plan-node';
+import { nodeToDecisionNode } from '$lib/types/decision-node';
 import { nodeToQueryNode } from '$lib/types/query';
 import {
   nodeToAiChatMessageNode,
@@ -21,6 +24,9 @@ const TYPED_WIRE_CONVERTERS: ReadonlyMap<string, (node: Node) => Node> = new Map
   ['task', (node) => nodeToTaskNode(node) as unknown as Node],
   ['person', (node) => nodeToPersonNode(node) as unknown as Node],
   ['project', (node) => nodeToProjectNode(node) as unknown as Node],
+  ['spec', (node) => nodeToSpecNode(node) as unknown as Node],
+  ['plan', (node) => nodeToPlanNode(node) as unknown as Node],
+  ['decision', (node) => nodeToDecisionNode(node) as unknown as Node],
   ['query', (node) => nodeToQueryNode(node) as unknown as Node],
   ['ai-chat-native', (node) => nodeToAiChatNativeNode(node) as unknown as Node],
   ['ai-chat-pty', (node) => nodeToAiChatPtyNode(node) as unknown as Node],

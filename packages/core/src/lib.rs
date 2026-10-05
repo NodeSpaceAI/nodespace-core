@@ -26,7 +26,6 @@ pub mod conflict_sweep;
 pub mod db;
 pub mod governance;
 pub mod markdown;
-pub mod methodology;
 pub mod models;
 pub mod node_batch;
 pub mod ops;

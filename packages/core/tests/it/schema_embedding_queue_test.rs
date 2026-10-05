@@ -15,7 +15,6 @@
 
 use anyhow::Result;
 use nodespace_core::db::SqliteStore;
-use nodespace_core::methodology::{install_playbook, playbook_by_id};
 use nodespace_core::models::NewEmbedding;
 use nodespace_core::schema::{handle_create_schema, handle_update_schema};
 use nodespace_core::services::NodeService;
@@ -117,17 +116,24 @@ async fn create_schema_queues_the_new_schema() -> Result<()> {
     Ok(())
 }
 
-/// The property the acceptance criterion names: no schema create path leaves
-/// a schema with no embedding row. Core seeding, `create_schema` and a
-/// Playbook install are the three paths; a fourth that skips the queue shows
-/// up here as an id in the list.
+/// No schema create path leaves a schema with no embedding row. Core seeding
+/// and `create_schema` are the two paths, and a subtype is created through
+/// the second; a path that skips the queue shows up here as an id in the
+/// list.
 #[tokio::test]
 async fn no_schema_create_path_leaves_a_schema_unqueued() -> Result<()> {
     let (service, _tmp) = test_service().await?;
     create_invoice(&service).await?;
-    let playbook = playbook_by_id("linear").expect("the linear playbook ships");
-    let report = install_playbook(&service, &playbook).await;
-    assert!(report.success, "the linear playbook must install");
+    handle_create_schema(
+        &service,
+        json!({
+            "name": "Issue",
+            "extends": "task",
+            "fields": [{ "name": "estimate", "type": "number" }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("create_schema rejected: {e}"))?;
 
     let installed: Vec<String> = service
         .get_all_schemas()
@@ -135,7 +141,7 @@ async fn no_schema_create_path_leaves_a_schema_unqueued() -> Result<()> {
         .into_iter()
         .map(|s| s.envelope.id)
         .collect();
-    for id in ["invoice", "issue", "cycle"] {
+    for id in ["invoice", "issue", "spec", "plan", "decision"] {
         assert!(installed.iter().any(|s| s == id), "`{id}` must exist");
     }
 

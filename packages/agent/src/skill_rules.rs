@@ -611,7 +611,7 @@ pub const SUCCESS_NO_REVERIFY: InteractionRule = InteractionRule {
 
 /// The dedicated-verb instruction is a stable API constraint and is stated
 /// outright. The *value list* deliberately is not: `task.status` is declared
-/// `extensible` and ADR-076's `add_field_values` lets a methodology bundle
+/// `extensible` and ADR-076's `add_field_values` lets a user
 /// append real values to it, so any list written here is only correct until
 /// the first such install. The guidance points at `update_task_status`'s own
 /// `status` enum instead, which `tools::with_live_task_statuses` rewrites

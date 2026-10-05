@@ -4,7 +4,7 @@
  * TaskSchemaForm used to carry its own hardcoded STATUS_OPTIONS/PRIORITY_OPTIONS
  * enum constants and bespoke date-picker markup, duplicating what the real task
  * schema's coreValues/userValues and SchemaFieldLeaf already provide. That
- * duplication was removed: the 5 core fields now render through the shared
+ * duplication was removed: the core fields now render through the shared
  * SchemaFieldLeaf (driven by the schema TaskSchemaForm fetches from the backend),
  * and the Collapsible shell / trigger row / gated Relationships button / nested-
  * field modal now come from the shared TypedFormShell (also used by
@@ -76,6 +76,10 @@ function dateField(name: string, friendlyName: string): SchemaField {
   return { name, friendlyName, type: 'date', protection: 'user', indexed: false, required: false };
 }
 
+function linkField(name: string, friendlyName: string): SchemaField {
+  return { name, friendlyName, type: 'link', protection: 'user', indexed: false, required: false };
+}
+
 /** Mirrors the real `task` SchemaNode exactly as declared in core_schemas.rs. */
 function realTaskSchema(): SchemaNode {
   return {
@@ -97,6 +101,7 @@ function realTaskSchema(): SchemaNode {
         [
           { value: 'open', label: 'Open' },
           { value: 'in_progress', label: 'In Progress' },
+          { value: 'in_review', label: 'In Review' },
           { value: 'done', label: 'Done' },
           { value: 'cancelled', label: 'Cancelled' }
         ],
@@ -116,7 +121,17 @@ function realTaskSchema(): SchemaNode {
       ),
       dateField('due_date', 'Due date'),
       dateField('started_at', 'Started at'),
-      dateField('completed_at', 'Completed at')
+      dateField('completed_at', 'Completed at'),
+      linkField('pull_request', 'Pull request'),
+      {
+        name: 'commits',
+        friendlyName: 'Commits',
+        type: 'array',
+        itemType: 'link',
+        protection: 'user',
+        indexed: false,
+        required: false
+      }
     ]
   };
 }
@@ -277,9 +292,10 @@ describe('TaskSchemaForm — schema-fetch failure degrades gracefully (no blank 
     const { container } = render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
     await openForm(container);
 
-    // 5 core fields (status, priority, due date, started at, completed at) each fall back
+    // 7 core fields (status, priority, due date, started at, completed at, pull request,
+    // commits) each fall back
     // to the unavailable hint.
-    await waitFor(() => expect(screen.getAllByText('Unable to load')).toHaveLength(5));
+    await waitFor(() => expect(screen.getAllByText('Unable to load')).toHaveLength(7));
   });
 
   it('does not show "Unable to load" while the schema fetch is merely still in flight', async () => {
@@ -299,6 +315,38 @@ describe('TaskSchemaForm — schema-fetch failure degrades gracefully (no blank 
     resolveSchema(realTaskSchema());
     await waitFor(() => expect(screen.getAllByText('Open').length).toBeGreaterThanOrEqual(1));
     expect(screen.queryByText('Unable to load')).toBeNull();
+  });
+});
+
+describe('TaskSchemaForm — delivery links', () => {
+  it('shows the pull request and the commit count from the typed fields', async () => {
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
+      taskNode({
+        pullRequest: { title: 'Add the review status', url: 'https://example.com/pr/7' },
+        commits: [
+          { title: 'abc123', url: 'https://example.com/c/abc123' },
+          { title: 'def456', url: 'https://example.com/c/def456' }
+        ]
+      })
+    );
+    const { container } = render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
+    await openForm(container);
+
+    await waitFor(() => expect(screen.getByText('Add the review status')).toBeTruthy());
+    expect(screen.getByText('2 items')).toBeTruthy();
+  });
+
+  it('counts the delivery links in the completion badge', async () => {
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
+      taskNode({
+        status: 'open',
+        pullRequest: { title: 'PR', url: 'https://example.com/pr/1' },
+        commits: [{ title: 'abc', url: 'https://example.com/c/abc' }]
+      })
+    );
+    render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
+
+    await waitFor(() => expect(screen.getByText('3/7 fields')).toBeTruthy());
   });
 });
 
@@ -403,8 +451,8 @@ describe('TaskSchemaForm — single-valued relationships as fields', () => {
 
     render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
 
-    // taskNode() fills status only (1/5 core); +1 filled assignee of 2 promoted.
-    await waitFor(() => expect(screen.getByText('2/7 fields')).toBeTruthy());
+    // taskNode() fills status only (1/7 core); +1 filled assignee of 2 promoted.
+    await waitFor(() => expect(screen.getByText('2/9 fields')).toBeTruthy());
   });
 
   it('fails open (shows the trigger) when the relationship check errors', async () => {
@@ -418,14 +466,14 @@ describe('TaskSchemaForm — single-valued relationships as fields', () => {
 });
 
 describe('TaskSchemaForm — field completion badge', () => {
-  it('counts filled core fields out of 5', async () => {
+  it('counts filled core fields out of 7', async () => {
     loadNodeRelationshipsView.mockResolvedValue({ nodeType: 'task', groups: [] });
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
       taskNode({ status: 'open', priority: 'high', dueDate: '2026-12-31' })
     );
     render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
 
-    await waitFor(() => expect(screen.getByText('3/5 fields')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('3/7 fields')).toBeTruthy());
   });
 
   it('includes user-defined schema fields in the total', async () => {
@@ -444,7 +492,7 @@ describe('TaskSchemaForm — field completion badge', () => {
 
     render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
 
-    await waitFor(() => expect(screen.getByText('1/6 fields')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('1/8 fields')).toBeTruthy());
   });
 });
 

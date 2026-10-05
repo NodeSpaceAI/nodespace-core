@@ -1398,7 +1398,7 @@ mod tests {
             properties: json!({"task": {
                 "status": "open",
                 "custom:status": "shadow",
-                "custom:verification_method": "ran the tests",
+                "custom:review_notes": "ran the tests",
             }}),
             mentions: vec![],
             mentioned_in: vec![],
@@ -1406,7 +1406,7 @@ mod tests {
             lifecycle_status: "active".to_string(),
         };
         assert_eq!(
-            get_node_property(&node, "verification_method"),
+            get_node_property(&node, "review_notes"),
             Some(json!("ran the tests"))
         );
         assert_eq!(get_node_property(&node, "status"), Some(json!("open")));

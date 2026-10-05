@@ -1,4 +1,5 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
+import type { LinkValue } from './link-value';
 import type { NodeReference } from './node-reference';
 import type { Priority } from './priority';
 import type { TaskStatus } from './task-status';
@@ -15,6 +16,14 @@ export type TaskNode = {
   dueDate?: string;
   startedAt?: string;
   completedAt?: string;
+  /**
+   * The pull request that delivered the task.
+   */
+  pullRequest?: LinkValue;
+  /**
+   * The commits that delivered the task.
+   */
+  commits?: Array<LinkValue>;
   id: string;
   nodeType: string;
   content: string;

@@ -29,11 +29,15 @@ import type {
   CollectionNodeUpdate,
   DatabaseSettingsNode,
   DatabaseSettingsNodeUpdate,
+  DecisionNode,
+  DecisionNodeUpdate,
   Node,
   NodeReference,
   NodeWithChildren,
   PersonNode,
   PersonNodeUpdate,
+  PlanNode,
+  PlanNodeUpdate,
   PlayNode,
   PlayNodeUpdate,
   ProjectNode,
@@ -42,6 +46,8 @@ import type {
   QueryNodeUpdate,
   SkillNode,
   SkillNodeUpdate,
+  SpecNode,
+  SpecNodeUpdate,
   TaskNode,
   TaskNodeUpdate
 } from '$lib/types';
@@ -186,6 +192,30 @@ class TauriAdapter implements BackendAdapter {
     return withDiagnosticLogging(
       'updateSkillNode',
       () => invoke<SkillNode>('update_skill_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updateSpecNode(id: string, version: number, update: SpecNodeUpdate): Promise<SpecNode> {
+    return withDiagnosticLogging(
+      'updateSpecNode',
+      () => invoke<SpecNode>('update_spec_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updatePlanNode(id: string, version: number, update: PlanNodeUpdate): Promise<PlanNode> {
+    return withDiagnosticLogging(
+      'updatePlanNode',
+      () => invoke<PlanNode>('update_plan_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updateDecisionNode(id: string, version: number, update: DecisionNodeUpdate): Promise<DecisionNode> {
+    return withDiagnosticLogging(
+      'updateDecisionNode',
+      () => invoke<DecisionNode>('update_decision_node', { id, version, update }),
       [id, version, update]
     );
   }
@@ -590,6 +620,33 @@ export class HttpAdapter implements BackendAdapter {
     return await handleResponse<SkillNode>(response);
   }
 
+  async updateSpecNode(id: string, version: number, update: SpecNodeUpdate): Promise<SpecNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateSpecNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await handleResponse<SpecNode>(response);
+  }
+
+  async updatePlanNode(id: string, version: number, update: PlanNodeUpdate): Promise<PlanNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updatePlanNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await handleResponse<PlanNode>(response);
+  }
+
+  async updateDecisionNode(id: string, version: number, update: DecisionNodeUpdate): Promise<DecisionNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateDecisionNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await handleResponse<DecisionNode>(response);
+  }
+
   async updateDatabaseSettingsNode(
     id: string,
     version: number,
@@ -950,6 +1007,27 @@ class MockAdapter implements BackendAdapter {
     _update: SkillNodeUpdate
   ): Promise<SkillNode> {
     return {} as SkillNode;
+  }
+  async updateSpecNode(
+    _id: string,
+    _version: number,
+    _update: SpecNodeUpdate
+  ): Promise<SpecNode> {
+    return {} as SpecNode;
+  }
+  async updatePlanNode(
+    _id: string,
+    _version: number,
+    _update: PlanNodeUpdate
+  ): Promise<PlanNode> {
+    return {} as PlanNode;
+  }
+  async updateDecisionNode(
+    _id: string,
+    _version: number,
+    _update: DecisionNodeUpdate
+  ): Promise<DecisionNode> {
+    return {} as DecisionNode;
   }
   async updateDatabaseSettingsNode(
     _id: string,

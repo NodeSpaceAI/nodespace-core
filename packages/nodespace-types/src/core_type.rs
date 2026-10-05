@@ -29,6 +29,9 @@ pub enum CoreNodeType {
     AgentGuidance,
     Task,
     Project,
+    Spec,
+    Plan,
+    Decision,
     Person,
     Collection,
     Skill,
@@ -280,7 +283,7 @@ pub struct CoreTypeInfo {
 
 impl CoreNodeType {
     /// Every core type, in registry order.
-    pub const ALL: [CoreNodeType; 25] = [
+    pub const ALL: [CoreNodeType; 28] = [
         CoreNodeType::Text,
         CoreNodeType::Header,
         CoreNodeType::CodeBlock,
@@ -293,6 +296,9 @@ impl CoreNodeType {
         CoreNodeType::AgentGuidance,
         CoreNodeType::Task,
         CoreNodeType::Project,
+        CoreNodeType::Spec,
+        CoreNodeType::Plan,
+        CoreNodeType::Decision,
         CoreNodeType::Person,
         CoreNodeType::Collection,
         CoreNodeType::Skill,
@@ -415,6 +421,12 @@ impl CoreNodeType {
                 ..entry("task", Flat, DescriptionLine, NOT_EMBEDDED, TYPED)
             },
             Self::Project => entry("project", Flat, Name, NOT_EMBEDDED, TYPED),
+            // What is built and why, how, and what was decided (ADR-092). The
+            // content is the title; a spec's criteria are its checkbox
+            // children and a decision's body is its children.
+            Self::Spec => entry("spec", Flat, Name, NOT_EMBEDDED, TYPED),
+            Self::Plan => entry("plan", Flat, Name, NOT_EMBEDDED, TYPED),
+            Self::Decision => entry("decision", Flat, Name, NOT_EMBEDDED, TYPED),
             Self::Person => CoreTypeInfo {
                 title_template: Some("{first_name} {last_name}"),
                 ..entry("person", Flat, Ignored, NOT_EMBEDDED, TYPED)
@@ -770,6 +782,9 @@ mod tests {
                 | CoreNodeType::AgentGuidance
                 | CoreNodeType::Task
                 | CoreNodeType::Project
+                | CoreNodeType::Spec
+                | CoreNodeType::Plan
+                | CoreNodeType::Decision
                 | CoreNodeType::Person
                 | CoreNodeType::Collection
                 | CoreNodeType::Skill

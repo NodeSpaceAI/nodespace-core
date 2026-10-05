@@ -2,7 +2,8 @@
 //! crash-loop.
 //!
 //! When the default database's tables do not have the shape this build's DDL
-//! defines, `create_schema` refuses it with a [`SchemaMismatch`]. Retrying can
+//! defines, or it holds a core type that is not the one this build ships, the
+//! store refuses it with a [`SchemaMismatch`]. Retrying can
 //! never succeed: NodeSpace does not migrate databases, so the file is the
 //! same on every attempt. Yet a daemon that simply fails startup is restarted
 //! by its service manager (launchd's `KeepAlive`, systemd's
@@ -44,7 +45,7 @@ pub fn marker_path() -> Result<PathBuf> {
 }
 
 /// Open the default database `id` through `manager`, recording a refusal at
-/// `marker` when its tables do not match this build's schema, and clearing a
+/// `marker` when it does not match this build's schema, and clearing a
 /// marker left by an earlier refusal when it opens.
 ///
 /// `fallback_path` names the file in the marker if the registry cannot say
@@ -164,6 +165,7 @@ mod tests {
         SchemaMismatch {
             missing_tables: vec![],
             unexpected_tables: vec![],
+            core_types: vec![],
             tables: vec![TableShapeMismatch {
                 table: "relationship".to_string(),
                 missing_columns: vec!["reverse_relationship_type".to_string()],

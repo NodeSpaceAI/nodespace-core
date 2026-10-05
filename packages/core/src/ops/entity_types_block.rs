@@ -53,6 +53,9 @@ pub struct EntityTypeDescriptor {
 pub struct EntityFieldDescriptor {
     pub name: String,
     pub field_type: String,
+    /// What an `array` field's elements are. Not rendered into the compact
+    /// prompt line; the tool surface reads it to declare an element's shape.
+    pub item_type: Option<String>,
     /// Legal values for an enum field. A bare `status: enum` tells the model a
     /// value is wanted but not which ones the schema accepts, so it invents one
     /// and the write is rejected.
@@ -140,6 +143,7 @@ impl EntityFieldDescriptor {
         Self {
             name: f.name.clone(),
             field_type: f.field_type.to_string(),
+            item_type: f.item_type.as_ref().map(ToString::to_string),
             enum_values,
             required: f.required.unwrap_or(false),
             description: f.description.clone(),
@@ -388,6 +392,9 @@ impl EntityTypeDescriptor {
                 if f.required {
                     field["required"] = json!(true);
                 }
+                if let Some(item_type) = &f.item_type {
+                    field["item_type"] = json!(item_type);
+                }
                 if !f.enum_values.is_empty() {
                     field["enum_values"] = json!(f.enum_values);
                 }
@@ -450,6 +457,10 @@ impl EntityTypeDescriptor {
                         Some(EntityFieldDescriptor {
                             name: name.to_string(),
                             field_type,
+                            item_type: f
+                                .get("item_type")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
                             enum_values,
                             required: f.get("required").and_then(|v| v.as_bool()).unwrap_or(false),
                             description: f

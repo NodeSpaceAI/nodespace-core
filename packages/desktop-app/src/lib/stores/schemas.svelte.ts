@@ -22,7 +22,16 @@ const log = createLogger('SchemasStore');
 // Core schema IDs that are user-queryable and should appear in the sidenav.
 // Structural/inline types (text, date, header, code-block, etc.) are excluded —
 // they are node content primitives, not entity types users browse or filter.
-const SIDENAV_CORE_TYPES = new Set(['task', 'project', 'skill', 'person', 'agent-guidance']);
+const SIDENAV_CORE_TYPES = new Set([
+  'task',
+  'project',
+  'spec',
+  'plan',
+  'decision',
+  'skill',
+  'person',
+  'agent-guidance'
+]);
 
 class SchemasStore {
   /** Raw schema list */

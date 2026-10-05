@@ -13,6 +13,7 @@
 import * as grpc from '@grpc/grpc-js';
 import type { PersonNodeUpdate } from '../../desktop-app/src/lib/types/person-node.ts';
 import type { ProjectNodeUpdate } from '../../desktop-app/src/lib/types/project-node.ts';
+import type { TaskNodeUpdate } from '../../desktop-app/src/lib/types/task-node.ts';
 import type { SchemaNode } from '../../desktop-app/src/lib/types/schema-node.ts';
 import {
   buildPersonNodeUpdatePatch,
@@ -527,13 +528,7 @@ async function handleRequest(req: Request): Promise<Response> {
       // absent field = no change, null = clear, value = set. Reused here so
       // this gRPC request can't drift from what the Tauri command layer
       // encodes for the same logical update.
-      const patch = buildTaskNodeUpdatePatch(body as {
-        status?: string;
-        priority?: string | null;
-        dueDate?: string | null;
-        startedAt?: string | null;
-        completedAt?: string | null;
-      });
+      const patch = buildTaskNodeUpdatePatch(body as TaskNodeUpdate);
       const request = {
         nodeId,
         version: body.version ?? 0,
@@ -541,7 +536,9 @@ async function handleRequest(req: Request): Promise<Response> {
         priority: patch.priority ?? null,
         dueDate: patch.dueDate ?? null,
         startedAt: patch.startedAt ?? null,
-        completedAt: patch.completedAt ?? null
+        completedAt: patch.completedAt ?? null,
+        pullRequest: patch.pullRequest ?? null,
+        commits: patch.commits ?? null
       };
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateTaskNode,
@@ -596,7 +593,8 @@ async function handleRequest(req: Request): Promise<Response> {
         status: patch.status ?? null,
         priority: patch.priority ?? null,
         startDate: patch.startDate ?? null,
-        endDate: patch.endDate ?? null
+        endDate: patch.endDate ?? null,
+        repository: patch.repository ?? null
       };
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateProjectNode,
@@ -650,12 +648,16 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
-  // PATCH /api/collections/:id, /api/skills/:id, /api/database-settings/:id.
+  // PATCH /api/collections/:id, /api/skills/:id, /api/specs/:id, /api/plans/:id,
+  // /api/decisions/:id, /api/database-settings/:id.
   // Each travels as its JSON-encoded typed update, decoded by the daemon, as
   // for a query.
   for (const [pattern, rpc] of [
     [HTTP_ROUTE_PATTERNS.updateCollectionNode, 'updateCollectionNode'],
     [HTTP_ROUTE_PATTERNS.updateSkillNode, 'updateSkillNode'],
+    [HTTP_ROUTE_PATTERNS.updateSpecNode, 'updateSpecNode'],
+    [HTTP_ROUTE_PATTERNS.updatePlanNode, 'updatePlanNode'],
+    [HTTP_ROUTE_PATTERNS.updateDecisionNode, 'updateDecisionNode'],
     [HTTP_ROUTE_PATTERNS.updateDatabaseSettingsNode, 'updateDatabaseSettingsNode']
   ] as const) {
     const typedMatch = pathname.match(pattern);

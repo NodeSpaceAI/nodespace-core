@@ -173,6 +173,45 @@ describe('updateNode routing for typed core types', () => {
     expect((store.getNode('q1') as unknown as QueryNode).viewConfig).toEqual(viewConfig);
   });
 
+  it('routes a spec status change to updateSpecNode, never the generic update', async () => {
+    store.setNode(makeNode('sp1', 'spec', { specStatus: 'draft' }), dbSource);
+    const typedSpy = vi.spyOn(backendAdapter, 'updateSpecNode').mockImplementation(
+      async (id, version, update) =>
+        ({
+          ...makeNode(id, 'spec', { specStatus: 'draft', ...update }),
+          version: version + 1
+        }) as never
+    );
+    const genericSpy = vi.spyOn(backendAdapter, 'updateNode');
+
+    store.updateSpecNode('sp1', { specStatus: 'approved' }, viewerSource);
+
+    await vi.waitFor(() => expect(typedSpy).toHaveBeenCalledWith('sp1', 1, { specStatus: 'approved' }));
+    expect(genericSpy).not.toHaveBeenCalled();
+    expect((store.getNode('sp1') as unknown as { specStatus: string }).specStatus).toBe('approved');
+  });
+
+  it('routes a plan approach edit and a decision status change to their typed updates', async () => {
+    store.setNode(makeNode('pn1', 'plan', { planStatus: 'draft' }), dbSource);
+    store.setNode(makeNode('dc1', 'decision', { decisionStatus: 'proposed' }), dbSource);
+    const planSpy = vi.spyOn(backendAdapter, 'updatePlanNode').mockImplementation(
+      async (id, version, update) =>
+        ({ ...makeNode(id, 'plan', { ...update }), version: version + 1 }) as never
+    );
+    const decisionSpy = vi.spyOn(backendAdapter, 'updateDecisionNode').mockImplementation(
+      async (id, version, update) =>
+        ({ ...makeNode(id, 'decision', { ...update }), version: version + 1 }) as never
+    );
+
+    store.updatePlanNode('pn1', { approach: 'Two steps' }, viewerSource);
+    store.updateDecisionNode('dc1', { decisionStatus: 'accepted' }, viewerSource);
+
+    await vi.waitFor(() => expect(planSpy).toHaveBeenCalledWith('pn1', 1, { approach: 'Two steps' }));
+    await vi.waitFor(() =>
+      expect(decisionSpy).toHaveBeenCalledWith('dc1', 1, { decisionStatus: 'accepted' })
+    );
+  });
+
   it('routes a typed play field (e.g. a description edit) to updatePlayNode', async () => {
     store.setNode(makeNode('pl1', 'play', { rules: [] }), dbSource);
     const typedSpy = vi.spyOn(backendAdapter, 'updatePlayNode').mockImplementation(
@@ -269,6 +308,9 @@ describe('updateNode routing for typed core types', () => {
         play: vi.spyOn(backendAdapter, 'updatePlayNode').mockImplementation(respond),
         collection: vi.spyOn(backendAdapter, 'updateCollectionNode').mockImplementation(respond),
         skill: vi.spyOn(backendAdapter, 'updateSkillNode').mockImplementation(respond),
+        spec: vi.spyOn(backendAdapter, 'updateSpecNode').mockImplementation(respond),
+        plan: vi.spyOn(backendAdapter, 'updatePlanNode').mockImplementation(respond),
+        decision: vi.spyOn(backendAdapter, 'updateDecisionNode').mockImplementation(respond),
         'database-settings': vi
           .spyOn(backendAdapter, 'updateDatabaseSettingsNode')
           .mockImplementation(respond)

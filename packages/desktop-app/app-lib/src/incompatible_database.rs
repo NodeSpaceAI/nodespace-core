@@ -2,7 +2,7 @@
 //! it — telling the user, and moving it aside so NodeSpace can start fresh.
 //!
 //! NodeSpace does not migrate databases between versions: when the default
-//! database's tables do not match the current schema, `nodespaced` refuses to
+//! database does not match the current schema, `nodespaced` refuses to
 //! open it, records why in a marker file (`nodespace_proto::socket::
 //! incompatible_database_name`, shape [`IncompatibleDatabase`]) and exits
 //! cleanly so its service manager does not restart it into the same failure.

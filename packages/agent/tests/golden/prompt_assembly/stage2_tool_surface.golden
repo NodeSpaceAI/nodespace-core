@@ -751,7 +751,7 @@ parameters_schema:
 }
 
 ### update_task_status
-description: Update a task's status. Valid statuses: open, in_progress, done, cancelled.
+description: Update a task's status. Valid statuses: open, in_progress, in_review, done, cancelled.
 parameters_schema:
 {
   "properties": {
@@ -764,6 +764,7 @@ parameters_schema:
       "enum": [
         "open",
         "in_progress",
+        "in_review",
         "done",
         "cancelled"
       ],

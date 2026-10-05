@@ -466,6 +466,8 @@ describe('Core Plugins Integration', () => {
         { status: 'OPEN', expectedTaskState: 'pending' },
         { status: 'in_progress', expectedTaskState: 'inProgress' },
         { status: 'IN_PROGRESS', expectedTaskState: 'inProgress' },
+        { status: 'in_review', expectedTaskState: 'inProgress' },
+        { status: 'IN_REVIEW', expectedTaskState: 'inProgress' },
         { status: 'done', expectedTaskState: 'completed' },
         { status: 'DONE', expectedTaskState: 'completed' },
         { status: 'cancelled', expectedTaskState: 'completed' },

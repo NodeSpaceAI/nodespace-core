@@ -1,7 +1,7 @@
 //! A window must see its OWN out-of-band writes on its own `WatchNodes`
 //! stream: writes that reach the daemon through a Tauri command which the
-//! frontend store did not apply itself (the onboarding identity step, a
-//! playbook install, ...). The store learns about those only through the
+//! frontend store did not apply itself (the onboarding identity step, for
+//! one). The store learns about those only through the
 //! watcher → `node:*` event → fetch path, so if the daemon suppresses their
 //! echo as "this window's own write" they never reach the UI.
 //!
@@ -15,7 +15,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use nodespace_app_lib::commands::methodology::install_methodology;
 use nodespace_app_lib::commands::nodes::{
     create_node, create_relationship, delete_relationship, update_node,
     update_relationship_properties, CreateNodeInput,
@@ -115,20 +114,6 @@ async fn a_windows_out_of_band_writes_reach_its_own_watcher() {
             .any(|(n, id, _)| n == "node:updated" && *id == person_id)
     })
     .await;
-
-    // Playbook install: creates schemas (the sidebar type list reacts to their
-    // `node:created`) and plays.
-    let report = install_methodology(state.clone(), "spec-driven".to_string())
-        .await
-        .expect("install_methodology failed");
-    assert!(report.success, "install reported failure: {report:?}");
-    for node_type in ["schema", "play"] {
-        wait_until(&seen, &format!("node:created for a {node_type}"), |s| {
-            s.iter()
-                .any(|(n, _, t)| n == "node:created" && t.as_deref() == Some(node_type))
-        })
-        .await;
-    }
 
     cancel_token.cancel();
     let _ = tokio::time::timeout(Duration::from_secs(5), watcher_handle).await;

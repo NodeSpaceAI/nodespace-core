@@ -6,6 +6,9 @@
 //! ## Core Schemas
 //!
 //! - **task** - Task tracking with status, priority, dates
+//! - **spec** - What is being built and why; its criteria are checkbox children
+//! - **plan** - How one spec will be built
+//! - **decision** - What was decided; its body is its children
 //! - **text** - Plain text content
 //! - **date** - Daily note containers
 //! - **header** - Markdown headers (h1-h6)
@@ -34,7 +37,7 @@ use crate::models::schema::{
 };
 use crate::models::{
     AiChatMessageRole, AiChatProvider, AiChatSessionStatus, AiChatTurnOutcome, AiChatTurnStatus,
-    CoreNodeType, NodeEnvelope, SchemaNode,
+    CoreNodeType, DecisionStatus, NodeEnvelope, PlanStatus, SchemaNode, SpecStatus,
 };
 use chrono::Utc;
 
@@ -51,6 +54,90 @@ fn enum_values<T: Copy>(
     all.iter()
         .map(|(value, label)| EnumValue::new(as_str(*value).to_string(), label.to_string()))
         .collect()
+}
+
+/// An optional free-text field a user writes.
+fn text_field(name: &str, friendly_name: &str, description: &str) -> SchemaField {
+    SchemaField {
+        name: name.to_string(),
+        friendly_name: friendly_name.to_string(),
+        field_type: crate::models::SchemaFieldType::Text,
+        local_only: false,
+        protection: SchemaProtectionLevel::User,
+        core_values: None,
+        user_values: None,
+        indexed: false,
+        required: Some(false),
+        extensible: None,
+        default: None,
+        description: Some(description.to_string()),
+        item_type: None,
+        fields: None,
+        item_fields: None,
+        unique: None,
+        unique_case_insensitive: None,
+    }
+}
+
+/// An optional web link: a title and an absolute URL.
+fn link_field(name: &str, friendly_name: &str, description: &str) -> SchemaField {
+    SchemaField {
+        field_type: crate::models::SchemaFieldType::Link,
+        ..text_field(name, friendly_name, description)
+    }
+}
+
+/// An optional list of web links.
+fn link_list_field(name: &str, friendly_name: &str, description: &str) -> SchemaField {
+    SchemaField {
+        field_type: crate::models::SchemaFieldType::Array,
+        item_type: Some(crate::models::SchemaFieldType::Link),
+        ..text_field(name, friendly_name, description)
+    }
+}
+
+/// A required status field with a closed vocabulary. The seeded rules compare
+/// its values by name, so a user cannot add one.
+fn closed_status_field(
+    name: &str,
+    friendly_name: &str,
+    core_values: Vec<EnumValue>,
+    default: serde_json::Value,
+    description: &str,
+) -> SchemaField {
+    SchemaField {
+        field_type: crate::models::SchemaFieldType::Enum,
+        protection: SchemaProtectionLevel::Core,
+        core_values: Some(core_values),
+        user_values: Some(vec![]),
+        indexed: true,
+        required: Some(true),
+        extensible: Some(false),
+        default: Some(default),
+        ..text_field(name, friendly_name, description)
+    }
+}
+
+/// A many-to-many or one-to-many link another schema is reached through.
+fn relationship(
+    name: &str,
+    target_type: CoreNodeType,
+    cardinality: RelationshipCardinality,
+    reverse_name: &str,
+    reverse_cardinality: RelationshipCardinality,
+    description: &str,
+) -> SchemaRelationship {
+    SchemaRelationship {
+        name: name.to_string(),
+        target_type: Some(target_type.as_str().to_string()),
+        direction: RelationshipDirection::Out,
+        cardinality,
+        required: None,
+        reverse_name: reverse_name.to_string(),
+        reverse_cardinality,
+        edge_fields: None,
+        description: Some(description.to_string()),
+    }
 }
 
 /// Get all core schema definitions as SchemaNode instances
@@ -90,6 +177,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     core_values: Some(vec![
                         EnumValue::new("open".to_string(), "Open".to_string()),
                         EnumValue::new("in_progress".to_string(), "In Progress".to_string()),
+                        EnumValue::new("in_review".to_string(), "In Review".to_string()),
                         EnumValue::new("done".to_string(), "Done".to_string()),
                         EnumValue::new("cancelled".to_string(), "Cancelled".to_string()),
                     ]),
@@ -100,9 +188,11 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     default: Some(serde_json::json!("open")),
                     description: Some(
                         "Current workflow state of the task: open (not started), in_progress \
-                         (actively being worked), done (completed), or cancelled (abandoned, \
-                         not completed). Drives board columns and completion rollups — a task \
-                         counts toward \"done\" totals only when this equals done."
+                         (actively being worked), in_review (the work is finished and waiting \
+                         on review, typically an open pull request), done (completed), or \
+                         cancelled (abandoned, not completed). Drives board columns and \
+                         completion rollups — a task counts toward \"done\" totals only when \
+                         this equals done."
                             .to_string(),
                     ),
                     item_type: None,
@@ -183,7 +273,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     description: Some(
                         "Date work on the task actually began, distinct from due_date (the \
                          deadline) and created_at (when the task record was made). Set once, \
-                         when status first moves to in_progress; not required."
+                         when status first moves to in_progress or in_review; not required."
                             .to_string(),
                     ),
                     item_type: None,
@@ -217,6 +307,20 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
+                // Where the work landed (ADR-092 §4). Optional: a task is not
+                // always a code change, and no rule requires either.
+                link_field(
+                    "pull_request",
+                    "Pull request",
+                    "The pull request that delivered the task: its title and URL. Absent for \
+                     work that is not a code change.",
+                ),
+                link_list_field(
+                    "commits",
+                    "Commits",
+                    "The commits that delivered the task, each a title and URL. Written as the \
+                     whole list.",
+                ),
             ],
             // A task's assignee is the derived inverse of person's `tasks`
             // relationship declaration below (mirrors project ↔ task), and its
@@ -276,6 +380,16 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     edge_fields: None,
                     description: Some("The task(s) this task duplicates".to_string()),
                 },
+                // A task's spec and plan are the derived inverses of their
+                // `tasks` declarations; its decisions are declared here.
+                relationship(
+                    "decisions",
+                    CoreNodeType::Decision,
+                    RelationshipCardinality::Many,
+                    "tasks",
+                    RelationshipCardinality::Many,
+                    "Decisions that govern how this task is done",
+                ),
             ],
             title_template: None,
             properties_header_summary_template: None,
@@ -413,6 +527,14 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
+                // What binds a checkout to a project (ADR-092 §4): a client
+                // compares the checkout's remote with this link's URL.
+                link_field(
+                    "repository",
+                    "Repository",
+                    "The project's source repository: its title and URL. A checkout of that \
+                     repository belongs to this project.",
+                ),
             ],
             // A project has many tasks; the inverse (a task's single project) is
             // derived from this declaration, so `task` needs no entry of its own.
@@ -429,6 +551,155 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 edge_fields: None,
                 description: Some("Tasks belonging to this project".to_string()),
             }],
+            title_template: None,
+            properties_header_summary_template: None,
+            context_paths: Vec::new(),
+        },
+        // Spec, plan and decision (ADR-092): how work is tracked in every
+        // database. The content of each is its title.
+        //
+        // Like `project`, none is slash-command-creatable: each is set up
+        // deliberately, by the agent or through the entity surfaces.
+        //
+        // The status field of each carries the type's name (`spec_status`),
+        // not `status`: a bare `status` reads as the task lifecycle to every
+        // consumer that knows that name, and none of these is a unit of work.
+        //
+        // A spec's success criteria are its direct `checkbox` children
+        // (ADR-092 §2), so there is no criteria field.
+        SchemaNode {
+            envelope: envelope("spec", "Spec"),
+            extends: None,
+            is_core: true,
+            is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
+            schema_version: 1,
+            fields: vec![
+                text_field(
+                    "objective",
+                    "Objective",
+                    "What is being built, why, and for whom, in the requester's own terms, not \
+                     a restatement of the title.",
+                ),
+                text_field(
+                    "boundaries",
+                    "Boundaries",
+                    "What may always be done without asking, what needs sign-off first, and \
+                     what must never be done.",
+                ),
+                closed_status_field(
+                    "spec_status",
+                    "Spec status",
+                    enum_values(&SpecStatus::ALL, SpecStatus::as_str),
+                    serde_json::json!(SpecStatus::default()),
+                    "draft while being written; approved once the requester has confirmed it, \
+                     which needs at least one checkbox child as a success criterion and is \
+                     what lets a plan against it be approved; superseded once a newer spec \
+                     replaces it, which locks its fields.",
+                ),
+            ],
+            relationships: vec![
+                relationship(
+                    "tasks",
+                    CoreNodeType::Task,
+                    RelationshipCardinality::Many,
+                    "spec",
+                    RelationshipCardinality::Many,
+                    "Tasks this spec governs, linked directly so a task's spec is one hop \
+                     away. A task may serve more than one spec.",
+                ),
+                relationship(
+                    "decisions",
+                    CoreNodeType::Decision,
+                    RelationshipCardinality::Many,
+                    "specs",
+                    RelationshipCardinality::Many,
+                    "Decisions that govern the work under this spec",
+                ),
+            ],
+            title_template: None,
+            properties_header_summary_template: None,
+            context_paths: Vec::new(),
+        },
+        SchemaNode {
+            envelope: envelope("plan", "Plan"),
+            extends: None,
+            is_core: true,
+            is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
+            schema_version: 1,
+            fields: vec![
+                text_field(
+                    "approach",
+                    "Approach",
+                    "Major components, dependencies and sequencing, tied to the spec's success \
+                     criteria by name.",
+                ),
+                text_field(
+                    "risks",
+                    "Risks",
+                    "What could go wrong with this particular approach.",
+                ),
+                closed_status_field(
+                    "plan_status",
+                    "Plan status",
+                    enum_values(&PlanStatus::ALL, PlanStatus::as_str),
+                    serde_json::json!(PlanStatus::default()),
+                    "draft while being written; approved once the requester has confirmed it, \
+                     which requires its spec to be approved and is what lets its tasks start; \
+                     superseded once a newer plan replaces it, which locks its fields.",
+                ),
+            ],
+            relationships: vec![
+                relationship(
+                    "spec",
+                    CoreNodeType::Spec,
+                    RelationshipCardinality::One,
+                    "plans",
+                    RelationshipCardinality::Many,
+                    "The spec this plan implements. One per plan; a spec accumulates plans as \
+                     they are revised and superseded.",
+                ),
+                relationship(
+                    "tasks",
+                    CoreNodeType::Task,
+                    RelationshipCardinality::Many,
+                    "plan",
+                    RelationshipCardinality::One,
+                    "Tasks that carry out this plan. A task belongs to one plan.",
+                ),
+            ],
+            title_template: None,
+            properties_header_summary_template: None,
+            context_paths: Vec::new(),
+        },
+        // A decision's body is its children, so its status is its only field.
+        SchemaNode {
+            envelope: envelope("decision", "Decision"),
+            extends: None,
+            is_core: true,
+            is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
+            schema_version: 1,
+            fields: vec![closed_status_field(
+                "decision_status",
+                "Decision status",
+                enum_values(&DecisionStatus::ALL, DecisionStatus::as_str),
+                serde_json::json!(DecisionStatus::default()),
+                "proposed while under discussion; accepted once agreed; superseded once a \
+                 newer decision replaces it, which locks it.",
+            )],
+            relationships: vec![relationship(
+                "supersedes",
+                CoreNodeType::Decision,
+                RelationshipCardinality::Many,
+                "superseded_by",
+                RelationshipCardinality::Many,
+                "The decisions this one replaces",
+            )],
             title_template: None,
             properties_header_summary_template: None,
             context_paths: Vec::new(),
@@ -1948,15 +2219,18 @@ mod tests {
                 "collection",
                 "database-settings",
                 "date",
+                "decision",
                 "header",
                 "horizontal-line",
                 "ordered-list",
                 "person",
+                "plan",
                 "play",
                 "project",
                 "query",
                 "quote-block",
                 "skill",
+                "spec",
                 "table",
                 "task",
                 "text",
@@ -2246,7 +2520,7 @@ mod tests {
         let schemas = get_core_schemas();
         let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
 
-        assert_eq!(task.fields.len(), 5);
+        assert_eq!(task.fields.len(), 7);
         assert!(task.get_field("status").is_some());
         assert!(task.get_field("priority").is_some());
         assert!(task.get_field("due_date").is_some());
@@ -2325,9 +2599,9 @@ mod tests {
         let schemas = get_core_schemas();
         let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
 
-        // Exactly these three — an accidental fourth declaration on task should
-        // trip a test rather than ride along unnoticed.
-        assert_eq!(task.relationships.len(), 3);
+        // Exactly these three and `decisions` — an accidental fifth declaration
+        // on task should trip a test rather than ride along unnoticed.
+        assert_eq!(task.relationships.len(), 4);
 
         // Every one of these is task→task, Many/Many, and optional on both ends.
         for (name, reverse_name) in [
@@ -2352,6 +2626,208 @@ mod tests {
             assert!(rel.required.is_none(), "{name} must be optional");
             assert!(rel.edge_fields.is_none());
         }
+    }
+
+    /// ADR-092 §1: the three types carry exactly these fields, and each
+    /// status field is a required closed enum with the listed values and
+    /// default, typed by its own wire enum.
+    #[test]
+    fn spec_plan_and_decision_declare_the_decided_fields() {
+        use crate::models::{DecisionStatus, PlanStatus, SpecStatus};
+
+        let schemas = get_core_schemas();
+        let find = |id: &str| schemas.iter().find(|s| s.envelope.id == id).unwrap();
+        let names = |schema: &SchemaNode| -> Vec<String> {
+            schema.fields.iter().map(|f| f.name.clone()).collect()
+        };
+        let values = |schema: &SchemaNode, field: &str| -> Vec<String> {
+            let field = schema.get_field(field).unwrap();
+            assert_eq!(field.field_type, SchemaFieldType::Enum);
+            assert_eq!(field.extensible, Some(false), "a closed vocabulary");
+            assert_eq!(field.required, Some(true));
+            assert_eq!(field.user_values, Some(vec![]));
+            field
+                .core_values
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|v| v.value.clone())
+                .collect()
+        };
+
+        let spec = find("spec");
+        assert_eq!(names(spec), ["objective", "boundaries", "spec_status"]);
+        assert_eq!(
+            values(spec, "spec_status"),
+            ["draft", "approved", "superseded"]
+        );
+        assert_eq!(
+            spec.get_field("spec_status").unwrap().default,
+            Some(serde_json::json!("draft"))
+        );
+        assert_eq!(
+            serde_json::json!(SpecStatus::default()),
+            serde_json::json!("draft")
+        );
+        assert!(
+            spec.get_field("success_criteria").is_none(),
+            "a spec's criteria are its checkbox children"
+        );
+
+        let plan = find("plan");
+        assert_eq!(names(plan), ["approach", "risks", "plan_status"]);
+        assert_eq!(
+            values(plan, "plan_status"),
+            ["draft", "approved", "superseded"]
+        );
+        assert_eq!(
+            plan.get_field("plan_status").unwrap().default,
+            Some(serde_json::json!(PlanStatus::default()))
+        );
+
+        let decision = find("decision");
+        assert_eq!(names(decision), ["decision_status"]);
+        assert_eq!(
+            values(decision, "decision_status"),
+            ["proposed", "accepted", "superseded"]
+        );
+        assert_eq!(
+            decision.get_field("decision_status").unwrap().default,
+            Some(serde_json::json!(DecisionStatus::default()))
+        );
+        assert_eq!(
+            serde_json::json!(DecisionStatus::default()),
+            serde_json::json!("proposed")
+        );
+
+        for id in ["spec", "plan", "decision"] {
+            let schema = find(id);
+            // The text fields are optional free text.
+            for field in schema
+                .fields
+                .iter()
+                .filter(|f| !f.name.ends_with("_status"))
+            {
+                assert_eq!(
+                    field.field_type,
+                    SchemaFieldType::Text,
+                    "{id}.{}",
+                    field.name
+                );
+                assert_eq!(field.required, Some(false), "{id}.{}", field.name);
+            }
+            // None carries a bare `status`: that name is the task lifecycle.
+            assert!(schema.get_field("status").is_none(), "{id}");
+        }
+    }
+
+    /// ADR-092 §3: the declared relationships, with their names,
+    /// cardinalities and reverse names.
+    #[test]
+    fn the_model_relationships_have_the_decided_shape() {
+        use RelationshipCardinality::{Many, One};
+
+        let schemas = get_core_schemas();
+        for (declared_on, name, target, cardinality, reverse_name, reverse_cardinality) in [
+            ("spec", "tasks", "task", Many, "spec", Many),
+            ("spec", "decisions", "decision", Many, "specs", Many),
+            ("plan", "spec", "spec", One, "plans", Many),
+            ("plan", "tasks", "task", Many, "plan", One),
+            ("task", "decisions", "decision", Many, "tasks", Many),
+            (
+                "decision",
+                "supersedes",
+                "decision",
+                Many,
+                "superseded_by",
+                Many,
+            ),
+        ] {
+            let schema = schemas
+                .iter()
+                .find(|s| s.envelope.id == declared_on)
+                .unwrap();
+            let rel = schema
+                .relationships
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("{declared_on} declares {name}"));
+            assert_eq!(
+                rel.target_type.as_deref(),
+                Some(target),
+                "{declared_on}.{name}"
+            );
+            assert_eq!(rel.direction, RelationshipDirection::Out);
+            assert_eq!(rel.cardinality, cardinality, "{declared_on}.{name}");
+            assert_eq!(rel.reverse_name, reverse_name, "{declared_on}.{name}");
+            assert_eq!(
+                rel.reverse_cardinality, reverse_cardinality,
+                "{declared_on}.{name}"
+            );
+            assert!(rel.required.is_none(), "{declared_on}.{name} is optional");
+        }
+        let count = |id: &str| {
+            schemas
+                .iter()
+                .find(|s| s.envelope.id == id)
+                .unwrap()
+                .relationships
+                .len()
+        };
+        assert_eq!(count("spec"), 2);
+        assert_eq!(count("plan"), 2);
+        assert_eq!(count("decision"), 1);
+    }
+
+    /// ADR-092 §4: the three link fields, all optional.
+    #[test]
+    fn project_and_task_declare_their_link_fields() {
+        let schemas = get_core_schemas();
+        let field = |schema: &str, name: &str| {
+            schemas
+                .iter()
+                .find(|s| s.envelope.id == schema)
+                .unwrap()
+                .get_field(name)
+                .unwrap_or_else(|| panic!("{schema} declares {name}"))
+                .clone()
+        };
+        let repository = field("project", "repository");
+        assert_eq!(repository.field_type, SchemaFieldType::Link);
+        assert_eq!(repository.required, Some(false));
+
+        let pull_request = field("task", "pull_request");
+        assert_eq!(pull_request.field_type, SchemaFieldType::Link);
+        assert_eq!(pull_request.required, Some(false));
+
+        let commits = field("task", "commits");
+        assert_eq!(commits.field_type, SchemaFieldType::Array);
+        assert_eq!(commits.item_type, Some(SchemaFieldType::Link));
+        assert_eq!(commits.required, Some(false));
+
+        // No field of another build's or a removed bundle's rides on task.
+        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
+        assert!(task.fields.iter().all(|f| !f.name.contains(':')));
+    }
+
+    /// ADR-092 §5: the five core task statuses, in workflow order.
+    #[test]
+    fn task_status_has_five_core_values_in_order() {
+        let schemas = get_core_schemas();
+        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
+        let values: Vec<&str> = task
+            .get_field("status")
+            .unwrap()
+            .core_values
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|v| v.value.as_str())
+            .collect();
+        assert_eq!(
+            values,
+            ["open", "in_progress", "in_review", "done", "cancelled"]
+        );
     }
 
     #[test]

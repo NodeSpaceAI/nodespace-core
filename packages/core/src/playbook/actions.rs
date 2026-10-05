@@ -169,6 +169,20 @@ pub enum ActionError {
         message: String,
         action_index: usize,
     },
+    /// The write this action made was vetoed by an invariant rule of another
+    /// Play (ADR-060 §2). Nothing went wrong with this rule: the graph is in
+    /// a state the other rule does not let this write leave it in, so the
+    /// action is declined. A Play is never suspended for it.
+    ///
+    /// In a `for_each`, a refusal declines that item alone: the other items
+    /// are still written, and the first refusal is what the rule reports.
+    RefusedByInvariant {
+        message: String,
+        /// The Play and rule that vetoed the write.
+        refused_by_play: String,
+        refused_by_rule: String,
+        action_index: usize,
+    },
 }
 
 impl std::fmt::Display for ActionError {
@@ -201,6 +215,18 @@ impl std::fmt::Display for ActionError {
                     f,
                     "action[{}] version conflict for node '{}'",
                     action_index, node_id
+                )
+            }
+            Self::RefusedByInvariant {
+                message,
+                refused_by_play,
+                refused_by_rule,
+                action_index,
+            } => {
+                write!(
+                    f,
+                    "action[{}] refused by invariant rule '{}' (play {}): {}",
+                    action_index, refused_by_rule, refused_by_play, message
                 )
             }
             Self::ForEachResolutionFailed { path, message } => {
@@ -1498,6 +1524,7 @@ pub async fn execute_actions(
             );
 
             // Step 2: Execute the action for each item
+            let mut refused_item: Option<ActionError> = None;
             for (item_idx, item) in collection.iter().enumerate() {
                 ctx.current_item = Some(item.clone());
 
@@ -1542,6 +1569,14 @@ pub async fn execute_actions(
                     Ok(_) => {
                         debug!("action[{}] for_each item[{}] succeeded", i, item_idx);
                     }
+                    // An invariant rule declined this item. The others are
+                    // independent writes, so the iteration goes on: stopping
+                    // here would leave every later item unwritten on each
+                    // firing, for as long as this one is refused.
+                    Err(e @ ActionError::RefusedByInvariant { .. }) => {
+                        debug!("action[{}] for_each item[{}] declined: {}", i, item_idx, e);
+                        refused_item.get_or_insert(e);
+                    }
                     Err(e) => {
                         warn!(
                             "action[{}] for_each item[{}] failed, aborting rule: {}",
@@ -1553,6 +1588,12 @@ pub async fn execute_actions(
             }
 
             ctx.current_item = None;
+            // The rule is reported as declined once every item has had its
+            // turn. Later actions are skipped: they may bind to what this
+            // one would have written.
+            if let Some(refusal) = refused_item {
+                return ActionResult::Failed(refusal);
+            }
             // for_each doesn't produce a single result -- push Null placeholder
             ctx.action_results.push(Value::Null);
         } else {
@@ -1766,10 +1807,7 @@ async fn execute_create_node(
     node_service
         .create_node(node)
         .await
-        .map_err(|e| ActionError::ServiceError {
-            message: e.to_string(),
-            action_index,
-        })?;
+        .map_err(|e| write_error(&e, action_index))?;
 
     // Fetch the created node to return as result
     let created = node_service
@@ -1860,16 +1898,36 @@ async fn execute_update_node(
                 node_id: node_id.to_string(),
                 action_index,
             },
-            _ => ActionError::ServiceError {
-                message: e.to_string(),
-                action_index,
-            },
+            _ => write_error(&e, action_index),
         })?;
 
     binding_value(&updated).map_err(|e| ActionError::ServiceError {
         message: e.to_string(),
         action_index,
     })
+}
+
+/// The error a failed write of an action is reported as. A write an
+/// invariant rule vetoed is told apart from one that failed: the first is the
+/// graph declining the action, the second is something going wrong.
+fn write_error(e: &NodeServiceError, action_index: usize) -> ActionError {
+    match e {
+        NodeServiceError::PlayRuleRejected {
+            message,
+            play_id,
+            rule_name,
+            ..
+        } => ActionError::RefusedByInvariant {
+            message: message.clone(),
+            refused_by_play: play_id.clone(),
+            refused_by_rule: rule_name.clone(),
+            action_index,
+        },
+        _ => ActionError::ServiceError {
+            message: e.to_string(),
+            action_index,
+        },
+    }
 }
 
 async fn execute_add_relationship(
@@ -1917,10 +1975,7 @@ async fn execute_add_relationship(
     node_service
         .create_relationship(source_id, relationship_type, target_id, edge_data)
         .await
-        .map_err(|e| ActionError::ServiceError {
-            message: e.to_string(),
-            action_index,
-        })?;
+        .map_err(|e| write_error(&e, action_index))?;
 
     Ok(json!({
         "source_id": source_id,
@@ -1973,10 +2028,7 @@ async fn execute_remove_relationship(
     node_service
         .delete_relationship(source_id, relationship_type, target_id)
         .await
-        .map_err(|e| ActionError::ServiceError {
-            message: e.to_string(),
-            action_index,
-        })?;
+        .map_err(|e| write_error(&e, action_index))?;
 
     Ok(json!({
         "source_id": source_id,

@@ -569,6 +569,7 @@ impl NodeBehavior for HeaderNodeBehavior {
 /// Core values (protected, cannot be removed):
 /// - "open" - Not started (default)
 /// - "in_progress" - Currently being worked on
+/// - "in_review" - Finished and waiting on review
 /// - "done" - Finished
 /// - "cancelled" - Cancelled/abandoned
 ///
@@ -620,6 +621,90 @@ impl NodeBehavior for TaskNodeBehavior {
     /// Tasks under date nodes shouldn't pollute the date's semantic embedding.
     /// The date node represents "what I worked on" not "my todo list".
     fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
+    }
+}
+
+/// A spec, plan or decision is titled by its content, so it needs some.
+fn require_title(node: &Node, what: &str) -> Result<(), NodeValidationError> {
+    if node.content.trim().is_empty() {
+        return Err(NodeValidationError::MissingField(format!(
+            "content ({what} title)"
+        )));
+    }
+    Ok(())
+}
+
+/// Built-in behavior for spec nodes (ADR-092).
+///
+/// A spec says what is being built and why. Its content is its title, its
+/// fields are the schema's to check, and its success criteria are its direct
+/// `checkbox` children. The rules that guard approval and lock a superseded
+/// spec are seeded Plays, not validation.
+pub struct SpecNodeBehavior;
+
+impl NodeBehavior for SpecNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "spec"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        require_title(node, "spec")
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false
+    }
+
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
+    }
+}
+
+/// Built-in behavior for plan nodes (ADR-092).
+///
+/// A plan says how one spec will be built. Its content is its title and its
+/// fields are the schema's to check.
+pub struct PlanNodeBehavior;
+
+impl NodeBehavior for PlanNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "plan"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        require_title(node, "plan")
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false
+    }
+
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
+    }
+}
+
+/// Built-in behavior for decision nodes (ADR-092).
+///
+/// A decision records what was decided. Its content is its title and its body
+/// is its children.
+pub struct DecisionNodeBehavior;
+
+impl NodeBehavior for DecisionNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "decision"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        require_title(node, "decision")
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false
+    }
+
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
         None
     }
 }
@@ -2452,6 +2537,9 @@ impl NodeBehaviorRegistry {
         registry.register_core(Arc::new(HeaderNodeBehavior));
         registry.register_core(Arc::new(TaskNodeBehavior));
         registry.register_core(Arc::new(ProjectNodeBehavior));
+        registry.register_core(Arc::new(SpecNodeBehavior));
+        registry.register_core(Arc::new(PlanNodeBehavior));
+        registry.register_core(Arc::new(DecisionNodeBehavior));
         registry.register_core(Arc::new(CodeBlockNodeBehavior));
         registry.register_core(Arc::new(QuoteBlockNodeBehavior));
         registry.register_core(Arc::new(OrderedListNodeBehavior));

@@ -2,7 +2,7 @@
 
 /**
  * The daemon's default database was created by a different version of
- * NodeSpace and its tables do not match this version's schema. NodeSpace does
+ * NodeSpace and does not match this version's schema. NodeSpace does
  * not migrate databases, so the only way forward is to move the file aside
  * and start with a fresh one.
  */
@@ -12,8 +12,8 @@ export type IncompatibleDatabase = {
    */
   databasePath: string;
   /**
-   * Which tables differ and how, for logs and support. Not meant to be
-   * shown to a user as the headline.
+   * Which tables or core types differ and how, for logs and support. Not
+   * meant to be shown to a user as the headline.
    */
   detail: string;
   /**

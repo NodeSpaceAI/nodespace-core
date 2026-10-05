@@ -547,9 +547,7 @@ impl NodeService {
     ///   never have been reached. Both are accepted, not incidental: extends
     ///   chains are shallow by construction (ADR-078 composition is a rare,
     ///   administrative act, and nothing about this call site changes
-    ///   `MAX_EXTENDS_DEPTH`'s cap — the only real production `extends`
-    ///   declaration in this codebase, the built-in `linear` methodology, is
-    ///   a single level), and every other single-name lookup through
+    ///   `MAX_EXTENDS_DEPTH`'s cap), and every other single-name lookup through
     ///   `resolve_relationships`/`resolve_field_owners` in this codebase
     ///   (e.g. `check_node_completeness`, `find_duplicate_for`) already
     ///   resolves the full chain unconditionally rather than

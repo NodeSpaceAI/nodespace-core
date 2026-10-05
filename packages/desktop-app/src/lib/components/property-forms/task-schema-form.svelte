@@ -2,7 +2,8 @@
   TaskSchemaForm - Type-Safe Task Property Form
 
   Hybrid approach:
-  - Core task properties (status, priority, dueDate, startedAt, completedAt) render
+  - Core task properties (status, priority, dueDate, startedAt, completedAt, pullRequest,
+    commits) render
     through the shared SchemaFieldLeaf, driven by the real task schema's coreValues/
     userValues — no locally hardcoded enum options or date-picker markup. Their WRITES
     still go through the type-safe sharedNodeStore.updateTaskNode() functions below,
@@ -23,11 +24,12 @@
 -->
 
 <script lang="ts">
-import { isExactly } from '$lib/types/core-node-types';
+  import { isExactly } from '$lib/types/core-node-types';
   import { onMount } from 'svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { type SchemaNode, type SchemaField, isSchemaNode } from '$lib/types/schema-node';
+  import type { LinkValue } from '$lib/types/generated';
   import type { TaskStatus } from '$lib/types/task-node';
   import { nodeToTaskNode } from '$lib/types/task-node';
   import { createLogger } from '$lib/utils/logger';
@@ -39,6 +41,7 @@ import { isExactly } from '$lib/types/core-node-types';
   import NestedFieldTrigger from '$lib/components/schema/nested-field-trigger.svelte';
   import TypedFormShell from '$lib/components/schema/typed-form-shell.svelte';
   import { isNestedField } from '$lib/utils/nested-property-ops';
+  import { resolveFieldValue, buildFieldWrite } from '$lib/components/schema/schema-field-resolution';
 
   // Logger instance for TaskSchemaForm component
   const log = createLogger('TaskSchemaForm');
@@ -89,7 +92,15 @@ import { isExactly } from '$lib/types/core-node-types';
 
   // The real task schema's own field names (core_schemas.rs) — always snake_case,
   // matching what the backend actually returns from getSchema('task').
-  const CORE_FIELD_NAMES = ['status', 'priority', 'due_date', 'started_at', 'completed_at'];
+  const CORE_FIELD_NAMES = [
+    'status',
+    'priority',
+    'due_date',
+    'started_at',
+    'completed_at',
+    'pull_request',
+    'commits'
+  ];
 
   // A schema field by name, or undefined while `schema` hasn't loaded yet (or, in the
   // unexpected case of a schema-fetch failure — see loadSchema's catch above — never).
@@ -113,10 +124,10 @@ import { isExactly } from '$lib/types/core-node-types';
 
   // Calculate field completion stats
   const fieldStats = $derived.by(() => {
-    if (!node) return { filled: 0, total: 5 };
+    if (!node) return { filled: 0, total: CORE_FIELD_NAMES.length };
 
     let filled = 0;
-    let total = 5; // Core fields: status, priority, dueDate, startedAt, completedAt
+    let total = CORE_FIELD_NAMES.length;
 
     // Core fields
     if (node.status) filled++;
@@ -124,6 +135,8 @@ import { isExactly } from '$lib/types/core-node-types';
     if (node.dueDate) filled++;
     if (node.startedAt) filled++;
     if (node.completedAt) filled++;
+    if (node.pullRequest) filled++;
+    if (node.commits && node.commits.length > 0) filled++;
 
     // User-defined fields
     const userFields = userDefinedFields;
@@ -160,6 +173,20 @@ import { isExactly } from '$lib/types/core-node-types';
   // the persistence queue keeps only a node's newest write.
   function getUserFieldValue(fieldName: string): unknown {
     return node?.properties?.[fieldName];
+  }
+
+  // The shared nested-property modal edits one field by name: a core field is
+  // read from, and written to, its typed key; any other is an extension field.
+  function getFieldValue(fieldName: string): unknown {
+    return node ? resolveFieldValue(node, fieldName) : undefined;
+  }
+
+  function updateField(fieldName: string, value: unknown) {
+    if (!node) return;
+    sharedNodeStore.updateNode(nodeId, buildFieldWrite(node, fieldName, value), {
+      type: 'viewer',
+      viewerId: 'task-schema-form'
+    });
   }
 
   function updateUserField(fieldName: string, value: unknown) {
@@ -216,14 +243,23 @@ import { isExactly } from '$lib/types/core-node-types';
       { type: 'viewer', viewerId: 'task-schema-form' }
     );
   }
+
+  function updatePullRequest(pullRequest: LinkValue | null) {
+    if (!node) return;
+    sharedNodeStore.updateTaskNode(
+      nodeId,
+      { pullRequest },
+      { type: 'viewer', viewerId: 'task-schema-form' }
+    );
+  }
 </script>
 
 {#if node}
   <TypedFormShell
     {nodeId}
     {fieldStats}
-    getFieldValue={getUserFieldValue}
-    onFieldChange={updateUserField}
+    {getFieldValue}
+    onFieldChange={updateField}
   >
     {#snippet headerLeft()}
       {#if node.status}
@@ -244,6 +280,8 @@ import { isExactly } from '$lib/types/core-node-types';
       {@const dueDateField = getSchemaField('due_date')}
       {@const startedAtField = getSchemaField('started_at')}
       {@const completedAtField = getSchemaField('completed_at')}
+      {@const pullRequestField = getSchemaField('pull_request')}
+      {@const commitsField = getSchemaField('commits')}
       <!-- Placeholder for a core field whose schema lookup hasn't resolved yet — matches
            a SchemaFieldLeaf control's height so the grid doesn't jump once it appears.
            Blank while the fetch is still in flight (typically sub-frame; not worth a
@@ -334,6 +372,36 @@ import { isExactly } from '$lib/types/core-node-types';
               fieldId="task-completed-at"
               value={node.completedAt}
               onChange={(newValue) => updateCompletedAt(newValue as string | null)}
+            />
+          {:else}
+            {@render fieldUnavailable()}
+          {/if}
+        </div>
+
+        <!-- Pull Request Field -->
+        <div class="space-y-2">
+          <label for="task-pull-request" class="text-sm font-medium">Pull Request</label>
+          {#if pullRequestField}
+            <SchemaFieldLeaf
+              field={pullRequestField}
+              fieldId="task-pull-request"
+              value={node.pullRequest ?? null}
+              onChange={(newValue) => updatePullRequest((newValue as LinkValue | null) ?? null)}
+            />
+          {:else}
+            {@render fieldUnavailable()}
+          {/if}
+        </div>
+
+        <!-- Commits Field (a list of links, edited in the shared nested modal) -->
+        <div class="space-y-2">
+          <label for="task-commits" class="text-sm font-medium">Commits</label>
+          {#if commitsField}
+            <NestedFieldTrigger
+              field={commitsField}
+              fieldId="task-commits"
+              value={node.commits ?? null}
+              onopen={() => openNestedModal(commitsField)}
             />
           {:else}
             {@render fieldUnavailable()}

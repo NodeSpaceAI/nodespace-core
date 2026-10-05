@@ -117,9 +117,9 @@ Branch 2: `args: "skill guidance \"<the task>\""`.
 More instructions live there than this file carries, of two kinds. One fetch returns both.
 
 - **How to operate NodeSpace itself**: creating and updating nodes, defining or changing a schema, linking nodes with relationships, organizing nodes into collections, deleting, importing a document, resolving a duplicate, finding out why an automation rule has not fired.
-- **How this workspace works**: instructions for the workspace's own domains — the types and workflows installed or set up in it, such as Issues and Cycles, or whatever structure the user has built. A workspace has its own conventions: which type a thing is recorded as, what its statuses mean, what a workflow rejects. Expect them to exist, and fetch them before you work in one of its domains rather than guessing from generic knowledge.
+- **How this workspace works**: instructions for the workspace's own domains — the types and workflows set up in it, such as a team's own record types, or whatever structure the user has built. A workspace has its own conventions: which type a thing is recorded as, what its statuses mean, what a workflow rejects. Expect them to exist, and fetch them before you work in one of its domains rather than guessing from generic knowledge.
 
-**When to fetch.** Before any operation beyond a plain search or saving a plain note: before you create or change records of a type, define or change a schema, link nodes, organize, delete, import, or work in one of the workspace's domains. Form the query from the task as you now understand it — the user's request, or the step you are about to take ("add an issue to the current cycle", "define a type with an enum field"). When the task moves to a different operation, fetch again for that one.
+**When to fetch.** Before any operation beyond a plain search or saving a plain note: before you create or change records of a type, define or change a schema, link nodes, organize, delete, import, or work in one of the workspace's domains. Form the query from the task as you now understand it — the user's request, or the step you are about to take ("add a task to the spec", "define a type with an enum field"). When the task moves to a different operation, fetch again for that one.
 
 **What comes back is your instructions for the operation.** Each skill is a procedure: which commands to run, in what order, and what to do when one fails. Follow it as you follow this file, and in preference to your own assumptions about how a tool like this usually behaves. Then carry the operation out; a fetch is the first step of the task, not the end of it.
 
@@ -198,10 +198,3 @@ from. `nodespace node context <id> --version-only`, with the same `--path`
 flags as that read, prints the current one; when it differs, the node,
 something it returned or one of its skills changed, so read it again before
 you write.
-
-**Setting up a work-tracking workflow.** When the user asks for one (Linear-style
-issues and cycles, spec-driven development, Jira-style sprints), first run
-`nodespace skill guidance "workspace workflow"`. A skill named `<Name> Workspace`
-in the result means one is already installed: use it, and never install a second.
-Otherwise the steps are in `references/linear-playbook.md`,
-`references/spec-driven-playbook.md` and `references/jira-playbook.md`.

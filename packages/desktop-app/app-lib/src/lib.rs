@@ -880,6 +880,9 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             commands::nodes::update_task_node,
             commands::nodes::update_person_node,
             commands::nodes::update_project_node,
+            commands::nodes::update_spec_node,
+            commands::nodes::update_plan_node,
+            commands::nodes::update_decision_node,
             commands::nodes::update_query_node,
             commands::nodes::update_play_node,
             commands::nodes::update_collection_node,
@@ -901,10 +904,6 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             // Schema read commands (mutation commands removed, not used by UI)
             commands::schemas::get_all_schemas,
             commands::schemas::get_schema_definition,
-            // Methodology playbooks (list + install; the install itself lives
-            // in packages/core, reached over the in-process gRPC server)
-            commands::methodology::list_methodologies,
-            commands::methodology::install_methodology,
             // File import commands for bulk markdown import
             commands::import::import_markdown_file,
             commands::import::import_markdown_files,

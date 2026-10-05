@@ -7,7 +7,7 @@
 use anyhow::Result;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::Node;
-use nodespace_core::playbook::core_plays::PARENT_TASK_COMPLETION_PLAY_ID;
+use nodespace_core::playbook::core_plays::{CORE_PLAY_IDS, PARENT_TASK_COMPLETION_PLAY_ID};
 use nodespace_core::playbook::PlaybookEngine;
 use nodespace_core::services::NodeService;
 use serde_json::json;
@@ -127,20 +127,24 @@ async fn the_rollup_play_is_seeded_and_active() -> Result<()> {
     Ok(())
 }
 
-/// Seeding reconciles per id, so re-opening a database must not duplicate it.
+/// Seeding reconciles per id, so re-opening a database must not duplicate a
+/// core Play.
 #[tokio::test]
 async fn reopening_a_database_does_not_duplicate_the_play() -> Result<()> {
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("test.db");
+    let mut expected: Vec<&str> = CORE_PLAY_IDS.to_vec();
+    expected.sort_unstable();
+    assert!(expected.contains(&PARENT_TASK_COMPLETION_PLAY_ID));
 
     for _ in 0..2 {
         let mut store = Arc::new(SqliteStore::new(db_path.clone()).await?);
         let service = Arc::new(NodeService::new(&mut store).await?);
         let plays = service.query_nodes_by_type("play", true).await?;
-        let ids: Vec<&str> = plays.iter().map(|p| p.id.as_str()).collect();
+        let mut ids: Vec<&str> = plays.iter().map(|p| p.id.as_str()).collect();
+        ids.sort_unstable();
         assert_eq!(
-            ids,
-            [PARENT_TASK_COMPLETION_PLAY_ID],
+            ids, expected,
             "core Plays must reconcile per id, not re-seed on every open"
         );
     }
