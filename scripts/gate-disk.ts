@@ -144,7 +144,12 @@ export function listIncrementalDirs(incrementalDir: string): IncrementalDir[] {
   return dirs;
 }
 
-/** The crate a directory named `<crate>-<hash>` belongs to. */
+/**
+ * The crate a directory named `<crate>-<hash>` belongs to. That is the
+ * target's name, not the package's: every package's integration-test binary
+ * is `it` and every build script `build_script_build`, so those are each
+ * dated as one crate.
+ */
 function crateOf(name: string): string {
   return name.replace(/-[^-]*$/, "");
 }
@@ -245,8 +250,8 @@ export function pruneIncremental(targetDir: string, limits: PruneLimits, nowMs: 
 export function formatPruneResult(result: PruneResult): string {
   const size = (gib: number | null) => (gib === null ? "" : ` (${gib.toFixed(1)} GiB)`);
   const dirs = (count: number) => `${count} ${count === 1 ? "directory" : "directories"}`;
-  // Said, because without sizes the budget wasn't applied.
-  const unsized = result.keptGiB === null ? "; sizes unavailable, so only the age rule applied" : "";
+  // Said, because the budget is skipped when a kept directory has no size.
+  const unsized = result.keptGiB === null ? "; some sizes unavailable, so the budget may not have applied" : "";
   const kept = `${dirs(result.kept)} kept${size(result.keptGiB)}${unsized}`;
   if (result.removed === 0) return `  incremental cache: nothing to remove; ${kept}`;
   return `  incremental cache: removed ${dirs(result.removed)}${size(result.freedGiB)}; ${kept}`;

@@ -101,9 +101,16 @@ describe("selectSuperseded", () => {
     expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["core-a"]);
   });
 
-  test("reads the crate from a name whose crate part has dashes or underscores", () => {
-    const dirs = [dir("nodespace_core-0j8syoplaewcn", 5), dir("nodespace_core-3pnxa8lpia5a9", 0.1), dir("nodespace_core_it-2065x6qla1y24", 5)];
+  test("reads the crate from a name whose crate part has underscores", () => {
+    const dirs = [dir("nodespace_core-0j8syoplaewcn", 5), dir("nodespace_core-3pnxa8lpia5a9", 0.1), dir("nodespace_core_x-2065x6qla1y24", 5)];
     expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["nodespace_core-0j8syoplaewcn"]);
+  });
+
+  test("dates targets that share a name across packages as one crate", () => {
+    // Every package's integration-test binary is `it`: an unchanged package's
+    // directory ages out once another package's `it` is compiled.
+    const dirs = [dir("it-0j8syoplaewcn", 5), dir("it-3pnxa8lpia5a9", 0.1)];
+    expect(selectSuperseded(dirs, TWO_HOURS, NOW)).toEqual(["it-0j8syoplaewcn"]);
   });
 
   test("keeps a directory exactly the period old, and a crate's only directory however old", () => {
@@ -269,9 +276,9 @@ describe("formatPruneResult", () => {
     );
   });
 
-  test("reports the counts, and that the budget wasn't applied, when the sizes couldn't be measured", () => {
+  test("reports the counts, and that the budget may not have applied, when sizes couldn't be measured", () => {
     expect(formatPruneResult({ removed: 1, kept: 1, freedGiB: null, keptGiB: null })).toBe(
-      "  incremental cache: removed 1 directory; 1 directory kept; sizes unavailable, so only the age rule applied"
+      "  incremental cache: removed 1 directory; 1 directory kept; some sizes unavailable, so the budget may not have applied"
     );
   });
 
