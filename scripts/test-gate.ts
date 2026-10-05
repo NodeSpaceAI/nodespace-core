@@ -40,7 +40,6 @@
 
 import { existsSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { $ } from "bun";
 import { resolveDocsDir, resolvePublished } from "./check-node-types-doc";
 import { acquireGateLock, DISABLE_ENV_VAR, MACHINE_LOCK_PATH, MACHINE_SLOT_WHAT, registerLockRelease } from "./gate-lock";
 import { SCCACHE_CACHE_SIZE, sccacheServerUds } from "./gate-sccache";
@@ -55,7 +54,7 @@ import {
   type StageSpec,
 } from "./gate-stage";
 import { TOOLS_DIR } from "./setup-rust-tooling";
-import { freeGiBFromDf } from "./gate-output";
+import { formatPruneResult, freeGiB, freeSpaceRefusal, GATE_INCREMENTAL, pruneIncremental } from "./gate-disk";
 
 export type GateMode = "push" | "merge";
 
@@ -71,9 +70,6 @@ const MINUTE = 60_000;
 
 /** How long the merge gate waits for the machine slot before failing. */
 const MACHINE_SLOT_WAIT_CAP_MS = 2 * 60 * MINUTE;
-
-/** Below this much free disk the merge gate refuses to start. */
-const MIN_FREE_GIB = 20;
 
 /** `path` with symlinks resolved — a worktree's `.tools` links to the primary's. */
 function realpathOrSelf(path: string): string {
@@ -241,18 +237,6 @@ if (!merge) {
 
 // ── Merge gate ─────────────────────────────────────────────────────────────
 
-// Every worktree compiles into its own target/, and the gate can need several
-// gigabytes more. Running out halfway surfaces as a confusing I/O failure in
-// whichever stage hit it. Checked up front instead, with the cause named.
-const free = freeGiBFromDf(await $`df -Pk .`.quiet().nothrow().text());
-if (free !== null && free < MIN_FREE_GIB) {
-  console.error(
-    `\n✗ Only ${free.toFixed(1)} GiB free on this disk; the merge gate needs at least ${MIN_FREE_GIB}.\n` +
-      "  Each worktree's target/ holds its own build output. Free space by removing finished\n" +
-      "  worktrees, or with `cargo clean` in worktrees that aren't building, then re-run.\n"
-  );
-  process.exit(GATE_INFRA_EXIT);
-}
 // A missing nextest otherwise surfaces as a bare "command not found".
 if (!existsSync(join(TOOLS_DIR, "bin", "cargo-nextest"))) {
   console.error(`\n✗ ${TOOLS_DIR}/bin/cargo-nextest is missing — run \`bun install\`, which installs it (scripts/setup-rust-tooling.ts).\n`);
@@ -293,6 +277,19 @@ if (!machineSlot.held) {
   process.exit(GATE_INFRA_EXIT);
 }
 registerLockRelease(machineSlot);
+
+// Under the machine slot, so nothing else is compiling into this target/:
+// drop the incremental directories of stacks this checkout no longer builds
+// (gate-disk.ts), then check what is left. Every worktree compiles into its
+// own target/, and the gate can need several gigabytes more. Running out
+// halfway surfaces as a confusing I/O failure in whichever stage hit it, so
+// it is checked before the first compile, with the cause named.
+console.log(formatPruneResult(pruneIncremental(join(process.cwd(), "target"), GATE_INCREMENTAL)));
+const refusal = freeSpaceRefusal(freeGiB("."), "the merge gate");
+if (refusal !== null) {
+  console.error(refusal);
+  process.exit(GATE_INFRA_EXIT);
+}
 
 const daemonBinary = `${process.cwd()}/target/debug/${process.platform === "win32" ? "nodespaced.exe" : "nodespaced"}`;
 

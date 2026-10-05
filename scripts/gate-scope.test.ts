@@ -81,6 +81,7 @@ describe("classify", () => {
     "scripts/gate-scope.ts",
     "scripts/gate-lock.ts",
     "scripts/gate-stage.ts",
+    "scripts/gate-disk.ts",
     "scripts/test-changed.ts",
     "package.json",
     "bun.lock",
