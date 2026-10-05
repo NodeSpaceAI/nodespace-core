@@ -55,7 +55,7 @@ import {
   type StageSpec,
 } from "./gate-stage";
 import { TOOLS_DIR } from "./setup-rust-tooling";
-import { formatPruneResult, freeGiB, freeSpaceRefusal, GATE_INCREMENTAL, pruneIncremental } from "./gate-disk";
+import { formatDepsResult, formatPruneResult, freeGiB, freeSpaceRefusal, GATE_INCREMENTAL, pruneDeps, pruneIncremental } from "./gate-disk";
 
 export type GateMode = "push" | "merge";
 
@@ -290,12 +290,14 @@ if (!machineSlot.held) {
 registerLockRelease(machineSlot);
 
 // Under the machine slot, so nothing else is compiling into this target/:
-// drop the incremental directories of stacks this checkout no longer builds
-// (gate-disk.ts), then check what is left. Every worktree compiles into its
+// drop the incremental directories of stacks this checkout no longer builds,
+// and empty deps/ once it is over its budget (gate-disk.ts), then check what
+// is left. Every worktree compiles into its
 // own target/, and the gate can need several gigabytes more. Running out
 // halfway surfaces as a confusing I/O failure in whichever stage hit it, so
 // it is checked before the first compile, with the cause named.
 console.log(formatPruneResult(pruneIncremental(join(process.cwd(), "target"), GATE_INCREMENTAL)));
+console.log(formatDepsResult(pruneDeps(join(process.cwd(), "target"))));
 const refusal = freeSpaceRefusal(freeGiB("."), "the merge gate");
 if (refusal !== null) {
   console.error(refusal);

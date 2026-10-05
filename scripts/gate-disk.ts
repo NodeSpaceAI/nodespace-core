@@ -12,10 +12,15 @@
 // the superseded ones, keeps what is left within a size budget, then checks
 // free space.
 //
+// Cargo does the same beside it, in `target/debug/deps`: every build variant's
+// artifacts are named `<name>-<hash>`, and a superseded variant's are never
+// removed. Nothing on disk says which are current, so that directory is
+// emptied whole once it passes a budget (pruneDeps).
+//
 // Both callers run this while they hold the machine slot, so no other gate or
 // test:changed run is compiling into the same target/ during the prune.
 
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { freeGiBFromDf } from "./gate-output";
 
@@ -255,6 +260,67 @@ export function formatPruneResult(result: PruneResult): string {
   const kept = `${dirs(result.kept)} kept${size(result.keptGiB)}${unsized}`;
   if (result.removed === 0) return `  incremental cache: nothing to remove; ${kept}`;
   return `  incremental cache: removed ${dirs(result.removed)}${size(result.freedGiB)}; ${kept}`;
+}
+
+/**
+ * What `target/debug/deps` may hold before a run empties it. One set of
+ * artifacts for everything the merge gate builds is 7 GiB, and the gate
+ * checkout gains a set whenever a queued PR changes the hash's inputs: 16 GiB
+ * on the day measured. So this is about three sets, and that checkout passes
+ * it about once a day.
+ */
+export const DEPS_BUDGET_GIB = 20;
+
+export interface DepsPruneResult {
+  /** Disk `deps/` used before the prune, or null when it couldn't be measured. */
+  sizeGiB: number | null;
+  /** Whether it was over the budget and emptied. */
+  emptied: boolean;
+}
+
+/**
+ * Empties `target/debug/deps` under `targetDir` when it uses more than
+ * `budgetGiB`.
+ *
+ * All of it, because nothing on disk separates a current artifact from a
+ * superseded one: a build that finds a crate fresh writes nothing, and one
+ * crate has several current variants, built at different times. Cargo
+ * rebuilds what is missing, with the incremental directories and sccache
+ * still in place. Measured: the merge gate's builds took 103 s after an
+ * emptying, against 8 s with nothing to do and 392 s from an empty target/.
+ *
+ * Left alone when its size can't be read, and when it is a symlink.
+ */
+export function pruneDeps(targetDir: string, budgetGiB: number = DEPS_BUDGET_GIB, du: string = "du"): DepsPruneResult {
+  const depsDir = join(targetDir, "debug", "deps");
+  try {
+    if (!lstatSync(depsDir).isDirectory()) return { sizeGiB: null, emptied: false };
+  } catch {
+    return { sizeGiB: 0, emptied: false };
+  }
+  const kib = diskUsageKiB([depsDir], du).get(depsDir);
+  if (kib === undefined) return { sizeGiB: null, emptied: false };
+  const sizeGiB = kib / KIB_PER_GIB;
+  if (sizeGiB <= budgetGiB) return { sizeGiB, emptied: false };
+  try {
+    // Cargo creates the directory again on its next build.
+    rmSync(depsDir, { recursive: true, force: true });
+    return { sizeGiB, emptied: true };
+  } catch {
+    // Partly removed is safe: cargo rebuilds whatever is missing.
+    return { sizeGiB, emptied: false };
+  }
+}
+
+/** The one line a run prints about `deps/`. */
+export function formatDepsResult(result: DepsPruneResult, budgetGiB: number = DEPS_BUDGET_GIB): string {
+  if (result.sizeGiB === null) return "  build artifacts (deps/): size unavailable, so left alone";
+  const size = `${result.sizeGiB.toFixed(1)} GiB`;
+  if (result.emptied) {
+    return `  build artifacts (deps/): ${size}, over the ${budgetGiB} GiB budget; emptied, so this run rebuilds them (about 2 minutes)`;
+  }
+  if (result.sizeGiB > budgetGiB) return `  build artifacts (deps/): ${size}, over the ${budgetGiB} GiB budget, but couldn't be removed`;
+  return `  build artifacts (deps/): ${size} kept (emptied above ${budgetGiB} GiB)`;
 }
 
 /** Free space in GiB on the disk holding `path`, or null when it can't be read. */
