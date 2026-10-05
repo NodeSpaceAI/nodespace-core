@@ -314,6 +314,10 @@ parameters_schema:
     "id": {
       "description": "Node id to update — the \"id\" value exactly as it appeared in a tool result. Never the node's title.",
       "type": "string"
+    },
+    "version": {
+      "description": "Optional. The node's \"version\" as you last read it. The write is refused if the node has changed since; read it again before deciding what to do.",
+      "type": "integer"
     }
   },
   "required": [
@@ -750,6 +754,10 @@ parameters_schema:
         "cancelled"
       ],
       "type": "string"
+    },
+    "version": {
+      "description": "Optional. The node's \"version\" as you last read it. The write is refused if the node has changed since; read it again before deciding what to do.",
+      "type": "integer"
     }
   },
   "required": [
