@@ -589,7 +589,14 @@ pub async fn validate_play(
             if let Some(nt) = &trigger_node_type {
                 if let Ok(extraction) = path_extractor::extract_paths(&condition.source) {
                     for path in &extraction.paths {
-                        if path.root == "node" && path.segments.len() > 2 {
+                        // A two-segment path (`node.status`) is not checked
+                        // against the schema, except when it names a derived
+                        // attribute: that name is the registry's, so a type
+                        // that neither derives it nor declares a field of
+                        // that name cannot have it.
+                        let names_derived = path.segments.len() == 2
+                            && names_a_derived_attribute(&path.segments[1]);
+                        if path.root == "node" && (path.segments.len() > 2 || names_derived) {
                             validate_schema_path(
                                 &path.segments,
                                 nt,
@@ -603,6 +610,7 @@ pub async fn validate_play(
                     }
                     for coll in &extraction.collections {
                         if coll.collection.root == "node" && coll.collection.segments.len() > 1 {
+                            let before = errors.len();
                             validate_schema_path(
                                 &coll.collection.segments,
                                 nt,
@@ -612,6 +620,17 @@ pub async fn validate_play(
                                 &mut errors,
                             )
                             .await;
+                            if errors.len() == before {
+                                validate_derived_item_paths(
+                                    coll,
+                                    nt,
+                                    &location,
+                                    node_service,
+                                    &mut schema_cache,
+                                    &mut errors,
+                                )
+                                .await;
+                            }
                         }
                     }
                 }
@@ -916,6 +935,9 @@ async fn validate_schema_path(
 
     let full_path = segments.join(".");
     let mut current_type = trigger_node_type.to_string();
+    // False once a built-in relationship has been walked: any type may sit at
+    // its far end, so `current_type` is then only a guess.
+    let mut type_is_declared = true;
 
     // Walk from segments[1] onward (skipping "node")
     for (i, segment) in segments[1..].iter().enumerate() {
@@ -1007,6 +1029,28 @@ async fn validate_schema_path(
             }
         };
 
+        // A derived attribute (a checkbox's `checked`) is declared by the
+        // registry for a core type and its subtypes, and read ahead of any
+        // property. It is terminal, like a field. Past a built-in
+        // relationship the type is not known, so a name any type derives is
+        // accepted there.
+        let derives = crate::models::CoreNodeType::derived_attribute_in(&chain, segment).is_some()
+            || (!type_is_declared && names_a_derived_attribute(segment));
+        if derives {
+            if i + 1 < segments.len() - 1 {
+                errors.push(PlayValidationError::BrokenPath {
+                    path: full_path.clone(),
+                    segment: segment.clone(),
+                    message: format!(
+                        "'{}' is derived from a node's content, not a relationship (cannot traverse further)",
+                        segment
+                    ),
+                    location: location.to_string(),
+                });
+            }
+            return;
+        }
+
         let field_pos = field_owners
             .get(segment)
             .and_then(|owner| chain.iter().position(|t| t == owner));
@@ -1064,6 +1108,7 @@ async fn validate_schema_path(
         // when the type happens to be right, and at worst declines to catch a
         // broken segment — never invents an error for a valid path.
         if crate::models::schema::is_reserved_relationship_name(segment) {
+            type_is_declared = false;
             continue;
         }
 
@@ -1085,6 +1130,7 @@ async fn validate_schema_path(
                     Some(target_type) => {
                         // Follow the relationship to the type it reaches.
                         current_type = target_type;
+                        type_is_declared = true;
                         continue;
                     }
                     None => {
@@ -1117,16 +1163,97 @@ async fn validate_schema_path(
 
         // Neither a field nor a relationship — broken path
         // But only report if the schema actually exists (to avoid duplicate errors)
-        errors.push(PlayValidationError::BrokenPath {
-            path: full_path.clone(),
-            segment: segment.clone(),
-            message: format!(
+        let message = match derived_attribute_owners(segment) {
+            Some(owners) => format!(
+                "'{}' is derived from the content of a {} node; '{}' is not one and declares no field of that name",
+                segment, owners, current_type
+            ),
+            None => format!(
                 "'{}' is not a field or relationship on schema '{}'",
                 segment, current_type
             ),
+        };
+        errors.push(PlayValidationError::BrokenPath {
+            path: full_path.clone(),
+            segment: segment.clone(),
+            message,
             location: location.to_string(),
         });
         return;
+    }
+}
+
+/// Whether some core type derives an attribute of this name.
+fn names_a_derived_attribute(name: &str) -> bool {
+    !crate::models::DerivedAttribute::declared_as(name).is_empty()
+}
+
+/// The core types that derive an attribute of this name, as prose
+/// (`'checkbox'`), or `None` when none does.
+fn derived_attribute_owners(name: &str) -> Option<String> {
+    let owners: Vec<String> = crate::models::DerivedAttribute::declared_as(name)
+        .into_iter()
+        .map(|(node_type, _)| format!("'{node_type}'"))
+        .collect();
+    (!owners.is_empty()).then(|| owners.join(" or "))
+}
+
+/// Check the derived attributes a comprehension reads on its items
+/// (`node.tasks.exists(t, t.checked)`) against the collection's declared item
+/// type.
+///
+/// Only a path that names a derived attribute is checked: the name is the
+/// registry's, so an item type that neither derives it nor declares a field
+/// of that name cannot have it. A collection with no declared item type (one
+/// reached through a built-in relationship such as `has_child`, whose far end
+/// may be any type) is not checked.
+async fn validate_derived_item_paths(
+    coll: &path_extractor::CollectionPath,
+    trigger_node_type: &str,
+    location: &str,
+    node_service: &NodeService,
+    schema_cache: &mut SchemaCache,
+    errors: &mut Vec<PlayValidationError>,
+) {
+    let derived_paths: Vec<_> = coll
+        .item_paths
+        .iter()
+        .filter(|path| {
+            path.root == coll.iter_var
+                && path.segments.len() >= 2
+                && names_a_derived_attribute(&path.segments[1])
+        })
+        .collect();
+    if derived_paths.is_empty() {
+        return;
+    }
+    let relationships: Vec<&str> = coll.collection.segments[1..]
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let item_type =
+        match declared_collection_type(node_service, trigger_node_type, &relationships).await {
+            Ok(Some(item_type)) => item_type,
+            Ok(None) => return,
+            Err(error) => {
+                errors.push(PlayValidationError::SchemaResolutionFailed {
+                    node_type: trigger_node_type.to_string(),
+                    error,
+                    location: location.to_string(),
+                });
+                return;
+            }
+        };
+    for path in derived_paths {
+        validate_schema_path(
+            &path.segments,
+            &item_type,
+            location,
+            node_service,
+            schema_cache,
+            errors,
+        )
+        .await;
     }
 }
 
@@ -1152,7 +1279,7 @@ fn where_chain_sources(action: &ParsedAction) -> Vec<(String, &'static str)> {
 /// params — and walk to a relationship with a declared target type
 /// ([`declared_collection_type`], the same walk the runtime reads items at);
 /// every predicate must compile, and every variable it reads must be a field
-/// of that type (or a core key such as `id`/`content`).
+/// or a derived attribute of that type (or a core key such as `id`/`content`).
 async fn validate_where_filters(
     action: &ParsedAction,
     location: &str,
@@ -1305,7 +1432,15 @@ async fn validate_where_chain(
     };
 
     let fields: Vec<String> = match node_service.resolve_field_owners(&item_type).await {
-        Ok((fields, _, _)) => fields.into_iter().map(|f| f.name).collect(),
+        Ok((fields, _, chain)) => fields
+            .into_iter()
+            .map(|f| f.name)
+            .chain(
+                crate::models::CoreNodeType::derived_attributes_in(&chain)
+                    .into_iter()
+                    .map(|attribute| attribute.name().to_string()),
+            )
+            .collect(),
         Err(e) => {
             errors.push(PlayValidationError::SchemaResolutionFailed {
                 node_type: item_type,
@@ -2510,6 +2645,177 @@ mod tests {
             )];
             let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
+        }
+
+        // -- Derived attributes (ADR-094 §5) ---------------------------------
+
+        /// `vt_list -[boxes]-> checkbox` and `vt_list -[notes]-> vt_note`,
+        /// where `vt_note` is an ordinary type that derives nothing.
+        async fn create_checklist_schemas(svc: &NodeService) {
+            create_schema(svc, "vt_note", 1, json!([])).await;
+            create_schema(
+                svc,
+                "vt_list",
+                1,
+                json!([
+                    {
+                        "name": "boxes",
+                        "targetType": "checkbox",
+                        "direction": "out",
+                        "cardinality": "many",
+                        "reverseName": "box_of",
+                        "reverseCardinality": "one"
+                    },
+                    {
+                        "name": "notes",
+                        "targetType": "vt_note",
+                        "direction": "out",
+                        "cardinality": "many",
+                        "reverseName": "note_of",
+                        "reverseCardinality": "one"
+                    }
+                ]),
+            )
+            .await;
+        }
+
+        async fn condition_errors(
+            svc: &NodeService,
+            node_type: &str,
+            condition: &str,
+        ) -> Vec<PlayValidationError> {
+            let rules = vec![make_rule(node_type, vec![condition], vec![])];
+            match validate_play(&rules, svc).await {
+                Ok(()) => Vec::new(),
+                Err(errors) => errors,
+            }
+        }
+
+        /// The one error a refused derived attribute produces: a broken path
+        /// naming the attribute and the type that does not have it.
+        fn only_derived_refusal(errors: &[PlayValidationError], node_type: &str) {
+            assert_eq!(errors.len(), 1, "expected exactly one error: {errors:?}");
+            match &errors[0] {
+                PlayValidationError::BrokenPath {
+                    segment, message, ..
+                } => {
+                    assert_eq!(segment, "checked");
+                    assert!(
+                        message.contains("derived from the content of a 'checkbox' node")
+                            && message.contains(&format!("'{node_type}'")),
+                        "{message}"
+                    );
+                    assert!(!message.contains("  "), "stray whitespace: {message:?}");
+                }
+                other => panic!("expected BrokenPath, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_derived_attribute_is_accepted_on_the_type_that_declares_it() {
+            let (svc, _tmp) = create_test_service().await;
+            create_checklist_schemas(&svc).await;
+
+            for (node_type, condition) in [
+                // On the trigger node itself.
+                ("checkbox", "node.checked"),
+                ("checkbox", "node.checked == false"),
+                // On the items of a relationship declared to reach checkboxes.
+                ("vt_list", "node.boxes.exists(b, b.checked == false)"),
+                ("vt_list", "node.boxes.all(b, b.checked)"),
+                // Through a built-in relationship, whose far end may be any
+                // type: the rule the shipped workflow writes.
+                ("task", "node.has_child.exists(c, c.checked == false)"),
+                ("vt_note", "node.child_of.checked"),
+            ] {
+                let errors = condition_errors(&svc, node_type, condition).await;
+                assert!(errors.is_empty(), "{node_type}: {condition}: {errors:?}");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_derived_attribute_is_refused_on_a_type_that_does_not_declare_it() {
+            let (svc, _tmp) = create_test_service().await;
+            create_checklist_schemas(&svc).await;
+
+            // On the trigger node, in the two-segment form no other check reads.
+            let errors = condition_errors(&svc, "task", "node.checked == false").await;
+            only_derived_refusal(&errors, "task");
+            let errors = condition_errors(&svc, "vt_note", "node.checked").await;
+            only_derived_refusal(&errors, "vt_note");
+
+            // On the items of a relationship declared to reach another type.
+            let errors =
+                condition_errors(&svc, "vt_list", "node.notes.exists(n, n.checked == false)").await;
+            only_derived_refusal(&errors, "vt_note");
+
+            // Past a declared relationship, as a plain path.
+            let errors = condition_errors(&svc, "vt_note", "node.note_of.checked").await;
+            only_derived_refusal(&errors, "vt_list");
+        }
+
+        /// A derived attribute is a value, so nothing is reached through it.
+        #[tokio::test]
+        async fn a_derived_attribute_cannot_be_traversed() {
+            let (svc, _tmp) = create_test_service().await;
+
+            let errors = condition_errors(&svc, "checkbox", "node.checked.id == 'x'").await;
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            match &errors[0] {
+                PlayValidationError::BrokenPath { message, .. } => {
+                    assert!(message.contains("cannot traverse further"), "{message}")
+                }
+                other => panic!("expected BrokenPath, got {other:?}"),
+            }
+        }
+
+        /// A user-defined type that declares its own field of the same name
+        /// keeps it: the registry's attribute belongs to the types that
+        /// derive it.
+        #[tokio::test]
+        async fn a_field_named_like_a_derived_attribute_is_still_a_field() {
+            let (svc, _tmp) = create_test_service().await;
+            let schema_node = Node::new_with_id(
+                "vt_survey".to_string(),
+                "schema".to_string(),
+                "vt_survey".to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "vt_survey schema",
+                    "fields": [{"name": "checked", "type": "boolean"}]
+                }),
+            );
+            svc.create_node(schema_node).await.unwrap();
+
+            let errors = condition_errors(&svc, "vt_survey", "node.checked == true").await;
+            assert!(errors.is_empty(), "{errors:?}");
+        }
+
+        #[tokio::test]
+        async fn where_reads_a_derived_attribute_of_the_item_type_only() {
+            let (svc, _tmp) = create_test_service().await;
+            create_checklist_schemas(&svc).await;
+
+            let rules = |for_each: &str| {
+                vec![make_rule(
+                    "vt_list",
+                    vec![],
+                    vec![for_each_action(for_each)],
+                )]
+            };
+            let ok =
+                validate_play(&rules("trigger.node.boxes.where(checked == false)"), &svc).await;
+            assert!(ok.is_ok(), "{ok:?}");
+
+            let errors = validate_play(&rules("trigger.node.notes.where(checked == false)"), &svc)
+                .await
+                .expect_err("vt_note derives no `checked`");
+            let (message, _) = only_where_error(&errors);
+            assert!(
+                message.contains("'checked' is not a field of 'vt_note'"),
+                "{message}"
+            );
         }
 
         // -- `.where(...)` collection filters --------------------------------

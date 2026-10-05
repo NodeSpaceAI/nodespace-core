@@ -297,9 +297,12 @@ impl CelScope {
     }
 
     /// Whether the reading scope declares this field — i.e. whether a
-    /// condition authored at this scope is entitled to see it.
+    /// condition authored at this scope is entitled to see it. A derived
+    /// attribute of the scope's type is declared by the registry, not by a
+    /// schema field.
     fn declares(&self, name: &str) -> bool {
         self.scope_fields.iter().any(|f| f.name == name)
+            || crate::models::CoreNodeType::derived_attribute_in(&self.chain, name).is_some()
     }
 }
 
@@ -429,6 +432,8 @@ fn field_is_enum(fields: &[crate::models::SchemaField], name: &str) -> bool {
 /// - `version`: Int
 /// - All flattened properties as additional keys, except a `null` one: a
 ///   cleared field is left out, at every depth of an object-valued field
+/// - Each derived attribute the node's type declares (a checkbox's
+///   `checked`), computed from `content`
 ///
 /// Namespace prefixes on properties are stripped: `custom:status` → `status`.
 /// Internal `_`-prefixed bookkeeping keys (`_seed`, `_schemaVersion`,
@@ -551,6 +556,16 @@ pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
     // from this map too and is unaffected: `ItemPredicate::matches` binds a
     // missing key to `null`.
     map.retain(|_, value| !matches!(value, Value::Null));
+
+    // The derived attributes the registry declares for the type this chain
+    // resolves to (ADR-094 §5), computed from `content` by the attribute's
+    // one function. Inserted last: nothing stored can stand in for one.
+    for attribute in crate::models::CoreNodeType::derived_attributes_in(scope_chain) {
+        map.insert(
+            key(attribute.name()),
+            json_to_cel(&attribute.derive(&node.content)),
+        );
+    }
 
     Value::Map(cel_interpreter::objects::Map { map: Arc::new(map) })
 }

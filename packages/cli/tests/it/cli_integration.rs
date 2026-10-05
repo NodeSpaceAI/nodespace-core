@@ -373,6 +373,7 @@ async fn create_get_update_children_delete_round_trip() {
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![],
+            version: None,
         }),
         true,
     )
@@ -2446,6 +2447,7 @@ async fn node_update_sets_properties_and_preserves_content() {
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![],
+            version: None,
         }),
         true,
     )
@@ -2615,6 +2617,7 @@ async fn node_update_rejects_empty_args() {
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![],
+            version: None,
         }),
         true,
     )
@@ -2657,6 +2660,7 @@ async fn node_set_status_updates_status_property() {
         commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
             id: id.clone(),
             status: "done".into(),
+            version: None,
         }),
         true,
     )
@@ -2675,6 +2679,140 @@ async fn node_set_status_updates_status_property() {
     let props: serde_json::Value =
         serde_json::from_str(&node.properties).expect("parse properties");
     assert_eq!(props["task"]["status"], "done");
+
+    let _ = shutdown.send(());
+}
+
+/// `node update` and `node set-status` change a node only when it is still at
+/// the version the caller names. A stale version is refused with a message
+/// naming the node, the version given and the version it is at now, and
+/// nothing is written.
+#[tokio::test]
+async fn update_and_set_status_write_only_at_the_version_named() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let id = raw
+        .create_node(CreateNodeRequest {
+            node_type: "task".into(),
+            content: "a task".into(),
+            parent_id: None,
+            properties: serde_json::json!({"status": "open"}).to_string(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position: None,
+        })
+        .await
+        .expect("seed task")
+        .into_inner()
+        .node_id;
+
+    let set_status = |status: &str, version| {
+        commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
+            id: id.clone(),
+            status: status.into(),
+            version,
+        })
+    };
+    let update = |content: &str, version| {
+        commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            id: id.clone(),
+            content: Some(content.into()),
+            properties: vec![],
+            collections: vec![],
+            collection_ids: vec![],
+            remove_collection_ids: vec![],
+            version,
+        })
+    };
+    let assert_refused = |err: anyhow::Error, given: i64, current: i64| {
+        let message = format!("{err:#}");
+        for part in [
+            id.clone(),
+            format!("version {given} was given"),
+            format!("now at version {current}"),
+            "Nothing was written".to_string(),
+        ] {
+            assert!(message.contains(&part), "missing {part:?}: {message}");
+        }
+        assert!(
+            !message.contains("RPC failed"),
+            "a conflict is not a generic RPC failure: {message}"
+        );
+    };
+
+    // The first session to start the task with the version it read wins.
+    commands::node::run(&mut client, set_status("in_progress", Some(1)), false)
+        .await
+        .expect("the version read is still current");
+
+    // A second session that read the same version is refused, in both
+    // output modes.
+    for json in [false, true] {
+        let err = commands::node::run(&mut client, set_status("done", Some(1)), json)
+            .await
+            .expect_err("version 1 is stale");
+        assert_refused(err, 1, 2);
+    }
+    let err = commands::node::run(&mut client, update("taken over", Some(1)), false)
+        .await
+        .expect_err("version 1 is stale");
+    assert_refused(err, 1, 2);
+
+    let node = raw
+        .get_node(GetNodeRequest {
+            node_id: id.clone(),
+        })
+        .await
+        .expect("get node")
+        .into_inner()
+        .node_data
+        .expect("node_data");
+    assert_eq!(node.version, 2, "a refused write changes nothing");
+    assert_eq!(node.content, "a task");
+    let props: serde_json::Value =
+        serde_json::from_str(&node.properties).expect("parse properties");
+    assert_eq!(props["task"]["status"], "in_progress");
+
+    // Naming the current version lands; naming none applies to what is there.
+    commands::node::run(&mut client, update("renamed", Some(2)), false)
+        .await
+        .expect("version 2 is current");
+    commands::node::run(&mut client, set_status("done", None), false)
+        .await
+        .expect("no version: as before");
+
+    // The structured form `--json` prints carries the same three facts.
+    let status = raw
+        .update_node(nodespace_daemon::nodespace::UpdateNodeRequest {
+            node_id: id.clone(),
+            version: Some(2),
+            node_type: None,
+            content: Some("stale".into()),
+            properties: None,
+            add_to_collections: Vec::new(),
+            add_to_collection_ids: Vec::new(),
+            remove_from_collection_ids: Vec::new(),
+            lifecycle_status: None,
+            typed_client: false,
+        })
+        .await
+        .expect_err("version 2 is stale");
+    let conflict = commands::node::VersionConflict::from_status(&status)
+        .expect("the daemon reports a version conflict");
+    let printed = conflict.to_json();
+    assert_eq!(printed["error"], "version_conflict");
+    assert_eq!(printed["node_id"], id.as_str());
+    assert_eq!(printed["given_version"], 2);
+    assert_eq!(printed["current_version"], 4);
+    assert_eq!(printed["message"], conflict.message());
 
     let _ = shutdown.send(());
 }
@@ -2718,6 +2856,7 @@ async fn node_set_status_rejects_invalid_status() {
         commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
             id,
             status: "not-a-real-status".into(),
+            version: None,
         }),
         true,
     )
@@ -2798,6 +2937,7 @@ async fn node_set_status_accepts_schema_extended_status() {
         commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
             id: id.clone(),
             status: "backlog".into(),
+            version: None,
         }),
         true,
     )
@@ -3459,6 +3599,7 @@ async fn node_update_collection_adds_and_removes_membership() {
             collections: vec!["archive:2026".into()],
             collection_ids: vec![],
             remove_collection_ids: vec![],
+            version: None,
         }),
         true,
     )
@@ -3484,6 +3625,7 @@ async fn node_update_collection_adds_and_removes_membership() {
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![leaf_id.clone()],
+            version: None,
         }),
         true,
     )
@@ -3561,6 +3703,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec!["ops:oncall".into()],
+            version: None,
         }),
         true,
     )
@@ -3590,6 +3733,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![leaf_id],
+            version: None,
         }),
         true,
     )
@@ -4380,6 +4524,7 @@ async fn play_rules_are_written_and_read_with_their_descriptions() {
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![],
+            version: None,
         })
     };
 
@@ -4636,6 +4781,7 @@ async fn node_create_and_update_set_a_collection_description() {
             collections: vec![],
             collection_ids: vec![],
             remove_collection_ids: vec![],
+            version: None,
         }),
         true,
     )

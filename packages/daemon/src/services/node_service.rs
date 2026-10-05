@@ -3011,6 +3011,27 @@ async fn confirmed_delete(
     }
 }
 
+/// `value` as JSON text in ASCII: every character outside it is written as a
+/// `\u` escape (a surrogate pair above the basic plane). Such characters
+/// occur only inside JSON strings, where the escape means the same thing.
+fn ascii_json(value: &serde_json::Value) -> String {
+    let json = value.to_string();
+    if json.is_ascii() {
+        return json;
+    }
+    let mut out = String::with_capacity(json.len());
+    for c in json.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            for unit in c.encode_utf16(&mut [0; 2]) {
+                out.push_str(&format!("\\u{unit:04x}"));
+            }
+        }
+    }
+    out
+}
+
 pub(crate) fn ops_error_to_status(err: OpsError) -> Status {
     match err {
         OpsError::NotFound { id } => Status::not_found(format!("Not found: {}", id)),
@@ -3032,12 +3053,13 @@ pub(crate) fn ops_error_to_status(err: OpsError) -> Status {
                 "current_node": current_node,
             });
             let mut status = Status::new(tonic::Code::Aborted, message);
-            if let Ok(json) = serde_json::to_string(&payload) {
-                if let Ok(val) =
-                    json.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-                {
-                    status.metadata_mut().insert("x-version-conflict", val);
-                }
+            // The header is ASCII, and a client reads it as a string: text
+            // outside ASCII is sent as JSON `\u` escapes, or the client would
+            // find no conflict at all for a node holding any.
+            if let Ok(val) = ascii_json(&payload)
+                .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+            {
+                status.metadata_mut().insert("x-version-conflict", val);
             }
             status
         }
@@ -5331,6 +5353,60 @@ mod tests {
     /// `messages` sit under `properties["ai-chat-native"]` instead of at the top
     /// level hydrates the store with a node whose `turnStatus` is undefined,
     /// which strands the viewer's typing indicator after a conflict.
+    /// A node whose text is not ASCII still reaches the client in the
+    /// conflict header, which is ASCII and read as a string.
+    #[tokio::test]
+    async fn update_node_version_conflict_carries_a_non_ascii_node() {
+        let (svc, _tmp) = make_service().await;
+        let node_id = "c1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
+        svc.create_node(Request::new(crate::nodespace::CreateNodeRequest {
+            id: Some(node_id.to_string()),
+            node_type: "text".to_string(),
+            content: "naïve café ☕ 🎉".to_string(),
+            parent_id: None,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            properties: String::new(),
+            position: None,
+        }))
+        .await
+        .unwrap();
+
+        let update = |version, content: &str| {
+            Request::new(crate::nodespace::UpdateNodeRequest {
+                node_id: node_id.to_string(),
+                version: Some(version),
+                node_type: None,
+                content: Some(content.to_string()),
+                properties: None,
+                add_to_collections: Vec::new(),
+                add_to_collection_ids: Vec::new(),
+                remove_from_collection_ids: Vec::new(),
+                lifecycle_status: None,
+                typed_client: false,
+            })
+        };
+        svc.update_node(update(1, "résumé 🎉")).await.unwrap();
+        let err = svc
+            .update_node(update(1, "stale"))
+            .await
+            .expect_err("version 1 is stale");
+
+        assert_eq!(err.code(), tonic::Code::Aborted);
+        let header = err
+            .metadata()
+            .get("x-version-conflict")
+            .expect("x-version-conflict header missing");
+        let header = header.to_str().expect("the header must read as a string");
+        let json: serde_json::Value = serde_json::from_str(header).unwrap();
+        assert_eq!(json["node_id"], node_id);
+        assert_eq!(json["expected"], 1);
+        assert_eq!(json["actual"], 2);
+        assert_eq!(json["current_node"]["content"], "résumé 🎉");
+    }
+
     #[tokio::test]
     async fn update_node_version_conflict_embeds_flattened_current_node() {
         let (svc, _tmp) = make_service().await;

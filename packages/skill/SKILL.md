@@ -144,6 +144,12 @@ say what to do, and it says how each command is spelled.
 
 All commands accept `--json` for machine-readable output.
 
+**Writing at the version you read.** Every node has a `version`. `node update`
+and `node set-status` take `--version <n>`: the write lands only if the node is
+still at that version. Otherwise nothing is written and the command reports the
+version given and the current one. After such a conflict, read the node again
+before deciding what to do; never retry with the new number unread.
+
 **Selecting a database.** A single daemon can serve several local databases. Data
 commands accept a global `--database <name|id>` flag; `NODESPACE_DATABASE` sets
 the same target when the flag is absent. Without either, requests go to the

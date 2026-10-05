@@ -47,8 +47,9 @@ pub use nodespace_types::{
 // The core type registry (ADR-086 §3): the one list of the types NodeSpace
 // ships, and what each records.
 pub use nodespace_types::{
-    ChildrenRule, ContentRole, CoreNodeType, CoreTypeInfo, CoreTypeKind, ParentRule,
-    ParticipationRules, StructuralRules, TypeCategory, WireShape,
+    checkbox_is_checked, ChildrenRule, ContentRole, CoreNodeType, CoreTypeInfo, CoreTypeKind,
+    DerivedAttribute, DerivedValueType, ParentRule, ParticipationRules, StructuralRules,
+    TypeCategory, WireShape,
 };
 
 // node_to_typed_value and nodes_to_typed_values are the single canonical

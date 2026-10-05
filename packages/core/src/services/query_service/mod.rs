@@ -806,7 +806,9 @@ impl QueryService {
 
     /// Build property filter (Namespaced property access)
     ///
-    /// Uses SQLite json_extract for property access.
+    /// Uses SQLite json_extract for property access. A derived attribute of
+    /// the row's type is named the same way and computed from its content;
+    /// see [`Self::derived_or_stored`].
     fn build_property_filter(
         &self,
         filter: &QueryFilter,
@@ -834,7 +836,39 @@ impl QueryService {
         } else {
             format!("json_extract(properties, '$.{}.{}')", target_type, property)
         };
+        let field = Self::derived_or_stored(property, field);
         self.build_filter_condition(&field, &filter.operator, filter, built)
+    }
+
+    /// The expression a property filter on `property` reads: `stored`, unless
+    /// the registry declares a derived attribute of that name (ADR-094 §5).
+    ///
+    /// A derived attribute is computed from the row's `content`, for a row
+    /// whose type is, or extends, a type that declares it; every other row
+    /// reads `stored` as before. The choice is made per row, in SQL, because
+    /// a filter may run over rows of more than one type: a wildcard query, or
+    /// the nodes a built-in relationship such as `has_child` reaches. A
+    /// boolean attribute is `1` or `0`, which is what a boolean operand binds
+    /// as.
+    ///
+    /// `stored` is returned unchanged for every other name, so a filter on an
+    /// ordinary field keeps the exact expression its index is built on.
+    fn derived_or_stored(property: &str, stored: String) -> String {
+        let declared = crate::models::DerivedAttribute::declared_as(property);
+        if declared.is_empty() {
+            return stored;
+        }
+        let arms: Vec<String> = declared
+            .into_iter()
+            .map(|(node_type, attribute)| {
+                format!(
+                    "WHEN {} THEN {}",
+                    crate::db::schema::is_a_sql("node_type", &[node_type]),
+                    attribute.sql("content")
+                )
+            })
+            .collect();
+        format!("CASE {} ELSE {} END", arms.join(" "), stored)
     }
 
     /// Build content filter

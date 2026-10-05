@@ -180,6 +180,82 @@ pub enum WireShape {
     },
 }
 
+/// The type of value a derived attribute computes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DerivedValueType {
+    Boolean,
+}
+
+/// An attribute computed from a node's `content` and never stored
+/// (ADR-086 §4, ADR-094 §5).
+///
+/// A type declares its derived attributes in its registry entry, and its
+/// subtypes inherit them. Each has one Rust function ([`Self::derive`]) and
+/// the same computation as a SQL expression ([`Self::sql`]); every reader
+/// goes through one of the two, so nothing else matches on a content prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DerivedAttribute {
+    /// Whether a checkbox is ticked.
+    Checked,
+}
+
+impl DerivedAttribute {
+    /// Every derived attribute any core type declares.
+    pub const ALL: [DerivedAttribute; 1] = [DerivedAttribute::Checked];
+
+    /// The name the attribute is read by, in a rule and in a query filter.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Checked => "checked",
+        }
+    }
+
+    pub const fn value_type(self) -> DerivedValueType {
+        match self {
+            Self::Checked => DerivedValueType::Boolean,
+        }
+    }
+
+    /// The attribute's value for a node with this `content`.
+    pub fn derive(self, content: &str) -> serde_json::Value {
+        match self {
+            Self::Checked => serde_json::Value::Bool(checkbox_is_checked(content)),
+        }
+    }
+
+    /// [`Self::derive`] as a SQL expression over `content`, a column or
+    /// expression holding the node's content. A boolean is `1` or `0`.
+    pub fn sql(self, content: &str) -> String {
+        match self {
+            Self::Checked => {
+                format!("(substr({content}, 1, 6) IN ('- [x] ', '- [X] '))")
+            }
+        }
+    }
+
+    /// The core types that declare an attribute of this name, each with the
+    /// attribute it declares. Subtypes are reached through the `extends`
+    /// chain, not listed.
+    pub fn declared_as(name: &str) -> Vec<(CoreNodeType, DerivedAttribute)> {
+        CoreNodeType::ALL
+            .into_iter()
+            .flat_map(|t| {
+                t.info()
+                    .derived
+                    .iter()
+                    .filter(|attribute| attribute.name() == name)
+                    .map(move |attribute| (t, *attribute))
+            })
+            .collect()
+    }
+}
+
+/// Whether a checkbox with this `content` is ticked: the content starts with
+/// `- [x] ` or `- [X] `. The one definition of a checkbox's checked state.
+pub fn checkbox_is_checked(content: &str) -> bool {
+    content.starts_with("- [x] ") || content.starts_with("- [X] ")
+}
+
 /// Everything the registry records for one core type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoreTypeInfo {
@@ -198,6 +274,8 @@ pub struct CoreTypeInfo {
     /// The template the title is interpolated from, when the type has one.
     pub title_template: Option<&'static str>,
     pub wire: WireShape,
+    /// The attributes derived from this type's content.
+    pub derived: &'static [DerivedAttribute],
 }
 
 impl CoreNodeType {
@@ -253,6 +331,7 @@ impl CoreNodeType {
                 always_titled: false,
                 title_template: None,
                 wire,
+                derived: &[],
             }
         }
         /// A type whose nodes take no children.
@@ -297,7 +376,10 @@ impl CoreNodeType {
                 EMBEDDED,
                 WireShape::Envelope,
             )),
-            Self::Checkbox => entry("checkbox", Primitive, Body, EMBEDDED, WireShape::Envelope),
+            Self::Checkbox => CoreTypeInfo {
+                derived: &[DerivedAttribute::Checked],
+                ..entry("checkbox", Primitive, Body, EMBEDDED, WireShape::Envelope)
+            },
             Self::HorizontalLine => leaf(entry(
                 "horizontal-line",
                 Primitive,
@@ -593,6 +675,40 @@ impl CoreNodeType {
         self.info().wire
     }
 
+    /// The derived attributes in force for this type: its own and its
+    /// ancestors'.
+    pub fn derived_attributes(self) -> Vec<DerivedAttribute> {
+        self.chain()
+            .into_iter()
+            .flat_map(|t| t.info().derived.iter().copied())
+            .collect()
+    }
+
+    /// The derived attribute called `name` on this type, if it has one.
+    pub fn derived_attribute(self, name: &str) -> Option<DerivedAttribute> {
+        self.derived_attributes()
+            .into_iter()
+            .find(|attribute| attribute.name() == name)
+    }
+
+    /// The derived attributes of the type whose `extends` chain is `chain`,
+    /// nearest scope first. A user-defined subtype of a core type has the
+    /// attributes of its nearest core ancestor.
+    pub fn derived_attributes_in<S: AsRef<str>>(chain: &[S]) -> Vec<DerivedAttribute> {
+        Self::nearest(chain)
+            .map(Self::derived_attributes)
+            .unwrap_or_default()
+    }
+
+    /// The derived attribute called `name` on the type whose `extends` chain
+    /// is `chain`, nearest scope first.
+    pub fn derived_attribute_in<S: AsRef<str>>(
+        chain: &[S],
+        name: &str,
+    ) -> Option<DerivedAttribute> {
+        Self::nearest(chain)?.derived_attribute(name)
+    }
+
     /// The core types the `@` mention picker leaves out.
     pub fn not_mentionable() -> Vec<Self> {
         Self::ALL
@@ -709,6 +825,72 @@ mod tests {
             if t.parent().is_some() {
                 assert_eq!(t.kind(), CoreTypeKind::CoreSubtype);
             }
+        }
+    }
+
+    #[test]
+    fn checkbox_declares_checked_and_no_other_type_does() {
+        assert_eq!(
+            DerivedAttribute::declared_as("checked"),
+            vec![(CoreNodeType::Checkbox, DerivedAttribute::Checked)]
+        );
+        assert_eq!(
+            CoreNodeType::Checkbox.derived_attribute("checked"),
+            Some(DerivedAttribute::Checked)
+        );
+        assert_eq!(CoreNodeType::Task.derived_attribute("checked"), None);
+        assert_eq!(CoreNodeType::Checkbox.derived_attribute("status"), None);
+        assert!(DerivedAttribute::declared_as("status").is_empty());
+        // A user subtype has its nearest core ancestor's attributes.
+        assert_eq!(
+            CoreNodeType::derived_attribute_in(&["criterion", "checkbox"], "checked"),
+            Some(DerivedAttribute::Checked)
+        );
+        assert_eq!(
+            CoreNodeType::derived_attribute_in(&["invoice"], "checked"),
+            None
+        );
+        assert_eq!(
+            DerivedAttribute::Checked.value_type(),
+            DerivedValueType::Boolean
+        );
+    }
+
+    #[test]
+    fn only_a_primitive_declares_derived_attributes_and_every_declared_one_is_listed() {
+        let mut declared = HashSet::new();
+        for t in CoreNodeType::ALL {
+            let own = t.info().derived;
+            if !own.is_empty() {
+                assert_eq!(t.category(), TypeCategory::Primitive, "{t}");
+            }
+            let names: HashSet<_> = own.iter().map(|a| a.name()).collect();
+            assert_eq!(names.len(), own.len(), "{t} declares a name twice");
+            declared.extend(own.iter().copied());
+        }
+        let all: HashSet<_> = DerivedAttribute::ALL.into_iter().collect();
+        assert_eq!(declared, all);
+    }
+
+    #[test]
+    fn checked_follows_the_content_prefix() {
+        for (content, checked) in [
+            ("- [x] done", true),
+            ("- [X] done", true),
+            ("- [x] ", true),
+            ("- [ ] open", false),
+            ("- [x]", false),
+            (" - [x] indented", false),
+            ("-[x] no space", false),
+            ("- [x]\tdone", false),
+            ("plain", false),
+            ("", false),
+        ] {
+            assert_eq!(checkbox_is_checked(content), checked, "{content:?}");
+            assert_eq!(
+                DerivedAttribute::Checked.derive(content),
+                serde_json::json!(checked)
+            );
         }
     }
 

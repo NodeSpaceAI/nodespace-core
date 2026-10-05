@@ -122,8 +122,21 @@ nodespace node update <node-id> --property status=in_progress --property priorit
 **Options:**
 - `--content <text>` — replaces the node's content/title. Omit to leave content unchanged.
 - `--property key=value` — repeatable; sets one property, deep-merged into existing properties (properties you don't mention are left untouched). Values are parsed as JSON when possible (numbers, booleans, arrays, objects), otherwise treated as a plain string.
+- `--version <n>` — the node's `version` as you read it. The update is written only if the node is still at that version. Omit it to update whatever is current.
 
 At least one of `--content` or `--property` is required.
+
+**Writing at the version you read:** every node has a `version`, printed by `node get` and by every write. Pass it back with `--version` when the change depends on what you read: starting a task, ticking a checklist item, editing text you just fetched. If someone else changed the node in between, nothing is written and the command exits non-zero:
+
+```
+Node <node-id> has changed since it was read: version 3 was given and it is now at version 4. Nothing was written. Read the node again before deciding what to do.
+```
+
+With `--json` the same is printed as `{"error": "version_conflict", "node_id": …, "given_version": 3, "current_version": 4, "message": …}`.
+
+**After a conflict, read the node again (`nodespace node get <node-id>`) before you do anything else.** Do not retry with the new version number: the node now holds a change you have not seen, and your write may no longer be right. A task you meant to start may already be in progress under another session, in which case you leave it and pick other work.
+
+**A derived attribute cannot be written.** A checkbox's `checked` is computed from its content (`- [ ] ` / `- [x] `) and is never a property: tick or untick one with `--content`, e.g. `nodespace node update <checkbox-id> --content "- [x] Tests pass"`. `--property checked=true` is refused.
 
 **Find then update:** if you don't already have the node's ID, locate it first — by name with `nodespace node query --title-contains "<name>"` (an exact match; `nodespace search` also finds names but mixes in documents that are only similar in meaning), or by topic with `nodespace search` — then update by ID. If the lookup comes back with zero matches or several equally plausible matches, ask the user one specific clarifying question rather than retrying — e.g. "I found 3 tickets in review — which one did you mean: the auth one, the CI one, or the audit-log one?"
 
@@ -135,9 +148,12 @@ At least one of `--content` or `--property` is required.
 
 ```bash
 nodespace node set-status <task-id> in_progress
+nodespace node set-status <task-id> in_progress --version <n>   # only if the task is still at the version you read
 ```
 
 Dedicated verb for task status transitions. Status must be one of the values the `task` schema's `status` field declares — the four built-ins (`open`, `in_progress`, `done`, `cancelled`) plus any added via `schema update`'s `add_field_values` (see "Adding a value to an existing enum" under Schema inspection and management). Validated against that live vocabulary; an invalid value is rejected with the current list.
+
+`--version <n>` works as it does for `node update` (see "Writing at the version you read" above). Start a task with the version you read it at: of two sessions that both try, one is refused, and it reads the task again and moves on.
 
 **Output:** Updated node JSON.
 
@@ -208,6 +224,7 @@ Worked examples:
 - "overdue tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"lt","property":"due_date","relative_date":{"anchor":"today"}}]'`
 - "issues in the current cycle" → `nodespace query --type issue --filters '[{"type":"related","operator":"exists","path":["cycle"],"filter":{"type":"property","operator":"lte","property":"start_date","relative_date":{"anchor":"today"}}},{"type":"related","operator":"exists","path":["cycle"],"filter":{"type":"property","operator":"gte","property":"end_date","relative_date":{"anchor":"today"}}}]'`
 - "high priority tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"priority","value":"high"}]'`
+- "tasks with an unchecked item" → `nodespace query --type task --filters '[{"type":"related","operator":"equals","path":["has_child"],"filter":{"type":"property","operator":"equals","property":"checked","value":false}}]'`. `checked` is a checkbox's derived attribute: computed from its content, named in a `property` filter like a field, and never matched by a node that is not a checkbox.
 
 Date format for all date properties: **YYYY-MM-DD**.
 
@@ -731,11 +748,13 @@ Operate on individual nodes (get, create, update, delete, children, query, expor
 - `--collection <PATH>` — Collection path to add the node to, `:`-delimited for hierarchy (e.g. `docs:rust`). Missing segments are created. Repeatable. Mutually exclusive with --collection-id
 - `--collection-id <ID>` — Collection ID to add the node to (repeatable). Prefer --collection
 - `--remove-collection-id <ID>` — Collection ID to remove the node from (repeatable)
+- `--version <VERSION>` — The node version you read. Updates only if the node is still at it; otherwise nothing is written and the current version is reported. Omit to update whatever is current
 
 **`nodespace node set-status`** — Set a task node's status (dedicated verb — do not use `update` for this)
 
 - `<ID>` — Task node ID (required)
 - `<STATUS>` — New status. Must be one of the values the `task` schema's `status` field declares — the four built-ins (open, in_progress, done, cancelled) plus any added since. An invalid value is rejected with the current list (required)
+- `--version <VERSION>` — The task version you read. Sets the status only if the task is still at it; otherwise nothing is written and the current version is reported. Omit to update whatever is current
 
 **`nodespace node delete`** — Delete a node and everything nested under it, in two steps: without `--version`/`--descendants` it only previews what would be removed and prints the exact command that deletes it
 
