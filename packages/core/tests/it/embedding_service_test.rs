@@ -2558,17 +2558,16 @@ async fn test_search_semantic_enumerate_leaves_out_a_system_roots_fragments() ->
         json!({ "description": "What the skill is for" }),
     );
     node_service.create_node(skill.clone()).await?;
-    // More fragments than a page holds, all newer than the user's nodes.
+    // All newer than the user's nodes. With a limit of 2 a page holds 18
+    // rows, so the user's nodes are reached only by reading on past several
+    // pages of fragments.
     for i in 0..70 {
         create_child_node(&node_service, &skill.id, "text", &format!("Step {i}")).await?;
     }
 
-    let output = search_ops::search_semantic(
-        &node_service,
-        &embedding_service,
-        empty_search_input("", Some(vec!["text".to_string()])),
-    )
-    .await?;
+    let mut input = empty_search_input("", Some(vec!["text".to_string()]));
+    input.limit = Some(2);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
 
     let mut listed: Vec<&str> = output
         .nodes
@@ -2579,6 +2578,39 @@ async fn test_search_semantic_enumerate_leaves_out_a_system_roots_fragments() ->
     let mut own = vec![document.id.as_str(), paragraph.id.as_str()];
     own.sort_unstable();
     assert_eq!(listed, own);
+    Ok(())
+}
+
+/// Naming a type asks for it: a type outside the `Knowledge` scope is listed
+/// when it is named, wherever it sits. Only a knowledge type is judged by its
+/// root.
+#[tokio::test]
+async fn test_search_semantic_enumerate_lists_a_named_system_type_under_its_root() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let skill = Node::new(
+        "skill".to_string(),
+        "A skill".to_string(),
+        json!({ "description": "What the skill is for" }),
+    );
+    node_service.create_node(skill.clone()).await?;
+    let quote = create_child_node(&node_service, &skill.id, "quote-block", "> A caution").await?;
+
+    let output = search_ops::search_semantic(
+        &node_service,
+        &embedding_service,
+        empty_search_input("", Some(vec!["quote-block".to_string()])),
+    )
+    .await?;
+
+    let listed: Vec<&str> = output
+        .nodes
+        .iter()
+        .filter_map(|n| n["id"].as_str())
+        .collect();
+    assert!(listed.contains(&quote.id.as_str()), "{listed:?}");
     Ok(())
 }
 

@@ -856,23 +856,30 @@ fn status() -> Result<()> {
     // apart from a machine with no harness.
     let present = run_installer_subcommand(&installer, "status")?;
     let detected = run_installer_subcommand(&installer, "detect")?;
-    for line in status_lines(&present.installed, &detected.installed) {
+    for line in status_lines(&present.installed, &present.skipped, &detected.installed) {
         println!("{line}");
     }
     Ok(())
 }
 
-/// What `skill status` prints, given the harnesses that have the skill
-/// (`present`) and the harnesses found on this machine (`detected`).
-fn status_lines(present: &[String], detected: &[String]) -> Vec<String> {
+/// What `skill status` prints, given the harnesses that have the skill as
+/// installed files (`present`), the ones that have it some other way, each
+/// with how (`managed`: Claude Code's plugin marketplace), and the harnesses
+/// found on this machine (`detected`).
+fn status_lines(present: &[String], managed: &[SkippedAgent], detected: &[String]) -> Vec<String> {
     let mut lines: Vec<String> = present
         .iter()
         .map(|agent| format!("✓ {agent}: present"))
         .collect();
     lines.extend(
+        managed
+            .iter()
+            .map(|skipped| format!("✓ {}: {}", skipped.agent, skipped.reason)),
+    );
+    lines.extend(
         detected
             .iter()
-            .filter(|agent| !present.contains(agent))
+            .filter(|agent| !present.contains(agent) && !managed.iter().any(|m| &m.agent == *agent))
             .map(|agent| format!("  {agent}: detected, skill not installed")),
     );
     if lines.is_empty() {
@@ -2015,17 +2022,34 @@ mod tests {
         let names = |agents: &[&str]| agents.iter().map(|a| a.to_string()).collect::<Vec<_>>();
 
         assert_eq!(
-            status_lines(&names(&["codex"]), &names(&["claude-code", "codex"])),
+            status_lines(&names(&["codex"]), &[], &names(&["claude-code", "codex"])),
             vec![
                 "✓ codex: present",
                 "  claude-code: detected, skill not installed"
             ]
         );
         assert_eq!(
-            status_lines(&[], &names(&["pi"])),
+            status_lines(&[], &[], &names(&["pi"])),
             vec!["  pi: detected, skill not installed"]
         );
-        assert_eq!(status_lines(&[], &[]), vec!["No agent harnesses detected."]);
+        assert_eq!(
+            status_lines(&[], &[], &[]),
+            vec!["No agent harnesses detected."]
+        );
+    }
+
+    /// A harness that has the skill through its own marketplace is reported
+    /// as having it, with how, and never as missing it.
+    #[test]
+    fn status_reports_a_marketplace_install_as_installed() {
+        let managed = [SkippedAgent {
+            agent: "claude-code".to_string(),
+            reason: "installed via the Claude Code plugin marketplace".to_string(),
+        }];
+        assert_eq!(
+            status_lines(&[], &managed, &["claude-code".to_string()]),
+            vec!["✓ claude-code: installed via the Claude Code plugin marketplace"]
+        );
     }
 
     #[test]

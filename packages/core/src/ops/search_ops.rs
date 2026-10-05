@@ -270,16 +270,23 @@ async fn resolve_type_chains_for_filters(
 /// applies the same filters.
 ///
 /// A listing is the most recently modified nodes first. Two things narrow it
-/// before `limit` counts anything, so neither can leave a page short of nodes
+/// before `limit` counts anything, so neither leaves a page short of nodes
 /// that exist:
 ///
 /// - `scope.member_ids` confines it to a collection. The members are fetched
 ///   by id rather than picked out of a capped slice of the whole table, which
 ///   a collection's members may not be in at all.
-/// - `scope.knowledge_only` leaves out a node that sits under a system-type
-///   root: the paragraphs of a skill or of agent guidance are `text` nodes,
-///   but they are that root's body, not the user's own. A search with a query
-///   never returns them either, since it ranks roots.
+/// - `scope.knowledge_only` leaves out a knowledge-type node that sits under
+///   a root the `Knowledge` scope does not return: the paragraphs of a skill
+///   or of agent guidance are `text` nodes, but they are that root's body,
+///   not the user's own. A search with a query never returns them either,
+///   since it ranks roots. A node whose own type is outside the scope is not
+///   judged by its root: it is listed only when its type is named, and naming
+///   a type asks for it (see [`should_skip_scope_filter`]).
+///
+/// The scope's own type check runs after this, in [`search_semantic`], so an
+/// untyped listing whose newest nodes are system roots can still come back
+/// short.
 async fn enumerate_nodes(
     node_service: &Arc<NodeService>,
     limit: usize,
@@ -297,8 +304,8 @@ async fn enumerate_nodes(
         _ => vec![None],
     };
 
-    // Whether each root met so far is a system type, so the nodes of one
-    // subtree cost one lookup between them.
+    // Whether each root met so far is outside the scope, so a subtree's nodes
+    // read its root's type once. Each still walks its own parent chain.
     let mut system_roots: HashMap<String, bool> = HashMap::new();
     let mut merged: Vec<Node> = Vec::new();
     for node_type in &node_types {
@@ -333,6 +340,7 @@ async fn enumerate_nodes(
                 });
                 if !matches_filters
                     || (scope.knowledge_only
+                        && !is_system_type(&node.node_type)
                         && sits_under_system_root(node_service, &node.id, &mut system_roots)
                             .await?)
                 {
@@ -377,9 +385,17 @@ struct EnumerateScope<'a> {
     knowledge_only: bool,
 }
 
-/// Whether `node_id` is a descendant of a root whose type is a system type: a
-/// core type the `Knowledge` scope does not return. A root is never under
-/// one, whatever its own type. `system_roots` remembers each root's answer.
+/// Whether `node_type` is a system type: a core type the `Knowledge` scope
+/// does not return. A user-defined type never is.
+fn is_system_type(node_type: &str) -> bool {
+    crate::models::CoreNodeType::from_id(node_type).is_some_and(|core| {
+        !crate::services::embedding_service::KNOWLEDGE_CORE_TYPES.contains(&core)
+    })
+}
+
+/// Whether `node_id` is a descendant of a root whose type is a system type
+/// (see [`is_system_type`]). A root is never under one, whatever its own
+/// type. `system_roots` remembers each root's answer.
 async fn sits_under_system_root(
     node_service: &Arc<NodeService>,
     node_id: &str,
@@ -401,11 +417,7 @@ async fn sits_under_system_root(
         .get_node_type(&root_id)
         .await
         .map_err(|e| failed(e.to_string()))?;
-    let is_system = root_type
-        .and_then(|t| crate::models::CoreNodeType::from_id(&t))
-        .is_some_and(|core| {
-            !crate::services::embedding_service::KNOWLEDGE_CORE_TYPES.contains(&core)
-        });
+    let is_system = root_type.is_some_and(|t| is_system_type(&t));
     system_roots.insert(root_id, is_system);
     Ok(is_system)
 }

@@ -150,8 +150,8 @@ impl TreeInvariantRule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeInvariantViolation {
     pub rule: TreeInvariantRule,
-    /// The node the write would have left in violation. `None` only for a
-    /// collection refused before it was given an id.
+    /// The node the write would have left in violation. `None` for a node
+    /// refused on create: it was never written, so it has no id to look up.
     pub node_id: Option<String>,
     /// The other nodes involved: for `MemberOfNotRoot` on a reparent or merge,
     /// the collections the node belongs to (empty when the refused write is

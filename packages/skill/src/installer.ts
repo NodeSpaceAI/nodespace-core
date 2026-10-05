@@ -446,9 +446,10 @@ export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT
     if (readdirSync(root).length === 0) {
       try {
         rmdirSync(root);
-        // Install made every directory between the harness's own and the
-        // install directory (`skills/`), so one this leaves empty goes too.
-        // The harness's own directory is never touched.
+        // Install makes any missing directory between the harness's own and
+        // the install directory (`skills/`). One this leaves empty goes too,
+        // whoever made it: nothing records which were ours, and an empty one
+        // holds nothing to lose. The harness's own directory is never touched.
         pruneEmptyParents(resolve(config.detectionDir), root);
       } catch {
         // A symlinked install directory (a dotfile manager's link) cannot be

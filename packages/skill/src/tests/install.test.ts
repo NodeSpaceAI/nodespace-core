@@ -3,7 +3,13 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { extractResourceRoot, skipReasonText, mcpSkipReasonText } from '../install.js';
+import {
+  extractResourceRoot,
+  skipReasonText,
+  mcpSkipReasonText,
+  UP_TO_DATE_TEXT,
+  PLUGIN_MANAGED_STATUS_TEXT,
+} from '../install.js';
 
 describe('extractResourceRoot', () => {
   it('returns no resourceRoot and all args unchanged when the flag is absent', () => {
@@ -105,5 +111,50 @@ describe('uninstall --resource-root', () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('codex: removed 2 file(s)');
     expect(existsSync(installDir)).toBe(false);
+  });
+});
+
+// Run as the real CLI: the lines it prints are what `nodespace skill` parses.
+describe('the lines the CLI prints', () => {
+  const home = join(tmpdir(), `nodespace-skill-cli-lines-test-${process.pid}`);
+  const resourceRoot = join(home, 'resources');
+
+  function run(...args: string[]): string {
+    const { CLAUDE_CONFIG_DIR: _ignored, ...inherited } = process.env;
+    const result = spawnSync(
+      'bun',
+      [join(import.meta.dirname, '..', 'install.ts'), ...args, '--resource-root', resourceRoot],
+      { env: { ...inherited, HOME: home, USERPROFILE: home }, encoding: 'utf8' }
+    );
+    expect(result.status).toBe(0);
+    return result.stdout;
+  }
+
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('reports a re-run over a current install as up to date', () => {
+    mkdirSync(join(home, '.codex'), { recursive: true });
+    mkdirSync(resourceRoot, { recursive: true });
+    writeFileSync(join(resourceRoot, 'SKILL.md'), 'skill', 'utf8');
+
+    expect(run('install', 'codex')).toContain('✓ codex: installed 1 file(s)');
+    expect(run('install', 'codex')).toContain(`✓ codex: ${UP_TO_DATE_TEXT} (1 file(s))`);
+  });
+
+  it('reports a marketplace-managed Claude Code in status as installed that way, not as absent', () => {
+    const plugins = join(home, '.claude', 'plugins');
+    mkdirSync(plugins, { recursive: true });
+    writeFileSync(
+      join(plugins, 'installed_plugins.json'),
+      JSON.stringify({ plugins: { 'nodespace@some-marketplace': [] } }),
+      'utf8'
+    );
+
+    const status = run('status', 'claude-code');
+
+    expect(status).toContain(`⚠ claude-code: ${PLUGIN_MANAGED_STATUS_TEXT}`);
+    expect(status).not.toContain('not present');
   });
 });
