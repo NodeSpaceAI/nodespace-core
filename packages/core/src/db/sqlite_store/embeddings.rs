@@ -438,7 +438,7 @@ impl SqliteStore {
         // `density` now genuinely measures "fraction of the node's chunks near the query"
         // rather than always being ~1.0; it still feeds the same composite formula.
         let query_blob: Vec<u8> = query_vector.iter().flat_map(|f| f.to_le_bytes()).collect();
-        let k = (limit * EMBEDDING_KNN_OVERFETCH).max(limit);
+        let k = (limit * EMBEDDING_KNN_OVERFETCH).max(limit).min(VEC0_K_MAX);
 
         // Group by node_id: track max similarity, chunk counts
         let mut node_scores: HashMap<String, (f64, i64, i64)> = HashMap::new(); // node_id -> (max_sim, matching_chunks, total_chunks)

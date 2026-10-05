@@ -2231,26 +2231,50 @@ async fn test_search_semantic_default_scope_leaves_core_schemas_out_and_keeps_us
 /// extra rows as there are built-in schemas.
 ///
 /// Through the enumerate path, where a fresh database's built-in schemas are
-/// the first rows and the user's note comes after them.
+/// its first rows. A small-limit search must return the same first results as
+/// one large enough to see every row.
 #[tokio::test]
 async fn test_search_semantic_small_limit_reaches_past_the_built_in_schemas() -> Result<()> {
     let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
     let node_service = Arc::new(node_service);
     let embedding_service = Arc::new(embedding_service);
+    create_root_node(&node_service, "text", "Hall Nine booking for the offsite").await?;
 
-    let note = create_root_node(&node_service, "text", "Hall Nine booking for the offsite").await?;
-
-    let mut untyped = empty_search_input("*", None);
-    untyped.limit = Some(2);
-    let output = search_ops::search_semantic(&node_service, &embedding_service, untyped).await?;
-    let ids: Vec<(&str, &str)> = output
-        .matched_nodes
-        .iter()
-        .map(|n| (n.node_type.as_str(), n.id.as_str()))
-        .collect();
+    let limit = 2;
+    // The case this test exists for: the window a limit-2 search fetches
+    // without the extra rows (3 × limit) holds only built-in schemas. If seeding
+    // stops putting them first, this fails rather than the test passing with
+    // nothing to prove.
+    let front = node_service
+        .query_nodes(nodespace_core::models::NodeFilter::new().with_limit(limit * 3))
+        .await?;
     assert!(
-        output.matched_nodes.iter().any(|n| n.id == note.id),
-        "a limit-2 search that names no type must still return the user's note, got {ids:?}"
+        front.len() == limit * 3
+            && front
+                .iter()
+                .all(|n| n.node_type == "schema" && n.properties["isCore"] == true),
+        "precondition: the first {} rows are built-in schemas, got {:?}",
+        limit * 3,
+        front.iter().map(|n| &n.id).collect::<Vec<_>>()
+    );
+
+    let ids = |output: &search_ops::SearchSemanticOutput| -> Vec<String> {
+        output.matched_nodes.iter().map(|n| n.id.clone()).collect()
+    };
+    let mut everything = empty_search_input("*", None);
+    everything.limit = Some(1000);
+    let everything =
+        search_ops::search_semantic(&node_service, &embedding_service, everything).await?;
+    let mut small = empty_search_input("*", None);
+    small.limit = Some(limit);
+    let small = search_ops::search_semantic(&node_service, &embedding_service, small).await?;
+
+    let expected: Vec<String> = ids(&everything).into_iter().take(limit).collect();
+    assert_eq!(expected.len(), limit, "the database holds enough results");
+    assert_eq!(
+        ids(&small),
+        expected,
+        "a limit-{limit} search that names no type must return the first results, not stop at the built-in schemas"
     );
 
     Ok(())
