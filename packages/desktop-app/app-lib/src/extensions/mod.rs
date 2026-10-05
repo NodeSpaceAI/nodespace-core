@@ -309,7 +309,8 @@ impl<R: Runtime> AppExtensions<R> {
     /// contract of ADR-084 §4.2: it accepts the arguments and environment
     /// core's launcher passes, uses core's default names for the socket, lock,
     /// UI pid file and marker, gives its exit status the meanings the contract
-    /// defines, and takes core's single-instance lock.
+    /// defines, takes core's single-instance lock, and shows core's tray when
+    /// passed `--tray`.
     ///
     /// # Panics
     ///

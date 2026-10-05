@@ -126,14 +126,17 @@ fn the_window_capability_grants_the_main_window_and_no_other() {
 /// `build.removeUnusedCommands` strips every plugin command that no capability
 /// file grants. Core's window capability is added at runtime, not from a file,
 /// so turning it on would strip the opener and dialog commands the capability
-/// grants.
+/// grants. Tauri also reads the setting under its kebab-case alias.
 #[test]
 fn the_tauri_config_leaves_unused_plugin_commands_in() {
     let config: serde_json::Value =
         serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri.conf.json is JSON");
 
-    assert_ne!(
-        config["build"]["removeUnusedCommands"],
-        serde_json::Value::Bool(true)
-    );
+    for key in ["removeUnusedCommands", "remove-unused-commands"] {
+        assert_ne!(
+            config["build"][key],
+            serde_json::Value::Bool(true),
+            "build.{key} strips the plugin commands core's window capability grants"
+        );
+    }
 }
