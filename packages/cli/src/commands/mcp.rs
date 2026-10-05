@@ -413,17 +413,14 @@ pub async fn run(action: Option<McpAction>, sock: PathBuf, database: Option<Stri
     }
 }
 
-/// Resolves `~/.nodespace/daemon.toml` — the same file
-/// `nodespace_daemon::SettingsServiceImpl` reads/writes — independently of
-/// the daemon: this whole file is a separate process with no gRPC connection
-/// to it, for the server loop ([`run_server`]'s enablement check) as much as
-/// for `install`/`uninstall`/`status` below.
+/// Resolves `<nodespace_dir>/daemon.toml` — the same file
+/// `nodespace_daemon::SettingsServiceImpl` reads/writes, through the same
+/// resolver, so `NODESPACE_HOME` isolates both — independently of the daemon:
+/// this whole file is a separate process with no gRPC connection to it, for
+/// the server loop ([`run_server`]'s enablement check) as much as for
+/// `install`/`uninstall`/`status` below.
 fn daemon_config_path() -> Result<PathBuf> {
-    let home =
-        std::env::var("HOME").context("$HOME is unset — cannot locate NodeSpace settings")?;
-    Ok(PathBuf::from(home)
-        .join(nodespace_proto::socket::STATE_DIR)
-        .join("daemon.toml"))
+    Ok(nodespace_daemon::nodespace_dir()?.join("daemon.toml"))
 }
 
 /// Prompt on a real terminal; auto-confirm (stating that the prompt was

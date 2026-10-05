@@ -730,26 +730,36 @@ mod tests {
         (SettingsServiceImpl::new(config_path), tempdir)
     }
 
+    /// Restores `NODESPACE_HOME` and `HOME` on drop, so a panic cannot leak them.
+    /// The environment is process-global: nextest runs each test in its own
+    /// process, and the window is the one synchronous call.
+    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            for (var, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(var, value),
+                    None => std::env::remove_var(var),
+                }
+            }
+        }
+    }
+
     /// `with_default_path` with `NODESPACE_HOME` at `nodespace_home` and `HOME`
-    /// at `user_home`, every variable restored afterwards. The environment is
-    /// process-global: nextest runs each test in its own process, and the window
-    /// is the one synchronous call.
+    /// at `user_home`.
     fn default_path_service(
         nodespace_home: &std::path::Path,
         user_home: &std::path::Path,
     ) -> SettingsServiceImpl {
-        const VARS: [&str; 2] = ["NODESPACE_HOME", "HOME"];
-        let saved: Vec<_> = VARS.iter().map(std::env::var_os).collect();
+        let _restore = EnvRestore(
+            ["NODESPACE_HOME", "HOME"]
+                .map(|v| (v, std::env::var_os(v)))
+                .into(),
+        );
         std::env::set_var("NODESPACE_HOME", nodespace_home);
         std::env::set_var("HOME", user_home);
-        let svc = SettingsServiceImpl::with_default_path().expect("default path");
-        for (var, value) in VARS.iter().zip(saved) {
-            match value {
-                Some(value) => std::env::set_var(var, value),
-                None => std::env::remove_var(var),
-            }
-        }
-        svc
+        SettingsServiceImpl::with_default_path().expect("default path")
     }
 
     /// A "real" home holding a `daemon.toml` with one OpenAI-compat config.
