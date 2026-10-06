@@ -117,7 +117,7 @@ fn ids(values: &[&str]) -> Vec<String> {
 #[tokio::test]
 async fn a_database_requiring_an_unsupported_extension_is_refused_untouched() {
     let dir = tempfile::tempdir().unwrap();
-    let path = database_requiring(dir.path(), "marked", &["pro"]).await;
+    let path = database_requiring(dir.path(), "marked", &["sync"]).await;
     let mgr = manager(dir.path(), &[]).await;
     let id = mgr.register(path.clone()).await.unwrap().id;
     let before = contents(path.parent().unwrap());
@@ -129,16 +129,16 @@ async fn a_database_requiring_an_unsupported_extension_is_refused_untouched() {
         .expect("the open is refused");
 
     let refusal = DatabaseRequiresExtensions::find_in(&err).expect("a required-extensions refusal");
-    assert_eq!(refusal.unsupported, ids(&["pro"]));
+    assert_eq!(refusal.unsupported, ids(&["sync"]));
     let status = refusal.to_status();
     assert_eq!(status.code(), tonic::Code::FailedPrecondition);
     assert_eq!(
         status.message(),
-        nodespace_proto::extension_names::refusal_message(&["pro"])
+        nodespace_proto::extension_names::refusal_message(&["sync"])
     );
     assert_eq!(
         nodespace_proto::requires_extension::unsupported_extensions(&status),
-        Some(ids(&["pro"]))
+        Some(ids(&["sync"]))
     );
     assert_eq!(
         contents(path.parent().unwrap()),
@@ -168,7 +168,7 @@ async fn a_singleton_retyped_to_a_subtype_is_still_refused() {
         )
         .await
         .unwrap();
-        require(&node_service, &["pro"]).await;
+        require(&node_service, &["sync"]).await;
         let settings = node_service.get_node(SETTINGS_ID).await.unwrap().unwrap();
         let retyped = node_service
             .update_node(
@@ -195,7 +195,7 @@ async fn a_singleton_retyped_to_a_subtype_is_still_refused() {
 
     assert_eq!(
         DatabaseRequiresExtensions::find_in(&err).map(|r| r.unsupported.clone()),
-        Some(ids(&["pro"]))
+        Some(ids(&["sync"]))
     );
 }
 
@@ -208,7 +208,7 @@ async fn a_requirement_only_in_the_wal_is_refused() {
     std::fs::create_dir_all(&db_dir).unwrap();
     let path = db_dir.join("db.sqlite");
     let (store, node_service) = open_store(&path).await;
-    require(&node_service, &["pro"]).await;
+    require(&node_service, &["sync"]).await;
     assert!(
         wal_of(&path).exists(),
         "the requirement is still in the WAL"
@@ -283,7 +283,7 @@ async fn a_supported_extension_opens_and_an_unsupported_one_is_refused() {
 #[tokio::test]
 async fn a_closed_never_opened_database_is_marked_in_the_listing() {
     let dir = tempfile::tempdir().unwrap();
-    let marked = database_requiring(dir.path(), "marked", &["pro"]).await;
+    let marked = database_requiring(dir.path(), "marked", &["sync"]).await;
     let plain = database_requiring(dir.path(), "plain", &[]).await;
     let mgr = manager(dir.path(), &[]).await;
     mgr.register(marked.clone()).await.unwrap();
@@ -299,7 +299,7 @@ async fn a_closed_never_opened_database_is_marked_in_the_listing() {
             .map(|d| (d.status, d.unsupported_extensions.clone()))
             .collect::<Vec<_>>(),
         vec![
-            (DatabaseStatus::RequiresExtension, ids(&["pro"])),
+            (DatabaseStatus::RequiresExtension, ids(&["sync"])),
             (DatabaseStatus::Closed, vec![]),
         ]
     );
@@ -313,7 +313,7 @@ async fn a_closed_never_opened_database_is_marked_in_the_listing() {
             entries[0].label,
             format!(
                 "marked — default · {}",
-                nodespace_proto::extension_names::requirement(&["pro"])
+                nodespace_proto::extension_names::requirement(&["sync"])
             )
         );
         assert_eq!(entries[1].label, "plain");

@@ -1669,20 +1669,20 @@ mod tests {
     fn a_refusal_maps_to_requires_extension_with_its_payload() {
         use nodespace_proto::extension_names::{refusal_message, DOWNLOAD_LABEL, DOWNLOAD_URL};
 
-        let err = status_to_command_error(refusal(&["pro"]));
+        let err = status_to_command_error(refusal(&["sync"]));
 
         assert_eq!(err.code, "REQUIRES_EXTENSION");
-        assert_eq!(err.message, refusal_message(&["pro"]));
+        assert_eq!(err.message, refusal_message(&["sync"]));
         assert!(err.conflict_data.is_none());
         assert_eq!(
             serde_json::to_value(&err).unwrap(),
             serde_json::json!({
-                "message": refusal_message(&["pro"]),
+                "message": refusal_message(&["sync"]),
                 "code": "REQUIRES_EXTENSION",
                 "details": "FailedPrecondition",
                 "requiresExtension": {
-                    "unsupportedExtensions": ["pro"],
-                    "message": refusal_message(&["pro"]),
+                    "unsupportedExtensions": ["sync"],
+                    "message": refusal_message(&["sync"]),
                     "downloadLabel": DOWNLOAD_LABEL,
                     "downloadUrl": DOWNLOAD_URL,
                 },
@@ -1707,8 +1707,8 @@ mod tests {
     #[test]
     fn status_message_renders_the_refusal_as_the_shared_message() {
         assert_eq!(
-            status_message(refusal(&["pro"])),
-            nodespace_proto::extension_names::refusal_message(&["pro"])
+            status_message(refusal(&["sync"])),
+            nodespace_proto::extension_names::refusal_message(&["sync"])
         );
         let other = tonic::Status::internal("boom");
         assert_eq!(status_message(other.clone()), other.to_string());

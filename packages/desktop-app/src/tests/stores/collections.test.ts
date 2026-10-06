@@ -950,9 +950,9 @@ describe('Collections Store', () => {
     });
 
     it('applies a non-content type to its subtypes', () => {
-      schemasStore.schemas = [{ id: 'pro-collection', extends: 'collection' } as SchemaNode];
+      schemasStore.schemas = [{ id: 'sync-collection', extends: 'collection' } as SchemaNode];
       try {
-        expect(isNonContentNodeType('pro-collection')).toBe(true);
+        expect(isNonContentNodeType('sync-collection')).toBe(true);
         expect(isNonContentNodeType('issue')).toBe(false);
       } finally {
         schemasStore.schemas = [];

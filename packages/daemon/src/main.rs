@@ -1289,7 +1289,7 @@ mod open_default_database_tests {
                     &settings.id,
                     settings.version,
                     NodeUpdate::new()
-                        .with_properties(serde_json::json!({ "required_extensions": ["pro"] })),
+                        .with_properties(serde_json::json!({ "required_extensions": ["sync"] })),
                 )
                 .await
                 .unwrap();

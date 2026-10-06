@@ -1,4 +1,4 @@
-// Covers the Pro-boundary hard ban (scripts/check-pro-boundary.ts). Pattern
+// Covers the sync-boundary hard ban (scripts/check-sync-boundary.ts). Pattern
 // tests run each marker's regex against tables of lines that must and must
 // not match. Discovery, allowlist and CLI tests build a throwaway git
 // repository per test, because the behavior under test is git's: what it
@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import * as checker from "./check-pro-boundary";
+import * as checker from "./check-sync-boundary";
 import {
   ALLOWLIST,
   EXCLUDED_FILES,
@@ -33,14 +33,14 @@ import {
   type LineMarkerName,
   type MarkerCounts,
   type MarkerHits,
-} from "./check-pro-boundary";
+} from "./check-sync-boundary";
 
 // Many tests spawn git or bun processes. Bun's 5s default per-test timeout is
 // tight on the loaded machines these tests run on (the merge gate shares them
 // with Rust builds), and a timeout here would eject an unrelated PR.
 setDefaultTimeout(30_000);
 
-const CHECKER_PATH = join(dirname(new URL(import.meta.url).pathname), "check-pro-boundary.ts");
+const CHECKER_PATH = join(dirname(new URL(import.meta.url).pathname), "check-sync-boundary.ts");
 const LINE_MARKERS = Object.keys(MARKERS) as LineMarkerName[];
 
 /** Joins fragments into one needle. */
@@ -51,14 +51,15 @@ const TEN = j("ten", "ant");
 const CMD = j("pro", "_tier"); // proCommands
 const CMD2 = j("pro", "_signout"); // proCommands
 const WORD = j("P", "ro"); // proWording
-const PRODUCT = j("NodeSpace", " ", "P", "ro"); // productName and proWording
+const RETIRED_PRODUCT = j("NodeSpace", " ", "P", "ro"); // productName and proWording
+const PRODUCT = j("NodeSpace", " ", "Sy", "nc"); // productName
 const BOUND = j("bound ", TEN); // cloudAccountWording
 const DAEMON = j("the ", WORD, " daemon"); // cloudWording and proWording
 
 let dir: string;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "check-pro-boundary-test-"));
+  dir = mkdtempSync(join(tmpdir(), "check-sync-boundary-test-"));
 });
 
 afterEach(() => {
@@ -340,13 +341,13 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
     noMatch: ["sync to disk", "cloudflare", "to cloudflare", "progated", j("iCloud", " sync")],
   },
   proWording: {
-    match: [j("// the ", WORD, " build"), PRODUCT, j(WORD, "-only"), WORD],
+    match: [j("// the ", WORD, " build"), RETIRED_PRODUCT, j(WORD, "-only"), WORD],
     noMatch: ["M2 Pro", "DeepSeek V4 Pro", "MacBook Pro", "iPad Pro", "iPhone Pro", "Protocol", "Provider", "pro", "NodeSpaceProduct"],
   },
   productName: {
-    match: [PRODUCT, j("This database needs ", PRODUCT), j(PRODUCT, "'s sync")],
+    match: [PRODUCT, RETIRED_PRODUCT, j("This database needs ", PRODUCT), j(PRODUCT, "'s sync")],
     // Case-sensitive and whole-word.
-    noMatch: ["NodeSpace prompt", "NodeSpace Protocol", "NodeSpace Product", "nodespace pro", "NodeSpaceProduct"],
+    noMatch: ["NodeSpace prompt", "NodeSpace Protocol", "NodeSpace Product", "nodespace pro", "NodeSpaceProduct", "NodeSpace Syncing", "nodespace sync"],
   },
 };
 
@@ -521,10 +522,10 @@ describe("listScannedFiles", () => {
 
   test("skips the checker's own two files", () => {
     initRepo();
-    write("scripts/check-pro-boundary.ts", `${CMD}\n`);
-    write("scripts/check-pro-boundary.test.ts", `${CMD}\n`);
+    write("scripts/check-sync-boundary.ts", `${CMD}\n`);
+    write("scripts/check-sync-boundary.test.ts", `${CMD}\n`);
     write("scripts/other.ts", "x\n");
-    expect(EXCLUDED_FILES).toEqual(["scripts/check-pro-boundary.ts", "scripts/check-pro-boundary.test.ts"]);
+    expect(EXCLUDED_FILES).toEqual(["scripts/check-sync-boundary.ts", "scripts/check-sync-boundary.test.ts"]);
     expect(listScannedFiles(dir)).toEqual(["scripts/other.ts"]);
   });
 
@@ -578,7 +579,7 @@ describe("countMarkers", () => {
   });
 
   test("one line can count under several markers, once each", () => {
-    write("packages/a/lib.rs", `invoke('${CMD}'); // the ${BOUND} sees ${PRODUCT}\n`);
+    write("packages/a/lib.rs", `invoke('${CMD}'); // the ${BOUND} sees ${RETIRED_PRODUCT}\n`);
     const { counts } = countMarkers(["packages/a/lib.rs"], dir);
     expect(counts.proCommands).toBe(1);
     expect(counts.cloudAccountWording).toBe(1);
@@ -630,7 +631,7 @@ describe("countMarkers — allowlist", () => {
   const entry: AllowlistEntry = { file: MODULE, exempt: PRODUCT };
 
   test("an entry removes its exact string from its file's lines before the markers are tested", () => {
-    write(MODULE, `  pro: "${PRODUCT}",\n`);
+    write(MODULE, `  sync: "${PRODUCT}",\n`);
     const { counts } = countMarkers([MODULE], dir, [entry]);
     expect(counts).toEqual(zeroCounts());
   });
@@ -659,10 +660,10 @@ describe("countMarkers — allowlist", () => {
   });
 
   test("without the entry the same file counts", () => {
-    write(MODULE, `  pro: "${PRODUCT}",\n`);
+    write(MODULE, `  sync: "${PRODUCT}",\n`);
     const { counts } = countMarkers([MODULE], dir, []);
     expect(counts.productName).toBe(1);
-    expect(counts.proWording).toBe(1);
+    expect(counts.proWording).toBe(0);
   });
 });
 
@@ -682,12 +683,12 @@ describe("allowlistProblems", () => {
   });
 
   test("a live entry has no problem", () => {
-    fixture({ [MODULE]: `pro: "${PRODUCT}",\n` });
+    fixture({ [MODULE]: `sync: "${PRODUCT}",\n` });
     expect(allowlistProblems([valid], dir)).toEqual([]);
   });
 
   test("several entries for the one file are allowed", () => {
-    fixture({ [MODULE]: `pro: "${PRODUCT}", // ${WORD}\n` });
+    fixture({ [MODULE]: `sync: "${PRODUCT}", // ${WORD}\n` });
     expect(allowlistProblems([valid, { file: MODULE, exempt: WORD }], dir)).toEqual([]);
   });
 
@@ -822,7 +823,7 @@ describe("changedFilesSinceMain", () => {
     initRepo();
     write("packages/a/x.ts", "x\n");
     expect(changedFilesSinceMain(dir)).toEqual([]);
-    const elsewhere = mkdtempSync(join(tmpdir(), "check-pro-boundary-nogit-"));
+    const elsewhere = mkdtempSync(join(tmpdir(), "check-sync-boundary-nogit-"));
     try {
       withEnv({ GIT_CEILING_DIRECTORIES: dirname(elsewhere) }, () => {
         expect(changedFilesSinceMain(elsewhere)).toEqual([]);
@@ -947,14 +948,14 @@ describe("CLI", () => {
     const source = readFileSync(CHECKER_PATH, "utf8");
     expect(source).toMatch(declaration);
     const replaced = `export const ALLOWLIST: readonly { file: string; exempt: string }[] = ${JSON.stringify(entries)};`;
-    writeFileSync(join(dir, "scripts/check-pro-boundary.ts"), source.replace(declaration, () => replaced));
+    writeFileSync(join(dir, "scripts/check-sync-boundary.ts"), source.replace(declaration, () => replaced));
     return runCopy(args);
   }
 
   function runCopy(args: readonly string[]): { status: number; stdout: string; stderr: string } {
     // The ceiling keeps git from finding a repository above a fixture that has none.
     const env = { ...gitEnv(), GIT_CEILING_DIRECTORIES: dirname(dir) };
-    const result = spawnSync("bun", ["run", join(dir, "scripts/check-pro-boundary.ts"), ...args], { encoding: "utf8", env });
+    const result = spawnSync("bun", ["run", join(dir, "scripts/check-sync-boundary.ts"), ...args], { encoding: "utf8", env });
     return { status: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
   }
 
@@ -970,7 +971,7 @@ describe("CLI", () => {
     const { status, stdout, stderr } = runInFixture();
     expect({ status, stderr }).toEqual({ status: 0, stderr: "" });
     for (const name of MARKER_NAMES) expect(stdout).toMatch(new RegExp(`^${name} +0$`, "m"));
-    expect(stdout).toContain("No Pro marker in core");
+    expect(stdout).toContain("No sync-boundary marker in core");
   });
 
   test("a single hit exits 1, listing the line under \"In files this branch changed\", with no paste block", () => {
@@ -994,9 +995,9 @@ describe("CLI", () => {
   test("an allowlisted string passes end to end, and every other hit in that file still fails", () => {
     repoWithOriginMain();
     const names = "packages/a/extension-names.ts";
-    write(names, `export const NAMES = { pro: "${PRODUCT}" };\n`);
+    write(names, `export const NAMES = { sync: "${PRODUCT}" };\n`);
     expect(runInFixtureWithAllowlist([{ file: names, exempt: PRODUCT }]).status).toBe(0);
-    write(names, `export const NAMES = { pro: "${PRODUCT}" };\n// ${DAEMON}\n`);
+    write(names, `export const NAMES = { sync: "${PRODUCT}" };\n// ${DAEMON}\n`);
     const { status, stderr } = runInFixtureWithAllowlist([{ file: names, exempt: PRODUCT }]);
     expect(status).toBe(1);
     expect(stderr).toContain(`${names}:2: // ${DAEMON}`);
@@ -1091,7 +1092,7 @@ describe("real-repo hard ban", () => {
   });
 
   // ADR-081 section 8: exactly one file, the display-name module for the
-  // Pro-database refusal, and in it only the product name.
+  // refusal of a sync database, and in it only the offering name.
   const NAMES_MODULE = "packages/proto/src/extension_names.rs";
 
   test("the allowlist is the one entry ADR-081 section 8 allows", () => {
@@ -1111,6 +1112,12 @@ describe("real-repo hard ban", () => {
     expect(hits.proWording).toEqual([`${NAMES_MODULE}:2: // ${WORD}`, `${NAMES_MODULE}:3: "${PRODUCT}" via ${DAEMON}`]);
     expect(hits.cloudWording).toEqual([`${NAMES_MODULE}:3: "${PRODUCT}" via ${DAEMON}`]);
     expect(hits.proCommands).toEqual([`${NAMES_MODULE}:4: fn ${CMD}() {}`]);
+  });
+
+  test("the retired product name stays banned in the display-name module", () => {
+    write(NAMES_MODULE, `"${PRODUCT}"\n"${RETIRED_PRODUCT}"\n`);
+    const { hits } = countMarkers([NAMES_MODULE], dir, ALLOWLIST);
+    expect(hits.productName).toEqual([`${NAMES_MODULE}:2: "${RETIRED_PRODUCT}"`]);
   });
 
   test("the entry applies to no other file", () => {

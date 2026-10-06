@@ -235,7 +235,7 @@ mod tests {
     fn a_refused_database_has_the_requires_extension_status() {
         let entry = to_entry(DatabaseInfo {
             status: DatabaseStatus::RequiresExtension as i32,
-            unsupported_extensions: vec!["pro".to_string()],
+            unsupported_extensions: vec!["sync".to_string()],
             ..Default::default()
         });
         assert_eq!(entry.status, "requires_extension");

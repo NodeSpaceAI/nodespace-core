@@ -484,7 +484,7 @@ mod tests {
     /// agent that is not ready, although both are FAILED_PRECONDITION.
     #[test]
     fn a_refusal_is_not_reported_as_an_agent_not_ready() {
-        let status = nodespace_proto::requires_extension::status(&["pro".to_string()]);
+        let status = nodespace_proto::requires_extension::status(&["sync".to_string()]);
         let err = status_to_command_error(status);
         assert_eq!(err.code, "REQUIRES_EXTENSION");
         assert!(err.requires_extension.is_some());

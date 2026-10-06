@@ -214,8 +214,8 @@ await run({
 // automated check such a change gets. In merge mode this runs before the machine
 // slot, so a hit fails in seconds instead of minutes into a gate run.
 await run({
-  label: "check-pro-boundary (ADR-081 code-boundary ratchet)",
-  command: "bun run scripts/check-pro-boundary.ts",
+  label: "check-sync-boundary (ADR-081 code-boundary ratchet)",
+  command: "bun run scripts/check-sync-boundary.ts",
   timeoutMs: 5 * MINUTE,
   nice: !merge,
 });
