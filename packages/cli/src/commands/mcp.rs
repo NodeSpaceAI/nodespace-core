@@ -44,12 +44,13 @@
 //! multiple external consumers" actually needs:
 //!
 //! - **Explicit user enablement.** [`run_server`] refuses to serve anything
-//!   -- not even `initialize` -- unless `~/.nodespace/daemon.toml`'s `[mcp]
-//!   enabled` flag is `true` (see [`enforce_enabled`]). The flag defaults to
-//!   `false` ([`nodespace_daemon::McpConfig`]) and is only ever set by
-//!   [`install`]/[`uninstall`] below, so a client pointed at this binary
-//!   (whether via the installer or a hand-edited config) cannot get a live
-//!   connection until a user has actually run `nodespace mcp install`.
+//!   -- not even `initialize` -- unless the selected database's
+//!   `external_tools_enabled` setting is `true` (see [`enforce_enabled`]).
+//!   The setting is a field of that database's settings node (ADR-095),
+//!   defaults to `false`, and is only ever set by [`install`]/[`uninstall`]
+//!   below, so a client pointed at this binary (whether via the installer or
+//!   a hand-edited config) cannot get a live connection to a database until
+//!   a user has actually run `nodespace mcp install` for it.
 //! - **Provenance marking.** Every `tools/list` entry carries
 //!   `_meta.source: "external"` ([`TOOL_SOURCE`]) -- see that constant's doc
 //!   comment for why this is the scoped analog of ADR-038's registry-node
@@ -62,9 +63,10 @@
 //! # Installer (`nodespace mcp install`/`uninstall`/`status`)
 //!
 //! Configures a bash-less MCP client (currently Claude Desktop) to launch
-//! this server and flips the enablement flag above -- the CLI-only
-//! equivalent, for this transport, of what `nodespace skill install` already
-//! does for the skill files. See [`install`], [`uninstall`], [`status`], and
+//! this server and flips the enablement setting above in the database the
+//! command is run for (the `--database` selection, else the default) -- the
+//! CLI-only equivalent, for this transport, of what `nodespace skill install`
+//! already does for the skill files. See [`install`], [`uninstall`], [`status`], and
 //! `packages/skill/src/mcp-installer.ts` (the client-config writer these
 //! subcommands shell out to, via the same compiled installer
 //! `commands::skill::resolve_installer` already resolves).
@@ -75,7 +77,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use nodespace_daemon::{read_mcp_settings, set_mcp_enabled, McpConfig};
+use nodespace_types::{DatabaseSettingsFields, DATABASE_SETTINGS_NODE_ID};
 use regex::Regex;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -381,14 +383,16 @@ fn find_unbounded_pattern_property(map: &serde_json::Map<String, Value>) -> Opti
 #[derive(Subcommand, Debug)]
 pub enum McpAction {
     /// Configure a detected bash-less MCP client (currently Claude Desktop)
-    /// to launch `nodespace mcp`, and enable the passthrough tool. Safe to
-    /// re-run.
+    /// to launch `nodespace mcp`, and enable the passthrough tool for the
+    /// selected database (`--database`, else the default). Safe to re-run.
+    /// The client launches the server for the default database, so install
+    /// for the database the client should use.
     Install(InstallArgs),
     /// Remove the MCP config this wrote from every detected client and
-    /// disable the passthrough tool again.
+    /// disable the passthrough tool again for the selected database.
     Uninstall,
-    /// Report whether the passthrough tool is enabled and which clients
-    /// currently have a config pointing at it.
+    /// Report whether the passthrough tool is enabled for the selected
+    /// database and which clients currently have a config pointing at it.
     Status,
 }
 
@@ -407,26 +411,95 @@ pub struct InstallArgs {
 pub async fn run(action: Option<McpAction>, sock: PathBuf, database: Option<String>) -> Result<()> {
     match action {
         None => run_server(sock, database).await,
-        Some(McpAction::Install(args)) => install(args).await,
-        Some(McpAction::Uninstall) => uninstall().await,
-        Some(McpAction::Status) => status().await,
+        Some(McpAction::Install(args)) => install(args, &sock, database.as_deref()).await,
+        Some(McpAction::Uninstall) => uninstall(&sock, database.as_deref()).await,
+        Some(McpAction::Status) => status(&sock, database.as_deref()).await,
     }
 }
 
-/// Resolves `<nodespace_dir>/daemon.toml` — the same file
-/// `nodespace_daemon::SettingsServiceImpl` reads/writes, through the same
-/// resolver, so `NODESPACE_HOME` isolates both — independently of the daemon:
-/// this whole file is a separate process with no gRPC connection to it, for
-/// the server loop ([`run_server`]'s enablement check) as much as for
-/// `install`/`uninstall`/`status` below.
-fn daemon_config_path() -> Result<PathBuf> {
-    Ok(nodespace_daemon::nodespace_dir()?.join("daemon.toml"))
+/// The database a `mcp` command acts on: a node client routed to it, and how
+/// to name it to the user.
+struct SettingsTarget {
+    client: crate::NodeClient,
+    label: String,
+}
+
+/// Route to the `--database` selection (else the daemon's default) and name
+/// it. The enablement setting is a field of that database's settings node
+/// (ADR-095), so every `mcp` command needs the daemon and says which database
+/// it read or changed.
+async fn connect_settings_target(sock: &Path, database: Option<&str>) -> Result<SettingsTarget> {
+    let (interceptor, id) = crate::resolve_routing(sock, database).await?;
+    let client = crate::connect(sock, interceptor).await?;
+    let label = match id {
+        Some(id) => {
+            let mut registry = crate::connect_database(sock).await?;
+            let listed = registry
+                .list(nodespace_daemon::nodespace::ListDatabasesRequest {})
+                .await
+                .context("List RPC failed")?
+                .into_inner();
+            match listed.databases.iter().find(|d| d.id == id) {
+                Some(info) => format!("database '{}' ({})", info.name, info.id),
+                None => format!("database {id}"),
+            }
+        }
+        None => "the daemon's default database".to_string(),
+    };
+    Ok(SettingsTarget { client, label })
+}
+
+/// The database's settings and the version of the node that holds them.
+async fn read_settings(client: &mut crate::NodeClient) -> Result<(DatabaseSettingsFields, i64)> {
+    let response = client
+        .get_node(nodespace_daemon::nodespace::GetNodeRequest {
+            node_id: DATABASE_SETTINGS_NODE_ID.to_string(),
+        })
+        .await
+        .context("GetNode RPC failed for the database's settings")?
+        .into_inner();
+    let node = response
+        .node_data
+        .context("the database's settings node is missing")?;
+    let properties: Value =
+        serde_json::from_str(&node.properties).context("parse the settings node's properties")?;
+    let settings = DatabaseSettingsFields::from_properties(&properties)
+        .context("read the database's settings")?;
+    Ok((settings, node.version))
+}
+
+/// Write `external_tools_enabled` through the settings node's typed update. A
+/// lost race with another settings write reads the winning version and tries
+/// once more.
+async fn set_external_tools_enabled(client: &mut crate::NodeClient, enabled: bool) -> Result<()> {
+    for attempt in 0..2 {
+        let (_, version) = read_settings(client).await?;
+        let result = client
+            .update_database_settings_node(
+                nodespace_daemon::nodespace::UpdateDatabaseSettingsNodeRequest {
+                    node_id: DATABASE_SETTINGS_NODE_ID.to_string(),
+                    version,
+                    update_json: json!({ "externalToolsEnabled": enabled }).to_string(),
+                },
+            )
+            .await;
+        match result {
+            Ok(_) => return Ok(()),
+            Err(status) if attempt == 0 && status.code() == tonic::Code::FailedPrecondition => {}
+            Err(status) => {
+                return Err(
+                    anyhow::Error::new(status).context("UpdateDatabaseSettingsNode RPC failed")
+                )
+            }
+        }
+    }
+    unreachable!("the second attempt returns its own result")
 }
 
 /// Prompt on a real terminal; auto-confirm (stating that the prompt was
 /// skipped, so the choice is visible in captured output) when stdin or
 /// stdout isn't one — mirrors `commands::skill::confirm_install`.
-fn confirm_enable() -> Result<bool> {
+fn confirm_enable(label: &str) -> Result<bool> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         println!(
             "No interactive terminal detected -- proceeding with install (pass --yes to silence \
@@ -436,9 +509,9 @@ fn confirm_enable() -> Result<bool> {
     }
 
     print!(
-        "Enable the NodeSpace MCP passthrough tool and configure detected clients (e.g. Claude \
-         Desktop) to launch `nodespace mcp`? A configured client will be able to run any \
-         `nodespace` CLI command through this connection. [Y/n] "
+        "Enable the NodeSpace MCP passthrough tool for {label} and configure detected clients \
+         (e.g. Claude Desktop) to launch `nodespace mcp`? A configured client will be able to \
+         run any `nodespace` CLI command through this connection. [Y/n] "
     );
     use std::io::Write;
     std::io::stdout().flush().ok();
@@ -457,8 +530,9 @@ fn confirm_enable() -> Result<bool> {
 /// This ordering is the explicit-user-enablement gate itself: a run that
 /// configures nothing (nothing detected, or every candidate skipped) leaves
 /// the tool disabled, exactly as it was before.
-async fn install(args: InstallArgs) -> Result<()> {
-    if !args.yes && !confirm_enable()? {
+async fn install(args: InstallArgs, sock: &Path, database: Option<&str>) -> Result<()> {
+    let mut target = connect_settings_target(sock, database).await?;
+    if !args.yes && !confirm_enable(&target.label)? {
         println!("Skipped.");
         return Ok(());
     }
@@ -481,11 +555,13 @@ async fn install(args: InstallArgs) -> Result<()> {
         return Ok(());
     }
 
-    let config_path = daemon_config_path()?;
-    set_mcp_enabled(&config_path, true)
+    set_external_tools_enabled(&mut target.client, true)
         .await
         .context("enable the NodeSpace MCP passthrough tool")?;
-    println!("The NodeSpace MCP passthrough tool is now enabled.");
+    println!(
+        "The NodeSpace MCP passthrough tool is now enabled for {}.",
+        target.label
+    );
     Ok(())
 }
 
@@ -493,7 +569,8 @@ async fn install(args: InstallArgs) -> Result<()> {
 /// passthrough tool afterward — unconditionally, not just when a config was
 /// actually found, so this is a reliable way back to "definitely disabled"
 /// regardless of what state the client configs are in.
-async fn uninstall() -> Result<()> {
+async fn uninstall(sock: &Path, database: Option<&str>) -> Result<()> {
+    let mut target = connect_settings_target(sock, database).await?;
     let installer = super::skill::resolve_installer()?;
     let outcome = super::skill::run_installer_subcommand(&installer, "mcp-uninstall")?;
 
@@ -508,25 +585,32 @@ async fn uninstall() -> Result<()> {
         }
     }
 
-    let config_path = daemon_config_path()?;
-    set_mcp_enabled(&config_path, false)
+    set_external_tools_enabled(&mut target.client, false)
         .await
         .context("disable the NodeSpace MCP passthrough tool")?;
-    println!("The NodeSpace MCP passthrough tool is now disabled.");
+    println!(
+        "The NodeSpace MCP passthrough tool is now disabled for {}.",
+        target.label
+    );
     Ok(())
 }
 
 /// Reports the enablement flag plus which detected clients currently have a
 /// config pointing at this server. Read-only — touches neither the flag nor
 /// any client config.
-async fn status() -> Result<()> {
-    let config_path = daemon_config_path()?;
-    let settings = read_mcp_settings(&config_path)
+async fn status(sock: &Path, database: Option<&str>) -> Result<()> {
+    let mut target = connect_settings_target(sock, database).await?;
+    let (settings, _) = read_settings(&mut target.client)
         .await
         .context("read NodeSpace MCP settings")?;
     println!(
-        "Passthrough tool enabled: {}",
-        if settings.enabled { "yes" } else { "no" }
+        "Passthrough tool enabled for {}: {}",
+        target.label,
+        if settings.external_tools_enabled {
+            "yes"
+        } else {
+            "no"
+        }
     );
 
     let installer = super::skill::resolve_installer()?;
@@ -545,14 +629,14 @@ async fn status() -> Result<()> {
 /// Trust Boundary, "Registration is gated… external tools require explicit
 /// user enablement"). Pure so the message is unit-testable without file I/O
 /// — [`run_server`] is the only caller that actually reads the setting.
-fn enforce_enabled(settings: &McpConfig) -> Result<()> {
-    if settings.enabled {
+fn enforce_enabled(settings: &DatabaseSettingsFields, label: &str) -> Result<()> {
+    if settings.external_tools_enabled {
         return Ok(());
     }
     anyhow::bail!(
-        "The NodeSpace MCP passthrough tool is not enabled. Run `nodespace mcp install` to \
-         enable it and configure a client (e.g. Claude Desktop), or `nodespace mcp status` to \
-         check the current state."
+        "The NodeSpace MCP passthrough tool is not enabled for {label}. Run `nodespace mcp \
+         install` to enable it and configure a client (e.g. Claude Desktop), or `nodespace mcp \
+         status` to check the current state."
     )
 }
 
@@ -575,11 +659,11 @@ fn enforce_enabled(settings: &McpConfig) -> Result<()> {
 /// client's first message at all rather than accepting a connection and
 /// gating individual calls.
 pub async fn run_server(sock: PathBuf, database: Option<String>) -> Result<()> {
-    let config_path = daemon_config_path()?;
-    let settings = read_mcp_settings(&config_path)
+    let mut target = connect_settings_target(&sock, database.as_deref()).await?;
+    let (settings, _) = read_settings(&mut target.client)
         .await
         .context("read NodeSpace MCP settings")?;
-    enforce_enabled(&settings)?;
+    enforce_enabled(&settings, &target.label)?;
 
     let exe = std::env::current_exe().context("resolve the nodespace executable's own path")?;
 
@@ -1438,16 +1522,21 @@ mod tests {
 
     #[test]
     fn enforce_enabled_rejects_a_disabled_config_with_an_actionable_message() {
-        let err =
-            enforce_enabled(&McpConfig { enabled: false }).expect_err("disabled must be rejected");
+        let err = enforce_enabled(&DatabaseSettingsFields::default(), "database 'work'")
+            .expect_err("disabled must be rejected");
         let msg = err.to_string();
         assert!(msg.contains("not enabled"), "got: {msg}");
+        assert!(msg.contains("database 'work'"), "got: {msg}");
         assert!(msg.contains("nodespace mcp install"), "got: {msg}");
     }
 
     #[test]
     fn enforce_enabled_accepts_an_enabled_config() {
-        assert!(enforce_enabled(&McpConfig { enabled: true }).is_ok());
+        let enabled = DatabaseSettingsFields {
+            external_tools_enabled: true,
+            ..Default::default()
+        };
+        assert!(enforce_enabled(&enabled, "database 'work'").is_ok());
     }
 
     #[test]

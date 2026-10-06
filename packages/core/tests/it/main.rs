@@ -26,6 +26,7 @@ mod core_task_link_relationships_test;
 mod core_type_registry_test;
 mod create_node_property_persistence_test;
 mod create_schema_result_reflects_persisted_state_test;
+mod database_settings_fields_test;
 mod default_scope_schema_search_live_test;
 mod derived_attributes_test;
 mod embedding_service_test;

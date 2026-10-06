@@ -45,7 +45,11 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'role', wire: 'role' }
   ],
   'database-settings': [
-    { storage: 'required_extensions', wire: 'requiredExtensions', structured: 'array' }
+    { storage: 'required_extensions', wire: 'requiredExtensions', structured: 'array' },
+    { storage: 'capture_enabled', wire: 'captureEnabled', structured: 'boolean' },
+    { storage: 'capture_content', wire: 'captureContent' },
+    { storage: 'external_tools_enabled', wire: 'externalToolsEnabled', structured: 'boolean' },
+    { storage: 'providers', wire: 'providers', structured: 'array' }
   ],
   query: [
     { storage: 'target_type', wire: 'targetType' },
@@ -111,7 +115,13 @@ export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string
   plan: { planStatus: 'draft' },
   decision: { decisionStatus: 'proposed' },
   skill: { maxIterations: 2, role: 'tool', toolWhitelist: [], useFor: '' },
-  'database-settings': { requiredExtensions: [] },
+  'database-settings': {
+    captureContent: 'metadata_only',
+    captureEnabled: false,
+    externalToolsEnabled: false,
+    providers: [],
+    requiredExtensions: []
+  },
   query: { executionCount: 0, filters: [], generatedBy: 'user', targetType: '*' },
   play: { enabled: true, rules: [] },
   'ai-chat-native': { agent: '', contextTokens: 0, provider: 'native', turnStatus: 'idle' },

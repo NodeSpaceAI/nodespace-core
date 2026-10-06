@@ -26,7 +26,7 @@ use super::extensions::DaemonExtensions;
 use super::terminal_summary::LocalModelSummarizer;
 use super::{
     AgentSessionHandler, EmbeddingReady, EmbeddingsServiceImpl, ImportServiceImpl,
-    LocalAgentServiceImpl, NodeServiceImpl, SettingsServiceImpl, SharedLocalAgent,
+    LocalAgentServiceImpl, NodeServiceImpl, SharedLocalAgent,
 };
 
 /// The process-global build context every per-database service set needs
@@ -191,12 +191,10 @@ pub type SubtreeGateFactory =
 
 /// Process-global services shared across every database the daemon serves
 /// (ADR-053: one daemon, multiple local databases). Built once by
-/// [`build_shared_services`]. `settings` is registered directly on the router;
-/// `context` is what each per-database service set is built from and what the
+/// [`build_shared_services`]. `context` is what each per-database service set
+/// is built from and what the
 /// [`crate::services::database_manager::DatabaseManager`] caches.
 pub struct SharedServices {
-    /// Daemon-wide settings (`daemon.toml`); registered once on the router.
-    pub settings: SettingsServiceImpl,
     /// The build context handed to every per-database service set.
     pub context: SharedContext,
 }
@@ -279,7 +277,7 @@ impl DatabaseServices {
 }
 
 /// Build the process-global services shared across every database (ADR-053):
-/// the PTY manager, daemon settings, and the single embedding model. The model
+/// the PTY manager and the single embedding model. The model
 /// is loaded once in the background and published over a watch channel so each
 /// database's embedding wiring can await it. Returns the shared set plus the
 /// model-load task handle (`None` when no model file exists).
@@ -299,8 +297,6 @@ pub async fn build_shared_services(
     extensions.check()?;
 
     let pty_manager = Arc::new(PtySessionManager::new());
-    let settings = SettingsServiceImpl::with_default_path()
-        .map_err(|e| anyhow::anyhow!("Failed to initialize SettingsService: {}", e))?;
 
     // One embedding model backs every database. Determine the path now (cheap);
     // if absent, no task spawns and the channel stays closed so per-database
@@ -324,17 +320,13 @@ pub async fn build_shared_services(
     let scheduler = Arc::new(EmbeddingScheduler::new());
 
     // One chat engine and model catalog back every database, for the same
-    // reason the embedding model does: it is a single machine resource.
-    // Resolved through `nodespace_dir` so provider configs follow
-    // NODESPACE_HOME exactly as the database and the registry do — reading the
-    // real home instead let an isolated daemon serving a temp database take its
-    // OpenAI-compat provider configs from (and write probe verdicts into) the
-    // user's own `~/.nodespace`.
-    let local_agent = SharedLocalAgent::new(crate::nodespace_dir()?.join("daemon.toml"));
+    // reason the embedding model does: it is a single machine resource. The
+    // OpenAI-compatible providers are not shared: each database's own settings
+    // node holds its own (ADR-095).
+    let local_agent = SharedLocalAgent::new();
 
     Ok((
         SharedServices {
-            settings,
             context: SharedContext {
                 pty_manager,
                 model: model_rx,
@@ -486,15 +478,9 @@ pub async fn build_database_services(
         )
     });
 
-    // Resolved through `nodespace_dir` so it follows NODESPACE_HOME, exactly as
-    // the database and the ADR-053 registry do. Reading it from the real home
-    // instead left an isolated daemon serving a temp database while taking its
-    // OpenAI-compat provider configs from the user's own `~/.nodespace`.
-    let capture_config_path = crate::nodespace_dir()?.join("daemon.toml");
     let agent_session = AgentSessionHandler::new(
         shared.pty_manager.clone(),
         node_service.clone(),
-        capture_config_path,
         Arc::new(LocalModelSummarizer::new(shared.local_agent.clone())),
     );
 
@@ -633,7 +619,6 @@ async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServi
     let agent_session = AgentSessionHandler::new(
         shared.pty_manager.clone(),
         node_service.clone(),
-        crate::nodespace_dir()?.join("daemon.toml"),
         Arc::new(LocalModelSummarizer::new(shared.local_agent.clone())),
     );
     let import = ImportServiceImpl::new(node_service.clone());
@@ -725,7 +710,7 @@ async fn seed_agent_nodes(node_service: &mut CoreNodeService) {
 ///
 /// `NODESPACED_MODEL_PATH` when set, else `models/` under
 /// [`crate::nodespace_dir`], so the model follows `NODESPACE_HOME` exactly as
-/// the database, the registry and `daemon.toml` do. An isolated daemon finds no
+/// the database and the registry do. An isolated daemon finds no
 /// model unless one is placed under its own home or named explicitly. Reading
 /// the real home instead made every isolated run load the user's model and
 /// start GPU work nobody asked it for. A run that wants the user's model (an

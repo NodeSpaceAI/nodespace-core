@@ -325,6 +325,7 @@ async fn a_database_settings_update_writes_and_clears_required_extensions() {
             settings.version,
             DatabaseSettingsNodeUpdate {
                 required_extensions: Some(Some(vec!["fixture".to_string()])),
+                ..Default::default()
             },
         )
         .await
@@ -344,6 +345,7 @@ async fn a_database_settings_update_writes_and_clears_required_extensions() {
             updated.version,
             DatabaseSettingsNodeUpdate {
                 required_extensions: Some(None),
+                ..Default::default()
             },
         )
         .await
@@ -361,6 +363,7 @@ async fn a_database_settings_update_conflicts_on_a_stale_version_and_refuses_ano
     let settings = stored(&svc, SETTINGS_ID).await;
     let update = || DatabaseSettingsNodeUpdate {
         required_extensions: Some(Some(vec!["fixture".to_string()])),
+        ..Default::default()
     };
 
     svc.update_database_settings_node(SETTINGS_ID, settings.version, update())

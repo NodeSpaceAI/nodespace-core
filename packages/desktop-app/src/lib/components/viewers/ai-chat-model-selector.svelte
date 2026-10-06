@@ -34,15 +34,13 @@
   import {
     chatModelList,
     getSystemRamGb,
-    getOpenAiCompatConfigsFromDaemon,
     type ChatModelEntry,
   } from '$lib/services/tauri-commands';
   import { AGENT_EVENTS } from '$lib/types/agent-types';
-  import { getOpenAiConfigs } from '$lib/stores/settings.svelte';
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { addTab, navigationStore, setActiveTab } from '$lib/stores/navigation.svelte';
   import { createLogger } from '$lib/utils/logger';
-  import type { OpenAiCompatConfig } from '$lib/types/ai-chat-node';
+  import type { ProviderConfig } from '$lib/types';
   import { agentStore, isLocalAgent } from '$lib/stores/agent-store.svelte';
 
   const log = createLogger('AiChatModelSelector');
@@ -68,7 +66,7 @@
   // --- Async data ---
   let models = $state<ChatModelEntry[]>([]);
   let ramGb = $state(0);
-  let openAiConfigs = $state<OpenAiCompatConfig[]>([]);
+  let openAiConfigs = $state<ProviderConfig[]>([]);
   let loading = $state(true);
 
   // Live download tracking (model_id → bytes)
@@ -118,24 +116,17 @@
 
   async function refresh(): Promise<void> {
     try {
-      const [list, ram, daemonConfigs] = await Promise.all([
+      const [list, ram, providers] = await Promise.all([
         chatModelList(),
         getSystemRamGb(),
-        getOpenAiCompatConfigsFromDaemon().catch((err) => {
-          log.warn('Failed to load OpenAI-compat configs from daemon, using local cache', err);
+        settingsStore.loadProviders().catch((err) => {
+          log.warn("Failed to load the database's providers", err);
           return null;
         }),
       ]);
       models = list;
       ramGb = ram;
-      openAiConfigs =
-        daemonConfigs?.map((c) => ({
-          id: c.id,
-          name: c.name,
-          baseUrl: c.baseUrl,
-          apiKey: c.apiKey,
-          model: c.model,
-        })) ?? getOpenAiConfigs();
+      openAiConfigs = providers ?? settingsStore.openAiConfigs;
     } catch (err) {
       log.error('Failed to load model list', err);
     } finally {

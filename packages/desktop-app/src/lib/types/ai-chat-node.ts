@@ -38,14 +38,6 @@ export type {
   AiChatTurnStatus
 } from './generated';
 
-export interface OpenAiCompatConfig {
-  id: string; // uuid, generated client-side
-  name: string; // user-provided display name (cosmetic only, never sent to the endpoint)
-  baseUrl: string; // e.g. "https://api.openai.com/v1"
-  apiKey: string; // stored on the daemon (~/.nodespace/daemon.toml, 0600)
-  model: string; // wire-protocol "model" field, e.g. "gpt-4o" — required by the real OpenAI API
-}
-
 /** Any chat node. */
 export type AiChatNode = AiChatNativeNode | AiChatPtyNode;
 

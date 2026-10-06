@@ -22,8 +22,8 @@ use nodespace_daemon::nodespace::{
 };
 use nodespace_daemon::{
     build_base_router, unrouted_services_if_default_refused, BaseServices, DatabaseManager,
-    DatabaseServiceClient, DatabaseServiceImpl, DbManagerLayer, NodeServiceClient,
-    SettingsServiceImpl, SharedContext, DATABASE_ID_HEADER,
+    DatabaseServiceClient, DatabaseServiceImpl, DbManagerLayer, NodeServiceClient, SharedContext,
+    DATABASE_ID_HEADER,
 };
 use nodespace_nlp_engine::EmbeddingService;
 use nodespace_proto::{extension_names, requires_extension};
@@ -33,7 +33,7 @@ use tokio::sync::{oneshot, watch};
 use tonic::metadata::MetadataValue;
 use tonic::{Code, Request};
 
-fn test_context(home: &Path) -> SharedContext {
+fn test_context() -> SharedContext {
     let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
     SharedContext {
         pty_manager: Arc::new(PtySessionManager::new()),
@@ -42,7 +42,7 @@ fn test_context(home: &Path) -> SharedContext {
         model_load_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
-        local_agent: nodespace_daemon::SharedLocalAgent::new(home.join("daemon.toml")),
+        local_agent: nodespace_daemon::SharedLocalAgent::new(),
         extensions: nodespace_daemon::DaemonExtensions::none(),
     }
 }
@@ -119,7 +119,7 @@ fn text_node(content: &str) -> CreateNodeRequest {
 async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
     let tempdir = TempDir::new().unwrap();
     let home = tempdir.path();
-    let context = test_context(home);
+    let context = test_context();
     let default_path = database_requiring(home, "default", &["sync"]).await;
     let default_dir = default_path.parent().unwrap().to_path_buf();
     let other_path = database_requiring(home, "other", &[]).await;
@@ -154,7 +154,6 @@ async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
         node_service: bundle.node_service_grpc.clone(),
         agent_session: bundle.agent_session.clone(),
         import: bundle.import.clone(),
-        settings: SettingsServiceImpl::new(home.join("daemon.toml")),
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),

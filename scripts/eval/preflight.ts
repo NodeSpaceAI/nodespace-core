@@ -596,9 +596,10 @@ export function preflight(
         `  This eval creates schemas, chat nodes, and instances; running it here would ` +
         `write test data into live user data.`,
       `Isolate the daemon with NODESPACE_HOME (not NODESPACED_DB_PATH, which the\n` +
-        `  database registry overrides). The embedding model and daemon.toml (API\n` +
-        `  keys) follow NODESPACE_HOME too, so the isolated daemon holds no provider\n` +
-        `  keys. Name your own model copy for skill retrieval:\n` +
+        `  database registry overrides). The embedding model follows NODESPACE_HOME\n` +
+        `  too, and provider settings (API keys) are fields of each database's own\n` +
+        `  settings node, so the isolated daemon's database holds no provider keys.\n` +
+        `  Name your own model copy for skill retrieval:\n` +
         `    NODESPACE_HOME=/tmp/nodespaced-test \\\n` +
         `      NODESPACED_MODEL_PATH=$HOME/.nodespace/models/nomic-embed-text-v1.5.Q8_0.gguf \\\n` +
         `      NODESPACED_SOCKET=${env.socket} target/release/nodespaced\n` +

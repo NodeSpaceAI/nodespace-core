@@ -67,7 +67,7 @@ pub use seed_updates::{
 /// `"database-settings"`, so the instance must use a distinct reserved id to
 /// avoid colliding with it. Seeding and the singleton idempotency guard both
 /// key off this constant so the node is deterministic and created at most once.
-pub(crate) const DATABASE_SETTINGS_NODE_ID: &str = "database-settings-singleton";
+pub(crate) const DATABASE_SETTINGS_NODE_ID: &str = nodespace_types::DATABASE_SETTINGS_NODE_ID;
 
 /// Compute property changes between pre-mutation and post-mutation node properties
 ///

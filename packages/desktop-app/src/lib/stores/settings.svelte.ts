@@ -1,14 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { createLogger } from '$lib/utils/logger';
-import type { OpenAiCompatConfig, AiChatProvider } from '$lib/types/ai-chat-node';
-import {
-  getOpenAiCompatConfigsFromDaemon,
-  setOpenAiCompatConfigsOnDaemon,
-} from '$lib/services/tauri-commands';
+import type { AiChatProvider } from '$lib/types/ai-chat-node';
+import type { ProviderConfig } from '$lib/types';
+import { readDatabaseSettings, updateDatabaseSettings } from '$lib/services/database-settings';
 
 const log = createLogger('SettingsStore');
 
-export type { OpenAiCompatConfig };
+export type { ProviderConfig };
 
 const LOCAL_STORAGE_KEY = 'nodespace-settings';
 
@@ -24,21 +22,21 @@ export interface AppSettings {
     renderMarkdown: boolean;
     theme: string;
   };
-  openAiConfigs: OpenAiCompatConfig[];
   defaultModelSelection: ModelSelection | null;
 }
 
 // ---------------------------------------------------------------------------
 // localStorage helpers for client-side settings
 //
-// OpenAI-compat configs are persisted on the daemon (~/.nodespace/daemon.toml,
-// via SettingsService) — that is the source of truth the backend reads by
-// UUID when loading an "openai-compat:<uuid>" model. localStorage is kept as
-// a synchronous read cache only, refreshed from the daemon on loadSettings().
+// Only the app's own preference lives here: the default model choice. The
+// OpenAI-compatible providers are a field of the database's settings node
+// (ADR-095) — the source of truth the daemon reads by UUID when loading an
+// "openai-compat:<uuid>" model. They are held in memory for the database the
+// window shows, never copied to localStorage, where they would outlive a
+// switch to another database and carry its API keys with them.
 // ---------------------------------------------------------------------------
 
 interface LocalPersistedSettings {
-  openAiConfigs?: OpenAiCompatConfig[];
   defaultModelSelection?: ModelSelection | null;
 }
 
@@ -66,36 +64,25 @@ function writeLocalSettings(patch: LocalPersistedSettings): void {
 class SettingsStore {
   appSettings = $state<AppSettings | null>(null);
 
+  /** The providers of the database this window shows, as last read from it. */
+  openAiConfigs = $state<ProviderConfig[]>([]);
+
   /** Set before opening the settings tab to pre-select a category (e.g. 'integrations'). */
   initialCategory = $state<string | null>(null);
 
   async loadSettings(): Promise<void> {
     try {
-      const settings =
-        await invoke<Omit<AppSettings, 'openAiConfigs' | 'defaultModelSelection'>>('get_settings');
+      const settings = await invoke<Omit<AppSettings, 'defaultModelSelection'>>('get_settings');
       const local = readLocalSettings();
 
-      // Refresh the OpenAI-compat cache from the daemon (source of truth).
-      // Falls back to the local cache if the daemon call fails (e.g. offline
-      // dev-proxy mode) so the UI still has something to show.
-      let openAiConfigs = local.openAiConfigs ?? [];
       try {
-        const daemonConfigs = await getOpenAiCompatConfigsFromDaemon();
-        openAiConfigs = daemonConfigs.map((c) => ({
-          id: c.id,
-          name: c.name,
-          baseUrl: c.baseUrl,
-          apiKey: c.apiKey,
-          model: c.model,
-        }));
-        writeLocalSettings({ openAiConfigs });
+        await this.loadProviders();
       } catch (err) {
-        log.warn('Failed to load OpenAI-compat configs from daemon, using local cache', err);
+        log.warn("Failed to load the database's providers", err);
       }
 
       this.appSettings = {
         ...settings,
-        openAiConfigs,
         defaultModelSelection: local.defaultModelSelection ?? null,
       };
     } catch (err) {
@@ -126,29 +113,24 @@ class SettingsStore {
     }
   }
 
+  /** Read the database's providers (the source of truth) into the store. */
+  async loadProviders(): Promise<ProviderConfig[]> {
+    const settings = await readDatabaseSettings();
+    this.openAiConfigs = settings.providers;
+    return settings.providers;
+  }
+
   /**
-   * Persist the full set of OpenAI-compat configs. Writes to the local cache
-   * immediately (so synchronous getOpenAiConfigs() readers see the change),
-   * then pushes to the daemon — the backend-accessible source of truth used
-   * to resolve "openai-compat:<uuid>" models.
+   * Replace the database's providers through the settings node's typed
+   * update. The store holds what the node holds afterward: the verdicts the
+   * daemon keeps or drops are its own to decide.
    */
-  async saveOpenAiConfigs(configs: OpenAiCompatConfig[]): Promise<void> {
-    writeLocalSettings({ openAiConfigs: configs });
-    if (this.appSettings) {
-      this.appSettings = { ...this.appSettings, openAiConfigs: configs };
-    }
+  async saveProviders(providers: ProviderConfig[]): Promise<void> {
     try {
-      await setOpenAiCompatConfigsOnDaemon(
-        configs.map((c) => ({
-          id: c.id,
-          name: c.name,
-          baseUrl: c.baseUrl,
-          apiKey: c.apiKey,
-          model: c.model,
-        }))
-      );
+      const node = await updateDatabaseSettings({ providers });
+      this.openAiConfigs = node.providers;
     } catch (err) {
-      log.error('Failed to persist OpenAI-compat configs to daemon:', err);
+      log.error("Failed to save the database's providers:", err);
     }
   }
 
@@ -166,12 +148,8 @@ export const settingsStore = new SettingsStore();
 // Free-function delegators / helpers (keep existing callers working unchanged)
 // ---------------------------------------------------------------------------
 
-export function getOpenAiConfigs(): OpenAiCompatConfig[] {
-  return readLocalSettings().openAiConfigs ?? [];
-}
-
-export function saveOpenAiConfigs(configs: OpenAiCompatConfig[]): Promise<void> {
-  return settingsStore.saveOpenAiConfigs(configs);
+export function getOpenAiConfigs(): ProviderConfig[] {
+  return settingsStore.openAiConfigs;
 }
 
 export function getDefaultModelSelection(): ModelSelection | null {

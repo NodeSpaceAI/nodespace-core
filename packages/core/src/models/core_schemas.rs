@@ -40,7 +40,7 @@ use crate::models::{
     CoreNodeType, DecisionStatus, NodeEnvelope, PlanStatus, SchemaNode, SpecStatus,
 };
 use chrono::Utc;
-use nodespace_types::RelationshipPath;
+use nodespace_types::{CaptureContent, RelationshipPath};
 
 /// The `database-settings` field that lists the extensions a reader needs in
 /// order to read a database correctly (ADR-083 §2).
@@ -55,6 +55,46 @@ fn enum_values<T: Copy>(
     all.iter()
         .map(|(value, label)| EnumValue::new(as_str(*value).to_string(), label.to_string()))
         .collect()
+}
+
+/// The shared shape of a `database-settings` field: a core field that is
+/// optional, which each declaration fills in.
+fn settings_field() -> SchemaField {
+    SchemaField {
+        name: String::new(),
+        friendly_name: String::new(),
+        field_type: crate::models::SchemaFieldType::Text,
+        local_only: false,
+        protection: SchemaProtectionLevel::Core,
+        core_values: None,
+        user_values: None,
+        indexed: false,
+        required: Some(false),
+        extensible: None,
+        default: None,
+        description: None,
+        item_type: None,
+        fields: None,
+        item_fields: None,
+        unique: None,
+        unique_case_insensitive: None,
+    }
+}
+
+/// A text field of a provider config; a `required` one must be present.
+fn provider_field(
+    name: &str,
+    friendly_name: &str,
+    description: &str,
+    required: bool,
+) -> SchemaField {
+    SchemaField {
+        name: name.to_string(),
+        friendly_name: friendly_name.to_string(),
+        description: Some(description.to_string()),
+        required: Some(required),
+        ..settings_field()
+    }
 }
 
 /// An optional free-text field a user writes.
@@ -2023,12 +2063,12 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             properties_header_summary_template: None,
             context_paths: Vec::new(),
         },
-        // Database Settings schema — the singleton anchor for database-level
-        // configuration and for the owner `has_role` edge (person → this node).
-        // Its one field, `required_extensions`, names the extensions a reader
-        // needs; the daemon refuses to open a database that lists one it does
-        // not support (ADR-083 §2). It lives in this base bucket, so it stays
-        // in place when the singleton is retyped to a subtype (ADR-078).
+        // Database Settings schema — the singleton anchor for the database's
+        // own settings (ADR-095) and for the owner `has_role` edge (person →
+        // this node). Every setting the daemon acts on is a field here, read
+        // and written in the database a request is routed to. All fields live
+        // in this base bucket, so they stay in place when the singleton is
+        // retyped to a subtype (ADR-078, ADR-083 §2).
         SchemaNode {
             envelope: envelope("database-settings", "Database Settings"),
             extends: None,
@@ -2037,30 +2077,104 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             children: Default::default(),
             parent: Default::default(),
             schema_version: 1,
-            fields: vec![SchemaField {
-                name: REQUIRED_EXTENSIONS_FIELD.to_string(),
-                friendly_name: "Required extensions".to_string(),
-                field_type: crate::models::SchemaFieldType::Array,
-                local_only: false,
-                protection: SchemaProtectionLevel::Core,
-                core_values: None,
-                user_values: None,
-                indexed: false,
-                required: Some(false),
-                extensible: None,
-                default: Some(serde_json::json!([])),
-                description: Some(
-                    "Ids of the extensions a reader needs in order to read this database \
-                     correctly. Empty by default. Core assigns no meaning to any entry; it \
-                     refuses to open a database that lists an extension it does not support."
-                        .to_string(),
-                ),
-                item_type: Some(crate::models::SchemaFieldType::Text),
-                fields: None,
-                item_fields: None,
-                unique: None,
-                unique_case_insensitive: None,
-            }],
+            fields: vec![
+                SchemaField {
+                    name: REQUIRED_EXTENSIONS_FIELD.to_string(),
+                    friendly_name: "Required extensions".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
+                    description: Some(
+                        "Ids of the extensions a reader needs in order to read this database \
+                         correctly. Empty by default. Core assigns no meaning to any entry; it \
+                         refuses to open a database that lists an extension it does not support."
+                            .to_string(),
+                    ),
+                    item_type: Some(crate::models::SchemaFieldType::Text),
+                    default: Some(serde_json::json!([])),
+                    ..settings_field()
+                },
+                SchemaField {
+                    name: "capture_enabled".to_string(),
+                    friendly_name: "Capture sessions".to_string(),
+                    field_type: crate::models::SchemaFieldType::Boolean,
+                    default: Some(serde_json::json!(false)),
+                    description: Some(
+                        "Whether a finished terminal session is saved to its chat node."
+                            .to_string(),
+                    ),
+                    ..settings_field()
+                },
+                SchemaField {
+                    name: "capture_content".to_string(),
+                    friendly_name: "Capture content".to_string(),
+                    field_type: crate::models::SchemaFieldType::Enum,
+                    core_values: Some(enum_values(&CaptureContent::ALL, CaptureContent::as_str)),
+                    default: Some(serde_json::json!(CaptureContent::MetadataOnly.as_str())),
+                    description: Some("How much of a captured session is saved.".to_string()),
+                    ..settings_field()
+                },
+                SchemaField {
+                    name: "external_tools_enabled".to_string(),
+                    friendly_name: "External tools".to_string(),
+                    field_type: crate::models::SchemaFieldType::Boolean,
+                    default: Some(serde_json::json!(false)),
+                    description: Some(
+                        "Whether external tool clients may use this database through \
+                         `nodespace mcp`. Off until a user turns it on."
+                            .to_string(),
+                    ),
+                    ..settings_field()
+                },
+                SchemaField {
+                    name: "providers".to_string(),
+                    friendly_name: "Providers".to_string(),
+                    field_type: crate::models::SchemaFieldType::Array,
+                    item_type: Some(crate::models::SchemaFieldType::Object),
+                    item_fields: Some(vec![
+                        provider_field(
+                            "id",
+                            "Id",
+                            "A UUID. Chats refer to the provider as `openai-compat:<id>`.",
+                            true,
+                        ),
+                        provider_field("name", "Name", "Display name in the model selector.", true),
+                        provider_field(
+                            "base_url",
+                            "Base URL",
+                            "Requests go to `<base_url>/chat/completions`.",
+                            true,
+                        ),
+                        provider_field(
+                            "api_key",
+                            "API key",
+                            "Sent as a bearer token. Empty when the endpoint needs none.",
+                            false,
+                        ),
+                        provider_field(
+                            "model",
+                            "Model",
+                            "The `model` field sent to the endpoint.",
+                            false,
+                        ),
+                        SchemaField {
+                            name: "routing_ok".to_string(),
+                            friendly_name: "Routing verdicts".to_string(),
+                            field_type: crate::models::SchemaFieldType::Object,
+                            description: Some(
+                                "The routing probe's verdict per served model. Dropped when the \
+                                 endpoint or model changes."
+                                    .to_string(),
+                            ),
+                            ..settings_field()
+                        },
+                    ]),
+                    default: Some(serde_json::json!([])),
+                    description: Some(
+                        "The OpenAI-compatible providers this database has configured."
+                            .to_string(),
+                    ),
+                    ..settings_field()
+                },
+            ],
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
@@ -3267,10 +3381,9 @@ mod tests {
     }
 
     #[test]
-    fn test_database_settings_schema_declares_only_required_extensions() {
-        // database-settings is a Core singleton anchor. Its only field is the
-        // neutral list of extensions a database requires (ADR-083 §2): a list
-        // of strings, empty by default.
+    fn test_database_settings_schema_declares_the_settings_fields() {
+        // database-settings is a Core singleton anchor. Its fields are the
+        // settings the daemon acts on (ADR-095), all in the base bucket.
         let schemas = get_core_schemas();
         let settings = schemas
             .iter()
@@ -3284,13 +3397,42 @@ mod tests {
                 .iter()
                 .map(|f| f.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["required_extensions"]
+            vec![
+                "required_extensions",
+                "capture_enabled",
+                "capture_content",
+                "external_tools_enabled",
+                "providers"
+            ]
         );
-        let field = &settings.fields[0];
-        assert_eq!(field.field_type, crate::models::SchemaFieldType::Array);
-        assert_eq!(field.item_type, Some(crate::models::SchemaFieldType::Text));
-        assert_eq!(field.default, Some(serde_json::json!([])));
-        assert_eq!(field.required, Some(false));
+        let field = |name: &str| settings.fields.iter().find(|f| f.name == name).unwrap();
+        assert_eq!(
+            field("required_extensions").item_type,
+            Some(crate::models::SchemaFieldType::Text)
+        );
+        assert_eq!(
+            field("capture_enabled").default,
+            Some(serde_json::json!(false))
+        );
+        assert_eq!(
+            field("capture_content").default,
+            Some(serde_json::json!("metadata_only"))
+        );
+        assert_eq!(
+            field("external_tools_enabled").default,
+            Some(serde_json::json!(false))
+        );
+        assert_eq!(field("providers").default, Some(serde_json::json!([])));
+        assert_eq!(
+            field("providers")
+                .item_fields
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["id", "name", "base_url", "api_key", "model", "routing_ok"]
+        );
     }
 
     #[test]

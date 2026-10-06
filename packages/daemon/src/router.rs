@@ -16,7 +16,6 @@ use crate::{
     AgentSessionHandler, AgentSessionServiceServer, DatabaseServiceImpl, DatabaseServiceServer,
     EmbeddingsServiceImpl, EmbeddingsServiceServer, ImportServiceImpl, ImportServiceServer,
     LocalAgentServiceImpl, LocalAgentServiceServer, NodeServiceImpl, NodeServiceServer,
-    SettingsServiceImpl, SettingsServiceServer,
 };
 
 /// All base service implementations required by a NodeSpace daemon.
@@ -27,7 +26,6 @@ pub struct BaseServices {
     pub node_service: NodeServiceImpl,
     pub agent_session: AgentSessionHandler,
     pub import: ImportServiceImpl,
-    pub settings: SettingsServiceImpl,
     pub local_agent: LocalAgentServiceImpl,
     /// `None` only when no NLP model file exists at daemon startup.
     pub embeddings: Option<EmbeddingsServiceImpl>,
@@ -73,9 +71,6 @@ where
         )))
         .add_service(with_message_limits!(ImportServiceServer::new(
             services.import
-        )))
-        .add_service(with_message_limits!(SettingsServiceServer::new(
-            services.settings
         )))
         .add_service(with_message_limits!(LocalAgentServiceServer::new(
             services.local_agent

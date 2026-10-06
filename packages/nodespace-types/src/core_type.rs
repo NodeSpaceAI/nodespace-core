@@ -443,9 +443,13 @@ impl CoreNodeType {
                 ))
             },
             Self::Skill => entry("skill", Flat, Name, EMBEDDED, TYPED),
-            Self::DatabaseSettings => {
-                leaf(entry("database-settings", Flat, Name, NOT_EMBEDDED, TYPED))
-            }
+            Self::DatabaseSettings => leaf(entry(
+                "database-settings",
+                Structured,
+                Name,
+                NOT_EMBEDDED,
+                TYPED,
+            )),
             Self::Query => leaf(entry(
                 "query",
                 Structured,

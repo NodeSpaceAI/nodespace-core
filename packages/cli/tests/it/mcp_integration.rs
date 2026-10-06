@@ -12,14 +12,20 @@
 //! harness, not of the CLI's own platform support.
 #![cfg(unix)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use nodespace_daemon::nodespace::{
+    CreateDatabaseRequest, GetNodeRequest, UpdateDatabaseSettingsNodeRequest,
+};
+use nodespace_types::DATABASE_SETTINGS_NODE_ID;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::timeout;
+
+use crate::cli_integration::spawn_routing_daemon;
 
 /// Sends one JSON-RPC request line to the child's stdin and reads exactly
 /// one response line from its stdout.
@@ -63,35 +69,85 @@ async fn wait_for_clean_exit(mut child: Child) {
     );
 }
 
-/// A fresh, isolated `$HOME` with `.nodespace/daemon.toml` pre-written to
-/// `[mcp] enabled = true` -- the ADR-038 explicit-user-enablement flag
-/// `nodespace mcp` now refuses to serve anything without (see
-/// `commands::mcp::enforce_enabled`). Every test below that exercises the
-/// live JSON-RPC transport spawns the server with `HOME` pointed here rather
-/// than the real one, both so the test is deterministic regardless of
-/// whatever is (or isn't) already enabled on the machine running it, and so
-/// no test writes to a real `~/.nodespace/daemon.toml`.
-fn enabled_home() -> tempfile::TempDir {
-    let home = tempfile::tempdir().expect("tempdir");
-    let state_dir = home.path().join(".nodespace");
-    std::fs::create_dir_all(&state_dir).expect("create .nodespace dir");
-    std::fs::write(state_dir.join("daemon.toml"), "[mcp]\nenabled = true\n")
-        .expect("write enabled daemon.toml");
-    home
+/// An isolated `$HOME`, so no test reads or writes the real one.
+fn isolated_home() -> tempfile::TempDir {
+    tempfile::tempdir().expect("tempdir")
 }
 
-#[tokio::test]
-async fn mcp_speaks_stdio_jsonrpc_and_exposes_exactly_one_tool() {
-    let home = enabled_home();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
+/// `nodespace --socket <sock> [--database <selection>] mcp ...`, with `$HOME`
+/// isolated and no `NODESPACE_HOME`.
+fn nodespace_mcp(sock: &Path, database: Option<&str>, home: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_nodespace"));
+    command.arg("--socket").arg(sock);
+    if let Some(database) = database {
+        command.arg("--database").arg(database);
+    }
+    command
         .arg("mcp")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
+        .env("HOME", home)
+        .env_remove("NODESPACE_HOME");
+    command
+}
+
+fn spawn_server(mut command: Command) -> Child {
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn nodespace mcp");
+        .expect("spawn nodespace mcp")
+}
+
+/// Set `external_tools_enabled` on the settings node of the database selected
+/// (the daemon's default when `None`), through the typed update the CLI and
+/// the Settings screen use.
+async fn set_external_tools(sock: &Path, database: Option<&str>, enabled: bool) {
+    let (interceptor, _) = nodespace_cli::resolve_routing(sock, database)
+        .await
+        .expect("resolve routing");
+    let mut client = nodespace_cli::connect(sock, interceptor)
+        .await
+        .expect("connect");
+    let node = client
+        .get_node(GetNodeRequest {
+            node_id: DATABASE_SETTINGS_NODE_ID.to_string(),
+        })
+        .await
+        .expect("read the settings node")
+        .into_inner()
+        .node_data
+        .expect("settings node data");
+    client
+        .update_database_settings_node(UpdateDatabaseSettingsNodeRequest {
+            node_id: DATABASE_SETTINGS_NODE_ID.to_string(),
+            version: node.version,
+            update_json: json!({ "externalToolsEnabled": enabled }).to_string(),
+        })
+        .await
+        .expect("write external_tools_enabled");
+}
+
+async fn create_database(sock: &Path, name: &str) -> String {
+    let mut registry = nodespace_cli::connect_database(sock)
+        .await
+        .expect("connect registry");
+    registry
+        .create(CreateDatabaseRequest {
+            name: name.to_string(),
+            path: None,
+        })
+        .await
+        .expect("create database")
+        .into_inner()
+        .id
+}
+
+#[tokio::test]
+async fn mcp_speaks_stdio_jsonrpc_and_exposes_exactly_one_tool() {
+    let (sock, _shutdown, _daemon_dir) = spawn_routing_daemon().await;
+    set_external_tools(&sock, None, true).await;
+    let home = isolated_home();
+    let mut child = spawn_server(nodespace_mcp(&sock, None, home.path()));
 
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
@@ -136,43 +192,64 @@ async fn mcp_speaks_stdio_jsonrpc_and_exposes_exactly_one_tool() {
     wait_for_clean_exit(child).await;
 }
 
+/// With no daemon to read the database's settings from, the server cannot
+/// tell whether tools are enabled, so it refuses to start rather than serve.
 #[tokio::test]
-async fn mcp_tool_call_reports_daemon_unreachable_actionably_not_as_a_raw_connection_error() {
+async fn mcp_refuses_to_start_when_the_daemon_is_unreachable() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     // A path inside a fresh, empty tempdir guarantees nothing is listening —
     // the daemon-unreachable path triggers deterministically, regardless of
     // whether some other daemon happens to be running on the host executing
     // this test.
     let sock = tempdir.path().join("no-such-daemon.sock");
-    // Reuse the same tempdir as $HOME (distinct from the --socket path
-    // above, which overrides socket resolution independently) so this is
-    // enabled without touching the real ~/.nodespace/daemon.toml.
-    let state_dir = tempdir.path().join(".nodespace");
-    std::fs::create_dir_all(&state_dir).expect("create .nodespace dir");
-    std::fs::write(state_dir.join("daemon.toml"), "[mcp]\nenabled = true\n")
-        .expect("write enabled daemon.toml");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("--socket")
-        .arg(&sock)
-        .arg("mcp")
-        .env("HOME", tempdir.path())
-        .env_remove("NODESPACE_HOME")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn nodespace mcp");
+    let output = timeout(
+        Duration::from_secs(15),
+        spawn_server(nodespace_mcp(&sock, None, tempdir.path())).wait_with_output(),
+    )
+    .await
+    .expect("mcp server did not exit promptly")
+    .expect("wait on child");
 
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Could not connect to nodespaced"),
+        "expected the CLI's own friendly connection error, got: {stderr}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a server that cannot start must never write to stdout (the JSON-RPC transport)"
+    );
+}
+
+#[tokio::test]
+async fn mcp_tool_call_reports_a_daemon_that_went_away_actionably_not_as_a_raw_connection_error() {
+    let (sock, shutdown, _daemon_dir) = spawn_routing_daemon().await;
+    set_external_tools(&sock, None, true).await;
+    let home = isolated_home();
+    let mut child = spawn_server(nodespace_mcp(&sock, None, home.path()));
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+    let init = send_and_read(
+        &mut stdin,
+        &mut stdout,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    )
+    .await;
+    assert_eq!(init["result"]["serverInfo"]["name"], "nodespace");
+
+    // The server started against a running daemon; now nothing is listening.
+    let _ = shutdown.send(());
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
     let call = send_and_read(
         &mut stdin,
         &mut stdout,
         json!({
             "jsonrpc": "2.0",
-            "id": 1,
+            "id": 2,
             "method": "tools/call",
             "params": {"name": "nodespace", "arguments": {"args": "node get some-id"}},
         }),
@@ -207,16 +284,10 @@ async fn mcp_tool_call_reports_daemon_unreachable_actionably_not_as_a_raw_connec
 
 #[tokio::test]
 async fn mcp_tool_call_rejects_an_unterminated_quote_without_dispatching_anything() {
-    let home = enabled_home();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("mcp")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn nodespace mcp");
+    let (sock, _shutdown, _daemon_dir) = spawn_routing_daemon().await;
+    set_external_tools(&sock, None, true).await;
+    let home = isolated_home();
+    let mut child = spawn_server(nodespace_mcp(&sock, None, home.path()));
 
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
@@ -244,31 +315,23 @@ async fn mcp_tool_call_rejects_an_unterminated_quote_without_dispatching_anythin
 }
 
 /// ADR-038 Trust Boundary, proven end-to-end against the real binary rather
-/// than only at the unit level (`enforce_enabled`'s own tests): with no
-/// `daemon.toml` at all (the out-of-the-box state for a `$HOME` that has
-/// never run `nodespace mcp install`), the server must refuse to serve
-/// anything and exit non-zero with an actionable message, rather than
-/// accepting a connection and only gating individual calls.
+/// than only at the unit level (`enforce_enabled`'s own tests): a database
+/// that has never run `nodespace mcp install` has `external_tools_enabled`
+/// off, and the server must refuse to serve anything and exit non-zero with
+/// an actionable message naming the database, rather than accepting a
+/// connection and only gating individual calls.
 #[tokio::test]
 async fn mcp_refuses_to_start_when_not_enabled() {
-    // A bare, empty $HOME -- no .nodespace directory at all, so
-    // read_mcp_settings falls back to McpConfig::default() (enabled: false).
-    let home = tempfile::tempdir().expect("tempdir");
+    let (sock, _shutdown, _daemon_dir) = spawn_routing_daemon().await;
+    let home = isolated_home();
 
-    let child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("mcp")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn nodespace mcp");
-
-    let output = timeout(Duration::from_secs(15), child.wait_with_output())
-        .await
-        .expect("mcp server did not exit promptly when disabled")
-        .expect("wait on child");
+    let output = timeout(
+        Duration::from_secs(15),
+        spawn_server(nodespace_mcp(&sock, None, home.path())).wait_with_output(),
+    )
+    .await
+    .expect("mcp server did not exit promptly when disabled")
+    .expect("wait on child");
 
     assert!(
         !output.status.success(),
@@ -281,6 +344,10 @@ async fn mcp_refuses_to_start_when_not_enabled() {
         "expected an actionable disabled-state message on stderr, got: {stderr}"
     );
     assert!(
+        stderr.contains("database 'Default'"),
+        "expected the message to name the database, got: {stderr}"
+    );
+    assert!(
         stderr.contains("nodespace mcp install"),
         "expected the message to name the fix, got: {stderr}"
     );
@@ -291,34 +358,61 @@ async fn mcp_refuses_to_start_when_not_enabled() {
     );
 }
 
-/// Same disabled state, but explicit: `[mcp]\nenabled = false` behaves
-/// identically to no file at all, proving the flag itself (not just its
-/// absence) is honored.
+/// Same disabled state, but explicit: a database whose flag was turned on and
+/// then off behaves like one that never had it on.
 #[tokio::test]
 async fn mcp_refuses_to_start_when_explicitly_disabled() {
-    let home = tempfile::tempdir().expect("tempdir");
-    let state_dir = home.path().join(".nodespace");
-    std::fs::create_dir_all(&state_dir).expect("create .nodespace dir");
-    std::fs::write(state_dir.join("daemon.toml"), "[mcp]\nenabled = false\n")
-        .expect("write disabled daemon.toml");
+    let (sock, _shutdown, _daemon_dir) = spawn_routing_daemon().await;
+    set_external_tools(&sock, None, true).await;
+    set_external_tools(&sock, None, false).await;
+    let home = isolated_home();
 
-    let child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("mcp")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn nodespace mcp");
-
-    let output = timeout(Duration::from_secs(15), child.wait_with_output())
-        .await
-        .expect("mcp server did not exit promptly when disabled")
-        .expect("wait on child");
+    let output = timeout(
+        Duration::from_secs(15),
+        spawn_server(nodespace_mcp(&sock, None, home.path())).wait_with_output(),
+    )
+    .await
+    .expect("mcp server did not exit promptly when disabled")
+    .expect("wait on child");
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("not enabled"));
+}
+
+/// Two databases open in one daemon each behave by their own setting
+/// (ADR-095): enabling external tools for one leaves the other refusing.
+#[tokio::test]
+async fn mcp_serves_only_the_databases_that_enabled_external_tools() {
+    let (sock, _shutdown, _daemon_dir) = spawn_routing_daemon().await;
+    create_database(&sock, "Second").await;
+    set_external_tools(&sock, Some("Second"), true).await;
+    let home = isolated_home();
+
+    // The default database never enabled them: it refuses.
+    let refused = timeout(
+        Duration::from_secs(15),
+        spawn_server(nodespace_mcp(&sock, None, home.path())).wait_with_output(),
+    )
+    .await
+    .expect("mcp server did not exit promptly when disabled")
+    .expect("wait on child");
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("database 'Default'"), "got: {stderr}");
+
+    // The second one did: it serves.
+    let mut child = spawn_server(nodespace_mcp(&sock, Some("Second"), home.path()));
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    let init = send_and_read(
+        &mut stdin,
+        &mut stdout,
+        json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+    )
+    .await;
+    assert_eq!(init["result"]["serverInfo"]["name"], "nodespace");
+    drop(stdin);
+    wait_for_clean_exit(child).await;
 }
 
 /// A fake, always-resolvable `nodespace` executable placed first on `PATH`,
@@ -345,10 +439,11 @@ fn fake_nodespace_on_path(dir: &std::path::Path) -> String {
 
 /// End-to-end proof of the full explicit-user-enablement lifecycle described
 /// in `commands::mcp`'s doc comment: `nodespace mcp install` writes Claude
-/// Desktop's real config file and flips `daemon.toml`'s `[mcp] enabled` flag
-/// via the real (compiled-from-TypeScript) installer script -- not a mock of
-/// either side -- after which the server actually accepts a connection, and
-/// `nodespace mcp uninstall` reverses both, after which it refuses again.
+/// Desktop's real config file and sets the database's `external_tools_enabled`
+/// setting via the real (compiled-from-TypeScript) installer script -- not a
+/// mock of either side -- after which the server actually accepts a
+/// connection, and `nodespace mcp uninstall` reverses both, after which it
+/// refuses again. Each command says which database it acted on.
 ///
 /// Skipped (not failed) when `packages/skill/dist/install.js` isn't built --
 /// mirrors `commands::skill::tests::
@@ -374,6 +469,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
         return;
     }
 
+    let (sock, _shutdown, _daemon_dir) = spawn_routing_daemon().await;
     let home = tempfile::tempdir().expect("tempdir");
     let claude_dir = home
         .path()
@@ -383,28 +479,27 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
     std::fs::create_dir_all(&claude_dir).expect("create fake Claude Desktop dir");
     let path_with_fake_nodespace = fake_nodespace_on_path(home.path());
     let config_path = claude_dir.join("claude_desktop_config.json");
-    let daemon_toml_path = home.path().join(".nodespace").join("daemon.toml");
 
     // Before install: status reports disabled and no config file exists.
-    let status_before = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("mcp")
+    let status_before = nodespace_mcp(&sock, None, home.path())
         .arg("status")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
         .output()
         .await
         .expect("run mcp status");
     assert!(status_before.status.success());
-    assert!(String::from_utf8_lossy(&status_before.stdout).contains("enabled: no"));
+    let status_before_stdout = String::from_utf8_lossy(&status_before.stdout);
+    assert!(
+        status_before_stdout.contains("database 'Default'")
+            && status_before_stdout.contains("enabled for database 'Default'")
+            && status_before_stdout.contains(": no"),
+        "got: {status_before_stdout}"
+    );
     assert!(!config_path.exists());
 
-    // Install: writes the client config and enables the flag.
-    let install_out = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("mcp")
+    // Install: writes the client config and enables the setting.
+    let install_out = nodespace_mcp(&sock, None, home.path())
         .arg("install")
         .arg("--yes")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
         .env("PATH", &path_with_fake_nodespace)
         .output()
         .await
@@ -421,7 +516,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
         "got: {install_stdout}"
     );
     assert!(
-        install_stdout.contains("now enabled"),
+        install_stdout.contains("now enabled for database 'Default'"),
         "got: {install_stdout}"
     );
 
@@ -437,24 +532,39 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
         .expect("command is a string")
         .ends_with("fakebin/nodespace"));
 
-    // daemon.toml now has the flag set, and mcp status agrees.
-    let daemon_toml =
-        std::fs::read_to_string(&daemon_toml_path).expect("read daemon.toml written by install");
-    assert!(daemon_toml.contains("enabled = true"), "got: {daemon_toml}");
+    // The settings node now has the field set, and mcp status agrees.
+    let mut client = {
+        let (interceptor, _) = nodespace_cli::resolve_routing(&sock, None)
+            .await
+            .expect("resolve routing");
+        nodespace_cli::connect(&sock, interceptor)
+            .await
+            .expect("connect")
+    };
+    let settings_node = client
+        .get_node(GetNodeRequest {
+            node_id: DATABASE_SETTINGS_NODE_ID.to_string(),
+        })
+        .await
+        .expect("read settings node")
+        .into_inner()
+        .node_data
+        .expect("node data");
+    assert!(
+        settings_node
+            .properties
+            .contains("\"external_tools_enabled\":true"),
+        "got: {}",
+        settings_node.properties
+    );
 
-    let status_after_install = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("mcp")
+    let status_after_install = nodespace_mcp(&sock, None, home.path())
         .arg("status")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
         .output()
         .await
         .expect("run mcp status");
     let status_stdout = String::from_utf8_lossy(&status_after_install.stdout);
-    assert!(
-        status_stdout.contains("enabled: yes"),
-        "got: {status_stdout}"
-    );
+    assert!(status_stdout.contains(": yes"), "got: {status_stdout}");
     assert!(
         status_stdout.contains("claude-desktop"),
         "got: {status_stdout}"
@@ -463,15 +573,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
     // The server now actually accepts a connection and answers initialize --
     // proving install didn't just flip a flag but genuinely unblocked the
     // trust-boundary gate `run_server` enforces.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("mcp")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn nodespace mcp");
+    let mut child = spawn_server(nodespace_mcp(&sock, None, home.path()));
     let mut stdin = child.stdin.take().expect("stdin");
     let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
     let init = send_and_read(
@@ -484,12 +586,9 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
     drop(stdin);
     wait_for_clean_exit(child).await;
 
-    // Uninstall: removes the config entry and disables the flag again.
-    let uninstall_out = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("mcp")
+    // Uninstall: removes the config entry and disables the setting again.
+    let uninstall_out = nodespace_mcp(&sock, None, home.path())
         .arg("uninstall")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
         .output()
         .await
         .expect("run mcp uninstall");
@@ -501,7 +600,7 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
         "got: {uninstall_stdout}"
     );
     assert!(
-        uninstall_stdout.contains("now disabled"),
+        uninstall_stdout.contains("now disabled for database 'Default'"),
         "got: {uninstall_stdout}"
     );
 
@@ -514,23 +613,9 @@ async fn mcp_install_uninstall_round_trip_against_the_real_installer_enables_and
         "the nodespace entry must be removed, got: {written_config_after}"
     );
 
-    let daemon_toml_after = std::fs::read_to_string(&daemon_toml_path).expect("read daemon.toml");
-    assert!(
-        daemon_toml_after.contains("enabled = false"),
-        "got: {daemon_toml_after}"
-    );
-
     // The server refuses again -- uninstall genuinely re-closed the gate,
     // not just the client config.
-    let output = Command::new(env!("CARGO_BIN_EXE_nodespace"))
-        .arg("mcp")
-        .env("HOME", home.path())
-        .env_remove("NODESPACE_HOME")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn nodespace mcp")
+    let output = spawn_server(nodespace_mcp(&sock, None, home.path()))
         .wait_with_output()
         .await
         .expect("wait on child");

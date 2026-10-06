@@ -61,13 +61,7 @@ async fn spawn_test_daemon() -> (Client, Arc<PtySessionManager>, oneshot::Sender
     let node_service = Arc::new(CoreNodeService::new(&mut store).await.expect("NodeService"));
 
     let manager = Arc::new(PtySessionManager::new());
-    let capture_config_path = tempdir.path().join("daemon.toml");
-    let handler = AgentSessionHandler::new(
-        manager.clone(),
-        node_service,
-        capture_config_path,
-        Arc::new(NoSummarizer),
-    );
+    let handler = AgentSessionHandler::new(manager.clone(), node_service, Arc::new(NoSummarizer));
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

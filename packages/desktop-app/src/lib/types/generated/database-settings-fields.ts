@@ -1,27 +1,20 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
 import type { CaptureContent } from './capture-content';
-import type { NodeReference } from './node-reference';
 import type { ProviderConfig } from './provider-config';
 
 /**
- * Wire shape for the database-settings singleton sent to the frontend.
+ * The `database-settings` schema's fields, decoded from the node's
+ * properties (ADR-095).
  *
- * Produced by `node_to_typed_value` for a `database-settings` node: the
- * schema's fields are promoted to the top level (camelCase, see
- * [`DatabaseSettingsFields`]).
+ * The only reader of a stored settings node: storage keys are the schema's
+ * snake_case field names, hoisted by the store under
+ * `properties.database-settings.*` and left there when another build retypes
+ * the singleton to a subtype (ADR-083 §2). [`Self::from_properties`] reads
+ * that bucket, or the flat shape a node built in memory carries. On the wire
+ * the same fields travel camelCase at the top level of a
+ * [`DatabaseSettingsNode`].
  */
-export type DatabaseSettingsNode = {
-  id: string;
-  nodeType: string;
-  content: string;
-  version: number;
-  createdAt: string;
-  modifiedAt: string;
-  properties: Record<string, unknown>;
-  mentions?: Array<string>;
-  mentionedIn?: Array<NodeReference>;
-  title?: string | null;
-  lifecycleStatus: string;
+export type DatabaseSettingsFields = {
   /**
    * Ids of the extensions a reader needs in order to read this database.
    */

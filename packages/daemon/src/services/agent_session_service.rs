@@ -31,15 +31,15 @@ use crate::nodespace::{
     ResizeRequest, ResizeResponse, SessionInfo, StreamOutputRequest, TerminateSessionRequest,
     TerminateSessionResponse, WriteInputRequest, WriteInputResponse,
 };
-use crate::services::capture_service::{finalize_capture, CompletedSession, SessionSummarizer};
-use crate::services::settings_service::{read_capture_settings, CaptureConfig};
+use crate::services::capture_service::{
+    finalize_capture, CaptureConfig, CompletedSession, SessionSummarizer,
+};
 
 /// gRPC adapter that owns shared handles to the PTY engine.
 #[derive(Clone)]
 pub struct AgentSessionHandler {
     manager: Arc<PtySessionManager>,
     node_service: Arc<CoreNodeService>,
-    config_path: PathBuf,
     /// Derives a finished session's summary, when capture saves one.
     summarizer: Arc<dyn SessionSummarizer>,
 }
@@ -48,13 +48,11 @@ impl AgentSessionHandler {
     pub fn new(
         manager: Arc<PtySessionManager>,
         node_service: Arc<CoreNodeService>,
-        config_path: PathBuf,
         summarizer: Arc<dyn SessionSummarizer>,
     ) -> Self {
         Self {
             manager,
             node_service,
-            config_path,
             summarizer,
         }
     }
@@ -320,20 +318,20 @@ impl AgentSessionService for AgentSessionHandler {
         // The node already exists (created up front, ADR-088); the session
         // carries its id, so that node is written rather than a new one minted.
         //
-        // Capture config is read once here (at launch time) so finalize_capture
-        // doesn't re-hit the filesystem on every session end. Sessions started
-        // before the handler initializes are not covered (no manager.get hit).
+        // Capture config is read once here, from the session's database at
+        // launch time, so finalize_capture doesn't re-read it on every session
+        // end. Sessions started before the handler initializes are not covered
+        // (no manager.get hit).
         if let Some(ref session) = this.manager.get(&id).await {
             let session = session.clone();
             let node_service = this.node_service.clone();
-            let config_path = this.config_path.clone();
             let summarizer = this.summarizer.clone();
 
             tokio::spawn(async move {
-                let config = match read_capture_settings(&config_path).await {
-                    Ok(c) => c,
+                let config = match node_service.database_settings().await {
+                    Ok((settings, _)) => CaptureConfig::from(&settings),
                     Err(e) => {
-                        tracing::warn!(error = %e, "capture: failed to read config, saving no session content");
+                        tracing::warn!(error = %e, "capture: failed to read the database's settings, saving no session content");
                         CaptureConfig::default()
                     }
                 };

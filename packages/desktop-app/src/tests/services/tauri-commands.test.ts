@@ -271,72 +271,6 @@ describe('Tauri System Commands - API Surface', () => {
       expect(mockInvoke).toHaveBeenCalledWith('ensure_model_ready', { modelId: 'model-x' });
       expect(result).toBe(true);
     });
-
-    it('getCaptureSettings invokes get_capture_settings', async () => {
-      mockInvoke.mockResolvedValue({ enabled: true, content: 'full' });
-
-      const result = await tauriCommands.getCaptureSettings();
-
-      expect(mockInvoke).toHaveBeenCalledWith('get_capture_settings');
-      expect(result).toEqual({ enabled: true, content: 'full' });
-    });
-
-    it('updateCaptureSettings invokes update_capture_settings with enabled/content, defaulting missing fields to null', async () => {
-      mockInvoke.mockResolvedValue({ enabled: true, content: 'summary' });
-
-      await tauriCommands.updateCaptureSettings({ enabled: true });
-
-      expect(mockInvoke).toHaveBeenCalledWith('update_capture_settings', {
-        enabled: true,
-        content: null
-      });
-    });
-
-    it('updateCaptureSettings defaults a missing enabled field to null when only content is provided', async () => {
-      mockInvoke.mockResolvedValue({ enabled: false, content: 'full' });
-
-      await tauriCommands.updateCaptureSettings({ content: 'full' });
-
-      expect(mockInvoke).toHaveBeenCalledWith('update_capture_settings', {
-        enabled: null,
-        content: 'full'
-      });
-    });
-
-    it('updateCaptureSettings passes both fields through when both are provided', async () => {
-      mockInvoke.mockResolvedValue({ enabled: false, content: 'metadata_only' });
-
-      await tauriCommands.updateCaptureSettings({ enabled: false, content: 'metadata_only' });
-
-      expect(mockInvoke).toHaveBeenCalledWith('update_capture_settings', {
-        enabled: false,
-        content: 'metadata_only'
-      });
-    });
-
-    it('getOpenAiCompatConfigsFromDaemon invokes get_openai_compat_configs', async () => {
-      const configs: tauriCommands.OpenAiCompatConfigDto[] = [
-        { id: '1', name: 'n', baseUrl: 'https://x', apiKey: 'k', model: 'm' }
-      ];
-      mockInvoke.mockResolvedValue(configs);
-
-      const result = await tauriCommands.getOpenAiCompatConfigsFromDaemon();
-
-      expect(mockInvoke).toHaveBeenCalledWith('get_openai_compat_configs');
-      expect(result).toEqual(configs);
-    });
-
-    it('setOpenAiCompatConfigsOnDaemon invokes set_openai_compat_configs with configs', async () => {
-      const configs: tauriCommands.OpenAiCompatConfigDto[] = [
-        { id: '1', name: 'n', baseUrl: 'https://x', apiKey: 'k', model: 'm' }
-      ];
-      mockInvoke.mockResolvedValue(configs);
-
-      const result = await tauriCommands.setOpenAiCompatConfigsOnDaemon(configs);
-
-      expect(mockInvoke).toHaveBeenCalledWith('set_openai_compat_configs', { configs });
-      expect(result).toEqual(configs);
-    });
   });
 
   describe('Non-Tauri fallbacks (outside desktop)', () => {
@@ -506,38 +440,6 @@ describe('Tauri System Commands - API Surface', () => {
         }
       );
       expect(result).toBe(false);
-    });
-
-    it('getCaptureSettings returns defaults outside Tauri without calling fetch', async () => {
-      const result = await tauriCommands.getCaptureSettings();
-      expect(result).toEqual({ enabled: false, content: 'metadata_only' });
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
-
-    it('updateCaptureSettings merges partial settings into defaults outside Tauri without calling fetch', async () => {
-      const result = await tauriCommands.updateCaptureSettings({ enabled: true });
-      expect(result).toEqual({ enabled: true, content: 'metadata_only' });
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
-
-    it('updateCaptureSettings with no overrides returns the bare defaults', async () => {
-      const result = await tauriCommands.updateCaptureSettings({});
-      expect(result).toEqual({ enabled: false, content: 'metadata_only' });
-    });
-
-    it('getOpenAiCompatConfigsFromDaemon returns an empty array outside Tauri without calling fetch', async () => {
-      const result = await tauriCommands.getOpenAiCompatConfigsFromDaemon();
-      expect(result).toEqual([]);
-      expect(fetchMock).not.toHaveBeenCalled();
-    });
-
-    it('setOpenAiCompatConfigsOnDaemon echoes back the input configs outside Tauri without calling fetch', async () => {
-      const configs: tauriCommands.OpenAiCompatConfigDto[] = [
-        { id: '1', name: 'n', baseUrl: 'https://x', apiKey: 'k', model: 'm' }
-      ];
-      const result = await tauriCommands.setOpenAiCompatConfigsOnDaemon(configs);
-      expect(result).toBe(configs);
-      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

@@ -908,10 +908,6 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             // Settings commands
             commands::settings::get_settings,
             commands::settings::update_display_settings,
-            commands::settings::get_capture_settings,
-            commands::settings::update_capture_settings,
-            commands::settings::get_openai_compat_configs,
-            commands::settings::set_openai_compat_configs,
             commands::settings::windows_autorun_present,
             commands::settings::remove_windows_autorun,
             // Local database registry commands (ADR-053)

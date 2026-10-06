@@ -343,28 +343,80 @@ impl NodeService {
             .await
     }
 
-    /// Update the database-settings node's core field
-    /// (`required_extensions`) with optimistic concurrency control. See
-    /// [`Self::update_person_node`] for why this delegates to the generic
-    /// pipeline.
+    /// The settings this database holds (ADR-095): the singleton's fields, with
+    /// the schema defaults for any it does not store.
+    ///
+    /// Every consumer reads settings here, in the database it is routed to.
+    /// Returns the node's version beside the fields so a read-modify-write can
+    /// pass it to [`Self::update_database_settings_node`].
+    pub async fn database_settings(
+        &self,
+    ) -> Result<(crate::models::DatabaseSettingsFields, i64), NodeServiceError> {
+        let node = self
+            .get_node(DATABASE_SETTINGS_NODE_ID)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(DATABASE_SETTINGS_NODE_ID))?;
+        let fields = crate::models::DatabaseSettingsFields::from_properties(&node.properties)
+            .map_err(|e| NodeServiceError::invalid_update(e.to_string()))?;
+        Ok((fields, node.version))
+    }
+
+    /// Update the database-settings node's fields with optimistic concurrency
+    /// control. See [`Self::update_person_node`] for why this delegates to the
+    /// generic pipeline.
+    ///
+    /// A provider's routing verdicts describe the endpoint and model they were
+    /// measured against, so a write that changes either one's `base_url` or
+    /// `model` drops that provider's verdicts, whatever the client sent.
     pub async fn update_database_settings_node(
         &self,
         id: &str,
         expected_version: i64,
-        update: crate::models::DatabaseSettingsNodeUpdate,
+        mut update: crate::models::DatabaseSettingsNodeUpdate,
     ) -> Result<Node, NodeServiceError> {
         if update.is_empty() {
             return Err(NodeServiceError::invalid_update(
                 "DatabaseSettingsNodeUpdate contains no changes",
             ));
         }
-        self.update_typed_fields(
-            id,
-            "database-settings",
-            expected_version,
-            update.to_properties_patch(),
-        )
-        .await
+        let existing = self
+            .get_node(id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
+        // A subtype another build retyped the singleton to inherits these
+        // fields in the base bucket (ADR-083 §2), so it is written the same.
+        if !self
+            .type_is_a(
+                &existing.node_type,
+                crate::models::CoreNodeType::DatabaseSettings,
+            )
+            .await?
+        {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Node '{}' is {} node, not a database-settings node",
+                id,
+                crate::utils::with_indefinite_article(&existing.node_type)
+            )));
+        }
+        if let Some(Some(providers)) = update.providers.as_mut() {
+            if let Ok(before) =
+                crate::models::DatabaseSettingsFields::from_properties(&existing.properties)
+            {
+                for provider in providers.iter_mut() {
+                    let unchanged = before.provider(&provider.id).is_some_and(|old| {
+                        old.base_url == provider.base_url && old.model == provider.model
+                    });
+                    if !unchanged {
+                        provider.routing_ok.clear();
+                    }
+                }
+            }
+        }
+        let patch = NodeUpdate {
+            properties: Some(update.to_properties_patch()),
+            ..Default::default()
+        };
+        self.update_node(id, expected_version, patch).await
     }
 
     /// Record the engine's suspension of a play on the play node
