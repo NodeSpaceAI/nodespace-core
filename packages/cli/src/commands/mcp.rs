@@ -1133,6 +1133,9 @@ mod tests {
             "--socket=/explicit/other.sock node get abc",
             "--database other node get abc",
             "--database=other node get abc",
+            "nodespace --database other node get abc",
+            "node get abc -- --database other",
+            r#""--database" "other" node get abc"#,
             "node update database-settings-singleton --database other --property external_tools_enabled=true",
         ] {
             let err = build_child_args(args, Path::new("/default.sock"), Some("work"))
