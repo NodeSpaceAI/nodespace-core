@@ -1,8 +1,8 @@
 # NodeSpace
 
-> **Faster context. Fewer tokens.**
+> **Your repo knows what you built. NodeSpace knows why.**
 
-AI coding assistants forget everything between sessions. NodeSpace gives them persistent, searchable access to your project knowledge — so you stop re-explaining your codebase every time you start a conversation.
+The workspace for agentic development. Specs, plans, decisions and your team's conventions live in one local graph, and every coding agent works from it: what to build, what governs it, and how your team does it.
 
 **[nodespace.ai](https://nodespace.ai)** · **[Download](https://github.com/NodeSpaceAI/nodespace-core/releases)** · **[Discord](https://discord.gg/UHFZKzH9)**
 
@@ -12,15 +12,40 @@ AI coding assistants forget everything between sessions. NodeSpace gives them pe
 
 ---
 
-## Why NodeSpace
+## The context ladder
 
-Developers using AI assistants waste time copying files, re-explaining architecture, and watching context degrade mid-session. NodeSpace fixes this by sitting between your knowledge and your AI tools:
+How good an agent is depends on the context it starts with. Every team climbs the same ladder, and most stop at step three.
 
-- **80% fewer roundtrips** — AI agents query your knowledge base via the NodeSpace skill instead of scanning files with grep/ripgrep
-- **Runs entirely on your machine** — no cloud accounts, no API calls, no data leaving localhost
-- **Works offline** — on planes, behind VPNs, anywhere
+1. **Prompting.** Copy, paste and re-explain every session. The context lives in your head.
+2. **Connecting.** MCP into Jira, Linear or Notion. The context lives in tools built for people, and the agent has to know what to search for.
+3. **Documenting.** Specs, decisions and conventions live as markdown in the repo, starting with CLAUDE.md. The agent greps for them, and they are only as current as each checkout's last pull. Following them is optional.
+4. **Assembling.** Each task starts with the right context already composed: its spec, the decisions behind it, and the conventions that apply. One source, current for everyone, and the process is enforced, not suggested.
 
-You write things down once. Every AI tool you use can find them instantly.
+NodeSpace takes you to step four, without building it yourself.
+
+---
+
+## What NodeSpace does
+
+**Available now**
+
+- **A local knowledge graph with semantic search.** Typed nodes, links between them, and search that understands what an agent is asking for. It runs on your machine and works offline.
+- **Skills for coding agents.** Agents fetch skills and schemas for the task at hand through the CLI (`nodespace skill guidance`, `nodespace skill get`). The skill installer sets this up for Claude Code, Codex, Antigravity CLI, OpenCode and Pi. MCP covers surfaces with no shell.
+- **Plays.** Rules that run on every change: reject a write or update, create and link nodes. View them in the app and switch them on and off. The workflow is data, so you edit it rather than fork it.
+- **Saved queries and boards.** Kanban, lists and tables over any query.
+- **A desktop app.** Where you review, edit and organize what agents use. Agents and people work on the same graph.
+
+**Coming**
+
+- Spec, plan and decision as core types, with checklists as criteria and gate Plays that keep steps in order
+- Ready, in-progress and awaiting-review task queues
+- Reading a task with its context and skills in one call
+- Harness plugins for Claude Code, Pi and OpenCode that list skills and notice changes mid-session
+- Sessions launched from NodeSpace into the project's checkout
+
+## Local-first
+
+Your knowledge stays on your hardware and works offline. Search and embeddings run inside the app, with no per-query cloud bill, so agents can check context throughout a task. Team synchronization is optional and end-to-end encrypted.
 
 ---
 
@@ -40,13 +65,25 @@ Apple Silicon is the only supported macOS target. The cask installs a signed and
 
 | Platform | Format |
 |----------|--------|
-| macOS 14 (Sonoma) or later, Apple Silicon | `.dmg` |
 | Windows | `.msi` or `.exe` |
 | Linux | `nodespace`/`nodespaced` binaries (CLI + daemon only — no packaged desktop app yet) |
 
-### Team collaboration
+### Get started
 
-For team collaboration, contact [developer@nodespace.ai](mailto:developer@nodespace.ai).
+1. **Install the app** (above).
+2. **Connect your coding agent.** On first launch the app detects the agents on your machine and installs the NodeSpace skill into each. To run the installer yourself, or on a machine with only the CLI:
+
+   ```bash
+   nodespace skill install    # detect agents and install the skill
+   nodespace skill status     # see which agents have it
+   ```
+
+   For a harness the app did not launch, import the skill from [NodeSpaceAI/nodespace-skill](https://github.com/NodeSpaceAI/nodespace-skill). For surfaces with no shell, `nodespace mcp install` sets up MCP.
+3. **Start a session.** Ask your agent for a task; it fetches your project's context and conventions from NodeSpace.
+
+### Team synchronization
+
+For team synchronization, contact [developer@nodespace.ai](mailto:developer@nodespace.ai).
 
 ### Build from Source
 
@@ -67,8 +104,7 @@ bun run tauri:dev
 
 ```bash
 bun run test          # Fast unit tests (Happy-DOM)
-bun run test:browser  # Browser integration tests (Playwright)
-bun run test:all      # All tests (unit + browser + Rust)
+bun run test:all      # Unit, scripts, skill and Rust tests
 bun run rust:test     # Rust backend tests only
 ```
 
