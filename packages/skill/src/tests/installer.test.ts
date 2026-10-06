@@ -276,6 +276,12 @@ describe('AGENTS config', () => {
     expect(plugin.files).toContain(join(manifest.types));
   });
 
+  it('installs the Antigravity skill where it reads skills for every project, not in the CLI data folder', () => {
+    const antigravity = AGENTS.find(a => a.name === 'antigravity')!;
+    expect(antigravity.installDir).toBe(join(TMP, '.gemini', 'config', 'skills', 'nodespace'));
+    expect(antigravity.detectionDir).toBe(join(TMP, '.gemini', 'antigravity-cli'));
+  });
+
   it('install paths are under the expected agent dir', () => {
     const expectedDirs: Record<string, string> = {
       'claude-code': '.claude',

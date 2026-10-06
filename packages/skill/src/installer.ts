@@ -705,7 +705,7 @@ export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT
 
     // Last, so an uninstall interrupted part-way can be run again.
     removeInstalledFile(root, INSTALL_RECORD);
-    removeIfEmpty(root, config.detectionDir);
+    removeIfEmpty(root, config.pruneRoot ?? config.detectionDir);
 
     results.push({ agent: agentName, removed });
   }
