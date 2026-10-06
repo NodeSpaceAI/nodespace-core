@@ -41,7 +41,7 @@
     "tauri:dev": "bun run dev:tauri",
     "tauri:build": "bun run dev:tauri:sidecars --release && bun run --cwd ../.. build:skill && bunx tauri build"
   },
-  "license": "MIT",
+  "license": "FSL-1.1-ALv2",
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.6.0",

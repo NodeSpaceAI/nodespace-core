@@ -40,5 +40,5 @@
     "typescript": "~5.9.3",
     "vitest": "^3.2.7"
   },
-  "license": "MIT"
+  "license": "FSL-1.1-ALv2"
 }

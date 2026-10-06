@@ -30,7 +30,7 @@ resolver = "2"
 version = "0.3.4"
 authors = ["NodeSpace Team"]
 edition = "2021"
-license = "MIT"
+license = "FSL-1.1-ALv2"
 repository = "https://github.com/NodeSpaceAI/nodespace-core"
 
 [workspace.dependencies]
