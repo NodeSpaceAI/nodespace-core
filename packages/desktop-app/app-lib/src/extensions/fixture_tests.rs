@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, oneshot};
 use super::{
     assemble, core_plugin_names, run_channel_rebuilt_hooks, spawn_daemon_ready_tasks,
     AppExtensions, CancellationToken, Channel, LatestVersionSource, UpdateSource,
-    CHANNEL_REBUILT_HOOK_TIMEOUT, EXTENSION_API_VERSION,
+    CHANNEL_REBUILT_HOOK_TIMEOUT,
 };
 use crate::services::GrpcClient;
 use crate::update_check::{
@@ -110,11 +110,6 @@ fn invoke(app: &App<MockRuntime>, command: &str) -> Result<String, serde_json::V
     };
     get_ipc_response(&webview, request)
         .map(|body| body.deserialize::<String>().expect("a string reply"))
-}
-
-#[test]
-fn extension_api_version_is_two_six() {
-    assert_eq!(EXTENSION_API_VERSION, (2, 6));
 }
 
 /// The fixture naming a daemon of its own. `run` installs the profile into

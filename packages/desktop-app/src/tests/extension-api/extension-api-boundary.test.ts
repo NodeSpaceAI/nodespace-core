@@ -21,6 +21,7 @@ import {
   HOST_API_DIR,
   LIB_ROOT,
   SRC_ROOT,
+  exportedNames,
   importSpecifiers,
   resolveSpecifier,
   sourceFiles
@@ -76,6 +77,13 @@ function describeImports(imports: Import[]): string[] {
 const hostApiFiles = sourceFiles(HOST_API_DIR);
 
 describe('extension API boundary', () => {
+  it('lists its exports explicitly, with no `export *`', () => {
+    const entries = hostApiFiles.filter((file) => file.endsWith('.ts'));
+    expect(entries.length).toBeGreaterThan(0);
+    // exportedNames throws on `export *` and `export * as`.
+    for (const file of entries) expect(() => exportedNames(file)).not.toThrow();
+  });
+
   it('is imported by no core module under src/lib or src/routes', () => {
     const coreFiles = [
       ...sourceFiles(LIB_ROOT).filter((file) => !file.startsWith(`${HOST_API_DIR}${path.sep}`)),

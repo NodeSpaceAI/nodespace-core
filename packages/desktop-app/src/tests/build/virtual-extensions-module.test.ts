@@ -42,7 +42,7 @@ describe('virtual:nodespace-extensions', () => {
   it('default-exports the entry’s array when a build injects one', async () => {
     const server = await serverFor(FIXTURE_ENTRY);
     const module = await server.ssrLoadModule(VIRTUAL_ID);
-    expect(module.default).toEqual([{ id: 'sample-extension', apiVersion: 2 }]);
+    expect(module.default).toEqual([{ id: 'sample-extension' }]);
   });
 
   it('default-exports an empty list when nothing is injected, as in core', async () => {
@@ -62,14 +62,14 @@ describe('virtual:nodespace-extensions', () => {
       [
         "import { mount } from 'svelte';",
         "import { invoke } from '@tauri-apps/api/core';",
-        "export default [{ id: 'outside-extension', apiVersion: 2, imports: [typeof mount, typeof invoke] }];"
+        "export default [{ id: 'outside-extension', imports: [typeof mount, typeof invoke] }];"
       ].join('\n')
     );
 
     const server = await serverFor(entry);
     const module = await server.ssrLoadModule(VIRTUAL_ID);
     expect(module.default).toEqual([
-      { id: 'outside-extension', apiVersion: 2, imports: ['function', 'function'] }
+      { id: 'outside-extension', imports: ['function', 'function'] }
     ]);
   });
 });

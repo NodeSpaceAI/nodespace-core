@@ -16,7 +16,6 @@ import {
   extensionTestGlobs,
   resolveExtensionsEntry
 } from '../../../vite-plugins/nodespace-extensions-entry.js';
-import { EXTENSION_API_VERSION } from '$lib/plugins/ui-extensions';
 import type * as host from '$lib/plugins/ui-extensions';
 import type * as api from '@nodespace/extension-api';
 
@@ -233,10 +232,9 @@ describe('nodespace extensions build entry', () => {
       });
     });
 
-    it('resolves @nodespace/extension-api under the unit-tier config, exposing the registration API', async () => {
+    it('resolves @nodespace/extension-api under the unit-tier config, exposing core functions', async () => {
       const api = await import('@nodespace/extension-api');
-      // The full export list is recorded by the surface snapshot in src/tests/extension-api.
-      expect(api.EXTENSION_API_VERSION).toBe(EXTENSION_API_VERSION);
+      expect(api.createLogger).toBeTypeOf('function');
     });
 
     it('re-exports the contribution types an extension is written against, unchanged', () => {

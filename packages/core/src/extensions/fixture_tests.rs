@@ -8,9 +8,7 @@
 //!   edge's properties: stored there, validated on every edge write, and a
 //!   bucket nobody registered left alone.
 //!
-//! This file records the data half of the extension API. A change to it needs
-//! an `EXTENSION_API_VERSION` bump (ADR-082 §8), which
-//! `scripts/check-extension-api-version.ts` enforces.
+//! This file tests the data half of the extension points (ADR-082 §9).
 
 use std::sync::Arc;
 

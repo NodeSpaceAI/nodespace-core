@@ -1,9 +1,8 @@
 /**
- * Source scanning for the extension API's surface and boundary tests: export
- * lists, type declarations and import specifiers, read from the TypeScript
+ * Source scanning for the extension API's boundary tests: export
+ * lists and import specifiers, read from the TypeScript
  * syntax tree of each file (no type checking).
  */
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -111,52 +110,6 @@ export function exportedNames(file: string, source?: string): ExportedName[] {
     }
   }
   return names;
-}
-
-export interface TypeDeclaration {
-  /** The declaration as the TypeScript printer emits it, without comments, `export` or layout. */
-  text: string;
-  /** Every identifier the declaration mentions, for following its references. */
-  refs: Set<string>;
-}
-
-const printer = ts.createPrinter({ removeComments: true });
-
-/** Every top-level `interface` and `type` declaration in a module, by name; merged ones joined. */
-export function typeDeclarations(file: string, source?: string): Map<string, TypeDeclaration> {
-  const sf = parseSource(file, source);
-  const declarations = new Map<string, TypeDeclaration>();
-  for (const st of sf.statements) {
-    if (!ts.isInterfaceDeclaration(st) && !ts.isTypeAliasDeclaration(st)) continue;
-    const refs = new Set<string>();
-    const visit = (node: ts.Node): void => {
-      if (ts.isIdentifier(node)) refs.add(node.text);
-      ts.forEachChild(node, visit);
-    };
-    ts.forEachChild(st, visit);
-    const text = printer
-      .printNode(ts.EmitHint.Unspecified, st, sf)
-      .replace(/^export\s+/, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    // Merged declarations (`interface X` twice) count together, in source order.
-    const earlier = declarations.get(st.name.text);
-    if (earlier) {
-      for (const ref of earlier.refs) refs.add(ref);
-      declarations.set(st.name.text, { text: `${earlier.text} ${text}`, refs });
-    } else {
-      declarations.set(st.name.text, { text, refs });
-    }
-  }
-  return declarations;
-}
-
-/** SHA-256 over declarations' text, independent of their order. */
-export function hashDeclarations(declarations: Map<string, TypeDeclaration>): string {
-  const lines = [...declarations].sort(([a], [b]) => a.localeCompare(b));
-  return createHash('sha256')
-    .update(lines.map(([name, { text }]) => `${name}\t${text}`).join('\n'))
-    .digest('hex');
 }
 
 /** Every `.ts` and `.svelte` file under `dir`, recursively. */

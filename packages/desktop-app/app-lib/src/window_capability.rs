@@ -23,10 +23,10 @@
 //! app crate depends directly on every plugin crate [`plugin_crates`] lists,
 //! even though this library registers the plugins themselves.
 //!
-//! That list is part of the app-crate contract the extension API versions
-//! (ADR-082 §8). Granting a permission of a plugin it does not yet name makes
-//! every app crate built on an earlier core panic at startup until it adds the
-//! dependency, so it is a major change to `EXTENSION_API_VERSION`.
+//! That list is part of the contract with the app crate (ADR-082 §8).
+//! Granting a permission of a plugin it does not yet name makes an app crate
+//! built on an earlier core revision panic at startup until it adds the
+//! dependency, so the app crate adds it when it moves its core pin.
 //!
 //! Its identifier, `core-window`, keeps it apart from a capability an app crate
 //! grants from its own files, which Tauri's scaffold names `default`.
@@ -112,7 +112,7 @@ mod tests {
             plugin_crates(),
             ["tauri-plugin-dialog", "tauri-plugin-opener"],
             "the plugins the capability grants are part of the app-crate contract: granting \
-             a new one is a major EXTENSION_API_VERSION bump"
+             a new one means the app crate must add the dependency"
         );
     }
 

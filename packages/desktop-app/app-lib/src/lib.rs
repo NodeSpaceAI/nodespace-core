@@ -49,10 +49,7 @@ mod atomic_file;
 // Extension points for an app crate built on this library.
 pub mod extensions;
 use extensions::register_core_plugins;
-pub use extensions::{
-    assemble, AppExtensions, DaemonProfile, LatestVersionSource, UpdateSource,
-    EXTENSION_API_VERSION,
-};
+pub use extensions::{assemble, AppExtensions, DaemonProfile, LatestVersionSource, UpdateSource};
 
 // Core's window capability, added at startup so every app crate gets it.
 pub mod window_capability;

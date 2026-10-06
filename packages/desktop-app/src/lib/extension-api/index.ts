@@ -11,38 +11,10 @@
  * extensions, not something core consumes. `extension-api-boundary.test.ts`
  * holds that boundary.
  *
- * Compatibility policy (ADR-082 §8)
- * ---------------------------------
- * `EXTENSION_API_VERSION` (`{ major, minor }`, in `plugins/ui-extensions.ts`)
- * versions:
- *   - this module and its `/ui` and `/testing` entries;
- *   - the `virtual:nodespace-extensions` contract and the `NODESPACE_EXTENSIONS`
- *     variable;
- *   - slot ids, their host props and mount semantics;
- *   - node-type registration through `nodeTypes`, and the `PluginDefinition`
- *     and node-component types it takes;
- *   - contribution failure behaviour (ADR-082 §3.4);
- *   - hook timing, as `plugins/extension-lifecycle.ts` documents it.
- *
- * Which bump a change needs:
- *   - major: removing, renaming or retyping an export; changing a slot's
- *     location, props or mount semantics; changing a hook's timing.
- *   - minor: a new optional slot, hook, service or field.
- *   - none: anything not reachable through the API.
- *
- * Process:
- *   - A change that alters the API bumps `EXTENSION_API_VERSION` in the same PR
- *     and re-records the surface snapshot:
- *       UPDATE_EXTENSION_API_SURFACE=1 bun run --cwd packages/desktop-app test src/tests/extension-api
- *   - The PR description says so, and so do core's release notes, under an
- *     "Extension API" heading.
- *   - Every entry lists its exports explicitly; `export *` is refused, so
- *     nothing reaches the API by accident. Every file in this directory is an
- *     entry. `extension-api-surface.test.ts` compares the export lists and the
- *     API's type declarations with the snapshot. It fails on a change without a
- *     bump and on a removal without a major one; whether a changed type is major
- *     or minor is the reviewer's call, by the rules above.
- *   - Core modules never import the host API.
+ * Every entry lists its exports explicitly; `export *` is refused, so nothing
+ * reaches the API by accident. Every file in this directory is an entry. The API
+ * carries no version: core and the app built on it come from one pinned core
+ * revision (ADR-082 §8).
  */
 
 import type { CreatedNode, CreateNodeInput } from '$lib/services/backend-adapter';
@@ -55,7 +27,6 @@ import type { Node } from '$lib/types';
 
 // --- Registration ---------------------------------------------------------------
 
-export { EXTENSION_API_VERSION } from '$lib/plugins/ui-extensions';
 export type {
   ChromeContribution,
   ChromeSlot,
