@@ -221,7 +221,7 @@ async fn schema_definition(
 ///
 /// Both `phrase` and `haystack` are tokenized identically, splitting on any
 /// non-alphanumeric character (not only whitespace) — a schema id like
-/// `release-plan` or `pull_request` must match a query that spells it with
+/// `release-plan` or `pull-request` must match a query that spells it with
 /// spaces, and vice versa, since ids and queries are not guaranteed to use
 /// the same separator. Single-token phrases (the common case: a type id
 /// like `ticket`) are checked by exact token match. Multi-token phrases (an
