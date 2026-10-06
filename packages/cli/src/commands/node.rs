@@ -363,7 +363,7 @@ pub async fn run(
         NodeAction::Update(args) => update(client, args, json, journal).await,
         NodeAction::SetStatus(args) => set_status(client, args, json, journal).await,
         NodeAction::Move(args) => move_node(client, args, json, journal).await,
-        NodeAction::Delete(args) => delete(client, args, json, journal).await,
+        NodeAction::Delete(args) => delete(client, args, json).await,
         NodeAction::Children(args) => children(client, args, json).await,
         NodeAction::Query(args) => query(client, args, json).await,
         NodeAction::Export(args) => export(client, args, json).await,
@@ -739,12 +739,7 @@ async fn require_child_of(
 /// A delete names what it removes before it removes it (ADR-080): the bare
 /// form previews, and only the form carrying the preview's version and
 /// nested-node count deletes — refused if either has changed since.
-async fn delete(
-    client: &mut NodeClient,
-    args: DeleteArgs,
-    json: bool,
-    journal: &WriteJournal,
-) -> Result<()> {
+async fn delete(client: &mut NodeClient, args: DeleteArgs, json: bool) -> Result<()> {
     let dry_run = args.descendants.is_none();
     let response = client
         .delete_node(DeleteNodeRequest {
@@ -761,9 +756,6 @@ async fn delete(
     if dry_run {
         output::print_delete_preview(&response, &args.routing, json)
     } else {
-        if response.existed {
-            journal.record(&response.node_id, response.version);
-        }
         output::print_delete(&response, json)
     }
 }
@@ -926,7 +918,9 @@ async fn batch_update(
 
 /// Journals the versions a batch update left its nodes at. The response names
 /// the nodes and not their versions, so they are read back; a read that fails
-/// loses the entries and nothing else.
+/// loses the entries and nothing else. A node another process writes between
+/// the batch and the read-back is journaled at that writer's version: the same
+/// unversioned read-then-write window the batch itself has.
 async fn record_batch(client: &mut NodeClient, updated: &[String], journal: &WriteJournal) {
     if updated.is_empty() {
         return;

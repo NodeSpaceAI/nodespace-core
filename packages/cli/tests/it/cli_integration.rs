@@ -6722,7 +6722,8 @@ async fn every_node_write_is_journaled_at_the_version_it_leaves_the_node() {
     .expect_err("a stale version is refused");
     assert_eq!(journal_entries(&path).len(), before);
 
-    // A preview deletes nothing and records nothing; the confirmed delete does.
+    // A delete records nothing: the node is gone, and a watcher is told so by
+    // the not-found read, not by a version.
     let delete = |version, descendants| {
         commands::node::NodeAction::Delete(commands::node::DeleteArgs {
             id: node.clone(),
@@ -6739,7 +6740,7 @@ async fn every_node_write_is_journaled_at_the_version_it_leaves_the_node() {
     commands::node::run(&mut client, delete(Some(version), Some(0)), true, &journal)
         .await
         .expect("delete");
-    assert_eq!(journal_entries(&path).len(), before + 1);
+    assert_eq!(journal_entries(&path).len(), before);
 
     let _ = shutdown.send(());
 }

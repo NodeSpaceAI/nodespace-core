@@ -978,7 +978,9 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
 
     // The node is at a version one of the session's own commands wrote, or
     // the journal could not be read and nothing says it was not: the change
-    // becomes the baseline.
+    // becomes the baseline. Only the node's current version is attributed: a
+    // change by someone else that the session's own write then followed,
+    // between two checks, is not told apart.
     if (own === null || own.get(item.id)?.has(now.nodeVersion)) {
       await update($, watch, kept => ({ ...kept, item: now }))
 
