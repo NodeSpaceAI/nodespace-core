@@ -12,10 +12,10 @@ use crate::playbook::PlaybookEngine;
 use serde_json::json;
 use tempfile::TempDir;
 
-const DOC: &str = "dr_doc";
+const DOC: &str = "dr-doc";
 const PLAY_ID: &str = "d7000000-0000-4000-8000-000000000001";
 
-/// A database with a `dr_doc` type and one active play holding `rules`. The
+/// A database with a `dr-doc` type and one active play holding `rules`. The
 /// engine is returned so the lifecycle the service reads rules from stays
 /// alive for the test.
 async fn service_with_rules(
@@ -31,7 +31,7 @@ async fn service_with_rules(
     crate::schema::handle_create_schema(
         &service,
         json!({
-            "name": "dr_reviewer",
+            "name": "dr-reviewer",
             "fields": [{ "name": "name", "type": "text" }]
         }),
     )
@@ -47,7 +47,7 @@ async fn service_with_rules(
             ],
             "relationships": [{
                 "name": "reviewer",
-                "targetType": "dr_reviewer",
+                "targetType": "dr-reviewer",
                 "direction": "out",
                 "cardinality": "one",
                 "reverseName": "reviews",
@@ -75,7 +75,7 @@ async fn service_with_rules(
     (service, engine, temp_dir)
 }
 
-/// An invariant rule on a change of `dr_doc.stage`.
+/// An invariant rule on a change of `dr-doc.stage`.
 fn on_stage_change(
     name: &str,
     conditions: serde_json::Value,

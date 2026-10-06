@@ -1026,7 +1026,7 @@ mod tests {
         )
         .await
         .expect("a subtype of the terminal chat");
-        let node_id = create_chat(&node_service, "pairing_session", "codex").await;
+        let node_id = create_chat(&node_service, "pairing-session", "codex").await;
 
         let mut session = make_session();
         session.node_id = Some(node_id.clone());

@@ -39,7 +39,7 @@ async fn create_base_and_subtype(ns: &Arc<NodeService>) {
     handle_create_schema(
         ns,
         json!({
-            "name": "ledger_entry",
+            "name": "ledger-entry",
             "fields": [
                 { "name": "amount", "type": "number" },
                 { "name": "memo", "type": "text" }
@@ -51,8 +51,8 @@ async fn create_base_and_subtype(ns: &Arc<NodeService>) {
     handle_create_schema(
         ns,
         json!({
-            "name": "refund_entry",
-            "extends": "ledger_entry",
+            "name": "refund-entry",
+            "extends": "ledger-entry",
             "fields": [{ "name": "reason", "type": "text" }]
         }),
     )
@@ -74,7 +74,7 @@ async fn get_node_on_a_subtype_returns_and_lists_inherited_fields() {
             "create_node",
             json!({
                 "content": "Refund for a duplicate charge",
-                "node_type": "refund_entry",
+                "node_type": "refund-entry",
                 "field_values": { "amount": 42, "reason": "duplicate" },
             }),
         )
@@ -117,7 +117,7 @@ async fn empty_search_on_a_subtype_names_inherited_filterable_fields() {
     let found = executor
         .execute(
             "search_nodes",
-            json!({ "query": "", "node_type": "refund_entry" }),
+            json!({ "query": "", "node_type": "refund-entry" }),
         )
         .await
         .expect("search_nodes must succeed");

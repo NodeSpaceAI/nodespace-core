@@ -188,7 +188,7 @@ async fn rejects_node_type_with_no_schema_and_no_core_behavior(
     let ns = test_service().await?;
     // The real id ("equipment") is never seeded — only the invented display
     // name is attempted, matching the scenario 4 trace where the schema was
-    // created as "equipment_item" but create_node was called with "Equipment
+    // created as "equipment-item" but create_node was called with "Equipment
     // Item Tracker".
     let err = node_ops::create_node(
         &ns,

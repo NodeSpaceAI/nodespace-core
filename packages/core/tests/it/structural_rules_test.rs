@@ -267,7 +267,7 @@ async fn a_subtype_inherits_its_bases_rules_and_cannot_relax_them() {
     .await;
     assert_eq!(
         svc.store()
-            .structural_rules_in_force("quick_reply")
+            .structural_rules_in_force("quick-reply")
             .await
             .unwrap(),
         svc.store()
@@ -293,7 +293,7 @@ async fn a_subtype_inherits_its_bases_rules_and_cannot_relax_them() {
             .expect_err("a subtype may only tighten")
             .to_string();
         assert!(error.contains("only tighten"), "{params}: {error}");
-        assert!(svc.get_schema_node("loose_reply").await.unwrap().is_none());
+        assert!(svc.get_schema_node("loose-reply").await.unwrap().is_none());
     }
     let error = handle_create_schema(
         &svc,
@@ -316,17 +316,17 @@ async fn a_subtype_inherits_its_bases_rules_and_cannot_relax_them() {
             "name": "Support Reply",
             "extends": "reply",
             "fields": [],
-            "parent": { "rule": "must_have_parent_of", "types": ["support_thread"] }
+            "parent": { "rule": "must_have_parent_of", "types": ["support-thread"] }
         }),
     )
     .await;
     let thread = create(&svc, "thread", "General").await;
-    let support = create(&svc, "support_thread", "Support").await;
+    let support = create(&svc, "support-thread", "Support").await;
     assert_eq!(
-        refused(create_under(&svc, &thread, "support_reply", "hello").await),
+        refused(create_under(&svc, &thread, "support-reply", "hello").await),
         TreeInvariantRule::ParentRequired
     );
-    create_under(&svc, &support, "support_reply", "hello")
+    create_under(&svc, &support, "support-reply", "hello")
         .await
         .unwrap();
 
@@ -341,7 +341,7 @@ async fn a_subtype_inherits_its_bases_rules_and_cannot_relax_them() {
         }),
     )
     .await;
-    let journal = create(&svc, "private_journal", "Mine").await;
+    let journal = create(&svc, "private-journal", "Mine").await;
     for refused_type in ["task", "person"] {
         assert_eq!(
             refused(create_under(&svc, &journal, refused_type, "x").await),
@@ -566,9 +566,9 @@ async fn a_rule_is_tightened_only_when_no_node_breaks_it() {
         json!({ "schema_id": "deck", "children": { "rule": "none" } }),
     )
     .await
-    .expect_err("card_stack's list would relax `none`")
+    .expect_err("card-stack's list would relax `none`")
     .to_string();
-    assert!(error.contains("card_stack"), "{error}");
+    assert!(error.contains("card-stack"), "{error}");
 }
 
 // ---------------------------------------------------------------------------

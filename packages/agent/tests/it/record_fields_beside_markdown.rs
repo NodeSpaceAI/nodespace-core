@@ -59,7 +59,7 @@ async fn a_record_read_as_markdown_carries_its_set_fields() {
     handle_create_schema(
         &ns,
         json!({
-            "name": "customer_account",
+            "name": "customer-account",
             "fields": [
                 { "name": "signed_date", "type": "date" },
                 { "name": "region", "type": "text" }
@@ -72,7 +72,7 @@ async fn a_record_read_as_markdown_carries_its_set_fields() {
         &executor,
         json!({
             "content": "Northwind Trading",
-            "node_type": "customer_account",
+            "node_type": "customer-account",
             "field_values": { "signed_date": "2025-03-14" },
         }),
     )

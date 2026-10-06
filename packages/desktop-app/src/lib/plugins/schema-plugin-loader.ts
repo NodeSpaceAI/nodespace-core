@@ -76,11 +76,8 @@ let resyncGeneration = 0;
 /**
  * Humanize a schema ID into a readable display name
  *
- * Converts technical IDs into user-friendly names:
- * - camelCase → Camel Case
- * - snake_case → Snake Case
- * - kebab-case → Kebab Case
- * - Capitalizes each word
+ * A type id is kebab-case; each word is capitalized and the hyphens become
+ * spaces.
  *
  * @param id - Schema ID to humanize
  * @returns Humanized display name
@@ -88,23 +85,15 @@ let resyncGeneration = 0;
  * @example
  * ```typescript
  * humanizeSchemaId('invoice') // 'Invoice'
- * humanizeSchemaId('salesInvoice') // 'Sales Invoice'
- * humanizeSchemaId('sales_invoice') // 'Sales Invoice'
- * humanizeSchemaId('sales-invoice') // 'Sales Invoice'
+ * humanizeSchemaId('customer-profile') // 'Customer Profile'
  * ```
  */
 export function humanizeSchemaId(id: string): string {
-  return (
-    id
-      // Insert space before uppercase letters (camelCase → camel Case)
-      .replace(/([A-Z])/g, ' $1')
-      // Replace underscores and hyphens with spaces
-      .replace(/[_-]/g, ' ')
-      // Trim leading/trailing spaces
-      .trim()
-      // Capitalize first letter of each word
-      .replace(/\b\w/g, (char) => char.toUpperCase())
-  );
+  return id
+    .split('-')
+    .filter((word) => word.length > 0)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
 
 /**

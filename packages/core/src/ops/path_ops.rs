@@ -410,19 +410,19 @@ mod tests {
         // Declared first, with no target type.
         crate::schema::handle_create_schema(
             &svc,
-            serde_json::json!({ "name": "po_anything", "fields": [], "relationships": [relationship(None)] }),
+            serde_json::json!({ "name": "po-anything", "fields": [], "relationships": [relationship(None)] }),
         )
         .await
         .unwrap();
         crate::schema::handle_create_schema(
             &svc,
-            serde_json::json!({ "name": "po_fan", "fields": [], "relationships": [relationship(Some("task"))] }),
+            serde_json::json!({ "name": "po-fan", "fields": [], "relationships": [relationship(Some("task"))] }),
         )
         .await
         .unwrap();
 
         let watchers = resolved(hop(&svc, Some("task"), "watchers").await);
-        assert_eq!(watchers.source_type.as_deref(), Some("po_fan"));
+        assert_eq!(watchers.source_type.as_deref(), Some("po-fan"));
         assert!(!watchers.untyped);
     }
 

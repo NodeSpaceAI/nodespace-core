@@ -1794,17 +1794,17 @@ mod tests {
 
             create_schema(
                 &svc,
-                json!({"name": "rf_project", "fields": [{"name": "status", "type": "text"}]}),
+                json!({"name": "rf-project", "fields": [{"name": "status", "type": "text"}]}),
             )
             .await;
             create_schema(
                 &svc,
                 json!({
-                    "name": "rf_task",
+                    "name": "rf-task",
                     "fields": [],
                     "relationships": [{
                         "name": "project",
-                        "targetType": "rf_project",
+                        "targetType": "rf-project",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "tasks",
@@ -1816,28 +1816,28 @@ mod tests {
 
             svc.create_node(node(
                 "dc9569ca-1867-5917-b11b-8b77a9236717",
-                "rf_project",
+                "rf-project",
                 json!({"status": "active"}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
                 "d65e6776-2ea6-5bff-a3d4-cf789180883f",
-                "rf_project",
+                "rf-project",
                 json!({"status": "completed"}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
                 "d0aaac45-70f6-537e-a669-b6da9229eb6a",
-                "rf_task",
+                "rf-task",
                 json!({}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
                 "d5255404-47a9-5cbc-ad65-a93d51e23b51",
-                "rf_task",
+                "rf-task",
                 json!({}),
             ))
             .await
@@ -1860,7 +1860,7 @@ mod tests {
             .unwrap();
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
-                "target_type": "rf_task",
+                "target_type": "rf-task",
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
@@ -1900,7 +1900,7 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "rf2_sprint",
+                    "name": "rf2-sprint",
                     "fields": []
                 }),
             )
@@ -1908,11 +1908,11 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "rf2_task",
+                    "name": "rf2-task",
                     "fields": [{"name": "severity", "type": "text"}],
                     "relationships": [{
                         "name": "sprint",
-                        "targetType": "rf2_sprint",
+                        "targetType": "rf2-sprint",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "tasks",
@@ -1924,41 +1924,41 @@ mod tests {
 
             svc.create_node(node(
                 "036a1de4-68d2-56db-800d-0af9282deb1a",
-                "rf2_sprint",
+                "rf2-sprint",
                 json!({}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
                 "ec7a4732-33ae-578f-b965-8d89e1d05970",
-                "rf2_sprint",
+                "rf2-sprint",
                 json!({}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
                 "93bf1145-a86c-5584-a012-c98947702696",
-                "rf2_task",
+                "rf2-task",
                 json!({"severity": "critical"}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
                 "a7a56745-c02d-5d04-83df-5e02e9fb3366",
-                "rf2_task",
+                "rf2-task",
                 json!({"severity": "minor"}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
                 "201dfae7-602b-5e1d-97c1-23c741f34e19",
-                "rf2_task",
+                "rf2-task",
                 json!({"severity": "minor"}),
             ))
             .await
             .unwrap();
             // sprint-hot has both a critical and a minor task -- still one match.
-            // The forward declaration (`sprint`) lives on `rf2_task`, so the
+            // The forward declaration (`sprint`) lives on `rf2-task`, so the
             // edge is created from the task's end, naming the forward name --
             // `tasks` is the reverse spelling the query filter below uses.
             svc.create_relationship(
@@ -1987,7 +1987,7 @@ mod tests {
             .unwrap();
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
-                "target_type": "rf2_sprint",
+                "target_type": "rf2-sprint",
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
@@ -2103,17 +2103,17 @@ mod tests {
 
             create_schema(
                 &svc,
-                json!({"name": "rf3_epic", "fields": [{"name": "status", "type": "text"}]}),
+                json!({"name": "rf3-epic", "fields": [{"name": "status", "type": "text"}]}),
             )
             .await;
             create_schema(
                 &svc,
                 json!({
-                    "name": "rf3_task",
+                    "name": "rf3-task",
                     "fields": [],
                     "relationships": [{
                         "name": "epic",
-                        "targetType": "rf3_epic",
+                        "targetType": "rf3-epic",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "issues",
@@ -2124,20 +2124,20 @@ mod tests {
             .await;
             create_schema(
                 &svc,
-                json!({"name": "rf3_story", "extends": "rf3_task", "fields": []}),
+                json!({"name": "rf3-story", "extends": "rf3-task", "fields": []}),
             )
             .await;
 
             svc.create_node(node(
                 "00e0ccd8-aa1e-53da-92f6-6dab31ad8626",
-                "rf3_epic",
+                "rf3-epic",
                 json!({"status": "active"}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
                 "2563689f-df77-5f7c-9aad-879d135a915f",
-                "rf3_story",
+                "rf3-story",
                 json!({}),
             ))
             .await
@@ -2152,7 +2152,7 @@ mod tests {
             .expect("create_relationship must succeed for an inherited relationship");
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
-                "target_type": "rf3_story",
+                "target_type": "rf3-story",
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
@@ -2182,15 +2182,15 @@ mod tests {
         async fn related_filter_depth_greater_than_one_is_rejected() {
             let (svc, _tmp) = make_test_service().await;
 
-            create_schema(&svc, json!({"name": "rf4_owner", "fields": []})).await;
+            create_schema(&svc, json!({"name": "rf4-owner", "fields": []})).await;
             create_schema(
                 &svc,
                 json!({
-                    "name": "rf4_project",
+                    "name": "rf4-project",
                     "fields": [],
                     "relationships": [{
                         "name": "owner",
-                        "targetType": "rf4_owner",
+                        "targetType": "rf4-owner",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "projects",
@@ -2202,11 +2202,11 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "rf4_task",
+                    "name": "rf4-task",
                     "fields": [],
                     "relationships": [{
                         "name": "project",
-                        "targetType": "rf4_project",
+                        "targetType": "rf4-project",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "tasks",
@@ -2217,7 +2217,7 @@ mod tests {
             .await;
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
-                "target_type": "rf4_task",
+                "target_type": "rf4-task",
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
@@ -2363,17 +2363,17 @@ mod tests {
 
             create_schema(
                 &svc,
-                json!({"name": "rf5_project", "fields": [{"name": "status", "type": "text"}]}),
+                json!({"name": "rf5-project", "fields": [{"name": "status", "type": "text"}]}),
             )
             .await;
             create_schema(
                 &svc,
                 json!({
-                    "name": "rf5_task",
+                    "name": "rf5-task",
                     "fields": [],
                     "relationships": [{
                         "name": "project",
-                        "targetType": "rf5_project",
+                        "targetType": "rf5-project",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "tasks",
@@ -2385,14 +2385,14 @@ mod tests {
 
             svc.create_node(node(
                 "9ac587e9-f1b5-5f0c-881d-3719852c028b",
-                "rf5_project",
+                "rf5-project",
                 json!({"status": "active"}),
             ))
             .await
             .unwrap();
             svc.create_node(node(
                 "054b66fd-0362-5b43-86a6-1961eda0112b",
-                "rf5_task",
+                "rf5-task",
                 json!({}),
             ))
             .await
@@ -2409,10 +2409,10 @@ mod tests {
             // Walked from the project's end using the forward name itself
             // ("project"), not its reverseName ("tasks") -- the
             // InboundForward branch, distinct from the Reverse test above.
-            // rf5_task declares no fields, so the nested filter matches on
+            // rf5-task declares no fields, so the nested filter matches on
             // a metadata field (node_type) rather than a property.
             let input: ExecuteQueryInput = serde_json::from_value(json!({
-                "target_type": "rf5_project",
+                "target_type": "rf5-project",
                 "filters": [{
                     "type": "related",
                     "operator": "equals",
@@ -2421,7 +2421,7 @@ mod tests {
                         "type": "metadata",
                         "operator": "equals",
                         "property": "node_type",
-                        "value": "rf5_task"
+                        "value": "rf5-task"
                     }
                 }]
             }))
@@ -2502,17 +2502,17 @@ mod tests {
         async fn seed_project_tree(svc: &Arc<NodeService>) {
             create_schema(
                 svc,
-                json!({"name": "pt_project", "fields": [{"name": "status", "type": "text"}]}),
+                json!({"name": "pt-project", "fields": [{"name": "status", "type": "text"}]}),
             )
             .await;
             create_schema(
                 svc,
                 json!({
-                    "name": "pt_task",
+                    "name": "pt-task",
                     "fields": [],
                     "relationships": [{
                         "name": "project",
-                        "targetType": "pt_project",
+                        "targetType": "pt-project",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "tasks",
@@ -2523,10 +2523,10 @@ mod tests {
             .await;
 
             for (id, node_type, props) in [
-                (ACTIVE_PROJECT, "pt_project", json!({"status": "active"})),
-                (DONE_PROJECT, "pt_project", json!({"status": "done"})),
-                (ACTIVE_TASK, "pt_task", json!({})),
-                (DONE_TASK, "pt_task", json!({})),
+                (ACTIVE_PROJECT, "pt-project", json!({"status": "active"})),
+                (DONE_PROJECT, "pt-project", json!({"status": "done"})),
+                (ACTIVE_TASK, "pt-task", json!({})),
+                (DONE_TASK, "pt-task", json!({})),
                 (NOTE_UNDER_ACTIVE_TASK, "text", json!({})),
                 (NOTE_UNDER_NOTE, "text", json!({})),
                 (NOTE_UNDER_DONE_TASK, "text", json!({})),
@@ -2569,7 +2569,7 @@ mod tests {
             let tasks = matching_ids(
                 &svc,
                 json!({
-                    "target_type": "pt_task",
+                    "target_type": "pt-task",
                     "filters": [{
                         "type": "relationship", "operator": "equals",
                         "path": ["project"], "node_id": ACTIVE_PROJECT
@@ -2584,7 +2584,7 @@ mod tests {
             let projects = matching_ids(
                 &svc,
                 json!({
-                    "target_type": "pt_project",
+                    "target_type": "pt-project",
                     "filters": [{
                         "type": "relationship", "operator": "equals",
                         "path": ["tasks"], "node_id": DONE_TASK
@@ -2606,7 +2606,7 @@ mod tests {
             let tasks = matching_ids(
                 &svc,
                 json!({
-                    "target_type": "pt_project",
+                    "target_type": "pt-project",
                     "filters": [{
                         "type": "relationship", "operator": "equals",
                         "path": ["tasks", "has_child"], "node_id": NOTE_UNDER_ACTIVE_TASK
@@ -2679,17 +2679,17 @@ mod tests {
             let (svc, _tmp) = make_test_service().await;
             create_schema(
                 &svc,
-                json!({"name": "st_ticket", "fields": [{"name": "state", "type": "text"}]}),
+                json!({"name": "st-ticket", "fields": [{"name": "state", "type": "text"}]}),
             )
             .await;
             create_schema(
                 &svc,
-                json!({"name": "st_bug", "extends": "st_ticket", "fields": []}),
+                json!({"name": "st-bug", "extends": "st-ticket", "fields": []}),
             )
             .await;
             svc.create_node(node(
                 "a2000000-0000-4000-8000-000000000001",
-                "st_ticket",
+                "st-ticket",
                 json!({"state": "open"}),
             ))
             .await
@@ -2698,7 +2698,7 @@ mod tests {
             // in the base type's bucket, where the base-scoped filter reads it.
             svc.create_node(node(
                 "a2000000-0000-4000-8000-000000000002",
-                "st_bug",
+                "st-bug",
                 json!({"state": "open"}),
             ))
             .await
@@ -2707,7 +2707,7 @@ mod tests {
             let tickets = matching_ids(
                 &svc,
                 json!({
-                    "target_type": "st_ticket",
+                    "target_type": "st-ticket",
                     "filters": [{
                         "type": "property", "operator": "equals",
                         "property": "state", "value": "open"
@@ -2723,7 +2723,7 @@ mod tests {
                 ]
             );
 
-            let bugs = matching_ids(&svc, json!({ "target_type": "st_bug", "filters": [] })).await;
+            let bugs = matching_ids(&svc, json!({ "target_type": "st-bug", "filters": [] })).await;
             assert_eq!(bugs, ["a2000000-0000-4000-8000-000000000002"]);
         }
 
@@ -2736,18 +2736,18 @@ mod tests {
             let (svc, _tmp) = make_test_service().await;
             create_schema(
                 &svc,
-                json!({"name": "so_ticket", "fields": [{"name": "rank", "type": "text"}]}),
+                json!({"name": "so-ticket", "fields": [{"name": "rank", "type": "text"}]}),
             )
             .await;
             create_schema(
                 &svc,
-                json!({"name": "so_bug", "extends": "so_ticket", "fields": []}),
+                json!({"name": "so-bug", "extends": "so-ticket", "fields": []}),
             )
             .await;
             for (id, node_type, rank) in [
-                ("a3000000-0000-4000-8000-000000000001", "so_ticket", "a"),
-                ("a3000000-0000-4000-8000-000000000002", "so_bug", "m"),
-                ("a3000000-0000-4000-8000-000000000003", "so_ticket", "z"),
+                ("a3000000-0000-4000-8000-000000000001", "so-ticket", "a"),
+                ("a3000000-0000-4000-8000-000000000002", "so-bug", "m"),
+                ("a3000000-0000-4000-8000-000000000003", "so-ticket", "z"),
             ] {
                 svc.create_node(node(id, node_type, json!({ "rank": rank })))
                     .await
@@ -2758,7 +2758,7 @@ mod tests {
                 let svc = Arc::clone(&svc);
                 async move {
                     let input: ExecuteQueryInput = serde_json::from_value(json!({
-                        "target_type": "so_ticket",
+                        "target_type": "so-ticket",
                         "filters": [],
                         "sorting": [{ "field": "rank", "direction": direction }]
                     }))
@@ -2768,7 +2768,7 @@ mod tests {
                         .unwrap()
                         .iter()
                         .map(|n| {
-                            n.properties["so_ticket"]["rank"]
+                            n.properties["so-ticket"]["rank"]
                                 .as_str()
                                 .unwrap()
                                 .to_string()
@@ -2801,7 +2801,7 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "si_ticket",
+                    "name": "si-ticket",
                     "fields": [
                         { "name": "rank", "type": "text" },
                         { "name": "repository", "type": "object", "fields": [
@@ -2813,7 +2813,7 @@ mod tests {
             .await;
             create_schema(
                 &svc,
-                json!({ "name": "si_bug", "extends": "si_ticket", "fields": [
+                json!({ "name": "si-bug", "extends": "si-ticket", "fields": [
                     { "name": "severity", "type": "text" }
                 ] }),
             )
@@ -2831,7 +2831,7 @@ mod tests {
             ] {
                 svc.create_node(node(
                     &id(n),
-                    "si_bug",
+                    "si-bug",
                     json!({ "rank": rank, "severity": "low", "repository": { "url": url } }),
                 ))
                 .await
@@ -2846,7 +2846,7 @@ mod tests {
                     ordered_ids(
                         &svc,
                         json!({
-                            "target_type": "si_bug", "filters": [], "limit": limit,
+                            "target_type": "si-bug", "filters": [], "limit": limit,
                             "sorting": [{ "field": field, "direction": direction }]
                         }),
                     )
@@ -2891,10 +2891,10 @@ mod tests {
                 }
             };
             assert_eq!(
-                scope_of("si_bug").await.bucket.as_deref(),
-                Some("si_ticket")
+                scope_of("si-bug").await.bucket.as_deref(),
+                Some("si-ticket")
             );
-            assert_eq!(scope_of("si_ticket").await, PropertyScope::default());
+            assert_eq!(scope_of("si-ticket").await, PropertyScope::default());
         }
 
         /// A subtype of a type on the shared urgency scale sorts its
@@ -2905,12 +2905,12 @@ mod tests {
             let (svc, _tmp) = make_test_service().await;
             create_schema(
                 &svc,
-                json!({ "name": "sp_bug", "extends": "task", "fields": [] }),
+                json!({ "name": "sp-bug", "extends": "task", "fields": [] }),
             )
             .await;
             let id = |n: u8| format!("a5000000-0000-4000-8000-00000000000{n}");
             for (n, priority) in [(1, "low"), (2, "highest"), (3, "medium"), (4, "high")] {
-                svc.create_node(node(&id(n), "sp_bug", json!({ "priority": priority })))
+                svc.create_node(node(&id(n), "sp-bug", json!({ "priority": priority })))
                     .await
                     .unwrap();
             }
@@ -2922,7 +2922,7 @@ mod tests {
                     ordered_ids(
                         &svc,
                         json!({
-                            "target_type": "sp_bug", "filters": [], "limit": limit,
+                            "target_type": "sp-bug", "filters": [], "limit": limit,
                             "sorting": [{ "field": "priority", "direction": direction }]
                         }),
                     )
@@ -2945,7 +2945,7 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "me_ticket",
+                    "name": "me-ticket",
                     "fields": [{
                         "name": "state", "type": "enum", "extensible": true,
                         "coreValues": [
@@ -2958,13 +2958,13 @@ mod tests {
             .await;
             create_schema(
                 &svc,
-                json!({ "name": "me_bug", "extends": "me_ticket", "fields": [] }),
+                json!({ "name": "me-bug", "extends": "me-ticket", "fields": [] }),
             )
             .await;
             crate::schema::handle_update_schema(
                 &svc,
                 json!({
-                    "schema_id": "me_bug",
+                    "schema_id": "me-bug",
                     "add_field_values": [{
                         "field": "state",
                         "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
@@ -2980,11 +2980,11 @@ mod tests {
             const BUG_OPEN: &str = "a6000000-0000-4000-8000-000000000004";
             const BUG_DONE: &str = "a6000000-0000-4000-8000-000000000005";
             for (id, node_type, state) in [
-                (TICKET_OPEN, "me_ticket", "open"),
-                (TICKET_DONE, "me_ticket", "done"),
-                (BUG_BACKLOG, "me_bug", "backlog"),
-                (BUG_OPEN, "me_bug", "open"),
-                (BUG_DONE, "me_bug", "done"),
+                (TICKET_OPEN, "me-ticket", "open"),
+                (TICKET_DONE, "me-ticket", "done"),
+                (BUG_BACKLOG, "me-bug", "backlog"),
+                (BUG_OPEN, "me-bug", "open"),
+                (BUG_DONE, "me-bug", "done"),
             ] {
                 svc.create_node(node(id, node_type, json!({ "state": state })))
                     .await
@@ -2992,7 +2992,7 @@ mod tests {
             }
             // The subtype's rows hold the field under the subtype.
             let stored = svc.get_node(BUG_OPEN).await.unwrap().unwrap();
-            assert_eq!(stored.properties["me_bug"]["state"], "open");
+            assert_eq!(stored.properties["me-bug"]["state"], "open");
 
             let matching = |target: &'static str, filter: Value| {
                 let svc = Arc::clone(&svc);
@@ -3002,28 +3002,28 @@ mod tests {
             };
             let state_is = |value: &str| json!({ "type": "property", "operator": "equals", "property": "state", "value": value });
             assert_eq!(
-                matching("me_ticket", state_is("open")).await,
+                matching("me-ticket", state_is("open")).await,
                 [TICKET_OPEN, BUG_BACKLOG, BUG_OPEN]
             );
             let mut not_open = state_is("open");
             not_open["negate"] = json!(true);
             assert_eq!(
-                matching("me_ticket", not_open).await,
+                matching("me-ticket", not_open).await,
                 [TICKET_DONE, BUG_DONE]
             );
             assert_eq!(
                 matching(
-                    "me_ticket",
+                    "me-ticket",
                     json!({ "type": "property", "operator": "in", "property": "state", "value": ["done"] })
                 )
                 .await,
                 [TICKET_DONE, BUG_DONE]
             );
             // The base type has no `backlog`.
-            assert!(matching("me_ticket", state_is("backlog")).await.is_empty());
+            assert!(matching("me-ticket", state_is("backlog")).await.is_empty());
             // At its own type the subtype's value is read as stored.
-            assert_eq!(matching("me_bug", state_is("backlog")).await, [BUG_BACKLOG]);
-            assert_eq!(matching("me_bug", state_is("open")).await, [BUG_OPEN]);
+            assert_eq!(matching("me-bug", state_is("backlog")).await, [BUG_BACKLOG]);
+            assert_eq!(matching("me-bug", state_is("open")).await, [BUG_OPEN]);
 
             // Sorted and returned at the base type, every row carries the
             // base type's value in the base type's bucket. The order is the
@@ -3033,12 +3033,12 @@ mod tests {
                 let svc = Arc::clone(&svc);
                 async move {
                     let input: ExecuteQueryInput = serde_json::from_value(json!({
-                        "target_type": "me_ticket", "filters": [], "limit": limit,
+                        "target_type": "me-ticket", "filters": [], "limit": limit,
                         "sorting": [{ "field": "state", "direction": direction }]
                     }))
                     .unwrap();
                     let nodes = execute_query_nodes(&svc, input).await.unwrap();
-                    svc.project_nodes_to_scope(nodes, Some("me_ticket"))
+                    svc.project_nodes_to_scope(nodes, Some("me-ticket"))
                         .await
                         .unwrap()
                 }
@@ -3046,10 +3046,10 @@ mod tests {
             let rows = states("asc", 50).await;
             let read: Vec<&str> = rows
                 .iter()
-                .map(|n| n.properties["me_ticket"]["state"].as_str().unwrap())
+                .map(|n| n.properties["me-ticket"]["state"].as_str().unwrap())
                 .collect();
             assert_eq!(read, ["open", "open", "open", "done", "done"]);
-            assert!(rows.iter().all(|n| n.properties.get("me_bug").is_none()));
+            assert!(rows.iter().all(|n| n.properties.get("me-bug").is_none()));
             let mut last_two: Vec<String> =
                 states("desc", 2).await.into_iter().map(|n| n.id).collect();
             last_two.sort();
@@ -3066,7 +3066,7 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "ml_a",
+                    "name": "ml-a",
                     "fields": [{
                         "name": "state", "type": "enum", "extensible": true,
                         "coreValues": [
@@ -3077,7 +3077,7 @@ mod tests {
                 }),
             )
             .await;
-            for (name, extends) in [("ml_b", "ml_a"), ("ml_c", "ml_b"), ("ml_d", "ml_c")] {
+            for (name, extends) in [("ml-b", "ml-a"), ("ml-c", "ml-b"), ("ml-d", "ml-c")] {
                 create_schema(
                     &svc,
                     json!({ "name": name, "extends": extends, "fields": [] }),
@@ -3085,7 +3085,7 @@ mod tests {
                 .await;
             }
             for (schema, value, maps_to) in
-                [("ml_b", "backlog", "open"), ("ml_c", "icebox", "backlog")]
+                [("ml-b", "backlog", "open"), ("ml-c", "icebox", "backlog")]
             {
                 crate::schema::handle_update_schema(
                     &svc,
@@ -3107,11 +3107,11 @@ mod tests {
             const D_ICEBOX: &str = "a8000000-0000-4000-8000-000000000004";
             const D_DONE: &str = "a8000000-0000-4000-8000-000000000005";
             for (id, node_type, state) in [
-                (A_OPEN, "ml_a", "open"),
-                (B_BACKLOG, "ml_b", "backlog"),
-                (C_ICEBOX, "ml_c", "icebox"),
-                (D_ICEBOX, "ml_d", "icebox"),
-                (D_DONE, "ml_d", "done"),
+                (A_OPEN, "ml-a", "open"),
+                (B_BACKLOG, "ml-b", "backlog"),
+                (C_ICEBOX, "ml-c", "icebox"),
+                (D_ICEBOX, "ml-d", "icebox"),
+                (D_DONE, "ml-d", "done"),
             ] {
                 svc.create_node(node(id, node_type, json!({ "state": state })))
                     .await
@@ -3132,23 +3132,23 @@ mod tests {
                 }
             };
             assert_eq!(
-                matching("ml_a", "open").await,
+                matching("ml-a", "open").await,
                 [A_OPEN, B_BACKLOG, C_ICEBOX, D_ICEBOX]
             );
-            assert_eq!(matching("ml_a", "done").await, [D_DONE]);
+            assert_eq!(matching("ml-a", "done").await, [D_DONE]);
             assert_eq!(
-                matching("ml_b", "backlog").await,
+                matching("ml-b", "backlog").await,
                 [B_BACKLOG, C_ICEBOX, D_ICEBOX]
             );
-            assert!(matching("ml_b", "icebox").await.is_empty());
-            assert_eq!(matching("ml_c", "icebox").await, [C_ICEBOX, D_ICEBOX]);
+            assert!(matching("ml-b", "icebox").await.is_empty());
+            assert_eq!(matching("ml-c", "icebox").await, [C_ICEBOX, D_ICEBOX]);
 
             // The field sorts in the order the top type declares it, `open`
             // then `done`, at every type that reads it. Every other row
             // reads as `open` there, so the one `done` row is last
             // ascending, and first descending, at the top type and at the
             // middle one alike.
-            for target in ["ml_a", "ml_b"] {
+            for target in ["ml-a", "ml-b"] {
                 let first = ordered_ids(
                     &svc,
                     json!({
@@ -3162,7 +3162,7 @@ mod tests {
 
             // The row returned carries the value the queried type reads.
             let icebox = svc.get_node(D_ICEBOX).await.unwrap().unwrap();
-            for (scope, reads_as) in [("ml_a", "open"), ("ml_b", "backlog"), ("ml_c", "icebox")] {
+            for (scope, reads_as) in [("ml-a", "open"), ("ml-b", "backlog"), ("ml-c", "icebox")] {
                 let projected = svc
                     .project_nodes_to_scope(vec![icebox.clone()], Some(scope))
                     .await
@@ -3186,13 +3186,13 @@ mod tests {
             let (svc, _tmp) = make_test_service().await;
             create_schema(
                 &svc,
-                json!({ "name": "su_issue", "extends": "task", "fields": [] }),
+                json!({ "name": "su-issue", "extends": "task", "fields": [] }),
             )
             .await;
             crate::schema::handle_update_schema(
                 &svc,
                 json!({
-                    "schema_id": "su_issue",
+                    "schema_id": "su-issue",
                     "add_field_values": [{
                         "field": "priority",
                         "values": [
@@ -3206,13 +3206,13 @@ mod tests {
             .unwrap();
             let id = |n: u8| format!("a7000000-0000-4000-8000-00000000000{n}");
             for (n, priority) in [(1, "none"), (2, "medium"), (3, "urgent"), (4, "high")] {
-                svc.create_node(node(&id(n), "su_issue", json!({ "priority": priority })))
+                svc.create_node(node(&id(n), "su-issue", json!({ "priority": priority })))
                     .await
                     .unwrap();
             }
             let by_urgency = [id(3), id(4), id(2), id(1)];
 
-            for target in ["su_issue", "task"] {
+            for target in ["su-issue", "task"] {
                 let sorted = |direction: &'static str, limit: usize| {
                     let svc = Arc::clone(&svc);
                     async move {
@@ -3245,7 +3245,7 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "eo_ticket",
+                    "name": "eo-ticket",
                     "fields": [{
                         "name": "stage", "type": "enum", "extensible": true,
                         // Alphabetically: doing, shipped, triage.
@@ -3261,7 +3261,7 @@ mod tests {
             crate::schema::handle_update_schema(
                 &svc,
                 json!({
-                    "schema_id": "eo_ticket",
+                    "schema_id": "eo-ticket",
                     "add_field_values": [{
                         "field": "stage",
                         // Alphabetically: archived, blocked.
@@ -3285,7 +3285,7 @@ mod tests {
                 (6, Some("doing")),
             ] {
                 let props = stage.map_or(json!({}), |stage| json!({ "stage": stage }));
-                svc.create_node(node(&id(n), "eo_ticket", props))
+                svc.create_node(node(&id(n), "eo-ticket", props))
                     .await
                     .unwrap();
             }
@@ -3297,7 +3297,7 @@ mod tests {
                     ordered_ids(
                         &svc,
                         json!({
-                            "target_type": "eo_ticket", "filters": [], "limit": limit,
+                            "target_type": "eo-ticket", "filters": [], "limit": limit,
                             "sorting": [{ "field": "stage", "direction": direction }]
                         }),
                     )
@@ -3314,7 +3314,7 @@ mod tests {
             // The order is the schema's, read when the query runs.
             let rank = resolve_sorting(
                 &svc,
-                "eo_ticket",
+                "eo-ticket",
                 vec![SortConfig {
                     field: "stage".to_string(),
                     ..Default::default()
@@ -3334,7 +3334,7 @@ mod tests {
             // Two values the schema does not list, written past validation:
             // after every declared value, ordered between themselves as text.
             for (n, value) in [(7, "mystery"), (8, "enigma")] {
-                svc.create_node(node(&id(n), "eo_ticket", json!({ "stage": "triage" })))
+                svc.create_node(node(&id(n), "eo-ticket", json!({ "stage": "triage" })))
                     .await
                     .unwrap();
                 svc.store()
@@ -3343,7 +3343,7 @@ mod tests {
                     .execute(
                         &format!(
                             "UPDATE node SET properties = \
-                             json_set(properties, '$.eo_ticket.stage', '{value}') \
+                             json_set(properties, '$.\"eo-ticket\".stage', '{value}') \
                              WHERE id = '{}'",
                             id(n)
                         ),
@@ -3459,13 +3459,13 @@ mod tests {
             let (svc, _tmp) = make_test_service().await;
             create_schema(
                 &svc,
-                json!({ "name": "pv_issue", "extends": "task", "fields": [] }),
+                json!({ "name": "pv-issue", "extends": "task", "fields": [] }),
             )
             .await;
             crate::schema::handle_update_schema(
                 &svc,
                 json!({
-                    "schema_id": "pv_issue",
+                    "schema_id": "pv-issue",
                     "add_field_values": [{
                         "field": "status",
                         "values": [{ "value": "triage", "label": "Triage", "mapsTo": "open" }]
@@ -3476,7 +3476,7 @@ mod tests {
             .unwrap();
             const ISSUE: &str = "aa000000-0000-4000-8000-000000000001";
             const TASK: &str = "aa000000-0000-4000-8000-000000000002";
-            svc.create_node(node(ISSUE, "pv_issue", json!({ "status": "open" })))
+            svc.create_node(node(ISSUE, "pv-issue", json!({ "status": "open" })))
                 .await
                 .unwrap();
             svc.create_node(task_node(TASK, "open", None))
@@ -3559,25 +3559,25 @@ mod tests {
             let (svc, _tmp) = make_test_service().await;
             create_schema(
                 &svc,
-                json!({"name": "ng_item", "fields": [{"name": "owner", "type": "text"}]}),
+                json!({"name": "ng-item", "fields": [{"name": "owner", "type": "text"}]}),
             )
             .await;
             const ADA: &str = "b1000000-0000-4000-8000-000000000001";
             const BOB: &str = "b1000000-0000-4000-8000-000000000002";
             const NOBODY: &str = "b1000000-0000-4000-8000-000000000003";
-            svc.create_node(node(ADA, "ng_item", json!({ "owner": "ada" })))
+            svc.create_node(node(ADA, "ng-item", json!({ "owner": "ada" })))
                 .await
                 .unwrap();
-            svc.create_node(node(BOB, "ng_item", json!({ "owner": "bob" })))
+            svc.create_node(node(BOB, "ng-item", json!({ "owner": "bob" })))
                 .await
                 .unwrap();
-            svc.create_node(node(NOBODY, "ng_item", json!({})))
+            svc.create_node(node(NOBODY, "ng-item", json!({})))
                 .await
                 .unwrap();
 
             let not_ada = matching_ids(
                 &svc,
-                json!({ "target_type": "ng_item", "filters": [{
+                json!({ "target_type": "ng-item", "filters": [{
                     "type": "property", "operator": "equals", "property": "owner",
                     "value": "ada", "negate": true
                 }] }),
@@ -3587,7 +3587,7 @@ mod tests {
 
             let unowned = matching_ids(
                 &svc,
-                json!({ "target_type": "ng_item", "filters": [{
+                json!({ "target_type": "ng-item", "filters": [{
                     "type": "property", "operator": "exists", "property": "owner", "negate": true
                 }] }),
             )
@@ -3596,7 +3596,7 @@ mod tests {
 
             let not_this_node = matching_ids(
                 &svc,
-                json!({ "target_type": "ng_item", "filters": [{
+                json!({ "target_type": "ng-item", "filters": [{
                     "type": "content", "operator": "contains", "value": ADA, "negate": true
                 }] }),
             )
@@ -3658,7 +3658,7 @@ mod tests {
             create_schema(
                 svc,
                 json!({
-                    "name": "wf_plan",
+                    "name": "wf-plan",
                     "fields": [{"name": "plan_status", "type": "text"}],
                     "relationships": [{
                         "name": "plans",
@@ -3700,7 +3700,7 @@ mod tests {
                 (APPROVED_PLAN, "approved", PLANNED),
                 (DRAFT_PLAN, "draft", DRAFTED),
             ] {
-                svc.create_node(node(plan, "wf_plan", json!({ "plan_status": plan_status })))
+                svc.create_node(node(plan, "wf-plan", json!({ "plan_status": plan_status })))
                     .await
                     .unwrap();
                 svc.create_relationship(plan, "plans", task, json!({}))
@@ -3995,7 +3995,7 @@ mod tests {
             create_schema(
                 svc,
                 json!({
-                    "name": "op_project",
+                    "name": "op-project",
                     "fields": [
                         { "name": "label", "type": "text" },
                         { "name": "repository", "type": "object", "fields": [
@@ -4014,13 +4014,13 @@ mod tests {
             ] {
                 svc.create_node(node(
                     id,
-                    "op_project",
+                    "op-project",
                     json!({ "repository": { "url": url, "host": { "name": host } } }),
                 ))
                 .await
                 .unwrap();
             }
-            svc.create_node(node(NO_REPO, "op_project", json!({ "label": "none" })))
+            svc.create_node(node(NO_REPO, "op-project", json!({ "label": "none" })))
                 .await
                 .unwrap();
         }
@@ -4034,7 +4034,7 @@ mod tests {
 
             let by_url = matching_ids(
                 &svc,
-                json!({ "target_type": "op_project", "filters": [{
+                json!({ "target_type": "op-project", "filters": [{
                     "type": "property", "operator": "equals",
                     "property": "repository.url", "value": "https://example.com/b.git"
                 }] }),
@@ -4044,7 +4044,7 @@ mod tests {
 
             let not_a = matching_ids(
                 &svc,
-                json!({ "target_type": "op_project", "filters": [{
+                json!({ "target_type": "op-project", "filters": [{
                     "type": "property", "operator": "equals", "negate": true,
                     "property": "repository.url", "value": "https://example.com/a.git"
                 }] }),
@@ -4053,7 +4053,7 @@ mod tests {
             assert_eq!(not_a, [REPO_B, NO_REPO]);
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
-                "target_type": "op_project",
+                "target_type": "op-project",
                 "filters": [{
                     "type": "property", "operator": "exists", "property": "repository.host.name"
                 }],
@@ -4077,7 +4077,7 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "op_checkout",
+                    "name": "op-checkout",
                     "fields": [{ "name": "repository", "type": "link" }]
                 }),
             )
@@ -4088,19 +4088,19 @@ mod tests {
             ] {
                 svc.create_node(node(
                     id,
-                    "op_checkout",
+                    "op-checkout",
                     json!({ "repository": { "title": title, "url": url } }),
                 ))
                 .await
                 .unwrap();
             }
-            svc.create_node(node(NO_REPO, "op_checkout", json!({})))
+            svc.create_node(node(NO_REPO, "op-checkout", json!({})))
                 .await
                 .unwrap();
 
             let by_url = matching_ids(
                 &svc,
-                json!({ "target_type": "op_checkout", "filters": [{
+                json!({ "target_type": "op-checkout", "filters": [{
                     "type": "property", "operator": "equals",
                     "property": "repository.url", "value": "https://example.com/b.git"
                 }] }),
@@ -4109,7 +4109,7 @@ mod tests {
             assert_eq!(by_url, [REPO_B]);
 
             let input: ExecuteQueryInput = serde_json::from_value(json!({
-                "target_type": "op_checkout",
+                "target_type": "op-checkout",
                 "filters": [{
                     "type": "property", "operator": "exists", "property": "repository.title"
                 }],
@@ -4126,7 +4126,7 @@ mod tests {
 
             for property in ["repository.host", "repository.url.scheme"] {
                 let input: ExecuteQueryInput = serde_json::from_value(json!({
-                    "target_type": "op_checkout",
+                    "target_type": "op-checkout",
                     "filters": [{ "type": "property", "operator": "exists", "property": property }]
                 }))
                 .unwrap();
@@ -4154,7 +4154,7 @@ mod tests {
                 ("repository.url.scheme", "'repository.url' is a text field"),
             ] {
                 let input: ExecuteQueryInput = serde_json::from_value(
-                    json!({ "target_type": "op_project", "filters": filter_on(property) }),
+                    json!({ "target_type": "op-project", "filters": filter_on(property) }),
                 )
                 .unwrap();
                 let at_run = execute_query(&svc, input).await.unwrap_err();
@@ -4165,7 +4165,7 @@ mod tests {
                 let mut query = node(
                     READY_QUERY,
                     "query",
-                    json!({ "target_type": "op_project", "filters": filter_on(property) }),
+                    json!({ "target_type": "op-project", "filters": filter_on(property) }),
                 );
                 query.content = "Undeclared".to_string();
                 let at_save = svc.create_node(query).await.unwrap_err();
@@ -4173,7 +4173,7 @@ mod tests {
             }
 
             let sorted = json!({
-                "target_type": "op_project",
+                "target_type": "op-project",
                 "filters": [],
                 "sorting": [{ "field": "repository.branch", "direction": "asc" }]
             });
@@ -4199,8 +4199,8 @@ mod tests {
             // A name that could not be formatted into a statement is refused
             // when the query is saved, in a filter and in a sort.
             for fields in [
-                json!({ "target_type": "op_project", "filters": filter_on("la bel") }),
-                json!({ "target_type": "op_project", "filters": [],
+                json!({ "target_type": "op-project", "filters": filter_on("la bel") }),
+                json!({ "target_type": "op-project", "filters": [],
                     "sorting": [{ "field": "la'bel", "direction": "asc" }] }),
             ] {
                 let mut query = node(READY_QUERY, "query", fields);
@@ -4231,7 +4231,7 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "in_ticket",
+                    "name": "in-ticket",
                     "fields": [
                         { "name": "state", "type": "text" },
                         { "name": "repository", "type": "object", "fields": [
@@ -4243,7 +4243,7 @@ mod tests {
             .await;
             create_schema(
                 &svc,
-                json!({ "name": "in_bug", "extends": "in_ticket", "fields": [
+                json!({ "name": "in-bug", "extends": "in-ticket", "fields": [
                     { "name": "severity", "type": "text" }
                 ] }),
             )
@@ -4253,7 +4253,7 @@ mod tests {
             for (id, state, url) in [(OPEN, "open", "a.git"), (CLOSED, "closed", "b.git")] {
                 svc.create_node(node(
                     id,
-                    "in_bug",
+                    "in-bug",
                     json!({ "state": state, "severity": "low", "repository": { "url": url } }),
                 ))
                 .await
@@ -4265,7 +4265,7 @@ mod tests {
                 async move {
                     matching_ids(
                         &svc,
-                        json!({ "target_type": "in_bug", "filters": [filter] }),
+                        json!({ "target_type": "in-bug", "filters": [filter] }),
                     )
                     .await
                 }
@@ -4298,7 +4298,7 @@ mod tests {
             const PARENT_OF_OPEN: &str = "e0000000-0000-4000-8000-000000000011";
             const PARENT_OF_CLOSED: &str = "e0000000-0000-4000-8000-000000000012";
             for (parent, child) in [(PARENT_OF_OPEN, OPEN), (PARENT_OF_CLOSED, CLOSED)] {
-                svc.create_node(node(parent, "in_ticket", json!({ "state": "open" })))
+                svc.create_node(node(parent, "in-ticket", json!({ "state": "open" })))
                     .await
                     .unwrap();
                 svc.create_relationship(parent, "has_child", child, json!({}))
@@ -4307,7 +4307,7 @@ mod tests {
             }
             let no_child_that_is_not_closed = matching_ids(
                 &svc,
-                json!({ "target_type": "in_ticket", "filters": [
+                json!({ "target_type": "in-ticket", "filters": [
                     { "type": "related", "operator": "exists", "path": ["has_child"], "negate": true,
                       "filter": { "type": "property", "operator": "equals", "property": "state",
                                   "value": "closed", "negate": true } }
@@ -4390,10 +4390,10 @@ mod tests {
                 "repository.$",
             ] {
                 for input in [
-                    json!({ "target_type": "op_project", "filters": [{
+                    json!({ "target_type": "op-project", "filters": [{
                         "type": "property", "operator": "exists", "property": property
                     }] }),
-                    json!({ "target_type": "op_project", "filters": [],
+                    json!({ "target_type": "op-project", "filters": [],
                         "sorting": [{ "field": property, "direction": "asc" }] }),
                 ] {
                     let err = execute_query(&svc, serde_json::from_value(input).unwrap())
@@ -4411,13 +4411,13 @@ mod tests {
 
         const SHAPED_BUG: &str = "a9000000-0000-4000-8000-000000000001";
 
-        /// `rs_bug` extends `rs_ticket`, adding a field of its own and a
+        /// `rs-bug` extends `rs-ticket`, adding a field of its own and a
         /// value to the inherited enum; one bug holds a value in each.
         async fn seed_shaped_bug(svc: &Arc<NodeService>) {
             create_schema(
                 svc,
                 json!({
-                    "name": "rs_ticket",
+                    "name": "rs-ticket",
                     "fields": [
                         {
                             "name": "state", "type": "enum", "extensible": true,
@@ -4434,7 +4434,7 @@ mod tests {
             create_schema(
                 svc,
                 json!({
-                    "name": "rs_bug", "extends": "rs_ticket",
+                    "name": "rs-bug", "extends": "rs-ticket",
                     "fields": [{ "name": "severity", "type": "text" }]
                 }),
             )
@@ -4442,7 +4442,7 @@ mod tests {
             crate::schema::handle_update_schema(
                 svc,
                 json!({
-                    "schema_id": "rs_bug",
+                    "schema_id": "rs-bug",
                     "add_field_values": [{
                         "field": "state",
                         "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
@@ -4453,7 +4453,7 @@ mod tests {
             .unwrap();
             svc.create_node(node(
                 SHAPED_BUG,
-                "rs_bug",
+                "rs-bug",
                 json!({ "state": "backlog", "owner": "ann", "severity": "low" }),
             ))
             .await
@@ -4461,7 +4461,7 @@ mod tests {
             // The inherited field is stored under the type that declares it,
             // which is what a single-bucket conversion drops.
             let stored = svc.get_node(SHAPED_BUG).await.unwrap().unwrap();
-            assert_eq!(stored.properties["rs_ticket"]["owner"], "ann");
+            assert_eq!(stored.properties["rs-ticket"]["owner"], "ann");
         }
 
         /// The one row's flat properties, as an agent tool call reads them.
@@ -4482,7 +4482,7 @@ mod tests {
             let (svc, _tmp) = make_test_service().await;
             seed_shaped_bug(&svc).await;
 
-            let output = shaped_bug_at(&svc, json!({ "target_type": "rs_bug" })).await;
+            let output = shaped_bug_at(&svc, json!({ "target_type": "rs-bug" })).await;
             assert_eq!(
                 shaped_bug_properties(&output),
                 &json!({ "state": "backlog", "owner": "ann", "severity": "low" })
@@ -4496,7 +4496,7 @@ mod tests {
 
             // The subtype's added `backlog` reads as the `open` it maps to,
             // and the subtype's own `severity` is not a field of the base.
-            let output = shaped_bug_at(&svc, json!({ "target_type": "rs_ticket" })).await;
+            let output = shaped_bug_at(&svc, json!({ "target_type": "rs-ticket" })).await;
             assert_eq!(
                 shaped_bug_properties(&output),
                 &json!({ "state": "open", "owner": "ann" })
@@ -4513,20 +4513,20 @@ mod tests {
             create_schema(
                 &svc,
                 json!({
-                    "name": "rs_task_bug", "extends": "task",
+                    "name": "rs-task-bug", "extends": "task",
                     "fields": [{ "name": "severity", "type": "text" }]
                 }),
             )
             .await;
             svc.create_node(node(
                 BUG,
-                "rs_task_bug",
+                "rs-task-bug",
                 json!({ "priority": "high", "severity": "low" }),
             ))
             .await
             .unwrap();
 
-            for (target_type, severity) in [("rs_task_bug", Some("low")), ("task", None)] {
+            for (target_type, severity) in [("rs-task-bug", Some("low")), ("task", None)] {
                 let output = shaped_bug_at(
                     &svc,
                     json!({ "target_type": target_type, "filters": [{
@@ -4569,11 +4569,11 @@ mod tests {
             let (svc, _tmp) = make_test_service().await;
             seed_shaped_bug(&svc).await;
             for (id, title, target_type) in [
-                ("a9000000-0000-4000-8000-000000000002", "Bugs", "rs_bug"),
+                ("a9000000-0000-4000-8000-000000000002", "Bugs", "rs-bug"),
                 (
                     "a9000000-0000-4000-8000-000000000003",
                     "Tickets",
-                    "rs_ticket",
+                    "rs-ticket",
                 ),
             ] {
                 save_query(

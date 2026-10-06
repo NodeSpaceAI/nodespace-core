@@ -1262,18 +1262,18 @@ mod tests {
     /// `create_node [ERROR] Unknown node_type 'feature_writeups'`.
     #[test]
     fn schema_named_in_query_is_recovered_when_semantic_retrieval_is_empty() {
-        let all = vec![named_schema("feature_write_up", "feature write-up", false)];
+        let all = vec![named_schema("feature-write-up", "feature write-up", false)];
         let hits = append_schemas_named_in_query(vec![], &all, "Put one down for feature write-up");
         let ids: Vec<&str> = hits.iter().map(|s| s.envelope.id.as_str()).collect();
-        assert_eq!(ids, vec!["feature_write_up"]);
+        assert_eq!(ids, vec!["feature-write-up"]);
     }
 
-    /// Matched by snake_case id as well as by display name — `create_node`
+    /// Matched by kebab-case id as well as by display name — `create_node`
     /// takes the id, and a user echoing it back is the same evidence.
     #[test]
-    fn schema_named_by_snake_case_id_is_recovered() {
-        let all = vec![named_schema("release_plan", "Release Plan", false)];
-        let hits = append_schemas_named_in_query(vec![], &all, "add a release_plan for Q3");
+    fn schema_named_by_kebab_case_id_is_recovered() {
+        let all = vec![named_schema("release-plan", "Release Plan", false)];
+        let hits = append_schemas_named_in_query(vec![], &all, "add a release-plan for Q3");
         assert_eq!(hits.len(), 1);
     }
 
@@ -2098,7 +2098,7 @@ mod tests {
     fn a_resolved_entity_renders_with_its_id_and_type() {
         let out = ctx_with(resolved(vec![entity(
             "Northwind Trading",
-            "company_sold_to",
+            "company-sold-to",
             "abc123",
             -2.5,
         )]))
@@ -2106,7 +2106,7 @@ mod tests {
 
         assert!(out.contains(RESOLVED_ENTITIES_HEADER));
         assert!(
-            out.contains("\"Northwind Trading\" (company_sold_to) id=abc123"),
+            out.contains("\"Northwind Trading\" (company-sold-to) id=abc123"),
             "the id must reach the prompt verbatim, or the model asks for it: {out}"
         );
     }
@@ -2156,7 +2156,7 @@ mod tests {
     fn entities_render_before_schemas() {
         let mut ctx = ctx_with(resolved(vec![entity(
             "Northwind Trading",
-            "company_sold_to",
+            "company-sold-to",
             "abc123",
             -2.5,
         )]));
@@ -2212,7 +2212,7 @@ mod tests {
         // give way too — see `entity_lines_give_way_to_the_note`.
         let long_title = format!("Contoso{}", " Ltd".repeat(50));
         let two = vec![
-            entity("Northwind Trading", "company_sold_to", "abc123", -2.5),
+            entity("Northwind Trading", "company-sold-to", "abc123", -2.5),
             entity(&long_title, "customer", "def456", -2.4),
         ];
         let full = ctx_with(resolved(two.clone())).format_for_prompt(4000);
@@ -2306,7 +2306,7 @@ mod tests {
     #[test]
     fn entity_lines_give_way_to_the_note() {
         let two = vec![
-            entity("Northwind Trading", "company_sold_to", "abc123", -2.5),
+            entity("Northwind Trading", "company-sold-to", "abc123", -2.5),
             entity("Contoso Ltd", "customer", "def456", -2.4),
         ];
         let ctx = ctx_with(EntityResolution::Resolved {
@@ -2341,7 +2341,7 @@ mod tests {
     fn a_budget_too_small_for_any_entity_renders_no_header() {
         let out = ctx_with(resolved(vec![entity(
             "Northwind Trading",
-            "company_sold_to",
+            "company-sold-to",
             "abc123",
             -2.5,
         )]))

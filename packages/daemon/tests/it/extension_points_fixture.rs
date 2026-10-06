@@ -29,9 +29,9 @@ use tempfile::TempDir;
 const FIXTURE_ID: &str = "fixture";
 
 /// The fixture's subtype of `collection`.
-const FIXTURE_TYPE: &str = "fixture_collection";
+const FIXTURE_TYPE: &str = "fixture-collection";
 
-/// The behaviour of `fixture_collection extends collection`: a `max_members`
+/// The behaviour of `fixture-collection extends collection`: a `max_members`
 /// in its bucket must be at least 1.
 struct FixtureCollectionBehavior;
 

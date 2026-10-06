@@ -32,7 +32,7 @@ async fn create_test_service() -> Result<(Arc<NodeService>, TempDir)> {
 async fn make_adr(svc: &NodeService, id: &str) -> Result<()> {
     svc.create_node(Node::new_with_id(
         id.to_string(),
-        "in_norm_adr".to_string(),
+        "in-norm-adr".to_string(),
         format!("{id} content"),
         json!({}),
     ))
@@ -47,12 +47,12 @@ async fn create_adr_schema(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "in_norm_adr",
+            "name": "in-norm-adr",
             "fields": [],
             "relationships": [
                 {
                     "name": "supersedes",
-                    "targetType": "in_norm_adr",
+                    "targetType": "in-norm-adr",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "superseded_by",
@@ -68,7 +68,7 @@ async fn create_adr_schema(svc: &Arc<NodeService>) -> Result<()> {
                 },
                 {
                     "name": "superseded_by",
-                    "targetType": "in_norm_adr",
+                    "targetType": "in-norm-adr",
                     "direction": "in",
                     "cardinality": "one",
                     "reverseName": "supersedes",
@@ -490,16 +490,16 @@ async fn make_node(svc: &NodeService, id: &str, node_type: &str) -> Result<()> {
     Ok(())
 }
 
-/// `in_norm_person.approves` (out) targets `in_norm_doc`, which names the
-/// same edge `approved_by` (in). `in_norm_memo` declares its own `approves`
+/// `in-norm-person.approves` (out) targets `in-norm-doc`, which names the
+/// same edge `approved_by` (in). `in-norm-memo` declares its own `approves`
 /// toward docs — the same stored forward name from a different source type.
 async fn create_cross_type_schemas(svc: &Arc<NodeService>) -> Result<()> {
     // Each end's declaration names the other as its target, so the doc
     // exists first and gains its `in` declaration once the person does.
-    handle_create_schema(svc, json!({ "name": "in_norm_doc", "fields": [] }))
+    handle_create_schema(svc, json!({ "name": "in-norm-doc", "fields": [] }))
         .await
         .map_err(|e| anyhow::anyhow!("doc schema: {e}"))?;
-    for source in ["in_norm_person", "in_norm_memo"] {
+    for source in ["in-norm-person", "in-norm-memo"] {
         handle_create_schema(
             svc,
             json!({
@@ -507,7 +507,7 @@ async fn create_cross_type_schemas(svc: &Arc<NodeService>) -> Result<()> {
                 "fields": [],
                 "relationships": [{
                     "name": "approves",
-                    "targetType": "in_norm_doc",
+                    "targetType": "in-norm-doc",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "approved_by",
@@ -521,10 +521,10 @@ async fn create_cross_type_schemas(svc: &Arc<NodeService>) -> Result<()> {
     handle_update_schema(
         svc,
         json!({
-            "schema_id": "in_norm_doc",
+            "schema_id": "in-norm-doc",
             "add_relationships": [{
                 "name": "approved_by",
-                "targetType": "in_norm_person",
+                "targetType": "in-norm-person",
                 "direction": "in",
                 "cardinality": "many",
                 "reverseName": "approves",
@@ -534,14 +534,14 @@ async fn create_cross_type_schemas(svc: &Arc<NodeService>) -> Result<()> {
     )
     .await
     .map_err(|e| anyhow::anyhow!("doc approved_by: {e}"))?;
-    make_node(svc, "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167", "in_norm_doc").await?;
+    make_node(svc, "ee5ab1a7-1de8-531f-a862-9e9c1b2a2167", "in-norm-doc").await?;
     make_node(
         svc,
         "99e6a416-b162-589d-97e9-af6fa8004f05",
-        "in_norm_person",
+        "in-norm-person",
     )
     .await?;
-    make_node(svc, "d7ac97fb-f0b6-5af0-bc46-80281a91c768", "in_norm_memo").await?;
+    make_node(svc, "d7ac97fb-f0b6-5af0-bc46-80281a91c768", "in-norm-memo").await?;
     Ok(())
 }
 
@@ -589,7 +589,7 @@ async fn cross_type_write_through_in_name_rejects_wrong_types() -> Result<()> {
     make_node(
         &svc,
         "4f1f600c-d552-57c4-b1b1-1f4676f32c07",
-        "in_norm_person",
+        "in-norm-person",
     )
     .await?;
 
@@ -605,7 +605,7 @@ async fn cross_type_write_through_in_name_rejects_wrong_types() -> Result<()> {
         .expect_err("a person has no `approved_by`");
     assert!(
         err.to_string()
-            .contains("'approved_by' not defined in schema 'in_norm_person'"),
+            .contains("'approved_by' not defined in schema 'in-norm-person'"),
         "got: {err}"
     );
     // doc1 -> doc1: the far end is a doc, which does not declare `approves`.
@@ -620,7 +620,7 @@ async fn cross_type_write_through_in_name_rejects_wrong_types() -> Result<()> {
         .expect_err("a doc cannot approve");
     assert!(
         err.to_string()
-            .contains("inbound view of 'in_norm_doc.approves'"),
+            .contains("inbound view of 'in-norm-doc.approves'"),
         "got: {err}"
     );
     Ok(())
@@ -666,12 +666,12 @@ async fn cross_type_read_through_in_name_narrows_to_declared_type() -> Result<()
     Ok(())
 }
 
-/// A `direction: in` declaration as `add_relationships` on `in_norm_doc`,
-/// mirroring `in_norm_person.approves` except where `overrides` says.
+/// A `direction: in` declaration as `add_relationships` on `in-norm-doc`,
+/// mirroring `in-norm-person.approves` except where `overrides` says.
 fn doc_in_declaration(overrides: serde_json::Value) -> serde_json::Value {
     let mut rel = json!({
         "name": "endorsed_by",
-        "targetType": "in_norm_person",
+        "targetType": "in-norm-person",
         "direction": "in",
         "cardinality": "many",
         "reverseName": "approves",
@@ -680,7 +680,7 @@ fn doc_in_declaration(overrides: serde_json::Value) -> serde_json::Value {
     for (k, v) in overrides.as_object().cloned().unwrap_or_default() {
         rel[k] = v;
     }
-    json!({ "schema_id": "in_norm_doc", "add_relationships": [rel] })
+    json!({ "schema_id": "in-norm-doc", "add_relationships": [rel] })
 }
 
 /// Saving an `in` declaration is rejected unless it exactly mirrors a forward
@@ -696,11 +696,11 @@ async fn unpaired_or_mismatched_in_declaration_is_rejected_at_save() -> Result<(
     let err = handle_create_schema(
         &svc,
         json!({
-            "name": "in_norm_team",
+            "name": "in-norm-team",
             "fields": [],
             "relationships": [{
                 "name": "approval_of",
-                "targetType": "in_norm_doc",
+                "targetType": "in-norm-doc",
                 "direction": "in",
                 "cardinality": "many",
                 "reverseName": "approved_by",
@@ -720,7 +720,7 @@ async fn unpaired_or_mismatched_in_declaration_is_rejected_at_save() -> Result<(
     // without colliding.
     handle_update_schema(
         &svc,
-        json!({ "schema_id": "in_norm_doc", "remove_relationships": ["approved_by"] }),
+        json!({ "schema_id": "in-norm-doc", "remove_relationships": ["approved_by"] }),
     )
     .await
     .map_err(|e| anyhow::anyhow!("drop approved_by: {e}"))?;
@@ -785,25 +785,25 @@ async fn editing_forward_mirrored_by_in_declaration_is_rejected() -> Result<()> 
 
     let removed = handle_update_schema(
         &svc,
-        json!({ "schema_id": "in_norm_person", "remove_relationships": ["approves"] }),
+        json!({ "schema_id": "in-norm-person", "remove_relationships": ["approves"] }),
     )
     .await
     .expect_err("removing a mirrored forward must be rejected");
     assert!(
         removed
             .to_string()
-            .contains("would break 'in_norm_doc.approved_by'"),
+            .contains("would break 'in-norm-doc.approved_by'"),
         "got: {removed}"
     );
 
     let redeclared = handle_update_schema(
         &svc,
         json!({
-            "schema_id": "in_norm_person",
+            "schema_id": "in-norm-person",
             "remove_relationships": ["approves"],
             "add_relationships": [{
                 "name": "approves",
-                "targetType": "in_norm_doc",
+                "targetType": "in-norm-doc",
                 "direction": "out",
                 "cardinality": "many",
                 "reverseName": "endorsed_by",
@@ -830,11 +830,11 @@ async fn in_declaration_mirroring_inherited_forward_is_accepted() -> Result<()> 
     handle_create_schema(
         &svc,
         json!({
-            "name": "in_norm_base",
+            "name": "in-norm-base",
             "fields": [],
             "relationships": [{
                 "name": "supersedes",
-                "targetType": "in_norm_base",
+                "targetType": "in-norm-base",
                 "direction": "out",
                 "cardinality": "one",
                 "reverseName": "superseded_by",
@@ -847,12 +847,12 @@ async fn in_declaration_mirroring_inherited_forward_is_accepted() -> Result<()> 
     handle_create_schema(
         &svc,
         json!({
-            "name": "in_norm_sub",
-            "extends": "in_norm_base",
+            "name": "in-norm-sub",
+            "extends": "in-norm-base",
             "fields": [],
             "relationships": [{
                 "name": "superseded_by",
-                "targetType": "in_norm_sub",
+                "targetType": "in-norm-sub",
                 "direction": "in",
                 "cardinality": "one",
                 "reverseName": "supersedes",
@@ -863,8 +863,8 @@ async fn in_declaration_mirroring_inherited_forward_is_accepted() -> Result<()> 
     .await
     .map_err(|e| anyhow::anyhow!("sub schema: {e}"))?;
 
-    make_node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "in_norm_sub").await?;
-    make_node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "in_norm_sub").await?;
+    make_node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "in-norm-sub").await?;
+    make_node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "in-norm-sub").await?;
     svc.create_relationship(
         "ac012a23-2b8e-5fdc-9aca-df129fe90625",
         "superseded_by",
@@ -890,17 +890,17 @@ async fn in_declaration_mirroring_inherited_forward_is_accepted() -> Result<()> 
 #[tokio::test]
 async fn pairing_is_validated_after_same_call_extends_retarget() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
-    handle_create_schema(&svc, json!({ "name": "in_norm_parent_a", "fields": [] }))
+    handle_create_schema(&svc, json!({ "name": "in-norm-parent-a", "fields": [] }))
         .await
         .map_err(|e| anyhow::anyhow!("parent a: {e}"))?;
     handle_create_schema(
         &svc,
         json!({
-            "name": "in_norm_parent_b",
+            "name": "in-norm-parent-b",
             "fields": [],
             "relationships": [{
                 "name": "reviews",
-                "targetType": "in_norm_parent_b",
+                "targetType": "in-norm-parent-b",
                 "direction": "out",
                 "cardinality": "many",
                 "reverseName": "reviewed_by",
@@ -912,7 +912,7 @@ async fn pairing_is_validated_after_same_call_extends_retarget() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("parent b: {e}"))?;
     handle_create_schema(
         &svc,
-        json!({ "name": "in_norm_child", "extends": "in_norm_parent_a", "fields": [] }),
+        json!({ "name": "in-norm-child", "extends": "in-norm-parent-a", "fields": [] }),
     )
     .await
     .map_err(|e| anyhow::anyhow!("child: {e}"))?;
@@ -920,11 +920,11 @@ async fn pairing_is_validated_after_same_call_extends_retarget() -> Result<()> {
     handle_update_schema(
         &svc,
         json!({
-            "schema_id": "in_norm_child",
-            "extends": "in_norm_parent_b",
+            "schema_id": "in-norm-child",
+            "extends": "in-norm-parent-b",
             "add_relationships": [{
                 "name": "reviewed_by",
-                "targetType": "in_norm_child",
+                "targetType": "in-norm-child",
                 "direction": "in",
                 "cardinality": "many",
                 "reverseName": "reviews",
@@ -951,13 +951,13 @@ async fn reparenting_middle_schema_that_drops_mirrored_forward_is_rejected() -> 
                 .map_err(|e| anyhow::anyhow!("{e}"))
         }
     };
-    create(json!({ "name": "in_norm_target", "fields": [] })).await?;
+    create(json!({ "name": "in-norm-target", "fields": [] })).await?;
     create(json!({
-        "name": "in_norm_grand",
+        "name": "in-norm-grand",
         "fields": [],
         "relationships": [{
             "name": "reviews",
-            "targetType": "in_norm_target",
+            "targetType": "in-norm-target",
             "direction": "out",
             "cardinality": "many",
             "reverseName": "reviewed_by",
@@ -965,18 +965,18 @@ async fn reparenting_middle_schema_that_drops_mirrored_forward_is_rejected() -> 
         }]
     }))
     .await?;
-    create(json!({ "name": "in_norm_other_grand", "fields": [] })).await?;
-    create(json!({ "name": "in_norm_middle", "extends": "in_norm_grand", "fields": [] })).await?;
-    create(json!({ "name": "in_norm_leaf", "extends": "in_norm_middle", "fields": [] })).await?;
+    create(json!({ "name": "in-norm-other-grand", "fields": [] })).await?;
+    create(json!({ "name": "in-norm-middle", "extends": "in-norm-grand", "fields": [] })).await?;
+    create(json!({ "name": "in-norm-leaf", "extends": "in-norm-middle", "fields": [] })).await?;
     // The target names its reviewers by the leaf type, whose forward is
     // inherited two levels up.
     handle_update_schema(
         &svc,
         json!({
-            "schema_id": "in_norm_target",
+            "schema_id": "in-norm-target",
             "add_relationships": [{
                 "name": "reviewed_by",
-                "targetType": "in_norm_leaf",
+                "targetType": "in-norm-leaf",
                 "direction": "in",
                 "cardinality": "many",
                 "reverseName": "reviews",
@@ -989,13 +989,13 @@ async fn reparenting_middle_schema_that_drops_mirrored_forward_is_rejected() -> 
 
     let err = handle_update_schema(
         &svc,
-        json!({ "schema_id": "in_norm_middle", "extends": "in_norm_other_grand" }),
+        json!({ "schema_id": "in-norm-middle", "extends": "in-norm-other-grand" }),
     )
     .await
     .expect_err("re-parenting away from the declaring ancestor must be rejected");
     let message = err.to_string();
     assert!(
-        message.contains("would break 'in_norm_target.reviewed_by'"),
+        message.contains("would break 'in-norm-target.reviewed_by'"),
         "got: {message}"
     );
     assert_eq!(
@@ -1014,7 +1014,7 @@ async fn reparenting_middle_schema_that_drops_mirrored_forward_is_rejected() -> 
 async fn write_through_in_name_after_forward_dropped_below_save_is_rejected() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_cross_type_schemas(&svc).await?;
-    svc.set_schema_relationships("in_norm_person", &[]).await?;
+    svc.set_schema_relationships("in-norm-person", &[]).await?;
 
     let err = svc
         .create_relationship(
@@ -1024,11 +1024,11 @@ async fn write_through_in_name_after_forward_dropped_below_save_is_rejected() ->
             json!({}),
         )
         .await
-        .expect_err("in_norm_person no longer declares `approves`");
+        .expect_err("in-norm-person no longer declares `approves`");
     let message = err.to_string();
     assert!(
-        message.contains("'approved_by' on 'in_norm_doc'")
-            && message.contains("in_norm_person.approves"),
+        message.contains("'approved_by' on 'in-norm-doc'")
+            && message.contains("in-norm-person.approves"),
         "error should name the caller's spelling: {message}"
     );
     Ok(())
@@ -1062,7 +1062,7 @@ async fn panel_renders_in_declaration_edge_once() -> Result<()> {
         .find(|g| {
             g.relationship_name == "approves"
                 && g.direction == "in"
-                && g.source_type == "in_norm_person"
+                && g.source_type == "in-norm-person"
         })
         .expect("person.approves inbound group");
     let ids: Vec<_> = approvals.related.iter().map(|r| r.id.as_str()).collect();

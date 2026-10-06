@@ -241,12 +241,12 @@ async fn golden_medium_history_calibration() {
     // actual style captured in production traces this session), padded to
     // land in the same order of magnitude as ADR-064's measured ablation
     // point, well short of the real scenario's ~7,500-8,500 tokens.
-    let verbose_turn_3 = "I've created the schema for **Equipment Item** (equipment_item) to \
+    let verbose_turn_3 = "I've created the schema for **Equipment Item** (equipment-item) to \
         track what you have. For tracking checkouts, I also tried to create a second type \
         called \"Equipment Checkout Record,\" but it seems like creating multiple schemas in \
         one go is restricted by my current tools.\n\nTo best capture your needs -- tracking an \
         item *and* its checkout status/cost -- we should use just one type for now:\n1. \
-        **`equipment_item`**: To store details about each piece of equipment and its \
+        **`equipment-item`**: To store details about each piece of equipment and its \
         replacement cost.\n\nThe schema now has a single field: replacement_cost (number). You \
         can log items against it whenever you're ready, and we can always add more fields \
         later such as a status field for checked-out vs returned, a location field, or a \
@@ -328,10 +328,10 @@ async fn golden_medium_history_terse_control() {
     let facts = [
         "Fact: an 'equipment' schema was created with fields: replacement_cost (number).",
         "Fact: no other schemas were created in this conversation.",
-        "Fact: one equipment_item node was created.",
+        "Fact: one equipment-item node was created.",
         "Fact: that node's replacement_cost is 2400.",
         "Fact: that node's title is 'Laser Cutter'.",
-        "Fact: no other equipment_item nodes exist yet.",
+        "Fact: no other equipment-item nodes exist yet.",
         "Fact: the equipment schema has exactly one field: replacement_cost.",
         "Fact: the laser cutter was logged as checked out, no status field exists yet.",
         "Fact: node ids are assigned automatically and are not known to the user.",
@@ -391,25 +391,25 @@ async fn golden_terse_matched_size_probe() {
     let facts = [
         "Fact: an equipment schema was created with fields: replacement_cost (number).",
         "Fact: no other schemas were created in this conversation.",
-        "Fact: one equipment_item node was created.",
+        "Fact: one equipment-item node was created.",
         "Fact: that node's replacement_cost is 2400.",
         "Fact: that node's title is 'Laser Cutter'.",
-        "Fact: no other equipment_item nodes exist yet.",
+        "Fact: no other equipment-item nodes exist yet.",
         "Fact: the equipment schema has exactly one field: replacement_cost.",
         "Fact: the laser cutter was logged as checked out, no status field exists yet.",
         "Fact: node ids are assigned automatically and are not known to the user.",
         "Fact: the user refers to items by their replacement_cost value, not by id.",
         "Fact: the schema was created in response to the user's request to track equipment.",
         "Fact: the replacement_cost field is of type number, not string.",
-        "Fact: the equipment_item node was created after the schema was created.",
+        "Fact: the equipment-item node was created after the schema was created.",
         "Fact: the user's team checks out and returns equipment items over time.",
-        "Fact: only one node currently exists under the equipment_item type.",
+        "Fact: only one node currently exists under the equipment-item type.",
         "Fact: the node's creation was confirmed successfully with no errors.",
         "Fact: the schema creation was confirmed successfully with no errors.",
         "Fact: the user has not yet added a status property to the schema.",
         "Fact: the assistant has not renamed or deleted any existing fields.",
         "Fact: the conversation so far concerns exactly one equipment item and one schema.",
-        "Fact: the equipment_item type id is 'equipment_item', lowercase with an underscore.",
+        "Fact: the equipment-item type id is 'equipment-item', lowercase with a hyphen.",
         "Fact: the replacement_cost value 2400 was provided directly by the user.",
         "Fact: the laser cutter is the only item logged so far in this conversation.",
         "Fact: the schema and node were both created successfully in prior turns.",

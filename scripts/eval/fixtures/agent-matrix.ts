@@ -462,7 +462,7 @@ export function assertExpectation(
  * winnability test cannot drift apart — the value the prompt refers to and the
  * value the seed writes have to be the same one, and nothing else enforces it.
  */
-const SEEDED_TYPE = "incident_report";
+const SEEDED_TYPE = "incident-report";
 const SEEDED_ONCALL_FIELD = "on_call";
 
 /** The engineer named ONLY in seeded state — never in any prompt. */
@@ -1579,7 +1579,7 @@ const GROUPS: MatrixScenario[][] = [
   // rather than restate the claim. Seeding creates a SCHEMA as well as the
   // instances, and workspace context retrieves schemas semantically and
   // interpolates them into the system prompt — so the model DOES see that an
-  // `incident_report` type exists with an `on_call` field. What it does not see
+  // `incident-report` type exists with an `on_call` field. What it does not see
   // is any instance: only `"schema"`-type nodes are retrieved that way, so the
   // three titles and the `rowan` -> `search index corruption` mapping stay out.
   //

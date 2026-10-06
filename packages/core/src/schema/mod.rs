@@ -448,7 +448,7 @@ async fn validate_relationship_targets(
                  required reverseName. Omit the relationship only if '{}' is a type the \
                  user never asked for, rather than inventing one. (A relationship pointing \
                  back at the schema being created is allowed: give its schema ID, the \
-                 snake_case form of the name.)",
+                 kebab-case form of the name, e.g. 'customer-profile'.)",
                 rel.name, target_type, target_type, target_type
             )));
         }
@@ -1985,7 +1985,7 @@ pub fn parse_create_schema_params(params: Value) -> Result<CreateSchemaParams, M
 /// - `relationships`: Optional relationship definitions to other schemas
 ///
 /// # Returns
-/// - `schema_id`: Generated schema ID (snake_case)
+/// - `schema_id`: Generated schema ID (kebab-case)
 /// - `fields`: List of created fields
 /// - `relationships`: List of created relationships
 /// - `warnings`: e.g. a field name shadowing a reserved core property
@@ -3862,8 +3862,8 @@ mod tests {
     fn test_normalize_schema_id() {
         use crate::services::node_service::normalize_schema_id;
         assert_eq!(normalize_schema_id("Invoice"), "invoice");
-        assert_eq!(normalize_schema_id("Customer Profile"), "customer_profile");
-        assert_eq!(normalize_schema_id("code_block"), "code_block");
+        assert_eq!(normalize_schema_id("Customer Profile"), "customer-profile");
+        assert_eq!(normalize_schema_id("code_block"), "code-block");
         assert_eq!(normalize_schema_id("Project"), "project");
     }
 
@@ -3872,10 +3872,7 @@ mod tests {
         use crate::services::node_service::normalize_schema_id;
         let entity_name = "Customer Invoice";
         let schema_id = normalize_schema_id(entity_name);
-        // normalize_schema_id joins on '_' (see its dedicated unit tests); the core
-        // hardcoded schema ids that use hyphens (code-block, …) are not generated
-        // through this path.
-        assert_eq!(schema_id, "customer_invoice");
+        assert_eq!(schema_id, "customer-invoice");
     }
 
     fn field(name: &str) -> SchemaField {

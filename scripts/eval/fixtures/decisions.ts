@@ -279,10 +279,10 @@ interface DecisionScenario extends Scenario {
 ///   that is the shape the agent gives a type asked for "with a name, an end
 ///   date and a capacity". The spec type has one, and the seeded spec's `name`
 ///   is set to its title (see `seedWorkspace`).
-/// - Both ids contain an underscore, which a model may escape when it lists
-///   them (`outcome-list-types`).
-const SPEC_TYPE = "feature_spec";
-const CYCLE_TYPE = "planning_cycle";
+/// - Both ids are two words joined by a hyphen, which a model may split or
+///   respace when it lists them (`outcome-list-types`).
+const SPEC_TYPE = "feature-spec";
+const CYCLE_TYPE = "planning-cycle";
 const SIGNED_OFF_DATE_FIELD = "signed_off_date";
 
 const SEEDED_TYPES: Array<{ id: string; params: Record<string, unknown> }> = [
@@ -461,7 +461,7 @@ export function groupSeeds(group: Scenario[]): Array<"workspace" | "linked-skill
 
 /// The type the linked-skill scenarios act on, and the only one their turns
 /// are held to.
-const LINKED_TYPE = "bug_report";
+const LINKED_TYPE = "bug-report";
 
 /// Skills linked to `LINKED_TYPE` through `applies_to`.
 ///

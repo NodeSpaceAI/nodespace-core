@@ -5968,9 +5968,9 @@ mod tests {
 
     /// A fixture `extends` subtype of `text`, added the way another build adds
     /// one (ADR-082 §2.1).
-    const FIXTURE_NOTE: &str = "fixture_note";
+    const FIXTURE_NOTE: &str = "fixture-note";
 
-    /// The behaviour of `fixture_note extends text`. Its embedding rule
+    /// The behaviour of `fixture-note extends text`. Its embedding rule
     /// differs from text's: it contributes to its parent's embedding with a
     /// label.
     struct FixtureNoteBehavior;
@@ -5994,7 +5994,7 @@ mod tests {
     }
 
     /// A node service over a fresh database built with `extensions`, holding
-    /// the schemas of `fixture_note extends text` and `chore extends task`.
+    /// the schemas of `fixture-note extends text` and `chore extends task`.
     async fn service_with(
         extensions: &crate::extensions::DataExtensions,
     ) -> (Arc<crate::services::NodeService>, tempfile::TempDir) {
@@ -6052,7 +6052,7 @@ mod tests {
 
     /// A subtype's behaviour decides its embedding (ADR-082 §2.1), including
     /// what its node contributes to an aggregating parent: a text or header
-    /// parent aggregates a `fixture_note` child as `FixtureNoteBehavior` says,
+    /// parent aggregates a `fixture-note` child as `FixtureNoteBehavior` says,
     /// not as text's behaviour would.
     #[tokio::test]
     async fn a_subtype_child_contributes_to_its_parent_as_its_registered_behaviour_says() {
@@ -6082,7 +6082,7 @@ mod tests {
 
     /// With no extension, aggregation is what core's own behaviours give: a
     /// subtype with no behaviour of its own contributes as the type it
-    /// extends (`fixture_note` as text; `chore` as task, which contributes
+    /// extends (`fixture-note` as text; `chore` as task, which contributes
     /// nothing), and the tree reads in document order.
     #[tokio::test]
     async fn aggregation_with_no_extension_is_unchanged() {

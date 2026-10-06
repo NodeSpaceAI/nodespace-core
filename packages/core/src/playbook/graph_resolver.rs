@@ -1577,11 +1577,11 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn resolve_property_on_root_node() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_task", json!([])).await;
+            create_schema(&svc, "gr-task", json!([])).await;
 
             let node = make_node(
                 "a5fab10d-1e9c-5fb3-89f8-1f9288a0d2e7",
-                "gr_task",
+                "gr-task",
                 json!({"status": "open"}),
             );
             svc.create_node(node.clone()).await.unwrap();
@@ -1597,11 +1597,11 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn resolve_missing_property_returns_missing() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_task2", json!([])).await;
+            create_schema(&svc, "gr-task2", json!([])).await;
 
             let node = make_node(
                 "82cead27-2991-5a3d-8822-dc0d548c481b",
-                "gr_task2",
+                "gr-task2",
                 json!({"status": "open"}),
             );
             svc.create_node(node.clone()).await.unwrap();
@@ -1618,14 +1618,14 @@ mod tests {
         async fn resolve_single_hop_relationship() {
             let (svc, _tmp) = create_test_service().await;
 
-            // Create schemas: gr_story has no rels, gr_issue -> story
-            create_schema(&svc, "gr_story", json!([])).await;
+            // Create schemas: gr-story has no rels, gr-issue -> story
+            create_schema(&svc, "gr-story", json!([])).await;
             create_schema(
                 &svc,
-                "gr_issue",
+                "gr-issue",
                 json!([{
                     "name": "story",
-                    "targetType": "gr_story",
+                    "targetType": "gr-story",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -1637,14 +1637,14 @@ mod tests {
             // Create nodes
             let story = make_node(
                 "c7c9cf0b-71a4-5bc1-833d-60e538bd42b7",
-                "gr_story",
+                "gr-story",
                 json!({"status": "active"}),
             );
             svc.create_node(story.clone()).await.unwrap();
 
             let issue = make_node(
                 "8c6a5e17-6d57-5ef5-8a93-cab9b3cb5089",
-                "gr_issue",
+                "gr-issue",
                 json!({"status": "open"}),
             );
             svc.create_node(issue.clone()).await.unwrap();
@@ -1681,13 +1681,13 @@ mod tests {
             };
 
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_story_err", json!([])).await;
+            create_schema(&svc, "gr-story-err", json!([])).await;
             create_schema(
                 &svc,
-                "gr_issue_err",
+                "gr-issue-err",
                 json!([{
                     "name": "story",
-                    "targetType": "gr_story_err",
+                    "targetType": "gr-story-err",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -1697,14 +1697,14 @@ mod tests {
             .await;
             let issue = make_node(
                 "17d5e68b-85b7-5f36-81fd-b137954515bd",
-                "gr_issue_err",
+                "gr-issue-err",
                 json!({"status": "open"}),
             );
             svc.create_node(issue.clone()).await.unwrap();
 
             let conditions = vec![CompiledCondition::compile("!has(node.story)").unwrap()];
             let event = DomainEvent::NodeCreated {
-                node_type: "gr_issue_err".to_string(),
+                node_type: "gr-issue-err".to_string(),
                 node_id: issue.id.clone(),
             };
 
@@ -1730,7 +1730,7 @@ mod tests {
             // the walk below would never run.
             let other_issue = make_node(
                 "17d5e68b-85b7-5f36-81fd-b137954515be",
-                "gr_issue_err",
+                "gr-issue-err",
                 json!({"status": "open"}),
             );
             svc.create_node(other_issue.clone()).await.unwrap();
@@ -1784,13 +1784,13 @@ mod tests {
         async fn resolve_path_and_enrich_context_work_under_current_thread_runtime() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_story_ct", json!([])).await;
+            create_schema(&svc, "gr-story-ct", json!([])).await;
             create_schema(
                 &svc,
-                "gr_issue_ct",
+                "gr-issue-ct",
                 json!([{
                     "name": "story",
-                    "targetType": "gr_story_ct",
+                    "targetType": "gr-story-ct",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -1801,14 +1801,14 @@ mod tests {
 
             let story = make_node(
                 "c8848aed-f332-53d6-a408-a277e359f8ce",
-                "gr_story_ct",
+                "gr-story-ct",
                 json!({"status": "active"}),
             );
             svc.create_node(story.clone()).await.unwrap();
 
             let issue = make_node(
                 "a023b9dc-00c7-510b-884e-da40974a72fc",
-                "gr_issue_ct",
+                "gr-issue-ct",
                 json!({"status": "open"}),
             );
             svc.create_node(issue.clone()).await.unwrap();
@@ -1854,14 +1854,14 @@ mod tests {
         async fn resolve_multi_hop_relationship_chain() {
             let (svc, _tmp) = create_test_service().await;
 
-            // Chain: gr_task3 -> story -> epic
-            create_schema(&svc, "gr_epic", json!([])).await;
+            // Chain: gr-task3 -> story -> epic
+            create_schema(&svc, "gr-epic", json!([])).await;
             create_schema(
                 &svc,
-                "gr_story3",
+                "gr-story3",
                 json!([{
                     "name": "epic",
-                    "targetType": "gr_epic",
+                    "targetType": "gr-epic",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "stories",
@@ -1871,10 +1871,10 @@ mod tests {
             .await;
             create_schema(
                 &svc,
-                "gr_task3",
+                "gr-task3",
                 json!([{
                     "name": "story",
-                    "targetType": "gr_story3",
+                    "targetType": "gr-story3",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -1885,21 +1885,21 @@ mod tests {
 
             let epic = make_node(
                 "2504876b-ac56-57ef-8353-22706def408f",
-                "gr_epic",
+                "gr-epic",
                 json!({"status": "in_progress"}),
             );
             svc.create_node(epic).await.unwrap();
 
             let story = make_node(
                 "27c083ca-7466-59cd-b737-a9c076bbf28c",
-                "gr_story3",
+                "gr-story3",
                 json!({"status": "active"}),
             );
             svc.create_node(story).await.unwrap();
 
             let task = make_node(
                 "1139a1a0-6f33-5282-97c4-3bf0c8db6f10",
-                "gr_task3",
+                "gr-task3",
                 json!({"status": "open"}),
             );
             svc.create_node(task.clone()).await.unwrap();
@@ -1963,13 +1963,13 @@ mod tests {
         async fn many_relationship_with_zero_matches_resolves_to_empty_collection() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_item_empty", json!([])).await;
+            create_schema(&svc, "gr-item-empty", json!([])).await;
             create_schema(
                 &svc,
-                "gr_parent_empty",
+                "gr-parent-empty",
                 json!([{
                     "name": "items",
-                    "targetType": "gr_item_empty",
+                    "targetType": "gr-item-empty",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "parent",
@@ -1982,7 +1982,7 @@ mod tests {
             // "freshly created Cycle with no Issues yet" shape.
             let parent = make_node(
                 "15bfaa70-906c-54ed-ae38-5b02022afb56",
-                "gr_parent_empty",
+                "gr-parent-empty",
                 json!({}),
             );
             svc.create_node(parent.clone()).await.unwrap();
@@ -2014,13 +2014,13 @@ mod tests {
         async fn one_relationship_with_zero_matches_still_resolves_to_missing() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_cycle_unset", json!([])).await;
+            create_schema(&svc, "gr-cycle-unset", json!([])).await;
             create_schema(
                 &svc,
-                "gr_issue_unset",
+                "gr-issue-unset",
                 json!([{
                     "name": "cycle",
-                    "targetType": "gr_cycle_unset",
+                    "targetType": "gr-cycle-unset",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -2032,7 +2032,7 @@ mod tests {
             // Issue created with NO cycle relationship ever added.
             let issue = make_node(
                 "d8d25f33-0604-59de-955c-e0fdc76bc325",
-                "gr_issue_unset",
+                "gr-issue-unset",
                 json!({}),
             );
             svc.create_node(issue.clone()).await.unwrap();
@@ -2056,10 +2056,10 @@ mod tests {
         async fn undeclared_segment_still_resolves_to_missing() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_lonely", json!([])).await;
+            create_schema(&svc, "gr-lonely", json!([])).await;
             let node = make_node(
                 "9f68169c-2c13-59df-87d6-ecd6e7f418f0",
-                "gr_lonely",
+                "gr-lonely",
                 json!({}),
             );
             svc.create_node(node.clone()).await.unwrap();
@@ -2080,13 +2080,13 @@ mod tests {
         async fn resolve_path_cache_hit() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_story4", json!([])).await;
+            create_schema(&svc, "gr-story4", json!([])).await;
             create_schema(
                 &svc,
-                "gr_task4",
+                "gr-task4",
                 json!([{
                     "name": "story",
-                    "targetType": "gr_story4",
+                    "targetType": "gr-story4",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -2097,13 +2097,13 @@ mod tests {
 
             let story = make_node(
                 "107dc6a4-d317-5b21-9f39-6d1d8943c681",
-                "gr_story4",
+                "gr-story4",
                 json!({"status": "done"}),
             );
             svc.create_node(story).await.unwrap();
             let task = make_node(
                 "cc70c452-a76f-5ced-900f-87737c548736",
-                "gr_task4",
+                "gr-task4",
                 json!({}),
             );
             svc.create_node(task.clone()).await.unwrap();
@@ -2135,13 +2135,13 @@ mod tests {
         async fn resolve_collection_returns_multiple_nodes() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_subtask", json!([])).await;
+            create_schema(&svc, "gr-subtask", json!([])).await;
             create_schema(
                 &svc,
-                "gr_parent",
+                "gr-parent",
                 json!([{
                     "name": "subtasks",
-                    "targetType": "gr_subtask",
+                    "targetType": "gr-subtask",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "parent_task",
@@ -2152,12 +2152,12 @@ mod tests {
 
             let sub1 = make_node(
                 "76d0533a-fca3-53fc-ae07-c8a6fff28407",
-                "gr_subtask",
+                "gr-subtask",
                 json!({"status": "done"}),
             );
             let sub2 = make_node(
                 "197f434b-77de-5206-965b-5464fa621440",
-                "gr_subtask",
+                "gr-subtask",
                 json!({"status": "open"}),
             );
             svc.create_node(sub1).await.unwrap();
@@ -2165,7 +2165,7 @@ mod tests {
 
             let parent = make_node(
                 "fc562f69-fc5e-50c3-b4da-d89de50e6f79",
-                "gr_parent",
+                "gr-parent",
                 json!({}),
             );
             svc.create_node(parent.clone()).await.unwrap();
@@ -2206,13 +2206,13 @@ mod tests {
         async fn enrich_context_builds_cel_values() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_target5", json!([])).await;
+            create_schema(&svc, "gr-target5", json!([])).await;
             create_schema(
                 &svc,
-                "gr_source5",
+                "gr-source5",
                 json!([{
                     "name": "target",
-                    "targetType": "gr_target5",
+                    "targetType": "gr-target5",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "sources",
@@ -2223,13 +2223,13 @@ mod tests {
 
             let target = make_node(
                 "ac296fa4-9a76-56d8-b333-866646d27c09",
-                "gr_target5",
+                "gr-target5",
                 json!({"status": "ready"}),
             );
             svc.create_node(target).await.unwrap();
             let source = make_node(
                 "9147b150-a60c-550a-b49f-2fe7d9d20974",
-                "gr_source5",
+                "gr-source5",
                 json!({}),
             );
             svc.create_node(source.clone()).await.unwrap();
@@ -2266,11 +2266,11 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn resolve_empty_segments_returns_root_node() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_task6", json!([])).await;
+            create_schema(&svc, "gr-task6", json!([])).await;
 
             let node = make_node(
                 "49638dad-3ddf-51c0-9ee9-d01cf0d23db2",
-                "gr_task6",
+                "gr-task6",
                 json!({}),
             );
             svc.create_node(node.clone()).await.unwrap();
@@ -2286,11 +2286,11 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn cannot_walk_past_scalar() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_task7", json!([])).await;
+            create_schema(&svc, "gr-task7", json!([])).await;
 
             let node = make_node(
                 "6831fac3-a02b-5d53-a66b-814c006e379f",
-                "gr_task7",
+                "gr-task7",
                 json!({"status": "open"}),
             );
             svc.create_node(node.clone()).await.unwrap();
@@ -2311,14 +2311,14 @@ mod tests {
         async fn enrich_context_resolves_multi_hop_path() {
             let (svc, _tmp) = create_test_service().await;
 
-            // Chain: gr_task8 -> story8 -> epic8
-            create_schema(&svc, "gr_epic8", json!([])).await;
+            // Chain: gr-task8 -> story8 -> epic8
+            create_schema(&svc, "gr-epic8", json!([])).await;
             create_schema(
                 &svc,
-                "gr_story8",
+                "gr-story8",
                 json!([{
                     "name": "epic",
-                    "targetType": "gr_epic8",
+                    "targetType": "gr-epic8",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "stories",
@@ -2328,10 +2328,10 @@ mod tests {
             .await;
             create_schema(
                 &svc,
-                "gr_task8",
+                "gr-task8",
                 json!([{
                     "name": "story",
-                    "targetType": "gr_story8",
+                    "targetType": "gr-story8",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -2342,19 +2342,19 @@ mod tests {
 
             let epic = make_node(
                 "169f3f29-1189-5671-b858-e6f349db079b",
-                "gr_epic8",
+                "gr-epic8",
                 json!({"status": "in_progress"}),
             );
             svc.create_node(epic).await.unwrap();
             let story = make_node(
                 "7e8706b4-1465-5989-b7fd-e25d6288e32b",
-                "gr_story8",
+                "gr-story8",
                 json!({"status": "active"}),
             );
             svc.create_node(story).await.unwrap();
             let task = make_node(
                 "d80b5203-ae2f-5735-906d-7043d9e52394",
-                "gr_task8",
+                "gr-task8",
                 json!({"status": "open"}),
             );
             svc.create_node(task.clone()).await.unwrap();
@@ -2417,13 +2417,13 @@ mod tests {
             use crate::playbook::cel::{evaluate_conditions, CompiledCondition, ConditionResult};
 
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_story_null", json!([])).await;
+            create_schema(&svc, "gr-story-null", json!([])).await;
             create_schema(
                 &svc,
-                "gr_task_null",
+                "gr-task-null",
                 json!([{
                     "name": "story",
-                    "targetType": "gr_story_null",
+                    "targetType": "gr-story-null",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -2459,12 +2459,12 @@ mod tests {
             ];
 
             for (which, story_id, task_id, story_props, has_value) in cases {
-                svc.create_node(make_node(story_id, "gr_story_null", story_props.clone()))
+                svc.create_node(make_node(story_id, "gr-story-null", story_props.clone()))
                     .await
                     .unwrap();
                 // The task carries the same field, for the collection read
                 // from the story's side below.
-                let task = make_node(task_id, "gr_task_null", story_props);
+                let task = make_node(task_id, "gr-task-null", story_props);
                 svc.create_node(task.clone()).await.unwrap();
                 svc.create_relationship(task_id, "story", story_id, json!({}))
                     .await
@@ -2472,7 +2472,7 @@ mod tests {
 
                 // The fixture must really store what the case is named for.
                 let stored = svc.get_node(story_id).await.unwrap().unwrap();
-                let stored_priority = stored.properties["gr_story_null"].get("priority");
+                let stored_priority = stored.properties["gr-story-null"].get("priority");
                 match which {
                     "cleared" => assert_eq!(stored_priority, Some(&json!(null))),
                     "never set" => assert_eq!(stored_priority, None),
@@ -2480,7 +2480,7 @@ mod tests {
                 }
 
                 let event = crate::db::events::DomainEvent::NodeCreated {
-                    node_type: "gr_task_null".to_string(),
+                    node_type: "gr-task-null".to_string(),
                     node_id: task_id.to_string(),
                 };
                 for (expr, without_value, with_value) in [
@@ -2547,7 +2547,7 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "gr_linked",
+                    "name": "gr-linked",
                     "fields": [{ "name": "repository", "type": "link" }]
                 }),
             )
@@ -2555,7 +2555,7 @@ mod tests {
             .unwrap();
 
             let event = crate::db::events::DomainEvent::NodeCreated {
-                node_type: "gr_linked".to_string(),
+                node_type: "gr-linked".to_string(),
                 node_id: "unused".to_string(),
             };
             let cases = [
@@ -2567,7 +2567,7 @@ mod tests {
                 ("5d0e3b1c-0c57-4f0e-8a41-2f1f3c7a0002", json!({}), false),
             ];
             for (id, props, is_set) in cases {
-                let node = make_node(id, "gr_linked", props);
+                let node = make_node(id, "gr-linked", props);
                 svc.create_node(node.clone()).await.unwrap();
                 for (expr, when_set, when_unset) in [
                     (
@@ -2603,13 +2603,13 @@ mod tests {
             // node_to_cel_value.
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_related11", json!([])).await;
+            create_schema(&svc, "gr-related11", json!([])).await;
             create_schema(
                 &svc,
-                "gr_root11",
+                "gr-root11",
                 json!([{
                     "name": "related_node",
-                    "targetType": "gr_related11",
+                    "targetType": "gr-related11",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "roots",
@@ -2620,13 +2620,13 @@ mod tests {
 
             let related = make_node(
                 "fd1c1afe-18cb-558c-b0d3-9fc930d72c7b",
-                "gr_related11",
+                "gr-related11",
                 json!({"status": "active", "_playbookChainDepth": 7}),
             );
             svc.create_node(related).await.unwrap();
             let root = make_node(
                 "cd5d5d14-9148-5bed-91cd-754185704f03",
-                "gr_root11",
+                "gr-root11",
                 json!({}),
             );
             svc.create_node(root.clone()).await.unwrap();
@@ -2695,13 +2695,13 @@ mod tests {
         async fn resolve_collection_with_collection_path() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_item9", json!([])).await;
+            create_schema(&svc, "gr-item9", json!([])).await;
             create_schema(
                 &svc,
-                "gr_parent9",
+                "gr-parent9",
                 json!([{
                     "name": "items",
-                    "targetType": "gr_item9",
+                    "targetType": "gr-item9",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "collection",
@@ -2712,12 +2712,12 @@ mod tests {
 
             let item1 = make_node(
                 "f1e99148-e345-55b0-a3bf-fc7289df6a41",
-                "gr_item9",
+                "gr-item9",
                 json!({"status": "done"}),
             );
             let item2 = make_node(
                 "fa650a80-244b-5e73-980e-cc70dd49adf7",
-                "gr_item9",
+                "gr-item9",
                 json!({"status": "open"}),
             );
             svc.create_node(item1).await.unwrap();
@@ -2725,7 +2725,7 @@ mod tests {
 
             let parent = make_node(
                 "ceee2e5f-adf7-5091-b85a-67e5ae80ec1b",
-                "gr_parent9",
+                "gr-parent9",
                 json!({}),
             );
             svc.create_node(parent.clone()).await.unwrap();
@@ -2771,13 +2771,13 @@ mod tests {
         async fn enrich_context_with_collection() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_sub10", json!([])).await;
+            create_schema(&svc, "gr-sub10", json!([])).await;
             create_schema(
                 &svc,
-                "gr_parent10",
+                "gr-parent10",
                 json!([{
                     "name": "tasks",
-                    "targetType": "gr_sub10",
+                    "targetType": "gr-sub10",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "parent_task",
@@ -2788,12 +2788,12 @@ mod tests {
 
             let sub1 = make_node(
                 "d4ff61ea-e0fa-5cad-8db0-e0cdac5f32f2",
-                "gr_sub10",
+                "gr-sub10",
                 json!({"status": "done"}),
             );
             let sub2 = make_node(
                 "87f5b39d-b67c-5d48-add2-1d7a7bcfc023",
-                "gr_sub10",
+                "gr-sub10",
                 json!({"status": "open"}),
             );
             svc.create_node(sub1).await.unwrap();
@@ -2801,7 +2801,7 @@ mod tests {
 
             let parent = make_node(
                 "93150e2e-5d1d-5292-8bdc-77f86393d43f",
-                "gr_parent10",
+                "gr-parent10",
                 json!({}),
             );
             svc.create_node(parent.clone()).await.unwrap();
@@ -2872,17 +2872,17 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn builtin_reverse_name_walks_to_the_parent() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_rev_task", json!([])).await;
+            create_schema(&svc, "gr-rev-task", json!([])).await;
 
             let parent = make_node(
                 "9c98927a-4041-56c4-b1d8-2c9a06d5723a",
-                "gr_rev_task",
+                "gr-rev-task",
                 json!({"status": "open"}),
             );
             svc.create_node(parent.clone()).await.unwrap();
             let child = make_node(
                 "984353e4-bfac-5202-96f2-54010d96232c",
-                "gr_rev_task",
+                "gr-rev-task",
                 json!({"status": "done"}),
             );
             svc.create_node(child.clone()).await.unwrap();
@@ -2928,17 +2928,17 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn a_related_nodes_core_fields_resolve() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_core_task", json!([])).await;
+            create_schema(&svc, "gr-core-task", json!([])).await;
 
             let parent = make_node(
                 "61fc0710-eddf-5aa3-872b-12132075a3ab",
-                "gr_core_task",
+                "gr-core-task",
                 json!({"status": "open"}),
             );
             svc.create_node(parent.clone()).await.unwrap();
             let child = make_node(
                 "0ad70408-ba33-5384-aa53-9e6db860be23",
-                "gr_core_task",
+                "gr-core-task",
                 json!({"status": "done"}),
             );
             svc.create_node(child.clone()).await.unwrap();
@@ -2954,7 +2954,7 @@ mod tests {
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             for (segment, want) in [
                 ("id", "61fc0710-eddf-5aa3-872b-12132075a3ab"),
-                ("node_type", "gr_core_task"),
+                ("node_type", "gr-core-task"),
             ] {
                 let result = resolver
                     .resolve_path(&child, &["child_of".to_string(), segment.to_string()])
@@ -2975,7 +2975,7 @@ mod tests {
                 .resolve_path(&child, &["child_of".to_string(), "type_chain".to_string()])
                 .await
             {
-                ResolvedValue::Scalar(v) => assert_eq!(v, json!(["gr_core_task"])),
+                ResolvedValue::Scalar(v) => assert_eq!(v, json!(["gr-core-task"])),
                 other => panic!("expected a Scalar for child_of.type_chain, got {other:?}"),
             }
 
@@ -2991,20 +2991,20 @@ mod tests {
 
         /// A schema-declared `reverseName` resolves the same way, and chains.
         ///
-        /// `gr_rev_person` declares `tasks`; a task reaching its owner spells
+        /// `gr-rev-person` declares `tasks`; a task reaching its owner spells
         /// that `assignee`. The second hop (`.email`) proves a reverse segment
         /// leaves the walk in the same state a forward one does — the resolved
         /// node keeps being walkable, so multi-hop paths work through it.
         #[tokio::test(flavor = "multi_thread")]
         async fn declared_reverse_name_resolves_and_chains() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_rev_ticket", json!([])).await;
+            create_schema(&svc, "gr-rev-ticket", json!([])).await;
             create_schema(
                 &svc,
-                "gr_rev_person",
+                "gr-rev-person",
                 json!([{
                     "name": "tasks",
-                    "targetType": "gr_rev_ticket",
+                    "targetType": "gr-rev-ticket",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "assignee",
@@ -3015,13 +3015,13 @@ mod tests {
 
             let person = make_node(
                 "22396a0f-ef2c-5998-a93c-b626687a36da",
-                "gr_rev_person",
+                "gr-rev-person",
                 json!({"email": "ada@example.com"}),
             );
             svc.create_node(person.clone()).await.unwrap();
             let ticket = make_node(
                 "c00e5c50-aba9-5350-8a3f-ad2d4adca7a4",
-                "gr_rev_ticket",
+                "gr-rev-ticket",
                 json!({"status": "open"}),
             );
             svc.create_node(ticket.clone()).await.unwrap();
@@ -3067,13 +3067,13 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn reverse_name_excludes_another_schemas_same_forward_name() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_nar_ticket", json!([])).await;
+            create_schema(&svc, "gr-nar-ticket", json!([])).await;
             create_schema(
                 &svc,
-                "gr_nar_person",
+                "gr-nar-person",
                 json!([{
                     "name": "tasks",
-                    "targetType": "gr_nar_ticket",
+                    "targetType": "gr-nar-ticket",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "assignee",
@@ -3084,10 +3084,10 @@ mod tests {
             // A second schema declaring the SAME forward name at the same type.
             create_schema(
                 &svc,
-                "gr_nar_project",
+                "gr-nar-project",
                 json!([{
                     "name": "tasks",
-                    "targetType": "gr_nar_ticket",
+                    "targetType": "gr-nar-ticket",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "project",
@@ -3098,19 +3098,19 @@ mod tests {
 
             let person = make_node(
                 "de34e23d-e992-584a-b512-96a69307fb69",
-                "gr_nar_person",
+                "gr-nar-person",
                 json!({"email": "grace@x.io"}),
             );
             svc.create_node(person.clone()).await.unwrap();
             let project = make_node(
                 "2052f379-c47b-5a08-8aa7-2be327e25aae",
-                "gr_nar_project",
+                "gr-nar-project",
                 json!({"name": "Apollo"}),
             );
             svc.create_node(project.clone()).await.unwrap();
             let ticket = make_node(
                 "050d7c67-e214-512c-90f4-0667accac799",
-                "gr_nar_ticket",
+                "gr-nar-ticket",
                 json!({"status": "open"}),
             );
             svc.create_node(ticket.clone()).await.unwrap();
@@ -3163,11 +3163,11 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn reverse_segment_feeds_a_collection() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_sib_task", json!([])).await;
+            create_schema(&svc, "gr-sib-task", json!([])).await;
 
             let parent = make_node(
                 "d2c02095-f68f-5e79-851a-2d28484980cf",
-                "gr_sib_task",
+                "gr-sib-task",
                 json!({"status": "open"}),
             );
             svc.create_node(parent.clone()).await.unwrap();
@@ -3175,7 +3175,7 @@ mod tests {
                 "2e51a202-4d99-50c8-9d6c-e7dfda6b1c32",
                 "da1b5799-6677-53c9-b277-282337ff2d1b",
             ] {
-                let child = make_node(id, "gr_sib_task", json!({"status": "done"}));
+                let child = make_node(id, "gr-sib-task", json!({"status": "done"}));
                 svc.create_node(child.clone()).await.unwrap();
                 svc.create_relationship(
                     "d2c02095-f68f-5e79-851a-2d28484980cf",
@@ -3217,13 +3217,13 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn another_schemas_forward_name_walks_inbound() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_inf_doc", json!([])).await;
+            create_schema(&svc, "gr-inf-doc", json!([])).await;
             create_schema(
                 &svc,
-                "gr_inf_author",
+                "gr-inf-author",
                 json!([{
                     "name": "wrote",
-                    "targetType": "gr_inf_doc",
+                    "targetType": "gr-inf-doc",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "written_by",
@@ -3234,13 +3234,13 @@ mod tests {
 
             let author = make_node(
                 "05305480-70d4-5232-865e-3e0017a9b2f9",
-                "gr_inf_author",
+                "gr-inf-author",
                 json!({"name": "Kay"}),
             );
             svc.create_node(author.clone()).await.unwrap();
             let doc = make_node(
                 "5ffbd4e3-edac-54da-adc8-62e235f0e3f9",
-                "gr_inf_doc",
+                "gr-inf-doc",
                 json!({"status": "draft"}),
             );
             svc.create_node(doc.clone()).await.unwrap();
@@ -3289,13 +3289,13 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn enrich_context_resolves_a_terminal_reverse_segment() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_term_ticket", json!([])).await;
+            create_schema(&svc, "gr-term-ticket", json!([])).await;
             create_schema(
                 &svc,
-                "gr_term_person",
+                "gr-term-person",
                 json!([{
                     "name": "tasks",
-                    "targetType": "gr_term_ticket",
+                    "targetType": "gr-term-ticket",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "assignee",
@@ -3306,14 +3306,14 @@ mod tests {
 
             svc.create_node(make_node(
                 "dcbb6d10-5e53-544f-a363-e1cca6fba6dd",
-                "gr_term_person",
+                "gr-term-person",
                 json!({"email": "ada@example.com"}),
             ))
             .await
             .unwrap();
             let ticket = make_node(
                 "9e86de83-ef32-573a-a09d-4326792b60a6",
-                "gr_term_ticket",
+                "gr-term-ticket",
                 json!({"status": "open"}),
             );
             svc.create_node(ticket.clone()).await.unwrap();
@@ -3353,7 +3353,7 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn cache_does_not_leak_between_root_nodes() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_cache_task", json!([])).await;
+            create_schema(&svc, "gr-cache-task", json!([])).await;
 
             // Two independent parent/child pairs.
             for (parent, child) in [
@@ -3368,12 +3368,12 @@ mod tests {
             ] {
                 svc.create_node(make_node(
                     parent,
-                    "gr_cache_task",
+                    "gr-cache-task",
                     json!({"status": "open"}),
                 ))
                 .await
                 .unwrap();
-                svc.create_node(make_node(child, "gr_cache_task", json!({"status": "done"})))
+                svc.create_node(make_node(child, "gr-cache-task", json!({"status": "done"})))
                     .await
                     .unwrap();
                 svc.create_relationship(parent, "has_child", child, json!({}))
@@ -3423,11 +3423,11 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn undeclared_segment_is_missing_rather_than_an_error() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "gr_unk_task", json!([])).await;
+            create_schema(&svc, "gr-unk-task", json!([])).await;
 
             let node = make_node(
                 "6dc01f21-c30f-5698-9183-5871f63ce349",
-                "gr_unk_task",
+                "gr-unk-task",
                 json!({"status": "open"}),
             );
             svc.create_node(node.clone()).await.unwrap();
@@ -3463,7 +3463,7 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "gr_ext_item",
+                    "name": "gr-ext-item",
                     "fields": []
                 }),
             )
@@ -3473,11 +3473,11 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "gr_ext_base",
+                    "name": "gr-ext-base",
                     "fields": [],
                     "relationships": [{
                         "name": "items",
-                        "targetType": "gr_ext_item",
+                        "targetType": "gr-ext-item",
                         "direction": "out",
                         "cardinality": "many",
                         "reverseName": "parent",
@@ -3491,8 +3491,8 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "gr_ext_sub",
-                    "extends": "gr_ext_base",
+                    "name": "gr-ext-sub",
+                    "extends": "gr-ext-base",
                     "fields": []
                 }),
             )
@@ -3503,7 +3503,7 @@ mod tests {
             // is only declared on the ancestor, never redeclared here.
             let parent = make_node(
                 "aed64f08-54fd-51a3-bf3e-1a114273d61e",
-                "gr_ext_sub",
+                "gr-ext-sub",
                 json!({}),
             );
             svc.create_node(parent.clone()).await.unwrap();
@@ -3542,13 +3542,13 @@ mod tests {
         {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_revmany_project", json!([])).await;
+            create_schema(&svc, "gr-revmany-project", json!([])).await;
             create_schema(
                 &svc,
-                "gr_revmany_task",
+                "gr-revmany-task",
                 json!([{
                     "name": "project",
-                    "targetType": "gr_revmany_project",
+                    "targetType": "gr-revmany-project",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "tasks",
@@ -3562,7 +3562,7 @@ mod tests {
             // `project`'s own schema has no relationships of its own at all.
             let project = make_node(
                 "84dcef65-8d1e-5e2a-a148-730006f96faa",
-                "gr_revmany_project",
+                "gr-revmany-project",
                 json!({}),
             );
             svc.create_node(project.clone()).await.unwrap();
@@ -3593,13 +3593,13 @@ mod tests {
         async fn reverse_declared_many_relationship_with_one_match_resolves_to_collection() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_revmany1_project", json!([])).await;
+            create_schema(&svc, "gr-revmany1-project", json!([])).await;
             create_schema(
                 &svc,
-                "gr_revmany1_task",
+                "gr-revmany1-task",
                 json!([{
                     "name": "project",
-                    "targetType": "gr_revmany1_project",
+                    "targetType": "gr-revmany1-project",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "tasks",
@@ -3610,13 +3610,13 @@ mod tests {
 
             let project = make_node(
                 "4034b8e7-b8b9-589e-9633-695772d2b4df",
-                "gr_revmany1_project",
+                "gr-revmany1-project",
                 json!({}),
             );
             svc.create_node(project.clone()).await.unwrap();
             let task = make_node(
                 "d145deac-8b96-5a23-83cf-2c3b94cbd877",
-                "gr_revmany1_task",
+                "gr-revmany1-task",
                 json!({}),
             );
             svc.create_node(task.clone()).await.unwrap();
@@ -3668,7 +3668,7 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "gr_extlk_base",
+                    "name": "gr-extlk-base",
                     "fields": []
                 }),
             )
@@ -3680,8 +3680,8 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "gr_extlk_sub",
-                    "extends": "gr_extlk_base",
+                    "name": "gr-extlk-sub",
+                    "extends": "gr-extlk-base",
                     "fields": []
                 }),
             )
@@ -3692,7 +3692,7 @@ mod tests {
             // and no `extends`/`extended_by` edge ever points at it.
             let base = make_node(
                 "fcf3f955-9d07-57f3-96a9-101ddfe28607",
-                "gr_extlk_base",
+                "gr-extlk-base",
                 json!({}),
             );
             svc.create_node(base.clone()).await.unwrap();
@@ -3731,13 +3731,13 @@ mod tests {
         ) {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_infmany_project", json!([])).await;
+            create_schema(&svc, "gr-infmany-project", json!([])).await;
             create_schema(
                 &svc,
-                "gr_infmany_task",
+                "gr-infmany-task",
                 json!([{
                     "name": "owner_project",
-                    "targetType": "gr_infmany_project",
+                    "targetType": "gr-infmany-project",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "owned_tasks",
@@ -3749,7 +3749,7 @@ mod tests {
             // A project with NO tasks ever attached.
             let project = make_node(
                 "39d73c85-e744-5931-a830-fcbb7e15cbf6",
-                "gr_infmany_project",
+                "gr-infmany-project",
                 json!({}),
             );
             svc.create_node(project.clone()).await.unwrap();
@@ -3780,13 +3780,13 @@ mod tests {
         async fn inbound_forward_name_many_relationship_with_one_match_resolves_to_collection() {
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "gr_infmany1_project", json!([])).await;
+            create_schema(&svc, "gr-infmany1-project", json!([])).await;
             create_schema(
                 &svc,
-                "gr_infmany1_task",
+                "gr-infmany1-task",
                 json!([{
                     "name": "owner_project",
-                    "targetType": "gr_infmany1_project",
+                    "targetType": "gr-infmany1-project",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "owned_tasks",
@@ -3797,13 +3797,13 @@ mod tests {
 
             let project = make_node(
                 "e1b1f6b3-cc9c-58ef-8c58-9fbf29c13fe3",
-                "gr_infmany1_project",
+                "gr-infmany1-project",
                 json!({}),
             );
             svc.create_node(project.clone()).await.unwrap();
             let task = make_node(
                 "29b9b1df-e10c-574d-ba78-09abe0b5549e",
-                "gr_infmany1_task",
+                "gr-infmany1-task",
                 json!({}),
             );
             svc.create_node(task.clone()).await.unwrap();
@@ -3841,8 +3841,8 @@ mod tests {
         /// A forward name must be looked up in the ADR-078
         /// `extends`-chain-merged set `resolve_relationships` provides, not
         /// in the type's own directly-declared relationships. Looked up in
-        /// the latter, `items`, declared only on `gr_ext_base` and inherited
-        /// (not redeclared) by `gr_ext_sub`, is invisible: the name resolves
+        /// the latter, `items`, declared only on `gr-ext-base` and inherited
+        /// (not redeclared) by `gr-ext-sub`, is invisible: the name resolves
         /// as undeclared, which a path treats as an empty result -- even
         /// though the write path (`create_relationship` ->
         /// `resolve_declared_relationship`) is already chain-aware and
@@ -3857,7 +3857,7 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "gr_ext_item2",
+                    "name": "gr-ext-item2",
                     "fields": []
                 }),
             )
@@ -3867,11 +3867,11 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "gr_ext_base2",
+                    "name": "gr-ext-base2",
                     "fields": [],
                     "relationships": [{
                         "name": "items",
-                        "targetType": "gr_ext_item2",
+                        "targetType": "gr-ext-item2",
                         "direction": "out",
                         "cardinality": "many",
                         "reverseName": "parent",
@@ -3885,8 +3885,8 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "gr_ext_sub2",
-                    "extends": "gr_ext_base2",
+                    "name": "gr-ext-sub2",
+                    "extends": "gr-ext-base2",
                     "fields": []
                 }),
             )
@@ -3897,13 +3897,13 @@ mod tests {
             // `items` is only declared on the ancestor schema.
             let parent = make_node(
                 "a2edd255-83dd-5de3-ba8d-76e3fa4195e9",
-                "gr_ext_sub2",
+                "gr-ext-sub2",
                 json!({}),
             );
             svc.create_node(parent.clone()).await.unwrap();
             let item = make_node(
                 "0224d98d-8686-5ae6-9f57-4d386d5fd0ed",
-                "gr_ext_item2",
+                "gr-ext-item2",
                 json!({}),
             );
             svc.create_node(item.clone()).await.unwrap();
@@ -3946,9 +3946,9 @@ mod tests {
         /// epic: item i → story i → epic i. Returns the items.
         async fn seed_item_chains(svc: &Arc<NodeService>, prefix: &str, count: usize) -> Vec<Node> {
             let (epic, story, item) = (
-                format!("{prefix}_epic"),
-                format!("{prefix}_story"),
-                format!("{prefix}_item"),
+                format!("{prefix}-epic"),
+                format!("{prefix}-story"),
+                format!("{prefix}-item"),
             );
             create_schema(svc, &epic, json!([])).await;
             create_schema(
@@ -4007,7 +4007,7 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn a_path_resolves_for_every_root_in_one_statement() {
             let (svc, _tmp) = create_test_service().await;
-            let items = seed_item_chains(&svc, "gr_batch", 25).await;
+            let items = seed_item_chains(&svc, "gr-batch", 25).await;
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             let resolved = resolver
@@ -4058,7 +4058,7 @@ mod tests {
             };
 
             let (svc, _tmp) = create_test_service().await;
-            let items = seed_item_chains(&svc, "gr_ahead", 10).await;
+            let items = seed_item_chains(&svc, "gr-ahead", 10).await;
 
             let conditions = [
                 // A prefix of the next path, a repeat of it, and a property
@@ -4109,7 +4109,7 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn seeding_takes_only_the_roots_own_paths() {
             let (svc, _tmp) = create_test_service().await;
-            let items = seed_item_chains(&svc, "gr_seed", 2).await;
+            let items = seed_item_chains(&svc, "gr-seed", 2).await;
             let path = segments(&["story", "status"]);
 
             let mut scan = GraphResolver::new(Arc::clone(&svc));
@@ -4142,7 +4142,7 @@ mod tests {
         #[tokio::test(flavor = "multi_thread")]
         async fn a_declared_hop_after_a_builtin_one_is_resolved_from_the_nodes_reached() {
             let (svc, _tmp) = create_test_service().await;
-            let items = seed_item_chains(&svc, "gr_stage", 6).await;
+            let items = seed_item_chains(&svc, "gr-stage", 6).await;
 
             // A note under each item: note → child_of → item → story.
             let mut notes = Vec::new();

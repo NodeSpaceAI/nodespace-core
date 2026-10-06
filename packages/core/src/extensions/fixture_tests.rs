@@ -23,9 +23,9 @@ use crate::models::{Node, NodeUpdate, ValidationError as NodeValidationError};
 use crate::services::{CollectionService, CreateNodeParams, InsertPositionOwned, NodeService};
 
 /// The fixture subtype's schema id.
-const FIXTURE_TYPE: &str = "fixture_collection";
+const FIXTURE_TYPE: &str = "fixture-collection";
 
-/// The behaviour of `fixture_collection extends collection`. It reads its own
+/// The behaviour of `fixture-collection extends collection`. It reads its own
 /// field from its own bucket and refuses a `max_members` below 1, which the
 /// schema's `number` type alone admits. For everything but validation it
 /// behaves as a collection.
@@ -158,7 +158,7 @@ async fn the_subtypes_fields_are_stored_in_its_own_bucket() {
     assert_eq!(
         node.properties,
         json!({
-            "fixture_collection": { "max_members": 3 },
+            "fixture-collection": { "max_members": 3 },
             "collection": { "description": "Our team" }
         })
     );
@@ -251,7 +251,7 @@ async fn a_collection_retyped_to_the_subtype_is_rebucketed_and_validated() {
     assert_eq!(
         retyped.properties,
         json!({
-            "fixture_collection": { "max_members": 5 },
+            "fixture-collection": { "max_members": 5 },
             "collection": { "description": "Our team" }
         })
     );

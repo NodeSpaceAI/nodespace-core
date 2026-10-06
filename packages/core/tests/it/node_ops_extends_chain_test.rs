@@ -26,15 +26,15 @@ async fn service_with_refund_node() -> Result<(Arc<NodeService>, TempDir)> {
 
     handle_create_schema(
         &svc,
-        json!({ "name": "ledger_entry", "fields": [{ "name": "amount", "type": "number" }] }),
+        json!({ "name": "ledger-entry", "fields": [{ "name": "amount", "type": "number" }] }),
     )
     .await
     .map_err(|e| anyhow::anyhow!("base schema: {e}"))?;
     handle_create_schema(
         &svc,
         json!({
-            "name": "refund_entry",
-            "extends": "ledger_entry",
+            "name": "refund-entry",
+            "extends": "ledger-entry",
             "fields": [{ "name": "reason", "type": "text" }]
         }),
     )
@@ -43,7 +43,7 @@ async fn service_with_refund_node() -> Result<(Arc<NodeService>, TempDir)> {
 
     svc.create_node(Node::new_with_id(
         "4f96c399-4d8c-554b-83e3-14eeb86dc3a9".to_string(),
-        "refund_entry".to_string(),
+        "refund-entry".to_string(),
         "Refund".to_string(),
         json!({ "amount": 42, "reason": "duplicate" }),
     ))
@@ -75,7 +75,7 @@ async fn query_nodes_returns_an_extending_nodes_inherited_values() -> Result<()>
     let out = query_nodes(
         &svc,
         QueryNodesInput {
-            node_type: Some("refund_entry".to_string()),
+            node_type: Some("refund-entry".to_string()),
             limit: None,
             offset: None,
             collection_id: None,

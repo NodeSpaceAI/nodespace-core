@@ -77,7 +77,7 @@ async fn a_write_that_cannot_be_verified_is_an_error_not_a_populated_success() {
 
     let msg = err.to_string();
     assert!(
-        msg.contains("event_venue"),
+        msg.contains("event-venue"),
         "the error must name the schema that was not created, got: {msg}"
     );
     assert!(
@@ -115,7 +115,7 @@ async fn a_committed_but_unreadable_schema_is_not_reported_as_never_created() {
 
     let msg = err.to_string();
     assert!(
-        msg.contains("event_venue"),
+        msg.contains("event-venue"),
         "the error must name the schema, got: {msg}"
     );
     assert!(
@@ -226,7 +226,7 @@ async fn result_field_list_is_not_an_echo_of_the_request() {
         .expect("result field carries friendlyName");
 
     let persisted = svc
-        .get_schema_node("event_venue")
+        .get_schema_node("event-venue")
         .await
         .expect("read back schema")
         .expect("schema exists");
@@ -309,7 +309,7 @@ async fn two_sequential_creates_both_persist_and_both_results_are_accurate() {
     .await
     .expect("second create succeeds");
 
-    for (result, expected_id) in [(&first, "company_sold_to"), (&second, "event_venue")] {
+    for (result, expected_id) in [(&first, "company-sold-to"), (&second, "event-venue")] {
         let reported = result
             .get("schemaId")
             .and_then(|v| v.as_str())

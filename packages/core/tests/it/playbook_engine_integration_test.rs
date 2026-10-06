@@ -209,7 +209,7 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
 
     create_schema(
         &service,
-        "pb_task",
+        "pb-task",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -223,7 +223,7 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
         json!([{
             "name": "auto-close",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb_task" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb-task" } },
             "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
             "actions": [{
                 "description": "Test action",
@@ -244,7 +244,7 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
 
     // Local mutation whose condition passes — should fire the action.
     let matching = Node::new(
-        "pb_task".to_string(),
+        "pb-task".to_string(),
         "task that should auto-close".to_string(),
         json!({ "status": "open" }),
     );
@@ -253,7 +253,7 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
 
     // Local mutation whose condition fails — action must NOT fire.
     let non_matching = Node::new(
-        "pb_task".to_string(),
+        "pb-task".to_string(),
         "task that should stay untouched".to_string(),
         json!({ "status": "closed" }),
     );
@@ -266,7 +266,7 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "pb_task", "status").and_then(|v| v.as_str()) == Some("done")
+                Ok(Some(n)) if user_field(&n, "pb-task", "status").and_then(|v| v.as_str()) == Some("done")
             )
         }
     })
@@ -283,7 +283,7 @@ async fn play_fires_end_to_end_for_local_mutation() -> Result<()> {
         .await?
         .expect("non-matching node must still exist");
     assert_eq!(
-        user_field(&untouched, "pb_task", "status").and_then(|v| v.as_str()),
+        user_field(&untouched, "pb-task", "status").and_then(|v| v.as_str()),
         Some("closed"),
         "a node whose condition evaluates false must not be touched by the action"
     );
@@ -310,7 +310,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
 
     create_schema(
         &service,
-        "pb_sync_task",
+        "pb-sync-task",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -323,7 +323,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
         json!([{
             "name": "auto-close-sync",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb_sync_task" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb-sync-task" } },
             "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
             "actions": [{
                 "description": "Test action",
@@ -344,7 +344,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
     // event). Condition would pass (status == "open") if evaluated at all.
     let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let synced_node = Node::new(
-        "pb_sync_task".to_string(),
+        "pb-sync-task".to_string(),
         "task applied via sync".to_string(),
         json!({ "status": "open" }),
     );
@@ -357,7 +357,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
     // ruling out "the play never activated" as a false-negative explanation
     // for the sync node staying untouched.
     let control = Node::new(
-        "pb_sync_task".to_string(),
+        "pb-sync-task".to_string(),
         "control: local task, same shape".to_string(),
         json!({ "status": "open" }),
     );
@@ -370,7 +370,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "pb_sync_task", "status").and_then(|v| v.as_str()) == Some("done")
+                Ok(Some(n)) if user_field(&n, "pb-sync-task", "status").and_then(|v| v.as_str()) == Some("done")
             )
         }
     })
@@ -388,7 +388,7 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
         .await?
         .expect("sync-tagged node must still exist (it was created, just not acted on)");
     assert_eq!(
-        user_field(&synced_after, "pb_sync_task", "status").and_then(|v| v.as_str()),
+        user_field(&synced_after, "pb-sync-task", "status").and_then(|v| v.as_str()),
         Some("open"),
         "a sync-originated NodeCreated event must be excluded from trigger evaluation \
          before rule matching (ADR-073) — this node must be left exactly as created"
@@ -417,7 +417,7 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
 
     create_schema(
         &service,
-        "pb_bulk_sync_task",
+        "pb-bulk-sync-task",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -430,7 +430,7 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
         json!([{
             "name": "auto-close-bulk-sync",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb_bulk_sync_task" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pb-bulk-sync-task" } },
             "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
             "actions": [{
                 "description": "Test action",
@@ -449,7 +449,7 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
     // `bulk_create`, not one `create_node` call per row.
     let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let synced_node = Node::new(
-        "pb_bulk_sync_task".to_string(),
+        "pb-bulk-sync-task".to_string(),
         "task applied via sync bulk_create".to_string(),
         json!({ "status": "open" }),
     );
@@ -461,7 +461,7 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
     // would have fired for this exact play/condition/action if origin
     // hadn't gated it out.
     let control = Node::new(
-        "pb_bulk_sync_task".to_string(),
+        "pb-bulk-sync-task".to_string(),
         "control: local bulk_create, same shape".to_string(),
         json!({ "status": "open" }),
     );
@@ -474,7 +474,7 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "pb_bulk_sync_task", "status").and_then(|v| v.as_str()) == Some("done")
+                Ok(Some(n)) if user_field(&n, "pb-bulk-sync-task", "status").and_then(|v| v.as_str()) == Some("done")
             )
         }
     })
@@ -501,13 +501,13 @@ async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Resu
     // fix) — a node it creates stores properties flat at the top level
     // (`properties.status`), not nested under the node_type key the way
     // `create_node`/`update_node` do. If the update action HAD fired, it
-    // would have deep-merged a namespaced `{"pb_bulk_sync_task": {"status":
+    // would have deep-merged a namespaced `{"pb-bulk-sync-task": {"status":
     // "done"}}` alongside that flat shape (as the control assertion above
     // relies on) — so asserting its absence, together with the untouched
     // flat property, is the correct and shape-agnostic way to prove this
     // node was never acted on.
     assert_eq!(
-        user_field(&synced_after, "pb_bulk_sync_task", "status").and_then(|v| v.as_str()),
+        user_field(&synced_after, "pb-bulk-sync-task", "status").and_then(|v| v.as_str()),
         None,
         "the update action's namespaced 'done' marker must be absent — the sync-tagged \
          bulk_create event must never have reached trigger evaluation (ADR-073)"
@@ -543,13 +543,13 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
 
     create_schema(
         &service,
-        "pb_cron_task",
+        "pb-cron-task",
         json!([{ "name": "touched", "type": "boolean" }]),
     )
     .await?;
 
     let target = Node::new(
-        "pb_cron_task".to_string(),
+        "pb-cron-task".to_string(),
         "cron target".to_string(),
         json!({ "touched": false }),
     );
@@ -566,7 +566,7 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
         json!([{
             "name": "touch-scheduled",
             "description": "Test rule",
-            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "target_type": "pb_cron_task" } },
+            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "target_type": "pb-cron-task" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -609,7 +609,7 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "pb_cron_task", "touched").and_then(|v| v.as_bool()) == Some(true)
+                Ok(Some(n)) if user_field(&n, "pb-cron-task", "touched").and_then(|v| v.as_bool()) == Some(true)
             )
         }
     })
@@ -637,7 +637,7 @@ async fn scheduled_play_selects_through_a_saved_query_and_walks_a_path() -> Resu
 
     create_schema(
         &service,
-        "pb_sel_item",
+        "pb-sel-item",
         json!([
             { "name": "state", "type": "text" },
             { "name": "touched", "type": "boolean" }
@@ -656,7 +656,7 @@ async fn scheduled_play_selects_through_a_saved_query_and_walks_a_path() -> Resu
     ] {
         let parent = Node::new("text".to_string(), parent_says.to_string(), json!({}));
         let item = Node::new(
-            "pb_sel_item".to_string(),
+            "pb-sel-item".to_string(),
             name.to_string(),
             json!({ "state": state, "touched": false }),
         );
@@ -672,7 +672,7 @@ async fn scheduled_play_selects_through_a_saved_query_and_walks_a_path() -> Resu
         "query".to_string(),
         "Ready items".to_string(),
         json!({
-            "target_type": "pb_sel_item",
+            "target_type": "pb-sel-item",
             "filters": [{ "type": "property", "operator": "equals", "property": "state", "value": "ready" }]
         }),
     );
@@ -716,7 +716,7 @@ async fn scheduled_play_selects_through_a_saved_query_and_walks_a_path() -> Resu
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "pb_sel_item", "touched").and_then(|v| v.as_bool()) == Some(true)
+                Ok(Some(n)) if user_field(&n, "pb-sel-item", "touched").and_then(|v| v.as_bool()) == Some(true)
             )
         }
     };
@@ -750,8 +750,8 @@ async fn scheduled_play_selects_through_a_saved_query_and_walks_a_path() -> Resu
 /// syntax (`{add_days(...)}`, parsed by
 /// `BindingContext::resolve_function_call` in `actions.rs`) -- not just from
 /// a CEL condition, which is all that existed before this issue. A
-/// scheduled play scans for `pb_cycle_source` nodes and creates one
-/// `pb_cycle_result` node per match whose `end_date` is computed as
+/// scheduled play scans for `pb-cycle-source` nodes and creates one
+/// `pb-cycle-result` node per match whose `end_date` is computed as
 /// `start_date + 14 days` entirely through the play's own JSON -- no Rust
 /// test code computes the date; the assertion below only checks what the
 /// engine wrote.
@@ -761,7 +761,7 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
 
     create_schema(
         &service,
-        "pb_cycle_source",
+        "pb-cycle-source",
         json!([{ "name": "start_date", "type": "text" }]),
     )
     .await?;
@@ -771,13 +771,13 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
     // which is unrelated to what this test is about.
     create_schema(
         &service,
-        "pb_cycle_result",
+        "pb-cycle-result",
         json!([{ "name": "end_date", "type": "text" }]),
     )
     .await?;
 
     let source = Node::new(
-        "pb_cycle_source".to_string(),
+        "pb-cycle-source".to_string(),
         "cycle source".to_string(),
         json!({ "start_date": "2026-01-01" }),
     );
@@ -793,16 +793,16 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
         json!([{
             "name": "compute-end-date-scheduled",
             "description": "Test rule",
-            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "target_type": "pb_cycle_source" } },
+            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "select": { "target_type": "pb-cycle-source" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
                 "action_type": "create_node",
                 "params": {
-                    "node_type": "pb_cycle_result",
+                    "node_type": "pb-cycle-result",
                     "content": "computed cycle result",
                     "properties": {
-                        "end_date": "{add_days(trigger.node.properties.pb_cycle_source.start_date, 14)}"
+                        "end_date": "{add_days(trigger.node.properties.pb-cycle-source.start_date, 14)}"
                     }
                 }
             }]
@@ -829,11 +829,11 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
         let service = Arc::clone(&service);
         async move {
             let results = service
-                .query_nodes_by_type("pb_cycle_result", false)
+                .query_nodes_by_type("pb-cycle-result", false)
                 .await
                 .unwrap_or_default();
             results.iter().any(|n| {
-                user_field(n, "pb_cycle_result", "end_date").and_then(|v| v.as_str())
+                user_field(n, "pb-cycle-result", "end_date").and_then(|v| v.as_str())
                     == Some("2026-01-15")
             })
         }
@@ -841,7 +841,7 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
     .await;
     assert!(
         fired,
-        "scheduled play must have created a pb_cycle_result node whose \
+        "scheduled play must have created a pb-cycle-result node whose \
          end_date was computed by the engine as start_date (2026-01-01) \
          + 14 days = 2026-01-15, via {{add_days(...)}} in the action's \
          properties param"
@@ -897,8 +897,8 @@ async fn setup_cycle_total_estimate_play(
 )> {
     let (service, tmp) = create_test_service().await?;
 
-    let issue_type = format!("agg_issue_{cycle_suffix}");
-    let cycle_type = format!("agg_cycle_{cycle_suffix}");
+    let issue_type = format!("agg-issue-{cycle_suffix}");
+    let cycle_type = format!("agg-cycle-{cycle_suffix}");
 
     create_schema(
         &service,
@@ -940,7 +940,7 @@ async fn setup_cycle_total_estimate_play(
                 // matching the stored shape (`{cycle_type: {"touch": ...}}`)
                 // rather than the bare field name (see
                 // `playbook_invariant_integration_test.rs`'s
-                // `property_key: "iv_update_reject.status"` for the same
+                // `property_key: "iv-update-reject.status"` for the same
                 // convention on an established, already-passing test).
                 "property_key": format!("{cycle_type}.touch")
             },
@@ -1069,8 +1069,8 @@ async fn patch_node_properties(
 async fn recompute_over_a_relationship_with_zero_current_matches_does_not_fail_the_action(
 ) -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
-    let issue_type = "agg_issue_zero";
-    let cycle_type = "agg_cycle_zero";
+    let issue_type = "agg-issue-zero";
+    let cycle_type = "agg-cycle-zero";
 
     create_schema(
         &service,
@@ -1198,7 +1198,7 @@ async fn recompute_over_a_relationship_with_zero_current_matches_does_not_fail_t
 async fn recompute_reflects_current_state_on_each_trigger_firing() -> Result<()> {
     let (service, _tmp, _engine, shutdown_tx, task, cycle_id, issue_a_id, _issue_b_id) =
         setup_cycle_total_estimate_play("fresh").await?;
-    let cycle_type = "agg_cycle_fresh";
+    let cycle_type = "agg-cycle-fresh";
 
     // First recompute: touch the cycle, expect 3 + 5 = 8.
     patch_node_properties(&service, &cycle_id, json!({ "touch": "v1" })).await?;
@@ -1247,7 +1247,7 @@ async fn recompute_reflects_current_state_on_each_trigger_firing() -> Result<()>
 async fn recompute_does_not_fire_from_a_contributing_items_own_change() -> Result<()> {
     let (service, _tmp, _engine, shutdown_tx, task, cycle_id, issue_a_id, _issue_b_id) =
         setup_cycle_total_estimate_play("gap").await?;
-    let cycle_type = "agg_cycle_gap";
+    let cycle_type = "agg-cycle-gap";
 
     // Establish a known baseline via the Cycle's own trigger (the supported
     // path), exactly like the positive test above.
@@ -1261,7 +1261,7 @@ async fn recompute_does_not_fire_from_a_contributing_items_own_change() -> Resul
     assert!(baseline, "baseline recompute must sum 3 + 5 = 8");
 
     // Change a contributing Issue's OWN estimate -- and do NOT touch the
-    // Cycle. No trigger in this play fires on `agg_issue_gap`'s own events.
+    // Cycle. No trigger in this play fires on `agg-issue-gap`'s own events.
     patch_node_properties(&service, &issue_a_id, json!({ "estimate": 100 })).await?;
 
     // Give the (non-existent) reactive path a real chance to fire before
@@ -1313,7 +1313,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
 
     create_schema(
         &service,
-        "pbrel_add_task",
+        "pbrel-add-task",
         json!([{ "name": "notified", "type": "text" }]),
     )
     .await?;
@@ -1329,7 +1329,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
-                "select": { "target_type": "pbrel_add_task" }
+                "select": { "target_type": "pbrel-add-task" }
             },
             "conditions": [],
             "actions": [{
@@ -1346,7 +1346,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let source = Node::new(
-        "pbrel_add_task".to_string(),
+        "pbrel-add-task".to_string(),
         "mentioning node".to_string(),
         json!({ "notified": "no" }),
     );
@@ -1354,7 +1354,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
     service.create_node(source).await?;
 
     let target = Node::new(
-        "pbrel_add_task".to_string(),
+        "pbrel-add-task".to_string(),
         "mentioned node".to_string(),
         json!({ "notified": "no" }),
     );
@@ -1369,7 +1369,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "pbrel_add_task", "notified").and_then(|v| v.as_str()) == Some("yes")
+                Ok(Some(n)) if user_field(&n, "pbrel-add-task", "notified").and_then(|v| v.as_str()) == Some("yes")
             )
         }
     })
@@ -1385,7 +1385,7 @@ async fn relationship_added_rule_fires_on_matching_relationship_create() -> Resu
         .await?
         .expect("target node must still exist");
     assert_eq!(
-        user_field(&target_untouched, "pbrel_add_task", "notified").and_then(|v| v.as_str()),
+        user_field(&target_untouched, "pbrel-add-task", "notified").and_then(|v| v.as_str()),
         Some("no"),
         "the rule's trigger.node is the SOURCE node -- the target/mentioned \
          node must be left untouched"
@@ -1403,13 +1403,13 @@ async fn relationship_removed_rule_fires_on_matching_relationship_delete() -> Re
 
     create_schema(
         &service,
-        "pbrel_remove_task",
+        "pbrel-remove-task",
         json!([{ "name": "notified", "type": "text" }]),
     )
     .await?;
 
     let source = Node::new(
-        "pbrel_remove_task".to_string(),
+        "pbrel-remove-task".to_string(),
         "mentioning node".to_string(),
         json!({ "notified": "no" }),
     );
@@ -1417,7 +1417,7 @@ async fn relationship_removed_rule_fires_on_matching_relationship_delete() -> Re
     service.create_node(source).await?;
 
     let target = Node::new(
-        "pbrel_remove_task".to_string(),
+        "pbrel-remove-task".to_string(),
         "mentioned node".to_string(),
         json!({ "notified": "no" }),
     );
@@ -1439,7 +1439,7 @@ async fn relationship_removed_rule_fires_on_matching_relationship_delete() -> Re
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_removed",
-                "select": { "target_type": "pbrel_remove_task" }
+                "select": { "target_type": "pbrel-remove-task" }
             },
             "conditions": [],
             "actions": [{
@@ -1463,7 +1463,7 @@ async fn relationship_removed_rule_fires_on_matching_relationship_delete() -> Re
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "pbrel_remove_task", "notified").and_then(|v| v.as_str()) == Some("removed")
+                Ok(Some(n)) if user_field(&n, "pbrel-remove-task", "notified").and_then(|v| v.as_str()) == Some("removed")
             )
         }
     })
@@ -1489,14 +1489,14 @@ async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() ->
     nodespace_core::schema::handle_create_schema(
         &service,
         json!({
-            "name": "pbrel_sub_base",
+            "name": "pbrel-sub-base",
             "fields": [{ "name": "notified", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await?;
     nodespace_core::schema::handle_create_schema(
         &service,
-        json!({ "name": "pbrel_sub_child", "extends": "pbrel_sub_base", "fields": [] }),
+        json!({ "name": "pbrel-sub-child", "extends": "pbrel-sub-base", "fields": [] }),
     )
     .await?;
 
@@ -1512,7 +1512,7 @@ async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() ->
                 "type": "graph_event",
                 "on": "relationship_added",
                 // Registered on the BASE type -- never redeclared on the subtype.
-                "select": { "target_type": "pbrel_sub_base" }
+                "select": { "target_type": "pbrel-sub-base" }
             },
             "conditions": [],
             "actions": [{
@@ -1530,7 +1530,7 @@ async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() ->
 
     // The relationship's source node is an instance of the SUBTYPE.
     let source = Node::new(
-        "pbrel_sub_child".to_string(),
+        "pbrel-sub-child".to_string(),
         "subtype mentioning node".to_string(),
         json!({}),
     );
@@ -1538,7 +1538,7 @@ async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() ->
     service.create_node(source).await?;
 
     let target = Node::new(
-        "pbrel_sub_base".to_string(),
+        "pbrel-sub-base".to_string(),
         "mentioned node".to_string(),
         json!({}),
     );
@@ -1553,7 +1553,7 @@ async fn relationship_added_rule_on_base_type_fires_for_subtype_source_node() ->
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "pbrel_sub_base", "notified").and_then(|v| v.as_str()) == Some("yes")
+                Ok(Some(n)) if user_field(&n, "pbrel-sub-base", "notified").and_then(|v| v.as_str()) == Some("yes")
             )
         }
     })
@@ -1576,13 +1576,13 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
 
     create_schema(
         &service,
-        "pbrel_registered_task",
+        "pbrel-registered-task",
         json!([{ "name": "notified", "type": "text" }]),
     )
     .await?;
     create_schema(
         &service,
-        "pbrel_unrelated_task",
+        "pbrel-unrelated-task",
         json!([{ "name": "notified", "type": "text" }]),
     )
     .await?;
@@ -1598,7 +1598,7 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
-                "select": { "target_type": "pbrel_registered_task" }
+                "select": { "target_type": "pbrel-registered-task" }
             },
             "conditions": [],
             "actions": [{
@@ -1614,10 +1614,10 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // Source node's type (`pbrel_unrelated_task`) is unrelated to the play's
-    // registered `node_type` (`pbrel_registered_task`) -- no shared ancestry.
+    // Source node's type (`pbrel-unrelated-task`) is unrelated to the play's
+    // registered `node_type` (`pbrel-registered-task`) -- no shared ancestry.
     let source = Node::new(
-        "pbrel_unrelated_task".to_string(),
+        "pbrel-unrelated-task".to_string(),
         "unrelated mentioning node".to_string(),
         json!({ "notified": "no" }),
     );
@@ -1625,7 +1625,7 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
     service.create_node(source).await?;
 
     let target = Node::new(
-        "pbrel_registered_task".to_string(),
+        "pbrel-registered-task".to_string(),
         "mentioned node".to_string(),
         json!({ "notified": "no" }),
     );
@@ -1644,7 +1644,7 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
         .await?
         .expect("source node must still exist");
     assert_eq!(
-        user_field(&after, "pbrel_unrelated_task", "notified").and_then(|v| v.as_str()),
+        user_field(&after, "pbrel-unrelated-task", "notified").and_then(|v| v.as_str()),
         Some("no"),
         "a rule registered on an unrelated node_type must not fire for this \
          relationship's source node"
@@ -1662,7 +1662,7 @@ async fn relationship_added_rule_does_not_fire_for_non_matching_source_type() ->
 async fn an_action_failure_in_a_running_engine_suspends_the_play_until_it_is_enabled() -> Result<()>
 {
     let (service, _tmp) = create_test_service().await?;
-    let node_type = "susp_widget";
+    let node_type = "susp-widget";
     create_schema(
         &service,
         node_type,

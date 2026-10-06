@@ -121,8 +121,8 @@ impl DataExtensions {
         let mut registry = NodeBehaviorRegistry::new();
         for behavior in &self.behaviors {
             let type_name = behavior.type_name();
-            // A core type is refused as one first, though some core ids
-            // (`code-block`) are not schema ids `create_schema` produces.
+            // A core type is refused as one first: its id is kebab-case too,
+            // but `create_schema` refuses a name that derives it.
             registry.register(behavior.clone())?;
             if type_name.is_empty()
                 || crate::services::node_service::normalize_schema_id(type_name) != type_name
@@ -194,8 +194,8 @@ pub enum DataExtensionsError {
     /// A behaviour's type is not a schema id `create_schema` can store, so no
     /// node would ever have it.
     #[error(
-        "'{0}' is not a schema id: create_schema stores a schema under its lowercase name, \
-         with words joined by '_'"
+        "'{0}' is not a schema id: a type id is kebab-case, lowercase words joined by '-' \
+         (e.g. 'customer-profile')"
     )]
     NotASchemaId(String),
     /// An edge-field declaration was refused (see
@@ -413,15 +413,24 @@ mod tests {
             )),
             "a core type is reported as one"
         );
-        for type_name in ["team-space", "Team", "team space", ""] {
+        for type_name in [
+            "team_space",
+            "Team",
+            "team space",
+            "-team",
+            "team--space",
+            "",
+        ] {
             assert_eq!(
                 DataExtensions::none().behavior(behavior(type_name)).check(),
                 Err(DataExtensionsError::NotASchemaId(type_name.to_string())),
             );
         }
+        let message = DataExtensionsError::NotASchemaId("team_space".to_string()).to_string();
+        assert!(message.contains("kebab-case"), "{message}");
         assert_eq!(
             DataExtensions::none()
-                .behavior(behavior("team_space"))
+                .behavior(behavior("fixture-collection"))
                 .check(),
             Ok(())
         );

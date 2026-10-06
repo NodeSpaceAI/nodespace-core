@@ -86,7 +86,7 @@ fn turn1_and_turn2_messages() -> Vec<StoredMessage> {
             ]
         }),
         serde_json::json!({
-            "schema_id": "equipment_checkout_record",
+            "schema_id": "equipment-checkout-record",
             "is_core": false,
             "version": 1
         }),
@@ -95,7 +95,7 @@ fn turn1_and_turn2_messages() -> Vec<StoredMessage> {
     let turn2_writes = completed_writes_from(&[exec(
         "create_node",
         serde_json::json!({
-            "node_type": "equipment_checkout_record",
+            "node_type": "equipment-checkout-record",
             "content": "Laser Cutter",
             "field_values": {"isReturned": false, "replacementCost": 2400}
         }),
@@ -173,7 +173,7 @@ fn resolve_query_result() -> serde_json::Value {
         "resolved": true,
         "id": "nodespace://laser-cutter-node",
         "title": "Laser Cutter",
-        "type": "equipment_checkout_record",
+        "type": "equipment-checkout-record",
         "properties": {"isReturned": false, "replacementCost": 2400}
     })
 }
@@ -202,7 +202,7 @@ fn messages_at_failing_step() -> Vec<ChatMessage> {
             function_name: "resolve_query".to_string(),
             arguments_json: serde_json::json!({
                 "request": "The 2400 one came back — set it to returned",
-                "node_type": "equipment_checkout_record"
+                "node_type": "equipment-checkout-record"
             })
             .to_string(),
             provider_extra: None,

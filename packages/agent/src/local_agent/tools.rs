@@ -1092,7 +1092,7 @@ fn def_search_nodes() -> ToolDefinition {
                 },
                 "node_type": {
                     "type": "string",
-                    "description": "Filter by node type (e.g. 'task', 'text', or a custom schema ID). For a custom schema ID, copy the id exactly from the EXISTING SCHEMAS block — character for character, including underscores — never shorten, singularize, paraphrase, or guess it from the user's wording. Omit to search all types."
+                    "description": "Filter by node type (e.g. 'task', 'text', or a custom schema ID). For a custom schema ID, copy the id exactly from the EXISTING SCHEMAS block — character for character, including hyphens — never shorten, singularize, paraphrase, or guess it from the user's wording. Omit to search all types."
                 },
                 "filters": {
                     "type": "array",
@@ -1263,7 +1263,7 @@ fn def_resolve_query() -> ToolDefinition {
                 },
                 "node_type": {
                     "type": "string",
-                    "description": "The target node type to resolve against (e.g. 'ticket'). Copy the id exactly from the EXISTING SCHEMAS block — character for character, including underscores — never shorten, singularize, paraphrase, or guess it from the user's wording."
+                    "description": "The target node type to resolve against (e.g. 'ticket'). Copy the id exactly from the EXISTING SCHEMAS block — character for character, including hyphens — never shorten, singularize, paraphrase, or guess it from the user's wording."
                 }
             },
             "required": ["request", "node_type"]
@@ -1390,7 +1390,7 @@ fn def_create_node() -> ToolDefinition {
                 },
                 "node_type": {
                     "type": "string",
-                    "description": "Node type: 'text', 'task', or a custom schema ID (e.g. 'ticket', 'adr'). For a custom schema ID, copy the id exactly from the EXISTING SCHEMAS block — character for character, including underscores — never shorten, singularize, paraphrase, or guess it from the user's wording. If the type is not listed there, it does not exist yet — do not invent an id for it."
+                    "description": "Node type: 'text', 'task', or a custom schema ID (e.g. 'ticket', 'adr'). For a custom schema ID, copy the id exactly from the EXISTING SCHEMAS block — character for character, including hyphens — never shorten, singularize, paraphrase, or guess it from the user's wording. If the type is not listed there, it does not exist yet — do not invent an id for it."
                 },
                 // Named `field_values`, NOT `properties` — a parameter literally
                 // named `properties` collides with JSON Schema's own `properties`
@@ -7242,13 +7242,13 @@ mod tests {
     fn a_semantic_result_with_text_carries_the_records_set_fields() {
         let stored = json!({
             "id": "abc",
-            "nodeType": "customer_account",
+            "nodeType": "customer-account",
             "content": "Northwind Trading",
             "markdown": "Northwind Trading",
         });
         let typed = json!({
             "id": "abc",
-            "nodeType": "customer_account",
+            "nodeType": "customer-account",
             "content": "Northwind Trading",
             "properties": { "signed_date": "2025-03-14" },
         });
@@ -7267,11 +7267,11 @@ mod tests {
     fn a_semantic_result_without_text_or_set_fields_carries_no_properties() {
         let typed_record = json!({
             "id": "abc",
-            "nodeType": "customer_account",
+            "nodeType": "customer-account",
             "properties": { "signed_date": "2025-03-14" },
         });
         let snippet_only = semantic_result_summary(
-            &json!({ "id": "abc", "nodeType": "customer_account", "content": "Northwind Trading" }),
+            &json!({ "id": "abc", "nodeType": "customer-account", "content": "Northwind Trading" }),
             Some(&typed_record),
         );
         assert!(snippet_only.get("properties").is_none(), "{snippet_only}");
@@ -7593,7 +7593,7 @@ mod tests {
 
     #[test]
     fn the_result_names_each_field_created_as_text_and_nothing_otherwise() {
-        let result = json!({"schemaId": "planning_cycle"});
+        let result = json!({"schemaId": "planning-cycle"});
         assert_eq!(with_created_as_text_note(result.clone(), &[]), result);
         let noted = with_created_as_text_note(result, &["status".to_string()]);
         assert_eq!(
@@ -7637,7 +7637,7 @@ mod tests {
             .is_some_and(|note| note.contains("'status'")));
         assert!(
             node_service
-                .get_schema_node("planning_cycle")
+                .get_schema_node("planning-cycle")
                 .await
                 .unwrap()
                 .is_some(),
@@ -9762,7 +9762,7 @@ mod tests {
             handle_create_schema(
                 &ns,
                 json!({
-                    "name": "customer_account",
+                    "name": "customer-account",
                     "fields": [{ "name": "signed_date", "type": "date" }]
                 }),
             )
@@ -9777,7 +9777,7 @@ mod tests {
                     &executor,
                     json!({
                         "content": title,
-                        "node_type": "customer_account",
+                        "node_type": "customer-account",
                         "field_values": { "signed_date": signed },
                     }),
                 )
@@ -9814,7 +9814,7 @@ mod tests {
             handle_create_schema(
                 &ns,
                 json!({
-                    "name": "ledger_entry",
+                    "name": "ledger-entry",
                     "fields": [{ "name": "amount", "type": "number" }]
                 }),
             )
@@ -9823,8 +9823,8 @@ mod tests {
             handle_create_schema(
                 &ns,
                 json!({
-                    "name": "refund_entry",
-                    "extends": "ledger_entry",
+                    "name": "refund-entry",
+                    "extends": "ledger-entry",
                     "fields": [{ "name": "reason", "type": "text" }]
                 }),
             )
@@ -9834,7 +9834,7 @@ mod tests {
                 &executor,
                 json!({
                     "content": "Refund for a duplicate charge",
-                    "node_type": "refund_entry",
+                    "node_type": "refund-entry",
                     "field_values": { "amount": 42, "reason": "duplicate" },
                 }),
             )
@@ -10252,7 +10252,7 @@ mod tests {
             inference_engine: None,
             playbook_lifecycle: None,
         };
-        // The real schema id ("equipment_item") is never created — only the
+        // The real schema id ("equipment-item") is never created — only the
         // invented display name is attempted, matching the traced failure.
         let result = executor
             .execute(
@@ -10792,12 +10792,12 @@ mod tests {
         handle_create_schema(
             &ns,
             json!({
-                "name": "seam_adr",
+                "name": "seam-adr",
                 "fields": [],
                 "relationships": [
                     {
                         "name": "supersedes",
-                        "targetType": "seam_adr",
+                        "targetType": "seam-adr",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "superseded_by",
@@ -10805,7 +10805,7 @@ mod tests {
                     },
                     {
                         "name": "superseded_by",
-                        "targetType": "seam_adr",
+                        "targetType": "seam-adr",
                         "direction": "in",
                         "cardinality": "one",
                         "reverseName": "supersedes",
@@ -10823,7 +10823,7 @@ mod tests {
         ] {
             ns.create_node(Node::new_with_id(
                 id.to_string(),
-                "seam_adr".to_string(),
+                "seam-adr".to_string(),
                 format!("{id} content"),
                 json!({}),
             ))
@@ -11033,7 +11033,7 @@ mod tests {
 
         /// A stand-in for a remote tool subtype: it extends `tool`, declares
         /// a binding field of its own and no handler, and is not native.
-        const REMOTE_TOOL_TYPE: &str = "remote_tool";
+        const REMOTE_TOOL_TYPE: &str = "remote-tool";
 
         fn tool_template(
             node_type: &str,

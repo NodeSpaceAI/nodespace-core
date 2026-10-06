@@ -55,13 +55,13 @@ async fn make_node(svc: &NodeService, id: &str, node_type: &str) -> Result<()> {
     Ok(())
 }
 
-/// Base type declares `story` forward, out to `rel_ops_ext_target`; the
+/// Base type declares `story` forward, out to `rel-ops-ext-target`; the
 /// subtype extends the base without redeclaring it.
 async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "rel_ops_ext_target",
+            "name": "rel-ops-ext-target",
             "fields": [{ "name": "title", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
@@ -71,11 +71,11 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "rel_ops_ext_base",
+            "name": "rel-ops-ext-base",
             "fields": [],
             "relationships": [{
                 "name": "story",
-                "targetType": "rel_ops_ext_target",
+                "targetType": "rel-ops-ext-target",
                 "direction": "out",
                 "cardinality": "one",
                 "reverseName": "tasks",
@@ -89,8 +89,8 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "rel_ops_ext_sub",
-            "extends": "rel_ops_ext_base",
+            "name": "rel-ops-ext-sub",
+            "extends": "rel-ops-ext-base",
             "fields": []
         }),
     )
@@ -117,14 +117,14 @@ async fn inherited_forward_name_resolves_as_forward_not_invalid_params() -> Resu
     make_node(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "rel_ops_ext_sub",
+        "rel-ops-ext-sub",
     )
     .await?;
 
     let resolved = rel_ops::resolve_relationship_name(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "rel_ops_ext_sub",
+        "rel-ops-ext-sub",
         "story",
     )
     .await?;
@@ -143,13 +143,13 @@ async fn real_edge_on_subtype_instance_is_readable_through_inherited_forward_nam
     make_node(
         &svc,
         "a2b6557f-5da0-5f9b-a63a-55077d89680b",
-        "rel_ops_ext_target",
+        "rel-ops-ext-target",
     )
     .await?;
     make_node(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "rel_ops_ext_sub",
+        "rel-ops-ext-sub",
     )
     .await?;
 
@@ -193,7 +193,7 @@ async fn undeclared_name_on_subtype_still_errors() -> Result<()> {
     make_node(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "rel_ops_ext_sub",
+        "rel-ops-ext-sub",
     )
     .await?;
 
@@ -226,7 +226,7 @@ async fn extends_literal_name_is_not_a_traversable_relationship() -> Result<()> 
     make_node(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "rel_ops_ext_sub",
+        "rel-ops-ext-sub",
     )
     .await?;
 
@@ -234,7 +234,7 @@ async fn extends_literal_name_is_not_a_traversable_relationship() -> Result<()> 
         let err = rel_ops::resolve_relationship_name(
             &svc,
             "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-            "rel_ops_ext_sub",
+            "rel-ops-ext-sub",
             name,
         )
         .await
@@ -263,7 +263,7 @@ async fn extends_literal_name_is_not_a_traversable_relationship() -> Result<()> 
 /// `reverseName`, for exactly the same reason it already won when declared
 /// directly -- picking the reverse match instead would mean the real,
 /// chain-aware edge the write path attached under the forward name (`shared`,
-/// out to `rel_ops_ext_target`) becomes invisible again, silently replaced by
+/// out to `rel-ops-ext-target`) becomes invisible again, silently replaced by
 /// a same-named but unrelated traversal.
 #[tokio::test]
 async fn inherited_forward_name_still_wins_over_another_schemas_same_spelled_reverse_name(
@@ -277,11 +277,11 @@ async fn inherited_forward_name_still_wins_over_another_schemas_same_spelled_rev
     handle_create_schema(
         &svc,
         json!({
-            "name": "rel_ops_ext_other",
+            "name": "rel-ops-ext-other",
             "fields": [],
             "relationships": [{
                 "name": "other_forward",
-                "targetType": "rel_ops_ext_sub",
+                "targetType": "rel-ops-ext-sub",
                 "direction": "out",
                 "cardinality": "one",
                 "reverseName": "story",
@@ -295,19 +295,19 @@ async fn inherited_forward_name_still_wins_over_another_schemas_same_spelled_rev
     make_node(
         &svc,
         "a2b6557f-5da0-5f9b-a63a-55077d89680b",
-        "rel_ops_ext_target",
+        "rel-ops-ext-target",
     )
     .await?;
     make_node(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "rel_ops_ext_sub",
+        "rel-ops-ext-sub",
     )
     .await?;
     make_node(
         &svc,
         "0046fadd-c17a-5c63-859d-3f4da0bbe519",
-        "rel_ops_ext_other",
+        "rel-ops-ext-other",
     )
     .await?;
 
@@ -333,7 +333,7 @@ async fn inherited_forward_name_still_wins_over_another_schemas_same_spelled_rev
     let resolved = rel_ops::resolve_relationship_name(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "rel_ops_ext_sub",
+        "rel-ops-ext-sub",
         "story",
     )
     .await?;
@@ -374,7 +374,7 @@ async fn viewer_shows_an_outbound_group_for_an_inherited_relationship() -> Resul
     make_node(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "rel_ops_ext_sub",
+        "rel-ops-ext-sub",
     )
     .await?;
 
@@ -388,14 +388,14 @@ async fn viewer_shows_an_outbound_group_for_an_inherited_relationship() -> Resul
             "an inherited outbound relationship must still render as a group, \
              even with zero edges yet",
         );
-    assert_eq!(group.target_type.as_deref(), Some("rel_ops_ext_target"));
+    assert_eq!(group.target_type.as_deref(), Some("rel-ops-ext-target"));
     assert_eq!(group.count, 0);
 
     // And once a real edge exists, the group reflects it.
     make_node(
         &svc,
         "a2b6557f-5da0-5f9b-a63a-55077d89680b",
-        "rel_ops_ext_target",
+        "rel-ops-ext-target",
     )
     .await?;
     svc.create_relationship(
@@ -422,13 +422,13 @@ async fn viewer_shows_an_outbound_group_for_an_inherited_relationship() -> Resul
 /// schema's exact `node_type`, not its whole descendant set (ADR-078) -- the
 /// same failure mode `graph_resolver.rs`'s reverse-segment walk already
 /// guards against, for the identical reason. `blocks` is declared only on
-/// `rel_ops_ext_reltask` (self-referential); `rel_ops_ext_relissue` extends
+/// `rel-ops-ext-reltask` (self-referential); `rel-ops-ext-relissue` extends
 /// it without redeclaring. An issue blocking another issue is a real edge
 /// under the inherited forward name (already correctly attached, per the
 /// forward-name fix above) -- but reading it back via the reverse name
 /// `blocked_by` used to compare the blocking node's concrete type
-/// (`rel_ops_ext_relissue`) against the declaring type
-/// (`rel_ops_ext_reltask`) with exact equality, silently dropping it: "issue
+/// (`rel-ops-ext-relissue`) against the declaring type
+/// (`rel-ops-ext-reltask`) with exact equality, silently dropping it: "issue
 /// blocks issue" read as "nothing blocks this."
 #[tokio::test]
 async fn reverse_name_narrowing_includes_a_subtype_of_the_declaring_schema() -> Result<()> {
@@ -437,11 +437,11 @@ async fn reverse_name_narrowing_includes_a_subtype_of_the_declaring_schema() -> 
     handle_create_schema(
         &svc,
         json!({
-            "name": "rel_ops_ext_reltask",
+            "name": "rel-ops-ext-reltask",
             "fields": [],
             "relationships": [{
                 "name": "blocks",
-                "targetType": "rel_ops_ext_reltask",
+                "targetType": "rel-ops-ext-reltask",
                 "direction": "out",
                 "cardinality": "many",
                 "reverseName": "blocked_by",
@@ -455,8 +455,8 @@ async fn reverse_name_narrowing_includes_a_subtype_of_the_declaring_schema() -> 
     handle_create_schema(
         &svc,
         json!({
-            "name": "rel_ops_ext_relissue",
-            "extends": "rel_ops_ext_reltask",
+            "name": "rel-ops-ext-relissue",
+            "extends": "rel-ops-ext-reltask",
             "fields": []
         }),
     )
@@ -466,13 +466,13 @@ async fn reverse_name_narrowing_includes_a_subtype_of_the_declaring_schema() -> 
     make_node(
         &svc,
         "ad5aeffa-8cb6-5701-af09-934561698590",
-        "rel_ops_ext_relissue",
+        "rel-ops-ext-relissue",
     )
     .await?;
     make_node(
         &svc,
         "5405e60e-d76e-512d-9ce7-02b169b96733",
-        "rel_ops_ext_relissue",
+        "rel-ops-ext-relissue",
     )
     .await?;
     svc.create_relationship(
@@ -487,7 +487,7 @@ async fn reverse_name_narrowing_includes_a_subtype_of_the_declaring_schema() -> 
     let resolved = rel_ops::resolve_relationship_name(
         &svc,
         "5405e60e-d76e-512d-9ce7-02b169b96733",
-        "rel_ops_ext_relissue",
+        "rel-ops-ext-relissue",
         "blocked_by",
     )
     .await?;
@@ -495,7 +495,7 @@ async fn reverse_name_narrowing_includes_a_subtype_of_the_declaring_schema() -> 
         resolved,
         ResolvedRelName::Reverse {
             forward_name: "blocks".to_string(),
-            source_type: Some("rel_ops_ext_reltask".to_string()),
+            source_type: Some("rel-ops-ext-reltask".to_string()),
         }
     );
 
@@ -528,18 +528,18 @@ async fn a_related_subtype_node_carries_its_inherited_fields() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     handle_create_schema(
         &svc,
-        json!({ "name": "rel_ops_ext_shape_target", "fields": [] }),
+        json!({ "name": "rel-ops-ext-shape-target", "fields": [] }),
     )
     .await
     .map_err(|e| anyhow::anyhow!("target schema: {e}"))?;
     handle_create_schema(
         &svc,
         json!({
-            "name": "rel_ops_ext_shape_base",
+            "name": "rel-ops-ext-shape-base",
             "fields": [{ "name": "owner", "type": "text" }],
             "relationships": [{
                 "name": "story",
-                "targetType": "rel_ops_ext_shape_target",
+                "targetType": "rel-ops-ext-shape-target",
                 "direction": "out",
                 "cardinality": "one",
                 "reverseName": "tasks",
@@ -552,24 +552,24 @@ async fn a_related_subtype_node_carries_its_inherited_fields() -> Result<()> {
     handle_create_schema(
         &svc,
         json!({
-            "name": "rel_ops_ext_shape_sub",
-            "extends": "rel_ops_ext_shape_base",
+            "name": "rel-ops-ext-shape-sub",
+            "extends": "rel-ops-ext-shape-base",
             "fields": [{ "name": "severity", "type": "text" }]
         }),
     )
     .await
     .map_err(|e| anyhow::anyhow!("subtype schema: {e}"))?;
 
-    make_node(&svc, TARGET, "rel_ops_ext_shape_target").await?;
+    make_node(&svc, TARGET, "rel-ops-ext-shape-target").await?;
     svc.create_node(Node::new_with_id(
         SUB.to_string(),
-        "rel_ops_ext_shape_sub".to_string(),
+        "rel-ops-ext-shape-sub".to_string(),
         format!("{SUB} content"),
-        json!({ "rel_ops_ext_shape_sub": { "owner": "ann", "severity": "low" } }),
+        json!({ "rel-ops-ext-shape-sub": { "owner": "ann", "severity": "low" } }),
     ))
     .await?;
     let stored = svc.get_node(SUB).await?.expect("the subtype node exists");
-    assert_eq!(stored.properties["rel_ops_ext_shape_base"]["owner"], "ann");
+    assert_eq!(stored.properties["rel-ops-ext-shape-base"]["owner"], "ann");
     svc.create_relationship(SUB, "story", TARGET, json!({}))
         .await?;
 

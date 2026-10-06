@@ -1725,16 +1725,16 @@ mod tests {
     }
 
     #[test]
-    fn schema_named_in_query_matches_a_snake_case_id_by_id_alone() {
+    fn schema_named_in_query_matches_a_kebab_case_id_by_id_alone() {
         // Regression: the id-path must work even when the display name
         // (content) doesn't share the same words as the id, so this only
         // passes via `id` matching, not `content`.
         let schemas = vec![
-            make_schema("release_plan", "Q3 Rollout", false),
+            make_schema("release-plan", "Q3 Rollout", false),
             make_schema("adr", "ADR", false),
         ];
         let found = schema_named_in_query("create a release plan for q3", &schemas);
-        assert_eq!(found.map(|s| s.envelope.id.as_str()), Some("release_plan"));
+        assert_eq!(found.map(|s| s.envelope.id.as_str()), Some("release-plan"));
     }
 
     #[test]
@@ -2350,20 +2350,20 @@ mod tests {
     /// resident "EXISTING SCHEMAS" block.
     #[test]
     fn named_schema_is_recovered_when_semantic_retrieval_is_empty() {
-        let all = vec![named_schema("feature_write_up", "feature write-up", false)];
+        let all = vec![named_schema("feature-write-up", "feature write-up", false)];
         let hits =
             append_named_schema_candidates(vec![], &all, "Put one down for feature write-up");
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0.envelope.id, "feature_write_up");
+        assert_eq!(hits[0].0.envelope.id, "feature-write-up");
         assert_eq!(hits[0].1, LEXICAL_SCHEMA_MATCH_CONFIDENCE);
     }
 
     #[test]
-    fn named_schema_matches_by_snake_case_id_as_well_as_display_name() {
-        let all = vec![named_schema("release_plan", "Release Plan", false)];
-        let hits = append_named_schema_candidates(vec![], &all, "add a release_plan for Q3");
+    fn named_schema_matches_by_kebab_case_id_as_well_as_display_name() {
+        let all = vec![named_schema("release-plan", "Release Plan", false)];
+        let hits = append_named_schema_candidates(vec![], &all, "add a release-plan for Q3");
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].0.envelope.id, "release_plan");
+        assert_eq!(hits[0].0.envelope.id, "release-plan");
     }
 
     #[test]

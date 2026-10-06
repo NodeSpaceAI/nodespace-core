@@ -321,15 +321,15 @@ async fn membership_of_a_view_follows_the_filter() -> Result<()> {
 async fn a_candidate_whose_rules_cannot_be_resolved_is_excluded_and_counted() -> Result<()> {
     let h = Harness::start().await?;
     for definition in [
-        json!({ "name": "pf_owner", "fields": [{ "name": "name", "type": "text" }] }),
+        json!({ "name": "pf-owner", "fields": [{ "name": "name", "type": "text" }] }),
         json!({
-            "name": "pf_item",
+            "name": "pf-item",
             "fields": [
                 { "name": "stage", "type": "text" },
                 { "name": "kind", "type": "text" }
             ],
             "relationships": [{
-                "name": "owner", "targetType": "pf_owner", "direction": "out",
+                "name": "owner", "targetType": "pf-owner", "direction": "out",
                 "cardinality": "one", "reverseName": "items", "reverseCardinality": "many"
             }]
         }),
@@ -347,7 +347,7 @@ async fn a_candidate_whose_rules_cannot_be_resolved_is_excluded_and_counted() ->
             "description": "Refuse to move an odd item",
             "trigger": {
                 "type": "graph_event", "on": "property_changed",
-                "select": { "target_type": "pf_item" }, "property_key": "pf_item.stage"
+                "select": { "target_type": "pf-item" }, "property_key": "pf-item.stage"
             },
             "conditions": [{ "expr": "node.kind == 'odd'", "description": "The item is odd" }],
             "actions": [{
@@ -364,7 +364,7 @@ async fn a_candidate_whose_rules_cannot_be_resolved_is_excluded_and_counted() ->
     for kind in ["even", "odd", "even", "odd", "odd"] {
         let id = h
             .try_create(
-                "pf_item",
+                "pf-item",
                 "An item",
                 json!({ "stage": "wait", "kind": kind }),
             )
@@ -378,7 +378,7 @@ async fn a_candidate_whose_rules_cannot_be_resolved_is_excluded_and_counted() ->
             READY.to_string(),
             "query".to_string(),
             "Movable items".to_string(),
-            json!({ "target_type": "pf_item", "filters": [{
+            json!({ "target_type": "pf-item", "filters": [{
                 "type": "permitted", "operator": "equals", "property": "stage", "value": "go"
             }] }),
         ))

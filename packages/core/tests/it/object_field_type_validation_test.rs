@@ -88,7 +88,7 @@ async fn create_req_widget(
         svc,
         node_ops::CreateNodeInput {
             id: None,
-            node_type: "req_widget".to_string(),
+            node_type: "req-widget".to_string(),
             content: "Sprocket".to_string(),
             parent_id: None,
             position: InsertPositionOwned::End,

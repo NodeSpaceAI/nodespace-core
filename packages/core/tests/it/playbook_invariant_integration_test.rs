@@ -208,7 +208,7 @@ async fn invariant_action_executes_synchronously_in_same_transaction() -> Result
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_task",
+        "iv-task",
         json!([
             { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
@@ -224,7 +224,7 @@ async fn invariant_action_executes_synchronously_in_same_transaction() -> Result
     let play_node = Node::new(
         "play".to_string(),
         "stamp-play".to_string(),
-        json!({ "play": { "rules": stamp_approved_invariant_rule("iv_task") } }),
+        json!({ "play": { "rules": stamp_approved_invariant_rule("iv-task") } }),
     );
     // Activate directly against the lifecycle manager (no engine loop
     // running to pick up the NodeCreated event reactively) — this test is
@@ -237,7 +237,7 @@ async fn invariant_action_executes_synchronously_in_same_transaction() -> Result
     }
 
     let triggering = Node::new(
-        "iv_task".to_string(),
+        "iv-task".to_string(),
         "needs approval".to_string(),
         json!({ "status": "pending" }),
     );
@@ -250,7 +250,7 @@ async fn invariant_action_executes_synchronously_in_same_transaction() -> Result
         .await?
         .expect("node must exist");
     assert_eq!(
-        user_field(&created, "iv_task", "approved"),
+        user_field(&created, "iv-task", "approved"),
         Some(&json!(true)),
         "invariant action must have already run by the time create_node returned"
     );
@@ -271,7 +271,7 @@ async fn invariant_action_failure_rolls_back_the_whole_node_creation() -> Result
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_gated",
+        "iv-gated",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -285,7 +285,7 @@ async fn invariant_action_failure_rolls_back_the_whole_node_creation() -> Result
             "name": "self-member-of-non-collection",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_gated" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-gated" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -307,7 +307,7 @@ async fn invariant_action_failure_rolls_back_the_whole_node_creation() -> Result
     }
 
     let doomed = Node::new(
-        "iv_gated".to_string(),
+        "iv-gated".to_string(),
         "should never exist".to_string(),
         json!({ "status": "pending" }),
     );
@@ -345,7 +345,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_multi",
+        "iv-multi",
         json!([
             { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
@@ -368,7 +368,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
                 "name": "stamp-first",
                 "class": "invariant",
                 "description": "Test rule",
-                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_multi" } },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-multi" } },
                 "conditions": [],
                 "actions": [{
                     "description": "Test action",
@@ -380,7 +380,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
                 "name": "fail-second",
                 "class": "invariant",
                 "description": "Test rule",
-                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_multi" } },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-multi" } },
                 "conditions": [],
                 "actions": [{
                     "description": "Test action",
@@ -403,7 +403,7 @@ async fn one_failing_invariant_rule_rolls_back_another_rule_s_successful_effect_
     }
 
     let doomed = Node::new(
-        "iv_multi".to_string(),
+        "iv-multi".to_string(),
         "should never exist".to_string(),
         json!({ "status": "pending" }),
     );
@@ -432,7 +432,7 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_sync_task",
+        "iv-sync-task",
         json!([
             { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
@@ -445,7 +445,7 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
     let play_node = Node::new(
         "play".to_string(),
         "sync-stamp-play".to_string(),
-        json!({ "play": { "rules": stamp_approved_invariant_rule("iv_sync_task") } }),
+        json!({ "play": { "rules": stamp_approved_invariant_rule("iv-sync-task") } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -456,7 +456,7 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
 
     let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let synced = Node::new(
-        "iv_sync_task".to_string(),
+        "iv-sync-task".to_string(),
         "arrived via sync".to_string(),
         json!({ "status": "pending" }),
     );
@@ -470,7 +470,7 @@ async fn invariant_rule_does_not_re_execute_on_sync_applied_node() -> Result<()>
         .await?
         .expect("sync-applied node must still be created");
     assert_eq!(
-        user_field(&after, "iv_sync_task", "approved"),
+        user_field(&after, "iv-sync-task", "approved"),
         None,
         "a sync-applied node must NOT have the invariant's effect applied locally — \
          it must arrive as plain synced data only"
@@ -492,7 +492,7 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_repair_task",
+        "iv-repair-task",
         json!([
             { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
@@ -505,7 +505,7 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
     create_play(
         &service,
         "repair-stamp-play",
-        stamp_approved_invariant_rule("iv_repair_task"),
+        stamp_approved_invariant_rule("iv-repair-task"),
     )
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -515,7 +515,7 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
     // and its condition still passes (no `approved` stamp present).
     let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let violating = Node::new(
-        "iv_repair_task".to_string(),
+        "iv-repair-task".to_string(),
         "violates the invariant".to_string(),
         json!({ "status": "pending" }),
     );
@@ -528,7 +528,7 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "iv_repair_task", "approved") == Some(&json!(true))
+                Ok(Some(n)) if user_field(&n, "iv-repair-task", "approved") == Some(&json!(true))
             )
         }
     })
@@ -551,7 +551,7 @@ async fn sync_applied_node_already_satisfying_invariant_is_not_touched() -> Resu
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_ok_task",
+        "iv-ok-task",
         json!([
             { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
@@ -563,7 +563,7 @@ async fn sync_applied_node_already_satisfying_invariant_is_not_touched() -> Resu
     create_play(
         &service,
         "already-ok-play",
-        stamp_approved_invariant_rule("iv_ok_task"),
+        stamp_approved_invariant_rule("iv-ok-task"),
     )
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -572,7 +572,7 @@ async fn sync_applied_node_already_satisfying_invariant_is_not_touched() -> Resu
     // 'approved-elsewhere' so the condition is false — nothing to repair.
     let sync_service = service.with_client(REPLICATED_APPLY_CLIENT_ID);
     let already_fine = Node::new(
-        "iv_ok_task".to_string(),
+        "iv-ok-task".to_string(),
         "already handled by origin".to_string(),
         json!({ "status": "approved-elsewhere" }),
     );
@@ -585,7 +585,7 @@ async fn sync_applied_node_already_satisfying_invariant_is_not_touched() -> Resu
 
     let node = service.get_node(&id).await?.unwrap();
     assert_eq!(
-        user_field(&node, "iv_ok_task", "status"),
+        user_field(&node, "iv-ok-task", "status"),
         Some(&json!("approved-elsewhere")),
         "a node whose invariant condition already fails must be left exactly as synced"
     );
@@ -605,7 +605,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_mixed_a",
+        "iv-mixed-a",
         json!([
             { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
@@ -614,7 +614,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
     .await?;
     create_schema(
         &service,
-        "iv_mixed_b",
+        "iv-mixed-b",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -628,7 +628,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
                 "name": "invariant-stamp",
                 "class": "invariant",
                 "description": "Test rule",
-                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_mixed_a" } },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-mixed-a" } },
                 "conditions": [{ "expr": "node.status == 'pending'", "description": "Test condition" }],
                 "actions": [{
                     "description": "Test action",
@@ -639,7 +639,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
             {
                 "name": "reactive-close",
                 "description": "Test rule",
-                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_mixed_b" } },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-mixed-b" } },
                 "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                 "actions": [{
                     "description": "Test action",
@@ -654,7 +654,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
 
     // Invariant half: synchronous.
     let a = Node::new(
-        "iv_mixed_a".to_string(),
+        "iv-mixed-a".to_string(),
         "a".to_string(),
         json!({ "status": "pending" }),
     );
@@ -662,13 +662,13 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
     service.create_node(a).await?;
     let a_after = service.get_node(&a_id).await?.unwrap();
     assert_eq!(
-        user_field(&a_after, "iv_mixed_a", "approved"),
+        user_field(&a_after, "iv-mixed-a", "approved"),
         Some(&json!(true))
     );
 
     // Reactive half: asynchronous, needs polling — unchanged behavior.
     let b = Node::new(
-        "iv_mixed_b".to_string(),
+        "iv-mixed-b".to_string(),
         "b".to_string(),
         json!({ "status": "open" }),
     );
@@ -680,7 +680,7 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "iv_mixed_b", "status").and_then(|v| v.as_str()) == Some("done")
+                Ok(Some(n)) if user_field(&n, "iv-mixed-b", "status").and_then(|v| v.as_str()) == Some("done")
             )
         }
     })
@@ -705,7 +705,7 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_seeded_task",
+        "iv-seeded-task",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -716,7 +716,7 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
         "name": "seeded-invariant-rule",
         "class": "invariant",
         "description": "Test rule",
-        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_seeded_task" } },
+        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-seeded-task" } },
         "conditions": [],
         "actions": []
     }]);
@@ -781,13 +781,13 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_chain_source",
+        "iv-chain-source",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     create_schema(
         &service,
-        "iv_chain_target",
+        "iv-chain-target",
         json!([
             { "name": "note", "type": "text" },
             { "name": "stamped_by_rule_b", "type": "boolean" }
@@ -798,8 +798,8 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
     let engine = PlaybookEngine::new(Arc::clone(&service));
     service.set_playbook_lifecycle(engine.lifecycle().clone());
 
-    // Rule A: on iv_chain_source creation, create an iv_chain_target node.
-    // Rule B: on iv_chain_target creation, stamp stamped_by_rule_b=true on it.
+    // Rule A: on iv-chain-source creation, create an iv-chain-target node.
+    // Rule B: on iv-chain-target creation, stamp stamped_by_rule_b=true on it.
     // Individually, each rule is valid (neither self-chains) and would pass
     // save-time eligibility. If dispatch recursed, rule A's own create_node
     // would trigger rule B inline, inside the very same transaction.
@@ -810,12 +810,12 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
             "name": "create-target",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_chain_source" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-chain-source" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
                 "action_type": "create_node",
-                "params": { "node_type": "iv_chain_target", "content": "created by rule A" }
+                "params": { "node_type": "iv-chain-target", "content": "created by rule A" }
             }]
         }] } }),
     );
@@ -833,7 +833,7 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
             "name": "stamp-target",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_chain_target" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-chain-target" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -853,7 +853,7 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
     }
 
     let source = Node::new(
-        "iv_chain_source".to_string(),
+        "iv-chain-source".to_string(),
         "trigger for the chain".to_string(),
         json!({ "status": "pending" }),
     );
@@ -863,15 +863,15 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
     // instead of computing the id, to keep this test's assertion independent
     // of the derivation formula's internals).
     let targets = service
-        .query_nodes_by_type("iv_chain_target", false)
+        .query_nodes_by_type("iv-chain-target", false)
         .await?;
     assert_eq!(
         targets.len(),
         1,
-        "rule A's create_node action must have produced exactly one iv_chain_target node"
+        "rule A's create_node action must have produced exactly one iv-chain-target node"
     );
     assert_eq!(
-        user_field(&targets[0], "iv_chain_target", "stamped_by_rule_b"),
+        user_field(&targets[0], "iv-chain-target", "stamped_by_rule_b"),
         None,
         "rule B must NOT have fired as a side effect of rule A's action within the same \
          transaction — invariant rules are non-chaining, depth 1 (ADR-060 §2)"
@@ -910,7 +910,7 @@ async fn invariant_rule_does_not_also_run_via_the_reactive_queue() -> Result<()>
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_no_double_exec",
+        "iv-no-double-exec",
         json!([
             { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
@@ -922,13 +922,13 @@ async fn invariant_rule_does_not_also_run_via_the_reactive_queue() -> Result<()>
     create_play(
         &service,
         "no-double-exec-play",
-        stamp_approved_invariant_rule("iv_no_double_exec"),
+        stamp_approved_invariant_rule("iv-no-double-exec"),
     )
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let triggering = Node::new(
-        "iv_no_double_exec".to_string(),
+        "iv-no-double-exec".to_string(),
         "must only be stamped once".to_string(),
         json!({ "status": "pending" }),
     );
@@ -940,7 +940,7 @@ async fn invariant_rule_does_not_also_run_via_the_reactive_queue() -> Result<()>
     // in-tx update_node action).
     let immediately_after = service.get_node(&triggering_id).await?.unwrap();
     assert_eq!(
-        user_field(&immediately_after, "iv_no_double_exec", "approved"),
+        user_field(&immediately_after, "iv-no-double-exec", "approved"),
         Some(&json!(true)),
         "the synchronous invariant stamp must already be applied when create_node returns"
     );
@@ -959,7 +959,7 @@ async fn invariant_rule_does_not_also_run_via_the_reactive_queue() -> Result<()>
          ExecutionQueue, which must never enqueue RuleClass::Invariant rules at all"
     );
     assert_eq!(
-        user_field(&later, "iv_no_double_exec", "approved"),
+        user_field(&later, "iv-no-double-exec", "approved"),
         Some(&json!(true)),
         "still stamped exactly once"
     );
@@ -1011,7 +1011,7 @@ async fn reject_action_prevents_node_creation_with_no_partial_write() -> Result<
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_reject_basic",
+        "iv-reject-basic",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -1022,9 +1022,9 @@ async fn reject_action_prevents_node_creation_with_no_partial_write() -> Result<
         "play".to_string(),
         "reject-basic-play".to_string(),
         json!({ "play": { "rules": reject_invariant_rule(
-            "iv_reject_basic",
+            "iv-reject-basic",
             "node.status == 'blocked'",
-            "cannot create a blocked iv_reject_basic node",
+            "cannot create a blocked iv-reject-basic node",
         ) } }),
     );
     {
@@ -1035,7 +1035,7 @@ async fn reject_action_prevents_node_creation_with_no_partial_write() -> Result<
     }
 
     let doomed = Node::new(
-        "iv_reject_basic".to_string(),
+        "iv-reject-basic".to_string(),
         "should never exist".to_string(),
         json!({ "status": "blocked" }),
     );
@@ -1065,7 +1065,7 @@ async fn reject_action_error_is_play_rule_rejected_with_the_rule_s_message() -> 
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_reject_msg",
+        "iv-reject-msg",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -1076,7 +1076,7 @@ async fn reject_action_error_is_play_rule_rejected_with_the_rule_s_message() -> 
         "play".to_string(),
         "reject-msg-play".to_string(),
         json!({ "play": { "rules": reject_invariant_rule(
-            "iv_reject_msg",
+            "iv-reject-msg",
             "node.status == 'blocked'",
             "custom violation text",
         ) } }),
@@ -1090,7 +1090,7 @@ async fn reject_action_error_is_play_rule_rejected_with_the_rule_s_message() -> 
     }
 
     let doomed = Node::new(
-        "iv_reject_msg".to_string(),
+        "iv-reject-msg".to_string(),
         "x".to_string(),
         json!({ "status": "blocked" }),
     );
@@ -1132,7 +1132,7 @@ async fn reject_action_condition_not_met_allows_normal_creation() -> Result<()> 
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_reject_gated",
+        "iv-reject-gated",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -1143,7 +1143,7 @@ async fn reject_action_condition_not_met_allows_normal_creation() -> Result<()> 
         "play".to_string(),
         "reject-gated-play".to_string(),
         json!({ "play": { "rules": reject_invariant_rule(
-            "iv_reject_gated",
+            "iv-reject-gated",
             "node.status == 'blocked'",
             "should never fire",
         ) } }),
@@ -1156,7 +1156,7 @@ async fn reject_action_condition_not_met_allows_normal_creation() -> Result<()> 
     }
 
     let allowed = Node::new(
-        "iv_reject_gated".to_string(),
+        "iv-reject-gated".to_string(),
         "fine".to_string(),
         json!({ "status": "open" }),
     );
@@ -1174,7 +1174,7 @@ async fn reject_action_condition_not_met_allows_normal_creation() -> Result<()> 
 
 /// A reject rule registered on a subtype reads a field the subtype inherits.
 ///
-/// `iv_sub_bug` extends `iv_sub_ticket` without redeclaring `state`, so a
+/// `iv-sub-bug` extends `iv-sub-ticket` without redeclaring `state`, so a
 /// bug's `state` is stored in the ancestor's bucket. A condition at the bug's
 /// own scope must still see it: were it absent, the rule would never match and
 /// the reject would silently allow the write it exists to veto. The open bug
@@ -1185,14 +1185,14 @@ async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
     nodespace_core::schema::handle_create_schema(
         &service,
         json!({
-            "name": "iv_sub_ticket",
+            "name": "iv-sub-ticket",
             "fields": [{ "name": "state", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
     .await?;
     nodespace_core::schema::handle_create_schema(
         &service,
-        json!({ "name": "iv_sub_bug", "extends": "iv_sub_ticket", "fields": [] }),
+        json!({ "name": "iv-sub-bug", "extends": "iv-sub-ticket", "fields": [] }),
     )
     .await?;
 
@@ -1202,7 +1202,7 @@ async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
         "play".to_string(),
         "reject-inherited-play".to_string(),
         json!({ "play": { "rules": reject_invariant_rule(
-            "iv_sub_bug",
+            "iv-sub-bug",
             "node.state == 'done'",
             "cannot create a done bug",
         ) } }),
@@ -1215,7 +1215,7 @@ async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
     }
 
     let open = Node::new(
-        "iv_sub_bug".to_string(),
+        "iv-sub-bug".to_string(),
         "open bug".to_string(),
         json!({ "state": "open" }),
     );
@@ -1226,14 +1226,14 @@ async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
         .await?
         .expect("an open bug must be created");
     assert_eq!(
-        user_field(&stored, "iv_sub_ticket", "state"),
+        user_field(&stored, "iv-sub-ticket", "state"),
         Some(&json!("open")),
         "precondition: the inherited field lives in the ancestor's bucket, got {}",
         stored.properties
     );
 
     let done = Node::new(
-        "iv_sub_bug".to_string(),
+        "iv-sub-bug".to_string(),
         "done bug".to_string(),
         json!({ "state": "done" }),
     );
@@ -1252,20 +1252,20 @@ async fn reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
 /// the edge's source inherits (ADR-078): relationship dispatch evaluates at the
 /// rule's scope through the same shared execution core as `node_created`.
 ///
-/// `status` lives in `iv_rel_ticket`'s bucket on an `iv_rel_bug`, so an
+/// `status` lives in `iv-rel-ticket`'s bucket on an `iv-rel-bug`, so an
 /// own-bucket read would see nothing and let the done bug's edge through.
 #[tokio::test]
 async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     nodespace_core::schema::handle_create_schema(
         &service,
-        json!({ "name": "iv_rel_target", "fields": [] }),
+        json!({ "name": "iv-rel-target", "fields": [] }),
     )
     .await?;
     nodespace_core::schema::handle_create_schema(
         &service,
         json!({
-            "name": "iv_rel_ticket",
+            "name": "iv-rel-ticket",
             "fields": [{ "name": "status", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
@@ -1273,12 +1273,12 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
     nodespace_core::schema::handle_create_schema(
         &service,
         json!({
-            "name": "iv_rel_bug",
-            "extends": "iv_rel_ticket",
+            "name": "iv-rel-bug",
+            "extends": "iv-rel-ticket",
             "fields": [],
             "relationships": [{
                 "name": "blocks",
-                "targetType": "iv_rel_target",
+                "targetType": "iv-rel-target",
                 "direction": "out",
                 "cardinality": "many",
                 "reverseName": "blocked_by",
@@ -1300,7 +1300,7 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
             "trigger": {
                 "type": "graph_event",
                 "on": "relationship_added",
-                "select": { "target_type": "iv_rel_bug" },
+                "select": { "target_type": "iv-rel-bug" },
             },
             "conditions": [{ "expr": "node.status == 'done'", "description": "Test condition" }],
             "actions": [{
@@ -1319,21 +1319,21 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
 
     let target = service
         .create_node(Node::new(
-            "iv_rel_target".to_string(),
+            "iv-rel-target".to_string(),
             "target".to_string(),
             json!({}),
         ))
         .await?;
     let open = service
         .create_node(Node::new(
-            "iv_rel_bug".to_string(),
+            "iv-rel-bug".to_string(),
             "open bug".to_string(),
             json!({ "status": "open" }),
         ))
         .await?;
     let done = service
         .create_node(Node::new(
-            "iv_rel_bug".to_string(),
+            "iv-rel-bug".to_string(),
             "done bug".to_string(),
             json!({ "status": "done" }),
         ))
@@ -1344,7 +1344,7 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
         .await?
         .expect("the done bug must exist");
     assert_eq!(
-        user_field(&stored, "iv_rel_ticket", "status"),
+        user_field(&stored, "iv-rel-ticket", "status"),
         Some(&json!("done")),
         "precondition: the inherited field lives in the ancestor's bucket, got {}",
         stored.properties
@@ -1377,8 +1377,8 @@ async fn relationship_reject_rule_on_a_subtype_reads_an_inherited_field() -> Res
 /// subtype at the base's scope (ADR-078): an extended value is translated
 /// through `maps_to` before the condition sees it.
 ///
-/// `iv_base_bug` adds `backlog`, mapping to `open`, to the `state` it inherits
-/// from `iv_base_ticket`. A ticket-scoped rule rejecting `open` must reject a
+/// `iv-base-bug` adds `backlog`, mapping to `open`, to the `state` it inherits
+/// from `iv-base-ticket`. A ticket-scoped rule rejecting `open` must reject a
 /// `backlog` bug, and must still allow a `done` one.
 #[tokio::test]
 async fn reject_rule_on_a_base_type_reads_a_subtype_through_maps_to() -> Result<()> {
@@ -1386,7 +1386,7 @@ async fn reject_rule_on_a_base_type_reads_a_subtype_through_maps_to() -> Result<
     nodespace_core::schema::handle_create_schema(
         &service,
         json!({
-            "name": "iv_base_ticket",
+            "name": "iv-base-ticket",
             "fields": [{
                 "name": "state",
                 "type": "enum",
@@ -1403,13 +1403,13 @@ async fn reject_rule_on_a_base_type_reads_a_subtype_through_maps_to() -> Result<
     .await?;
     nodespace_core::schema::handle_create_schema(
         &service,
-        json!({ "name": "iv_base_bug", "extends": "iv_base_ticket", "fields": [] }),
+        json!({ "name": "iv-base-bug", "extends": "iv-base-ticket", "fields": [] }),
     )
     .await?;
     nodespace_core::schema::handle_update_schema(
         &service,
         json!({
-            "schema_id": "iv_base_bug",
+            "schema_id": "iv-base-bug",
             "add_field_values": [{
                 "field": "state",
                 "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
@@ -1420,7 +1420,7 @@ async fn reject_rule_on_a_base_type_reads_a_subtype_through_maps_to() -> Result<
     create_play(
         &service,
         "reject-base-play",
-        reject_invariant_rule("iv_base_ticket", "node.state == 'open'", "no open tickets"),
+        reject_invariant_rule("iv-base-ticket", "node.state == 'open'", "no open tickets"),
     )
     .await?;
     // The engine's start-up load activates the play and builds the ancestry
@@ -1428,7 +1428,7 @@ async fn reject_rule_on_a_base_type_reads_a_subtype_through_maps_to() -> Result<
     let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
 
     let done = Node::new(
-        "iv_base_bug".to_string(),
+        "iv-base-bug".to_string(),
         "done bug".to_string(),
         json!({ "state": "done" }),
     );
@@ -1437,7 +1437,7 @@ async fn reject_rule_on_a_base_type_reads_a_subtype_through_maps_to() -> Result<
     assert!(service.get_node(&done_id).await?.is_some());
 
     let backlog = Node::new(
-        "iv_base_bug".to_string(),
+        "iv-base-bug".to_string(),
         "backlog bug".to_string(),
         json!({ "state": "backlog" }),
     );
@@ -1462,14 +1462,14 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_reject_order_a",
+        "iv-reject-order-a",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
     // Pre-existing node the (never-reached) augmenting action would target.
     let other = Node::new(
-        "iv_reject_order_a".to_string(),
+        "iv-reject-order-a".to_string(),
         "bystander".to_string(),
         json!({ "status": "untouched" }),
     );
@@ -1486,7 +1486,7 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
             "name": "reject-then-augment",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_order_a" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-reject-order-a" } },
             "conditions": [],
             "actions": [
                 {
@@ -1513,7 +1513,7 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
     }
 
     let doomed = Node::new(
-        "iv_reject_order_a".to_string(),
+        "iv-reject-order-a".to_string(),
         "trigger".to_string(),
         json!({ "status": "pending" }),
     );
@@ -1532,7 +1532,7 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
         "the augmenting action after reject must never have run"
     );
     assert_eq!(
-        user_field(&other_after, "iv_reject_order_a", "status"),
+        user_field(&other_after, "iv-reject-order-a", "status"),
         Some(&json!("untouched")),
         "the augmenting action's write must not be visible"
     );
@@ -1561,7 +1561,7 @@ async fn reject_on_reactive_rule_bypassing_save_time_validation_is_suspended_at_
 
     create_schema(
         &service,
-        "iv_reject_bypass",
+        "iv-reject-bypass",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -1573,7 +1573,7 @@ async fn reject_on_reactive_rule_bypassing_save_time_validation_is_suspended_at_
             "name": "reject-on-reactive",
             "class": "reactive",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_bypass" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-reject-bypass" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -1628,13 +1628,13 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_reject_order_b",
+        "iv-reject-order-b",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
 
     let other = Node::new(
-        "iv_reject_order_b".to_string(),
+        "iv-reject-order-b".to_string(),
         "bystander".to_string(),
         json!({ "status": "untouched" }),
     );
@@ -1651,7 +1651,7 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
             "name": "augment-then-reject",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv_reject_order_b" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "iv-reject-order-b" } },
             "conditions": [],
             "actions": [
                 {
@@ -1678,7 +1678,7 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
     }
 
     let doomed = Node::new(
-        "iv_reject_order_b".to_string(),
+        "iv-reject-order-b".to_string(),
         "trigger".to_string(),
         json!({ "status": "pending" }),
     );
@@ -1698,7 +1698,7 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
          when a LATER action in the same rule rejects"
     );
     assert_eq!(
-        user_field(&other_after, "iv_reject_order_b", "status"),
+        user_field(&other_after, "iv-reject-order-b", "status"),
         Some(&json!("untouched")),
         "the augmenting action's write must not be durably visible after rollback"
     );
@@ -1762,7 +1762,7 @@ async fn invariant_update_rule_executes_synchronously_in_same_transaction() -> R
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_update_task",
+        "iv-update-task",
         json!([
             { "name": "status", "type": "text" },
             { "name": "verified", "type": "boolean" }
@@ -1775,7 +1775,7 @@ async fn invariant_update_rule_executes_synchronously_in_same_transaction() -> R
     let play_node = Node::new(
         "play".to_string(),
         "stamp-verified-play".to_string(),
-        json!({ "play": { "rules": stamp_verified_on_update_invariant_rule("iv_update_task", "status") } }),
+        json!({ "play": { "rules": stamp_verified_on_update_invariant_rule("iv-update-task", "status") } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1785,7 +1785,7 @@ async fn invariant_update_rule_executes_synchronously_in_same_transaction() -> R
     }
 
     let node = Node::new(
-        "iv_update_task".to_string(),
+        "iv-update-task".to_string(),
         "task".to_string(),
         json!({ "status": "open" }),
     );
@@ -1803,12 +1803,12 @@ async fn invariant_update_rule_executes_synchronously_in_same_transaction() -> R
 
     // No wait_until: check the RETURN VALUE of update_node itself.
     assert_eq!(
-        user_field(&updated, "iv_update_task", "verified"),
+        user_field(&updated, "iv-update-task", "verified"),
         Some(&json!(true)),
         "invariant action must have already run by the time update_node returned"
     );
     assert_eq!(
-        user_field(&updated, "iv_update_task", "status"),
+        user_field(&updated, "iv-update-task", "status"),
         Some(&json!("in_progress")),
         "the triggering update itself must still have applied"
     );
@@ -1825,7 +1825,7 @@ async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_update_reject",
+        "iv-update-reject",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -1839,7 +1839,7 @@ async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
             "name": "reject-blocked-transition",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv_update_reject" }, "property_key": "iv_update_reject.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv-update-reject" }, "property_key": "iv-update-reject.status" },
             "conditions": [{ "expr": "node.status == 'blocked'", "description": "Test condition" }],
             "actions": [{
                 "description": "Test action",
@@ -1856,7 +1856,7 @@ async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
     }
 
     let node = Node::new(
-        "iv_update_reject".to_string(),
+        "iv-update-reject".to_string(),
         "task".to_string(),
         json!({ "status": "open" }),
     );
@@ -1884,7 +1884,7 @@ async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
         "a rejected update must not bump the node's version at all"
     );
     assert_eq!(
-        user_field(&after, "iv_update_reject", "status"),
+        user_field(&after, "iv-update-reject", "status"),
         Some(&json!("open")),
         "a rejected update must leave the property at its pre-update value"
     );
@@ -1900,7 +1900,7 @@ async fn invariant_update_rule_reject_emits_no_domain_event() -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_update_no_broadcast",
+        "iv-update-no-broadcast",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
@@ -1914,7 +1914,7 @@ async fn invariant_update_rule_reject_emits_no_domain_event() -> Result<()> {
             "name": "reject-always",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv_update_no_broadcast" }, "property_key": "iv_update_no_broadcast.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv-update-no-broadcast" }, "property_key": "iv-update-no-broadcast.status" },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -1931,7 +1931,7 @@ async fn invariant_update_rule_reject_emits_no_domain_event() -> Result<()> {
     }
 
     let node = Node::new(
-        "iv_update_no_broadcast".to_string(),
+        "iv-update-no-broadcast".to_string(),
         "task".to_string(),
         json!({ "status": "open" }),
     );
@@ -1972,7 +1972,7 @@ async fn invariant_update_rule_augmenting_action_commits_and_broadcasts_normally
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_update_broadcast",
+        "iv-update-broadcast",
         json!([
             { "name": "status", "type": "text" },
             { "name": "verified", "type": "boolean" }
@@ -1985,7 +1985,7 @@ async fn invariant_update_rule_augmenting_action_commits_and_broadcasts_normally
     let play_node = Node::new(
         "play".to_string(),
         "augment-on-update-play".to_string(),
-        json!({ "play": { "rules": stamp_verified_on_update_invariant_rule("iv_update_broadcast", "status") } }),
+        json!({ "play": { "rules": stamp_verified_on_update_invariant_rule("iv-update-broadcast", "status") } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -1995,7 +1995,7 @@ async fn invariant_update_rule_augmenting_action_commits_and_broadcasts_normally
     }
 
     let node = Node::new(
-        "iv_update_broadcast".to_string(),
+        "iv-update-broadcast".to_string(),
         "task".to_string(),
         json!({ "status": "open" }),
     );
@@ -2013,7 +2013,7 @@ async fn invariant_update_rule_augmenting_action_commits_and_broadcasts_normally
         )
         .await?;
     assert_eq!(
-        user_field(&updated, "iv_update_broadcast", "verified"),
+        user_field(&updated, "iv-update-broadcast", "verified"),
         Some(&json!(true)),
         "augmenting action must have run"
     );
@@ -2046,7 +2046,7 @@ async fn invariant_update_rule_scoped_to_one_property_ignores_a_different_proper
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_update_scoped",
+        "iv-update-scoped",
         json!([
             { "name": "status", "type": "text" },
             { "name": "priority", "type": "text" },
@@ -2061,7 +2061,7 @@ async fn invariant_update_rule_scoped_to_one_property_ignores_a_different_proper
         "play".to_string(),
         "scoped-property-play".to_string(),
         // Scoped to "status" only.
-        json!({ "play": { "rules": stamp_verified_on_update_invariant_rule("iv_update_scoped", "status") } }),
+        json!({ "play": { "rules": stamp_verified_on_update_invariant_rule("iv-update-scoped", "status") } }),
     );
     {
         let lifecycle = engine.lifecycle();
@@ -2071,7 +2071,7 @@ async fn invariant_update_rule_scoped_to_one_property_ignores_a_different_proper
     }
 
     let node = Node::new(
-        "iv_update_scoped".to_string(),
+        "iv-update-scoped".to_string(),
         "task".to_string(),
         json!({ "status": "open", "priority": "low" }),
     );
@@ -2089,12 +2089,12 @@ async fn invariant_update_rule_scoped_to_one_property_ignores_a_different_proper
         .await?;
 
     assert_eq!(
-        user_field(&updated, "iv_update_scoped", "verified"),
+        user_field(&updated, "iv-update-scoped", "verified"),
         None,
         "a property-key-scoped invariant rule must not fire for an unrelated property change"
     );
     assert_eq!(
-        user_field(&updated, "iv_update_scoped", "priority"),
+        user_field(&updated, "iv-update-scoped", "priority"),
         Some(&json!("high")),
         "the unrelated update itself must still have applied"
     );
@@ -2111,7 +2111,7 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_update_reactive",
+        "iv-update-reactive",
         json!([
             { "name": "status", "type": "text" },
             { "name": "notified", "type": "boolean" }
@@ -2127,7 +2127,7 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
             "name": "notify-on-status-change",
             // No "class" -> defaults to reactive.
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv_update_reactive" }, "property_key": "iv_update_reactive.status" },
+            "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "iv-update-reactive" }, "property_key": "iv-update-reactive.status" },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -2143,7 +2143,7 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let node = Node::new(
-        "iv_update_reactive".to_string(),
+        "iv-update-reactive".to_string(),
         "task".to_string(),
         json!({ "status": "open" }),
     );
@@ -2160,7 +2160,7 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
         .await?;
     // Must NOT be synchronous for a reactive rule.
     assert_eq!(
-        user_field(&updated, "iv_update_reactive", "notified"),
+        user_field(&updated, "iv-update-reactive", "notified"),
         None,
         "a reactive rule's effect must not be visible synchronously"
     );
@@ -2175,7 +2175,7 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
                 .ok()
                 .flatten()
                 .is_some_and(|n| {
-                    user_field(&n, "iv_update_reactive", "notified") == Some(&json!(true))
+                    user_field(&n, "iv-update-reactive", "notified") == Some(&json!(true))
                 })
         }
     })
@@ -2707,7 +2707,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_chain_task",
+        "iv-chain-task",
         json!([
             { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
@@ -2718,7 +2718,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
     create_play(
         &service,
         "chain-repair-play",
-        stamp_approved_invariant_rule("iv_chain_task"),
+        stamp_approved_invariant_rule("iv-chain-task"),
     )
     .await?;
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2727,7 +2727,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
 
     // A play write at the end of a chain: one more hop would pass the limit.
     let at_limit = Node::new(
-        "iv_chain_task".to_string(),
+        "iv-chain-task".to_string(),
         "play write at the limit".to_string(),
         json!({
             "status": "pending",
@@ -2741,7 +2741,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
     // Created after `at_limit`, so once it is repaired the engine has
     // finished with `at_limit` too.
     let depth_only = Node::new(
-        "iv_chain_task".to_string(),
+        "iv-chain-task".to_string(),
         "depth stamp without a write id".to_string(),
         json!({
             "status": "pending",
@@ -2757,7 +2757,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "iv_chain_task", "approved") == Some(&json!(true))
+                Ok(Some(n)) if user_field(&n, "iv-chain-task", "approved") == Some(&json!(true))
             )
         }
     })
@@ -2775,7 +2775,7 @@ async fn sync_repair_continues_only_a_play_written_chain() -> Result<()> {
 
     let at_limit_node = service.get_node(&at_limit_id).await?.unwrap();
     assert_eq!(
-        user_field(&at_limit_node, "iv_chain_task", "approved"),
+        user_field(&at_limit_node, "iv-chain-task", "approved"),
         None,
         "a repair one hop past the limit of a play-written chain must be skipped"
     );
@@ -2926,12 +2926,12 @@ async fn drain_verified_when_done(service: &Arc<NodeService>, node_type: &str) -
 /// device holds is repaired, exactly as a received create is.
 #[tokio::test]
 async fn sync_applied_update_violating_invariant_is_repaired() -> Result<()> {
-    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_repair").await?;
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv-su-repair").await?;
 
     let (id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_repair".to_string(),
+            "iv-su-repair".to_string(),
             "task".to_string(),
             json!({ "status": "open" }),
         ),
@@ -2945,7 +2945,7 @@ async fn sync_applied_update_violating_invariant_is_repaired() -> Result<()> {
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "iv_su_repair", "verified") == Some(&json!(true))
+                Ok(Some(n)) if user_field(&n, "iv-su-repair", "verified") == Some(&json!(true))
             )
         }
     })
@@ -2964,14 +2964,14 @@ async fn sync_applied_update_violating_invariant_is_repaired() -> Result<()> {
 /// node as it stands would fail it.
 #[tokio::test]
 async fn sync_applied_update_not_touching_the_rule_property_is_not_repaired() -> Result<()> {
-    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_other").await?;
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv-su-other").await?;
 
     // Arrives already violating (done, not verified). A create does not
     // match a property_changed rule, so nothing repairs it here.
     let (id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_other".to_string(),
+            "iv-su-other".to_string(),
             "task".to_string(),
             json!({ "status": "done", "priority": "low" }),
         ),
@@ -2979,11 +2979,11 @@ async fn sync_applied_update_not_touching_the_rule_property_is_not_repaired() ->
     .await?;
     let updated = update_via_sync(&service, &id, json!({ "priority": "high" })).await?;
 
-    drain_verified_when_done(&service, "iv_su_other").await?;
+    drain_verified_when_done(&service, "iv-su-other").await?;
 
     let node = service.get_node(&id).await?.unwrap();
     assert_eq!(
-        user_field(&node, "iv_su_other", "verified"),
+        user_field(&node, "iv-su-other", "verified"),
         None,
         "a received update that changes only an unrelated property must not trigger repair"
     );
@@ -3000,12 +3000,12 @@ async fn sync_applied_update_not_touching_the_rule_property_is_not_repaired() ->
 /// invariant satisfied is not repaired.
 #[tokio::test]
 async fn sync_applied_non_violating_update_is_not_repaired() -> Result<()> {
-    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_ok").await?;
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv-su-ok").await?;
 
     let (id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_ok".to_string(),
+            "iv-su-ok".to_string(),
             "task".to_string(),
             json!({ "status": "open" }),
         ),
@@ -3019,7 +3019,7 @@ async fn sync_applied_non_violating_update_is_not_repaired() -> Result<()> {
         update_via_sync(&service, &id, json!({ "status": "done", "verified": true })).await?;
     assert!(second.version > first.version);
 
-    drain_verified_when_done(&service, "iv_su_ok").await?;
+    drain_verified_when_done(&service, "iv-su-ok").await?;
 
     let node = service.get_node(&id).await?.unwrap();
     assert_eq!(
@@ -3039,7 +3039,7 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_su_create_only",
+        "iv-su-create-only",
         json!([
             { "name": "status", "type": "text" },
             { "name": "approved", "type": "boolean" }
@@ -3050,7 +3050,7 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
     activate_rules_directly(
         &engine,
         "create-only-play",
-        stamp_approved_invariant_rule("iv_su_create_only"),
+        stamp_approved_invariant_rule("iv-su-create-only"),
     );
 
     // Condition is `node.status == 'pending'`; created as `open`, so the
@@ -3058,7 +3058,7 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
     let (id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_create_only".to_string(),
+            "iv-su-create-only".to_string(),
             "task".to_string(),
             json!({ "status": "open" }),
         ),
@@ -3071,7 +3071,7 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
     let (barrier_id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_create_only".to_string(),
+            "iv-su-create-only".to_string(),
             "barrier".to_string(),
             json!({ "status": "pending" }),
         ),
@@ -3084,7 +3084,7 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
             async move {
                 matches!(
                     service.get_node(&id).await,
-                    Ok(Some(n)) if user_field(&n, "iv_su_create_only", "approved") == Some(&json!(true))
+                    Ok(Some(n)) if user_field(&n, "iv-su-create-only", "approved") == Some(&json!(true))
                 )
             }
         })
@@ -3096,7 +3096,7 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
     let (created_id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_create_only".to_string(),
+            "iv-su-create-only".to_string(),
             "task".to_string(),
             json!({ "status": "pending" }),
         ),
@@ -3108,7 +3108,7 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
         async move {
             matches!(
                 service.get_node(&id).await,
-                Ok(Some(n)) if user_field(&n, "iv_su_create_only", "approved") == Some(&json!(true))
+                Ok(Some(n)) if user_field(&n, "iv-su-create-only", "approved") == Some(&json!(true))
             )
         }
     })
@@ -3120,7 +3120,7 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
 
     let node = service.get_node(&id).await?.unwrap();
     assert_eq!(
-        user_field(&node, "iv_su_create_only", "approved"),
+        user_field(&node, "iv-su-create-only", "approved"),
         None,
         "a node_created invariant must not be re-checked by a received update"
     );
@@ -3135,12 +3135,12 @@ async fn sync_applied_update_does_not_run_a_node_created_invariant() -> Result<(
 /// the violating update, stamped one hop past the received write's depth.
 #[tokio::test]
 async fn sync_update_repair_writes_once_one_hop_past_the_received_depth() -> Result<()> {
-    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_once").await?;
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv-su-once").await?;
 
     let (id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_once".to_string(),
+            "iv-su-once".to_string(),
             "task".to_string(),
             json!({ "status": "open" }),
         ),
@@ -3148,10 +3148,10 @@ async fn sync_update_repair_writes_once_one_hop_past_the_received_depth() -> Res
     .await?;
     let received = update_via_sync(&service, &id, json!({ "status": "done" })).await?;
 
-    drain_verified_when_done(&service, "iv_su_once").await?;
+    drain_verified_when_done(&service, "iv-su-once").await?;
     let after_repair = service.get_node(&id).await?.unwrap();
     assert_eq!(
-        user_field(&after_repair, "iv_su_once", "verified"),
+        user_field(&after_repair, "iv-su-once", "verified"),
         Some(&json!(true))
     );
     assert_eq!(
@@ -3188,12 +3188,12 @@ async fn sync_update_repair_writes_once_one_hop_past_the_received_depth() -> Res
 /// the write id, so it starts a fresh chain.
 #[tokio::test]
 async fn stale_play_stamp_does_not_suppress_repair_of_a_user_edit() -> Result<()> {
-    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_stale").await?;
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv-su-stale").await?;
 
     let (id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_stale".to_string(),
+            "iv-su-stale".to_string(),
             "task".to_string(),
             json!({
                 "status": "open",
@@ -3206,10 +3206,10 @@ async fn stale_play_stamp_does_not_suppress_repair_of_a_user_edit() -> Result<()
     // A user's edit on another device: changes status, leaves the stamps.
     update_via_sync(&service, &id, json!({ "status": "done" })).await?;
 
-    drain_verified_when_done(&service, "iv_su_stale").await?;
+    drain_verified_when_done(&service, "iv-su-stale").await?;
     let node = service.get_node(&id).await?.unwrap();
     assert_eq!(
-        user_field(&node, "iv_su_stale", "verified"),
+        user_field(&node, "iv-su-stale", "verified"),
         Some(&json!(true)),
         "a stale play stamp must not block repairing a violation a user edit introduced"
     );
@@ -3231,13 +3231,13 @@ async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant(
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
-        "iv_su_legal",
+        "iv-su-legal",
         json!([{ "name": "status", "type": "text" }]),
     )
     .await?;
     create_schema(
         &service,
-        "iv_su_legal_log",
+        "iv-su-legal-log",
         json!([{ "name": "note", "type": "text" }]),
     )
     .await?;
@@ -3252,14 +3252,14 @@ async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant(
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "select": { "target_type": "iv_su_legal" },
-                "property_key": "iv_su_legal.status"
+                "select": { "target_type": "iv-su-legal" },
+                "property_key": "iv-su-legal.status"
             },
             "conditions": [{ "expr": "node.status == 'done'", "description": "Test condition" }],
             "actions": [{
                 "description": "Test action",
                 "action_type": "create_node",
-                "params": { "node_type": "iv_su_legal_log", "content": "done recorded" }
+                "params": { "node_type": "iv-su-legal-log", "content": "done recorded" }
             }]
         }]),
     )
@@ -3272,7 +3272,7 @@ async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant(
     let (id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_legal".to_string(),
+            "iv-su-legal".to_string(),
             "task".to_string(),
             json!({ "status": "open" }),
         ),
@@ -3284,7 +3284,7 @@ async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant(
         let service = Arc::clone(&service);
         async move {
             matches!(
-                service.query_nodes_by_type("iv_su_legal_log", true).await,
+                service.query_nodes_by_type("iv-su-legal-log", true).await,
                 Ok(nodes) if nodes.len() == 1
             )
         }
@@ -3304,12 +3304,12 @@ async fn sync_applied_update_is_repaired_by_a_saved_non_self_chaining_invariant(
 /// which is what marks it as a play hop rather than a user's edit.
 #[tokio::test]
 async fn sync_update_at_the_chain_depth_limit_is_not_repaired() -> Result<()> {
-    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv_su_limit").await?;
+    let (service, _tmp, shutdown_tx, task) = setup_verified_when_done("iv-su-limit").await?;
 
     let (id, _) = create_via_sync(
         &service,
         Node::new(
-            "iv_su_limit".to_string(),
+            "iv-su-limit".to_string(),
             "task".to_string(),
             json!({ "status": "open" }),
         ),
@@ -3326,9 +3326,9 @@ async fn sync_update_at_the_chain_depth_limit_is_not_repaired() -> Result<()> {
     )
     .await?;
 
-    drain_verified_when_done(&service, "iv_su_limit").await?;
+    drain_verified_when_done(&service, "iv-su-limit").await?;
     let node = service.get_node(&id).await?.unwrap();
-    assert_eq!(user_field(&node, "iv_su_limit", "verified"), None);
+    assert_eq!(user_field(&node, "iv-su-limit", "verified"), None);
     assert_eq!(node.version, received.version);
 
     shutdown_engine(shutdown_tx, task).await;
@@ -3364,7 +3364,7 @@ async fn contradictory_invariants_stop_at_the_limit_on_an_already_stamped_node()
 }
 
 async fn contradictory_invariants_ping_pong(initial_properties: serde_json::Value) -> Result<()> {
-    const NODE_TYPE: &str = "iv_su_pingpong";
+    const NODE_TYPE: &str = "iv-su-pingpong";
     fn mode_must_be(required: &str) -> serde_json::Value {
         json!([{
             "name": format!("mode-must-be-{required}"),
@@ -3544,7 +3544,7 @@ async fn chain_device(
     tokio::task::JoinHandle<Result<()>>,
 )> {
     let (service, tmp) = create_test_service().await?;
-    for node_type in ["rv_x", "rv_y", "rv_z"] {
+    for node_type in ["rv-x", "rv-y", "rv-z"] {
         create_schema(
             &service,
             node_type,
@@ -3557,9 +3557,9 @@ async fn chain_device(
         activate_rules_directly(&engine, name, play_rules.clone());
     }
     for (id, node_type) in [
-        ("1481fce2-d682-567e-add1-5805e071832e", "rv_x"),
-        ("1cba38b9-283d-5519-b32f-a13ad4185c32", "rv_y"),
-        ("6d43ed3c-86ef-5120-a279-9fb99a31dcca", "rv_z"),
+        ("1481fce2-d682-567e-add1-5805e071832e", "rv-x"),
+        ("1cba38b9-283d-5519-b32f-a13ad4185c32", "rv-y"),
+        ("6d43ed3c-86ef-5120-a279-9fb99a31dcca", "rv-z"),
     ] {
         create_via_sync(
             &service,
@@ -3587,11 +3587,11 @@ async fn in_transaction_invariant_hop_continues_the_repair_chain_depth() -> Resu
     let (service, _tmp, shutdown_tx, task) = chain_device(&[
         (
             "x-to-y",
-            relay_f_rules("rv_x", "1cba38b9-283d-5519-b32f-a13ad4185c32", false),
+            relay_f_rules("rv-x", "1cba38b9-283d-5519-b32f-a13ad4185c32", false),
         ),
         (
             "y-to-z",
-            relay_f_rules("rv_y", "6d43ed3c-86ef-5120-a279-9fb99a31dcca", false),
+            relay_f_rules("rv-y", "6d43ed3c-86ef-5120-a279-9fb99a31dcca", false),
         ),
     ])
     .await?;
@@ -3612,7 +3612,7 @@ async fn in_transaction_invariant_hop_continues_the_repair_chain_depth() -> Resu
         async move {
             matches!(
                 service.get_node("6d43ed3c-86ef-5120-a279-9fb99a31dcca").await,
-                Ok(Some(n)) if user_field(&n, "rv_z", "f") == Some(&json!("on"))
+                Ok(Some(n)) if user_field(&n, "rv-z", "f") == Some(&json!("on"))
             )
         }
     })
@@ -3656,17 +3656,17 @@ async fn cycle_through_an_in_transaction_invariant_hop_stops_at_the_limit() -> R
     let (device_a, _tmp_a, shutdown_a, task_a) = chain_device(&[
         (
             "x-to-y",
-            relay_f_rules("rv_x", "1cba38b9-283d-5519-b32f-a13ad4185c32", false),
+            relay_f_rules("rv-x", "1cba38b9-283d-5519-b32f-a13ad4185c32", false),
         ),
         (
             "y-to-z",
-            relay_f_rules("rv_y", "6d43ed3c-86ef-5120-a279-9fb99a31dcca", false),
+            relay_f_rules("rv-y", "6d43ed3c-86ef-5120-a279-9fb99a31dcca", false),
         ),
     ])
     .await?;
     let (device_b, _tmp_b, shutdown_b, task_b) = chain_device(&[(
         "z-to-x",
-        relay_f_rules("rv_z", "1481fce2-d682-567e-add1-5805e071832e", true),
+        relay_f_rules("rv-z", "1481fce2-d682-567e-add1-5805e071832e", true),
     )])
     .await?;
 

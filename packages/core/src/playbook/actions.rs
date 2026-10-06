@@ -3935,17 +3935,17 @@ mod tests {
     #[test]
     fn collect_binding_templates_in_value_walks_nested_object_and_array() {
         let params = json!({
-            "node_type": "pb_cycle_result",
+            "node_type": "pb-cycle-result",
             "content": "computed",
             "properties": {
-                "end_date": "{add_days(trigger.node.properties.pb_cycle_source.start_date, 14)}",
+                "end_date": "{add_days(trigger.node.properties.pb-cycle-source.start_date, 14)}",
                 "tags": ["{trigger.node.id}", "literal"]
             }
         });
         let mut templates = Vec::new();
         collect_binding_templates_in_value(&params, &mut templates);
         assert!(templates.contains(
-            &"add_days(trigger.node.properties.pb_cycle_source.start_date, 14)".to_string()
+            &"add_days(trigger.node.properties.pb-cycle-source.start_date, 14)".to_string()
         ));
         assert!(templates.contains(&"trigger.node.id".to_string()));
         // Literal text with no `{...}` contributes nothing, and non-string
@@ -5111,13 +5111,13 @@ mod tests {
         async fn single_hop_one_relationship_resolves_to_the_related_node() {
             let (svc, _tmp) = create_test_service().await;
 
-            declare_schema(&svc, "sh_cycle", json!([])).await;
+            declare_schema(&svc, "sh-cycle", json!([])).await;
             declare_schema(
                 &svc,
-                "sh_issue",
+                "sh-issue",
                 json!([{
                     "name": "cycle",
-                    "targetType": "sh_cycle",
+                    "targetType": "sh-cycle",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -5128,14 +5128,14 @@ mod tests {
 
             let cycle = make_trigger_node(
                 "4ef65e85-5856-5cd8-ae87-4185100f980c",
-                "sh_cycle",
+                "sh-cycle",
                 json!({}),
             );
             svc.create_node(cycle).await.unwrap();
             let issue = make_trigger_node(
                 "de3c38b5-df34-5692-b290-1c18fd12b034",
-                "sh_issue",
-                json!({"sh_issue": {"estimate": 3}}),
+                "sh-issue",
+                json!({"sh-issue": {"estimate": 3}}),
             );
             svc.create_node(issue.clone()).await.unwrap();
             svc.create_relationship(
@@ -5147,7 +5147,7 @@ mod tests {
             .await
             .unwrap();
 
-            let event = make_node_created_event("de3c38b5-df34-5692-b290-1c18fd12b034", "sh_issue");
+            let event = make_node_created_event("de3c38b5-df34-5692-b290-1c18fd12b034", "sh-issue");
             let resolver = GraphResolver::new(Arc::clone(&svc));
             let mut ctx = BindingContext::new(&issue, &event, Some(resolver));
 
@@ -5171,14 +5171,14 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             // Target schema must exist before a relationship can declare it
-            // as `targetType` -- declare the "many" side (sh_issue2) first.
-            declare_schema(&svc, "sh_issue2", json!([])).await;
+            // as `targetType` -- declare the "many" side (sh-issue2) first.
+            declare_schema(&svc, "sh-issue2", json!([])).await;
             declare_schema(
                 &svc,
-                "sh_cycle2",
+                "sh-cycle2",
                 json!([{
                     "name": "issues",
-                    "targetType": "sh_issue2",
+                    "targetType": "sh-issue2",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "cycle",
@@ -5189,19 +5189,19 @@ mod tests {
 
             let cycle = make_trigger_node(
                 "f2e78b8a-a88f-55e6-90df-6d10048632c8",
-                "sh_cycle2",
+                "sh-cycle2",
                 json!({}),
             );
             svc.create_node(cycle.clone()).await.unwrap();
             let issue_a = make_trigger_node(
                 "568a756c-cf0b-53a9-b297-dee0fb59bbe7",
-                "sh_issue2",
-                json!({"sh_issue2": {"estimate": 3}}),
+                "sh-issue2",
+                json!({"sh-issue2": {"estimate": 3}}),
             );
             let issue_b = make_trigger_node(
                 "bd4ee224-0773-564d-ac28-ab17dac78bd6",
-                "sh_issue2",
-                json!({"sh_issue2": {"estimate": 5}}),
+                "sh-issue2",
+                json!({"sh-issue2": {"estimate": 5}}),
             );
             svc.create_node(issue_a).await.unwrap();
             svc.create_node(issue_b).await.unwrap();
@@ -5223,7 +5223,7 @@ mod tests {
             .unwrap();
 
             let event =
-                make_node_created_event("f2e78b8a-a88f-55e6-90df-6d10048632c8", "sh_cycle2");
+                make_node_created_event("f2e78b8a-a88f-55e6-90df-6d10048632c8", "sh-cycle2");
             let resolver = GraphResolver::new(Arc::clone(&svc));
             let mut ctx = BindingContext::new(&cycle, &event, Some(resolver));
 
@@ -5508,12 +5508,12 @@ mod tests {
 
             // A person declares `tasks`; a ticket reads it back as `assignee`.
             for (type_name, rels) in [
-                ("bind_ticket", json!([])),
+                ("bind-ticket", json!([])),
                 (
-                    "bind_person",
+                    "bind-person",
                     json!([{
                         "name": "tasks",
-                        "targetType": "bind_ticket",
+                        "targetType": "bind-ticket",
                         "direction": "out",
                         "cardinality": "many",
                         "reverseName": "assignee",
@@ -5544,14 +5544,14 @@ mod tests {
 
             svc.create_node(make_trigger_node(
                 "4449b2e3-b913-5cd9-8e32-0c7d90aaddf8",
-                "bind_person",
+                "bind-person",
                 json!({"email": "ada@example.com"}),
             ))
             .await
             .unwrap();
             let ticket = make_trigger_node(
                 "63b212a6-2ee7-5b0c-9fe4-904454b53c12",
-                "bind_ticket",
+                "bind-ticket",
                 json!({}),
             );
             svc.create_node(ticket.clone()).await.unwrap();
@@ -5565,7 +5565,7 @@ mod tests {
             .unwrap();
 
             let event =
-                make_node_created_event("63b212a6-2ee7-5b0c-9fe4-904454b53c12", "bind_ticket");
+                make_node_created_event("63b212a6-2ee7-5b0c-9fe4-904454b53c12", "bind-ticket");
             let resolver = GraphResolver::new(Arc::clone(&svc));
             let mut ctx = BindingContext::new(&ticket, &event, Some(resolver));
 

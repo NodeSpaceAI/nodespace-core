@@ -73,7 +73,7 @@ parameters_schema:
       "type": "integer"
     },
     "node_type": {
-      "description": "Filter by node type (e.g. 'task', 'text', or a custom schema ID). For a custom schema ID, copy the id exactly from the EXISTING SCHEMAS block — character for character, including underscores — never shorten, singularize, paraphrase, or guess it from the user's wording. Omit to search all types.",
+      "description": "Filter by node type (e.g. 'task', 'text', or a custom schema ID). For a custom schema ID, copy the id exactly from the EXISTING SCHEMAS block — character for character, including hyphens — never shorten, singularize, paraphrase, or guess it from the user's wording. Omit to search all types.",
       "type": "string"
     },
     "query": {
@@ -257,7 +257,7 @@ parameters_schema:
       "type": "object"
     },
     "node_type": {
-      "description": "Node type: 'text', 'task', or a custom schema ID (e.g. 'ticket', 'adr'). For a custom schema ID, copy the id exactly from the EXISTING SCHEMAS block — character for character, including underscores — never shorten, singularize, paraphrase, or guess it from the user's wording. If the type is not listed there, it does not exist yet — do not invent an id for it.",
+      "description": "Node type: 'text', 'task', or a custom schema ID (e.g. 'ticket', 'adr'). For a custom schema ID, copy the id exactly from the EXISTING SCHEMAS block — character for character, including hyphens — never shorten, singularize, paraphrase, or guess it from the user's wording. If the type is not listed there, it does not exist yet — do not invent an id for it.",
       "type": "string"
     },
     "parent_id": {
