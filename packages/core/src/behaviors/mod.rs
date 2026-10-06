@@ -2707,8 +2707,8 @@ impl NodeBehaviorRegistry {
 
 /// Why a behaviour could not be registered.
 ///
-/// `non_exhaustive`: another build registers behaviours through the
-/// extension API, so a new refusal is a minor change to it.
+/// `non_exhaustive`: another build registers behaviours and matches on these
+/// refusals, and must keep compiling when a new one is added.
 #[derive(Error, Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BehaviorRegistrationError {

@@ -183,8 +183,8 @@ impl std::fmt::Debug for DataExtensions {
 
 /// Why a [`DataExtensions`] was refused.
 ///
-/// `non_exhaustive`: a new hook adds the ways it can be refused, which is a
-/// minor change to the extension API.
+/// `non_exhaustive`: a new hook adds the ways it can be refused, and a build
+/// that matches on these must keep compiling when one is added.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum DataExtensionsError {

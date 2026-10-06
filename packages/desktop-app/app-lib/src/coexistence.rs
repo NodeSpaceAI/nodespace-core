@@ -66,14 +66,14 @@ pub async fn get_other_daemon() -> Option<String> {
     other_daemon()
 }
 
-/// The notice's Retry, once the user has stopped the other daemon: starts this
-/// app's daemon again, then emits and returns the resulting status, the same
-/// strings `check_daemon_status` reports.
+/// Retry, from this notice once the user has stopped the other daemon, and
+/// from the not-running banner: starts this app's daemon again, then emits
+/// and returns the resulting status, the same strings `check_daemon_status`
+/// reports. A start that finds this app's daemon answering also ends the
+/// startup hold on the app's channel, even one past its limit.
 #[tauri::command]
 pub async fn retry_daemon_start(app: AppHandle) -> String {
-    crate::daemon_setup::start_daemon_and_report(&app)
-        .await
-        .to_string()
+    crate::daemon_setup::start_daemon_and_report(&app).await
 }
 
 /// Whether the machine-wide registration under this app's service label runs

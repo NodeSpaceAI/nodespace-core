@@ -50,7 +50,7 @@
     DATA_PLANE_READY_EVENT,
     daemonStatus,
     startDaemonStatusListener,
-    refreshDaemonStatus
+    retryDaemonStart
   } from '$lib/services/daemon-status';
   import { databaseStore } from '$lib/stores/database.svelte';
 
@@ -67,6 +67,22 @@
   const daemonUnreachable = $derived($daemonStatus.unreachable);
   const daemonIncompatibleDatabase = $derived($daemonStatus.incompatibleDatabase);
   const daemonOtherDaemon = $derived($daemonStatus.otherDaemon);
+
+  // The not-running banner's Retry starts the daemon again rather than only
+  // re-reading its status: a start is what brings a stopped daemon back, and
+  // what lets the app's held calls through once its own daemon answers.
+  let daemonRetrying = $state(false);
+
+  async function retryDaemon() {
+    daemonRetrying = true;
+    try {
+      await retryDaemonStart();
+    } catch (err) {
+      log.error('Failed to start the background service again', err);
+    } finally {
+      daemonRetrying = false;
+    }
+  }
 
   // The refusal of the active database, while the daemon refuses to open it
   // because it requires an extension this build does not support (ADR-083 §2).
@@ -680,7 +696,9 @@
           <span>
             NodeSpace background service is not running. Some features may be unavailable.
           </span>
-          <button onclick={() => refreshDaemonStatus()}> Retry </button>
+          <button disabled={daemonRetrying} onclick={retryDaemon}>
+            {daemonRetrying ? 'Retrying…' : 'Retry'}
+          </button>
         </div>
       {:else if daemonConnecting}
         <div class="daemon-connecting-banner" role="status">
@@ -785,8 +803,13 @@
     font-size: 0.8rem;
   }
 
-  .daemon-error-banner button:hover {
+  .daemon-error-banner button:hover:not(:disabled) {
     background: hsl(var(--destructive) / 0.2);
+  }
+
+  .daemon-error-banner button:disabled {
+    cursor: default;
+    opacity: 0.6;
   }
 
   .daemon-connecting-banner {

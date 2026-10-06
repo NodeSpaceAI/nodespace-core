@@ -89,9 +89,10 @@ fn remove_marker(marker: &Path) -> Result<()> {
 }
 
 /// Remove a marker left by an earlier refusal before starting the daemon, so
-/// the next [`crate::daemon_setup::wait_for_daemon_or_refusal`] only stops
-/// early for a refusal *this* start produced. The daemon rewrites it if the
-/// database is still incompatible.
+/// the next start attempt's wait for the daemon
+/// ([`crate::daemon_setup::answering_daemon`]) only stops early for a refusal
+/// *this* start produced. The daemon rewrites it if the database is still
+/// incompatible.
 pub fn clear_stale_marker() {
     if let Some(marker) = marker_path() {
         if let Err(e) = remove_marker(&marker) {
@@ -283,7 +284,7 @@ async fn reset(app: &AppHandle) -> Result<ResetIncompatibleDatabaseResult> {
 
     Ok(ResetIncompatibleDatabaseResult {
         backup_path: backup.map(|b| b.display().to_string()),
-        status: status.to_string(),
+        status,
     })
 }
 

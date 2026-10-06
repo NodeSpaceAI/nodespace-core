@@ -41,23 +41,31 @@
 //! [`run_periodic_checks`] for the timer loop itself.
 //!
 //! On subsequent launches:
-//!   - Check if the socket exists and the daemon responds (cheap path).
-//!   - If it responds, ask it which executable it runs and compare that with
-//!     the active [`DaemonProfile`]'s binary (see [`product_check`]). A daemon
-//!     running another binary is evicted: the app boots out its own service
-//!     registration, waits for the socket to clear, and registers its own daemon
-//!     below. A report that cannot be had changes nothing. Windows has no such
-//!     check.
-//!   - Once its own daemon is registered and the socket answers, ask again. A
-//!     daemon outside the shared registration (a Homebrew service, one started
-//!     by hand) survives the boot-out and keeps the socket, while the app's own
-//!     daemon exits on the single-instance lock; the app then reports the other
-//!     daemon through [`crate::coexistence`], so the frontend shows a notice
-//!     naming it. Only the reported status changes: the app's client still
-//!     dials the same socket, so its requests reach that daemon meanwhile.
+//!   - First, if a daemon responds on the socket, ask it which executable it
+//!     runs and compare that with the active [`DaemonProfile`]'s binary (see
+//!     [`product_check`]). A daemon running another binary is evicted: the app
+//!     boots out its own service registration, waits for the socket to clear,
+//!     and registers its own daemon below. A report that cannot be had changes
+//!     nothing. Windows has no such eviction.
 //!   - If already healthy: no-op.
 //!   - If service is registered but daemon crashed: restart it.
 //!   - If service is missing (e.g. clean install): re-run first-launch setup.
+//!   - Last, whichever of those happened and on every platform, wait for a
+//!     daemon to answer on the socket the app dials and ask it the same
+//!     question ([`answering_daemon`]).
+//!     A daemon outside the shared registration (a Homebrew service, one
+//!     started by hand) survives the boot-out and keeps the socket, while the
+//!     app's own daemon exits on the single-instance lock; the app then reports
+//!     the other daemon through [`crate::coexistence`], so the frontend shows a
+//!     notice naming it.
+//!
+//! The app's shared gRPC channel is held from the moment the app builds its
+//! client, and that last answer is what ends the hold ([`start_attempt`]): it
+//! ends when the daemon answering is this app's, or when nothing answers at
+//! all. For another daemon, or one that does not say which it is, the hold
+//! stays on and the calls on that channel keep waiting, so they reach neither.
+//! The hold covers that one channel only: the CLI, the skill and agent sessions
+//! dial the socket themselves.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -65,6 +73,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use nodespace_proto::nodespace::GetDaemonVersionRequest;
+use nodespace_proto::{with_message_limits, NodeServiceClient};
 use tauri::AppHandle;
 use tokio::time::timeout;
 #[cfg(any(windows, test))]
@@ -551,23 +560,36 @@ pub fn product_check(reported: Option<&str>, profile: &DaemonProfile) -> Product
 /// How long [`running_daemon_executable`] waits for the daemon to answer.
 const PRODUCT_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Asks the running daemon, over `client`, for the path of its own executable.
+/// Asks the daemon on `socket` (a pipe name on Windows) for the path of its own
+/// executable.
+///
+/// It dials a connection of its own rather than riding the app's shared
+/// channel: that channel is held until the daemon answering has passed this
+/// check, so a check on it would wait for itself.
 ///
 /// `None` when the call fails or does not finish within
-/// [`PRODUCT_CHECK_TIMEOUT`]; either way the answer is unknown, and the caller
-/// carries on as if it had not asked. A daemon built before the report existed
-/// answers with an empty string, which is `Some("")` here and not `None`.
-pub async fn running_daemon_executable(client: &GrpcClient) -> Option<String> {
-    let mut node = client.client().await;
-    let call = node.get_daemon_version(Request::new(GetDaemonVersionRequest {}));
-    match timeout(PRODUCT_CHECK_TIMEOUT, call).await {
+/// [`PRODUCT_CHECK_TIMEOUT`]; either way the answer is unknown. A daemon built
+/// before the report existed answers with an empty string, which is `Some("")`
+/// here and not `None`. A failure is logged at debug only, since
+/// [`answering_daemon`] asks again on every poll; the callers say what they
+/// make of no answer.
+pub async fn running_daemon_executable(socket: &Path) -> Option<String> {
+    let ask = async {
+        let channel = crate::services::grpc_client::dial_once(socket)
+            .await
+            .map_err(|error| tonic::Status::unavailable(error.to_string()))?;
+        with_message_limits!(NodeServiceClient::new(channel))
+            .get_daemon_version(Request::new(GetDaemonVersionRequest {}))
+            .await
+    };
+    match timeout(PRODUCT_CHECK_TIMEOUT, ask).await {
         Ok(Ok(response)) => Some(response.into_inner().executable_path),
         Ok(Err(status)) => {
-            tracing::warn!(%status, "could not read the running daemon's executable");
+            tracing::debug!(%status, "could not read the running daemon's executable");
             None
         }
         Err(_) => {
-            tracing::warn!(
+            tracing::debug!(
                 timeout = ?PRODUCT_CHECK_TIMEOUT,
                 "timed out reading the running daemon's executable"
             );
@@ -672,78 +694,202 @@ async fn evict_if_other_product(
     }
 }
 
-/// The startup step: if a daemon answers on `socket_path`, asks it which
-/// executable it runs and evicts it when that is not the active profile's
-/// daemon. Returns true when it did.
+/// The first step of a start: if a daemon answers on `socket_path`, asks it
+/// which executable it runs and evicts it when that is not `profile`'s daemon.
+/// Returns true when it did.
 ///
-/// The question goes through the app's managed gRPC client, which dials the
-/// socket `NODESPACED_SOCKET` names when it is set. A daemon there is not the
-/// one this app registers on `socket_path`, so its answer says nothing about
-/// that registration and the check is skipped.
+/// This step only evicts. It never ends the startup hold on the app's channel,
+/// whatever the daemon answers: [`start_attempt`] asks again once the start has
+/// done what it can, and that answer decides.
 ///
-/// The client's channel may still hold a connection to an evicted daemon; it
-/// dials again on its next call, as it does after any other daemon restart.
+/// `dialed` is the socket the app's client dials, which `NODESPACED_SOCKET`
+/// can point elsewhere. A daemon there is not the one this app registers on
+/// `socket_path`, and the one on `socket_path` is not the one the app would
+/// call, so nothing is asked and nothing is evicted.
+///
+/// `boot_out` is a parameter so a test can stand in for the service manager.
 #[cfg(unix)]
-async fn evict_other_product_daemon(app: &AppHandle, socket_path: &Path) -> bool {
-    use tauri::Manager;
-
-    let dialed = crate::services::grpc_client::resolve_socket_path();
+pub(crate) async fn evict_other_product_daemon(
+    socket_path: &Path,
+    dialed: &Path,
+    profile: &DaemonProfile,
+    boot_out: impl FnOnce() + Send + 'static,
+) -> bool {
     if dialed != socket_path {
         tracing::info!(
             dialed = %dialed.display(),
             registered = %socket_path.display(),
-            "the app dials another daemon socket; skipping the check of which daemon is running"
+            "the app dials another daemon socket; skipping the eviction check"
         );
         return false;
     }
     if check_daemon_socket(socket_path).await != DaemonStatus::Healthy {
         return false;
     }
-    let reported = match app.try_state::<GrpcClient>() {
-        Some(client) => running_daemon_executable(&client).await,
-        None => None,
-    };
+    let reported = running_daemon_executable(socket_path).await;
     evict_if_other_product(
         socket_path,
         reported.as_deref(),
-        daemon_profile::active(),
+        profile,
         EVICTION_EXIT_GRACE,
-        boot_out_service_registration,
+        boot_out,
     )
     .await
 }
 
-/// The daemon holding `socket_path` once this app's own daemon is registered,
-/// when it is not the active profile's: its reported executable, empty if it
-/// named none.
-///
-/// Such a daemon is outside the shared service registration (a Homebrew
-/// service, or one started by hand). It survived the boot-out, and the daemon
-/// this app registered exits on the single-instance lock (ADR-084 §4.3).
-///
-/// `None` when the daemon is this app's, could not be asked, or the app dials
-/// another socket (`NODESPACED_SOCKET`), whose daemon says nothing about this
-/// registration.
-#[cfg(unix)]
-async fn other_daemon_on_socket(app: &AppHandle, socket_path: &Path) -> Option<String> {
-    use tauri::Manager;
-
-    if crate::services::grpc_client::resolve_socket_path() != socket_path {
-        return None;
-    }
-    let client = app.try_state::<GrpcClient>()?;
-    other_daemon_in(
-        running_daemon_executable(&client).await,
-        daemon_profile::active(),
-    )
+/// Who answers on the socket the app's client dials, once a start attempt has
+/// done what it can.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Answering {
+    /// A daemon running the active profile's binary.
+    ThisApp,
+    /// A daemon running another binary: its reported executable, empty if it
+    /// named none. Such a daemon is outside the shared service registration (a
+    /// Homebrew service, or one started by hand): it survived the boot-out, and
+    /// the daemon this app registered exits on the single-instance lock
+    /// (ADR-084 §4.3).
+    Other(String),
+    /// Something holds the socket and never said which daemon it is: it did
+    /// not accept in time, or did not answer the question.
+    Unchecked,
+    /// Nothing holds the socket.
+    Nobody,
 }
 
-/// `reported` when it names another executable than `profile`'s daemon.
-#[cfg(any(unix, test))]
-fn other_daemon_in(reported: Option<String>, profile: &DaemonProfile) -> Option<String> {
-    match product_check(reported.as_deref(), profile) {
-        ProductCheck::Mismatch => reported,
-        ProductCheck::Match | ProductCheck::Unknown => None,
+/// How long a start attempt waits for a daemon to answer on the socket and say
+/// which it is.
+///
+/// The daemon loads the embedding model before binding the socket (~9s on an
+/// M2 Mac); 30s covers a cold-start model load on slower machines.
+const DAEMON_START_WAIT: Duration = Duration::from_secs(30);
+
+/// How often [`answering_daemon`] looks at the socket again.
+const ANSWER_POLL: Duration = Duration::from_millis(250);
+
+/// Waits up to `max_wait` for a daemon to answer on `dialed` (a pipe name on
+/// Windows) and say which executable it runs, and reports who answers.
+///
+/// A daemon that accepts but does not answer the question is asked again on
+/// every poll until the wait is over: no answer is not a pass. The wait also
+/// ends as soon as `refused()` reports that the daemon stopped on purpose (it
+/// refused an incompatible database and exited), since it will never answer.
+/// When the wait ends with nobody identified, the last look at the socket
+/// decides between [`Answering::Nobody`] and [`Answering::Unchecked`].
+pub(crate) async fn answering_daemon(
+    dialed: &Path,
+    profile: &DaemonProfile,
+    max_wait: Duration,
+    refused: impl Fn() -> bool,
+) -> Answering {
+    let deadline = tokio::time::Instant::now() + max_wait;
+    loop {
+        let status = check_daemon_socket(dialed).await;
+        if status == DaemonStatus::Healthy {
+            let reported = running_daemon_executable(dialed).await;
+            match product_check(reported.as_deref(), profile) {
+                ProductCheck::Match => return Answering::ThisApp,
+                ProductCheck::Mismatch => return Answering::Other(reported.unwrap_or_default()),
+                ProductCheck::Unknown => {}
+            }
+        }
+        let refused = refused();
+        if refused {
+            tracing::warn!(
+                "nodespaced refused its database: it was created by a different version \
+                 of NodeSpace"
+            );
+        }
+        if refused || tokio::time::Instant::now() >= deadline {
+            return if status == DaemonStatus::NotRunning {
+                Answering::Nobody
+            } else {
+                Answering::Unchecked
+            };
+        }
+        tokio::time::sleep(ANSWER_POLL).await;
+    }
+}
+
+/// What a start attempt that ended with `answering` on the socket amounts to:
+/// the daemon's status, with the executable of another daemon holding the
+/// socket, if one does.
+///
+/// An answer on the socket is not enough to call the daemon healthy: only this
+/// app's own daemon is. Another daemon there means this app's is not the one
+/// running, and [`crate::coexistence`] reports it by the executable returned
+/// here.
+fn start_outcome(answering: Answering) -> (DaemonStatus, Option<String>) {
+    match answering {
+        Answering::ThisApp => (DaemonStatus::Healthy, None),
+        Answering::Other(executable) => (DaemonStatus::NotRunning, Some(executable)),
+        Answering::Unchecked => (DaemonStatus::Starting, None),
+        Answering::Nobody => (DaemonStatus::NotRunning, None),
+    }
+}
+
+/// Runs `bring_up`, the launcher's steps, then finds out who answers on
+/// `dialed`, the socket the app's client dials ([`answering_daemon`]), and
+/// ends the startup hold on `client` when the answer allows it. Returns the
+/// resulting status, with the executable of another daemon holding the socket.
+///
+/// The hold ends on exactly two answers: the daemon answering is `profile`'s,
+/// or nothing answers at all (the calls then fail as they do whenever the
+/// daemon is down). For another daemon, or one that never said which it is,
+/// the hold stays on: calls on the channel keep waiting, and fail once the
+/// hold's limit has passed. The next attempt asks again, and Retry runs one
+/// ([`crate::coexistence::retry_daemon_start`]), so a hold left on, even past
+/// its limit, ends as soon as an attempt finds this app's daemon answering.
+///
+/// The hold does not end because `bring_up` returned. Whatever path it took,
+/// and whether or not it asked a daemon on the way, the daemon answering
+/// afterwards is the one the app's calls would reach, so that is the one
+/// asked. A `bring_up` that failed waits for nothing: whoever answers then is
+/// asked once.
+///
+/// This covers the calls on `client`'s channel and nothing else on the
+/// machine. `client` is `None` when the app manages no client; `wait`,
+/// `refused` and `bring_up` are parameters so a test can stand in for the
+/// launcher.
+pub(crate) async fn start_attempt(
+    client: Option<&GrpcClient>,
+    dialed: &Path,
+    profile: &DaemonProfile,
+    wait: Duration,
+    refused: impl Fn() -> bool,
+    bring_up: impl std::future::Future<Output = Result<()>>,
+) -> Result<(DaemonStatus, Option<String>)> {
+    let brought_up = bring_up.await;
+    let wait = if brought_up.is_ok() {
+        wait
+    } else {
+        Duration::ZERO
+    };
+    let answering = answering_daemon(dialed, profile, wait, refused).await;
+    match &answering {
+        Answering::ThisApp | Answering::Nobody => {
+            if let Some(client) = client {
+                client.release_startup_hold();
+            }
+        }
+        Answering::Other(executable) => tracing::warn!(
+            executable,
+            expected = profile.binary_name,
+            "another daemon, outside this app's service registration, holds the socket"
+        ),
+        Answering::Unchecked => tracing::warn!(
+            "the daemon on the socket did not say which daemon it is; the next start attempt \
+             asks it again"
+        ),
+    }
+    match brought_up {
+        Ok(()) => Ok(start_outcome(answering)),
+        // Another daemon holding the socket explains the failure better than
+        // the failure does, and is what the user can act on.
+        Err(error) if matches!(answering, Answering::Other(_)) => {
+            tracing::error!("Daemon start failed: {:#}", error);
+            Ok(start_outcome(answering))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -753,11 +899,28 @@ fn other_daemon_in(reported: Option<String>, profile: &DaemonProfile) -> Option<
 /// error state. Callers that report the outcome to the frontend, the app's
 /// startup among them, use [`start_daemon_and_report`].
 ///
+/// This is the only way the app starts its daemon, and it ends the startup hold
+/// on the app's gRPC channel itself ([`start_attempt`]), so no caller can start
+/// the daemon and leave the hold behind.
+///
 /// Returns `NotRunning` as well when another daemon, outside this app's service
 /// registration, holds the socket: this app's daemon is then not the one
 /// running, and [`crate::coexistence::other_daemon`] names the other one.
+/// Returns `Starting` when something holds the socket and did not say which
+/// daemon it is.
 pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
-    record_outcome(bring_up_daemon(app)).await
+    use tauri::Manager;
+
+    let client = app.try_state::<GrpcClient>();
+    record_outcome(start_attempt(
+        client.as_deref(),
+        &crate::services::grpc_client::resolve_socket_path(),
+        daemon_profile::active(),
+        DAEMON_START_WAIT,
+        crate::incompatible_database::refusal_recorded,
+        bring_up_daemon(app),
+    ))
+    .await
 }
 
 /// Awaits `bring_up`, then replaces the record of another daemon holding the
@@ -776,9 +939,11 @@ pub(crate) async fn record_outcome(
     outcome.map(|(status, _)| status)
 }
 
-/// The body of [`ensure_daemon_running`]: the resulting status, with the
-/// executable of another daemon found holding the socket, if any.
-async fn bring_up_daemon(app: &AppHandle) -> Result<(DaemonStatus, Option<String>)> {
+/// The launcher's steps of [`ensure_daemon_running`]: evicts another product's
+/// daemon, installs the sidecars, and registers and starts this app's daemon
+/// unless a healthy one is already running. It does not wait for the daemon it
+/// starts; [`start_attempt`] does, and asks whichever daemon answers.
+async fn bring_up_daemon(app: &AppHandle) -> Result<()> {
     let home = home_dir().context("Cannot resolve home directory")?;
     let bin_dir = home.join(DAEMON_BIN_DIR);
     let log_dir = home.join(DAEMON_LOG_DIR);
@@ -791,6 +956,20 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<(DaemonStatus, Option<String
     #[cfg(windows)]
     let socket_path = PathBuf::from(crate::services::grpc_client::resolve_pipe_name());
     let daemon_bin = sidecar_install_path(&bin_dir, daemon_binary_name());
+
+    // A daemon that answers but runs another binary is not ours to use, however
+    // healthy it looks, so it is evicted before anything below can return early
+    // on it. Windows has no second binary to tell apart here.
+    #[cfg(unix)]
+    let evicted = evict_other_product_daemon(
+        &socket_path,
+        &crate::services::grpc_client::resolve_socket_path(),
+        daemon_profile::active(),
+        boot_out_service_registration,
+    )
+    .await;
+    #[cfg(not(unix))]
+    let evicted = false;
 
     // Ensure all directories exist before any binary checks.
     tokio::fs::create_dir_all(&bin_dir)
@@ -809,13 +988,6 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<(DaemonStatus, Option<String
     let binary_updated = extract_sidecar_if_changed(app, daemon_binary_name(), &bin_dir).await?;
     extract_sidecar_if_changed(app, CLI_BINARY_NAME, &bin_dir).await?;
 
-    // A daemon that answers but runs another binary is not ours to use, however
-    // healthy it looks. Windows has no second binary to tell apart.
-    #[cfg(unix)]
-    let evicted = evict_other_product_daemon(app, &socket_path).await;
-    #[cfg(not(unix))]
-    let evicted = false;
-
     if evicted {
         // Its registration is gone and the socket has been given time to clear:
         // there is nothing left to kill, and no healthy daemon to return early
@@ -828,7 +1000,7 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<(DaemonStatus, Option<String
         let status = check_daemon_socket(&socket_path).await;
         if status == DaemonStatus::Healthy {
             tracing::info!("nodespaced is already running and healthy");
-            return Ok((DaemonStatus::Healthy, None));
+            return Ok(());
         }
         if should_retry_before_spawn(&status) {
             // Give a busy-but-likely-healthy daemon a short window to answer
@@ -837,7 +1009,7 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<(DaemonStatus, Option<String
             let retried = wait_for_daemon(&socket_path, Duration::from_secs(5)).await;
             if retried == DaemonStatus::Healthy {
                 tracing::info!("nodespaced was starting/busy, now healthy");
-                return Ok((DaemonStatus::Healthy, None));
+                return Ok(());
             }
             tracing::warn!(
                 ?retried,
@@ -917,71 +1089,29 @@ async fn bring_up_daemon(app: &AppHandle) -> Result<(DaemonStatus, Option<String
         register_autorun_windows(&daemon_bin);
     }
 
-    // The daemon loads the embedding model before binding the socket (~9s on an M2 Mac).
-    // 30s covers cold-start model load on slower machines.
-    let status = wait_for_daemon_or_refusal(
-        &socket_path,
-        Duration::from_secs(30),
-        crate::incompatible_database::refusal_recorded,
-    )
-    .await;
-
-    #[cfg(unix)]
-    let outcome = start_outcome(status, other_daemon_on_socket(app, &socket_path)).await;
-    #[cfg(not(unix))]
-    let outcome = (status, None);
-    Ok(outcome)
-}
-
-/// What a start whose wait for the socket ended in `status` amounts to: that
-/// status, or `NotRunning` with the other daemon's executable when
-/// `other_daemon` finds one holding the socket.
-///
-/// An answer on the socket is not enough: a daemon outside this app's
-/// registration survives the boot-out and keeps the socket, and the daemon
-/// just registered exits on the single-instance lock. So a healthy socket is
-/// asked whose it is; one that does not answer is not asked.
-///
-/// `other_daemon` is a parameter so a test can stand in for the daemon.
-#[cfg(any(unix, test))]
-async fn start_outcome(
-    status: DaemonStatus,
-    other_daemon: impl std::future::Future<Output = Option<String>>,
-) -> (DaemonStatus, Option<String>) {
-    if status != DaemonStatus::Healthy {
-        return (status, None);
-    }
-    match other_daemon.await {
-        Some(executable) => {
-            tracing::warn!(
-                executable,
-                "another daemon, outside this app's service registration, holds the socket"
-            );
-            (DaemonStatus::NotRunning, Some(executable))
-        }
-        None => (status, None),
-    }
+    Ok(())
 }
 
 /// Starts the daemon as [`ensure_daemon_running`] does, then emits the result
-/// to the frontend as `daemon-status` and returns it: `healthy`, or why the
-/// daemon is down ([`crate::incompatible_database::daemon_down_status`]).
-pub async fn start_daemon_and_report(app: &AppHandle) -> &'static str {
+/// to the frontend as `daemon-status` and returns it: `healthy`, or what a
+/// status check reports then ([`crate::daemon_status`]), so the two never
+/// disagree about a start that left the startup hold on.
+pub async fn start_daemon_and_report(app: &AppHandle) -> String {
     let status = match ensure_daemon_running(app).await {
         Ok(DaemonStatus::Healthy) => {
             tracing::info!("nodespaced is running");
-            "healthy"
+            "healthy".to_string()
         }
         Ok(status) => {
             tracing::warn!(?status, "nodespaced is not healthy");
-            crate::incompatible_database::daemon_down_status()
+            crate::daemon_status(app).await
         }
         Err(e) => {
             tracing::error!("Daemon start failed: {:#}", e);
-            crate::incompatible_database::daemon_down_status()
+            crate::daemon_status(app).await
         }
     };
-    window_routing::emit_routed(app, "daemon-status", status, None);
+    window_routing::emit_routed(app, "daemon-status", status.as_str(), None);
     status
 }
 
@@ -1118,7 +1248,9 @@ pub async fn check_daemon_socket(socket_path: &Path) -> DaemonStatus {
         // ERROR_PIPE_BUSY (231): daemon is running but all instances are busy with
         // existing clients. The daemon is healthy — treat as Starting so the caller
         // retries rather than spawning a second instance.
-        Ok(Err(e)) if e.raw_os_error() == Some(231) => DaemonStatus::Starting,
+        Ok(Err(e)) if e.raw_os_error() == Some(crate::services::grpc_client::ERROR_PIPE_BUSY) => {
+            DaemonStatus::Starting
+        }
         Ok(Err(_)) => DaemonStatus::NotRunning,
         Err(_) => DaemonStatus::Starting,
     }
@@ -1129,31 +1261,12 @@ pub async fn check_daemon_socket(socket_path: &Path) -> DaemonStatus {
 /// `pub` (not `pub(crate)`) so the readiness integration test — which lives
 /// in `tests/`, a separate crate — can drive it against a real daemon.
 pub async fn wait_for_daemon(socket_path: &Path, max_wait: Duration) -> DaemonStatus {
-    wait_for_daemon_or_refusal(socket_path, max_wait, || false).await
-}
-
-/// [`wait_for_daemon`], but also stop as soon as `refused()` reports that the
-/// daemon has stopped on purpose — it refused an incompatible database and
-/// exited, so it will never become healthy and the full wait would only delay
-/// telling the user why.
-pub async fn wait_for_daemon_or_refusal(
-    socket_path: &Path,
-    max_wait: Duration,
-    refused: impl Fn() -> bool,
-) -> DaemonStatus {
     let deadline = tokio::time::Instant::now() + max_wait;
     loop {
         let status = check_daemon_socket(socket_path).await;
         if status == DaemonStatus::Healthy {
             tracing::info!("nodespaced is up and healthy");
             return DaemonStatus::Healthy;
-        }
-        if refused() {
-            tracing::warn!(
-                "nodespaced refused its database: it was created by a different version \
-                 of NodeSpace"
-            );
-            return status;
         }
         if tokio::time::Instant::now() >= deadline {
             tracing::warn!("nodespaced did not respond within {:?}", max_wait);
@@ -3862,44 +3975,6 @@ mod log_rotation_watcher_tests {
     }
 }
 
-#[cfg(all(test, unix))]
-mod wait_for_daemon_or_refusal_tests {
-    use super::{wait_for_daemon_or_refusal, DaemonStatus};
-    use std::time::{Duration, Instant};
-
-    /// A daemon that recorded a refusal has stopped on purpose; the wait must
-    /// end at once rather than run out its full timeout before the user is
-    /// told why.
-    #[tokio::test]
-    async fn stops_waiting_as_soon_as_a_refusal_is_recorded() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("absent.sock");
-        let started = Instant::now();
-
-        let status = wait_for_daemon_or_refusal(&socket, Duration::from_secs(30), || true).await;
-
-        assert_eq!(status, DaemonStatus::NotRunning);
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "a recorded refusal must end the wait immediately, took {:?}",
-            started.elapsed()
-        );
-    }
-
-    #[tokio::test]
-    async fn without_a_refusal_it_waits_out_the_timeout() {
-        let dir = tempfile::tempdir().unwrap();
-        let socket = dir.path().join("absent.sock");
-        let started = Instant::now();
-
-        let status =
-            wait_for_daemon_or_refusal(&socket, Duration::from_millis(600), || false).await;
-
-        assert_eq!(status, DaemonStatus::NotRunning);
-        assert!(started.elapsed() >= Duration::from_millis(600));
-    }
-}
-
 /// The app deletes a daemon's socket file only once nothing answers on it. A
 /// daemon it did not start (a Homebrew service, one started by hand) may still
 /// be serving that file, and every daemon holds a single-instance lock beside
@@ -3991,73 +4066,42 @@ mod stale_socket_removal_tests {
 
 #[cfg(test)]
 mod product_check_tests {
-    use super::{other_daemon_in, product_check, start_outcome, DaemonStatus, ProductCheck};
+    use super::{product_check, start_outcome, Answering, DaemonStatus, ProductCheck};
     use crate::daemon_profile::DaemonProfile;
 
     fn community() -> DaemonProfile {
         DaemonProfile::community()
     }
 
-    /// A healthy socket held by another daemon is not this app's daemon
-    /// running: the start ends `NotRunning` and names that daemon.
-    #[tokio::test]
-    async fn a_start_that_finds_another_daemon_on_a_healthy_socket_is_not_running() {
+    /// Only this app's own daemon answering makes a start healthy. Another
+    /// daemon there ends it `NotRunning` and names that daemon, even one that
+    /// named no executable; one that never said which it is leaves it
+    /// `Starting`, and names nobody.
+    #[test]
+    fn a_start_is_healthy_only_when_this_apps_daemon_answers() {
         assert_eq!(
-            start_outcome(DaemonStatus::Healthy, async {
-                Some("/opt/bin/custom-daemon".to_owned())
-            })
-            .await,
+            start_outcome(Answering::ThisApp),
+            (DaemonStatus::Healthy, None)
+        );
+        assert_eq!(
+            start_outcome(Answering::Other("/opt/bin/custom-daemon".to_owned())),
             (
                 DaemonStatus::NotRunning,
                 Some("/opt/bin/custom-daemon".to_owned())
             )
         );
         assert_eq!(
-            start_outcome(DaemonStatus::Healthy, async { None }).await,
-            (DaemonStatus::Healthy, None)
-        );
-    }
-
-    /// A socket that does not answer has no daemon to ask, so the start keeps
-    /// its own status and the question is never put.
-    #[tokio::test]
-    async fn a_start_whose_socket_does_not_answer_asks_no_daemon() {
-        for status in [DaemonStatus::NotRunning, DaemonStatus::Starting] {
-            let mut asked = false;
-            let outcome = start_outcome(status.clone(), async {
-                asked = true;
-                Some("/opt/bin/custom-daemon".to_owned())
-            })
-            .await;
-            assert_eq!(outcome, (status, None));
-            assert!(!asked);
-        }
-    }
-
-    /// What the start reports as the other daemon holding the socket: only a
-    /// daemon that answered with another executable, or with none.
-    #[test]
-    fn only_another_reported_executable_is_an_other_daemon() {
-        assert_eq!(
-            other_daemon_in(
-                Some("/Users/me/.nodespace/bin/nodespaced".to_owned()),
-                &community()
-            ),
-            None
-        );
-        assert_eq!(
-            other_daemon_in(Some("/opt/bin/custom-daemon".to_owned()), &community()),
-            Some("/opt/bin/custom-daemon".to_owned())
-        );
-        assert_eq!(
-            other_daemon_in(Some(String::new()), &community()),
-            Some(String::new()),
+            start_outcome(Answering::Other(String::new())),
+            (DaemonStatus::NotRunning, Some(String::new())),
             "a daemon that names no executable is not this app's"
         );
         assert_eq!(
-            other_daemon_in(None, &community()),
-            None,
-            "a daemon that could not be asked is left alone"
+            start_outcome(Answering::Unchecked),
+            (DaemonStatus::Starting, None)
+        );
+        assert_eq!(
+            start_outcome(Answering::Nobody),
+            (DaemonStatus::NotRunning, None)
         );
     }
 

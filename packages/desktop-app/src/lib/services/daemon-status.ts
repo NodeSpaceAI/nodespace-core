@@ -31,7 +31,7 @@
  * real path through this shared contract instead of bypassing it.
  */
 
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import { isTauri } from '@tauri-apps/api/core';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -312,10 +312,11 @@ export function stopDaemonStatusListener(): void {
 }
 
 /**
- * Re-pull the current daemon status through the shared contract. Used by the
- * manual "Retry" affordance so a recovered daemon is detected the same way
- * an automatic recovery would be — including firing `onDaemonReconnect`
- * listeners — instead of only clearing the banner locally.
+ * Re-pull the current daemon status through the shared contract, so a
+ * recovered daemon is detected the same way an automatic recovery would be —
+ * including firing `onDaemonReconnect` listeners. For a source with no push
+ * transport and no daemon to start; the app's own Retry starts the daemon
+ * again instead ({@link retryDaemonStart}).
  */
 export async function refreshDaemonStatus(): Promise<void> {
   if (!activeSource) return;
@@ -363,12 +364,19 @@ export async function getOtherDaemon(): Promise<string | null> {
 }
 
 /**
- * Start this app's daemon again, once the user has stopped the other daemon
- * that held the socket. Applies the resulting status through the shared
+ * Start this app's daemon again: the Retry of the not-running banner, and of
+ * the other-daemon notice once the user has stopped the daemon that held the
+ * socket. Applies the resulting status through the shared
  * contract, so a healthy start fires `onDaemonReconnect` listeners exactly as
- * any other recovery would, and returns it.
+ * any other recovery would, and returns it. A source with no Tauri behind it
+ * (the harness, the dev proxy) has no daemon to start, so it re-reads the
+ * status instead and returns the one now current.
  */
 export async function retryDaemonStart(): Promise<string> {
+  if (!isTauri()) {
+    await refreshDaemonStatus();
+    return get(daemonStatus).unreachable ? 'not_running' : 'healthy';
+  }
   restartInFlight = true;
   let status: string;
   try {
