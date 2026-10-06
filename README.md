@@ -71,7 +71,7 @@ Apple Silicon is the only supported macOS target. The cask installs a signed and
 
 ### Team synchronization
 
-For team synchronization, contact [developer@nodespace.ai](mailto:developer@nodespace.ai).
+Team synchronization is in active development. To try it, contact [developer@nodespace.ai](mailto:developer@nodespace.ai).
 
 ### Build from Source
 
