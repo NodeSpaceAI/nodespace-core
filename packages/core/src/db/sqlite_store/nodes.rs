@@ -4274,6 +4274,15 @@ impl SqliteStore {
     /// schemas through schema retrieval instead. A date's title is its ISO
     /// content, which tokenizes to bare numbers (`2026`, `09`, `23`), so any
     /// message carrying a number would otherwise resolve to date pages.
+    ///
+    /// Tool nodes are excluded for the reason schemas are. A tool's title is
+    /// its function name (`create_node`), which tokenizes to the verb and
+    /// noun of an ordinary request, and a tool is something the agent calls,
+    /// not a record the user names. In a workspace with nothing else to
+    /// match, "create a new task called …" resolved to the `create_node`,
+    /// `create_schema` and `create_relationship` tool nodes; the turn was
+    /// told their ids were the entities it mentioned, and it wrote the
+    /// task's title onto the `create_node` tool node with `update_node`.
     pub async fn resolve_entities_by_title(
         &self,
         message: &str,
@@ -4306,7 +4315,8 @@ impl SqliteStore {
                 "n.node_type",
                 &[
                     crate::models::CoreNodeType::Schema,
-                    crate::models::CoreNodeType::Date
+                    crate::models::CoreNodeType::Date,
+                    crate::models::CoreNodeType::Tool
                 ]
             ),
             limit

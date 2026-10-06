@@ -285,15 +285,18 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // severity and review date" leads with Graph Editing, 0.889 to
         // 0.868. Naming the details a new kind carries here ("…such as a
         // priority, an owner, or a date") lifted this skill on requests of
-        // every kind, as the longer opening did, and was not kept. What
-        // was measured is on
-        // `a_new_kind_of_record_with_named_details_leads_or_places_schema_creation`.
+        // every kind, as the longer opening did, and was not kept. No
+        // wording here pays that cost: routing reads the request's shape
+        // off the query and searches for this skill by its capability
+        // (`routing::is_new_kind_shaped`, `routing::retrieve_candidates`).
+        // What was measured is on
+        // `a_new_kind_of_record_with_named_details_leads_with_schema_creation`.
         // Guarded in `tests/it/live_skill_retrieval_stability.rs` by
         // `start_tracking_requests_route_schema_creation`,
         // `tracking_one_existing_record_still_reaches_a_record_skill`,
         // `updates_to_one_record_do_not_lead_with_schema_creation`,
         // `adds_to_an_existing_list_keep_a_skill_that_can_create` and
-        // `a_new_kind_of_record_with_named_details_leads_or_places_schema_creation`.
+        // `a_new_kind_of_record_with_named_details_leads_with_schema_creation`.
         //
         // The `not_for` names the two requests that share this skill's
         // nouns and define nothing: one more record of a kind that is
@@ -304,6 +307,15 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // of who made which architecture decision", a tracking request
         // worded as one record, which this skill led at 0.897 and now
         // ranks third on at 0.844.
+        //
+        // The quoted phrases that end the `use_for` ("…or says 'new
+        // type', 'node type', …, 'rename a field'") read as a list of
+        // trigger words, and they are measured. Without them "add a
+        // priority field to the ticket type" no longer leads with this
+        // skill, "add a priority field to my invoices" leaves it out of
+        // the candidates (Graph Editing 0.820, Organization 0.798, Node
+        // Creation 0.786), and "set up a board of tickets by status", a
+        // saved view, leads with it. They stay.
         //
         // Wording is measured here as it was for Graph Editing. "Add
         // another one of a kind that is already tracked." fixed the same
@@ -484,6 +496,14 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // `linking_requests_route_relationship_management`,
         // `add_shaped_requests_for_another_skill_keep_their_leader` and
         // `relationship_management_not_for_leaves_linking_scores_unchanged`.
+        //
+        // The last sentence of the `use_for` ("Show which records depend
+        // on or are linked to one.") is measured too. Without it this
+        // skill loses the lead on "record an edge between the rebuild
+        // task and the storage decision" to Graph Editing (0.890 against
+        // 0.895) and on "connect the retro notes to the sprint they
+        // belong to" to Node Merge (0.799 against 0.801), and leaves the
+        // candidates of "which tasks depend on the API migration?".
         use_for: "Link, connect or attach one record to another, or record an edge between two nodes: say that a task or note depends on, is blocked by, belongs to, must respect, or points at another record. Show which records depend on or are linked to one.",
         tools: &["create_relationship", "delete_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
         max_iterations: 3,

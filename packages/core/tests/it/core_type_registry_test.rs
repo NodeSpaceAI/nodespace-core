@@ -444,6 +444,94 @@ async fn a_namespaced_key_and_a_bookkeeping_key_are_accepted() {
     }
 }
 
+/// `undeclared_core_keys` says ahead of a write which flat keys the closed
+/// bucket will refuse. The two must agree key for key, in both directions: a
+/// key it lists that is accepted would be renamed by a caller for nothing,
+/// and one it misses is still refused.
+#[tokio::test]
+async fn undeclared_core_keys_lists_exactly_the_keys_a_write_refuses() {
+    let (svc, _tmp) = test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Gadget", "fields": [{ "name": "size", "type": "number" }] }),
+    )
+    .await
+    .expect("a user-defined type");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Chore",
+            "extends": "task",
+            "fields": [{ "name": "room", "type": "text" }]
+        }),
+    )
+    .await
+    .expect("a user subtype of a core type");
+
+    let object = json!({ "status": "open" });
+    let text = json!("x");
+    let cases = [
+        ("colour", &text),
+        ("task__status", &text),
+        ("status", &text),
+        ("priority", &text),
+        ("room", &text),
+        ("size", &text),
+        ("custom:colour", &text),
+        ("custom:", &text),
+        ("vendor:thing", &text),
+        ("_seed", &text),
+        // A bucket's own name addresses the bucket when it holds an object,
+        // and is one more undeclared key when it holds anything else.
+        ("task", &object),
+        ("task", &text),
+        // Derived from a checkbox's content, with a refusal of its own.
+        ("checked", &text),
+    ];
+    // `schema` among them: its definition is not bucketed, so the store
+    // refuses none of its keys this way.
+    for node_type in ["task", "text", "checkbox", "gadget", "chore", "schema"] {
+        for (key, value) in cases {
+            let properties = json!({ key: value });
+            let listed = svc
+                .undeclared_core_keys(node_type, properties.as_object().unwrap())
+                .await
+                .unwrap();
+            // Refused for this reason, by this message. A write refused for
+            // another (a value `status` does not take, a derived attribute)
+            // is not one the closed bucket turned away.
+            let refused = create(&svc, node_type, "One", properties.clone())
+                .await
+                .is_err_and(|e| e.to_string().contains("is not a field of the core type"));
+            assert_eq!(
+                listed.iter().any(|k| k == key),
+                refused,
+                "{key:?}: {value} on a {node_type}"
+            );
+        }
+    }
+    // A flat key beside the node's own bucket: the map is taken as bucketed
+    // already, so the key reaches no bucket and is not refused this way.
+    let beside = json!({ "task": { "status": "open" }, "colour": "red" });
+    let listed = svc
+        .undeclared_core_keys("task", beside.as_object().unwrap())
+        .await
+        .unwrap();
+    let refused = create(&svc, "task", "One", beside.clone())
+        .await
+        .is_err_and(|e| e.to_string().contains("is not a field of the core type"));
+    assert_eq!(!listed.is_empty(), refused, "a key beside the own bucket");
+
+    // A type that is not a core type refuses nothing, and neither does one
+    // that does not exist: that is the write's own error.
+    let colour = json!({ "colour": "red" });
+    assert!(svc
+        .undeclared_core_keys("no-such-type", colour.as_object().unwrap())
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 /// The rule is the core type's bucket's. A subtype's own bucket follows its
 /// own schema, and a user-defined type stays open.
 #[tokio::test]

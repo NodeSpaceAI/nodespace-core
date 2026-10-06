@@ -23,6 +23,8 @@
  *     route_multi (what route_multi's guard clauses defend against)
  *   - A request for a new kind of record ends with a type created, not only
  *     with `create_schema` called (`createsType`)
+ *   - A request for one new record ends with a record created, not only with
+ *     `create_node` called (`createsRecord`)
  *
  * Every scenario not expecting route_multi fails if Stage 1 routes multi, so a
  * regression that splits single intents cannot pass on downstream effects alone.
@@ -95,6 +97,13 @@ export interface RoutingScenario extends Scenario {
    * leaves nothing behind, and a turn that ended on one was scored as routed.
    */
   createsType?: boolean;
+  /**
+   * The request asks for one new record, so the turn must end with a record
+   * created. Calling `create_node` is not that, for the reason `createsType`
+   * gives: a turn whose every call was refused for a field the type does not
+   * declare was scored as routed, and left nothing behind.
+   */
+  createsRecord?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +133,7 @@ const FIXTURES: RoutingScenario[] = [
     scenario: "Direct: create instance (existing type)",
     prompt: "Create a new task called 'Review the sync protocol spec'",
     expected: { kind: "skill", skill: "Node Creation" },
+    createsRecord: true,
   },
 
   // ── Indirect phrasing → correct skill (LOAD-BEARING) ─────────────────────
@@ -174,6 +184,7 @@ const FIXTURES: RoutingScenario[] = [
     priorTurns: ["Create a database for tracking our feature specs"],
     prompt: "Add a spec for offline sync that's due for sign-off next Friday",
     expected: { kind: "skill", skill: "Node Creation" },
+    createsRecord: true,
     loadBearing: true,
     adversarial: true, // should NOT route to Schema Creation
   },
@@ -277,6 +288,7 @@ const FIXTURES: RoutingScenario[] = [
     prompt:
       "Add a task to rotate the staging API keys, and also pull up my notes on the auth redesign",
     expected: { kind: "multi" },
+    createsRecord: true,
   },
   {
     id: "multi-schema-and-search",
@@ -295,6 +307,7 @@ const FIXTURES: RoutingScenario[] = [
     prompt:
       "Create a task to move the notifications service onto the new queue tomorrow morning, make it high priority, and note on it that the old queue shuts down at noon on Friday",
     expected: { kind: "skill", skill: "Node Creation" },
+    createsRecord: true,
     singleIntentAtLength: true,
   },
   {
@@ -428,6 +441,10 @@ function calledSchemaCreate(turns: TurnRecord[]): boolean {
   return turns.some((t) => t.toolsCalled.includes("create_schema"));
 }
 
+function calledNodeCreate(turns: TurnRecord[]): boolean {
+  return turns.some((t) => t.toolsCalled.includes("create_node"));
+}
+
 /**
  * Whether the turns created a type: a `create_schema` call the tool did not
  * refuse. The tool reads the type back from the store before it reports
@@ -437,11 +454,26 @@ function calledSchemaCreate(turns: TurnRecord[]): boolean {
  * tool's name in `toolsCalled` is the call, not its result.
  */
 export function createdAType(turns: TurnRecord[]): boolean {
-  return turns.some(
-    (t) =>
-      t.toolCalls?.some((c) => c.name === "create_schema" && !c.isError) ??
-      false,
+  return acceptedInScoredTurn(turns, "create_schema");
+}
+
+/**
+ * Whether the scored turn (the last one) made a call to `tool` that the tool
+ * did not refuse. The turns before it are context: a record or a type one of
+ * them created is not what the scored request left behind.
+ */
+function acceptedInScoredTurn(turns: TurnRecord[], tool: string): boolean {
+  return (
+    turns.at(-1)?.toolCalls?.some((c) => c.name === tool && !c.isError) ?? false
   );
+}
+
+/**
+ * Whether the turns created a record: a `create_node` call the tool did not
+ * refuse. Read the way [`createdAType`] reads a type, and for the same reason.
+ */
+export function createdARecord(turns: TurnRecord[]): boolean {
+  return acceptedInScoredTurn(turns, "create_node");
 }
 
 /** Stage 1's recorded decision for the scored turn (the last one). */
@@ -472,15 +504,26 @@ export function assertFixture(
   turns: TurnRecord[],
 ): Verdict {
   const routed = assertRouting(fixture, turns);
-  if (!routed.passed || !fixture.createsType || createdAType(turns)) {
+  if (!routed.passed) {
     return routed;
   }
-  return {
-    passed: false,
-    failure: calledSchemaCreate(turns)
-      ? "Routed as expected, but no type exists after the turn: every create_schema call was refused"
-      : "Routed as expected, but no type exists after the turn: create_schema was not called",
-  };
+  if (fixture.createsType && !createdAType(turns)) {
+    return {
+      passed: false,
+      failure: calledSchemaCreate(turns)
+        ? "Routed as expected, but no type exists after the turn: every create_schema call was refused"
+        : "Routed as expected, but no type exists after the turn: create_schema was not called",
+    };
+  }
+  if (fixture.createsRecord && !createdARecord(turns)) {
+    return {
+      passed: false,
+      failure: calledNodeCreate(turns)
+        ? "Routed as expected, but no record exists after the turn: every create_node call was refused"
+        : "Routed as expected, but no record exists after the turn: create_node was not called",
+    };
+  }
+  return routed;
 }
 
 /**
@@ -518,7 +561,7 @@ export function assertRouting(
           (expectedSkill.includes("schema creation") &&
             calledSchemaCreate(turns)) ||
           (expectedSkill.includes("node creation") &&
-            turns.some((t) => t.toolsCalled.includes("create_node")));
+            calledNodeCreate(turns));
         if (!toolCheck) {
           return {
             passed: false,
@@ -632,6 +675,8 @@ const fixture: EvalFixture = {
       adversarial: s.adversarial ?? false,
       createsType: s.createsType ?? false,
       typeCreated: createdAType(turns),
+      createsRecord: s.createsRecord ?? false,
+      recordCreated: createdARecord(turns),
       passedOnRoutingAlone: assertRouting(s, turns).passed,
       matchedSkill: skillNameFromTurns(turns),
       clarified: isClarification(turns.map((t) => t.reply).join("\n")),
@@ -655,6 +700,15 @@ const fixture: EvalFixture = {
             r.extra?.createsType === true &&
             r.extra.passedOnRoutingAlone === true &&
             r.extra.typeCreated === false,
+        ).length
+      }`,
+      `Asked for a new record and created one: ${count((e) => e.createsRecord === true)}`,
+      `Routed to record creation and created nothing: ${
+        results.filter(
+          (r) =>
+            r.extra?.createsRecord === true &&
+            r.extra.passedOnRoutingAlone === true &&
+            r.extra.recordCreated === false,
         ).length
       }`,
       `Compound → route_multi: ${count((e) => (e.expected as ExpectedOutcome).kind === "multi")}`,

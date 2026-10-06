@@ -496,23 +496,140 @@ fn can_lead_a_creation(candidate: &SkillCandidate) -> bool {
         && skill_can_create_a_record(candidate)
 }
 
+/// Whether a routing query asks to start keeping a new kind of record: one
+/// that opens by setting up or starting to track something, and names a kind
+/// of thing and not one record.
+///
+/// The same defect [`is_add_shaped`] closes for adds, on the other side. The
+/// kind's name is all an embedding has to go on, and when it is another
+/// skill's subject the request is retrieved as that skill's. Measured on the
+/// locked embedding model, "set up Deletion requests with a requester and a
+/// due date" ranked Node Deletion first (0.920) and the skill that holds
+/// `create_schema` second (0.853); "keep track of merge requests with a
+/// reviewer and a status" ranked Node Merge, Graph Editing and Conflict
+/// Journal ahead of it, so `create_schema` was not offered at all. About
+/// twenty wordings of the descriptions involved were measured and none
+/// separated them without a cost on requests about one record.
+///
+/// So the shape is read off the query Stage 1 wrote. It decides no route. It
+/// decides one thing about the candidates Stage 2 judges, in
+/// [`retrieve_candidates`]: a skill that can define a type leads them.
+///
+/// Two openings, each with its own test for a kind of thing:
+///
+/// - **A tracking phrase** ("keep track of", "start tracking", "begin
+///   tracking", "start keeping track of", "track"), followed by a word that
+///   can open the name of a kind. That leaves out every word that opens a
+///   mention of one thing or of something that is not a record at all
+///   ([`OPENS_NO_KIND`]), and a name in the possessive. "Start tracking the
+///   login timeout bug", "track an expense", "keep track of my dentist
+///   appointment", "track Priya's onboarding", "keep track of when the cycle
+///   ends" and "track down the notes on auth" are not this shape.
+/// - **"Set up"**, followed by a word that passes the same test, and then
+///   the details each one carries, introduced by "with a" or "with an": "set
+///   up Postmortems with a severity and a review date". "Set up" also opens
+///   requests for one record ("set up a meeting with Priya") and for a view
+///   ("set up a board of tickets by status"), which is why it needs both.
+///
+/// English only, and narrow on purpose. What it misses is routed as it was
+/// before this existed: "keep track of the books I lend out" and "start
+/// tracking our planning cycles" name a kind behind a word that usually
+/// opens one thing. What it takes wrongly is one thing worded with a bare
+/// noun: "set up staging with a seed script", "track progress on the Q4
+/// cycle".
+pub fn is_new_kind_shaped(query: &str) -> bool {
+    const TRACKING_PHRASES: [&str; 5] = [
+        "start keeping track of ",
+        "keep track of ",
+        "start tracking ",
+        "begin tracking ",
+        "track ",
+    ];
+    let lowered = query.trim().to_lowercase();
+    if let Some(rest) = TRACKING_PHRASES
+        .iter()
+        .find_map(|phrase| lowered.strip_prefix(phrase))
+    {
+        return opens_a_kind(rest);
+    }
+    if let Some(rest) = lowered.strip_prefix("set up ") {
+        return opens_a_kind(rest) && (rest.contains(" with a ") || rest.contains(" with an "));
+    }
+    false
+}
+
+/// Words that, right after a tracking phrase or "set up", do not open the
+/// name of a kind of record: a determiner, pronoun or possessive that points
+/// at one thing, a quantifier that counts single ones, a question word that
+/// opens a clause, and "down" ("track down" is a lookup).
+const OPENS_NO_KIND: [&str; 26] = [
+    "a", "an", "the", "this", "that", "these", "those", "it", "them", "my", "our", "your", "his",
+    "her", "their", "its", "one", "each", "every", "when", "whether", "what", "who", "how", "why",
+    "down",
+];
+
+/// Whether `rest`, lowercased, opens with a word that can start the name of a
+/// kind: not one of [`OPENS_NO_KIND`], and not a name in the possessive
+/// ("priya's onboarding").
+fn opens_a_kind(rest: &str) -> bool {
+    let word: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+    let possessive = word.ends_with("'s") || word.ends_with("\u{2019}s");
+    let word = word.trim_matches(|c: char| !c.is_alphanumeric());
+    !word.is_empty() && !possessive && !OPENS_NO_KIND.contains(&word)
+}
+
+/// The retrieval query for a new kind of record that did not lead with a
+/// skill able to define one: the capability, then the request.
+///
+/// The same shape as [`create_retrieval_query`]. The wording is the one the
+/// type skill's description carries, and of the four measured it is the one
+/// that put that skill above every first-search leader.
+pub fn new_kind_retrieval_query(query: &str) -> String {
+    format!("define a new entity type with custom fields: {query}")
+}
+
+/// Whether a skill can define a type.
+pub fn skill_can_define_a_type(candidate: &SkillCandidate) -> bool {
+    candidate
+        .tools
+        .iter()
+        .any(|t| Tool::from_name(t) == Some(Tool::CreateSchema))
+}
+
+/// Whether the candidate that would lead the turn can define a type.
+pub fn leads_with_a_type_skill(ranked: &[SkillCandidate]) -> bool {
+    leading_tool_bearing_candidate(&select_candidates(ranked.to_vec()))
+        .is_some_and(skill_can_define_a_type)
+}
+
 /// Retrieval's ranking for one routing query, through `retrieve`: a search for
 /// a query, asked for a number of candidates.
 ///
-/// A query that is not shaped like an add is one search, returned as it came
-/// back. A request to add something ([`is_add_shaped`]) differs in two ways:
+/// A query of neither shape below is one search, returned as it came back.
+///
+/// A request to add something ([`is_add_shaped`]) differs in two ways:
 ///
 /// - It is ranked without the skills that can remove user data
 ///   ([`without_destructive_skills`]), and asked for
 ///   [`ADD_RETRIEVAL_FETCH`] so the ranking is still full without them.
 /// - When none of the candidates Stage 2 would then judge can create a record,
 ///   retrieval runs once more on [`create_retrieval_query`], and the best
-///   match that can create and cannot remove joins the ranking with the score
-///   that search gave it. That score is on the second query's scale, which
-///   names the skill's own capability, so the skill usually leads the turn it
-///   was added to. Every other candidate keeps the score it had: the second
-///   search adds one skill to the ranking and removes none from it, though the
-///   skill it adds can take the last place Stage 2 judges.
+///   match that can create and cannot remove joins the ranking.
+///
+/// A request for a new kind of record ([`is_new_kind_shaped`]) differs in one:
+/// when the candidate that would lead cannot define a type, retrieval runs
+/// once more on [`new_kind_retrieval_query`], and the best match that can
+/// joins the ranking. The lead is what is checked, not a place among the
+/// candidates, because the fields declared on a write tool come only from the
+/// leading candidates ([`declare_write_tool_fields`]) and the leader is the
+/// skill the turn is recorded as routed to.
+///
+/// Either way the skill that joins has the score its own search gave it. That
+/// score is on the second query's scale, which names the skill's own
+/// capability, so the skill usually leads the turn it was added to. Every
+/// other candidate keeps the score it had: the second search adds one skill
+/// to the ranking and removes none from it, though the skill it adds can take
+/// the last place Stage 2 judges.
 ///
 /// A second search that fails leaves the first ranking as it was.
 ///
@@ -527,30 +644,66 @@ where
     Fut: std::future::Future<Output = Result<Vec<SkillCandidate>, E>>,
     E: std::fmt::Display,
 {
-    if !is_add_shaped(query) {
-        return retrieve(query.to_string(), RETRIEVAL_FETCH).await;
+    if is_add_shaped(query) {
+        let ranked =
+            without_destructive_skills(retrieve(query.to_string(), ADD_RETRIEVAL_FETCH).await?);
+        if !lacks_a_creating_skill(&ranked) {
+            return Ok(ranked);
+        }
+        // Asked for as many as the first search: only one of them is kept,
+        // and a workspace's own types can fill the first places of a shorter
+        // ranking.
+        let second = retrieve(create_retrieval_query(query), ADD_RETRIEVAL_FETCH)
+            .await
+            .map(without_destructive_skills);
+        return Ok(with_the_best_match(
+            ranked,
+            second,
+            skill_can_create_a_record,
+            query,
+        ));
     }
-    let mut ranked =
-        without_destructive_skills(retrieve(query.to_string(), ADD_RETRIEVAL_FETCH).await?);
-    if !lacks_a_creating_skill(&ranked) {
+    let ranked = retrieve(query.to_string(), RETRIEVAL_FETCH).await?;
+    if !is_new_kind_shaped(query) || leads_with_a_type_skill(&ranked) {
         return Ok(ranked);
     }
-    // Asked for as many as the first search: only one of them is kept, and a
-    // workspace's own types can fill the first places of a shorter ranking.
-    match retrieve(create_retrieval_query(query), ADD_RETRIEVAL_FETCH).await {
+    // Asked for as many as an add's second search, for the same reason:
+    // only one of them is kept, and a workspace's own types can fill the
+    // first places of a shorter ranking.
+    let second = retrieve(new_kind_retrieval_query(query), ADD_RETRIEVAL_FETCH).await;
+    Ok(with_the_best_match(
+        ranked,
+        second,
+        skill_can_define_a_type,
+        query,
+    ))
+}
+
+/// `ranked` with the best match of a second search that `can` do what the
+/// request's shape asks for, at the score that search gave it. A skill
+/// already ranked is moved, not repeated. A second search that failed, or
+/// held no such skill above its score bar, leaves `ranked` as it was.
+fn with_the_best_match<E: std::fmt::Display>(
+    mut ranked: Vec<SkillCandidate>,
+    second: Result<Vec<SkillCandidate>, E>,
+    can: impl Fn(&SkillCandidate) -> bool,
+    query: &str,
+) -> Vec<SkillCandidate> {
+    match second {
         Ok(second) => {
-            let creating = without_destructive_skills(second)
+            // A procedure never leads a turn, and the skill a shape adds is
+            // there to lead it.
+            let found = second
                 .into_iter()
-                .find(can_lead_a_creation);
-            if let Some(creating) = creating {
+                .find(|c| c.role != SkillRole::Procedure && clears_score_gate(c) && can(c));
+            if let Some(found) = found {
                 tracing::debug!(
-                    skill = %creating.name,
-                    score = creating.score,
-                    "an add found no skill that can create a record; added one"
+                    skill = %found.name,
+                    score = found.score,
+                    "the ranking lacked a skill for what the request's shape asks; added one"
                 );
-                // It may already be ranked, below the bound.
-                ranked.retain(|c| c.id != creating.id);
-                ranked.push(creating);
+                ranked.retain(|c| c.id != found.id);
+                ranked.push(found);
                 ranked.sort_by(|a, b| b.score.total_cmp(&a.score));
             }
         }
@@ -558,11 +711,11 @@ where
             tracing::warn!(
                 error = %e,
                 query,
-                "retrieval for a skill that can create a record failed; continuing without one"
+                "the second retrieval for a request's shape failed; continuing without it"
             );
         }
     }
-    Ok(ranked)
+    ranked
 }
 
 #[derive(Debug, Deserialize)]
@@ -1949,6 +2102,206 @@ mod tests {
     async fn a_first_search_that_fails_is_the_callers_error() {
         let searches = Searches::new(vec![]);
         assert!(searches.run(ADD).await.is_err());
+    }
+
+    #[test]
+    fn a_query_that_sets_up_or_starts_tracking_a_kind_of_thing_is_new_kind_shaped() {
+        for query in [
+            "set up Postmortems with a severity and review date",
+            "Set up Runbooks with a service and a last reviewed date.",
+            "set up Retrospectives with an owner and a follow-up date",
+            "keep track of incident postmortems with severity and review date",
+            "keep track of decisions behind each feature",
+            "start tracking planning cycles",
+            "begin tracking design decisions",
+            "  start keeping track of production incidents",
+            "track planning cycles",
+        ] {
+            assert!(is_new_kind_shaped(query), "{query:?}");
+        }
+    }
+
+    #[test]
+    fn a_query_about_one_record_or_a_view_is_not_new_kind_shaped() {
+        for query in [
+            // A tracking phrase, then a word that points at one thing.
+            "start tracking the login timeout bug",
+            "track this task's progress",
+            "start tracking the offline sync spec's sign-off",
+            "keep track of the Q4 cycle's status",
+            "keep track of it",
+            "track an expense",
+            "start tracking a bug in the importer",
+            // A possessive, a quantifier, a clause, and a lookup idiom.
+            "keep track of my dentist appointment on Friday",
+            "start tracking our planning cycles",
+            "start tracking Priya's onboarding",
+            "track Acme\u{2019}s renewal",
+            "track one expense",
+            "track each open ticket",
+            "keep track of when the Q4 cycle ends",
+            "track whether the deploy finished",
+            "keep track of what we decided about caching",
+            "start keeping track of who owes me money",
+            "track down the notes on the auth redesign",
+            // "Set up" with an article, or with no details named.
+            "set up a meeting with Priya on Friday",
+            "set up a board of tickets by status",
+            "set up the staging database with a seed script",
+            "set up Postmortems",
+            "set up our retro with an agenda",
+            // The phrase has to open the query, whole.
+            "we should start tracking production incidents",
+            "tracking is broken on the dashboard",
+            "tracker for the venues I book",
+            "add a task to keep track of renewals",
+            "track",
+            "",
+        ] {
+            assert!(!is_new_kind_shaped(query), "{query:?}");
+        }
+    }
+
+    const NEW_KIND: &str = "set up Deletion requests with a requester and a due date";
+
+    /// The ranking measured for [`NEW_KIND`] on the locked embedding model.
+    fn new_kind_collision_ranking() -> Vec<SkillCandidate> {
+        vec![
+            candidate("Node Deletion", 0.920, &["delete_node", "search_nodes"]),
+            candidate("Schema Creation", 0.853, &["create_schema"]),
+            candidate("Node Creation", 0.831, &["create_node", "update_node"]),
+            candidate("Play Authoring", 0.814, &["update_play"]),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_new_kind_another_skill_leads_gets_a_type_skill_from_a_second_search() {
+        let second = new_kind_retrieval_query(NEW_KIND);
+        let searches = Searches::new(vec![
+            (NEW_KIND, new_kind_collision_ranking()),
+            (
+                &second,
+                vec![
+                    candidate("Schema Creation", 0.993, &["create_schema"]),
+                    candidate("Node Creation", 0.914, &["create_node", "update_node"]),
+                ],
+            ),
+        ]);
+        let judged = select_candidates(searches.run(NEW_KIND).await.unwrap());
+
+        assert_eq!(
+            names(&judged),
+            ["Schema Creation", "Node Deletion", "Node Creation"],
+            "the type skill is moved to the lead, not repeated"
+        );
+        assert_eq!(
+            judged[0].score, 0.993,
+            "it has the score its search gave it"
+        );
+        assert_eq!(judged[2].score, 0.831, "and nobody else's score moved");
+        let offered = stage2_permitted_names(&judged);
+        assert!(offered.contains("create_schema"));
+        assert!(
+            !offered.contains("delete_node"),
+            "the deletion skill no longer leads, so its tool is withheld"
+        );
+        assert_eq!(
+            searches.asked(),
+            [
+                (NEW_KIND.to_string(), RETRIEVAL_FETCH),
+                (second, ADD_RETRIEVAL_FETCH)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_kind_a_type_skill_already_leads_is_not_searched_twice() {
+        let query = "start tracking planning cycles";
+        let searches = Searches::new(vec![(
+            query,
+            vec![
+                candidate("Schema Creation", 0.872, &["create_schema"]),
+                candidate("Graph Editing", 0.828, &["update_node", "create_node"]),
+            ],
+        )]);
+        let ranked = searches.run(query).await.unwrap();
+        assert_eq!(names(&ranked), ["Schema Creation", "Graph Editing"]);
+        assert_eq!(searches.asked().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_type_skill_that_places_without_leading_is_searched_for_again() {
+        // Third place offers `create_schema`, and still leaves the turn routed
+        // to the record skill with that skill's fields on the write tools.
+        let query = "keep track of merge requests with a reviewer and a status";
+        let second = new_kind_retrieval_query(query);
+        let searches = Searches::new(vec![
+            (
+                query,
+                vec![
+                    candidate("Graph Editing", 0.906, &["update_node", "create_node"]),
+                    candidate("Conflict Journal", 0.879, &["list_conflicts"]),
+                    candidate("Schema Creation", 0.866, &["create_schema"]),
+                ],
+            ),
+            (
+                &second,
+                vec![candidate("Schema Creation", 1.007, &["create_schema"])],
+            ),
+        ]);
+        let ranked = searches.run(query).await.unwrap();
+        assert_eq!(
+            names(&ranked),
+            ["Schema Creation", "Graph Editing", "Conflict Journal"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_kind_whose_second_search_fails_or_finds_no_type_skill_keeps_its_ranking() {
+        // No ranking is registered for the second query, so that search errs.
+        let failing = Searches::new(vec![(NEW_KIND, new_kind_collision_ranking())]);
+        let ranked = failing.run(NEW_KIND).await.unwrap();
+        assert_eq!(failing.asked().len(), 2);
+        assert_eq!(ranked[0].name, "Node Deletion");
+
+        let second = new_kind_retrieval_query(NEW_KIND);
+        let without = Searches::new(vec![
+            (NEW_KIND, new_kind_collision_ranking()),
+            (
+                &second,
+                vec![
+                    candidate("Node Creation", 0.95, &["create_node"]),
+                    // Below the mutating bar: not a skill the turn may use.
+                    candidate("Schema Creation", 0.2, &["create_schema"]),
+                ],
+            ),
+        ]);
+        let ranked = without.run(NEW_KIND).await.unwrap();
+        assert_eq!(
+            names(&ranked),
+            [
+                "Node Deletion",
+                "Schema Creation",
+                "Node Creation",
+                "Play Authoring"
+            ]
+        );
+        assert_eq!(ranked[1].score, 0.853);
+    }
+
+    #[tokio::test]
+    async fn a_request_about_one_record_that_opens_like_a_new_kind_is_one_search() {
+        let query = "keep track of the Q4 cycle's status";
+        let searches = Searches::new(vec![(
+            query,
+            vec![
+                candidate("Graph Editing", 0.870, &["update_node", "create_node"]),
+                candidate("Schema Creation", 0.784, &["create_schema"]),
+            ],
+        )]);
+        let ranked = searches.run(query).await.unwrap();
+        assert_eq!(names(&ranked), ["Graph Editing", "Schema Creation"]);
+        assert_eq!(searches.asked().len(), 1);
     }
 
     #[test]

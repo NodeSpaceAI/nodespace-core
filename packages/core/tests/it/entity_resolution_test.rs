@@ -191,6 +191,45 @@ mod entity_resolution_tests {
         Ok(())
     }
 
+    /// A tool node is titled with its function name, which is the verb and
+    /// noun of an ordinary request. It is something the agent calls, never a
+    /// record the message names.
+    #[tokio::test]
+    async fn tools_are_not_resolved() -> Result<()> {
+        let (store, service, _t) = create_test_store().await?;
+        let tool = Node::new(
+            "tool-native".to_string(),
+            "create_node".to_string(),
+            json!({ "handler": "create_node" }),
+        );
+        let tool_id = tool.id.clone();
+        service.create_node(tool).await?;
+        let titled = service.get_node(&tool_id).await?.and_then(|n| n.title);
+        assert_eq!(
+            titled.as_deref(),
+            Some("create_node"),
+            "the tool is titled, so only the type keeps it out"
+        );
+        let task = seed_entity(&service, "task", "Create the release node").await?;
+
+        let hits = store
+            .resolve_entities_by_title(
+                "Create a new node called 'Review the sync protocol spec'",
+                12,
+            )
+            .await?;
+
+        assert!(
+            hits.iter().all(|h| h.node_type != "tool-native"),
+            "a tool may not resolve as an entity, got: {hits:?}"
+        );
+        assert!(
+            hits.iter().any(|h| h.id == task),
+            "a record sharing the same words still resolves, got: {hits:?}"
+        );
+        Ok(())
+    }
+
     /// A body node that merely MENTIONS a name is not an entity. A node with a
     /// parent carries no title (`compute_title` returns None for a non-root
     /// node of a content-titled type), so it never enters `node_title_fts` and
