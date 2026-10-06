@@ -148,7 +148,7 @@ export const AGENTS: AgentConfig[] = [
     // its built-in skills), so its presence is what shows the CLI is
     // installed. Skills for every project are read from the shared config
     // directory, `~/.gemini/config/skills/<name>/`, which Antigravity's
-    // documentation names. Checked against Antigravity CLI 1.3.0: a skill in
+    // documentation names (and where `skills.json` is not needed). Checked against Antigravity CLI 1.3.0: a skill in
     // that folder is listed to the agent with no `skills.json` entry, and one
     // in `antigravity-cli/skills/` is not.
     detectionDir: join(home, '.gemini', 'antigravity-cli'),
