@@ -461,7 +461,7 @@ mod tests {
     async fn a_value_that_is_not_a_list_of_strings_is_an_error() {
         for properties in [
             r#"{"database-settings": {"required_extensions": "sync"}}"#,
-            r#"{"database-settings": {"required_extensions": "[\"pro\"]"}}"#,
+            r#"{"database-settings": {"required_extensions": "[\"sync\"]"}}"#,
             r#"{"database-settings": {"required_extensions": 42}}"#,
             r#"{"database-settings": {"required_extensions": ["sync", 1]}}"#,
         ] {

@@ -866,7 +866,7 @@ describe("hitFailures", () => {
     const message = hitFailures({ ...noHits(), proCommands: ["packages/a/x.ts:1: a", "packages/a/y.ts:2: b"] })[0];
     expect(message).toContain(`proCommands (${MARKERS.proCommands.summary}): 2 hits`);
     expect(message).toContain("ADR-081");
-    expect(message).toContain("Pro repository");
+    expect(message).toContain("Sync repository");
     expect(message).toContain("fragments");
     expect(message).toContain("narrow, tested fix to the marker's pattern");
   });

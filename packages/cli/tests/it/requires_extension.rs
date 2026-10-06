@@ -86,7 +86,7 @@ impl Drop for Daemon {
     }
 }
 
-/// Boot a daemon whose default database requires `pro`, with a second
+/// Boot a daemon whose default database requires `sync`, with a second
 /// database `other` holding one node.
 async fn spawn_daemon() -> Daemon {
     spawn_daemon_with(Ok::<_, tonic::Status>).await

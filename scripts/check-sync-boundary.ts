@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Enforces the sync boundary of ADR-081: core is the complete free
-// product and ships no Pro code. This is a hard ban (ADR-081 section 8): any
+// product and ships no Sync code. This is a hard ban (ADR-081 section 8): any
 // line that matches a marker, and any file whose basename has a `pro`
 // segment, fails the check. There are no baselines to raise and no
 // exemptions. A false positive gets a narrow, tested fix to the marker's
@@ -363,7 +363,7 @@ export function changedFilesSinceMain(repoRoot: string = REPO): string[] {
 }
 
 const GUIDANCE =
-  "Core ships no Pro code (ADR-081): Pro features and Pro fixes belong in the Pro repository (ADR-081 section 5), and core may only expose a generic extension point (ADR-082). " +
+  "Core ships no Sync code (ADR-081): Sync features and Sync fixes belong in the Sync repository (ADR-081 section 5), and core may only expose a generic extension point (ADR-082). " +
   "A test that proves something is absent builds its needle from fragments. " +
   "A false positive gets a narrow, tested fix to the marker's pattern in scripts/check-sync-boundary.ts.";
 
