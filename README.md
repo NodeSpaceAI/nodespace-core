@@ -35,8 +35,7 @@ NodeSpace takes you to step four, without building it yourself.
 
 ## Local-first
 
-Your knowledge stays on your hardware and works offline. Search and embeddings run inside the app, with no per-query cloud bill, so agents can check context throughout a task. Team synchronization is optional and end-to-end encrypted.
-
+Your knowledge stays on your hardware and works offline. Search and embeddings run inside the app, with no per-query cloud bill, so agents can check context throughout a task.
 ---
 
 ## Installation
