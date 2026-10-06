@@ -632,6 +632,12 @@ const FIXTURES: DecisionScenario[] = [
   // before"), and retrieval still led with Node Creation for the second
   // scenario below during development. So these score embedding similarity,
   // not instruction quality — the same class as ADR-038 Finding 4.
+  //
+  // Both type requests name postmortems and a severity, which an embedding
+  // reads as Graph Editing's subject, and retrieval alone leads them with
+  // that skill. They are routed to Schema Creation because the shape of the
+  // request is read off the query (`routing::is_new_kind_shaped`), so they
+  // also score that rule.
   {
     id: "skill-type-request-direct",
     scenario: "Skill: an explicit type request routes to Schema Creation",

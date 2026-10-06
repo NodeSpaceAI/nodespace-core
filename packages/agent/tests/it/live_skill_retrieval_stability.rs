@@ -29,9 +29,9 @@ use std::sync::Arc;
 
 use nodespace_agent::agent_types::SkillCandidate;
 use nodespace_agent::local_agent::routing::{
-    is_add_shaped, leading_tool_bearing_candidate, lookup_retrieval_query, retrieve_candidates,
-    select_candidates, skill_can_create_a_record, skill_is_destructive, RETRIEVAL_FETCH,
-    RETRIEVAL_TOP_K,
+    is_add_shaped, is_new_kind_shaped, leading_tool_bearing_candidate, lookup_retrieval_query,
+    retrieve_candidates, select_candidates, skill_can_create_a_record, skill_can_define_a_type,
+    skill_is_destructive, RETRIEVAL_FETCH, RETRIEVAL_TOP_K,
 };
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::db::SqliteStore;
@@ -49,7 +49,7 @@ use tempfile::TempDir;
 /// Number of identical reps per query. Matches the issue's own reproduction
 /// (`--runs 3`) as a floor — the observed defect rate was 1-in-3, so fewer
 /// reps risks a clean run proving nothing.
-const REPS: usize = 5;
+pub(crate) const REPS: usize = 5;
 
 /// Seed the skill registry into a fresh DB and embed every skill root with a
 /// real model. Returns `None` if the embedding model isn't on disk, so the
@@ -1118,7 +1118,7 @@ async fn retrieved_candidates(
 /// The candidates Stage 2 judges for `query`, as `agent_loop`'s `route`
 /// arrives at them for a single query: `routing::retrieve_candidates`, then
 /// `routing::select_candidates`.
-async fn routed_candidates(
+pub(crate) async fn routed_candidates(
     embedding_service: &Arc<NodeEmbeddingService>,
     node_service: &Arc<NodeService>,
     query: &str,
@@ -1212,20 +1212,35 @@ async fn start_tracking_requests_route_schema_creation() {
     );
 }
 
+/// Requests for a new kind of record, as Stage 1 words them, whose kind is
+/// named after another skill's subject. On retrieval's own ranking each is
+/// led by the skill that shares the noun.
+const NEW_KINDS_NAMING_ANOTHER_SKILLS_SUBJECT: [&str; 10] = [
+    "set up Postmortems with a severity and review date",
+    "keep track of incident postmortems with severity and review date",
+    "set up Runbooks with a service and a last reviewed date",
+    "keep track of automations with a trigger and an owner",
+    "keep track of merge requests with a reviewer and a status",
+    "set up Deletion requests with a requester and a due date",
+    "keep track of imports with a source file and a row count",
+    "set up Bugs with a status and a priority",
+    "keep track of dependencies with a version and a license",
+    "set up Duplicate reports with a source and a resolution",
+];
+
 /// A request for a new kind of record that names the details each one carries
 /// ("set up Postmortems with a severity and a review date") asks for a type.
 /// It must lead with Schema Creation, not merely place it: the fields declared
 /// on a write tool come only from the candidates at the turn's top score
-/// (`routing::declare_write_tool_fields`).
+/// (`routing::declare_write_tool_fields`), and the leader is the skill the
+/// turn is recorded as routed to.
 ///
 /// The requests are what Stage 1 makes of such a message, in both the "set
 /// up" and the "keep track of" wording, over several nouns and details so the
 /// shape is what is measured.
 ///
-/// The shape leads where the nouns are no other skill's: by 0.012 to 0.036 on
-/// the first three. It does not where they are, and that is recorded here and
-/// not accepted. An incident and its severity read as Graph Editing's
-/// completion states, and a runbook as an automation:
+/// On retrieval alone the shape leads where the nouns are no other skill's,
+/// by 0.012 to 0.036 on the first three, and not where they are:
 ///
 /// - "set up Postmortems with a severity and review date": Graph Editing
 ///   0.864, Schema Creation 0.856.
@@ -1233,6 +1248,11 @@ async fn start_tracking_requests_route_schema_creation() {
 ///   Graph Editing 0.889, Schema Creation 0.868.
 /// - "set up Runbooks with a service and a last reviewed date": Play
 ///   Authoring 0.844, Schema Creation 0.814.
+/// - "set up Deletion requests with a requester and a due date": Node
+///   Deletion 0.920, Schema Creation 0.853.
+/// - "keep track of merge requests with a reviewer and a status": Node Merge
+///   0.947, Graph Editing 0.906, Conflict Journal 0.879, Schema Creation
+///   fourth at 0.866.
 ///
 /// No wording of either description separated them without a cost elsewhere.
 /// Naming the details a new kind carries in Schema Creation's ("…such as a
@@ -1245,60 +1265,218 @@ async fn start_tracking_requests_route_schema_creation() {
 /// closer to its `use_for` than to any `not_for`. Having Stage 1 say
 /// "record type" or "a new kind of record" lifted both skills together.
 ///
-/// For those three only the second half is asserted: Schema Creation is in
-/// the top 3, so `create_schema` is offered.
+/// So the shape is read off the query (`routing::is_new_kind_shaped`) and the
+/// type skill is searched for by its capability
+/// (`routing::retrieve_candidates`). On that second search Schema Creation
+/// scores 0.987 to 1.021 on these, above every first-search leader (0.947 at
+/// most).
 #[tokio::test]
 #[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
-async fn a_new_kind_of_record_with_named_details_leads_or_places_schema_creation() {
+async fn a_new_kind_of_record_with_named_details_leads_with_schema_creation() {
     let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
         return;
     };
     let mut misses = Vec::new();
-    for (query, lead_asserted) in [
-        (
-            "set up Retrospectives with an owner and a follow-up date",
-            true,
-        ),
-        (
-            "keep track of vendor contracts with a renewal date and an owner",
-            true,
-        ),
-        (
-            "keep track of customer interviews with a persona and an interview date",
-            true,
-        ),
-        ("set up Postmortems with a severity and review date", false),
-        (
-            "keep track of incident postmortems with severity and review date",
-            false,
-        ),
-        (
-            "set up Runbooks with a service and a last reviewed date",
-            false,
-        ),
-    ] {
+    for query in [
+        "set up Retrospectives with an owner and a follow-up date",
+        "keep track of vendor contracts with a renewal date and an owner",
+        "keep track of customer interviews with a persona and an interview date",
+    ]
+    .into_iter()
+    .chain(NEW_KINDS_NAMING_ANOTHER_SKILLS_SUBJECT)
+    {
+        assert!(
+            is_new_kind_shaped(query),
+            "{query:?} is not shaped like a new kind"
+        );
         eprintln!(
             "{query:?}: {:?}",
             scored_ranking(&embedding_service, &node_service, query, 6).await
         );
-        let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
-        let holds = |ranked: &Vec<String>| {
-            let place = ranked.iter().position(|n| n == "Schema Creation");
-            if lead_asserted {
-                place == Some(0)
-            } else {
-                place.is_some()
+        for _ in 0..REPS {
+            let judged = routed_candidates(&embedding_service, &node_service, query).await;
+            if !leading_tool_bearing_candidate(&judged).is_some_and(|c| c.name == "Schema Creation")
+            {
+                eprintln!(
+                    "  routed: {:?}",
+                    judged
+                        .iter()
+                        .map(|c| format!("{}={:.3}", c.name, c.score))
+                        .collect::<Vec<_>>()
+                );
+                misses.push(query);
+                break;
             }
-        };
-        if !rankings.iter().all(holds) {
-            misses.push(query);
         }
     }
     assert!(
         misses.is_empty(),
-        "Schema Creation lost rank 1, or missed the top-{RETRIEVAL_TOP_K} where the lead is not \
-         asserted, for {misses:?}"
+        "Schema Creation does not lead the candidates Stage 2 judges for {misses:?}"
     );
+}
+
+/// The reason for the guard above, kept measurable: on retrieval's own ranking
+/// each of those requests is led by a skill that cannot define a type. If a
+/// description change ever fixes that in retrieval, this fails and the rule in
+/// `routing::retrieve_candidates` can be weighed against the simpler ranking.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn without_the_new_kind_rule_those_requests_lead_with_another_skill() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    for query in NEW_KINDS_NAMING_ANOTHER_SKILLS_SUBJECT {
+        let judged = select_candidates(
+            retrieved_candidates(&embedding_service, &node_service, query, RETRIEVAL_FETCH).await,
+        );
+        assert!(
+            !leading_tool_bearing_candidate(&judged).is_some_and(skill_can_define_a_type),
+            "retrieval alone now leads {query:?} with a type skill; judged: {:?}",
+            judged.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+    }
+}
+
+/// The cost side of reading the shape: a request that opens with the same
+/// words and is about one record, or a view, is not that shape, so it is
+/// routed on retrieval's ranking as it was. Each keeps the candidates it had,
+/// in the order it had them.
+///
+/// One of these is also a request retrieval alone leads with the type skill:
+/// "start tracking the offline sync spec's sign-off", recorded on
+/// `tracking_one_existing_record_still_reaches_a_record_skill`. The shape
+/// does not make it so and does not undo it.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn requests_about_one_record_that_open_like_a_new_kind_keep_their_ranking() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    let mut moved = Vec::new();
+    for query in [
+        "start tracking the login timeout bug",
+        "track this task's progress",
+        "start tracking the offline sync spec's sign-off",
+        "keep track of the Q4 cycle's status",
+        "set up a board of tickets by status",
+        "set up a meeting with Priya on Friday",
+        "set up the Q4 cycle with a kickoff date",
+        // No determiner in front, and still one thing or no record at all.
+        "keep track of my dentist appointment on Friday",
+        "start tracking Priya's onboarding",
+        "track Acme's renewal",
+        "track one expense",
+        "track each open ticket",
+        "keep track of when the Q4 cycle ends",
+        "track whether the deploy finished",
+        "keep track of what we decided about caching",
+        "track down the notes on the auth redesign",
+    ] {
+        assert!(
+            !is_new_kind_shaped(query),
+            "{query:?} is shaped like a new kind"
+        );
+        let names = |judged: Vec<SkillCandidate>| -> Vec<String> {
+            judged.into_iter().map(|c| c.name).collect()
+        };
+        let before = names(select_candidates(
+            retrieved_candidates(&embedding_service, &node_service, query, RETRIEVAL_FETCH).await,
+        ));
+        let after = names(routed_candidates(&embedding_service, &node_service, query).await);
+        eprintln!("{query:?}: {after:?}");
+        if before != after {
+            moved.push(query);
+        }
+    }
+    assert!(
+        moved.is_empty(),
+        "the new-kind rule moved the candidates of {moved:?}"
+    );
+}
+
+/// What the shape takes wrongly, measured and recorded as its cost: a request about
+/// one thing, worded with a bare noun after the opening, reads as a kind.
+/// Each of these is the shape, so the type skill is searched for and leads
+/// where retrieval alone led with another skill. `create_node` and
+/// `update_node` are still offered when a skill that holds them is among the
+/// candidates, without their declared fields.
+///
+/// Asserted so that a narrower test for a kind, when one is found, shows up
+/// here as a request that is no longer the shape.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn requests_about_one_thing_worded_with_a_bare_noun_read_as_a_kind() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    for query in [
+        "track progress on the Q4 cycle",
+        "track time spent on the importer bug",
+        "set up staging with a seed script",
+        "set up weekly sync with an agenda",
+    ] {
+        assert!(
+            is_new_kind_shaped(query),
+            "{query:?} is no longer shaped like a new kind: move it to the controls"
+        );
+        let before = select_candidates(
+            retrieved_candidates(&embedding_service, &node_service, query, RETRIEVAL_FETCH).await,
+        );
+        let after = routed_candidates(&embedding_service, &node_service, query).await;
+        let scored = |judged: &[SkillCandidate]| -> Vec<String> {
+            judged
+                .iter()
+                .map(|c| format!("{}={:.3}", c.name, c.score))
+                .collect()
+        };
+        eprintln!(
+            "{query:?}: retrieval alone {:?}; routed {:?}",
+            scored(&before),
+            scored(&after)
+        );
+        assert!(
+            leading_tool_bearing_candidate(&after).is_some_and(skill_can_define_a_type),
+            "{query:?} no longer leads with a type skill; routed {:?}",
+            scored(&after)
+        );
+    }
+}
+
+/// A new kind of record that retrieval alone already leads with the type
+/// skill is not searched for twice, so it keeps the candidates and the scores
+/// it had: the rule changes only the requests it has to.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn a_new_kind_the_type_skill_already_leads_keeps_its_scores() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+    for query in [
+        "start tracking planning cycles",
+        "start tracking release trains",
+        "begin tracking design decisions",
+        "track planning cycles",
+    ] {
+        assert!(
+            is_new_kind_shaped(query),
+            "{query:?} is not shaped like a new kind"
+        );
+        let scored = |judged: Vec<SkillCandidate>| -> Vec<String> {
+            judged
+                .into_iter()
+                .map(|c| format!("{}={:.3}", c.name, c.score))
+                .collect()
+        };
+        let before = scored(select_candidates(
+            retrieved_candidates(&embedding_service, &node_service, query, RETRIEVAL_FETCH).await,
+        ));
+        let after = scored(routed_candidates(&embedding_service, &node_service, query).await);
+        assert_eq!(before, after, "{query:?}");
+        assert!(
+            after[0].starts_with("Schema Creation="),
+            "{query:?}: {after:?}"
+        );
+    }
 }
 
 /// The cost side of Schema Creation opening with the tracking verb: a request

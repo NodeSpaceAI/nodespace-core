@@ -17,6 +17,7 @@ import fixture, {
   assertFixture,
   assertRouting,
   constantAnswerBaseline,
+  createdARecord,
   createdAType,
   stage1Expectation,
   type RoutingScenario,
@@ -78,9 +79,14 @@ describe("route_multi scoring", () => {
   const compound = byId("multi-task-and-search");
 
   test("a compound scenario passes only when Stage 1 routed multi", () => {
-    expect(assertFixture(compound, [turn({ routingDecision: "multi" })]).passed).toBe(true);
+    // The task it asks for is created in each, so only the decision varies.
+    const acted = {
+      toolsCalled: ["create_node"],
+      toolCalls: [{ name: "create_node", isError: false }],
+    };
+    expect(assertFixture(compound, [turn({ ...acted, routingDecision: "multi" })]).passed).toBe(true);
     for (const d of ["query", "multi_rejected", "clarify", undefined]) {
-      expect(assertFixture(compound, [turn({ routingDecision: d })]).passed).toBe(false);
+      expect(assertFixture(compound, [turn({ ...acted, routingDecision: d })]).passed).toBe(false);
     }
   });
 
@@ -182,12 +188,120 @@ describe("type-creating scenarios are scored on the type", () => {
   });
 
   test("a scenario that asks for no type is not held to one", () => {
+    expect(byId("direct-node-create").createsType).toBeUndefined();
     const s = byId("direct-node-create");
     const turns = [
       turn({
         routingDecision: "query",
         toolsCalled: ["create_node"],
         toolCalls: [{ name: "create_node", isError: false }],
+      }),
+    ];
+    expect(assertFixture(s, turns).passed).toBe(true);
+  });
+});
+
+describe("record-creating scenarios are scored on the record", () => {
+  const created = { name: "create_node", isError: false };
+  const refused = { name: "create_node", isError: true };
+
+  test("every scenario that expects Node Creation must create a record", () => {
+    const nodeScenarios = scenarios.filter(
+      (s) => s.expected.kind === "skill" && s.expected.skill === "Node Creation",
+    );
+    expect(nodeScenarios.length).toBeGreaterThan(0);
+    expect(nodeScenarios.every((s) => s.createsRecord === true)).toBe(true);
+  });
+
+  test("a turn whose every create_node was refused fails, though it routed", () => {
+    const s = byId("single-intent-long-task");
+    const turns = [
+      turn({
+        routingDecision: "query",
+        toolsCalled: ["create_node", "create_node", "create_node"],
+        toolCalls: [refused, refused, refused],
+      }),
+    ];
+    expect(assertRouting(s, turns).passed).toBe(true);
+    const verdict = assertFixture(s, turns);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failure).toContain("every create_node call was refused");
+  });
+
+  test("a refused call followed by an accepted one passes", () => {
+    const s = byId("direct-node-create");
+    const turns = [
+      turn({
+        routingDecision: "query",
+        toolsCalled: ["create_node", "create_node"],
+        toolCalls: [refused, created],
+      }),
+    ];
+    expect(assertFixture(s, turns).passed).toBe(true);
+  });
+
+  test("naming the skill in the reply without creating a record fails", () => {
+    const s = byId("direct-node-create");
+    const turns = [
+      turn({ routingDecision: "query", reply: "I'll use the Node Creation skill for that." }),
+    ];
+    expect(assertRouting(s, turns).passed).toBe(true);
+    const verdict = assertFixture(s, turns);
+    expect(verdict.passed).toBe(false);
+    expect(verdict.failure).toContain("create_node was not called");
+  });
+
+  test("a compound request that asks for a task must create it", () => {
+    const s = byId("multi-task-and-search");
+    const searched = turn({
+      routingDecision: "multi",
+      toolsCalled: ["create_node", "search_semantic"],
+      toolCalls: [refused, { name: "search_semantic", isError: false }],
+    });
+    expect(assertFixture(s, [searched]).passed).toBe(false);
+    const createdToo = turn({
+      routingDecision: "multi",
+      toolsCalled: ["create_node", "search_semantic"],
+      toolCalls: [created, { name: "search_semantic", isError: false }],
+    });
+    expect(assertFixture(s, [createdToo]).passed).toBe(true);
+  });
+
+  test("a record or a type an earlier turn created does not count", () => {
+    // The scenario's prior turn sets up the type. A call it made is context,
+    // not what the scored request left behind.
+    const s = byId("instance-not-schema-invoice");
+    const prior = turn({
+      routingDecision: "query",
+      toolsCalled: ["create_node"],
+      toolCalls: [created],
+    });
+    const scored = turn({
+      routingDecision: "query",
+      toolsCalled: ["create_node"],
+      toolCalls: [refused],
+    });
+    expect(createdARecord([prior, scored])).toBe(false);
+    const typed = turn({ toolCalls: [{ name: "create_schema", isError: false }] });
+    expect(createdAType([typed, scored])).toBe(false);
+    expect(createdAType([scored, typed])).toBe(true);
+    expect(assertFixture(s, [prior, scored]).passed).toBe(false);
+    expect(assertFixture(s, [prior, turn({ ...scored, toolCalls: [created] })]).passed).toBe(true);
+  });
+
+  test("a call with no recorded outcome is not a record created", () => {
+    const turns = [turn({ routingDecision: "query", toolsCalled: ["create_node"] })];
+    expect(createdARecord(turns)).toBe(false);
+    expect(assertFixture(byId("direct-node-create"), turns).passed).toBe(false);
+  });
+
+  test("a scenario that asks for no record is not held to one", () => {
+    const s = byId("direct-schema-create");
+    const turns = [
+      turn({
+        routingDecision: "query",
+        toolsCalled: ["create_schema"],
+        toolCalls: [{ name: "create_schema", isError: false }],
       }),
     ];
     expect(assertFixture(s, turns).passed).toBe(true);

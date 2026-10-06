@@ -5,6 +5,13 @@
 //! reads as equivalent ranks very differently. This is the record those texts
 //! are written against: each request names the skill that owns it, and a run
 //! shows where that skill ranks, by how much, and which neighbour is closest.
+//!
+//! A request is won or lost on the candidates routing judges
+//! (`routing::retrieve_candidates`, then `routing::select_candidates`), which
+//! is what a turn runs on: routing reads a request's shape as well as ranking
+//! it, so a request retrieval alone loses can be one the product serves. The
+//! scores recorded beside each verdict are retrieval's own, across the whole
+//! registry, so a row shows what the texts did before any shape was read.
 //! `REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD` holds the confusions: requests that
 //! share a skill's vocabulary and belong to a different one.
 //!
@@ -32,7 +39,11 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nodespace_agent::local_agent::routing::{lookup_retrieval_query, RETRIEVAL_TOP_K};
+use nodespace_agent::agent_types::SkillCandidate;
+use nodespace_agent::local_agent::routing::{
+    leading_tool_bearing_candidate, lookup_retrieval_query, skill_can_create_a_record,
+    RETRIEVAL_TOP_K,
+};
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
 use nodespace_core::models::{SkillFields, SkillRole};
 use nodespace_core::ops::skill_ops::{find_skills, FindSkillsInput};
@@ -41,7 +52,7 @@ use sha2::{Digest, Sha256};
 
 use crate::live_embedding_prefix_measurement::SKILL_CASES;
 use crate::live_skill_retrieval_stability::{
-    repeated_rankings, seed_and_embed_registry, TEXT_OVERRIDES_VAR,
+    routed_candidates, seed_and_embed_registry, REPS, TEXT_OVERRIDES_VAR,
 };
 
 /// Where the request's owner must rank, on every rep. A procedure skill is
@@ -50,12 +61,19 @@ use crate::live_skill_retrieval_stability::{
 /// `First` and `Window` mean the same for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Want {
-    /// First: the skill's declared write-tool fields and any destructive
-    /// tool are offered only from the leading candidate.
+    /// Leads the candidates Stage 2 judges: the skill's declared write-tool
+    /// fields and any destructive tool are offered only from the leading
+    /// candidate.
     First,
-    /// Within the candidate window. For a request two skills can both serve,
-    /// where either leading is correct.
+    /// Among the candidates Stage 2 judges. For a request two skills can both
+    /// serve, where either leading is correct.
     Window,
+    /// The leading candidate can create a record. For one new record of a
+    /// type that exists: two skills hold `create_node`, routing reads the
+    /// adding verb to keep one of them among the candidates
+    /// (`routing::retrieve_candidates`), and the turn is served by whichever
+    /// leads. The owner is still the skill the scores are recorded for.
+    LeadCreates,
 }
 
 /// One request and the skill that owns it.
@@ -97,6 +115,17 @@ const fn window(request: &'static str, owner: &'static str) -> Case {
     }
 }
 
+/// One new record of a type that exists, which a skill that can create must
+/// lead.
+const fn add(request: &'static str) -> Case {
+    Case {
+        request,
+        owner: "Node Creation",
+        want: Want::LeadCreates,
+        lookup: false,
+    }
+}
+
 /// A lookup of `topic`, which Research & Search must lead.
 const fn lookup(topic: &'static str) -> Case {
     Case {
@@ -124,15 +153,13 @@ const CASES: &[Case] = &[
     lookup("tasks that depend on the API migration"),
     lookup("notes in the Cooking collection"),
     // Node Creation: one record of a type that already exists.
+    // The two Node Creation itself leads keep the stricter verdict.
     first("create a ticket for the login bug", "Node Creation"),
     first("add a new customer called Harbor Freight", "Node Creation"),
-    first("new note: call the plumber", "Node Creation"),
-    first("make a task to renew the domain", "Node Creation"),
-    first(
-        "log today's gig at the Blue Room, paid 300",
-        "Node Creation",
-    ),
-    first("add another album: Blue Train by Coltrane", "Node Creation"),
+    add("new note: call the plumber"),
+    add("make a task to renew the domain"),
+    add("log today's gig at the Blue Room, paid 300"),
+    add("add another album: Blue Train by Coltrane"),
     // Schema Creation: a kind of thing, or a change to one.
     first("add a severity field to tickets", "Schema Creation"),
     first(
@@ -149,6 +176,21 @@ const CASES: &[Case] = &[
     ),
     first(
         "tickets should also have an environment, staging or production",
+        "Schema Creation",
+    ),
+    // A new kind named after another skill's subject, as Stage 1 words it.
+    // Retrieval alone leads each with that skill; routing reads the shape
+    // (`routing::is_new_kind_shaped`).
+    first(
+        "set up Postmortems with a severity and review date",
+        "Schema Creation",
+    ),
+    first(
+        "keep track of merge requests with a reviewer and a status",
+        "Schema Creation",
+    ),
+    first(
+        "set up Deletion requests with a requester and a due date",
         "Schema Creation",
     ),
     // Graph Editing: an existing record changes and stays.
@@ -438,9 +480,10 @@ const REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD: &[(&str, &str)] = &[
     ),
 ];
 
-/// Requests in the matrix that their owner does not yet win: measured and
-/// recorded, not asserted. Most score under 0.75 for every skill, where a
-/// proper noun or an amount decides the order more than any wording does.
+/// Requests in the matrix that their owner does not yet win on the candidates
+/// routing judges: measured and recorded, not asserted. Most score under 0.75
+/// for every skill, where a proper noun or an amount decides the order more
+/// than any wording does.
 ///
 /// The list is a ratchet. A wording that wins one of these fails the matrix
 /// until the request is taken off, and a request that newly misses is a
@@ -448,10 +491,7 @@ const REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD: &[(&str, &str)] = &[
 /// miss and nothing else: a request listed here that is also in
 /// [`REQUESTS_ANOTHER_SKILL_MUST_NOT_LEAD`] still fails if that skill leads it.
 const NOT_YET_WON: &[&str] = &[
-    // One new record, which a skill about existing records leads.
-    "make a task to renew the domain",
-    "new note: call the plumber",
-    "log today's gig at the Blue Room, paid 300",
+    // One new record, which a skill that cannot create one leads.
     "log a new invoice for Acme, $2400, due next month",
     "add another album: Blue Train by Coltrane",
     // A change to a type's fields, a new rule, or a new kind of record,
@@ -463,11 +503,11 @@ const NOT_YET_WON: &[&str] = &[
     // An update that names an amount or a payment.
     "change the amount on the Acme invoice to 2600",
     "the Camden invoice came in, mark it paid",
-    "the 2400 one came back, set it to returned",
     // A dependency stated as a fact or asked as a question, with no linking
     // verb. The question is a lookup once Stage 1 has routed it, which leads
-    // with Research & Search; that skill searches and does not hold the
-    // traversal tool, so either way the question is answered without it.
+    // with Research & Search. That skill does not hold `get_related_nodes`.
+    // It holds `search_nodes`, whose relationship filter selects the nodes
+    // whose path reaches a given node, and `get_node_context`.
     "this task depends on the API migration",
     "the launch task is blocked by the security review",
     // Filing with no word for a collection, or by a proper noun.
@@ -505,7 +545,42 @@ fn labelled_cases() -> Vec<Case> {
         .collect()
 }
 
-/// Every skill's score for `query`, best first.
+/// What a turn runs on for one request: the candidates Stage 2 judges.
+struct Routing {
+    /// The skill that leads them.
+    lead: Option<String>,
+    /// Whether that skill can create a record.
+    lead_creates: bool,
+    judged: Vec<String>,
+}
+
+impl Routing {
+    fn lead_name(&self) -> &str {
+        self.lead.as_deref().unwrap_or("-")
+    }
+}
+
+/// [`REPS`] routings of `query`.
+async fn routed(
+    embedding_service: &Arc<NodeEmbeddingService>,
+    node_service: &Arc<NodeService>,
+    query: &str,
+) -> Vec<Routing> {
+    let mut reps = Vec::with_capacity(REPS);
+    for _ in 0..REPS {
+        let judged: Vec<SkillCandidate> =
+            routed_candidates(embedding_service, node_service, query).await;
+        let lead = leading_tool_bearing_candidate(&judged);
+        reps.push(Routing {
+            lead: lead.map(|c| c.name.clone()),
+            lead_creates: lead.is_some_and(skill_can_create_a_record),
+            judged: judged.into_iter().map(|c| c.name).collect(),
+        });
+    }
+    reps
+}
+
+/// Every skill's score for `query` on retrieval alone, best first.
 async fn scores(
     embedding_service: &Arc<NodeEmbeddingService>,
     node_service: &Arc<NodeService>,
@@ -618,7 +693,7 @@ async fn skills_win_their_requests() {
     };
 
     let mut table = String::from(
-        "request\towner\twant\trank\tscore\tleader\tleader_score\tclosest_other\tmargin\n",
+        "request\towner\twant\trank\tscore\tleader\tleader_score\tclosest_other\tmargin\trouted_leader\n",
     );
     // (request, the line to print, whether `NOT_YET_WON` may excuse it)
     let mut failures: Vec<(&str, String, bool)> = Vec::new();
@@ -645,24 +720,24 @@ async fn skills_win_their_requests() {
             (Some(own), Some((_, other))) => format!("{:+.3}", own - other),
             _ => "-".to_string(),
         };
+        let reps = routed(&es, &ns, &query).await;
+        let routed_leader = reps[0].lead_name();
         let _ = writeln!(
             table,
-            "{query}\t{owner}\t{want:?}\t{}\t{}\t{leader}\t{leader_score:.3}\t{}\t{margin}",
+            "{query}\t{owner}\t{want:?}\t{}\t{}\t{leader}\t{leader_score:.3}\t{}\t{margin}\t{routed_leader}",
             rank.map_or("-".to_string(), |i| (i + 1).to_string()),
             own_score.map_or("-".to_string(), |s| format!("{s:.3}")),
             closest_other.map_or("-", |(skill, _)| skill.as_str()),
         );
 
-        let held = repeated_rankings(&es, &ns, &query)
-            .await
-            .iter()
-            .all(|top| match want {
-                _ if procedures.iter().any(|p| p == owner) => {
-                    top.iter().any(|skill| skill == owner)
-                }
-                Want::First => top.first().is_some_and(|skill| skill == owner),
-                Want::Window => top.iter().any(|skill| skill == owner),
-            });
+        let held = reps.iter().all(|routing| match want {
+            _ if procedures.iter().any(|p| p == owner) => {
+                routing.judged.iter().any(|skill| skill == owner)
+            }
+            Want::First => routing.lead.as_deref() == Some(owner),
+            Want::Window => routing.judged.iter().any(|skill| skill == owner),
+            Want::LeadCreates => routing.lead_creates,
+        });
         if !held {
             let top: Vec<String> = ranked
                 .iter()
@@ -671,7 +746,10 @@ async fn skills_win_their_requests() {
                 .collect();
             failures.push((
                 request,
-                format!("{query:?} wants {owner} {want:?}: {top:?}"),
+                format!(
+                    "{query:?} wants {owner} {want:?}: routed {:?}; retrieval alone {top:?}",
+                    reps[0].judged
+                ),
                 true,
             ));
         }
@@ -688,15 +766,16 @@ async fn skills_win_their_requests() {
             .iter()
             .find(|(candidate, _)| candidate == skill)
             .map(|(_, score)| *score);
+        let reps = routed(&es, &ns, request).await;
+        let routed_leader = reps[0].lead_name();
         let _ = writeln!(
             table,
-            "{request}\tnot {skill}\tNotFirst\t-\t{}\t{leader}\t{leader_score:.3}\t-\t-",
+            "{request}\tnot {skill}\tNotFirst\t-\t{}\t{leader}\t{leader_score:.3}\t-\t-\t{routed_leader}",
             wrong_score.map_or("-".to_string(), |s| format!("{s:.3}")),
         );
-        let led = repeated_rankings(&es, &ns, request)
-            .await
+        let led = reps
             .iter()
-            .any(|top| top.first().is_some_and(|first| first == skill));
+            .any(|routing| routing.lead.as_deref() == Some(*skill));
         if led {
             failures.push((
                 request,

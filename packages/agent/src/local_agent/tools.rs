@@ -3746,6 +3746,114 @@ fn with_created_as_text_note(mut result: Value, as_text: &[String]) -> Value {
     result
 }
 
+/// Where a key the model sent ends up when it is not stored as sent.
+#[derive(Debug, PartialEq)]
+struct StoredAs {
+    sent: String,
+    stored: String,
+    /// The key named a field the type declares, with the type in front.
+    declared: bool,
+}
+
+/// Rewrite the keys of `props` that a core type would refuse as undeclared,
+/// and return what each became.
+///
+/// A core type's schema is closed (ADR-086): a key it does not declare is
+/// refused unless it carries an extension prefix. The model sends such a key
+/// two ways, both measured on the locked model:
+///
+/// - A particular the type has no field for ("note on it that the old queue
+///   shuts down at noon" as `notes`). `field_values`'s description asks for
+///   the `custom:` prefix and the model leaves it off.
+/// - A field the type does declare, with the type in front: `task__status`.
+///   The description says to "prefix it by type".
+///
+/// The refusal named the prefix as an example, and the next call copied the
+/// example into another refused key (`{"custom": []}`); three refusals in a
+/// row ended the turn with no record. A refusal is a result the model has to
+/// turn into a second call (ADR-064, the 2026-10-05 amendment), so the tool
+/// does what the description asks and says so on its result
+/// ([`with_stored_as_note`]): `<type>__<field>` is stored as the field when
+/// the type declares it, and any other undeclared key under `custom:`.
+///
+/// The description is left as it was. One run with the prefix rule taken
+/// out of it stopped the `task__status` key and lost the first call its
+/// `node_type`; that run had other differences in it, so the wording is
+/// unmeasured, not shown to be needed.
+///
+/// Only this tool boundary is lenient: the CLI and the store still refuse
+/// the bare key. A key whose new name is already in `props` is left for the
+/// store to refuse, since two values would claim one field.
+async fn store_undeclared_keys(
+    ns: &NodeService,
+    node_type: &str,
+    props: &mut serde_json::Map<String, Value>,
+) -> Vec<StoredAs> {
+    // A type that cannot be resolved is the write's own error to report.
+    let Ok(undeclared) = ns.undeclared_core_keys(node_type, props).await else {
+        return Vec::new();
+    };
+    let typed = format!("{node_type}__");
+    let mut moved = Vec::new();
+    for sent in undeclared {
+        let field = sent.strip_prefix(&typed).filter(|field| !field.is_empty());
+        let declared = match field {
+            Some(field) => ns.declares_field(node_type, field).await.unwrap_or(false),
+            None => false,
+        };
+        let stored = match field {
+            Some(field) if declared => field.to_string(),
+            _ => format!("custom:{sent}"),
+        };
+        if props.contains_key(&stored) {
+            continue;
+        }
+        if let Some(value) = props.remove(&sent) {
+            props.insert(stored.clone(), value);
+            moved.push(StoredAs {
+                sent,
+                stored,
+                declared,
+            });
+        }
+    }
+    moved
+}
+
+/// `result` with a note naming each key [`store_undeclared_keys`] rewrote,
+/// when it rewrote any. Under `notes`, like [`with_created_as_text_note`]:
+/// what the tool did, stated as a fact about the stored record.
+///
+/// On a dry run nothing is stored, so the note says where the key would go.
+fn with_stored_as_note(
+    mut result: Value,
+    node_type: &str,
+    moved: &[StoredAs],
+    dry_run: bool,
+) -> Value {
+    if moved.is_empty() {
+        return result;
+    }
+    let verb = if dry_run { "would be" } else { "is" };
+    if let Some(object) = result.as_object_mut() {
+        let notes: Vec<String> = moved
+            .iter()
+            .map(|StoredAs { sent, stored, declared }| {
+                if *declared {
+                    format!("'{sent}' is the '{node_type}' field '{stored}', so it {verb} stored as '{stored}'.")
+                } else {
+                    format!(
+                        "'{sent}' is not a field of the built-in type '{node_type}', so it {verb} \
+                         stored as '{stored}'."
+                    )
+                }
+            })
+            .collect();
+        object.insert("notes".to_string(), json!(notes));
+    }
+    result
+}
+
 /// All tool definitions for the graph executor, derived from the registry.
 pub fn all_tool_definitions() -> Vec<ToolDefinition> {
     // Force evaluation of the completeness proof; an associated const is only
@@ -4514,9 +4622,11 @@ impl GraphToolExecutor {
         // Captured before `props` is moved into the input below. See the
         // `content_only` flag on the result for why this is needed.
         let requested_any_properties = !props.is_empty();
-        let properties = Value::Object(props);
 
         let ns = self.node_service()?;
+        let stored_as = store_undeclared_keys(&ns, &params.node_type, &mut props).await;
+        let node_type = params.node_type.clone();
+        let properties = Value::Object(props);
 
         // node_service.compute_title() handles all title derivation:
         // - title_template + properties for schema types that define one
@@ -4608,6 +4718,7 @@ impl GraphToolExecutor {
                 .insert("content_only".into(), json!(true));
         }
 
+        let result = with_stored_as_note(result, &node_type, &stored_as, false);
         Ok(ok_result(tool_call_id, "create_node", result))
     }
 
@@ -4641,18 +4752,37 @@ impl GraphToolExecutor {
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default();
         props.extend(flat_extras);
-        let new_properties = if props.is_empty() {
-            None
-        } else {
-            Some(Value::Object(props))
-        };
 
-        if params.content.is_none() && new_properties.is_none() {
+        if params.content.is_none() && props.is_empty() {
             return Err(ToolError::InvalidArguments {
                 tool: "update_node".into(),
                 reason: "At least one of 'content' or 'field_values' must be provided".into(),
             });
         }
+
+        let ns = self.node_service()?;
+        let node_id = strip_node_uri(&params.id).to_string();
+
+        // The node's type decides which keys its bucket takes. A node that
+        // cannot be read is the update's own error to report.
+        let node_type = if props.is_empty() {
+            None
+        } else {
+            ns.get_node(&node_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|node| node.node_type)
+        };
+        let stored_as = match &node_type {
+            Some(node_type) => store_undeclared_keys(&ns, node_type, &mut props).await,
+            None => Vec::new(),
+        };
+        let new_properties = if props.is_empty() {
+            None
+        } else {
+            Some(Value::Object(props))
+        };
 
         // Counted from what the CALL supplied, not from the merged result: the
         // result carries every property the node has, so a call that changed
@@ -4664,9 +4794,6 @@ impl GraphToolExecutor {
             .and_then(|p| p.as_object())
             .map(|o| o.len())
             .unwrap_or(0);
-
-        let ns = self.node_service()?;
-        let node_id = strip_node_uri(&params.id).to_string();
 
         // No-op gate. The guard above only fires when BOTH fields are absent, so
         // a call carrying `content` alone satisfies it — including when that
@@ -4752,6 +4879,11 @@ impl GraphToolExecutor {
                      was. It predicts rule rejections only; the real write can still be refused."
                 ),
             );
+            // The rules were asked about the keys as they would be stored.
+            let result = match &node_type {
+                Some(node_type) => with_stored_as_note(result, node_type, &stored_as, true),
+                None => result,
+            };
             return Ok(ok_result(tool_call_id, "update_node", result));
         }
 
@@ -4791,6 +4923,10 @@ impl GraphToolExecutor {
             );
         }
 
+        let result = match &node_type {
+            Some(node_type) => with_stored_as_note(result, node_type, &stored_as, false),
+            None => result,
+        };
         Ok(ok_result(tool_call_id, "update_node", result))
     }
 
@@ -9098,6 +9234,317 @@ mod tests {
     /// isolation: the reproducing call returned `is_error=false` and
     /// `updated: true`, which is exactly what a real write returns. It has to be
     /// checked against what the store actually holds afterwards.
+    /// A key a built-in type does not declare, sent to `create_node` or
+    /// `update_node`: stored under `custom:` and said so, not refused.
+    mod undeclared_keys_on_a_built_in_type {
+        use super::update_node_noop_gate::{make_test_service, plain_executor};
+        use super::*;
+
+        /// What `get_node` shows the model for `id`: the flat property map.
+        async fn stored(executor: &GraphToolExecutor, id: &str) -> Value {
+            executor
+                .execute("get_node", json!({ "id": id }))
+                .await
+                .unwrap()
+                .result["properties"]
+                .clone()
+        }
+
+        /// The request that ended with no record: a task with a particular
+        /// the type has no field for, beside one it has.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn create_node_stores_a_particular_the_task_type_has_no_field_for() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+
+            let result = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "task",
+                        "content": "Move notifications service onto the new queue",
+                        "field_values": {
+                            "notes": "Old queue shuts down at noon on Friday.",
+                            "priority": "high",
+                        },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error, "{result:?}");
+            assert_eq!(
+                result.result["notes"],
+                json!([
+                    "'notes' is not a field of the built-in type 'task', so it is stored as \
+                     'custom:notes'."
+                ])
+            );
+
+            let properties = stored(&executor, result.result["id"].as_str().unwrap()).await;
+            assert_eq!(
+                properties["custom:notes"],
+                "Old queue shuts down at noon on Friday."
+            );
+            assert_eq!(properties["priority"], "high");
+            assert!(properties.get("notes").is_none(), "{properties}");
+        }
+
+        /// The key the description's "prefix it by type" is answered with: a
+        /// field the type declares, with the type in front. It is that field.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn create_node_reads_a_type_prefixed_key_as_the_declared_field() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+
+            let result = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "task",
+                        "content": "Review the sync protocol spec",
+                        "field_values": { "task__status": "in_progress" },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error, "{result:?}");
+            assert_eq!(
+                result.result["notes"],
+                json!([
+                    "'task__status' is the 'task' field 'status', so it is stored as 'status'."
+                ])
+            );
+            let properties = stored(&executor, result.result["id"].as_str().unwrap()).await;
+            assert_eq!(properties["status"], "in_progress");
+            assert!(properties.get("task__status").is_none(), "{properties}");
+            assert!(
+                properties.get("custom:task__status").is_none(),
+                "{properties}"
+            );
+        }
+
+        /// The type in front of a name the type does not declare is one more
+        /// undeclared key, and so is another type's name in front.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_type_prefixed_key_for_no_declared_field_is_stored_under_custom() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+
+            let result = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "task",
+                        "content": "Ship crate 7",
+                        "field_values": { "task__weight": "40kg", "text__status": "open" },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error, "{result:?}");
+            let properties = stored(&executor, result.result["id"].as_str().unwrap()).await;
+            assert_eq!(properties["custom:task__weight"], "40kg");
+            assert_eq!(properties["custom:text__status"], "open");
+        }
+
+        /// The type in front of a name the store accepts and no schema
+        /// declares is not a declared field: it is stored under `custom:`
+        /// like any other key, not read as the name behind the prefix.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_type_prefixed_extension_or_bucket_name_is_not_read_as_a_field() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+
+            let result = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "task",
+                        "content": "Ship crate 7",
+                        "field_values": { "task__custom:weight": "40kg", "task__task": "x" },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error, "{result:?}");
+            let properties = stored(&executor, result.result["id"].as_str().unwrap()).await;
+            assert_eq!(properties["custom:task__custom:weight"], "40kg");
+            assert_eq!(properties["custom:task__task"], "x");
+        }
+
+        /// A dry run asks the rules about the keys as they would be stored,
+        /// and says which those are.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_dry_run_names_the_key_it_would_store() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+            let task = executor
+                .execute(
+                    "create_node",
+                    json!({ "node_type": "task", "content": "Renew the domain" }),
+                )
+                .await
+                .unwrap();
+            let id = task.result["id"].as_str().unwrap().to_string();
+
+            let result = executor
+                .execute(
+                    "update_node",
+                    json!({ "id": id, "field_values": { "registrar": "Gandi" }, "dry_run": true }),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error, "{result:?}");
+            assert_eq!(result.result["dry_run"], true);
+            assert_eq!(
+                result.result["notes"],
+                json!([
+                    "'registrar' is not a field of the built-in type 'task', so it would be stored as \
+                     'custom:registrar'."
+                ])
+            );
+            let properties = stored(&executor, &id).await;
+            assert!(properties.get("custom:registrar").is_none(), "{properties}");
+        }
+
+        /// The declared field sent beside its type-prefixed form: two values
+        /// for one field, so the store's refusal stands.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_field_sent_both_plain_and_type_prefixed_is_left_to_be_refused() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+
+            let outcome = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "task",
+                        "content": "Ship crate 7",
+                        "field_values": { "status": "done", "task__status": "open" },
+                    }),
+                )
+                .await;
+            let refused = match outcome {
+                Ok(result) => result.is_error,
+                Err(_) => true,
+            };
+            assert!(refused, "the prefixed key must not overwrite the plain one");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_declared_or_already_prefixed_key_is_stored_as_sent_with_no_note() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+
+            let result = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "task",
+                        "content": "Rotate the staging API keys",
+                        "field_values": { "priority": "high", "custom:weight": "40kg" },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error, "{result:?}");
+            assert!(result.result.get("notes").is_none(), "{result:?}");
+            let properties = stored(&executor, result.result["id"].as_str().unwrap()).await;
+            assert_eq!(properties["priority"], "high");
+            assert_eq!(properties["custom:weight"], "40kg");
+        }
+
+        /// A type the user defined is open: its bucket takes the bare key.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_user_defined_type_keeps_the_bare_key() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+            let created = executor
+                .execute(
+                    "create_schema",
+                    json!({
+                        "name": "Crate",
+                        "fields": [{ "name": "label", "type": "text" }],
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!created.is_error, "{created:?}");
+            let result = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "crate",
+                        "content": "Crate 7",
+                        "field_values": { "weight": "40kg" },
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error, "{result:?}");
+            assert!(result.result.get("notes").is_none(), "{result:?}");
+            let properties = stored(&executor, result.result["id"].as_str().unwrap()).await;
+            assert_eq!(properties["weight"], "40kg");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn update_node_stores_a_particular_the_task_type_has_no_field_for() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+            let task = executor
+                .execute(
+                    "create_node",
+                    json!({ "node_type": "task", "content": "Renew the domain" }),
+                )
+                .await
+                .unwrap();
+            let id = task.result["id"].as_str().unwrap().to_string();
+
+            let result = executor
+                .execute(
+                    "update_node",
+                    json!({ "id": id, "field_values": { "registrar": "Gandi" } }),
+                )
+                .await
+                .unwrap();
+            assert!(!result.is_error, "{result:?}");
+            assert_eq!(
+                result.result["notes"],
+                json!([
+                    "'registrar' is not a field of the built-in type 'task', so it is stored as \
+                     'custom:registrar'."
+                ])
+            );
+            assert_eq!(result.result["updated"], true);
+            let properties = stored(&executor, &id).await;
+            assert_eq!(properties["custom:registrar"], "Gandi");
+        }
+
+        /// Two values would claim one stored field, so neither is moved and
+        /// the store refuses the bare key as it does for every other caller.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_key_sent_both_bare_and_prefixed_is_left_to_be_refused() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns);
+
+            let outcome = executor
+                .execute(
+                    "create_node",
+                    json!({
+                        "node_type": "task",
+                        "content": "Ship crate 7",
+                        "field_values": { "weight": "40kg", "custom:weight": "41kg" },
+                    }),
+                )
+                .await;
+            let refused = match outcome {
+                Ok(result) => result.is_error,
+                Err(_) => true,
+            };
+            assert!(refused, "the bare key must not overwrite the prefixed one");
+        }
+    }
+
     /// Collection assignment on `create_node`, the one-call form the skill
     /// guidance leads with. These share `update_node_noop_gate`'s fixtures
     /// (`make_test_service`/`plain_executor`) rather than duplicating a second

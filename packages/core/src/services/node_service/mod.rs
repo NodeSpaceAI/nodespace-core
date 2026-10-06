@@ -1040,6 +1040,12 @@ pub(crate) fn is_extension_field_name(key: &str) -> bool {
         .any(|prefix| key.len() > prefix.len() && key.starts_with(prefix))
 }
 
+/// Whether a core type's closed bucket takes a key its schema does not
+/// declare: bookkeeping (`_`-prefixed) or a namespaced extension field.
+pub(crate) fn is_open_key(key: &str) -> bool {
+    key.starts_with('_') || is_extension_field_name(key)
+}
+
 /// Check if a string matches date node format: YYYY-MM-DD
 ///
 /// Valid examples: "2025-10-13", "2024-01-01"

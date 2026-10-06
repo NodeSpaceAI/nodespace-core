@@ -3377,7 +3377,7 @@ impl NodeService {
             };
             for key in bucket.keys() {
                 let declared = owners.get(key).is_some_and(|owner| owner == scope);
-                if declared || key.starts_with('_') || is_extension_field_name(key) {
+                if declared || is_open_key(key) {
                     continue;
                 }
                 return Err(NodeServiceError::invalid_update(format!(
@@ -3388,6 +3388,65 @@ impl NodeService {
             }
         }
         Ok(())
+    }
+
+    /// The keys of a flat property write to a `node_type` node that
+    /// [`Self::reject_undeclared_core_keys`] would refuse, in map order.
+    ///
+    /// A flat key is stored in the bucket of the schema that declares it, or
+    /// in the node's own bucket when none does. So it is refused exactly when
+    /// the node's own type is a core type and no schema in its chain declares
+    /// the key. Three kinds of key are not refused that way:
+    ///
+    /// - A key named after a type in the chain that holds an object. It
+    ///   addresses that type's bucket ([`Self::unnest_ancestor_buckets`]);
+    ///   holding anything else it is one more undeclared key.
+    /// - A derived attribute, which has its own refusal.
+    /// - Any key of a schema node. A schema's definition is not bucketed,
+    ///   and [`Self::rebucket_and_validate_with`] returns before the check.
+    /// - Any key beside the node's own bucket. A map that already holds the
+    ///   type's bucket as an object is taken as bucketed and not normalized,
+    ///   so a flat key next to it never enters a bucket.
+    ///
+    /// For a caller that stores such a key under an extension prefix instead
+    /// of sending a write it knows will be refused.
+    pub async fn undeclared_core_keys(
+        &self,
+        node_type: &str,
+        properties: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Vec<String>, NodeServiceError> {
+        if crate::models::CoreNodeType::from_id(node_type).is_none()
+            || crate::models::CoreNodeType::Schema.is_exactly(node_type)
+            || properties.get(node_type).is_some_and(|own| own.is_object())
+        {
+            return Ok(Vec::new());
+        }
+        let (_, owners, chain) = self.field_ownership_for_write(node_type).await?;
+        let derived = crate::models::CoreNodeType::derived_attributes_in(&chain);
+        Ok(properties
+            .iter()
+            .filter(|(key, value)| {
+                let names_a_bucket = value.is_object() && chain.iter().any(|scope| scope == *key);
+                !owners.contains_key(*key)
+                    && !is_open_key(key)
+                    && !names_a_bucket
+                    && !derived.iter().any(|attribute| attribute.name() == *key)
+            })
+            .map(|(key, _)| key.clone())
+            .collect())
+    }
+
+    /// Whether a schema in `node_type`'s chain declares a field called
+    /// `name`. Narrower than "a write of it is not refused": an extension
+    /// key, a bookkeeping key and a bucket's own name are all accepted and
+    /// none is a declared field.
+    pub async fn declares_field(
+        &self,
+        node_type: &str,
+        name: &str,
+    ) -> Result<bool, NodeServiceError> {
+        let (_, owners, _) = self.field_ownership_for_write(node_type).await?;
+        Ok(owners.contains_key(name))
     }
 
     /// Lift an ancestor's bucket out of the node's own bucket, where flat
