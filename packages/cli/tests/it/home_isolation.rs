@@ -106,6 +106,40 @@ fn command(real: &Path, args: &[&str]) -> Command {
     command
 }
 
+/// Whether the app installed on this machine stops an `uninstall` that is not
+/// redirected: there is one, and it does not declare itself the free
+/// NodeSpace (ADR-084).
+///
+/// The compiled binary checks the machine's real app, which no test can
+/// replace, so a test that runs it without a redirect expects whichever
+/// outcome that app calls for. The check's own cases are unit-tested against
+/// fixture bundles beside the command.
+fn installed_app_blocks_uninstall() -> bool {
+    let app = Path::new("/Applications/NodeSpace.app");
+    if !cfg!(target_os = "macos") || matches!(app.try_exists(), Ok(false)) {
+        return false;
+    }
+    let info = plist::Value::from_file(app.join("Contents").join("Info.plist")).ok();
+    let product = info
+        .as_ref()
+        .and_then(plist::Value::as_dictionary)
+        .and_then(|info| info.get("NodeSpaceProduct"))
+        .and_then(plist::Value::as_string);
+    product != Some("community")
+}
+
+/// The refusal beside an app that is not the free NodeSpace: the command
+/// fails with the reason and removes nothing from `home`, which held `before`.
+fn assert_refused(output: &Output, home: &Path, before: &BTreeMap<PathBuf, Vec<u8>>) {
+    assert!(!output.status.success(), "stdout: {}", stdout(output));
+    let err = stderr(output);
+    assert!(
+        err.contains("This command removes only the free NodeSpace."),
+        "got: {err}"
+    );
+    assert_eq!(&snapshot(home), before, "a refusal must remove nothing");
+}
+
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -156,16 +190,22 @@ fn uninstall_removes_the_redirected_install_and_leaves_the_real_home_alone() {
 
 /// With no redirect the user's own home is the one uninstalled: the binaries,
 /// sockets, lock files and this platform's service registration go, and the
-/// data stays.
+/// data stays. Beside an installed app that is not the free NodeSpace the
+/// command refuses instead, and the home stays whole.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn uninstall_without_a_redirect_removes_the_install_in_the_users_home() {
     let real = real_home();
+    let before = snapshot(real.path());
 
     let output = command(real.path(), &["uninstall"])
         .output()
         .expect("run nodespace");
 
+    if installed_app_blocks_uninstall() {
+        assert_refused(&output, real.path(), &before);
+        return;
+    }
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     let state_dir = PathBuf::from(STATE_DIR);
     // The other platform's service file stands in for an unrelated file.
@@ -201,6 +241,7 @@ fn uninstall_without_a_redirect_removes_the_install_in_the_users_home() {
 #[test]
 fn an_empty_nodespace_home_is_not_a_redirect_to_the_working_directory() {
     let real = real_home();
+    let real_before = snapshot(real.path());
     let working_dir = tempfile::tempdir().expect("working dir");
     populate_state_dir(working_dir.path(), "working dir");
     let before = snapshot(working_dir.path());
@@ -211,8 +252,14 @@ fn an_empty_nodespace_home_is_not_a_redirect_to_the_working_directory() {
         .output()
         .expect("run nodespace");
 
-    assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(snapshot(working_dir.path()), before);
+    // Only a run that is not redirected is checked against the installed app,
+    // so its refusal shows the empty value was no redirect either.
+    if installed_app_blocks_uninstall() {
+        assert_refused(&output, real.path(), &real_before);
+        return;
+    }
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert!(
         !real.path().join(STATE_DIR).join("bin").exists(),
         "the user's own install is the one removed"

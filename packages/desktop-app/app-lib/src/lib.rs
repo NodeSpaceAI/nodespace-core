@@ -33,6 +33,10 @@ pub mod daemon_setup;
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 pub mod incompatible_database;
 
+// Other NodeSpace daemons and service registrations this app cannot replace
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub mod coexistence;
+
 // The bundled embedding model, copied into the daemon's model directory
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 mod bundled_model;
@@ -116,9 +120,11 @@ pub(crate) const DATA_PLANE_READY_EVENT: &str = "daemon:data-plane-ready";
 
 /// Report the current daemon health to the frontend.
 ///
-/// Returns "healthy", "starting", "not_running", or "incompatible_database"
-/// (not running because it refused a database another version created). The
-/// frontend uses this to decide which error state to show.
+/// Returns "healthy", "starting", "not_running", "incompatible_database" (not
+/// running because it refused a database another version created), or
+/// "other_daemon" (another daemon, outside this app's service registration,
+/// holds the socket). The frontend uses this to decide which error state to
+/// show.
 #[tauri::command]
 async fn check_daemon_status() -> String {
     daemon_status_body().await
@@ -133,21 +139,23 @@ async fn check_daemon_status() -> String {
 /// function `pub` collides with them (`E0255`, defined multiple times).
 pub async fn daemon_status_body() -> String {
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-    {
+    let status = crate::coexistence::status_unless_other_daemon(async {
         use daemon_setup::{check_daemon_socket, DaemonStatus};
 
         // Probe the SAME socket the gRPC client dials (honors NODESPACED_SOCKET).
         let socket_path = crate::services::grpc_client::resolve_socket_path();
-        return match check_daemon_socket(socket_path.as_path()).await {
+        match check_daemon_socket(socket_path.as_path()).await {
             DaemonStatus::Healthy => "healthy".to_string(),
             DaemonStatus::Starting => "starting".to_string(),
             DaemonStatus::NotRunning => {
                 crate::incompatible_database::daemon_down_status().to_string()
             }
-        };
-    }
+        }
+    })
+    .await;
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    "healthy".to_string()
+    let status = "healthy".to_string();
+    status
 }
 
 // Include test module
@@ -598,47 +606,16 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                 let log_rotation_token = shutdown_token_for_setup.child_token();
 
                 tauri::async_runtime::spawn(async move {
-                    // Ensure nodespaced service is installed and running (launchd on macOS, systemd on Linux).
-                    {
-                        use daemon_setup::{ensure_daemon_running, DaemonStatus};
+                    // Ensure nodespaced service is installed and running (launchd on macOS,
+                    // systemd on Linux). Signal the frontend to hold off on gRPC calls
+                    // until the daemon is ready, then report how the start went.
+                    window_routing::emit_routed(&app_handle, "daemon-status", "starting", None);
 
-                        // Signal the frontend to hold off on gRPC calls until the daemon is ready.
-                        window_routing::emit_routed(&app_handle, "daemon-status", "starting", None);
+                    // The daemon looks for its embedding model only when it
+                    // starts, so the bundled copy goes in place first.
+                    bundled_model::provision_bundled_model(&app_handle).await;
 
-                        // The daemon looks for its embedding model only when it
-                        // starts, so the bundled copy goes in place first.
-                        bundled_model::provision_bundled_model(&app_handle).await;
-
-                        match ensure_daemon_running(&app_handle).await {
-                            Ok(DaemonStatus::Healthy) => {
-                                tracing::info!("nodespaced is running");
-                                window_routing::emit_routed(
-                                    &app_handle,
-                                    "daemon-status",
-                                    "healthy",
-                                    None,
-                                );
-                            }
-                            Ok(status) => {
-                                tracing::warn!("nodespaced not yet healthy: {:?}", status);
-                                window_routing::emit_routed(
-                                    &app_handle,
-                                    "daemon-status",
-                                    incompatible_database::daemon_down_status(),
-                                    None,
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!("Daemon setup failed: {:#}", e);
-                                window_routing::emit_routed(
-                                    &app_handle,
-                                    "daemon-status",
-                                    incompatible_database::daemon_down_status(),
-                                    None,
-                                );
-                            }
-                        }
-                    }
+                    daemon_setup::start_daemon_and_report(&app_handle).await;
 
                     // Windows only: periodically re-check the live daemon log files for
                     // the rest of this app session and restart nodespaced to rotate them
@@ -727,8 +704,11 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                     // above is done, check the daemon socket the same way
                     // `check_daemon_status` does and emit `not_running` so app-shell
                     // shows its error banner + retry. `Starting` is transient — only
-                    // `NotRunning` trips the banner.
-                    let socket_reachable = {
+                    // `NotRunning` trips the banner. A socket another daemon holds
+                    // counts as unreachable without a probe: the startup already
+                    // reported it, and the frontend is not told to load from that
+                    // daemon.
+                    let socket_reachable = crate::coexistence::other_daemon().is_none() && {
                         use daemon_setup::{check_daemon_socket, DaemonStatus};
                         // Probe the SAME socket the gRPC client dials (honors
                         // NODESPACED_SOCKET), not the hardcoded default — else a
@@ -828,6 +808,9 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             check_daemon_status,
             incompatible_database::get_incompatible_database,
             incompatible_database::reset_incompatible_database,
+            coexistence::get_other_daemon,
+            coexistence::retry_daemon_start,
+            coexistence::foreign_machine_wide_registration,
             take_pending_tray_database_selection,
             window_routing::pin_window_database,
             update_check::check_for_update_command,

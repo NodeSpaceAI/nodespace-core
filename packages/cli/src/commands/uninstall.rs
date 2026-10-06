@@ -9,29 +9,68 @@ use super::skill;
 #[derive(Args, Debug)]
 pub struct UninstallArgs {}
 
+/// Where the app is installed, on the one platform that installs one.
+#[cfg(target_os = "macos")]
+const INSTALLED_APP: Option<&str> = Some("/Applications/NodeSpace.app");
+#[cfg(not(target_os = "macos"))]
+const INSTALLED_APP: Option<&str> = None;
+
+/// The `Info.plist` key an app bundle declares its product in (ADR-084), and
+/// the value the free NodeSpace declares.
+const PRODUCT_KEY: &str = "NodeSpaceProduct";
+const COMMUNITY_PRODUCT: &str = "community";
+
+const NOT_COMMUNITY_MESSAGE: &str = "The NodeSpace app on this Mac is a different NodeSpace \
+    product, or an older NodeSpace that does not say which product it is. This command removes \
+    only the free NodeSpace. To remove that app, move /Applications/NodeSpace.app to the Trash, \
+    then run this command again to remove the rest.";
+
 pub fn run(_args: UninstallArgs) -> Result<()> {
     // The state directory comes from the daemon's own resolver, so it follows
     // `NODESPACE_HOME`.
     let state_dir = nodespace_daemon::nodespace_dir()?;
-
-    // The service registration and the agent skills live in the user's own
-    // home, not the NodeSpace home, and belong to the install there. A
-    // redirected run removes only what is under its own home.
     let redirected = nodespace_daemon::nodespace_home_override().is_some();
 
-    if !redirected {
+    uninstall(&state_dir, redirected, INSTALLED_APP.map(Path::new), || {
         stop_daemon();
-    }
-    // Before the bin directory goes: the skill installer sits in it.
+        // Before the bin directory goes: the skill installer sits in it.
+        report_skill_removal(&mut std::io::stdout(), skill::resolve_installer());
+    })
+}
+
+/// Uninstalls the NodeSpace whose state directory is `state_dir`.
+///
+/// The service registration and the agent skills live in the user's own
+/// home, not the NodeSpace home, and belong to the install there;
+/// `remove_from_user_home` removes them. A run `redirected` by
+/// `NODESPACE_HOME` removes only what is under its own home, so it never
+/// calls it.
+///
+/// `installed_app` is the app bundle that install's daemon and per-user files
+/// belong to. This command removes only the free NodeSpace: beside any other
+/// app it would stop that app's daemon and delete its per-user files while
+/// leaving the app itself behind, so it refuses before touching anything (see
+/// [`uninstall_blocker`]). A redirected run is not checked, because it leaves
+/// the daemon and everything else outside its own home alone, whichever app is
+/// installed.
+fn uninstall(
+    state_dir: &Path,
+    redirected: bool,
+    installed_app: Option<&Path>,
+    remove_from_user_home: impl FnOnce(),
+) -> Result<()> {
     if redirected {
         println!(
             "NODESPACE_HOME is set: the daemon service and agent skills in your own home were left in place."
         );
     } else {
-        report_skill_removal(&mut std::io::stdout(), skill::resolve_installer());
+        if let Some(message) = installed_app.and_then(uninstall_blocker) {
+            anyhow::bail!(message);
+        }
+        remove_from_user_home();
     }
-    remove_bin_dir(&state_dir);
-    remove_sock(&state_dir);
+    remove_bin_dir(state_dir);
+    remove_sock(state_dir);
 
     println!(
         "NodeSpace uninstalled. Your data at {} has been preserved.",
@@ -39,6 +78,31 @@ pub fn run(_args: UninstallArgs) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Why `uninstall` must not run with the app bundle at `app_bundle`
+/// installed, or `None` when it may.
+///
+/// No bundle means a headless install, which is the free NodeSpace. A bundle
+/// may proceed only when its `Contents/Info.plist` (XML or binary) declares
+/// [`PRODUCT_KEY`] = [`COMMUNITY_PRODUCT`]. Anything else refuses: another
+/// value, no key (an app built before the key existed, which cannot say what
+/// it is), a value that isn't a string, or a plist that can't be read.
+fn uninstall_blocker(app_bundle: &Path) -> Option<String> {
+    if let Ok(false) = app_bundle.try_exists() {
+        return None;
+    }
+    let info = plist::Value::from_file(app_bundle.join("Contents").join("Info.plist")).ok();
+    let product = info
+        .as_ref()
+        .and_then(plist::Value::as_dictionary)
+        .and_then(|info| info.get(PRODUCT_KEY))
+        .and_then(plist::Value::as_string);
+    if product == Some(COMMUNITY_PRODUCT) {
+        None
+    } else {
+        Some(NOT_COMMUNITY_MESSAGE.to_owned())
+    }
 }
 
 /// Remove the NodeSpace skill from every detected agent harness (Claude
@@ -155,6 +219,216 @@ fn remove_sock(state_dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    /// Creates `<dir>/NodeSpace.app/Contents` and returns the bundle path.
+    /// Every bundle lives in a tempdir; no test reads the real install.
+    fn app_bundle(dir: &Path) -> PathBuf {
+        let bundle = dir.join("NodeSpace.app");
+        fs::create_dir_all(bundle.join("Contents")).expect("create bundle");
+        bundle
+    }
+
+    fn info_plist(bundle: &Path) -> PathBuf {
+        bundle.join("Contents").join("Info.plist")
+    }
+
+    /// An `Info.plist` like the app's, with `product` under [`PRODUCT_KEY`]
+    /// when given.
+    fn info(product: Option<plist::Value>) -> plist::Value {
+        let mut info = plist::Dictionary::new();
+        info.insert("CFBundleIdentifier".into(), "com.nodespace.desktop".into());
+        if let Some(product) = product {
+            info.insert(PRODUCT_KEY.into(), product);
+        }
+        plist::Value::Dictionary(info)
+    }
+
+    /// The blocker for a bundle whose XML `Info.plist` is `info`.
+    fn blocker_for_xml(info: plist::Value) -> Option<String> {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle = app_bundle(dir.path());
+        info.to_file_xml(info_plist(&bundle))
+            .expect("write Info.plist");
+        uninstall_blocker(&bundle)
+    }
+
+    fn refused() -> Option<String> {
+        Some(NOT_COMMUNITY_MESSAGE.to_owned())
+    }
+
+    /// Written out whole, so a change to the constant cannot pass unnoticed:
+    /// ADR-084 fixes this wording.
+    #[test]
+    fn the_refusal_is_the_decided_wording() {
+        assert_eq!(
+            NOT_COMMUNITY_MESSAGE,
+            "The NodeSpace app on this Mac is a different NodeSpace product, or an older \
+             NodeSpace that does not say which product it is. This command removes only the \
+             free NodeSpace. To remove that app, move /Applications/NodeSpace.app to the \
+             Trash, then run this command again to remove the rest."
+        );
+    }
+
+    /// A headless install has no app, and uninstalls as it always has.
+    #[test]
+    fn uninstall_blocker_allows_no_app() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(uninstall_blocker(&dir.path().join("NodeSpace.app")), None);
+    }
+
+    #[test]
+    fn uninstall_blocker_allows_an_app_declaring_community() {
+        assert_eq!(blocker_for_xml(info(Some(COMMUNITY_PRODUCT.into()))), None);
+    }
+
+    /// Built bundles can carry a binary plist; the check reads both formats.
+    #[test]
+    fn uninstall_blocker_allows_a_binary_plist_declaring_community() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle = app_bundle(dir.path());
+        info(Some(COMMUNITY_PRODUCT.into()))
+            .to_file_binary(info_plist(&bundle))
+            .expect("write binary Info.plist");
+        assert!(fs::read(info_plist(&bundle))
+            .expect("read back")
+            .starts_with(b"bplist00"));
+
+        assert_eq!(uninstall_blocker(&bundle), None);
+    }
+
+    #[test]
+    fn uninstall_blocker_refuses_an_app_declaring_another_product() {
+        for product in ["other-product", ""] {
+            assert_eq!(
+                blocker_for_xml(info(Some(product.into()))),
+                refused(),
+                "{PRODUCT_KEY} = {product:?}"
+            );
+        }
+    }
+
+    /// An app built before the key existed can't say which product it is.
+    #[test]
+    fn uninstall_blocker_refuses_an_app_without_the_key() {
+        assert_eq!(blocker_for_xml(info(None)), refused());
+    }
+
+    #[test]
+    fn uninstall_blocker_refuses_a_product_that_is_not_a_string() {
+        assert_eq!(blocker_for_xml(info(Some(true.into()))), refused());
+    }
+
+    #[test]
+    fn uninstall_blocker_refuses_an_unparseable_info_plist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bundle = app_bundle(dir.path());
+        fs::write(info_plist(&bundle), "not a property list").expect("write Info.plist");
+        assert_eq!(uninstall_blocker(&bundle), refused());
+    }
+
+    #[test]
+    fn uninstall_blocker_refuses_an_app_without_an_info_plist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(uninstall_blocker(&app_bundle(dir.path())), refused());
+    }
+
+    /// A state directory holding an installed binary, and that binary's path.
+    fn installed_state_dir(home: &Path) -> (PathBuf, PathBuf) {
+        let state_dir = home.join(nodespace_proto::socket::STATE_DIR);
+        let binary = state_dir.join("bin").join("nodespace");
+        fs::create_dir_all(binary.parent().expect("bin dir")).expect("create bin dir");
+        fs::write(&binary, "").expect("write binary");
+        (state_dir, binary)
+    }
+
+    /// A bundle [`uninstall_blocker`] refuses: its `Info.plist` has no
+    /// [`PRODUCT_KEY`].
+    fn app_without_the_key(dir: &Path) -> PathBuf {
+        let bundle = app_bundle(dir);
+        info(None)
+            .to_file_xml(info_plist(&bundle))
+            .expect("write Info.plist");
+        bundle
+    }
+
+    /// Beside an app that is not the free NodeSpace the command stops before
+    /// it removes anything, in the user's home or the state directory.
+    #[test]
+    fn uninstall_refuses_beside_another_app_and_removes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, binary) = installed_state_dir(dir.path());
+        let app = app_without_the_key(dir.path());
+        let mut removed_from_user_home = false;
+
+        let error = uninstall(&state_dir, false, Some(&app), || {
+            removed_from_user_home = true;
+        })
+        .expect_err("refused");
+
+        assert_eq!(error.to_string(), NOT_COMMUNITY_MESSAGE);
+        assert!(!removed_from_user_home, "the service and skills must stay");
+        assert!(binary.exists(), "the state directory must be left alone");
+    }
+
+    /// Beside the free NodeSpace's app, or with no app at all (a headless
+    /// install, and every platform but macOS), the whole install goes.
+    #[test]
+    fn uninstall_proceeds_beside_the_community_app_and_with_no_app() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let community = app_bundle(dir.path());
+        info(Some(COMMUNITY_PRODUCT.into()))
+            .to_file_xml(info_plist(&community))
+            .expect("write Info.plist");
+        let absent = dir.path().join("absent").join("NodeSpace.app");
+
+        for app in [Some(community.as_path()), Some(absent.as_path()), None] {
+            let home = tempfile::tempdir().expect("tempdir");
+            let (state_dir, binary) = installed_state_dir(home.path());
+            let mut removed_from_user_home = false;
+
+            uninstall(&state_dir, false, app, || removed_from_user_home = true)
+                .expect("uninstalled");
+
+            assert!(removed_from_user_home, "app: {app:?}");
+            assert!(!binary.exists(), "app: {app:?}");
+        }
+    }
+
+    /// A run redirected by `NODESPACE_HOME` touches only its own home, so the
+    /// app installed on the machine neither stops it nor is affected by it.
+    #[test]
+    fn a_redirected_uninstall_is_not_checked_against_the_installed_app() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (state_dir, binary) = installed_state_dir(dir.path());
+        let app = app_without_the_key(dir.path());
+        let mut removed_from_user_home = false;
+
+        uninstall(&state_dir, true, Some(&app), || {
+            removed_from_user_home = true;
+        })
+        .expect("uninstalled");
+
+        assert!(!removed_from_user_home, "the service and skills must stay");
+        assert!(!binary.exists(), "the redirected install must go");
+    }
+
+    /// `run` is the one caller that names the real install, and no test may
+    /// run it against this machine's app, so its hand-off is checked in the
+    /// source: the installed app goes to [`uninstall`], whose refusal the
+    /// tests above cover.
+    #[test]
+    fn run_hands_the_installed_app_to_the_checked_uninstall() {
+        let source = include_str!("uninstall.rs");
+        let run = &source[source.find("pub fn run(").expect("run")..];
+        let run = &run[..run.find("\n}\n").expect("end of run")];
+        assert!(
+            run.contains("uninstall(&state_dir, redirected, INSTALLED_APP.map(Path::new), "),
+            "run no longer passes the installed app to uninstall:\n{run}"
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(INSTALLED_APP, Some("/Applications/NodeSpace.app"));
+    }
 
     /// Every flavour's socket and lock file must go, and nothing beside them.
     /// The daemon leaves its lock file behind on every exit, so a lock that

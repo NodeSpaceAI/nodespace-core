@@ -45,6 +45,11 @@ shell-words = "1.1"
 # authored before a given call cannot predict or forge it.
 uuid = { workspace = true }
 
+# Reads an installed app's Info.plist (XML or binary) for `uninstall`'s
+# product check -- already in the lockfile as a Tauri dependency. Only macOS
+# has an app to check; the check itself compiles and is tested everywhere.
+plist = "1.10"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 

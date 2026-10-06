@@ -189,7 +189,25 @@ pkgbuild \
 echo "==> Building distribution .pkg"
 mkdir -p "${OUTPUT_DIR}"
 
-# Write a minimal distribution XML so productbuild can produce a flat pkg
+# Write a minimal distribution XML so productbuild can produce a flat pkg.
+#
+# The installation check refuses to install over another NodeSpace product
+# (ADR-084 §5) before the Installer goes any further, and shows why in a
+# dialog. scripts/pkg-resources/preinstall makes the same decision for every
+# install, so keep the two in step: the installed bundle proceeds only when
+# its Info.plist declares NodeSpaceProduct = community. Nothing overrides
+# that; the refusal says to move the installed app to the Trash. Both read
+# static data and run nothing the previous install left on disk. rootVolumeOnly pins the target to the
+# startup disk, so the check looks at /Applications there.
+#
+# If the check itself throws, it logs and lets the install go on to preinstall,
+# which decides the same way: an Installer quirk must not block every install.
+# The release workflow fails the build if that log line ever appears.
+#
+# This is an unquoted heredoc: the script below must not contain a dollar
+# sign, a backtick or a backslash, or the shell would expand it.
+#
+# --- BEGIN distribution-xml (verified by scripts/pkg-installation-check.test.ts) ---
 DIST_XML="${BUILD_DIR}/distribution.xml"
 cat > "${DIST_XML}" <<DIST_XML_EOF
 <?xml version="1.0" encoding="utf-8"?>
@@ -198,6 +216,28 @@ cat > "${DIST_XML}" <<DIST_XML_EOF
     <organization>com.nodespace</organization>
     <domains enable_localSystem="true"/>
     <options customize="never" require-scripts="true" rootVolumeOnly="true"/>
+    <installation-check script="nodespaceInstallationCheck()"/>
+    <script><![CDATA[
+function nodespaceInstallationCheck() {
+    try {
+        var app = '/Applications/NodeSpace.app';
+        if (!system.files.fileExistsAtPath(app)) {
+            return true;
+        }
+        var info = system.files.plistAtPath(app + '/Contents/Info.plist');
+        if (info && String(info.NodeSpaceProduct) === 'community') {
+            return true;
+        }
+        my.result.type = 'Fatal';
+        my.result.title = 'This installer does not recognise the installed NodeSpace';
+        my.result.message = 'The NodeSpace app on this Mac is a different NodeSpace product, or an older NodeSpace that does not say which product it is. To replace it, move /Applications/NodeSpace.app to the Trash, then run this installer again. Your databases stay on this Mac.';
+        return false;
+    } catch (e) {
+        system.log('NodeSpace installation check failed: ' + e);
+        return true;
+    }
+}
+    ]]></script>
     <pkg-ref id="com.nodespace.pkg"/>
     <choices-outline>
         <line choice="default">
@@ -211,6 +251,7 @@ cat > "${DIST_XML}" <<DIST_XML_EOF
     <pkg-ref id="com.nodespace.pkg" version="${PKG_VERSION}" onConclusion="none">NodeSpace-component.pkg</pkg-ref>
 </installer-gui-script>
 DIST_XML_EOF
+# --- END distribution-xml ---
 
 productbuild \
     --distribution "${DIST_XML}" \

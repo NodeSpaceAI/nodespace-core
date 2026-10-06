@@ -10,6 +10,9 @@
  *   - an `incompatibleDatabase` flag for the case the daemon is down on
  *     purpose: it refused a database another version of NodeSpace created,
  *     which only moving that database aside can fix
+ *   - an `otherDaemon` flag for another NodeSpace daemon, outside this app's
+ *     service registration, holding the socket, which the user stops before
+ *     choosing Retry (ADR-084 §4.3)
  *   - a set of "on reconnect" callbacks that daemon-dependent stores
  *     (schemas, collections, children-tree) register to retry their load
  *     once the daemon transitions to healthy
@@ -79,6 +82,13 @@ export interface DaemonStatusState {
    * {@link resetIncompatibleDatabase}.
    */
   incompatibleDatabase: boolean;
+  /**
+   * True once an `other_daemon` status has been observed: another NodeSpace
+   * daemon, outside this app's service registration, holds the socket, and
+   * this app's daemon could not start beside it. It stays until a retry of
+   * the start finds the socket free of it; see {@link retryDaemonStart}.
+   */
+  otherDaemon: boolean;
 }
 
 export type { IncompatibleDatabase };
@@ -100,7 +110,7 @@ export interface ResetIncompatibleDatabaseResult {
 export interface DaemonStatusSource {
   /**
    * Pull the current status once. Resolves to `"healthy"`, `"starting"`,
-   * `"not_running"`, or `"incompatible_database"`.
+   * `"not_running"`, `"incompatible_database"`, or `"other_daemon"`.
    */
   getCurrent(): Promise<string>;
   /** Subscribe to pushed status changes. Returns an unsubscribe function. */
@@ -118,7 +128,8 @@ export interface DaemonStatusSource {
 const _status = writable<DaemonStatusState>({
   connecting: true,
   unreachable: false,
-  incompatibleDatabase: false
+  incompatibleDatabase: false,
+  otherDaemon: false
 });
 
 const reconnectListeners = new Set<() => void>();
@@ -130,15 +141,15 @@ let steadyStatePoll: ReturnType<typeof setInterval> | null = null;
 /** Guards against overlapping polls if a `getCurrent` probe runs long. */
 let pollInFlight = false;
 /**
- * True while {@link resetIncompatibleDatabase} is moving the database aside and
- * restarting the daemon. Statuses observed meanwhile (a poll landing while the
- * daemon is still loading reports `not_running`) describe a restart in
- * progress, not a new failure, so they are held back and the reset's own final
- * status is applied instead. Without this the incompatible-database banner —
+ * True while {@link resetIncompatibleDatabase} or {@link retryDaemonStart} is
+ * (re)starting the daemon. Statuses observed meanwhile (a poll landing while
+ * the daemon is still loading reports `not_running`) describe a restart in
+ * progress, not a new failure, so they are held back and the restart's own
+ * final status is applied instead. Without this the banner that started it —
  * and its in-progress state — would be swapped for the generic not-running
- * banner mid-reset.
+ * banner mid-restart.
  */
-let resetInFlight = false;
+let restartInFlight = false;
 
 /**
  * Register a callback to run whenever the daemon transitions to healthy
@@ -167,12 +178,13 @@ function fireReconnectListeners(): void {
 
 /** Apply a status string to shared state and fan out reconnect callbacks. Transport-agnostic. */
 function applyStatus(payload: string): void {
-  if (resetInFlight) return;
+  if (restartInFlight) return;
   const healthy = payload === 'healthy';
   _status.set({
     connecting: false,
     unreachable: payload === 'not_running',
-    incompatibleDatabase: payload === 'incompatible_database'
+    incompatibleDatabase: payload === 'incompatible_database',
+    otherDaemon: payload === 'other_daemon'
   });
 
   if (healthy && !lastHealthy) {
@@ -293,7 +305,7 @@ export function stopDaemonStatusListener(): void {
     steadyStatePoll = null;
   }
   pollInFlight = false;
-  resetInFlight = false;
+  restartInFlight = false;
   started = false;
   lastHealthy = false;
   activeSource = null;
@@ -329,13 +341,51 @@ export async function getIncompatibleDatabase(): Promise<IncompatibleDatabase | 
  * Rejects with the backend's message when nothing was moved.
  */
 export async function resetIncompatibleDatabase(): Promise<ResetIncompatibleDatabaseResult> {
-  resetInFlight = true;
+  restartInFlight = true;
   let result: ResetIncompatibleDatabaseResult;
   try {
     result = await invoke<ResetIncompatibleDatabaseResult>('reset_incompatible_database');
   } finally {
-    resetInFlight = false;
+    restartInFlight = false;
   }
   applyStatus(result.status);
   return result;
+}
+
+/**
+ * The executable of the other daemon holding the socket, as it reported it
+ * (empty when it named none), or `null` when there is none on record (or
+ * outside Tauri).
+ */
+export async function getOtherDaemon(): Promise<string | null> {
+  if (!isTauri()) return null;
+  return (await invoke<string | null>('get_other_daemon')) ?? null;
+}
+
+/**
+ * Start this app's daemon again, once the user has stopped the other daemon
+ * that held the socket. Applies the resulting status through the shared
+ * contract, so a healthy start fires `onDaemonReconnect` listeners exactly as
+ * any other recovery would, and returns it.
+ */
+export async function retryDaemonStart(): Promise<string> {
+  restartInFlight = true;
+  let status: string;
+  try {
+    status = await invoke<string>('retry_daemon_start');
+  } finally {
+    restartInFlight = false;
+  }
+  applyStatus(status);
+  return status;
+}
+
+/**
+ * Whether the machine-wide service registration under this app's label runs
+ * another product's daemon, which only that product's uninstaller can remove.
+ * False outside Tauri.
+ */
+export async function getForeignMachineWideRegistration(): Promise<boolean> {
+  if (!isTauri()) return false;
+  return await invoke<boolean>('foreign_machine_wide_registration');
 }

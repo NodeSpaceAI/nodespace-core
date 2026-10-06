@@ -23,7 +23,6 @@ use serde::Serialize;
 use tauri::AppHandle;
 
 use crate::daemon_setup::{self, DaemonStatus};
-use crate::window_routing;
 
 /// Status string [`daemon_down_status`] reports when the marker is present.
 pub const INCOMPATIBLE_DATABASE_STATUS: &str = "incompatible_database";
@@ -66,10 +65,14 @@ pub fn current() -> Option<IncompatibleDatabase> {
     marker_path().and_then(|marker| read_marker(&marker))
 }
 
-/// The status string for a daemon that is not running: why, when the daemon
-/// recorded why, and the generic `not_running` otherwise.
+/// The status string for this app's daemon not running: why, when that is
+/// known, and the generic `not_running` otherwise. Another daemon holding the
+/// socket ([`crate::coexistence`]) comes first: this app's daemon never got to
+/// open a database then.
 pub fn daemon_down_status() -> &'static str {
-    if current().is_some() {
+    if crate::coexistence::other_daemon().is_some() {
+        crate::coexistence::OTHER_DAEMON_STATUS
+    } else if current().is_some() {
         INCOMPATIBLE_DATABASE_STATUS
     } else {
         "not_running"
@@ -275,16 +278,8 @@ async fn reset(app: &AppHandle) -> Result<ResetIncompatibleDatabaseResult> {
 
     // No interim "starting" emit: the frontend keeps the banner (and its
     // in-progress state) up until this command returns, then applies the
-    // final status below.
-    let status = match daemon_setup::ensure_daemon_running(app).await {
-        Ok(DaemonStatus::Healthy) => "healthy",
-        Ok(_) => daemon_down_status(),
-        Err(e) => {
-            tracing::error!("Daemon restart after database reset failed: {:#}", e);
-            daemon_down_status()
-        }
-    };
-    window_routing::emit_routed(app, "daemon-status", status, None);
+    // final status this emits.
+    let status = daemon_setup::start_daemon_and_report(app).await;
 
     Ok(ResetIncompatibleDatabaseResult {
         backup_path: backup.map(|b| b.display().to_string()),

@@ -578,7 +578,7 @@ mod tests {
             .find("bundled_model::provision_bundled_model(&app_handle).await;")
             .expect("startup copies the bundled model");
         let start = lib
-            .find("match ensure_daemon_running(&app_handle).await")
+            .find("daemon_setup::start_daemon_and_report(&app_handle).await;")
             .expect("startup starts the daemon");
         assert!(copy < start, "the copy runs before the daemon starts");
         assert_eq!(lib.matches("provision_bundled_model(").count(), 1);

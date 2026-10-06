@@ -221,7 +221,6 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
       j("nodespaced", "-pro-aarch64"),
       j("PRO_DAEMON", "_BINARY_NAME"),
     ],
-    // ADR-084 section 5: core's preinstall honours the force variable, so it is not a marker.
     noMatch: [
       "rustfmt --edition 2021",
       'edition = "2021"',
@@ -230,7 +229,6 @@ const PATTERN_CASES: Record<LineMarkerName, { match: string[]; noMatch: string[]
       "app.nodespace.daemon.dev",
       "is_production",
       "incompatible-database-protocol",
-      "NODESPACE_FORCE_COMMUNITY=1",
     ],
   },
   proDataModel: {
@@ -398,10 +396,11 @@ describe("MARKERS patterns", () => {
       "mailto:developer@nodespace.ai",
       "For team collaboration, contact [developer@nodespace.ai](mailto:developer@nodespace.ai).",
       'product=$(/usr/libexec/PlistBuddy -c "Print :NodeSpaceProduct" "$APP/Contents/Info.plist")',
-      'if [ "$product" != "community" ] && [ "${NODESPACE_FORCE_COMMUNITY:-}" != "1" ]; then',
-      "Another NodeSpace product is installed on this Mac. Uninstall it with its own uninstaller first. Your databases stay on this Mac.",
+      'if [ "$product" != "community" ]; then',
       "The NodeSpace app on this Mac is a different NodeSpace product, or an older NodeSpace that does not say which product it is.",
-      "Use that product's own uninstaller, or update NodeSpace first; this command removes only the free NodeSpace.",
+      "To replace it, move /Applications/NodeSpace.app to the Trash, then run this installer again. Your databases stay on this Mac.",
+      "This command removes only the free NodeSpace.",
+      "To remove that app, move /Applications/NodeSpace.app to the Trash, then run this command again to remove the rest.",
     ];
     for (const line of lines) {
       for (const name of LINE_MARKERS) expect({ line, name, hit: MARKERS[name].pattern.test(line) }).toEqual({ line, name, hit: false });
