@@ -81,6 +81,7 @@ read _go
 echo "CWD=$(pwd -P)"
 echo "LAUNCHED_FOR=${{NODESPACE_LAUNCHED_FOR-unset}}"
 echo "DATABASE=$NODESPACE_DATABASE"
+echo "SOCKET=${{NODESPACED_SOCKET-unset}}"
 echo "PATH=$PATH"
 '{nodespace}' node get {task_id}
 echo "GET-EXIT=$?"
@@ -104,6 +105,9 @@ async fn spawn_daemon() -> Daemon {
     // here, not from the home of whoever runs the test. Each test is a process
     // of its own under nextest, so the variable is this test's alone.
     std::env::set_var("NODESPACE_HOME", home.path().join("nodespace-home"));
+    // The daemon's own environment names another socket. A session is told the
+    // one this daemon serves, whatever its environment held.
+    std::env::set_var("NODESPACED_SOCKET", "/nonexistent/not-this-daemon.sock");
     let sock = home.path().join("daemon.sock");
 
     let context = routing_test_context();
@@ -490,6 +494,14 @@ async fn a_launch_with_no_project_runs_in_a_private_folder_with_the_environment_
         "{output}"
     );
     assert!(output.contains("GET-EXIT=0"), "{output}");
+    // The session is told the socket this daemon serves.
+    assert!(
+        output.contains(&format!(
+            "SOCKET={}\r\n",
+            daemon.home.path().join("daemon.sock").display()
+        )),
+        "{output}"
+    );
     // Nothing was launched for, so the variable is absent, not empty.
     assert!(output.contains("LAUNCHED_FOR=unset\r\n"), "{output}");
     // No context file and no copy of the skill are written.
