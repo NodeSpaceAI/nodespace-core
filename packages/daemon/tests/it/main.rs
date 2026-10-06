@@ -18,6 +18,7 @@ mod grpc_round_trip;
 mod import_round_trip;
 mod live_terminal_summary;
 mod per_db_compute;
+mod per_db_settings;
 mod per_db_subtree_gate;
 mod required_extensions_e2e;
 mod scenario6_update_node_properties;
