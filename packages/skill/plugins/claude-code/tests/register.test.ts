@@ -6,7 +6,7 @@
 import type { On } from 'claude-code'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { httpsRemote, mayWrite, nodespaceInvocations, remoteSpellings } from '../hooks/register'
+import { httpsRemote, nodespaceInvocations, remoteSpellings } from '../hooks/register'
 
 type Skill = { node_id: string; title: string; use_for: string; modified_at: string }
 type Node = Record<string, unknown> & { id: string; version: number }
@@ -31,6 +31,11 @@ type World = {
   calls: string[][]
   projectFilters: string[]
   statuses: (string | undefined)[]
+  /** The session's write journal as the CLI keeps it; `null` when none was written. */
+  journal: string | null
+  isJournalFailing: boolean
+  /** The `nodespace journal end` commands the plugin ran, by session. */
+  journalEnds: string[]
 }
 
 const skill = (id: string, title: string, useFor = `when ${title} applies`): Skill => ({
@@ -59,8 +64,25 @@ function world(over: Partial<World> = {}): World {
     calls: [],
     projectFilters: [],
     statuses: [],
+    journal: null,
+    isJournalFailing: false,
+    journalEnds: [],
     ...over,
   }
+}
+
+const JOURNAL_PATH = '/home/u/.nodespace/journals/harness-1.jsonl'
+
+/** What the CLI appends when a command writes `id`: one line, ids and a version. */
+function wrote(w: World, id: string, version: number) {
+  w.journal = `${w.journal ?? ''}${JSON.stringify({ node_id: id, database: 'db-1', version })}\n`
+}
+
+/** The item as a write leaves it, journaled the way the CLI does. */
+function write(w: World, version: number, status = 'done') {
+  w.item = { id: 't1', version, title: 'Add the gauge', properties: { status } }
+  w.contextVersion = `c${version}`
+  wrote(w, 't1', version)
 }
 
 const ok = (value: unknown) => ({
@@ -117,8 +139,13 @@ function answer(w: World, argv: readonly string[]) {
   }
 
   if (args[0] === 'node' && args[1] === 'context') {
-    if (w.isContextFailing || !w.item) {
+    if (w.isContextFailing) {
       return failed('node not found')
+    }
+
+    // A deleted node, as the CLI reports it: structured on stdout, exit 1.
+    if (!w.item) {
+      return { ...ok({ error: 'not_found', node_id: args[2] }), exitCode: 1, stderr: `Error: Not found: ${args[2]}` }
     }
 
     // The form a person reads: what a launched session opens with.
@@ -158,9 +185,17 @@ function host(on: On, w: World, env: Record<string, string> = {}, toolText = '')
 
   // The environment as the plugin leaves it: an unset variable is gone for
   // every later read.
-  const variables: Record<string, string | undefined> = { ...env }
+  const variables: Record<string, string | undefined> = { HOME: '/home/u', ...env }
 
   on('env.get', (_, e) => ({ value: variables[e.name] }))
+  on('fs.exists', (_, e) => ({ value: e.path === JOURNAL_PATH && w.journal !== null }))
+  on('fs.read', (_, e) => {
+    if (e.path !== JOURNAL_PATH || w.journal === null || w.isJournalFailing) {
+      throw new Error('EACCES')
+    }
+
+    return { value: w.journal }
+  })
   on('env.set', (_, e) => {
     if (e.value === undefined) {
       seen.unset.push(e.name)
@@ -171,6 +206,14 @@ function host(on: On, w: World, env: Record<string, string> = {}, toolText = '')
     return { value: undefined }
   })
   on('process.run', async (_, e) => {
+    // The journal's own upkeep, at a session's start and end: not one of the
+    // commands a check makes, so it is kept apart from them.
+    if (e.argv[1] === 'journal' && e.argv[2] === 'end') {
+      w.journalEnds.push(e.argv[3] ?? '')
+
+      return { value: ok('') }
+    }
+
     w.calls.push([...e.argv])
 
     return { value: answer(w, e.argv) }
@@ -198,7 +241,7 @@ function host(on: On, w: World, env: Record<string, string> = {}, toolText = '')
     return { result: undefined as never, text: toolText }
   })
 
-  return { clock, seen }
+  return { clock, seen, variables }
 }
 
 const START = { cwd: '/repo', surface: 'terminal', isInteractive: true } as const
@@ -344,6 +387,44 @@ describe('session start', () => {
 
     expect(w.statuses).toEqual(['NodeSpace: the nodespace command was not found'])
     expect(w.calls).toEqual([['nodespace', '--version']])
+  })
+
+  test("names the session to every command the agent starts, and again after a /clear", async ($, on) => {
+    const w = world()
+    const { variables } = host(on, w)
+
+    await $.session.start(START)
+    expect(variables.NODESPACE_WRITE_JOURNAL).toBe('harness-1')
+
+    variables.NODESPACE_WRITE_JOURNAL = undefined
+    await $.session.end({ reason: 'clear', sessionId: 'harness-1', resume: { id: 's' } as never })
+    await $.prompt.submit(prompt('again'))
+    expect(variables.NODESPACE_WRITE_JOURNAL).toBe('harness-1')
+  })
+
+  test('clears the journal, and any a crashed session left, when a session starts and ends', async ($, on) => {
+    const w = world()
+
+    host(on, w)
+    await $.session.start(START)
+    expect(w.journalEnds).toEqual(['harness-1'])
+
+    // A reload mid-session fires `session.start` again and keeps the journal.
+    await $.session.start(START)
+    expect(w.journalEnds).toEqual(['harness-1'])
+
+    await $.session.end({ reason: 'exit', sessionId: 'harness-1', resume: { id: 's' } as never })
+    expect(w.journalEnds).toEqual(['harness-1', 'harness-1'])
+  })
+
+  test('a session with no CLI or a journal command that fails still starts', async ($, on) => {
+    const w = world({ hasCli: false })
+
+    host(on, w)
+    await $.session.start(START)
+    await $.session.end({ reason: 'exit', sessionId: 'harness-1', resume: { id: 's' } as never })
+
+    expect(w.statuses).toEqual(['NodeSpace: the nodespace command was not found'])
   })
 })
 
@@ -759,30 +840,105 @@ describe('the item being worked on', () => {
     expect(after.context).toBeUndefined()
   })
 
-  test("the session's own write is the new baseline, not a change under it", async ($, on) => {
+  // The plugin reads none of these lines: the CLI journals the write wherever
+  // it runs, and the journal is what says the change is the session's own.
+  for (const command of [
+    'nodespace node set-status t1 done --version 3',
+    './scripts/finish-task.sh',
+    'for id in t1; do nodespace node set-status $id done; done',
+    'nodespace node set-status t1 done &',
+  ]) {
+    test(`a write by \`${command}\` is the session's own through the journal`, async ($, on) => {
+      const w = world()
+      const { clock, seen } = host(on, w)
+
+      await $.session.start(START)
+      await $.tool.call(bash('nodespace node context t1'))
+
+      seen.onTool = () => write(w, 4)
+      await $.tool.call(bash(command))
+      seen.onTool = () => {}
+      await clock.advance(60_000)
+
+      const tools = seen.tools
+      const ran = await $.tool.call(bash('ls'))
+
+      expect(ran.deny).toBeUndefined()
+      expect(ran.context).toBeUndefined()
+      expect(seen.tools).toBe(tools + 1)
+
+      // The write is the baseline: the next change is someone else's.
+      w.item = { id: 't1', version: 5, title: 'Add the gauge', properties: { status: 'cancelled' } }
+      w.contextVersion = 'c5'
+      await clock.advance(60_000)
+      expect((await $.tool.call(bash('ls'))).deny).toContain('(t1) changed under it: it went from version 4 to 5')
+    })
+  }
+
+  test("a write through the nodespace tool is the session's own", async ($, on) => {
+    const w = world()
+    const { clock, seen } = host(on, w)
+
+    await $.session.start(START)
+    await $.tool.call({ tool: 'mcp__nodespace__nodespace', args: 'node context t1' } as never)
+
+    seen.onTool = () => write(w, 4)
+    await $.tool.call({ tool: 'mcp__nodespace__nodespace', args: 'node set-status t1 done' } as never)
+    seen.onTool = () => {}
+    await clock.advance(60_000)
+
+    const tools = seen.tools
+    const calls = w.calls.length
+
+    await $.tool.call(bash('ls'))
+    expect(seen.tools).toBe(tools + 1)
+    // The check itself: one version read, then the read of what moved.
+    expect(w.calls.slice(calls)).toEqual([
+      ['nodespace', '--json', 'node', 'context', 't1', '--version-only'],
+      ['nodespace', '--json', 'node', 'context', 't1'],
+    ])
+  })
+
+  test("a change someone else makes while the session's own write is running is still reported", async ($, on) => {
     const w = world()
     const { clock, seen } = host(on, w)
 
     await $.session.start(START)
     await $.tool.call(bash('nodespace node context t1'))
 
-    // The write lands when the command runs, after the check that precedes it.
+    // The session's write lands as version 4, and another process writes 5
+    // before the next check: the journal holds 4 only.
     seen.onTool = () => {
-      w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'done' } }
-      w.contextVersion = 'c2'
+      write(w, 4)
+      w.item = { id: 't1', version: 5, title: 'Add the gauge', properties: { status: 'cancelled' } }
+      w.contextVersion = 'c5'
     }
     await $.tool.call(bash('nodespace node set-status t1 done --version 3'))
     seen.onTool = () => {}
     await clock.advance(60_000)
 
-    const tools = seen.tools
-    const ran = await $.tool.call(bash('ls'))
+    const refused = await $.tool.call(bash('ls'))
 
-    expect(seen.tools).toBe(tools + 1)
-    expect(ran.context).toBeUndefined()
+    expect(refused.deny).toContain('(t1) changed under it: it went from version 3 to 5')
+    expect(refused.deny).toContain('- status: "in_progress" -> "cancelled"')
   })
 
-  test("a write the shell reader cannot parse is still the session's own", async ($, on) => {
+  test("another node's version in the journal is not the item's own", async ($, on) => {
+    const w = world()
+    const { clock } = host(on, w)
+
+    await $.session.start(START)
+    await $.tool.call(bash('nodespace node context t1'))
+
+    wrote(w, 'other', 4)
+    w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'cancelled' } }
+    w.contextVersion = 'c2'
+    await clock.advance(60_000)
+
+    expect((await $.tool.call(bash('ls'))).deny).toContain('changed under it')
+  })
+
+  test("the session's own write to what governs the item is not reported either", async ($, on) => {
     const w = world()
     const { clock, seen } = host(on, w)
 
@@ -790,34 +946,97 @@ describe('the item being worked on', () => {
     await $.tool.call(bash('nodespace node context t1'))
 
     seen.onTool = () => {
-      w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'done' } }
+      w.governing = [{ id: 'spec1', version: 3, title: 'Gauge spec' }]
       w.contextVersion = 'c2'
+      wrote(w, 'spec1', 3)
     }
-    await $.tool.call(bash('echo t1 | xargs nodespace node set-status done'))
+    await $.tool.call(bash('nodespace node update spec1 --content x'))
     seen.onTool = () => {}
     await clock.advance(60_000)
 
-    const tools = seen.tools
+    const ran = await $.tool.call(bash('ls'))
 
-    await $.tool.call(bash('ls'))
-    expect(seen.tools).toBe(tools + 1)
+    expect(ran.deny).toBeUndefined()
+    expect(ran.context).toBeUndefined()
   })
 
-  test('a change made by someone else is caught before an unrelated write absorbs it', async ($, on) => {
+  test("a write command makes no check of its own, before or after", async ($, on) => {
     const w = world()
     const { seen } = host(on, w)
 
     await $.session.start(START)
     await $.tool.call(bash('nodespace node context t1'))
 
+    const calls = w.calls.length
+
+    seen.onTool = () => write(w, 4)
+    await $.tool.call(bash('nodespace node set-status t1 done --version 3'))
+    await $.tool.call(bash('./scripts/finish-task.sh'))
+
+    expect(w.calls.length).toBe(calls)
+  })
+
+  test('a journal that cannot be read blocks nothing', async ($, on) => {
+    const w = world({ isJournalFailing: true, journal: '' })
+    const { clock, seen } = host(on, w)
+
+    await $.session.start(START)
+    await $.tool.call(bash('nodespace node context t1'))
+
     w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'cancelled' } }
     w.contextVersion = 'c2'
+    await clock.advance(60_000)
 
     const tools = seen.tools
-    const refused = await $.tool.call(bash('nodespace node create --type text --content "a note"'))
 
-    expect(refused.deny).toContain('(t1) changed under it')
+    expect((await $.tool.call(bash('ls'))).deny).toBeUndefined()
+    expect(seen.tools).toBe(tools + 1)
+  })
+
+  test('a deleted item refuses tool calls until the user replies', async ($, on) => {
+    const w = world()
+    const { clock, seen } = host(on, w)
+
+    await $.session.start(START)
+    await $.tool.call(bash('nodespace node context t1'))
+
+    w.item = null
+    await clock.advance(60_000)
+
+    const tools = seen.tools
+    const refused = await $.tool.call(bash('ls'))
+    const stillRefused = await $.tool.call(bash('ls'))
+
+    expect(refused.deny).toContain('(t1) no longer exists')
+    expect(refused.deny).toContain('Stop here.')
+    expect(stillRefused.deny).toContain('no longer exists')
     expect(seen.tools).toBe(tools)
+
+    // Nothing is left to watch once the user has replied.
+    await $.prompt.submit(prompt('carry on'))
+
+    const calls = w.calls.length
+
+    await clock.advance(60_000)
+    expect((await $.tool.call(bash('ls'))).deny).toBeUndefined()
+    expect(seen.tools).toBe(tools + 1)
+    expect(w.calls.length).toBe(calls)
+  })
+
+  test('a read that failed for any other reason is not a deleted item', async ($, on) => {
+    const w = world()
+    const { clock, seen } = host(on, w)
+
+    await $.session.start(START)
+    await $.tool.call(bash('nodespace node context t1'))
+
+    w.isContextFailing = true
+    await clock.advance(60_000)
+
+    const tools = seen.tools
+
+    expect((await $.tool.call(bash('ls'))).deny).toBeUndefined()
+    expect(seen.tools).toBe(tools + 1)
   })
 
   test('while refused, the tools that reach the user still run', async ($, on) => {
@@ -845,29 +1064,6 @@ describe('the item being worked on', () => {
     expect(seen.tools).toBe(tools + 2)
   })
 
-  test("a write through the nodespace tool is the session's own", async ($, on) => {
-    const w = world()
-    const { clock, seen } = host(on, w)
-
-    await $.session.start(START)
-    await $.tool.call({ tool: 'mcp__nodespace__nodespace', args: 'node context t1' } as never)
-
-    seen.onTool = () => {
-      w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'done' } }
-      w.contextVersion = 'c2'
-    }
-    await $.tool.call({ tool: 'mcp__nodespace__nodespace', args: 'node set-status t1 done' } as never)
-    seen.onTool = () => {}
-    await clock.advance(60_000)
-
-    const tools = seen.tools
-    const calls = w.calls.length
-
-    await $.tool.call(bash('ls'))
-    expect(seen.tools).toBe(tools + 1)
-    expect(w.calls.slice(calls)).toEqual([['nodespace', '--json', 'node', 'context', 't1', '--version-only']])
-  })
-
   test("the item's title cannot speak outside the graph marker", async ($, on) => {
     const w = world()
     const { clock } = host(on, w)
@@ -892,61 +1088,20 @@ describe('the item being worked on', () => {
     expect(before + after).not.toContain('approved')
   })
 
-  test('a second write of the session\'s own, checked while the first is still running, does not stop it', async ($, on) => {
+  test("several writes of the session's own between two checks are all its own", async ($, on) => {
     const w = world()
     const { clock, seen } = host(on, w)
 
     await $.session.start(START)
     await $.tool.call(bash('nodespace node context t1'))
 
-    // The first write lands while it runs, and the second is dispatched then:
-    // it is checked after the item moved and before the first reported back.
-    let second: Promise<{ deny?: string }> | null = null
-
-    seen.onTool = () => {
-      const version = (w.item?.version ?? 0) + 1
-
-      w.item = { id: 't1', version, title: 'Add the gauge', properties: { status: 'done' } }
-      w.contextVersion = `c${version}`
-      second ??= $.tool.call(bash('nodespace node update t1 --content "and a note"'))
-    }
-
-    const first = await $.tool.call(bash('nodespace node set-status t1 done --version 3'))
-
-    expect(first.deny).toBeUndefined()
-    expect((await second)?.deny).toBeUndefined()
-
+    seen.onTool = () => write(w, (w.item?.version ?? 0) + 1)
+    await $.tool.call(bash('nodespace node set-status t1 done --version 3'))
+    await $.tool.call(bash('nodespace node update t1 --content "and a note"'))
     seen.onTool = () => {}
     await clock.advance(60_000)
+
     expect((await $.tool.call(bash('ls'))).deny).toBeUndefined()
-
-    // With both reported back, a change is someone else's again.
-    w.item = { id: 't1', version: 9, title: 'Add the gauge', properties: { status: 'cancelled' } }
-    w.contextVersion = 'c9'
-    await clock.advance(60_000)
-    expect((await $.tool.call(bash('ls'))).deny).toContain('changed under it')
-  })
-
-  // This checks the outcome only. The engine here runs the two calls' checks
-  // one after the other, so the second is refused by the standing refusal, not
-  // by the lines that handle two checks reading at once: it does not pin those.
-  test("two writes dispatched together over someone else's change are both refused", async ($, on) => {
-    const w = world()
-
-    host(on, w)
-    await $.session.start(START)
-    await $.tool.call(bash('nodespace node context t1'))
-
-    w.item = { id: 't1', version: 4, title: 'Add the gauge', properties: { status: 'cancelled' } }
-    w.contextVersion = 'c2'
-
-    const ran = await Promise.all([
-      $.tool.call(bash('nodespace node set-status t1 done --version 3')),
-      $.tool.call(bash('nodespace node update t1 --content x')),
-    ])
-
-    expect(ran[0]?.deny).toContain('changed under it')
-    expect(ran[1]?.deny).toContain('changed under it')
   })
 
   test('two tool calls dispatched together run one check', async ($, on) => {
@@ -995,31 +1150,6 @@ describe('reading the shell line and the remote', () => {
       ['search', 'x'],
     ])
     expect(nodespaceInvocations('git status')).toEqual([])
-  })
-
-  test('a line may write unless every nodespace command in it is a known read', () => {
-    for (const line of [
-      'nodespace node update t1 --content x',
-      'nodespace search x && nodespace relationship create --from a --type t --to b',
-      'echo t1 | xargs nodespace node set-status done',
-      'echo `nodespace node delete t1`',
-      'env X=1 nodespace import notes.md',
-      'nodespace query --type task | xargs -I{} nodespace node set-status {} done',
-      'for id in $(nodespace query --type task); do nodespace node set-status $id done; done',
-      'if nodespace node get t1; then nodespace node update t1 --content x; fi',
-    ]) {
-      expect(mayWrite(line), line).toBe(true)
-    }
-
-    for (const line of [
-      'nodespace search x',
-      'nodespace --json node context t1 --path spec',
-      '/usr/local/bin/nodespace search x | head',
-      'cd /Users/me/nodespace/nodespace-core && ls',
-      'ls',
-    ]) {
-      expect(mayWrite(line), line).toBe(false)
-    }
   })
 
   test("the lookup names the checkout's own remote when it is none of the common spellings", () => {

@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nodespace_agent::pty::PtySessionManager;
+use nodespace_cli::journal::WriteJournal;
 use nodespace_cli::{commands, connect, connect_database, DatabaseIdInterceptor, NodeClient};
 use nodespace_core::{NodeService as CoreNodeService, SqliteStore};
 use nodespace_daemon::nodespace::{
@@ -42,6 +43,15 @@ use tokio::sync::{oneshot, watch};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 use tonic::Code;
+
+/// `node::run` with no write journal, as a command run outside a harness session.
+async fn node_run(
+    client: &mut NodeClient,
+    action: commands::node::NodeAction,
+    json: bool,
+) -> anyhow::Result<()> {
+    commands::node::run(client, action, json, &WriteJournal::at(None, "")).await
+}
 
 /// Spawn an in-process daemon over a temp-dir UDS and return the socket path.
 pub(crate) async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
@@ -258,7 +268,7 @@ async fn create_templated_type_without_content_and_reject_content() {
         .await
         .expect("connect");
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -277,7 +287,7 @@ async fn create_templated_type_without_content_and_reject_content() {
     .await
     .expect("a person is created from its template fields alone");
 
-    let err = commands::node::run(
+    let err = node_run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -307,7 +317,7 @@ async fn create_get_update_children_delete_round_trip() {
         .await
         .expect("connect");
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -344,7 +354,7 @@ async fn create_get_update_children_delete_round_trip() {
         .into_inner();
     let parent_id = created.node_id;
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -360,7 +370,7 @@ async fn create_get_update_children_delete_round_trip() {
     .await
     .expect("create child");
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Get(commands::node::GetArgs {
             id: parent_id.clone(),
@@ -370,7 +380,7 @@ async fn create_get_update_children_delete_round_trip() {
     .await
     .expect("get parent");
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             properties_json: None,
@@ -400,7 +410,7 @@ async fn create_get_update_children_delete_round_trip() {
         "parent updated via CLI"
     );
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Children(commands::node::ChildrenArgs {
             id: parent_id.clone(),
@@ -434,7 +444,7 @@ async fn create_get_update_children_delete_round_trip() {
     };
 
     // The bare form only previews: the parent and its child survive it.
-    commands::node::run(&mut client, delete(None, None), false)
+    node_run(&mut client, delete(None, None), false)
         .await
         .expect("preview delete");
     let current = raw_client
@@ -449,7 +459,7 @@ async fn create_get_update_children_delete_round_trip() {
 
     // A confirmation that no longer matches — here, a nested count the
     // parent does not have — deletes nothing.
-    let err = commands::node::run(&mut client, delete(Some(current.version), Some(0)), false)
+    let err = node_run(&mut client, delete(Some(current.version), Some(0)), false)
         .await
         .expect_err("a stale confirmation must be refused");
     assert!(
@@ -463,7 +473,7 @@ async fn create_get_update_children_delete_round_trip() {
         .await
         .expect("a refused delete must leave the node in place");
 
-    commands::node::run(&mut client, delete(Some(current.version), Some(1)), false)
+    node_run(&mut client, delete(Some(current.version), Some(1)), false)
         .await
         .expect("confirmed delete");
 
@@ -483,7 +493,7 @@ async fn get_missing_node_surfaces_not_found() {
         .await
         .expect("connect");
 
-    let err = commands::node::run(
+    let err = node_run(
         &mut client,
         commands::node::NodeAction::Get(commands::node::GetArgs {
             id: "does-not-exist".into(),
@@ -1388,7 +1398,7 @@ async fn node_query_by_type() {
     .await
     .expect("seed text");
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Query(commands::node::QueryArgs {
             id: None,
@@ -1447,7 +1457,7 @@ async fn node_export_markdown() {
     .await
     .expect("seed child");
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Export(commands::node::ExportArgs {
             id: root.node_id.clone(),
@@ -1508,7 +1518,7 @@ async fn node_batch_get_and_update() {
         .node_id;
 
     // batch-get: both found, one missing
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::BatchGet(commands::node::BatchGetArgs {
             ids: vec![a.clone(), b.clone(), "does-not-exist".into()],
@@ -1525,7 +1535,7 @@ async fn node_batch_get_and_update() {
     ])
     .to_string();
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::BatchUpdate(commands::node::BatchUpdateArgs {
             updates: updates_json,
@@ -1951,7 +1961,7 @@ fn move_args(id: &str) -> commands::node::MoveArgs {
 }
 
 async fn run_move(client: &mut NodeClient, args: commands::node::MoveArgs) -> anyhow::Result<()> {
-    commands::node::run(client, commands::node::NodeAction::Move(args), true).await
+    node_run(client, commands::node::NodeAction::Move(args), true).await
 }
 
 #[tokio::test]
@@ -2252,7 +2262,7 @@ async fn second_parent_edge_is_refused_with_the_move_command() {
     let nodespace_cli::Command::Node { action } = cli.command else {
         panic!("the refusal's command is not a node command");
     };
-    commands::node::run(&mut client, action, true)
+    node_run(&mut client, action, true)
         .await
         .expect("the refusal's command moves the node");
     assert_eq!(child_ids(&mut raw, &new_parent).await, [node]);
@@ -3126,7 +3136,7 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
     assert_eq!(run_skills, ["Implementing", "Standards"]);
 
     for json in [true, false] {
-        commands::node::run(
+        node_run(
             &mut client,
             commands::node::NodeAction::Context(commands::node::ContextArgs {
                 id: task.clone(),
@@ -3137,7 +3147,7 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
         )
         .await
         .expect("node context");
-        commands::node::run(
+        node_run(
             &mut client,
             commands::node::NodeAction::Context(commands::node::ContextArgs {
                 id: task.clone(),
@@ -3171,7 +3181,7 @@ async fn attached_skills_come_back_with_a_node_and_a_query_run_until_detached() 
             .expect("query run");
         }
     }
-    let unknown = commands::node::run(
+    let unknown = node_run(
         &mut client,
         commands::node::NodeAction::Context(commands::node::ContextArgs {
             id: task.clone(),
@@ -3538,7 +3548,7 @@ async fn node_update_sets_properties_and_preserves_content() {
         .into_inner()
         .node_id;
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             properties_json: None,
@@ -3710,7 +3720,7 @@ async fn node_update_rejects_empty_args() {
         .await
         .expect("connect");
 
-    let err = commands::node::run(
+    let err = node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             properties_json: None,
@@ -3759,7 +3769,7 @@ async fn node_set_status_updates_status_property() {
         .into_inner()
         .node_id;
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
             id: id.clone(),
@@ -3895,7 +3905,7 @@ async fn a_dry_run_update_or_set_status_writes_nothing() {
     let before = stored(&mut raw).await;
 
     for json in [false, true] {
-        commands::node::run(
+        node_run(
             &mut client,
             commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
                 id: id.clone(),
@@ -3907,7 +3917,7 @@ async fn a_dry_run_update_or_set_status_writes_nothing() {
         )
         .await
         .expect("a dry run answers whichever way the rules go");
-        commands::node::run(
+        node_run(
             &mut client,
             commands::node::NodeAction::Update(commands::node::UpdateArgs {
                 properties_json: None,
@@ -3931,7 +3941,7 @@ async fn a_dry_run_update_or_set_status_writes_nothing() {
     assert_eq!(after.properties, before.properties);
 
     // A stale version is refused, as on the write the dry run stands for.
-    let err = commands::node::run(
+    let err = node_run(
         &mut client,
         commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
             id: id.clone(),
@@ -4020,19 +4030,19 @@ async fn update_and_set_status_write_only_at_the_version_named() {
     };
 
     // The first session to start the task with the version it read wins.
-    commands::node::run(&mut client, set_status("in_progress", Some(1)), false)
+    node_run(&mut client, set_status("in_progress", Some(1)), false)
         .await
         .expect("the version read is still current");
 
     // A second session that read the same version is refused, in both
     // output modes.
     for json in [false, true] {
-        let err = commands::node::run(&mut client, set_status("done", Some(1)), json)
+        let err = node_run(&mut client, set_status("done", Some(1)), json)
             .await
             .expect_err("version 1 is stale");
         assert_refused(err, 1, 2);
     }
-    let err = commands::node::run(&mut client, update("taken over", Some(1)), false)
+    let err = node_run(&mut client, update("taken over", Some(1)), false)
         .await
         .expect_err("version 1 is stale");
     assert_refused(err, 1, 2);
@@ -4053,10 +4063,10 @@ async fn update_and_set_status_write_only_at_the_version_named() {
     assert_eq!(props["task"]["status"], "in_progress");
 
     // Naming the current version lands; naming none applies to what is there.
-    commands::node::run(&mut client, update("renamed", Some(2)), false)
+    node_run(&mut client, update("renamed", Some(2)), false)
         .await
         .expect("version 2 is current");
-    commands::node::run(&mut client, set_status("done", None), false)
+    node_run(&mut client, set_status("done", None), false)
         .await
         .expect("no version: as before");
 
@@ -4075,7 +4085,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
             dry_run: false,
         })
     };
-    let err = commands::node::run(&mut client, join(Some(1)), false)
+    let err = node_run(&mut client, join(Some(1)), false)
         .await
         .expect_err("version 1 is stale");
     assert_refused(err, 1, 4);
@@ -4099,7 +4109,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
         collections.nodes.iter().all(|c| c.content != "claimed"),
         "a refused update must not create or join a collection"
     );
-    commands::node::run(&mut client, join(Some(4)), false)
+    node_run(&mut client, join(Some(4)), false)
         .await
         .expect("version 4 is current");
     let collections = raw
@@ -4130,7 +4140,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
         .expect("seed large node")
         .into_inner()
         .node_id;
-    let err = commands::node::run(
+    let err = node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             properties_json: None,
@@ -4217,7 +4227,7 @@ async fn node_set_status_rejects_invalid_status() {
     // No CLI-side vocabulary check remains, so this exercises the daemon's
     // live-schema validation (the update pipeline's enum check) via the
     // RPC — same error-mapping path as `schema_create_rejects_malformed_params`.
-    let err = commands::node::run(
+    let err = node_run(
         &mut client,
         commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
             id,
@@ -4299,7 +4309,7 @@ async fn node_set_status_accepts_schema_extended_status() {
         .into_inner()
         .node_id;
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::SetStatus(commands::node::SetStatusArgs {
             id: id.clone(),
@@ -4588,7 +4598,7 @@ async fn database_routing_isolates_writes() {
     let mut node_second = node_client_for(&sock, &second_id).await;
 
     // Create a node routed to the second database via the node command handler.
-    commands::node::run(
+    node_run(
         &mut node_second,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -4848,7 +4858,7 @@ async fn node_create_collection_paths_are_repeatable_and_auto_create() {
         .await
         .expect("connect");
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -4960,7 +4970,7 @@ async fn node_update_collection_adds_and_removes_membership() {
 
     // --collection alone is enough to make an update meaningful: no --content
     // or --property is required.
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             properties_json: None,
@@ -4988,7 +4998,7 @@ async fn node_update_collection_adds_and_removes_membership() {
     assert_eq!(after_add.collection_ids.len(), 1);
     let leaf_id = after_add.collection_ids[0].clone();
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             properties_json: None,
@@ -5068,7 +5078,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
 
     // Pass the PATH where an id belongs — the mistake the old symmetric field
     // name invited. It removes nothing.
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             properties_json: None,
@@ -5100,7 +5110,7 @@ async fn removing_by_path_instead_of_id_does_not_silently_drop_membership() {
 
     // The id form is what actually detaches the edge.
     let leaf_id = before.collection_ids[0].clone();
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             properties_json: None,
@@ -5141,7 +5151,7 @@ async fn node_create_unresolvable_collection_is_an_error() {
         .await
         .expect("connect");
 
-    let err = commands::node::run(
+    let err = node_run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -5201,7 +5211,7 @@ async fn node_create_required_field_without_default_needs_property_flag() {
     // Without --property the required field cannot be supplied at all:
     // creation must still fail with the daemon's validation error, exactly
     // as before this flag existed.
-    let err = commands::node::run(
+    let err = node_run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -5223,7 +5233,7 @@ async fn node_create_required_field_without_default_needs_property_flag() {
     );
 
     // With --property, the same create now succeeds.
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -5321,7 +5331,7 @@ async fn node_property_sets_reads_and_clears_a_link() {
             collection_ids: vec![],
         })
     };
-    let err = commands::node::run(
+    let err = node_run(
         &mut client,
         create(vec![(
             "website".into(),
@@ -5337,7 +5347,7 @@ async fn node_property_sets_reads_and_clears_a_link() {
     );
 
     let link = serde_json::json!({"title": "Acme", "url": "https://acme.example"});
-    commands::node::run(
+    node_run(
         &mut client,
         create(vec![("website".into(), link.clone())]),
         true,
@@ -5363,7 +5373,7 @@ async fn node_property_sets_reads_and_clears_a_link() {
         link
     );
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             id: id.clone(),
@@ -5424,7 +5434,7 @@ async fn node_create_multiple_property_flags_set_multiple_fields() {
     .await
     .expect("schema create");
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Create(commands::node::CreateArgs {
             properties_json: None,
@@ -6309,7 +6319,7 @@ async fn play_rules_are_written_and_read_with_their_descriptions() {
         })
     };
 
-    let stale = commands::node::run(
+    let stale = node_run(
         &mut client,
         update(rules("node.content == 'hi'", "The note says hello")),
         true,
@@ -6324,7 +6334,7 @@ async fn play_rules_are_written_and_read_with_their_descriptions() {
         "{message}"
     );
 
-    let bare = commands::node::run(
+    let bare = node_run(
         &mut client,
         update(serde_json::json!([{
             "name": "greet",
@@ -6342,7 +6352,7 @@ async fn play_rules_are_written_and_read_with_their_descriptions() {
         "{message}"
     );
 
-    commands::node::run(
+    node_run(
         &mut client,
         update(rules("node.content == 'hi'", "The note says hi")),
         true,
@@ -6514,7 +6524,7 @@ async fn node_create_and_update_set_a_collection_description() {
             collection_ids: vec![],
         })
     };
-    commands::node::run(&mut client, create("Clients"), true)
+    node_run(&mut client, create("Clients"), true)
         .await
         .expect("create collection");
 
@@ -6543,7 +6553,7 @@ async fn node_create_and_update_set_a_collection_description() {
 
     // A second create of the same name is the same collection, so it is
     // refused rather than stored as a duplicate under another id.
-    let err = commands::node::run(&mut client, create("clients"), true)
+    let err = node_run(&mut client, create("clients"), true)
         .await
         .expect_err("a duplicate collection name is refused");
     assert!(
@@ -6551,7 +6561,7 @@ async fn node_create_and_update_set_a_collection_description() {
         "expected an already-exists error, got: {err:#}"
     );
 
-    commands::node::run(
+    node_run(
         &mut client,
         commands::node::NodeAction::Update(commands::node::UpdateArgs {
             properties_json: None,
@@ -6574,6 +6584,189 @@ async fn node_create_and_update_set_a_collection_description() {
     assert_eq!(
         stored_description(&mut raw).await,
         "Accounts we bill, one page each"
+    );
+
+    let _ = shutdown.send(());
+}
+
+/// The `(node_id, version)` pairs a journal holds, oldest first.
+fn journal_entries(path: &std::path::Path) -> Vec<(String, i64)> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| {
+            let entry: serde_json::Value = serde_json::from_str(line).expect("a JSON line");
+            assert_eq!(entry["database"], "db-1");
+            (
+                entry["node_id"].as_str().expect("node_id").to_string(),
+                entry["version"].as_i64().expect("version"),
+            )
+        })
+        .collect()
+}
+
+fn update_args(id: &str, content: &str) -> commands::node::UpdateArgs {
+    commands::node::UpdateArgs {
+        id: id.to_string(),
+        content: Some(content.to_string()),
+        properties: vec![],
+        properties_json: None,
+        collections: vec![],
+        collection_ids: vec![],
+        remove_collection_ids: vec![],
+        version: None,
+        dry_run: false,
+    }
+}
+
+/// The version `id` was last journaled at.
+fn journaled_version(path: &std::path::Path, id: &str) -> Option<i64> {
+    journal_entries(path)
+        .iter()
+        .rev()
+        .find(|(entry, _)| entry == id)
+        .map(|(_, version)| *version)
+}
+
+#[tokio::test]
+async fn every_node_write_is_journaled_at_the_version_it_leaves_the_node() {
+    let (sock, shutdown, tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+    let path = tempdir.path().join("journal.jsonl");
+    let journal = WriteJournal::at(Some(path.clone()), "db-1");
+
+    let parent = seed_text_node(&mut raw, "parent", None).await;
+    let other = seed_text_node(&mut raw, "other", None).await;
+    let node = seed_text_node(&mut raw, "node", Some(&parent)).await;
+
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Update(update_args(&node, "edited")),
+        true,
+        &journal,
+    )
+    .await
+    .expect("update");
+    assert_eq!(
+        journaled_version(&path, &node),
+        Some(node_version(&mut raw, &node).await)
+    );
+
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Move(commands::node::MoveArgs {
+            parent: Some(other.clone()),
+            ..move_args(&node)
+        }),
+        true,
+        &journal,
+    )
+    .await
+    .expect("move");
+    assert_eq!(
+        journaled_version(&path, &node),
+        Some(node_version(&mut raw, &node).await)
+    );
+
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::BatchUpdate(commands::node::BatchUpdateArgs {
+            updates: serde_json::json!([{ "node_id": node, "content": "again" }]).to_string(),
+        }),
+        true,
+        &journal,
+    )
+    .await
+    .expect("batch-update");
+    assert_eq!(
+        journaled_version(&path, &node),
+        Some(node_version(&mut raw, &node).await)
+    );
+
+    let before = journal_entries(&path).len();
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Create(commands::node::CreateArgs {
+            properties_json: None,
+            node_type: "text".into(),
+            content: Some("made".into()),
+            parent: None,
+            properties: vec![],
+            collections: vec![],
+            collection_ids: vec![],
+        }),
+        true,
+        &journal,
+    )
+    .await
+    .expect("create");
+    assert_eq!(journal_entries(&path).len(), before + 1);
+
+    // A write the daemon refuses changes nothing, so it records nothing.
+    let before = journal_entries(&path).len();
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Update(commands::node::UpdateArgs {
+            version: Some(1_000),
+            ..update_args(&other, "refused")
+        }),
+        true,
+        &journal,
+    )
+    .await
+    .expect_err("a stale version is refused");
+    assert_eq!(journal_entries(&path).len(), before);
+
+    // A delete records nothing: the node is gone, and a watcher is told so by
+    // the not-found read, not by a version.
+    let delete = |version, descendants| {
+        commands::node::NodeAction::Delete(commands::node::DeleteArgs {
+            id: node.clone(),
+            version,
+            descendants,
+            routing: Vec::new(),
+        })
+    };
+    commands::node::run(&mut client, delete(None, None), true, &journal)
+        .await
+        .expect("preview");
+    assert_eq!(journal_entries(&path).len(), before);
+    let version = node_version(&mut raw, &node).await;
+    commands::node::run(&mut client, delete(Some(version), Some(0)), true, &journal)
+        .await
+        .expect("delete");
+    assert_eq!(journal_entries(&path).len(), before);
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn a_context_read_of_a_missing_node_is_an_error_naming_it() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    let err = node_run(
+        &mut client,
+        commands::node::NodeAction::Context(commands::node::ContextArgs {
+            id: "00000000-0000-4000-8000-000000000000".into(),
+            paths: Vec::new(),
+            version_only: true,
+        }),
+        true,
+    )
+    .await
+    .expect_err("a missing node is an error");
+
+    assert_eq!(
+        format!("{err:#}"),
+        "Not found: 00000000-0000-4000-8000-000000000000"
     );
 
     let _ = shutdown.send(());

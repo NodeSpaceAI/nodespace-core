@@ -10,6 +10,7 @@ use nodespace_daemon::nodespace::{
 use nodespace_types::RelationshipPath;
 use serde_json::json;
 
+use crate::journal::WriteJournal;
 use crate::output;
 use crate::NodeClient;
 
@@ -349,20 +350,25 @@ pub struct BatchUpdateArgs {
     pub updates: String,
 }
 
-pub async fn run(client: &mut NodeClient, action: NodeAction, json: bool) -> Result<()> {
+pub async fn run(
+    client: &mut NodeClient,
+    action: NodeAction,
+    json: bool,
+    journal: &WriteJournal,
+) -> Result<()> {
     match action {
         NodeAction::Get(args) => get(client, args, json).await,
         NodeAction::Context(args) => context(client, args, json).await,
-        NodeAction::Create(args) => create(client, args, json).await,
-        NodeAction::Update(args) => update(client, args, json).await,
-        NodeAction::SetStatus(args) => set_status(client, args, json).await,
-        NodeAction::Move(args) => move_node(client, args, json).await,
+        NodeAction::Create(args) => create(client, args, json, journal).await,
+        NodeAction::Update(args) => update(client, args, json, journal).await,
+        NodeAction::SetStatus(args) => set_status(client, args, json, journal).await,
+        NodeAction::Move(args) => move_node(client, args, json, journal).await,
         NodeAction::Delete(args) => delete(client, args, json).await,
         NodeAction::Children(args) => children(client, args, json).await,
         NodeAction::Query(args) => query(client, args, json).await,
         NodeAction::Export(args) => export(client, args, json).await,
         NodeAction::BatchGet(args) => batch_get(client, args, json).await,
-        NodeAction::BatchUpdate(args) => batch_update(client, args, json).await,
+        NodeAction::BatchUpdate(args) => batch_update(client, args, json, journal).await,
     }
 }
 
@@ -378,6 +384,7 @@ async fn get(client: &mut NodeClient, args: GetArgs, json: bool) -> Result<()> {
 }
 
 async fn context(client: &mut NodeClient, args: ContextArgs, json: bool) -> Result<()> {
+    let id = args.id.clone();
     let response = client
         .get_node_context(GetNodeContextRequest {
             node_id: args.id,
@@ -386,6 +393,12 @@ async fn context(client: &mut NodeClient, args: ContextArgs, json: bool) -> Resu
         })
         .await
         .map_err(|status| match status.code() {
+            tonic::Code::NotFound if is_missing_node(&status, &id) => {
+                if json {
+                    println!("{:#}", missing_node_json(&id));
+                }
+                anyhow::anyhow!("{}", status.message())
+            }
             // The daemon's message names the path, or the node, at fault.
             tonic::Code::InvalidArgument | tonic::Code::NotFound => {
                 anyhow::anyhow!("{}", status.message())
@@ -400,7 +413,24 @@ async fn context(client: &mut NodeClient, args: ContextArgs, json: bool) -> Resu
     output::print_node_context(&response, json)
 }
 
-async fn create(client: &mut NodeClient, args: CreateArgs, json: bool) -> Result<()> {
+/// Whether a failed context read is the node itself not existing, and not a
+/// node a path reached: the daemon's message names the id that is missing.
+fn is_missing_node(status: &tonic::Status, id: &str) -> bool {
+    status.code() == tonic::Code::NotFound && status.message() == format!("Not found: {id}")
+}
+
+/// A missing node as structured output, in the shape `version_conflict` uses:
+/// a caller watching a node tells a deleted one from a failed read.
+fn missing_node_json(id: &str) -> serde_json::Value {
+    json!({ "error": "not_found", "node_id": id })
+}
+
+async fn create(
+    client: &mut NodeClient,
+    args: CreateArgs,
+    json: bool,
+    journal: &WriteJournal,
+) -> Result<()> {
     let properties = merge_properties(args.properties_json, args.properties).unwrap_or_default();
 
     let response = client
@@ -420,10 +450,16 @@ async fn create(client: &mut NodeClient, args: CreateArgs, json: bool) -> Result
         .into_inner();
 
     let node = response.node_data.context("daemon returned no node_data")?;
+    journal.record(&node.id, node.version);
     output::print_node(&node, json)
 }
 
-async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result<()> {
+async fn update(
+    client: &mut NodeClient,
+    args: UpdateArgs,
+    json: bool,
+    journal: &WriteJournal,
+) -> Result<()> {
     if args.content.is_none()
         && args.properties.is_empty()
         && args
@@ -464,6 +500,7 @@ async fn update(client: &mut NodeClient, args: UpdateArgs, json: bool) -> Result
         .into_inner();
 
     let node = response.node_data.context("daemon returned no node_data")?;
+    journal.record(&node.id, node.version);
     output::print_node(&node, json)
 }
 
@@ -479,7 +516,12 @@ async fn dry_run(client: &mut NodeClient, request: UpdateNodeRequest, json: bool
     output::print_dry_run(&response, json)
 }
 
-async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) -> Result<()> {
+async fn set_status(
+    client: &mut NodeClient,
+    args: SetStatusArgs,
+    json: bool,
+    journal: &WriteJournal,
+) -> Result<()> {
     // No client-side vocabulary check: `task.status` is `extensible: true`
     // (schema update's `add_field_values`), so the daemon's live schema —
     // not a list baked into this binary — is the only source of truth for
@@ -511,6 +553,7 @@ async fn set_status(client: &mut NodeClient, args: SetStatusArgs, json: bool) ->
         .into_inner();
 
     let node = response.node_data.context("daemon returned no node_data")?;
+    journal.record(&node.id, node.version);
     output::print_node(&node, json)
 }
 
@@ -580,7 +623,12 @@ fn write_refused(status: tonic::Status, rpc: &str, json: bool) -> anyhow::Error 
 
 /// A new parent (or `--root`) is a `MoveNode`; a position alone is a
 /// `ReorderNode` under the parent the node already has.
-async fn move_node(client: &mut NodeClient, args: MoveArgs, json: bool) -> Result<()> {
+async fn move_node(
+    client: &mut NodeClient,
+    args: MoveArgs,
+    json: bool,
+    journal: &WriteJournal,
+) -> Result<()> {
     use nodespace_daemon::nodespace::move_node_request::Position as MovePosition;
     use nodespace_daemon::nodespace::reorder_node_request::Position as ReorderPosition;
 
@@ -632,6 +680,7 @@ async fn move_node(client: &mut NodeClient, args: MoveArgs, json: bool) -> Resul
             .into_inner();
 
         let node = response.node_data.context("daemon returned no node_data")?;
+        journal.record(&node.id, node.version);
         return output::print_node(&node, json);
     }
 
@@ -656,6 +705,7 @@ async fn move_node(client: &mut NodeClient, args: MoveArgs, json: bool) -> Resul
         .into_inner()
         .node_data
         .context("daemon returned no node_data")?;
+    journal.record(&node.id, node.version);
     output::print_node(&node, json)
 }
 
@@ -805,7 +855,12 @@ async fn batch_get(client: &mut NodeClient, args: BatchGetArgs, json: bool) -> R
     Ok(())
 }
 
-async fn batch_update(client: &mut NodeClient, args: BatchUpdateArgs, json: bool) -> Result<()> {
+async fn batch_update(
+    client: &mut NodeClient,
+    args: BatchUpdateArgs,
+    json: bool,
+    journal: &WriteJournal,
+) -> Result<()> {
     use nodespace_daemon::nodespace::BatchUpdateItem;
 
     let raw: serde_json::Value = serde_json::from_str(&args.updates)
@@ -835,6 +890,7 @@ async fn batch_update(client: &mut NodeClient, args: BatchUpdateArgs, json: bool
         .await
         .context("UpdateNodesBatch RPC failed")?
         .into_inner();
+    record_batch(client, &response.updated, journal).await;
 
     if json {
         println!(
@@ -860,9 +916,33 @@ async fn batch_update(client: &mut NodeClient, args: BatchUpdateArgs, json: bool
     Ok(())
 }
 
+/// Journals the versions a batch update left its nodes at. The response names
+/// the nodes and not their versions, so they are read back; a read that fails
+/// loses the entries and nothing else. A node another process writes between
+/// the batch and the read-back is journaled at that writer's version: the same
+/// unversioned read-then-write window the batch itself has.
+async fn record_batch(client: &mut NodeClient, updated: &[String], journal: &WriteJournal) {
+    if updated.is_empty() {
+        return;
+    }
+    let read = client
+        .get_nodes_batch(GetNodesBatchRequest {
+            node_ids: updated.to_vec(),
+        })
+        .await;
+    if let Ok(response) = read {
+        for node in &response.into_inner().nodes {
+            journal.record(&node.id, node.version);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{merge_properties, CreateArgs, NodeAction, VersionConflict};
+    use super::{
+        is_missing_node, merge_properties, missing_node_json, CreateArgs, NodeAction,
+        VersionConflict,
+    };
     use clap::Parser;
 
     fn conflict_status(header: &str) -> tonic::Status {
@@ -890,6 +970,22 @@ mod tests {
             conflict.message(),
             "Node n-1 has changed since it was read: version 3 was given and it is now at \
              version 5. Nothing was written. Read the node again before deciding what to do."
+        );
+    }
+
+    #[test]
+    fn only_the_node_itself_missing_is_a_missing_node() {
+        let missing = tonic::Status::not_found("Not found: n-1");
+
+        assert!(is_missing_node(&missing, "n-1"));
+        assert!(!is_missing_node(&missing, "n-2"));
+        assert!(!is_missing_node(
+            &tonic::Status::internal("Not found: n-1"),
+            "n-1"
+        ));
+        assert_eq!(
+            missing_node_json("n-1"),
+            serde_json::json!({ "error": "not_found", "node_id": "n-1" })
         );
     }
 
