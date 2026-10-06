@@ -14,6 +14,6 @@ WRITE THE WHOLE RULE LIST: <!-- include: play-authoring-write -->
 
 <!-- include: play-stale-description -->
 
-REPAIR A REJECTED WRITE: a write that is refused changes nothing and says why, naming the rule and the part of it (trigger, condition or action) in one of two ways. By the rule's name and the part's number counted from one: "rule `complete parent`, condition 2" is the second condition. Or by position counted from zero: "rule[0].condition[1]" is the second condition of the first rule. Fix exactly what each problem names and write again. Don't tell the user the change is made until a write has succeeded.
+REPAIR A REJECTED WRITE: a write that is refused changes nothing and says why, naming the rule and the part of it (trigger, condition or action) in one of two ways. By the rule's name and the part's number counted from one: "rule `settle done task`, condition 2" is the second condition. Or by position counted from zero: "rule[0].condition[1]" is the second condition of the first rule. Fix exactly what each problem names and write again. Don't tell the user the change is made until a write has succeeded.
 
 ON AND OFF: <!-- include: play-authoring-switch -->
