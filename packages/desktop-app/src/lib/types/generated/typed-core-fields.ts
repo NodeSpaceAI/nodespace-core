@@ -48,7 +48,6 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'required_extensions', wire: 'requiredExtensions', structured: 'array' },
     { storage: 'capture_enabled', wire: 'captureEnabled', structured: 'boolean' },
     { storage: 'capture_content', wire: 'captureContent' },
-    { storage: 'external_tools_enabled', wire: 'externalToolsEnabled', structured: 'boolean' },
     { storage: 'providers', wire: 'providers', structured: 'array' }
   ],
   query: [
@@ -118,7 +117,6 @@ export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string
   'database-settings': {
     captureContent: 'metadata_only',
     captureEnabled: false,
-    externalToolsEnabled: false,
     providers: [],
     requiredExtensions: []
   },

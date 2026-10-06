@@ -26,7 +26,6 @@ function settingsNode(version: number) {
     version,
     captureEnabled: false,
     captureContent: 'metadata_only',
-    externalToolsEnabled: false,
     providers: [],
     requiredExtensions: []
   } as never;
@@ -80,10 +79,10 @@ describe('updateDatabaseSettings', () => {
     getNode.mockResolvedValueOnce(settingsNode(3)).mockResolvedValueOnce(settingsNode(4));
     updateNode.mockRejectedValueOnce(versionConflict).mockResolvedValueOnce(settingsNode(5));
 
-    await updateDatabaseSettings({ externalToolsEnabled: true });
+    await updateDatabaseSettings({ captureEnabled: true });
 
     expect(updateNode).toHaveBeenNthCalledWith(2, 'database-settings-singleton', 4, {
-      externalToolsEnabled: true
+      captureEnabled: true
     });
   });
 

@@ -2113,18 +2113,6 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     ..settings_field()
                 },
                 SchemaField {
-                    name: "external_tools_enabled".to_string(),
-                    friendly_name: "External tools".to_string(),
-                    field_type: crate::models::SchemaFieldType::Boolean,
-                    default: Some(serde_json::json!(false)),
-                    description: Some(
-                        "Whether external tool clients may use this database through \
-                         `nodespace mcp`. Off until a user turns it on."
-                            .to_string(),
-                    ),
-                    ..settings_field()
-                },
-                SchemaField {
                     name: "providers".to_string(),
                     friendly_name: "Providers".to_string(),
                     field_type: crate::models::SchemaFieldType::Array,
@@ -3401,7 +3389,6 @@ mod tests {
                 "required_extensions",
                 "capture_enabled",
                 "capture_content",
-                "external_tools_enabled",
                 "providers"
             ]
         );
@@ -3417,10 +3404,6 @@ mod tests {
         assert_eq!(
             field("capture_content").default,
             Some(serde_json::json!("metadata_only"))
-        );
-        assert_eq!(
-            field("external_tools_enabled").default,
-            Some(serde_json::json!(false))
         );
         assert_eq!(field("providers").default, Some(serde_json::json!([])));
         assert_eq!(

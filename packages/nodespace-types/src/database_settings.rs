@@ -93,8 +93,6 @@ pub struct DatabaseSettingsFields {
     pub capture_enabled: bool,
     /// How much of a captured session is saved.
     pub capture_content: CaptureContent,
-    /// Whether external tool clients (`nodespace mcp`) may use this database.
-    pub external_tools_enabled: bool,
     /// The OpenAI-compatible providers this database has configured.
     pub providers: Vec<ProviderConfig>,
 }
@@ -107,7 +105,6 @@ impl Default for DatabaseSettingsFields {
             required_extensions: Vec::new(),
             capture_enabled: false,
             capture_content: CaptureContent::default(),
-            external_tools_enabled: false,
             providers: Vec::new(),
         }
     }
@@ -150,11 +147,6 @@ impl DatabaseSettingsFields {
             capture_enabled: decode(field("capture_enabled"), "capture_enabled")?.unwrap_or(false),
             capture_content: decode(field("capture_content"), "capture_content")?
                 .unwrap_or_default(),
-            external_tools_enabled: decode(
-                field("external_tools_enabled"),
-                "external_tools_enabled",
-            )?
-            .unwrap_or(false),
             providers,
         })
     }
@@ -229,12 +221,6 @@ pub struct DatabaseSettingsNodeUpdate {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_clearable"
     )]
-    pub external_tools_enabled: Option<Option<bool>>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_clearable"
-    )]
     pub providers: Option<Option<Vec<ProviderConfig>>>,
 }
 
@@ -262,11 +248,6 @@ impl DatabaseSettingsNodeUpdate {
         put(&mut patch, "required_extensions", &self.required_extensions);
         put(&mut patch, "capture_enabled", &self.capture_enabled);
         put(&mut patch, "capture_content", &self.capture_content);
-        put(
-            &mut patch,
-            "external_tools_enabled",
-            &self.external_tools_enabled,
-        );
         put(&mut patch, "providers", &self.providers);
         Value::Object(patch)
     }
@@ -296,12 +277,18 @@ mod tests {
             r#"{"requiredExtensions": [1]}"#,
             r#"{"captureEnabled": "yes"}"#,
             r#"{"captureContent": 3}"#,
-            r#"{"externalToolsEnabled": "on"}"#,
             r#"{"providers": "none"}"#,
             r#"{"providers": [1]}"#,
         ] {
             assert!(update(body).is_err(), "{body} must be rejected");
         }
+    }
+
+    /// External tools are enabled by the client config `nodespace mcp install`
+    /// writes, not by a database setting, so the typed update has no such key.
+    #[test]
+    fn the_typed_update_rejects_an_external_tools_key() {
+        assert!(update(r#"{"externalToolsEnabled": true}"#).is_err());
     }
 
     #[test]
@@ -354,7 +341,7 @@ mod tests {
 
         let set = update(
             r#"{"requiredExtensions": ["fixture"], "captureEnabled": true,
-                "captureContent": "full", "externalToolsEnabled": true, "providers": []}"#,
+                "captureContent": "full", "providers": []}"#,
         )
         .unwrap();
         assert_eq!(
@@ -363,7 +350,6 @@ mod tests {
                 "required_extensions": ["fixture"],
                 "capture_enabled": true,
                 "capture_content": "full",
-                "external_tools_enabled": true,
                 "providers": [],
             })
         );
@@ -388,10 +374,10 @@ mod tests {
         assert!(!bucketed.provider(ID).unwrap().routing_ok["m"]);
 
         let flat = DatabaseSettingsFields::from_properties(&json!({
-            "external_tools_enabled": true,
+            "capture_enabled": true,
         }))
         .unwrap();
-        assert!(flat.external_tools_enabled);
+        assert!(flat.capture_enabled);
     }
 
     #[test]

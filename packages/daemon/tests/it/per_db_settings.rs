@@ -106,7 +106,7 @@ async fn each_open_database_behaves_by_its_own_settings() {
             .database_settings()
             .await
             .unwrap();
-        assert!(!settings.capture_enabled && !settings.external_tools_enabled);
+        assert!(!settings.capture_enabled);
         assert!(settings.providers.is_empty());
     }
 
@@ -115,7 +115,6 @@ async fn each_open_database_behaves_by_its_own_settings() {
         DatabaseSettingsNodeUpdate {
             capture_enabled: Some(Some(true)),
             capture_content: Some(Some(CaptureContent::Full)),
-            external_tools_enabled: Some(Some(true)),
             providers: Some(Some(vec![provider(WORK_PROVIDER, "Work endpoint")])),
             ..Default::default()
         },
@@ -159,10 +158,6 @@ async fn each_open_database_behaves_by_its_own_settings() {
             content: CaptureContent::Summary
         }
     );
-
-    // External tools: only the database that turned them on serves them.
-    assert!(work_settings.external_tools_enabled);
-    assert!(!home_settings.external_tools_enabled);
 
     // Providers: a config resolves in its own database and is not found in
     // the other.

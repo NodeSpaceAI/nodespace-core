@@ -394,7 +394,6 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::new("required_extensions", "requiredExtensions", Array),
                     F::new("capture_enabled", "captureEnabled", Boolean),
                     F::text("capture_content", "captureContent"),
-                    F::new("external_tools_enabled", "externalToolsEnabled", Boolean),
                     F::new("providers", "providers", Array),
                 ]
             }

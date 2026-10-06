@@ -19,10 +19,8 @@ import type { McpClientName } from './mcp-clients.js';
  * must not be registered until a user has explicitly turned it on. The only
  * callers are `install.ts`'s `mcp-install`/`mcp-uninstall`/`mcp-status`
  * commands, invoked by `nodespace mcp install`/`uninstall`/`status`
- * (`packages/cli/src/commands/mcp.rs`), which also sets the database's
- * `external_tools_enabled` setting that `nodespace mcp`'s own server checks
- * at startup -- so writing a client config here is necessary but not
- * sufficient for the tool to go live.
+ * (`packages/cli/src/commands/mcp.rs`). The client config written here is
+ * the enablement: nothing else is stored, and the server reads no setting.
  */
 
 export interface McpInstallResult {

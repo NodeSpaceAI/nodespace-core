@@ -9155,7 +9155,6 @@ mod tests {
                 "required_extensions": [],
                 "capture_enabled": false,
                 "capture_content": "metadata_only",
-                "external_tools_enabled": false,
                 "providers": [],
             } }),
             "seeding writes only the schema defaults onto the singleton"

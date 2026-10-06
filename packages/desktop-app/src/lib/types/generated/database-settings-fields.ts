@@ -28,10 +28,6 @@ export type DatabaseSettingsFields = {
    */
   captureContent: CaptureContent;
   /**
-   * Whether external tool clients (`nodespace mcp`) may use this database.
-   */
-  externalToolsEnabled: boolean;
-  /**
    * The OpenAI-compatible providers this database has configured.
    */
   providers: Array<ProviderConfig>;

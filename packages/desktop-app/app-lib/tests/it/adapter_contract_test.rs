@@ -448,7 +448,6 @@ async fn database_settings_typed_update_matches_the_http_adapter_contract() {
     assert_eq!(settings["requiredExtensions"], json!([]));
     assert_eq!(settings["captureEnabled"], json!(false));
     assert_eq!(settings["captureContent"], json!("metadata_only"));
-    assert_eq!(settings["externalToolsEnabled"], json!(false));
     assert_eq!(settings["providers"], json!([]));
     let version = settings["version"]
         .as_i64()

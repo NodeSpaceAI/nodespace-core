@@ -51,7 +51,6 @@ async fn a_new_database_starts_from_the_schema_defaults() {
 
     assert!(!settings.capture_enabled);
     assert_eq!(settings.capture_content, CaptureContent::MetadataOnly);
-    assert!(!settings.external_tools_enabled);
     assert!(settings.providers.is_empty());
     assert!(settings.required_extensions.is_empty());
 }
@@ -65,7 +64,6 @@ async fn the_update_writes_each_field_and_clearing_restores_its_default() {
         DatabaseSettingsNodeUpdate {
             capture_enabled: Some(Some(true)),
             capture_content: Some(Some(CaptureContent::Full)),
-            external_tools_enabled: Some(Some(true)),
             providers: Some(Some(vec![provider("http://a/v1", "m")])),
             ..Default::default()
         },
@@ -73,7 +71,7 @@ async fn the_update_writes_each_field_and_clearing_restores_its_default() {
     .await
     .unwrap();
     let (settings, _) = svc.database_settings().await.unwrap();
-    assert!(settings.capture_enabled && settings.external_tools_enabled);
+    assert!(settings.capture_enabled);
     assert_eq!(settings.capture_content, CaptureContent::Full);
     assert_eq!(settings.provider(PROVIDER_ID).unwrap().api_key, "secret");
 
@@ -88,7 +86,6 @@ async fn the_update_writes_each_field_and_clearing_restores_its_default() {
         DatabaseSettingsNodeUpdate {
             capture_enabled: Some(None),
             capture_content: Some(None),
-            external_tools_enabled: Some(None),
             providers: Some(None),
             ..Default::default()
         },
@@ -135,7 +132,6 @@ async fn a_flat_update_is_validated_like_the_typed_one() {
     for bad in [
         json!({ "capture_enabled": "yes" }),
         json!({ "capture_content": "everything" }),
-        json!({ "external_tools_enabled": 1 }),
         json!({ "providers": "none" }),
         json!({ "providers": [{ "name": "n", "base_url": "u" }] }),
         json!({ "providers": [{ "id": PROVIDER_ID, "name": "n", "base_url": "u", "extra": 1 }] }),
@@ -155,6 +151,26 @@ async fn a_flat_update_is_validated_like_the_typed_one() {
     assert_eq!(
         svc.database_settings().await.unwrap().0,
         nodespace_core::models::DatabaseSettingsFields::default()
+    );
+}
+
+/// External tools are enabled by the `nodespace mcp install` client config,
+/// not by a database setting, so the field is an undeclared key.
+#[tokio::test]
+async fn a_flat_update_naming_external_tools_enabled_is_rejected_as_undeclared() {
+    let (svc, _dir) = service().await;
+    let settings = svc.get_node(SETTINGS_ID).await.unwrap().unwrap();
+    let err = svc
+        .update_node(
+            SETTINGS_ID,
+            settings.version,
+            NodeUpdate::new().with_properties(json!({ "external_tools_enabled": true })),
+        )
+        .await
+        .expect_err("the removed field must be rejected");
+    assert!(
+        err.to_string().contains("external_tools_enabled"),
+        "the error must name the key: {err}"
     );
 }
 
@@ -219,7 +235,7 @@ async fn a_retyped_singleton_keeps_its_base_bucket_settings_readable_and_writabl
     write(
         &svc,
         DatabaseSettingsNodeUpdate {
-            external_tools_enabled: Some(Some(true)),
+            capture_content: Some(Some(CaptureContent::Full)),
             providers: Some(Some(vec![provider("http://a/v1", "m")])),
             ..Default::default()
         },
@@ -241,7 +257,7 @@ async fn a_retyped_singleton_keeps_its_base_bucket_settings_readable_and_writabl
     .unwrap();
 
     let (read, _) = svc.database_settings().await.unwrap();
-    assert!(read.external_tools_enabled);
+    assert_eq!(read.capture_content, CaptureContent::Full);
     assert_eq!(read.providers.len(), 1);
 
     write(
@@ -254,5 +270,5 @@ async fn a_retyped_singleton_keeps_its_base_bucket_settings_readable_and_writabl
     .await
     .unwrap();
     let (after, _) = svc.database_settings().await.unwrap();
-    assert!(after.capture_enabled && after.external_tools_enabled);
+    assert!(after.capture_enabled && after.capture_content == CaptureContent::Full);
 }
