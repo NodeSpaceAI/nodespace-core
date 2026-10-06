@@ -1053,10 +1053,29 @@ mod tests {
                 .unwrap_or_else(|| panic!("no rule example in: {text}"));
             let rule: RuleDefinition = serde_json::from_value(example)
                 .unwrap_or_else(|e| panic!("the rule example does not decode: {e}"));
-            assert_eq!(rule.conditions.len(), 1);
+            assert_eq!(rule.conditions.len(), 2);
             assert_eq!(rule.actions.len(), 1);
             nodespace_core::playbook::descriptions::check_descriptions(&[rule], None)
                 .expect("the example's descriptions pass");
+        }
+    }
+
+    /// `has_child` reaches every child, a checkbox or a note included, so a
+    /// comprehension over it that reads a task field fails on them. No
+    /// shipped rule shows one, and the guidance for conditions teaches
+    /// `type_chain` for asking whether a node is a task.
+    #[test]
+    fn no_rule_shows_a_task_field_read_on_every_child() {
+        for r in anchored_rules() {
+            for text in [r.imperative, r.prose] {
+                assert!(!text.contains("has_child.all(c, c.status"), "{}", r.id);
+            }
+        }
+        for text in [
+            agent_form!("play-authoring-schemas"),
+            skill_md_form!("play-authoring-schemas"),
+        ] {
+            assert!(text.contains("'task' in node.type_chain"), "{text}");
         }
     }
 
@@ -1068,12 +1087,12 @@ mod tests {
             DescribedComponent, DescriptionError, DescriptionProblem,
         };
         let rendered = DescriptionError {
-            rule: "complete parent".to_string(),
+            rule: "settle done task".to_string(),
             component: DescribedComponent::Condition(1),
             problem: DescriptionProblem::Stale,
         }
         .to_string();
-        let quoted = "rule `complete parent`, condition 2: its expression changed and its \
+        let quoted = "rule `settle done task`, condition 2: its expression changed and its \
                       description didn't";
         assert!(rendered.starts_with(quoted), "{rendered}");
         for text in [

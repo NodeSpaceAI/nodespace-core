@@ -1,1 +1,1 @@
-The `schemas` in get_play's result list the fields and relationships of every type the rules reference: use those names exactly.
+The `schemas` in get_play's result list the fields and relationships of every type the rules reference: use those names exactly. To ask in a condition whether a node is a task or a subtype of one, write `'task' in node.type_chain` (`type_chain` is the node's type followed by every type it extends); `node_type == 'task'` misses every subtype, and a node having a `status` proves nothing, because a project has one too.

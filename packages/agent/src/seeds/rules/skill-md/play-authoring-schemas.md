@@ -1,1 +1,1 @@
-Run `nodespace schema get <type>` for each type the rules name, and use the field and relationship names it prints exactly.
+Run `nodespace schema get <type>` for each type the rules name, and use the field and relationship names it prints exactly. To ask in a condition whether a node is a task or a subtype of one, write `'task' in node.type_chain` (`type_chain` is the node's type followed by every type it extends); `node_type == 'task'` misses every subtype, and a node having a `status` proves nothing, because a project has one too.
