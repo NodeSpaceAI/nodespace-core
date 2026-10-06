@@ -5,7 +5,7 @@
  * tests; this script is the only gate.
  *
  * - `push` (the default, run by the Husky pre-push hook): lint, the
- *   app-version drift check, the extension-API version check and the
+ *   app-version drift check and the
  *   source-scan checks (code boundary, node-type literals, lifecycle reads)
  *   only. Seconds, and it takes no lock. A push only publishes a branch; the merge is what
  *   changes main, and the merge gate tests it. Test the tiers a change
@@ -195,16 +195,6 @@ await run({
 await run({
   label: "check-version-sync (app version drift)",
   command: "bun run scripts/check-version-sync.ts",
-  timeoutMs: 5 * MINUTE,
-  nice: !merge,
-});
-// The extension API's version (ADR-082 section 8): a change to the host API's
-// surface snapshot or to an extension-point fixture bumps EXTENSION_API_VERSION
-// in the same change. It reads git alone, so the push is where it first runs;
-// the surface test that keeps the snapshot equal to the API is a frontend test.
-await run({
-  label: "check-extension-api-version (ADR-082 versioned extension API)",
-  command: "bun run scripts/check-extension-api-version.ts",
   timeoutMs: 5 * MINUTE,
   nice: !merge,
 });

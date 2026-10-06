@@ -20,7 +20,6 @@ const log = vi.hoisted(() => ({
 vi.mock('$lib/utils/logger', () => ({ createLogger: () => log }));
 
 import {
-  EXTENSION_API_VERSION,
   UiExtensionRegistry,
   registerExtensions,
   uiExtensionRegistry,
@@ -98,7 +97,7 @@ function plugin(id: string): PluginDefinition {
 }
 
 function ext(id: string, rest: Partial<NodespaceExtension> = {}): NodespaceExtension {
-  return { id, apiVersion: 2, ...rest };
+  return { id, ...rest };
 }
 
 const keysOf = (list: { key: string }[]) => list.map((c) => c.key);
@@ -164,24 +163,6 @@ describe('UiExtensionRegistry registration', () => {
     });
   });
 
-  it('does not register an extension whose apiVersion is not the supported major, and logs', () => {
-    const unsupported = EXTENSION_API_VERSION.major + 1;
-    const wrong = { ...ext('a', { chrome: [chrome('one')] }), apiVersion: unsupported } as never;
-    registry.register(wrong);
-
-    expect(registry.has('a')).toBe(false);
-    expect(registry.chromeFor('app-shell-modal')).toEqual([]);
-    expect(log.error).toHaveBeenCalledTimes(1);
-    expect(log.error).toHaveBeenCalledWith(
-      expect.stringContaining('apiVersion mismatch'),
-      expect.objectContaining({
-        id: 'a',
-        apiVersion: unsupported,
-        supported: EXTENSION_API_VERSION.major
-      })
-    );
-  });
-
   it('drops a repeated contribution id within one list, keeping the first, and logs', () => {
     registry.register(
       ext('a', {
@@ -240,11 +221,10 @@ describe('UiExtensionRegistry registration', () => {
       undefined,
       'a string',
       {},
-      { id: '', apiVersion: 2 },
-      { id: 'no-list', apiVersion: 2, chrome: 'not an array' },
+      { id: '' },
+      { id: 'no-list', chrome: 'not an array' },
       {
         id: 'bad-entries',
-        apiVersion: 2,
         chrome: [
           null,
           { id: 'no-load', slot: 'app-shell-modal' },
@@ -267,7 +247,6 @@ describe('UiExtensionRegistry registration', () => {
   it('never throws when a contribution getter throws', () => {
     const hostile = {
       id: 'hostile',
-      apiVersion: 2,
       get chrome(): ChromeContribution[] {
         throw new Error('getter failed');
       }
@@ -396,7 +375,6 @@ describe('UiExtensionRegistry settings contributions', () => {
   it('drops malformed entries and non-array lists without throwing', () => {
     const malformed = {
       id: 'bad',
-      apiVersion: 2,
       settingsSections: [null, { id: 'no-load', label: 'x' }, { label: 'no-id', load: noComponent }],
       settingsSlots: 'not an array'
     } as unknown as NodespaceExtension;
@@ -855,12 +833,10 @@ describe('UiExtensionRegistry replaceable slots', () => {
   it('drops malformed entries and a non-array list without throwing', () => {
     const bad = {
       id: 'bad',
-      apiVersion: 2,
       replaceableSlots: [{ id: 'no-load', slot: 'collaboration.entry' }, entry('fine')]
     } as unknown as NodespaceExtension;
     const notArray = {
       id: 'not-array',
-      apiVersion: 2,
       replaceableSlots: 'nope'
     } as unknown as NodespaceExtension;
 
@@ -1239,10 +1215,9 @@ describe('UiExtensionRegistry node types', () => {
   it('drops malformed entries and a non-array list without throwing', () => {
     const bad = {
       id: 'bad',
-      apiVersion: 2,
       nodeTypes: [null, {}, { plugin: { name: 'no id' } }, { plugin: plugin('') }, { plugin: plugin('fine') }]
     } as unknown as NodespaceExtension;
-    const notArray = { id: 'not-array', apiVersion: 2, nodeTypes: 'nope' } as unknown as NodespaceExtension;
+    const notArray = { id: 'not-array', nodeTypes: 'nope' } as unknown as NodespaceExtension;
 
     expect(() => {
       registry.register(bad);
@@ -1260,11 +1235,6 @@ describe('UiExtensionRegistry node types', () => {
     registry.register(ext('a', { nodeTypes: [{ plugin: plugin('ext-a') }] }));
     // Same id, different object: refused, so its type must not reach the plugin registry.
     registry.register(ext('a', { nodeTypes: [{ plugin: plugin('ext-duplicate') }] }));
-    registry.register({
-      id: 'old',
-      apiVersion: 1,
-      nodeTypes: [{ plugin: plugin('ext-old') }]
-    } as unknown as NodespaceExtension);
 
     expect(plugins.getAllPlugins().map((p) => p.id)).toEqual(['ext-a']);
   });
@@ -1272,7 +1242,6 @@ describe('UiExtensionRegistry node types', () => {
   it('registers no type when reading another contribution list throws', () => {
     const throwing = {
       id: 'throwing',
-      apiVersion: 2,
       nodeTypes: [{ plugin: plugin('ext-note') }],
       get chrome(): never {
         throw new Error('getter failed');
@@ -1397,10 +1366,9 @@ describe('UiExtensionRegistry tree-item actions', () => {
   it('drops malformed entries and a non-array list without throwing', () => {
     const bad = {
       id: 'bad',
-      apiVersion: 2,
       treeItemActions: [{ id: 'no-load' }, action('fine')]
     } as unknown as NodespaceExtension;
-    const notArray = { id: 'not-array', apiVersion: 2, treeItemActions: 'nope' } as unknown as NodespaceExtension;
+    const notArray = { id: 'not-array', treeItemActions: 'nope' } as unknown as NodespaceExtension;
 
     expect(() => {
       registry.register(bad);

@@ -191,7 +191,6 @@ describe('Labs page: the collaboration.entry replaceable slot', () => {
     // `when()` reads a flag (`section`) whose changes never change its result.
     const second: NodespaceExtension = {
       id: SECOND_EXTENSION_ID,
-      apiVersion: 2,
       replaceableSlots: [
         {
           id: 'entry',
@@ -221,7 +220,6 @@ describe('Labs page: the collaboration.entry replaceable slot', () => {
   it('keeps the rendered contribution mounted while a hidden, higher-priority one re-evaluates', async () => {
     const second: NodespaceExtension = {
       id: SECOND_EXTENSION_ID,
-      apiVersion: 2,
       replaceableSlots: [
         {
           // Evaluated first (higher priority) on every pass; stays hidden.
@@ -258,7 +256,6 @@ describe('Labs page: the collaboration.entry replaceable slot', () => {
     uiExtensionRegistry.register(createTestExtension());
     const second: NodespaceExtension = {
       id: SECOND_EXTENSION_ID,
-      apiVersion: 2,
       replaceableSlots: [
         {
           id: 'entry',

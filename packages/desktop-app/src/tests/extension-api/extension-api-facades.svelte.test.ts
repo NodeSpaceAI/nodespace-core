@@ -20,7 +20,6 @@ import * as daemonStatus from '$lib/services/daemon-status';
 import * as logger from '$lib/utils/logger';
 import * as errors from '$lib/types/errors';
 import * as tauriCoreHelper from '../helpers/mock-tauri-core';
-import { EXTENSION_API_VERSION } from '$lib/plugins/ui-extensions';
 import { Button } from '$lib/components/ui/button';
 import * as Dialog from '$lib/components/ui/dialog';
 import { focusTrap } from '$lib/actions/focus-trap';
@@ -235,7 +234,6 @@ describe('re-exports', () => {
     expect(api.createLogger).toBe(logger.createLogger);
     expect(api.toError).toBe(errors.toError);
     expect(api.isCommandError).toBe(errors.isCommandError);
-    expect(api.EXTENSION_API_VERSION).toBe(EXTENSION_API_VERSION);
     expect(testing.mockTauriCore).toBe(tauriCoreHelper.mockTauriCore);
     expect(ui.Button).toBe(Button);
     expect(ui.Dialog.Root).toBe(Dialog.Root);

@@ -21,6 +21,7 @@ import {
   HOST_API_DIR,
   LIB_ROOT,
   SRC_ROOT,
+  exportedNames,
   importSpecifiers,
   resolveSpecifier,
   sourceFiles
@@ -76,6 +77,29 @@ function describeImports(imports: Import[]): string[] {
 const hostApiFiles = sourceFiles(HOST_API_DIR);
 
 describe('extension API boundary', () => {
+  it('lists its exports explicitly, with no `export *`', () => {
+    const entries = hostApiFiles.filter((file) => file.endsWith('.ts'));
+    expect(entries.length).toBeGreaterThan(0);
+    // exportedNames throws on `export *` and `export * as`.
+    for (const file of entries) expect(() => exportedNames(file)).not.toThrow();
+  });
+
+  it('refuses `export *` and `export * as`, and lists explicit exports', () => {
+    const entry = path.join(HOST_API_DIR, 'example.ts');
+    expect(() => exportedNames(entry, "export * from './ui';")).toThrow(/export \*/);
+    expect(() => exportedNames(entry, "export * as ui from './ui';")).toThrow(/export \*/);
+    expect(
+      exportedNames(
+        entry,
+        "export { a as b } from './x';\nexport type { T } from './x';\nexport const c = 1;"
+      )
+    ).toEqual([
+      { name: 'b', isType: false },
+      { name: 'T', isType: true },
+      { name: 'c', isType: false }
+    ]);
+  });
+
   it('is imported by no core module under src/lib or src/routes', () => {
     const coreFiles = [
       ...sourceFiles(LIB_ROOT).filter((file) => !file.startsWith(`${HOST_API_DIR}${path.sep}`)),

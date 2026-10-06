@@ -2,9 +2,7 @@
 //! the daemon uses them: through `build_shared_services` and the public API
 //! alone.
 //!
-//! This file records the daemon half of the extension API. A change to it
-//! needs an `EXTENSION_API_VERSION` bump (ADR-082 §8), which
-//! `scripts/check-extension-api-version.ts` enforces.
+//! This file tests the daemon half of the extension points (ADR-082 §9).
 //!
 //! Every test that calls `build_shared_services` first points the daemon's
 //! home at a temporary directory and its embedding model at a file that does

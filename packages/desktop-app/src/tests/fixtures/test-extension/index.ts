@@ -67,7 +67,6 @@ export function createTestExtension(
   const section = options.section ?? {};
   return {
     id: TEST_EXTENSION_ID,
-    apiVersion: 2,
     nodeTypes: [{ plugin: createTestNodePlugin() }],
     chrome: [
       {

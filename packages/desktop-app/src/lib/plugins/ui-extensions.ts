@@ -3,7 +3,7 @@
  * =============================
  *
  * The registry behind NodeSpace's frontend extension API (ADR-082). An
- * extension is a plain object, `{ id, apiVersion, nodeTypes?, chrome?,
+ * extension is a plain object, `{ id, nodeTypes?, chrome?,
  * viewerTabs?, settingsSections?, settingsSlots?, replaceableSlots?,
  * treeItemActions? }`, whose contributions each carry an `id`, an optional
  * `when()` predicate, an optional `priority` and a lazy `load()` for the
@@ -20,8 +20,7 @@
  *   - `registerExtensions([...])` is what a build entry calls with the
  *     extensions it bundles. `uiExtensionRegistry.register(ext)` registers one.
  *   - Registration never throws: a throw at startup would blank the app. A
- *     duplicate extension id (the first registration is kept), an `apiVersion`
- *     that is not {@link EXTENSION_API_VERSION}`.major`, and a contribution id
+ *     duplicate extension id (the first registration is kept) and a contribution id
  *     repeated within one extension (the later one is dropped) are logged and
  *     skipped. Registering the identical object twice is a silent no-op.
  *   - A node type that is a core type, or that an extension already added, is
@@ -64,15 +63,11 @@ import type { PluginDefinition } from './types';
 
 const log = createLogger('UiExtensionRegistry');
 
-/** The extension API version this build implements. */
-export const EXTENSION_API_VERSION = { major: 2, minor: 6 } as const;
-
 // --- Lifecycle hooks (ADR-082 §3.5) ---------------------------------------------
 
 /**
  * Callbacks the host invokes at fixed points in the app's life. Where exactly,
- * and what each guarantees, is part of the versioned extension API and is
- * documented in `extension-lifecycle.ts`, which also implements the dispatch.
+ * and what each guarantees, is documented in `extension-lifecycle.ts`, which also implements the dispatch.
  */
 export interface ExtensionLifecycle {
   /**
@@ -252,7 +247,6 @@ export type TreeItemActionContribution = Omit<Contribution<TreeItemActionProps>,
 
 export interface NodespaceExtension {
   id: string;
-  apiVersion: typeof EXTENSION_API_VERSION.major;
   /** Host-invoked callbacks; see {@link ExtensionLifecycle}. */
   lifecycle?: ExtensionLifecycle;
   /**
@@ -450,14 +444,6 @@ export class UiExtensionRegistry {
       } else {
         log.error('Duplicate extension id; keeping the first registration', { id: ext.id });
       }
-      return;
-    }
-    if (ext.apiVersion !== EXTENSION_API_VERSION.major) {
-      log.error('Extension apiVersion mismatch; not registered', {
-        id: ext.id,
-        apiVersion: ext.apiVersion,
-        supported: EXTENSION_API_VERSION.major
-      });
       return;
     }
     const seenIds = new Set<string>();

@@ -16,7 +16,8 @@
  *
  * Firing points
  * -------------
- * These are part of the versioned extension API. Moving one is a breaking change.
+ * Moving one changes what an extension sees, so the app built on core
+ * checks it when it moves its core pin.
  *
  * `lifecycle.start()`
  *   - Called once per webview load, from the app shell's mount, and only when the

@@ -51,7 +51,6 @@ const registered: string[] = [];
 function register(extensionId: string, sections: SettingsSectionContribution[]): void {
   const extension: NodespaceExtension = {
     id: extensionId,
-    apiVersion: 2,
     settingsSections: sections
   };
   uiExtensionRegistry.register(extension);

@@ -2,8 +2,7 @@
 //!
 //! [`DaemonExtensions`] is the value [`super::build_shared_services`] takes.
 //! [`DaemonExtensions::none`] adds nothing, and the daemon then behaves exactly
-//! as core's own does. The hooks are part of the extension API, versioned
-//! with `EXTENSION_API_VERSION` (ADR-082 §8).
+//! as core's own does. The hooks carry no version of their own (ADR-082 §8).
 
 use std::sync::Arc;
 

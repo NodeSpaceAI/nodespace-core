@@ -44,13 +44,6 @@ pub use tonic::transport::Channel;
 #[cfg(test)]
 mod fixture_tests;
 
-/// The version of the extension API, as `(major, minor)`.
-///
-/// A breaking change to the API bumps the major number and an additive change
-/// bumps the minor number. The TypeScript host API carries the same value, and
-/// the two must stay equal.
-pub const EXTENSION_API_VERSION: (u32, u32) = (2, 6);
-
 /// Core's own Tauri plugins, in the order they are registered.
 ///
 /// This is the only list of them. [`register_core_plugins`] registers it for
