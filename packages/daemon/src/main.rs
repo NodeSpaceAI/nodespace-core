@@ -138,27 +138,33 @@ async fn open_default_database(
 /// `nodespace_proto::socket`. A dev daemon that fell back to the release
 /// `daemon.sock` would serve an endpoint the dev app never looks at, while
 /// that app reports the daemon as not running.
+///
+/// The fallback sits in the state directory under the shared home rule, so
+/// `NODESPACE_HOME` alone moves the socket, and the lock beside it, with the
+/// rest of the daemon's state.
 #[cfg(unix)]
 fn socket_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var(nodespace_proto::socket::SOCKET_ENV_VAR) {
         return std::path::PathBuf::from(p);
     }
-    default_socket_path_for(cfg!(debug_assertions))
+    let state_dir = nodespace_daemon::nodespace_dir().unwrap_or_else(|_| {
+        std::path::PathBuf::from("/tmp").join(nodespace_proto::socket::STATE_DIR)
+    });
+    default_socket_path_for(cfg!(debug_assertions), &state_dir)
 }
 
 /// The socket [`socket_path`] falls back to when `NODESPACED_SOCKET` is absent,
-/// for an arbitrary build flavour rather than this binary's own.
+/// for an arbitrary build flavour rather than this binary's own, in the state
+/// directory `state_dir`.
 ///
-/// Takes the flavour as a parameter because a compiled daemon is only ever one
-/// flavour, so this is the only way an ordinary `#[test]` can check both —
-/// which is exactly what the app/daemon agreement test needs. It reads no
-/// `NODESPACED_SOCKET` for the same reason its app-side counterpart doesn't:
-/// `cargo test` shares one process, so an env-reading resolver cannot be
-/// asserted on without racing every other test that touches that variable.
+/// Takes the flavour and the directory as parameters because a compiled daemon
+/// is only ever one flavour and `cargo test` shares one process environment,
+/// so this is the only way an ordinary `#[test]` can check both flavours — which
+/// is exactly what the app/daemon agreement test needs — without racing every
+/// other test that touches `HOME`, `NODESPACE_HOME` or `NODESPACED_SOCKET`.
 #[cfg(unix)]
-fn default_socket_path_for(is_debug: bool) -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    std::path::PathBuf::from(home).join(nodespace_proto::socket::daemon_socket_relative(is_debug))
+fn default_socket_path_for(is_debug: bool, state_dir: &std::path::Path) -> std::path::PathBuf {
+    state_dir.join(nodespace_proto::socket::daemon_socket_name(is_debug))
 }
 
 /// Binds a Unix domain socket so no other local user can ever reach it,
@@ -2491,17 +2497,19 @@ mod socket_fallback_flavour_tests {
         (true, ".nodespace/daemon-dev.sock"),
     ];
 
-    /// `default_socket_path_for` still reads `HOME`, which `cargo test` shares
-    /// across threads, so this asserts on the suffix under whatever `HOME` the
-    /// runner has rather than pinning an absolute path.
+    /// The fallback reads no environment, so this runs it against a home of
+    /// its own and asserts the whole path.
     #[test]
     fn every_flavour_falls_back_to_its_own_scoped_socket() {
+        let home = std::path::Path::new("/Users/someone");
+        let state_dir = home.join(".nodespace");
         for (is_debug, expected) in EXPECTED {
-            let resolved = default_socket_path_for(is_debug);
-            assert!(
-                resolved.ends_with(expected),
+            let resolved = default_socket_path_for(is_debug, &state_dir);
+            assert_eq!(
+                resolved,
+                home.join(expected),
                 "flavour (debug={is_debug}) fell back to {} — \
-                 expected it to end with {expected}. A daemon that binds a socket \
+                 expected {expected} under the home. A daemon that binds a socket \
                  its own app does not dial is unreachable.",
                 resolved.display()
             );
@@ -2512,9 +2520,10 @@ mod socket_fallback_flavour_tests {
     /// release `daemon.sock`. Distinctness is what makes the fallback correct.
     #[test]
     fn flavours_do_not_collapse_onto_one_socket() {
+        let state_dir = std::path::Path::new("/home/.nodespace");
         assert_ne!(
-            default_socket_path_for(false),
-            default_socket_path_for(true),
+            default_socket_path_for(false, state_dir),
+            default_socket_path_for(true, state_dir),
             "each build flavour must fall back to a distinct socket"
         );
     }
@@ -2537,9 +2546,10 @@ mod socket_fallback_flavour_tests {
         );
 
         std::env::remove_var("NODESPACED_SOCKET");
+        let state_dir = nodespace_daemon::nodespace_dir().expect("a home");
         assert_eq!(
             super::socket_path(),
-            super::default_socket_path_for(cfg!(debug_assertions)),
+            super::default_socket_path_for(cfg!(debug_assertions), &state_dir),
             "with no override, socket_path must be exactly this build's scoped default"
         );
 

@@ -224,7 +224,9 @@ pub enum Command {
     },
 }
 
-/// Resolve the socket path from an explicit override or env/default.
+/// Resolve the socket path from an explicit override or env/default. The
+/// default is in the state directory of the NodeSpace home, which
+/// `NODESPACE_HOME` redirects.
 #[cfg(unix)]
 pub fn resolve_socket_path(override_: Option<&str>) -> std::path::PathBuf {
     if let Some(p) = override_ {
@@ -233,8 +235,12 @@ pub fn resolve_socket_path(override_: Option<&str>) -> std::path::PathBuf {
     if let Ok(p) = std::env::var(nodespace_proto::socket::SOCKET_ENV_VAR) {
         return std::path::PathBuf::from(p);
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    discover_socket_in(&std::path::PathBuf::from(home).join(nodespace_proto::socket::STATE_DIR))
+    // The state directory under the shared home rule, so `NODESPACE_HOME`
+    // alone points the CLI at the daemon it isolated.
+    let state_dir = nodespace_daemon::nodespace_dir().unwrap_or_else(|_| {
+        std::path::PathBuf::from("/tmp").join(nodespace_proto::socket::STATE_DIR)
+    });
+    discover_socket_in(&state_dir)
 }
 
 /// Pick the daemon socket to dial when none is set explicitly. The daemon socket

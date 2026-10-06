@@ -15,6 +15,7 @@ mod extension_points_fixture;
 mod golden_reassignment_restore_real_pipeline;
 mod golden_scenario6_real_pipeline;
 mod grpc_round_trip;
+mod home_isolation;
 mod import_round_trip;
 mod live_terminal_summary;
 mod per_db_compute;

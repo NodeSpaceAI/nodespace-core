@@ -275,3 +275,114 @@ fn logs_does_not_fall_back_to_the_real_homes_log() {
         "no other install's log is a candidate: {err}"
     );
 }
+
+/// Binds a listener at `socket` that counts the connections it is dialed with
+/// and closes each at once, so a command that reaches it fails quickly.
+#[cfg(unix)]
+fn count_dials(socket: &Path) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fs::create_dir_all(socket.parent().expect("parent")).expect("create state dir");
+    let listener = std::os::unix::net::UnixListener::bind(socket).expect("bind socket");
+    let dials = Arc::new(AtomicUsize::new(0));
+    let counted = dials.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            counted.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    dials
+}
+
+/// With `NODESPACE_HOME` set and no socket override, the CLI dials the
+/// redirected home's socket and never the one in the real home.
+#[cfg(unix)]
+#[test]
+fn the_cli_dials_the_redirected_homes_socket_and_not_the_real_one() {
+    use std::sync::atomic::Ordering;
+
+    let real = tempfile::tempdir().expect("real home");
+    let isolated = tempfile::tempdir().expect("isolated home");
+    let socket = |home: &Path| home.join(STATE_DIR).join(DAEMON_SOCKET_NAMES[0]);
+    let real_dials = count_dials(&socket(real.path()));
+    let isolated_dials = count_dials(&socket(isolated.path()));
+
+    let output = nodespace(
+        real.path(),
+        isolated.path(),
+        &["node", "get", "no-such-node"],
+    );
+
+    assert!(!output.status.success(), "stdout: {}", stdout(&output));
+    assert_eq!(
+        real_dials.load(Ordering::SeqCst),
+        0,
+        "the real socket was dialed"
+    );
+    assert!(
+        isolated_dials.load(Ordering::SeqCst) > 0,
+        "the redirected socket was never dialed; stderr: {}",
+        stderr(&output)
+    );
+}
+
+/// With no redirect the CLI dials the user's home, as before.
+#[cfg(unix)]
+#[test]
+fn without_a_redirect_the_cli_dials_the_users_home() {
+    use std::sync::atomic::Ordering;
+
+    let real = tempfile::tempdir().expect("real home");
+    let dials = count_dials(&real.path().join(STATE_DIR).join(DAEMON_SOCKET_NAMES[0]));
+
+    let output = command(real.path(), &["node", "get", "no-such-node"])
+        .output()
+        .expect("run nodespace");
+
+    assert!(!output.status.success());
+    assert!(
+        dials.load(Ordering::SeqCst) > 0,
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
+/// `NODESPACED_SOCKET` and `--socket` still win over the home.
+#[cfg(unix)]
+#[test]
+fn the_socket_overrides_win_over_the_redirected_home() {
+    use std::sync::atomic::Ordering;
+
+    let real = tempfile::tempdir().expect("real home");
+    let isolated = tempfile::tempdir().expect("isolated home");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let isolated_dials = count_dials(&isolated.path().join(STATE_DIR).join(DAEMON_SOCKET_NAMES[0]));
+    let env_socket = elsewhere.path().join("env.sock");
+    let flag_socket = elsewhere.path().join("flag.sock");
+    let env_dials = count_dials(&env_socket);
+    let flag_dials = count_dials(&flag_socket);
+
+    let by_env = command(real.path(), &["node", "get", "no-such-node"])
+        .env("NODESPACE_HOME", isolated.path())
+        .env("NODESPACED_SOCKET", &env_socket)
+        .output()
+        .expect("run nodespace");
+    assert!(!by_env.status.success());
+    assert!(env_dials.load(Ordering::SeqCst) > 0);
+
+    let flag = flag_socket.display().to_string();
+    let by_flag = command(
+        real.path(),
+        &["--socket", &flag, "node", "get", "no-such-node"],
+    )
+    .env("NODESPACE_HOME", isolated.path())
+    .env("NODESPACED_SOCKET", &env_socket)
+    .output()
+    .expect("run nodespace");
+    assert!(!by_flag.status.success());
+    assert!(flag_dials.load(Ordering::SeqCst) > 0);
+
+    assert_eq!(isolated_dials.load(Ordering::SeqCst), 0);
+}

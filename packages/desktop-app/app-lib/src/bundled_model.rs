@@ -67,9 +67,9 @@ pub(crate) async fn provision_bundled_model<R: Runtime>(app: &AppHandle<R>) {
             return;
         }
     };
-    let Some(home) = nodespace_home_from_env() else {
+    let Some(home) = user_home() else {
         tracing::warn!(
-            "cannot resolve the NodeSpace home directory; not copying the bundled embedding model"
+            "cannot resolve the user's home directory; not copying the bundled embedding model"
         );
         return;
     };
@@ -110,29 +110,18 @@ fn bundled_model_resource() -> PathBuf {
         .join(EMBEDDING_MODEL_FILE)
 }
 
-/// Where the daemon looks for the model under the NodeSpace home `home`.
+/// Where the daemon looks for the model under the user's home `home`.
 fn model_target_path(home: &Path) -> PathBuf {
     home.join(nodespace_proto::socket::STATE_DIR)
         .join("models")
         .join(EMBEDDING_MODEL_FILE)
 }
 
-/// The NodeSpace home by the daemon's rule: `NODESPACE_HOME` when it is set
-/// and not empty, else the user's home directory. A value that is not valid
-/// UTF-8 is still a path, and is used.
-fn nodespace_home(
-    nodespace_home_var: Option<std::ffi::OsString>,
-    user_home: Option<PathBuf>,
-) -> Option<PathBuf> {
-    nodespace_home_var
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or(user_home)
-}
-
-/// [`nodespace_home`] from this process's environment.
-fn nodespace_home_from_env() -> Option<PathBuf> {
-    nodespace_home(std::env::var_os("NODESPACE_HOME"), dirs::home_dir())
+/// The user's home directory, under which the app copies the model. The app
+/// does not read `NODESPACE_HOME`: that is a test setting for the daemon and
+/// the CLI, and the daemon the app registers looks under the user's home.
+fn user_home() -> Option<PathBuf> {
+    dirs::home_dir()
 }
 
 /// Copies `bundled` to `target` unless [`skip_reason`] says there is nothing to
@@ -493,63 +482,22 @@ mod tests {
         );
     }
 
-    #[test]
-    fn nodespace_home_wins_over_the_user_home() {
-        assert_eq!(
-            nodespace_home(
-                Some("/isolated".into()),
-                Some(PathBuf::from("/Users/someone"))
-            ),
-            Some(PathBuf::from("/isolated"))
-        );
-        assert_eq!(
-            nodespace_home(None, Some(PathBuf::from("/Users/someone"))),
-            Some(PathBuf::from("/Users/someone"))
-        );
-        assert_eq!(nodespace_home(None, None), None);
-    }
-
-    /// The daemon reads an empty `NODESPACE_HOME` as unset, and looks for the
-    /// model in the user's home. The copy has to land there too.
-    #[test]
-    fn an_empty_nodespace_home_is_the_user_home() {
-        assert_eq!(
-            nodespace_home(Some("".into()), Some(PathBuf::from("/Users/someone"))),
-            Some(PathBuf::from("/Users/someone"))
-        );
-    }
-
-    /// The daemon honours a home whose path is not UTF-8, so the copy does.
-    #[cfg(unix)]
-    #[test]
-    fn a_nodespace_home_that_is_not_utf8_wins_over_the_user_home() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let isolated = std::ffi::OsString::from_vec(b"/iso\xFFlated".to_vec());
-        assert_eq!(
-            nodespace_home(
-                Some(isolated.clone()),
-                Some(PathBuf::from("/Users/someone"))
-            ),
-            Some(PathBuf::from(isolated))
-        );
-    }
-
-    /// With `NODESPACE_HOME` set, the model lands under it and the user's home
-    /// gets nothing. `HOME` points at a scratch directory standing in for the
+    /// With `NODESPACE_HOME` set, the model still lands under the user's home
+    /// and the redirected home gets nothing: the app does not read the
+    /// variable. `HOME` points at a scratch directory standing in for the
     /// real one. The environment is process-global: nextest runs each test in
     /// its own process, and every variable is restored before the asserts.
     #[test]
-    fn the_copy_follows_nodespace_home() {
+    fn the_copy_ignores_nodespace_home() {
         let (_resources, bundled) = bundle_with_model();
         let isolated = tempfile::tempdir().expect("isolated home");
-        let user_home = tempfile::tempdir().expect("user home");
+        let user = tempfile::tempdir().expect("user home");
 
         const VARS: [&str; 2] = ["NODESPACE_HOME", "HOME"];
         let saved: Vec<_> = VARS.iter().map(std::env::var_os).collect();
         std::env::set_var("NODESPACE_HOME", isolated.path());
-        std::env::set_var("HOME", user_home.path());
-        let home = nodespace_home_from_env();
+        std::env::set_var("HOME", user.path());
+        let home = user_home();
         for (var, value) in VARS.iter().zip(saved) {
             match value {
                 Some(value) => std::env::set_var(var, value),
@@ -558,15 +506,15 @@ mod tests {
         }
 
         let home = home.expect("a home");
-        assert_eq!(home, isolated.path());
+        assert_eq!(home, user.path());
         let target = model_target_path(&home);
         let outcome = provision(&bundled, &target, &sha256_hex(PLACEHOLDER)).expect("provision");
 
         assert_eq!(outcome, Provisioned::Copied);
         assert_eq!(fs::read(&target).expect("copied model"), PLACEHOLDER);
         assert!(
-            entries(user_home.path()).is_empty(),
-            "the user's home gets nothing"
+            entries(isolated.path()).is_empty(),
+            "the redirected home gets nothing"
         );
     }
 
