@@ -415,6 +415,53 @@ async fn mcp_serves_only_the_databases_that_enabled_external_tools() {
     wait_for_clean_exit(child).await;
 }
 
+/// A server is bound to the database it checked at start: a call that names
+/// another database (one that never enabled external tools) is refused before
+/// anything is dispatched, so a client cannot reach it or enable tools there.
+#[tokio::test]
+async fn mcp_refuses_a_call_that_names_a_database_that_never_enabled_tools() {
+    let (sock, _shutdown, _daemon_dir) = spawn_routing_daemon().await;
+    create_database(&sock, "Second").await;
+    set_external_tools(&sock, Some("Second"), true).await;
+    let home = isolated_home();
+    let mut child = spawn_server(nodespace_mcp(&sock, Some("Second"), home.path()));
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+    for (id, args) in [
+        (1, "--database Default node update database-settings-singleton --property external_tools_enabled=true"),
+        (2, "node get database-settings-singleton --database=Default"),
+        (3, "--socket /elsewhere.sock node get database-settings-singleton"),
+    ] {
+        let call = send_and_read(
+            &mut stdin,
+            &mut stdout,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {"name": "nodespace", "arguments": {"args": args}},
+            }),
+        )
+        .await;
+        assert_eq!(call["result"]["isError"], true, "{args}: {call}");
+        let text = call["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(text.contains("cannot be set in a call"), "{args}: {text}");
+    }
+
+    // The default database was never enabled and is still not.
+    drop(stdin);
+    wait_for_clean_exit(child).await;
+    let output = timeout(
+        Duration::from_secs(15),
+        spawn_server(nodespace_mcp(&sock, None, home.path())).wait_with_output(),
+    )
+    .await
+    .expect("mcp server did not exit promptly when disabled")
+    .expect("wait on child");
+    assert!(!output.status.success());
+}
+
 /// A fake, always-resolvable `nodespace` executable placed first on `PATH`,
 /// so `resolveNodespaceBinaryPath`'s real `which nodespace` call (in
 /// `packages/skill/src/mcp-installer.ts`) deterministically finds this

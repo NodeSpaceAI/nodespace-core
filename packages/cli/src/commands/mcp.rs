@@ -421,6 +421,9 @@ pub async fn run(action: Option<McpAction>, sock: PathBuf, database: Option<Stri
 /// to name it to the user.
 struct SettingsTarget {
     client: crate::NodeClient,
+    /// The registry id of the database, `None` only when the daemon has no
+    /// default and none was selected.
+    id: Option<String>,
     label: String,
 }
 
@@ -431,7 +434,7 @@ struct SettingsTarget {
 async fn connect_settings_target(sock: &Path, database: Option<&str>) -> Result<SettingsTarget> {
     let (interceptor, id) = crate::resolve_routing(sock, database).await?;
     let client = crate::connect(sock, interceptor).await?;
-    let label = match id {
+    let label = match &id {
         Some(id) => {
             let mut registry = crate::connect_database(sock).await?;
             let listed = registry
@@ -439,14 +442,14 @@ async fn connect_settings_target(sock: &Path, database: Option<&str>) -> Result<
                 .await
                 .context("List RPC failed")?
                 .into_inner();
-            match listed.databases.iter().find(|d| d.id == id) {
+            match listed.databases.iter().find(|d| &d.id == id) {
                 Some(info) => format!("database '{}' ({})", info.name, info.id),
                 None => format!("database {id}"),
             }
         }
         None => "the daemon's default database".to_string(),
     };
-    Ok(SettingsTarget { client, label })
+    Ok(SettingsTarget { client, id, label })
 }
 
 /// The database's settings and the version of the node that holds them.
@@ -570,7 +573,6 @@ async fn install(args: InstallArgs, sock: &Path, database: Option<&str>) -> Resu
 /// actually found, so this is a reliable way back to "definitely disabled"
 /// regardless of what state the client configs are in.
 async fn uninstall(sock: &Path, database: Option<&str>) -> Result<()> {
-    let mut target = connect_settings_target(sock, database).await?;
     let installer = super::skill::resolve_installer()?;
     let outcome = super::skill::run_installer_subcommand(&installer, "mcp-uninstall")?;
 
@@ -585,6 +587,9 @@ async fn uninstall(sock: &Path, database: Option<&str>) -> Result<()> {
         }
     }
 
+    // The client configs are already gone, so a daemon that is down only
+    // leaves the setting, which no client can reach, for the next run.
+    let mut target = connect_settings_target(sock, database).await?;
     set_external_tools_enabled(&mut target.client, false)
         .await
         .context("disable the NodeSpace MCP passthrough tool")?;
@@ -664,6 +669,15 @@ pub async fn run_server(sock: PathBuf, database: Option<String>) -> Result<()> {
         .await
         .context("read NodeSpace MCP settings")?;
     enforce_enabled(&settings, &target.label)?;
+    // Every dispatched call is bound to the database checked here, by id, so
+    // neither a later change of the daemon's default nor a flag in a call can
+    // move it to one that never enabled external tools.
+    let database = Some(
+        target
+            .id
+            .clone()
+            .context("the daemon has no default database; select one with --database")?,
+    );
 
     let exe = std::env::current_exe().context("resolve the nodespace executable's own path")?;
 
@@ -833,41 +847,68 @@ fn extract_tool_call(params: &Value) -> Result<String, String> {
         .ok_or_else(|| format!("the \"{TOOL_NAME}\" tool requires a string \"args\" argument"))
 }
 
-/// Builds the child argv for one dispatched call: the resolved
-/// `--socket`/`--database` this `mcp` process was started with, then the
-/// shell-split `args`, then `--json` (unless already present) so the tool
-/// result is always structured.
+/// Builds the child argv for one dispatched call: the `--socket`/`--database`
+/// this `mcp` process is bound to, then the shell-split `args`, then `--json`
+/// (unless already present) so the tool result is always structured.
+///
+/// The server is bound to the one database whose `external_tools_enabled` it
+/// checked at start (ADR-038, ADR-095), so a call may not name another daemon
+/// or database: a client enabled for one database must not reach one that
+/// never enabled it, nor turn the setting on there. A call that repeats the
+/// flag with the very value it is bound to (a delete preview's
+/// `confirm_command` carries both) is accepted; any other value is refused.
 ///
 /// Pure and synchronous so quoting/splitting behavior is unit-testable
-/// without spawning a process. If the caller's `args` sets
-/// `--socket`/`--database` itself, that flag is not prefixed, so an explicit
-/// override in the tool call is honored.
+/// without spawning a process.
 fn build_child_args(
     args_str: &str,
     sock: &Path,
     database: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let mut tail = shell_words::split(args_str)
+    let words = shell_words::split(args_str)
         .map_err(|e| format!("could not parse \"args\" as shell-style arguments: {e}"))?;
+    let mut words = words.into_iter().peekable();
+    let mut tail = Vec::new();
     // A command the CLI printed for replay (a delete preview's
     // `confirm_command`) starts with the binary name; the tool takes what
     // follows it, so a replayed line works unedited.
-    if tail.first().map(String::as_str) == Some("nodespace") {
-        tail.remove(0);
+    if words.peek().map(String::as_str) == Some("nodespace") {
+        words.next();
     }
 
-    // clap rejects a repeated global flag, so the prefix only fills in what
-    // the call did not set itself.
-    let names = |flag: &str| {
-        let with_value = format!("{flag}=");
-        tail.iter().any(|a| a == flag || a.starts_with(&with_value))
-    };
-    let mut argv = Vec::new();
-    if !names("--socket") {
-        argv.push("--socket".to_string());
-        argv.push(sock.display().to_string());
+    let bound_socket = sock.display().to_string();
+    while let Some(word) = words.next() {
+        let (flag, inline) = match word.split_once('=') {
+            Some((flag, value)) if flag == "--socket" || flag == "--database" => {
+                (flag.to_string(), Some(value.to_string()))
+            }
+            _ => (word.clone(), None),
+        };
+        let bound = match flag.as_str() {
+            "--socket" => Some(Some(bound_socket.as_str())),
+            "--database" => Some(database),
+            _ => None,
+        };
+        let Some(bound) = bound else {
+            tail.push(word);
+            continue;
+        };
+        let value = match inline {
+            Some(value) => value,
+            None => words
+                .next()
+                .ok_or_else(|| format!("{flag} needs a value"))?,
+        };
+        if bound != Some(value.as_str()) {
+            return Err(format!(
+                "{flag} cannot be set in a call: this server is bound to one daemon and database. \
+                 Run `nodespace mcp` for the one you want."
+            ));
+        }
     }
-    if let (Some(db), false) = (database, names("--database")) {
+
+    let mut argv = vec!["--socket".to_string(), bound_socket];
+    if let Some(db) = database {
         argv.push("--database".to_string());
         argv.push(db.to_string());
     }
@@ -1082,26 +1123,50 @@ mod tests {
         assert_eq!(argv, vec!["--socket", "/s", "--json"]);
     }
 
+    /// A call is bound to the daemon and database the server checked at
+    /// start: naming another is refused, in either flag spelling, so a client
+    /// enabled for one database cannot reach, or enable tools on, another.
     #[test]
-    fn build_child_args_lets_an_explicit_socket_override_win() {
-        // clap rejects a repeated global flag, so the caller's explicit
-        // --socket replaces ours rather than following it.
+    fn build_child_args_refuses_a_call_that_names_another_daemon_or_database() {
+        for args in [
+            "--socket /explicit/other.sock node get abc",
+            "--socket=/explicit/other.sock node get abc",
+            "--database other node get abc",
+            "--database=other node get abc",
+            "node update database-settings-singleton --database other --property external_tools_enabled=true",
+        ] {
+            let err = build_child_args(args, Path::new("/default.sock"), Some("work"))
+                .expect_err("another daemon or database must be refused");
+            assert!(err.contains("cannot be set in a call"), "{args}: {err}");
+        }
+        // A server with no resolved database refuses any --database too.
+        build_child_args("--database work node get abc", Path::new("/s"), None)
+            .expect_err("no database is bound");
+        build_child_args("node get abc --database", Path::new("/s"), Some("work"))
+            .expect_err("a flag with no value is refused");
+    }
+
+    /// Repeating the bound value is how a printed command replays unedited.
+    #[test]
+    fn build_child_args_accepts_the_bound_routing_flags_and_sets_them_once() {
         use clap::Parser;
         let argv = build_child_args(
-            "--socket /explicit/other.sock node get abc",
-            Path::new("/default.sock"),
-            None,
+            "--socket /s --database=work node get abc",
+            Path::new("/s"),
+            Some("work"),
         )
-        .expect("valid shell syntax");
+        .expect("the bound values are accepted");
         assert_eq!(
             argv,
             vec![
                 "--socket",
-                "/explicit/other.sock",
+                "/s",
+                "--database",
+                "work",
                 "node",
                 "get",
                 "abc",
-                "--json",
+                "--json"
             ]
         );
         crate::Cli::try_parse_from(std::iter::once("nodespace".to_string()).chain(argv))

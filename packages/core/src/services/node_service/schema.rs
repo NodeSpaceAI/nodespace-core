@@ -399,16 +399,16 @@ impl NodeService {
             )));
         }
         if let Some(Some(providers)) = update.providers.as_mut() {
-            if let Ok(before) =
+            // A stored list that cannot be read vouches for no verdict.
+            let before =
                 crate::models::DatabaseSettingsFields::from_properties(&existing.properties)
-            {
-                for provider in providers.iter_mut() {
-                    let unchanged = before.provider(&provider.id).is_some_and(|old| {
-                        old.base_url == provider.base_url && old.model == provider.model
-                    });
-                    if !unchanged {
-                        provider.routing_ok.clear();
-                    }
+                    .unwrap_or_default();
+            for provider in providers.iter_mut() {
+                let unchanged = before.provider(&provider.id).is_some_and(|old| {
+                    old.base_url == provider.base_url && old.model == provider.model
+                });
+                if !unchanged {
+                    provider.routing_ok.clear();
                 }
             }
         }
