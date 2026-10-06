@@ -16,7 +16,7 @@ use tempfile::TempDir;
 
 const NATIVE: &str = "tool-native";
 /// A stand-in for a remote tool subtype: it extends `tool` and is not native.
-const REMOTE: &str = "remote_tool";
+const REMOTE: &str = "remote-tool";
 
 async fn test_service() -> (Arc<NodeService>, TempDir) {
     let temp_dir = TempDir::new().expect("tempdir creation failed");

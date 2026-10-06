@@ -2095,6 +2095,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_kebab_case_type_id_is_quoted_in_every_json_path_that_names_its_bucket() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        assert_eq!(
+            query_service.resolve_field("tier", "customer-profile"),
+            "json_extract(properties, '$.\"customer-profile\".tier')"
+        );
+        // A query over every type names the bucket from the row's own type.
+        let wildcard = QueryService::own_or_inherited_field("tier");
+        assert!(
+            wildcard.contains("'$.\"' || node.node_type || '\".tier'"),
+            "{wildcard}"
+        );
+        assert!(
+            wildcard.contains("'$.\"' || a.ancestor || '\".tier'"),
+            "{wildcard}"
+        );
+        assert!(!wildcard.contains("'$.' ||"), "{wildcard}");
+    }
+
+    #[tokio::test]
     async fn test_build_property_filter_matches_indexed_expression() {
         let (query_service, _node_service, _temp) = create_test_services().await;
 

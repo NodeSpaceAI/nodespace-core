@@ -3288,7 +3288,7 @@ async fn test_create_schema_self_reference_reverse_edge_resolves() {
 async fn test_create_schema_self_reference_uses_normalized_schema_id() {
     let (svc, _tmp) = create_test_service().await;
 
-    // The exemption keys off the schema ID (snake_case of the name), which is
+    // The exemption keys off the schema ID (kebab-case of the name), which is
     // also the only string a later lookup could resolve. A multi-word name
     // must therefore self-reference by its normalized ID.
     handle_create_schema(
@@ -3299,7 +3299,7 @@ async fn test_create_schema_self_reference_uses_normalized_schema_id() {
                 { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ],
             "relationships": [
-                { "name": "supersedes", "targetType": "design_decision", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" }
+                { "name": "supersedes", "targetType": "design-decision", "direction": "out", "cardinality": "one", "reverseName": "superseded_by", "reverseCardinality": "one" }
             ]
         }),
     )
@@ -3307,7 +3307,7 @@ async fn test_create_schema_self_reference_uses_normalized_schema_id() {
     .expect("self-reference by normalized schema ID must be accepted");
 
     let schema = svc
-        .get_schema_node("design_decision")
+        .get_schema_node("design-decision")
         .await
         .expect("get_schema_node failed")
         .expect("schema should exist");
@@ -3316,7 +3316,7 @@ async fn test_create_schema_self_reference_uses_normalized_schema_id() {
             .expect("declaration should be persisted")
             .target_type
             .as_deref(),
-        Some("design_decision")
+        Some("design-decision")
     );
 }
 
@@ -3347,7 +3347,7 @@ async fn test_create_schema_self_reference_by_display_name_is_rejected() {
         "error should name the unresolvable target: {err}"
     );
     assert!(
-        svc.get_schema_node("design_decision")
+        svc.get_schema_node("design-decision")
             .await
             .expect("get_schema_node failed")
             .is_none(),
@@ -5074,7 +5074,7 @@ async fn test_add_fields_call_that_also_retargets_extends_is_checked_against_the
     create_base_schema(&svc, "New Parent", &["other_field"]).await;
     handle_create_schema(
         &svc,
-        json!({ "name": "Child", "extends": "old_parent", "fields": [] }),
+        json!({ "name": "Child", "extends": "old-parent", "fields": [] }),
     )
     .await
     .expect("child extends old_parent should succeed");
@@ -5082,7 +5082,7 @@ async fn test_add_fields_call_that_also_retargets_extends_is_checked_against_the
     // A single call that BOTH adds a field colliding with the OLD parent AND
     // re-targets `extends` onto a NEW, non-colliding parent must succeed:
     // by the time this call finishes, "child" no longer extends
-    // "old_parent", so "status" is no longer inherited from anywhere. This
+    // "old-parent", so "status" is no longer inherited from anywhere. This
     // is the case the `params.extends.is_some()` skip in the `add_fields`
     // ancestor gate exists for — the `extends` re-target block re-checks the
     // fully-merged field list against the NEW parent instead.
@@ -5090,7 +5090,7 @@ async fn test_add_fields_call_that_also_retargets_extends_is_checked_against_the
         &svc,
         json!({
             "schema_id": "child",
-            "extends": "new_parent",
+            "extends": "new-parent",
             "add_fields": [
                 { "name": "status", "type": "text", "protection": "user", "indexed": false }
             ]
@@ -5105,7 +5105,7 @@ async fn test_add_fields_call_that_also_retargets_extends_is_checked_against_the
     );
     assert_eq!(
         persisted_extends_target(&svc, "child").await.as_deref(),
-        Some("new_parent"),
+        Some("new-parent"),
         "the extends edge should now point at the new parent"
     );
 }
@@ -5118,7 +5118,7 @@ async fn test_add_fields_call_that_also_retargets_extends_still_rejects_a_collis
     create_base_schema(&svc, "New Parent", &["shared"]).await;
     handle_create_schema(
         &svc,
-        json!({ "name": "Child", "extends": "old_parent", "fields": [] }),
+        json!({ "name": "Child", "extends": "old-parent", "fields": [] }),
     )
     .await
     .expect("child extends old_parent should succeed");
@@ -5130,7 +5130,7 @@ async fn test_add_fields_call_that_also_retargets_extends_still_rejects_a_collis
         &svc,
         json!({
             "schema_id": "child",
-            "extends": "new_parent",
+            "extends": "new-parent",
             "add_fields": [
                 { "name": "shared", "type": "text", "protection": "user", "indexed": false }
             ]
@@ -5162,25 +5162,25 @@ async fn test_extends_retarget_rejects_a_field_inherited_from_the_new_parents_gr
     create_base_schema(&svc, "Old Parent", &["a"]).await;
     handle_create_schema(
         &svc,
-        json!({ "name": "Child", "extends": "old_parent", "fields": [] }),
+        json!({ "name": "Child", "extends": "old-parent", "fields": [] }),
     )
     .await
     .expect("child extends old_parent should succeed");
 
-    // The collision is two levels up the NEW parent's chain — "new_parent"
+    // The collision is two levels up the NEW parent's chain — "new-parent"
     // itself declares no fields, only inherits "shared" from "root" — so
     // this only fails if the re-target gate's `validate_no_field_redeclaration`
     // call resolves the new parent's full effective set rather than just its
     // own directly-declared fields. It also only tells correct blame from
     // buggy blame at THIS call site if the assertion below checks that the
-    // error names "root", not "new_parent": a wrong-blame regression here
+    // error names "root", not "new-parent": a wrong-blame regression here
     // would still name a real schema (just the wrong one) and could
     // otherwise hide behind this test's field/additive-only checks alone.
     let result = handle_update_schema(
         &svc,
         json!({
             "schema_id": "child",
-            "extends": "new_parent",
+            "extends": "new-parent",
             "add_fields": [
                 { "name": "shared", "type": "text", "protection": "user", "indexed": false }
             ]
@@ -5196,12 +5196,12 @@ async fn test_extends_retarget_rejects_a_field_inherited_from_the_new_parents_gr
         msg.contains("shared") && msg.contains("additive"),
         "error should name the colliding field and the additive-only rule: {msg}"
     );
-    // "root" is the actual DECLARING schema — "new_parent" merely inherits
+    // "root" is the actual DECLARING schema — "new-parent" merely inherits
     // it without redeclaring. The error must name the true owner (via
     // `resolve_field_owners`'s owner map), not the immediate new parent
     // unconditionally.
     assert!(
-        msg.contains("root") && !msg.contains("'new_parent'"),
+        msg.contains("root") && !msg.contains("'new-parent'"),
         "error should blame the schema that actually declares 'shared' (root), not the \
          immediate new parent (new_parent) it's merely inherited through: {msg}"
     );

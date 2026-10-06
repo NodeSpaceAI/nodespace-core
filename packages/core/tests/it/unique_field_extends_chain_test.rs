@@ -37,7 +37,7 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "unique_ext_base",
+            "name": "unique-ext-base",
             "fields": [{
                 "name": "email",
                 "type": "text",
@@ -54,8 +54,8 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "unique_ext_sub",
-            "extends": "unique_ext_base",
+            "name": "unique-ext-sub",
+            "extends": "unique-ext-base",
             "fields": []
         }),
     )
@@ -86,14 +86,14 @@ async fn find_duplicate_for_sees_inherited_unique_field() -> Result<()> {
 
     let existing_id = svc
         .create_node(Node::new(
-            "unique_ext_sub".to_string(),
+            "unique-ext-sub".to_string(),
             "Existing".to_string(),
-            json!({ "unique_ext_sub": { "email": "alice@example.com" } }),
+            json!({ "unique-ext-sub": { "email": "alice@example.com" } }),
         ))
         .await?;
 
     let dup = svc
-        .find_duplicate_for("unique_ext_sub", "email", "alice@example.com", None)
+        .find_duplicate_for("unique-ext-sub", "email", "alice@example.com", None)
         .await?;
 
     assert_eq!(
@@ -113,14 +113,14 @@ async fn find_duplicate_for_inherited_unique_field_no_conflict() -> Result<()> {
     create_base_and_subtype(&svc).await?;
 
     svc.create_node(Node::new(
-        "unique_ext_sub".to_string(),
+        "unique-ext-sub".to_string(),
         "Existing".to_string(),
-        json!({ "unique_ext_sub": { "email": "alice@example.com" } }),
+        json!({ "unique-ext-sub": { "email": "alice@example.com" } }),
     ))
     .await?;
 
     let dup = svc
-        .find_duplicate_for("unique_ext_sub", "email", "bob@example.com", None)
+        .find_duplicate_for("unique-ext-sub", "email", "bob@example.com", None)
         .await?;
 
     assert!(dup.is_none());
@@ -137,17 +137,17 @@ async fn detect_unique_field_collisions_sees_inherited_unique_field() -> Result<
 
     let first_id = svc
         .create_node(Node::new(
-            "unique_ext_sub".to_string(),
+            "unique-ext-sub".to_string(),
             "First".to_string(),
-            json!({ "unique_ext_sub": { "email": "alice@example.com" } }),
+            json!({ "unique-ext-sub": { "email": "alice@example.com" } }),
         ))
         .await?;
 
     let second_id = svc
         .create_node(Node::new(
-            "unique_ext_sub".to_string(),
+            "unique-ext-sub".to_string(),
             "Second".to_string(),
-            json!({ "unique_ext_sub": { "email": "ALICE@example.com" } }),
+            json!({ "unique-ext-sub": { "email": "ALICE@example.com" } }),
         ))
         .await?;
 
@@ -178,17 +178,17 @@ async fn detect_unique_field_collisions_inherited_unique_field_no_conflict() -> 
 
     let first_id = svc
         .create_node(Node::new(
-            "unique_ext_sub".to_string(),
+            "unique-ext-sub".to_string(),
             "First".to_string(),
-            json!({ "unique_ext_sub": { "email": "alice@example.com" } }),
+            json!({ "unique-ext-sub": { "email": "alice@example.com" } }),
         ))
         .await?;
 
     let second_id = svc
         .create_node(Node::new(
-            "unique_ext_sub".to_string(),
+            "unique-ext-sub".to_string(),
             "Second".to_string(),
-            json!({ "unique_ext_sub": { "email": "bob@example.com" } }),
+            json!({ "unique-ext-sub": { "email": "bob@example.com" } }),
         ))
         .await?;
 

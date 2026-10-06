@@ -2,6 +2,7 @@ pub mod core_type_shape;
 mod error;
 pub mod events;
 pub mod fractional_ordering;
+pub(crate) mod json_path;
 pub mod required_extensions;
 pub mod schema;
 mod sqlite_store;

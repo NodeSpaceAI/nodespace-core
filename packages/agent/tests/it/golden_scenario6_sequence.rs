@@ -295,7 +295,7 @@ async fn golden_turn3_resolution_after_two_terse_facts() {
         ),
         ChatMessage::text(
             Role::System,
-            "Fact: one equipment_item node was created with replacement_cost 2400 and title \
+            "Fact: one equipment-item node was created with replacement_cost 2400 and title \
              'Laser Cutter'."
                 .to_string(),
         ),
@@ -333,13 +333,13 @@ async fn golden_turn3_resolution_after_two_terse_facts() {
 ///   turn 1 (actual):  create_schema(name="Equipment Checkout Record",
 ///                        fields=[isReturned: boolean, replacementCost: number])
 ///   turn 2 (isolated): create_node(node_type="equipment", ...)        <- guessed id
-///   turn 3 (isolated): resolve_query(node_type="equipment_item", ...) <- different guessed id
+///   turn 3 (isolated): resolve_query(node_type="equipment-item", ...) <- different guessed id
 ///
-/// Neither "equipment" nor "equipment_item" is turn 1's real schema id.
+/// Neither "equipment" nor "equipment-item" is turn 1's real schema id.
 /// Per the id-derivation rule documented on production's own create_schema
 /// tool description (tools.rs: "'Customer Profile' -> 'customer_profile'"),
 /// turn 1's actual display name "Equipment Checkout Record" derives to
-/// "equipment_checkout_record" -- lowercase, spaces to underscores. This
+/// "equipment-checkout-record" -- lowercase, spaces to hyphens. This
 /// test uses turn 1's ACTUAL field names and that derived id as turn 2's
 /// input, then turn 2's ACTUAL output as turn 3's input, so a pass here
 /// means the CHAIN holds, not just each isolated link.
@@ -354,7 +354,7 @@ async fn golden_chained_turn2_given_turn1_actual_output() {
     // per production's documented rule, field names exactly as generated.
     let history = vec![ChatMessage::text(
         Role::System,
-        "Fact: a schema with id 'equipment_checkout_record' was created, with fields \
+        "Fact: a schema with id 'equipment-checkout-record' was created, with fields \
          isReturned (boolean) and replacementCost (number)."
             .to_string(),
     )];
@@ -373,9 +373,9 @@ async fn golden_chained_turn2_given_turn1_actual_output() {
         None => println!("GOLDEN[chained-turn2] no tool call parsed, raw: {raw:?}"),
     }
     // CONFIRMED 3/3, byte-identical: given turn 1's actual output as input,
-    // turn 2 correctly used node_type="equipment_checkout_record" (the real
+    // turn 2 correctly used node_type="equipment-checkout-record" (the real
     // derived id) and replacementCost=2400 (turn 1's real field name,
-    // camelCase) -- not the guessed "equipment"/"equipment_item" ids from
+    // camelCase) -- not the guessed "equipment"/"equipment-item" ids from
     // the isolated
     // version of this test. The chain holds for turn1 -> turn2.
     assert_eq!(
@@ -392,7 +392,7 @@ async fn golden_chained_turn2_given_turn1_actual_output() {
 /// assumed one -- the actual golden SEQUENCE, not three isolated islands.
 ///
 /// CONFIRMED 3/3, byte-identical: resolve_query(node_type=
-/// "equipment_checkout_record", ...). Combined with turn 1 (3/3) and
+/// "equipment-checkout-record", ...). Combined with turn 1 (3/3) and
 /// chained turn 2 (3/3), the full sequence is decision-grade end to end,
 /// not a single lucky run.
 #[tokio::test]
@@ -407,13 +407,13 @@ async fn golden_chained_turn3_given_turn2_actual_output() {
     let history = vec![
         ChatMessage::text(
             Role::System,
-            "Fact: a schema with id 'equipment_checkout_record' was created, with fields \
+            "Fact: a schema with id 'equipment-checkout-record' was created, with fields \
              isReturned (boolean) and replacementCost (number)."
                 .to_string(),
         ),
         ChatMessage::text(
             Role::System,
-            "Fact: an equipment_checkout_record node was created with replacementCost 2400 \
+            "Fact: an equipment-checkout-record node was created with replacementCost 2400 \
              and isReturned false."
                 .to_string(),
         ),

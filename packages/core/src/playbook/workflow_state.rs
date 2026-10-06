@@ -878,18 +878,18 @@ mod tests {
         svc.create_node(schema).await.unwrap();
 
         let task_schema = Node::new_with_id(
-            "wf_task".to_string(),
+            "wf-task".to_string(),
             "schema".to_string(),
-            "wf_task".to_string(),
+            "wf-task".to_string(),
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf_task",
+                "isCore": false, "schemaVersion": 1, "description": "wf-task",
                 "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
         );
         svc.create_node(task_schema).await.unwrap();
         svc.set_schema_relationships(
-            "wf_task",
+            "wf-task",
             &[serde_json::from_value(json!({
                 "name": "story",
                 "targetType": "story",
@@ -911,7 +911,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_task" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf-task" } },
                     "conditions": [{ "expr": "node.story.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -919,7 +919,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let task = make_test_node("wf_task", json!({"status": "open"}));
+        let task = make_test_node("wf-task", json!({"status": "open"}));
         svc.create_node(task.clone()).await.unwrap();
 
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
@@ -942,7 +942,7 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_ticket",
+                "name": "wf-ticket",
                 "fields": [{ "name": "state", "type": "text", "protection": "user", "indexed": false }]
             }),
         )
@@ -950,7 +950,7 @@ mod tests {
         .unwrap();
         crate::schema::handle_create_schema(
             &svc,
-            json!({ "name": "wf_bug", "extends": "wf_ticket", "fields": [] }),
+            json!({ "name": "wf-bug", "extends": "wf-ticket", "fields": [] }),
         )
         .await
         .unwrap();
@@ -963,7 +963,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_bug" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf-bug" } },
                     "conditions": [{ "expr": "node.state == 'done'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -973,8 +973,8 @@ mod tests {
 
         for (state, satisfied) in [("done", true), ("open", false)] {
             let node = make_test_node(
-                "wf_bug",
-                json!({ "wf_bug": {}, "wf_ticket": { "state": state } }),
+                "wf-bug",
+                json!({ "wf-bug": {}, "wf-ticket": { "state": state } }),
             );
             let result = get_workflow_state(&lifecycle, &svc, &node).await;
             assert_eq!(
@@ -999,11 +999,11 @@ mod tests {
         let (svc, _tmp) = test_service().await;
 
         let story_schema = Node::new_with_id(
-            "story_mh".to_string(),
+            "story-mh".to_string(),
             "schema".to_string(),
-            "story_mh".to_string(),
+            "story-mh".to_string(),
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "story_mh",
+                "isCore": false, "schemaVersion": 1, "description": "story-mh",
                 "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
@@ -1011,21 +1011,21 @@ mod tests {
         svc.create_node(story_schema).await.unwrap();
 
         let task_schema = Node::new_with_id(
-            "wf_task_mh".to_string(),
+            "wf-task-mh".to_string(),
             "schema".to_string(),
-            "wf_task_mh".to_string(),
+            "wf-task-mh".to_string(),
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf_task_mh",
+                "isCore": false, "schemaVersion": 1, "description": "wf-task-mh",
                 "fields": [],
                 "relationships": []
             }),
         );
         svc.create_node(task_schema).await.unwrap();
         svc.set_schema_relationships(
-            "wf_task_mh",
+            "wf-task-mh",
             &[serde_json::from_value(json!({
                 "name": "story",
-                "targetType": "story_mh",
+                "targetType": "story-mh",
                 "direction": "out",
                 "cardinality": "one",
                 "reverseName": "tasks",
@@ -1039,15 +1039,15 @@ mod tests {
         let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
         {
             let mut lm = lifecycle.write().unwrap();
-            // "story" is a real relationship on wf_task_mh, but "epic" is
-            // neither a field nor a relationship on story_mh — a typo one
+            // "story" is a real relationship on wf-task-mh, but "epic" is
+            // neither a field nor a relationship on story-mh — a typo one
             // hop deeper than the single-hop case.
             let play = make_play_node(
                 "pb-mh",
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_task_mh" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf-task-mh" } },
                     "conditions": [{ "expr": "node.story.epic == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1055,7 +1055,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let task = make_test_node("wf_task_mh", json!({}));
+        let task = make_test_node("wf-task-mh", json!({}));
         svc.create_node(task.clone()).await.unwrap();
 
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
@@ -1063,7 +1063,7 @@ mod tests {
         match &state.rules[0].conditions[0] {
             ConditionState::Unresolvable { reason, .. } => {
                 assert!(reason.contains("epic"), "reason was: {reason}");
-                assert!(reason.contains("story_mh"), "reason was: {reason}");
+                assert!(reason.contains("story-mh"), "reason was: {reason}");
             }
             other => panic!("expected Unresolvable, got {:?}", other),
         }
@@ -1074,11 +1074,11 @@ mod tests {
         let (svc, _tmp) = test_service().await;
 
         let task_schema = Node::new_with_id(
-            "wf_task2".to_string(),
+            "wf-task2".to_string(),
             "schema".to_string(),
-            "wf_task2".to_string(),
+            "wf-task2".to_string(),
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf_task2",
+                "isCore": false, "schemaVersion": 1, "description": "wf-task2",
                 "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
@@ -1093,7 +1093,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_task2" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf-task2" } },
                     "conditions": [{ "expr": "node.staatus == 'open'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1101,7 +1101,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let task = make_test_node("wf_task2", json!({"status": "open"}));
+        let task = make_test_node("wf-task2", json!({"status": "open"}));
         svc.create_node(task.clone()).await.unwrap();
 
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
@@ -1120,11 +1120,11 @@ mod tests {
         let (svc, _tmp) = test_service().await;
 
         let task_schema = Node::new_with_id(
-            "wf_task3".to_string(),
+            "wf-task3".to_string(),
             "schema".to_string(),
-            "wf_task3".to_string(),
+            "wf-task3".to_string(),
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf_task3",
+                "isCore": false, "schemaVersion": 1, "description": "wf-task3",
                 "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
@@ -1139,7 +1139,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf_task3" }, "property_key": "wf_task3.status" },
+                    "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf-task3" }, "property_key": "wf-task3.status" },
                     "conditions": [{ "expr": "trigger.property.old_value == 'open'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1147,7 +1147,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let task = make_test_node("wf_task3", json!({"status": "done"}));
+        let task = make_test_node("wf-task3", json!({"status": "done"}));
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
         assert_eq!(state.rules.len(), 1);
         match &state.rules[0].conditions[0] {
@@ -1205,11 +1205,11 @@ mod tests {
         let (svc, _tmp) = test_service().await;
 
         let task_schema = Node::new_with_id(
-            "wf_task4".to_string(),
+            "wf-task4".to_string(),
             "schema".to_string(),
-            "wf_task4".to_string(),
+            "wf-task4".to_string(),
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf_task4",
+                "isCore": false, "schemaVersion": 1, "description": "wf-task4",
                 "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
@@ -1224,7 +1224,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf_task4" }, "property_key": "wf_task4.status" },
+                    "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf-task4" }, "property_key": "wf-task4.status" },
                     "conditions": [{ "expr": "node.status == 'done'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1240,7 +1240,7 @@ mod tests {
         // here means this test would actually catch a future narrowing of
         // `GraphResolver`/`node_to_cel_value_at_scope`'s flat-shape fallback,
         // which is the only reason the flat shape passed before.
-        let task = make_test_node("wf_task4", json!({"wf_task4": {"status": "done"}}));
+        let task = make_test_node("wf-task4", json!({"wf-task4": {"status": "done"}}));
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
         assert_eq!(
             state.rules.len(),
@@ -1257,7 +1257,7 @@ mod tests {
     /// a `property_changed` candidate key built for it. Before the fix,
     /// `get_workflow_state` enumerated candidate keys from `schema.fields`
     /// alone — the subtype's own directly-declared fields, empty here — and
-    /// never built the `wf_sub_pc.status` key at all, so this rule was
+    /// never built the `wf-sub-pc.status` key at all, so this rule was
     /// silently absent from the response (`state.rules.len() == 0`) with no
     /// indication anything was skipped, even though it is genuinely active
     /// and satisfied.
@@ -1276,7 +1276,7 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_base_pc",
+                "name": "wf-base-pc",
                 "fields": [
                     { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
@@ -1288,8 +1288,8 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_sub_pc",
-                "extends": "wf_base_pc",
+                "name": "wf-sub-pc",
+                "extends": "wf-base-pc",
                 "fields": []
             }),
         )
@@ -1304,7 +1304,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf_sub_pc" }, "property_key": "wf_sub_pc.status" },
+                    "trigger": { "type": "graph_event", "on": "property_changed", "select": { "target_type": "wf-sub-pc" }, "property_key": "wf-sub-pc.status" },
                     "conditions": [{ "expr": "node.id != ''", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1312,7 +1312,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let task = make_test_node("wf_sub_pc", json!({}));
+        let task = make_test_node("wf-sub-pc", json!({}));
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
         assert_eq!(
             state.rules.len(),
@@ -1349,7 +1349,7 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_base_cf",
+                "name": "wf-base-cf",
                 "fields": [
                     { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
@@ -1361,8 +1361,8 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_sub_cf",
-                "extends": "wf_base_cf",
+                "name": "wf-sub-cf",
+                "extends": "wf-base-cf",
                 "fields": []
             }),
         )
@@ -1377,7 +1377,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_sub_cf" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf-sub-cf" } },
                     "conditions": [{ "expr": "node.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1385,7 +1385,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let task = make_test_node("wf_sub_cf", json!({}));
+        let task = make_test_node("wf-sub-cf", json!({}));
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
         assert_eq!(state.rules.len(), 1);
         match &state.rules[0].conditions[0] {
@@ -1415,7 +1415,7 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_rel_target",
+                "name": "wf-rel-target",
                 "fields": [
                     { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
@@ -1427,11 +1427,11 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_rel_base",
+                "name": "wf-rel-base",
                 "fields": [],
                 "relationships": [{
                     "name": "story",
-                    "targetType": "wf_rel_target",
+                    "targetType": "wf-rel-target",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "tasks",
@@ -1445,8 +1445,8 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_rel_sub",
-                "extends": "wf_rel_base",
+                "name": "wf-rel-sub",
+                "extends": "wf-rel-base",
                 "fields": []
             }),
         )
@@ -1461,7 +1461,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_rel_sub" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf-rel-sub" } },
                     "conditions": [{ "expr": "node.story.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1469,7 +1469,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let task = make_test_node("wf_rel_sub", json!({}));
+        let task = make_test_node("wf-rel-sub", json!({}));
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
         assert_eq!(state.rules.len(), 1);
         match &state.rules[0].conditions[0] {
@@ -1500,7 +1500,7 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_ext_base",
+                "name": "wf-ext-base",
                 "fields": [
                     { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
@@ -1512,8 +1512,8 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_ext_sub",
-                "extends": "wf_ext_base",
+                "name": "wf-ext-sub",
+                "extends": "wf-ext-base",
                 "fields": []
             }),
         )
@@ -1528,7 +1528,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_ext_sub" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf-ext-sub" } },
                     "conditions": [{ "expr": "node.extends.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1536,7 +1536,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let task = make_test_node("wf_ext_sub", json!({}));
+        let task = make_test_node("wf-ext-sub", json!({}));
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
         assert_eq!(state.rules.len(), 1);
         match &state.rules[0].conditions[0] {
@@ -1564,7 +1564,7 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_base_cron",
+                "name": "wf-base-cron",
                 "fields": [
                     { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
@@ -1576,8 +1576,8 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_sub_cron",
-                "extends": "wf_base_cron",
+                "name": "wf-sub-cron",
+                "extends": "wf-base-cron",
                 "fields": []
             }),
         )
@@ -1592,7 +1592,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "wf_base_cron" } },
+                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "wf-base-cron" } },
                     "conditions": [{ "expr": "node.id != ''", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1600,7 +1600,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let node = make_test_node("wf_sub_cron", json!({}));
+        let node = make_test_node("wf-sub-cron", json!({}));
         let state = get_workflow_state(&lifecycle, &svc, &node).await;
         assert_eq!(
             state.rules.len(),
@@ -1630,7 +1630,7 @@ mod tests {
     /// re-refreshes it) silently dropped a genuinely active, satisfied
     /// scheduled Play from this response.
     ///
-    /// The cache below is deliberately seeded to claim `wf_sub_cron_stale`
+    /// The cache below is deliberately seeded to claim `wf-sub-cron-stale`
     /// has no ancestry at all, even though the real schemas created here
     /// declare a genuine `extends` edge — simulating exactly that failed/
     /// not-yet-refreshed state — to prove the fan-out no longer depends on
@@ -1642,7 +1642,7 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_base_cron_stale",
+                "name": "wf-base-cron-stale",
                 "fields": [
                     { "name": "status", "type": "text", "protection": "user", "indexed": false }
                 ]
@@ -1654,8 +1654,8 @@ mod tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "wf_sub_cron_stale",
-                "extends": "wf_base_cron_stale",
+                "name": "wf-sub-cron-stale",
+                "extends": "wf-base-cron-stale",
                 "fields": []
             }),
         )
@@ -1665,18 +1665,18 @@ mod tests {
         let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
         {
             let mut lm = lifecycle.write().unwrap();
-            // Deliberately stale: claims `wf_sub_cron_stale` has no ancestry,
+            // Deliberately stale: claims `wf-sub-cron-stale` has no ancestry,
             // contradicting the real schema graph created above.
             lm.set_ancestor_cache(std::collections::HashMap::from([(
-                "wf_sub_cron_stale".to_string(),
-                vec!["wf_sub_cron_stale".to_string()],
+                "wf-sub-cron-stale".to_string(),
+                vec!["wf-sub-cron-stale".to_string()],
             )]));
             let play = make_play_node(
                 "pb-cron-stale-cache",
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "wf_base_cron_stale" } },
+                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "select": { "target_type": "wf-base-cron-stale" } },
                     "conditions": [{ "expr": "node.id != ''", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1684,7 +1684,7 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let node = make_test_node("wf_sub_cron_stale", json!({}));
+        let node = make_test_node("wf-sub-cron-stale", json!({}));
         let state = get_workflow_state(&lifecycle, &svc, &node).await;
         assert_eq!(
             state.rules.len(),
@@ -1770,11 +1770,11 @@ mod tests {
     ) {
         let (svc, tmp) = test_service().await;
         let schema = Node::new_with_id(
-            "wf_degraded".to_string(),
+            "wf-degraded".to_string(),
             "schema".to_string(),
-            "wf_degraded".to_string(),
+            "wf-degraded".to_string(),
             json!({
-                "isCore": false, "schemaVersion": 1, "description": "wf_degraded",
+                "isCore": false, "schemaVersion": 1, "description": "wf-degraded",
                 "fields": [{"name": "status", "friendlyName": "Status", "type": "text"}],
                 "relationships": []
             }),
@@ -1789,7 +1789,7 @@ mod tests {
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf_degraded" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "wf-degraded" } },
                     "conditions": [{ "expr": condition, "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -1804,7 +1804,7 @@ mod tests {
             .await
             .expect("dropping the relationship table should succeed");
 
-        let node = make_test_node("wf_degraded", json!({"status": "open"}));
+        let node = make_test_node("wf-degraded", json!({"status": "open"}));
         (svc, tmp, lifecycle, node)
     }
 
@@ -1827,7 +1827,7 @@ mod tests {
                 .degraded_reasons
                 .iter()
                 .any(|r| r
-                    .contains("effective-field/extends-chain resolution for 'wf_degraded' failed")),
+                    .contains("effective-field/extends-chain resolution for 'wf-degraded' failed")),
             "expected a degraded_reasons entry naming the failed extends-chain resolution: {:?}",
             state.degraded_reasons
         );

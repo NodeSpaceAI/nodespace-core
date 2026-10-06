@@ -26,13 +26,13 @@ async fn create_test_service() -> Result<(Arc<NodeService>, TempDir)> {
     Ok((node_service, temp_dir))
 }
 
-/// `ledger_invoice` declares `amount_due` and a `billed_to` relationship;
-/// `annual_ledger_invoice` extends it, declaring only `fiscal_year`.
+/// `ledger-invoice` declares `amount_due` and a `billed_to` relationship;
+/// `annual-ledger-invoice` extends it, declaring only `fiscal_year`.
 async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "ledger_customer",
+            "name": "ledger-customer",
             "fields": [{ "name": "name", "type": "text" }]
         }),
     )
@@ -42,11 +42,11 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "ledger_invoice",
+            "name": "ledger-invoice",
             "fields": [{ "name": "amount_due", "type": "number" }],
             "relationships": [{
                 "name": "billed_to",
-                "targetType": "ledger_customer",
+                "targetType": "ledger-customer",
                 "direction": "out",
                 "cardinality": "one",
                 "reverseName": "ledger_invoices",
@@ -60,8 +60,8 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "annual_ledger_invoice",
-            "extends": "ledger_invoice",
+            "name": "annual-ledger-invoice",
+            "extends": "ledger-invoice",
             "fields": [{ "name": "fiscal_year", "type": "number" }]
         }),
     )
@@ -89,7 +89,7 @@ async fn workspace_context_describes_a_subtype_with_its_inherited_declarations()
     let query = "add an annual ledger invoice for this year";
     let ctx = build_workspace_context(&svc, None, Some(query), None).await?;
     let prompt = ctx.format_for_prompt(8000);
-    let line = schema_line(&prompt, "annual_ledger_invoice");
+    let line = schema_line(&prompt, "annual-ledger-invoice");
 
     assert!(line.contains("fiscal_year: number"), "own field: {line}");
     assert!(
@@ -115,7 +115,7 @@ async fn create_schema_already_exists_quotes_the_inherited_definition() -> Resul
     let err = handle_create_schema(
         &svc,
         json!({
-            "name": "annual_ledger_invoice",
+            "name": "annual-ledger-invoice",
             "fields": [{ "name": "fiscal_year", "type": "number" }]
         }),
     )

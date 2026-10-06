@@ -14,7 +14,7 @@
 //! This file closes that gap: it builds the SAME turn-1/turn-2
 //! `ToolExecutionRecord`s the real agent loop would have produced (matching
 //! golden turn 1's and turn 2's actual recorded outputs — schema id
-//! `equipment_checkout_record`, fields `isReturned`/`replacementCost`, one
+//! `equipment-checkout-record`, fields `isReturned`/`replacementCost`, one
 //! `create_node` at `replacementCost: 2400`), runs them through the REAL
 //! `completed_writes_from` + `node_history_from_messages`, and feeds the
 //! resulting `ChatMessage` history into turn 3 against bare llama.cpp — same
@@ -103,8 +103,8 @@ fn exec(name: &str, args: serde_json::Value, result: serde_json::Value) -> ToolE
 /// `golden_scenario6_sequence.rs`'s doc comments):
 ///   turn 1: create_schema(name="Equipment Checkout Record",
 ///     fields=[isReturned: boolean, replacementCost: number])
-///     -> schemaId "equipment_checkout_record"
-///   turn 2: create_node(node_type="equipment_checkout_record",
+///     -> schemaId "equipment-checkout-record"
+///   turn 2: create_node(node_type="equipment-checkout-record",
 ///     field_values={isReturned: false, replacementCost: 2400})
 ///     -> nodespace://laser-cutter-node
 fn turn1_and_turn2_messages() -> Vec<StoredMessage> {
@@ -127,7 +127,7 @@ fn turn1_and_turn2_messages() -> Vec<StoredMessage> {
         // the fixture in the real wire shape is what makes this test's
         // assertion about the schema id mean anything.
         serde_json::json!({
-            "schemaId": "equipment_checkout_record",
+            "schemaId": "equipment-checkout-record",
             "isCore": false,
             "version": 1
         }),
@@ -136,7 +136,7 @@ fn turn1_and_turn2_messages() -> Vec<StoredMessage> {
     let turn2_writes = completed_writes_from(&[exec(
         "create_node",
         serde_json::json!({
-            "node_type": "equipment_checkout_record",
+            "node_type": "equipment-checkout-record",
             "content": "Laser Cutter",
             "field_values": {"isReturned": false, "replacementCost": 2400}
         }),
@@ -233,7 +233,7 @@ fn real_pipeline_renders_terse_facts_not_narrative_prose() {
     assert!(
         assistant_msgs[0]
             .content
-            .contains("equipment_checkout_record"),
+            .contains("equipment-checkout-record"),
         "turn 1 fact must carry the derived schema id, got: {:?}",
         assistant_msgs[0].content
     );

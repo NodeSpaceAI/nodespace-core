@@ -1172,18 +1172,19 @@ pub fn is_valid_node_id(node_id: &str) -> bool {
 /// Derive a stable schema node ID from the schema's display name.
 ///
 /// Schema nodes use their normalized name as ID (e.g. "Invoice" → "invoice",
-/// "Customer Profile" → "customer_profile") so they can be referenced
-/// predictably by type name rather than an opaque UUID.
+/// "Customer Profile" → "customer-profile") so they can be referenced
+/// predictably by type name rather than an opaque UUID. A type id is
+/// kebab-case: lowercase words joined by `-`.
 pub(crate) fn normalize_schema_id(name: &str) -> String {
     name.to_lowercase()
-        .replace([' ', '-'], "_")
+        .replace([' ', '_'], "-")
         .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_')
+        .filter(|c| c.is_alphanumeric() || *c == '-')
         .collect::<String>()
-        .split('_')
+        .split('-')
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
-        .join("_")
+        .join("-")
 }
 
 #[cfg(test)]
@@ -1193,16 +1194,20 @@ mod normalize_schema_id_tests {
     #[test]
     fn test_normalize_schema_id_basic() {
         assert_eq!(normalize_schema_id("Invoice"), "invoice");
-        assert_eq!(normalize_schema_id("Customer Profile"), "customer_profile");
-        assert_eq!(normalize_schema_id("code_block"), "code_block");
-        assert_eq!(normalize_schema_id("My Widget"), "my_widget");
+        assert_eq!(normalize_schema_id("Customer Profile"), "customer-profile");
+        assert_eq!(normalize_schema_id("code_block"), "code-block");
+        assert_eq!(normalize_schema_id("My Widget"), "my-widget");
     }
 
     #[test]
     fn test_normalize_schema_id_edge_cases() {
         assert_eq!(normalize_schema_id("  spaces  "), "spaces");
-        assert_eq!(normalize_schema_id("already-kebab"), "already_kebab");
-        assert_eq!(normalize_schema_id("UPPER CASE"), "upper_case");
+        assert_eq!(normalize_schema_id("already-kebab"), "already-kebab");
+        assert_eq!(normalize_schema_id("already_kebab"), "already-kebab");
+        assert_eq!(normalize_schema_id("UPPER CASE"), "upper-case");
+        assert_eq!(normalize_schema_id("--a__b  c--"), "a-b-c");
+        assert_eq!(normalize_schema_id("!!!"), "");
+        assert_eq!(normalize_schema_id(""), "");
     }
 }
 
@@ -4212,7 +4217,7 @@ mod tests {
             .await
             .expect_err("a schema cannot be created as core");
         assert!(is_refusal(&err), "{err:#}");
-        assert!(svc.get_node("fake_core").await.unwrap().is_none());
+        assert!(svc.get_node("fake-core").await.unwrap().is_none());
 
         // Setting isCore on a user schema.
         svc.create_node_with_parent(CreateNodeParams {

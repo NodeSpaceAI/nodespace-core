@@ -47,6 +47,15 @@ describe('resolveFieldValue', () => {
     expect(resolveFieldValue(node, 'status')).toBe('booked');
   });
 
+  it('reads and writes a field of a multi-word kebab-case type flat in properties', () => {
+    const node = { nodeType: 'customer-profile', properties: { full_name: 'Ada' } };
+
+    expect(resolveFieldValue(node, 'full_name')).toBe('Ada');
+    expect(buildFieldWrite(node, 'full_name', 'Grace')).toEqual({
+      properties: { full_name: 'Grace' }
+    });
+  });
+
   it('returns null for an unset field', () => {
     expect(resolveFieldValue({ nodeType: 'project', properties: {} }, 'priority')).toBe(null);
     expect(resolveFieldValue({ nodeType: 'venue' }, 'capacity')).toBe(null);

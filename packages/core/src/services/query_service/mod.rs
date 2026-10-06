@@ -847,7 +847,10 @@ impl QueryService {
             // in-Rust re-sort below ever sees them.
             Self::own_or_inherited_field(field)
         } else {
-            format!("json_extract(properties, '$.{}.{}')", target_type, field)
+            format!(
+                "json_extract(properties, '{}')",
+                crate::db::json_path::bucket_field_path(target_type, field)
+            )
         }
     }
 
@@ -861,11 +864,11 @@ impl QueryService {
     /// first.
     fn own_or_inherited_field(field: &str) -> String {
         format!(
-            "COALESCE(json_extract(node.properties, '$.' || node.node_type || '.{field}'), \
-             (SELECT json_extract(node.properties, '$.' || a.ancestor || '.{field}') \
+            "COALESCE(json_extract(node.properties, '$.\"' || node.node_type || '\".{field}'), \
+             (SELECT json_extract(node.properties, '$.\"' || a.ancestor || '\".{field}') \
                 FROM {ancestry} a \
                WHERE a.node_type = node.node_type AND a.depth > 0 \
-                 AND json_extract(node.properties, '$.' || a.ancestor || '.{field}') IS NOT NULL \
+                 AND json_extract(node.properties, '$.\"' || a.ancestor || '\".{field}') IS NOT NULL \
                ORDER BY a.depth LIMIT 1))",
             ancestry = crate::db::schema::TYPE_ANCESTRY_TABLE,
         )
@@ -887,7 +890,10 @@ impl QueryService {
         built: &mut BoundSql,
     ) -> String {
         let bucket = scope.bucket.as_deref().unwrap_or(target_type);
-        let own = format!("json_extract(properties, '$.{bucket}.{field}')");
+        let own = format!(
+            "json_extract(properties, '{}')",
+            crate::db::json_path::bucket_field_path(bucket, field)
+        );
         if scope.subtypes.is_empty() {
             return own;
         }
@@ -902,7 +908,10 @@ impl QueryService {
                 .iter()
                 .map(|node_type| built.bind(libsql::Value::Text(node_type.clone())))
                 .collect();
-            let stored = format!("json_extract(properties, '$.{bucket}.{field}')");
+            let stored = format!(
+                "json_extract(properties, '{}')",
+                crate::db::json_path::bucket_field_path(bucket, field)
+            );
             let read = if values.is_empty() {
                 stored
             } else {

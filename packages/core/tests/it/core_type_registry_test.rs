@@ -888,13 +888,13 @@ async fn a_type_name_id_is_accepted_for_a_schema_node() {
 
     create_schema(&svc, json!({ "name": "Customer Profile", "fields": [] })).await;
     assert!(svc
-        .get_schema_node("customer_profile")
+        .get_schema_node("customer-profile")
         .await
         .unwrap()
         .is_some());
 
     // The type-name form is the schema's alone.
-    let error = message(svc.create_node(with_id("customer_profile", "text")).await);
+    let error = message(svc.create_node(with_id("customer-profile", "text")).await);
     assert!(error.contains("not a valid UUID"), "{error}");
 }
 
@@ -1055,7 +1055,7 @@ async fn a_subtype_of_ai_chat_cannot_be_referenced() {
             "fields": [],
             "relationships": [{
                 "name": "discussed_in",
-                "targetType": "support_chat",
+                "targetType": "support-chat",
                 "direction": "out",
                 "cardinality": "many",
                 "reverseName": "tickets",
@@ -1070,7 +1070,7 @@ async fn a_subtype_of_ai_chat_cannot_be_referenced() {
 
     let chat = create(
         &svc,
-        "support_chat",
+        "support-chat",
         "Help",
         json!({ "agent": "nodespace" }),
     )

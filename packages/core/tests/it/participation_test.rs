@@ -931,13 +931,13 @@ async fn shutdown_engine(
 /// and `note`, which the tests edit to raise an event.
 async fn seed_job_schema(svc: &Arc<NodeService>) {
     let schema = Node::new_with_id(
-        "pp_job".to_string(),
+        "pp-job".to_string(),
         "schema".to_string(),
-        "pp_job".to_string(),
+        "pp-job".to_string(),
         json!({
             "isCore": false,
             "schemaVersion": 1,
-            "description": "pp_job schema",
+            "description": "pp-job schema",
             "fields": [
                 { "name": "status", "type": "text" },
                 { "name": "note", "type": "text" }
@@ -949,7 +949,7 @@ async fn seed_job_schema(svc: &Arc<NodeService>) {
 }
 
 async fn create_job(svc: &Arc<NodeService>, content: &str) -> String {
-    create(svc, "pp_job", content, json!({ "status": "open" })).await
+    create(svc, "pp-job", content, json!({ "status": "open" })).await
 }
 
 async fn job_status(svc: &Arc<NodeService>, id: &str) -> String {
@@ -958,7 +958,7 @@ async fn job_status(svc: &Arc<NodeService>, id: &str) -> String {
         .unwrap()
         .expect("the job exists")
         .properties
-        .get("pp_job")
+        .get("pp-job")
         .and_then(|p| p.get("status"))
         .and_then(|v| v.as_str())
         .unwrap_or_default()
@@ -975,12 +975,12 @@ async fn status_becomes(svc: &Arc<NodeService>, id: &str, status: &str) -> bool 
     .await
 }
 
-/// A play that marks every new `pp_job` done.
+/// A play that marks every new `pp-job` done.
 fn close_on_create() -> serde_json::Value {
     json!({ "rules": [{
         "name": "close-on-create",
         "description": "Test rule",
-        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
+        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-job" } },
         "conditions": [],
         "actions": [{
             "description": "Test action",
@@ -997,13 +997,13 @@ fn close_on_create() -> serde_json::Value {
 /// instead of on a clock.
 async fn seed_probe(svc: &Arc<NodeService>) {
     let schema = Node::new_with_id(
-        "pp_probe".to_string(),
+        "pp-probe".to_string(),
         "schema".to_string(),
-        "pp_probe".to_string(),
+        "pp-probe".to_string(),
         json!({
             "isCore": false,
             "schemaVersion": 1,
-            "description": "pp_probe schema",
+            "description": "pp-probe schema",
             "fields": [{ "name": "seen", "type": "text" }],
             "relationships": []
         }),
@@ -1016,7 +1016,7 @@ async fn seed_probe(svc: &Arc<NodeService>) {
         json!({ "rules": [{
             "name": "mark-probes",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_probe" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-probe" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -1031,7 +1031,7 @@ async fn seed_probe(svc: &Arc<NodeService>) {
 /// Wait until the engine has handled everything raised so far. See
 /// [`seed_probe`].
 async fn settled(svc: &Arc<NodeService>) {
-    let probe = create(svc, "pp_probe", "probe", json!({})).await;
+    let probe = create(svc, "pp-probe", "probe", json!({})).await;
     let seen = wait_until(|| {
         let svc = svc.clone();
         let probe = probe.clone();
@@ -1041,7 +1041,7 @@ async fn settled(svc: &Arc<NodeService>) {
                 .unwrap()
                 .and_then(|n| {
                     n.properties
-                        .get("pp_probe")
+                        .get("pp-probe")
                         .and_then(|p| p.get("seen"))
                         .and_then(|v| v.as_str())
                         .map(|seen| seen == "yes")
@@ -1115,8 +1115,8 @@ async fn no_rule_fires_on_an_archived_node() {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "select": { "target_type": "pp_job" },
-                "property_key": "pp_job.note"
+                "select": { "target_type": "pp-job" },
+                "property_key": "pp-job.note"
             },
             "conditions": [],
             "actions": [{
@@ -1181,7 +1181,7 @@ async fn no_action_touches_an_archived_node() {
         json!({ "rules": [{
             "name": "touch-the-archived",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-job" } },
             "conditions": [],
             "actions": [
                 {
@@ -1253,13 +1253,13 @@ async fn a_condition_sees_no_archived_related_node() {
     let (svc, _tmp) = test_service().await;
     seed_job_schema(&svc).await;
     let schema = Node::new_with_id(
-        "pp_batch".to_string(),
+        "pp-batch".to_string(),
         "schema".to_string(),
-        "pp_batch".to_string(),
+        "pp-batch".to_string(),
         json!({
             "isCore": false,
             "schemaVersion": 1,
-            "description": "pp_batch schema",
+            "description": "pp-batch schema",
             "fields": [
                 { "name": "status", "type": "text" },
                 { "name": "note", "type": "text" }
@@ -1271,14 +1271,14 @@ async fn a_condition_sees_no_archived_related_node() {
     let declarations: Vec<nodespace_core::models::schema::SchemaRelationship> =
         serde_json::from_value(json!([{
             "name": "jobs",
-            "targetType": "pp_job",
+            "targetType": "pp-job",
             "direction": "out",
             "cardinality": "many",
             "reverseName": "batch",
             "reverseCardinality": "one"
         }]))
         .unwrap();
-    svc.set_schema_relationships("pp_batch", &declarations)
+    svc.set_schema_relationships("pp-batch", &declarations)
         .await
         .unwrap();
 
@@ -1293,8 +1293,8 @@ async fn a_condition_sees_no_archived_related_node() {
             "trigger": {
                 "type": "graph_event",
                 "on": "property_changed",
-                "select": { "target_type": "pp_batch" },
-                "property_key": "pp_batch.note"
+                "select": { "target_type": "pp-batch" },
+                "property_key": "pp-batch.note"
             },
             "conditions": [{ "expr": "node.jobs.all(j, j.status == 'done')", "description": "Test condition" }],
             "actions": [{
@@ -1306,8 +1306,8 @@ async fn a_condition_sees_no_archived_related_node() {
     )
     .await;
 
-    let batch = create(&svc, "pp_batch", "A batch", json!({ "status": "open" })).await;
-    let finished = create(&svc, "pp_job", "Finished", json!({ "status": "done" })).await;
+    let batch = create(&svc, "pp-batch", "A batch", json!({ "status": "open" })).await;
+    let finished = create(&svc, "pp-job", "Finished", json!({ "status": "done" })).await;
     let abandoned = create_job(&svc, "Abandoned, still open").await;
     for job in [&finished, &abandoned] {
         svc.create_relationship(&batch, "jobs", job, json!({}))
@@ -1334,7 +1334,7 @@ async fn a_condition_sees_no_archived_related_node() {
                 .unwrap()
                 .and_then(|n| {
                     n.properties
-                        .get("pp_batch")
+                        .get("pp-batch")
                         .and_then(|p| p.get("status"))
                         .and_then(|v| v.as_str())
                         .map(|status| status == "done")
@@ -1375,7 +1375,7 @@ fn activate_invariant_rules(svc: &Arc<NodeService>, rules: serde_json::Value) ->
 async fn create_archived_job(svc: &Arc<NodeService>, properties: serde_json::Value) -> String {
     svc.create_node_with_parent(CreateNodeParams {
         id: None,
-        node_type: "pp_job".to_string(),
+        node_type: "pp-job".to_string(),
         content: "Created archived".to_string(),
         parent_id: None,
         position: InsertPositionOwned::End,
@@ -1398,7 +1398,7 @@ async fn no_invariant_rule_fires_on_an_archived_node() {
             "name": "no-forbidden-jobs",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-job" } },
             "conditions": [{ "expr": "node.status == 'forbidden'", "description": "Test condition" }],
             "actions": [{ "description": "Test action", "action_type": "reject", "params": { "message": "forbidden" } }]
         }]),
@@ -1406,7 +1406,7 @@ async fn no_invariant_rule_fires_on_an_archived_node() {
 
     let refused = svc
         .create_node(Node::new(
-            "pp_job".to_string(),
+            "pp-job".to_string(),
             "A live forbidden job".to_string(),
             json!({ "status": "forbidden" }),
         ))
@@ -1438,7 +1438,7 @@ async fn no_invariant_action_touches_an_archived_node() {
             "name": "touch-the-archived",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-job" } },
             "conditions": [],
             "actions": [
                 {
@@ -1521,7 +1521,7 @@ async fn a_condition_naming_the_lifecycle_fails_validation() {
             json!({
                 "name": "reads-lifecycle",
                 "description": "Test rule",
-                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-job" } },
                 "conditions": [{ "expr": condition, "description": "Test condition" }],
                 "actions": [{
                     "description": "Test action",
@@ -1550,7 +1550,7 @@ async fn an_update_node_action_carrying_the_lifecycle_is_rejected() {
         json!({
             "name": "archives",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-job" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -1587,7 +1587,7 @@ async fn a_binding_naming_the_lifecycle_fails_validation() {
             json!({
                 "name": "copies-lifecycle",
                 "description": "Test rule",
-                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
+                "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-job" } },
                 "conditions": [],
                 "actions": [{
                     "description": "Test action",
@@ -1610,7 +1610,7 @@ async fn a_binding_naming_the_lifecycle_fails_validation() {
         json!({
             "name": "iterates-lifecycle",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-job" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -1639,7 +1639,7 @@ async fn a_binding_cannot_reach_the_lifecycle_at_run_time() {
             "name": "copies-lifecycle",
             "class": "invariant",
             "description": "Test rule",
-            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp_job" } },
+            "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "pp-job" } },
             "conditions": [],
             "actions": [{
                 "description": "Test action",
@@ -1654,7 +1654,7 @@ async fn a_binding_cannot_reach_the_lifecycle_at_run_time() {
 
     let error = svc
         .create_node(Node::new(
-            "pp_job".to_string(),
+            "pp-job".to_string(),
             "A job".to_string(),
             json!({ "status": "open" }),
         ))

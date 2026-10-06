@@ -894,7 +894,7 @@ describe("end-state fixture invariants", () => {
   test("seeded schema vocabulary is not restated in fixture prompts", () => {
     for (const s of all) {
       for (const p of [s.prompt, ...(s.priorTurns ?? [])]) {
-        for (const f of ["incident_report", "on_call"]) {
+        for (const f of ["incident-report", "on_call"]) {
           expect(
             p.toLowerCase().includes(f),
             `scenario ${s.id}'s prompt names "${f}". The model already sees ` +

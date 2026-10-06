@@ -338,7 +338,7 @@ async fn find_skills_schema_metadata_includes_a_subtypes_inherited_declarations(
     handle_create_schema(
         &node_service,
         json!({
-            "name": "retainer_invoice",
+            "name": "retainer-invoice",
             "extends": "invoice",
             "fields": [{ "name": "retainer_months", "type": "number" }]
         }),
@@ -352,7 +352,7 @@ async fn find_skills_schema_metadata_includes_a_subtypes_inherited_declarations(
         "Bill a customer on a monthly retainer — create a retainer invoice record.",
     )
     .await?;
-    link(&node_service, &skill, "retainer_invoice").await?;
+    link(&node_service, &skill, "retainer-invoice").await?;
     embedding_service.embed_root_node(&skill.id).await?;
 
     // Names the subtype outright, so its `kind: "schema"` result arrives via
@@ -398,14 +398,14 @@ async fn find_skills_schema_metadata_includes_a_subtypes_inherited_declarations(
         .as_array()
         .expect("schema_metadata should be an array")
         .iter()
-        .find(|e| e["type_id"] == json!("retainer_invoice"))
+        .find(|e| e["type_id"] == json!("retainer-invoice"))
         .expect("the skill's schema_metadata should include the subtype");
     assert_inherited(scoped, "skill result");
 
     let schema_result = output
         .skills
         .iter()
-        .find(|s| s["kind"] == json!("schema") && s["id"] == json!("retainer_invoice"))
+        .find(|s| s["kind"] == json!("schema") && s["id"] == json!("retainer-invoice"))
         .expect("the named subtype should come back as a schema result");
     assert_inherited(&schema_result["schema_metadata"][0], "schema result");
 
@@ -424,7 +424,7 @@ async fn find_skills_carries_a_linked_type_and_its_subtypes() -> Result<()> {
     handle_create_schema(
         &node_service,
         json!({
-            "name": "retainer_invoice",
+            "name": "retainer-invoice",
             "extends": "invoice",
             "fields": [{ "name": "retainer_months", "type": "number" }]
         }),
@@ -450,7 +450,7 @@ async fn find_skills_carries_a_linked_type_and_its_subtypes() -> Result<()> {
     carried.sort();
     assert_eq!(
         carried,
-        ["invoice", "retainer_invoice"],
+        ["invoice", "retainer-invoice"],
         "a linked skill carries its target and the target's subtypes, and no other type"
     );
     assert!(

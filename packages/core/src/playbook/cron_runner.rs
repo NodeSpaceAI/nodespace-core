@@ -531,29 +531,29 @@ mod tests {
 
             // Create schema for the node type
             let schema = Node::new_with_id(
-                "cr_task".to_string(),
+                "cr-task".to_string(),
                 "schema".to_string(),
-                "cr_task".to_string(),
+                "cr-task".to_string(),
                 json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "cr_task schema",
+                    "description": "cr-task schema",
                     "fields": [{"name": "status", "type": "text"}],
                     "relationships": []
                 }),
             );
             svc.create_node(schema).await.unwrap();
 
-            // Create active nodes of type "cr_task"
+            // Create active nodes of type "cr-task"
             let node1 = Node::new_with_id(
                 "c3a9129b-ee73-5379-b845-e13aef9e81a6".to_string(),
-                "cr_task".to_string(),
+                "cr-task".to_string(),
                 "task 1".to_string(),
                 json!({"status": "open"}),
             );
             let node2 = Node::new_with_id(
                 "2806fa65-22e1-5e87-a087-874666c63f01".to_string(),
-                "cr_task".to_string(),
+                "cr-task".to_string(),
                 "task 2".to_string(),
                 json!({"status": "open"}),
             );
@@ -561,7 +561,7 @@ mod tests {
             svc.create_node(node2).await.unwrap();
 
             // Use "every minute" cron — guaranteed to match in any 60s window
-            let lifecycle = make_lifecycle_with_cron("0 * * * * * *", "cr_task");
+            let lifecycle = make_lifecycle_with_cron("0 * * * * * *", "cr-task");
 
             let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(100);
             check_and_enqueue(&lifecycle, &svc, &tx, chrono::Local::now()).await;
@@ -599,13 +599,13 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             let schema = Node::new_with_id(
-                "cr_task_archived".to_string(),
+                "cr-task-archived".to_string(),
                 "schema".to_string(),
-                "cr_task_archived".to_string(),
+                "cr-task-archived".to_string(),
                 json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "cr_task_archived schema",
+                    "description": "cr-task-archived schema",
                     "fields": [{"name": "status", "type": "text"}],
                     "relationships": []
                 }),
@@ -613,13 +613,13 @@ mod tests {
             svc.create_node(schema).await.unwrap();
 
             let live = Node::new(
-                "cr_task_archived".to_string(),
+                "cr-task-archived".to_string(),
                 "live task".to_string(),
                 json!({"status": "open"}),
             );
             let live_id = svc.create_node(live).await.unwrap();
             let retired = Node::new(
-                "cr_task_archived".to_string(),
+                "cr-task-archived".to_string(),
                 "retired task".to_string(),
                 json!({"status": "open"}),
             );
@@ -634,7 +634,7 @@ mod tests {
             .await
             .unwrap();
 
-            let lifecycle = make_lifecycle_with_cron("0 * * * * * *", "cr_task_archived");
+            let lifecycle = make_lifecycle_with_cron("0 * * * * * *", "cr-task-archived");
             let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(100);
             check_and_enqueue(&lifecycle, &svc, &tx, chrono::Local::now()).await;
 
@@ -651,13 +651,13 @@ mod tests {
 
             // Create schema
             let schema = Node::new_with_id(
-                "cr_task2".to_string(),
+                "cr-task2".to_string(),
                 "schema".to_string(),
-                "cr_task2".to_string(),
+                "cr-task2".to_string(),
                 json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "cr_task2 schema",
+                    "description": "cr-task2 schema",
                     "fields": [],
                     "relationships": []
                 }),
@@ -666,14 +666,14 @@ mod tests {
 
             let node = Node::new_with_id(
                 "9607d693-7b48-5724-9923-ad25df0c4278".to_string(),
-                "cr_task2".to_string(),
+                "cr-task2".to_string(),
                 "task 3".to_string(),
                 json!({}),
             );
             svc.create_node(node).await.unwrap();
 
             // Far-future cron expression — should NOT match current window
-            let lifecycle = make_lifecycle_with_cron("0 0 0 29 2 * 2099", "cr_task2");
+            let lifecycle = make_lifecycle_with_cron("0 0 0 29 2 * 2099", "cr-task2");
 
             let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(100);
             check_and_enqueue(&lifecycle, &svc, &tx, chrono::Local::now()).await;
@@ -694,13 +694,13 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             let schema = Node::new_with_id(
-                "cr_task_gap".to_string(),
+                "cr-task-gap".to_string(),
                 "schema".to_string(),
-                "cr_task_gap".to_string(),
+                "cr-task-gap".to_string(),
                 json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "cr_task_gap schema",
+                    "description": "cr-task-gap schema",
                     "fields": [],
                     "relationships": []
                 }),
@@ -708,7 +708,7 @@ mod tests {
             svc.create_node(schema).await.unwrap();
             let node = Node::new_with_id(
                 "6645c195-4778-5ecc-83c3-a647c8dd9620".to_string(),
-                "cr_task_gap".to_string(),
+                "cr-task-gap".to_string(),
                 "task 5".to_string(),
                 json!({}),
             );
@@ -718,7 +718,7 @@ mod tests {
             let now = chrono::Local::now();
             let due = now - chrono::Duration::seconds(90);
             let cron_expr = format!("{} {} {} * * * *", due.second(), due.minute(), due.hour());
-            let lifecycle = make_lifecycle_with_cron(&cron_expr, "cr_task_gap");
+            let lifecycle = make_lifecycle_with_cron(&cron_expr, "cr-task-gap");
 
             let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(100);
 
@@ -748,13 +748,13 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             let schema = Node::new_with_id(
-                "cr_task_poison".to_string(),
+                "cr-task-poison".to_string(),
                 "schema".to_string(),
-                "cr_task_poison".to_string(),
+                "cr-task-poison".to_string(),
                 json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "cr_task_poison schema",
+                    "description": "cr-task-poison schema",
                     "fields": [{"name": "status", "type": "text"}],
                     "relationships": []
                 }),
@@ -763,13 +763,13 @@ mod tests {
 
             let node = Node::new_with_id(
                 "348bc89e-0178-526d-a678-50d1e84f2813".to_string(),
-                "cr_task_poison".to_string(),
+                "cr-task-poison".to_string(),
                 "task 4".to_string(),
                 json!({"status": "open"}),
             );
             svc.create_node(node).await.unwrap();
 
-            let lifecycle = make_lifecycle_with_cron("0 * * * * * *", "cr_task_poison");
+            let lifecycle = make_lifecycle_with_cron("0 * * * * * *", "cr-task-poison");
 
             // Poison the lock: panic while holding the write guard.
             {
@@ -836,28 +836,28 @@ mod tests {
             }])
         }
 
-        /// A `sel_ticket` type with a `state` field and a `sel_bug` subtype,
+        /// A `sel-ticket` type with a `state` field and a `sel-bug` subtype,
         /// and four tickets: two open (one of them a bug), one closed, and
         /// one open but archived.
         async fn seed_tickets(svc: &Arc<NodeService>) {
             crate::schema::handle_create_schema(
                 svc,
-                json!({ "name": "sel_ticket", "fields": [{ "name": "state", "type": "text" }] }),
+                json!({ "name": "sel-ticket", "fields": [{ "name": "state", "type": "text" }] }),
             )
             .await
             .unwrap();
             crate::schema::handle_create_schema(
                 svc,
-                json!({ "name": "sel_bug", "extends": "sel_ticket", "fields": [] }),
+                json!({ "name": "sel-bug", "extends": "sel-ticket", "fields": [] }),
             )
             .await
             .unwrap();
 
             for (id, node_type, state) in [
-                (OPEN_TICKET, "sel_ticket", "open"),
-                (OPEN_BUG, "sel_bug", "open"),
-                (CLOSED_TICKET, "sel_ticket", "closed"),
-                (ARCHIVED_TICKET, "sel_ticket", "open"),
+                (OPEN_TICKET, "sel-ticket", "open"),
+                (OPEN_BUG, "sel-bug", "open"),
+                (CLOSED_TICKET, "sel-ticket", "closed"),
+                (ARCHIVED_TICKET, "sel-ticket", "open"),
             ] {
                 svc.create_node(Node::new_with_id(
                     id.to_string(),
@@ -913,7 +913,7 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             seed_tickets(&svc).await;
             let lifecycle = lifecycle_with_rules(scheduled_rule(
-                json!({ "target_type": "sel_ticket" }),
+                json!({ "target_type": "sel-ticket" }),
                 json!([]),
             ));
 
@@ -929,7 +929,7 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             seed_tickets(&svc).await;
             let lifecycle = lifecycle_with_rules(scheduled_rule(
-                json!({ "target_type": "sel_ticket", "filters": open_filter() }),
+                json!({ "target_type": "sel-ticket", "filters": open_filter() }),
                 json!([]),
             ));
 
@@ -940,7 +940,7 @@ mod tests {
                     .scan
                     .as_ref()
                     .expect("a scheduled work item carries its scan");
-                assert_eq!(scan.target_type, "sel_ticket");
+                assert_eq!(scan.target_type, "sel-ticket");
             }
         }
 
@@ -957,7 +957,7 @@ mod tests {
                 query_id.to_string(),
                 "query".to_string(),
                 "Open tickets".to_string(),
-                json!({ "target_type": "sel_ticket", "filters": open_filter(), "limit": 1 }),
+                json!({ "target_type": "sel-ticket", "filters": open_filter(), "limit": 1 }),
             ))
             .await
             .unwrap();
@@ -967,7 +967,7 @@ mod tests {
             let items = scan(&svc, &lifecycle).await;
             assert_eq!(scanned_ids(&items), [OPEN_TICKET, OPEN_BUG]);
             // The rule names no type of its own; the scan read it off the query.
-            assert_eq!(items[0].scan.as_ref().unwrap().target_type, "sel_ticket");
+            assert_eq!(items[0].scan.as_ref().unwrap().target_type, "sel-ticket");
             assert_eq!(items[0].rules[0].rule.trigger.registered_type(), None);
 
             // Repoint the saved query; the same play now scans the other set.
@@ -993,12 +993,12 @@ mod tests {
             seed_tickets(&svc).await;
             // The open ticket is the parent of an open bug, and the closed
             // ticket of a closed one. A bug keeps its inherited `state` in
-            // the `sel_ticket` bucket, so each child's state has to be read
+            // the `sel-ticket` bucket, so each child's state has to be read
             // there for the two parents to come apart.
             const CLOSED_BUG: &str = "c1000000-0000-4000-8000-000000000005";
             svc.create_node(Node::new_with_id(
                 CLOSED_BUG.to_string(),
-                "sel_bug".to_string(),
+                "sel-bug".to_string(),
                 CLOSED_BUG.to_string(),
                 json!({ "state": "closed" }),
             ))
@@ -1016,7 +1016,7 @@ mod tests {
                 "value": "open", "negate": true
             }]);
             let inline = lifecycle_with_rules(scheduled_rule(
-                json!({ "target_type": "sel_ticket", "filters": not_open }),
+                json!({ "target_type": "sel-ticket", "filters": not_open }),
                 json!([]),
             ));
             assert_eq!(
@@ -1029,7 +1029,7 @@ mod tests {
                 query_id.to_string(),
                 "query".to_string(),
                 "No open child".to_string(),
-                json!({ "target_type": "sel_ticket", "filters": [{
+                json!({ "target_type": "sel-ticket", "filters": [{
                     "type": "related", "operator": "exists", "path": ["has_child"], "negate": true,
                     "filter": {
                         "type": "property", "operator": "equals", "property": "state",
@@ -1090,7 +1090,7 @@ mod tests {
                     .unwrap();
             }
             let lifecycle = lifecycle_with_rules(scheduled_rule(
-                json!({ "target_type": "sel_ticket", "filters": open_filter() }),
+                json!({ "target_type": "sel-ticket", "filters": open_filter() }),
                 json!([{ "expr": "node.child_of.content != ''", "description": "Test condition" }]),
             ));
 

@@ -323,15 +323,24 @@ impl NodeService {
 
     /// Refuse a provided id that is not a UUID (ADR-086 §10). Three id forms
     /// are not UUIDs, and each belongs to one type: a `date` node's id is its
-    /// date (`YYYY-MM-DD`), a `schema` node's id is the type name, and the
+    /// date (`YYYY-MM-DD`), a `schema` node's id is the type name (kebab-case), and the
     /// settings singleton has a fixed id. Every other node, seeded or not, has
     /// a UUID.
     pub(crate) async fn ensure_valid_node_id(&self, node: &Node) -> Result<(), NodeServiceError> {
-        if uuid::Uuid::parse_str(&node.id).is_ok() {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type)
+            && uuid::Uuid::parse_str(&node.id).is_ok()
+        {
             return Ok(());
         }
-        if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) && !node.id.is_empty() {
-            return Ok(());
+        if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {
+            if !node.id.is_empty() && normalize_schema_id(&node.id) == node.id {
+                return Ok(());
+            }
+            return Err(NodeServiceError::invalid_update(format!(
+                "Schema id '{}' is not a valid type id. A type id is kebab-case: lowercase \
+                 letters and digits with words joined by '-' (e.g. 'customer-profile').",
+                node.id
+            )));
         }
         // `create_node` has already forced a date-shaped id to the `date` type.
         if crate::models::CoreNodeType::Date.is_exactly(&node.node_type)

@@ -545,7 +545,7 @@ describe("clarifyOk", () => {
     const diff: GraphDiff = {
       ...empty,
       addedNodes: [
-        { id: "n1", node_type: "planning_cycle", content: "Harbour", properties: {} },
+        { id: "n1", node_type: "planning-cycle", content: "Harbour", properties: {} },
       ],
     };
     const asked = turnAskedForClarification(["create_node"], "Created.", notAction);
@@ -579,10 +579,10 @@ describe("type-keyed property flattening", () => {
   // `populatedCount` saw only the wrapper.
   const scenario13 = {
     id: "n1",
-    node_type: "incident_report",
+    node_type: "incident-report",
     content: "search index corruption",
     properties: {
-      incident_report: {
+      "incident-report": {
         _schema_version: 1,
         on_call: "rowan",
         resolved: true,
@@ -622,10 +622,10 @@ describe("type-keyed property flattening", () => {
   test("finds a value by hasPropertyValue (scenario 9)", () => {
     const node = toSnapshotNode({
       id: "n4",
-      node_type: "feature_write_up",
+      node_type: "feature-write-up",
       content: "Offline sync",
       properties: {
-        feature_write_up: { _schema_version: 1, estimated_days: 8, signed_off: true },
+        "feature-write-up": { _schema_version: 1, estimated_days: 8, signed_off: true },
       },
     });
     expect(nodeSatisfies(node!, { contentMatches: "offline sync", hasPropertyValue: 8 })).toBe(true);

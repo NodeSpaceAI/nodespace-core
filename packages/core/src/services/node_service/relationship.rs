@@ -2775,12 +2775,12 @@ mod required_in_last_edge_tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "guard_adr",
+                "name": "guard-adr",
                 "fields": [],
                 "relationships": [
                     {
                         "name": "supersedes",
-                        "targetType": "guard_adr",
+                        "targetType": "guard-adr",
                         "direction": "out",
                         "cardinality": "many",
                         "reverseName": "superseded_by",
@@ -2788,7 +2788,7 @@ mod required_in_last_edge_tests {
                     },
                     {
                         "name": "superseded_by",
-                        "targetType": "guard_adr",
+                        "targetType": "guard-adr",
                         "direction": "in",
                         "cardinality": "many",
                         "required": true,
@@ -2803,11 +2803,11 @@ mod required_in_last_edge_tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "guard_memo",
+                "name": "guard-memo",
                 "fields": [],
                 "relationships": [{
                     "name": "supersedes",
-                    "targetType": "guard_adr",
+                    "targetType": "guard-adr",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "memo_superseded_by",
@@ -2884,8 +2884,8 @@ mod required_in_last_edge_tests {
     #[tokio::test]
     async fn deleting_the_last_inbound_edge_is_rejected() {
         let (svc, _tmp) = service().await;
-        node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "guard_adr").await;
-        node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "guard_adr").await;
+        node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "guard-adr").await;
+        node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "guard-adr").await;
         supersede(
             &svc,
             "15881b3b-b2c4-5713-8dc5-03428d288eb7",
@@ -2950,7 +2950,7 @@ mod required_in_last_edge_tests {
             "c9668a68-ab56-5b6a-b13d-1bef2f88c379",
             "bff0a8d2-4776-5ce4-9176-c4dd4cfc8f19",
         ] {
-            node(&svc, id, "guard_adr").await;
+            node(&svc, id, "guard-adr").await;
         }
         for source in [
             "7b9a12ed-d3ba-5b46-a6f6-7a952d22bd90",
@@ -3002,10 +3002,10 @@ mod required_in_last_edge_tests {
     #[tokio::test]
     async fn edge_from_an_unqualified_source_neither_counts_nor_is_protected() {
         let (svc, _tmp) = service().await;
-        node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "guard_adr").await;
-        node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "guard_adr").await;
-        node(&svc, "e6a50d56-17e6-5811-a64d-f182cc21963b", "guard_memo").await;
-        node(&svc, "1bd8dbd6-5886-52fc-9c55-af605a38ba28", "guard_memo").await;
+        node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "guard-adr").await;
+        node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "guard-adr").await;
+        node(&svc, "e6a50d56-17e6-5811-a64d-f182cc21963b", "guard-memo").await;
+        node(&svc, "1bd8dbd6-5886-52fc-9c55-af605a38ba28", "guard-memo").await;
         supersede(
             &svc,
             "15881b3b-b2c4-5713-8dc5-03428d288eb7",
@@ -3076,12 +3076,12 @@ mod required_in_last_edge_tests {
         crate::schema::handle_create_schema(
             &svc,
             json!({
-                "name": "guard_one",
+                "name": "guard-one",
                 "fields": [],
                 "relationships": [
                     {
                         "name": "replaces",
-                        "targetType": "guard_one",
+                        "targetType": "guard-one",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "replaced_by",
@@ -3089,7 +3089,7 @@ mod required_in_last_edge_tests {
                     },
                     {
                         "name": "replaced_by",
-                        "targetType": "guard_one",
+                        "targetType": "guard-one",
                         "direction": "in",
                         "cardinality": "many",
                         "required": true,
@@ -3107,7 +3107,7 @@ mod required_in_last_edge_tests {
             "6c453fe8-3e1e-5b84-9c1b-ba03442649a2",
             "31502b29-9308-57b3-8aa6-b0a42a0010b7",
         ] {
-            node(&svc, id, "guard_one").await;
+            node(&svc, id, "guard-one").await;
         }
         let targets = |id: &'static str| {
             let svc = svc.clone();
@@ -3175,8 +3175,8 @@ mod required_in_last_edge_tests {
         );
     }
 
-    /// Builds `shadow_child extends shadow_base`, both declaring `owns`
-    /// (reverse cardinality one) toward `shadow_thing`, with the child's own
+    /// Builds `shadow-child extends shadow-base`, both declaring `owns`
+    /// (reverse cardinality one) toward `shadow-thing`, with the child's own
     /// declaration shadowing the inherited one. Unreachable through
     /// `create_schema` / `update_schema` (cross-chain collision validation
     /// rejects it), so the shadow is written with the lower-level
@@ -3185,7 +3185,7 @@ mod required_in_last_edge_tests {
         let owns = |reverse_name: &str| {
             json!({
                 "name": "owns",
-                "targetType": "shadow_thing",
+                "targetType": "shadow-thing",
                 "direction": "out",
                 "cardinality": "many",
                 "reverseName": reverse_name,
@@ -3194,14 +3194,14 @@ mod required_in_last_edge_tests {
         };
         crate::schema::handle_create_schema(
             svc,
-            json!({ "name": "shadow_thing", "fields": [], "relationships": [] }),
+            json!({ "name": "shadow-thing", "fields": [], "relationships": [] }),
         )
         .await
         .expect("thing schema");
         crate::schema::handle_create_schema(
             svc,
             json!({
-                "name": "shadow_base",
+                "name": "shadow-base",
                 "fields": [],
                 "relationships": [owns("base_owner")]
             }),
@@ -3211,8 +3211,8 @@ mod required_in_last_edge_tests {
         crate::schema::handle_create_schema(
             svc,
             json!({
-                "name": "shadow_child",
-                "extends": "shadow_base",
+                "name": "shadow-child",
+                "extends": "shadow-base",
                 "fields": [],
                 "relationships": []
             }),
@@ -3224,38 +3224,38 @@ mod required_in_last_edge_tests {
         // validation the public schema paths run.
         let mut declarations = svc
             .store()
-            .get_schema_declarations("shadow_child")
+            .get_schema_declarations("shadow-child")
             .await
             .unwrap();
         declarations.push(serde_json::from_value(owns("child_owner")).unwrap());
-        svc.set_schema_relationships("shadow_child", &declarations)
+        svc.set_schema_relationships("shadow-child", &declarations)
             .await
             .unwrap();
-        let (_, owners) = svc.resolve_relationships("shadow_child").await.unwrap();
-        assert_eq!(owners.get("owns").map(String::as_str), Some("shadow_child"));
+        let (_, owners) = svc.resolve_relationships("shadow-child").await.unwrap();
+        assert_eq!(owners.get("owns").map(String::as_str), Some("shadow-child"));
     }
 
     /// Reverse-cardinality-one scoping is ownership *equality*, not
-    /// ancestor-chain membership. `shadow_child` extends
-    /// `shadow_base`; both end up declaring `owns` (reverse cardinality one)
-    /// toward `shadow_thing`, but `shadow_child`'s own declaration shadows the
+    /// ancestor-chain membership. `shadow-child` extends
+    /// `shadow-base`; both end up declaring `owns` (reverse cardinality one)
+    /// toward `shadow-thing`, but `shadow-child`'s own declaration shadows the
     /// inherited one. That state is unreachable through `create_schema` /
     /// `update_schema` (cross-chain collision validation rejects it), so it is
     /// built directly with the lower-level `set_schema_relationships`.
     ///
-    /// An existing `shadow_child` edge resolves `owns` to `shadow_child`, so
-    /// it belongs to a different declaration than a `shadow_base` source's and
+    /// An existing `shadow-child` edge resolves `owns` to `shadow-child`, so
+    /// it belongs to a different declaration than a `shadow-base` source's and
     /// must NOT be evicted by it. Chain-membership (`type_satisfies`) wrongly
-    /// counted it because `shadow_base` is in `shadow_child`'s chain.
+    /// counted it because `shadow-base` is in `shadow-child`'s chain.
     #[tokio::test]
     async fn reverse_cardinality_scope_ignores_edges_owned_by_a_shadowing_declaration() {
         let (svc, _tmp) = service().await;
         shadowed_owns_fixture(&svc).await;
 
-        node(&svc, "88c17c94-8606-52a6-9e7a-31c6abf519d3", "shadow_thing").await;
-        node(&svc, "759e78dc-004a-52e4-95a2-2668cd21aad9", "shadow_child").await;
-        node(&svc, "93fc523e-f0ea-5ce6-8340-1e756ac6fa13", "shadow_base").await;
-        node(&svc, "66348493-e523-5f42-8f27-c97eac4699e6", "shadow_base").await;
+        node(&svc, "88c17c94-8606-52a6-9e7a-31c6abf519d3", "shadow-thing").await;
+        node(&svc, "759e78dc-004a-52e4-95a2-2668cd21aad9", "shadow-child").await;
+        node(&svc, "93fc523e-f0ea-5ce6-8340-1e756ac6fa13", "shadow-base").await;
+        node(&svc, "66348493-e523-5f42-8f27-c97eac4699e6", "shadow-base").await;
 
         svc.create_relationship(
             "759e78dc-004a-52e4-95a2-2668cd21aad9",
@@ -3324,10 +3324,10 @@ mod required_in_last_edge_tests {
     async fn merge_repoint_ignores_edges_owned_by_a_shadowing_declaration() {
         let (svc, _tmp) = service().await;
         shadowed_owns_fixture(&svc).await;
-        node(&svc, "dd82a82d-26ba-5088-aae1-a5492e8a688d", "shadow_thing").await;
-        node(&svc, "127fa0d7-9a70-55e8-9571-2768eec9d989", "shadow_thing").await;
-        node(&svc, "759e78dc-004a-52e4-95a2-2668cd21aad9", "shadow_child").await;
-        node(&svc, "93fc523e-f0ea-5ce6-8340-1e756ac6fa13", "shadow_base").await;
+        node(&svc, "dd82a82d-26ba-5088-aae1-a5492e8a688d", "shadow-thing").await;
+        node(&svc, "127fa0d7-9a70-55e8-9571-2768eec9d989", "shadow-thing").await;
+        node(&svc, "759e78dc-004a-52e4-95a2-2668cd21aad9", "shadow-child").await;
+        node(&svc, "93fc523e-f0ea-5ce6-8340-1e756ac6fa13", "shadow-base").await;
         svc.create_relationship(
             "759e78dc-004a-52e4-95a2-2668cd21aad9",
             "owns",
@@ -3378,9 +3378,9 @@ mod required_in_last_edge_tests {
     #[tokio::test]
     async fn deleting_a_nonexistent_inbound_edge_stays_a_no_op() {
         let (svc, _tmp) = service().await;
-        node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "guard_adr").await;
-        node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "guard_adr").await;
-        node(&svc, "6e52f1e6-c527-50df-8892-cde6cb435c5a", "guard_adr").await;
+        node(&svc, "ac012a23-2b8e-5fdc-9aca-df129fe90625", "guard-adr").await;
+        node(&svc, "15881b3b-b2c4-5713-8dc5-03428d288eb7", "guard-adr").await;
+        node(&svc, "6e52f1e6-c527-50df-8892-cde6cb435c5a", "guard-adr").await;
         supersede(
             &svc,
             "15881b3b-b2c4-5713-8dc5-03428d288eb7",

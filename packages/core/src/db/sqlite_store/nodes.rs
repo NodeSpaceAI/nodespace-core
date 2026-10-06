@@ -4209,7 +4209,10 @@ impl SqliteStore {
             return Ok(None);
         }
 
-        let extract = format!("json_extract(properties, '$.{}.{}')", bucket, field);
+        let extract = format!(
+            "json_extract(properties, '{}')",
+            crate::db::json_path::bucket_field_path(bucket, field)
+        );
         let (lhs, needle) = if case_insensitive {
             // SQLite LOWER() folds ASCII only, so a value differing solely in the
             // case of a non-ASCII character would not be matched here. Acceptable:

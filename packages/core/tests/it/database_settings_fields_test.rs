@@ -232,7 +232,7 @@ async fn a_retyped_singleton_keeps_its_base_bucket_settings_readable_and_writabl
         SETTINGS_ID,
         settings.version,
         NodeUpdate {
-            node_type: Some("fixture_settings".to_string()),
+            node_type: Some("fixture-settings".to_string()),
             properties: Some(json!({ "fixture_flag": true })),
             ..NodeUpdate::new()
         },

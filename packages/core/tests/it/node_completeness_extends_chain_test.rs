@@ -46,13 +46,13 @@ async fn make_node(svc: &NodeService, id: &str, node_type: &str) -> Result<()> {
 }
 
 /// Base type declares `assignee` as `required: true`, out to
-/// `completeness_ext_target`; the subtype extends the base without
+/// `completeness-ext-target`; the subtype extends the base without
 /// redeclaring the relationship.
 async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "completeness_ext_target",
+            "name": "completeness-ext-target",
             "fields": [{ "name": "title", "type": "text", "protection": "user", "indexed": false }]
         }),
     )
@@ -62,11 +62,11 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "completeness_ext_base",
+            "name": "completeness-ext-base",
             "fields": [],
             "relationships": [{
                 "name": "assignee",
-                "targetType": "completeness_ext_target",
+                "targetType": "completeness-ext-target",
                 "direction": "out",
                 "cardinality": "one",
                 "required": true,
@@ -81,8 +81,8 @@ async fn create_base_and_subtype(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "completeness_ext_sub",
-            "extends": "completeness_ext_base",
+            "name": "completeness-ext-sub",
+            "extends": "completeness-ext-base",
             "fields": []
         }),
     )
@@ -101,7 +101,7 @@ async fn inherited_required_relationship_missing_reports_incomplete() -> Result<
     make_node(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "completeness_ext_sub",
+        "completeness-ext-sub",
     )
     .await?;
 
@@ -123,13 +123,13 @@ async fn inherited_required_relationship_satisfied_reports_complete() -> Result<
     make_node(
         &svc,
         "a2b6557f-5da0-5f9b-a63a-55077d89680b",
-        "completeness_ext_target",
+        "completeness-ext-target",
     )
     .await?;
     make_node(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "completeness_ext_sub",
+        "completeness-ext-sub",
     )
     .await?;
 
@@ -160,12 +160,12 @@ async fn create_inbound_required_schema(svc: &Arc<NodeService>) -> Result<()> {
     handle_create_schema(
         svc,
         json!({
-            "name": "completeness_in_adr",
+            "name": "completeness-in-adr",
             "fields": [],
             "relationships": [
                 {
                     "name": "supersedes",
-                    "targetType": "completeness_in_adr",
+                    "targetType": "completeness-in-adr",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "superseded_by",
@@ -173,7 +173,7 @@ async fn create_inbound_required_schema(svc: &Arc<NodeService>) -> Result<()> {
                 },
                 {
                     "name": "superseded_by",
-                    "targetType": "completeness_in_adr",
+                    "targetType": "completeness-in-adr",
                     "direction": "in",
                     "cardinality": "one",
                     "required": true,
@@ -196,7 +196,7 @@ async fn required_inbound_relationship_missing_reports_incomplete() -> Result<()
     make_node(
         &svc,
         "ac012a23-2b8e-5fdc-9aca-df129fe90625",
-        "completeness_in_adr",
+        "completeness-in-adr",
     )
     .await?;
 
@@ -223,13 +223,13 @@ async fn required_inbound_relationship_satisfied_from_other_side_reports_complet
     make_node(
         &svc,
         "ac012a23-2b8e-5fdc-9aca-df129fe90625",
-        "completeness_in_adr",
+        "completeness-in-adr",
     )
     .await?;
     make_node(
         &svc,
         "15881b3b-b2c4-5713-8dc5-03428d288eb7",
-        "completeness_in_adr",
+        "completeness-in-adr",
     )
     .await?;
 
@@ -275,13 +275,13 @@ async fn required_inbound_relationship_written_through_in_name_reports_complete(
     make_node(
         &svc,
         "ac012a23-2b8e-5fdc-9aca-df129fe90625",
-        "completeness_in_adr",
+        "completeness-in-adr",
     )
     .await?;
     make_node(
         &svc,
         "15881b3b-b2c4-5713-8dc5-03428d288eb7",
-        "completeness_in_adr",
+        "completeness-in-adr",
     )
     .await?;
 
@@ -316,11 +316,11 @@ async fn required_inbound_relationship_narrows_by_source_type() -> Result<()> {
     handle_create_schema(
         &svc,
         json!({
-            "name": "completeness_in_memo",
+            "name": "completeness-in-memo",
             "fields": [],
             "relationships": [{
                 "name": "supersedes",
-                "targetType": "completeness_in_adr",
+                "targetType": "completeness-in-adr",
                 "direction": "out",
                 "cardinality": "one",
                 "reverseName": "superseded_by_memo",
@@ -333,8 +333,8 @@ async fn required_inbound_relationship_narrows_by_source_type() -> Result<()> {
     handle_create_schema(
         &svc,
         json!({
-            "name": "completeness_in_adr_sub",
-            "extends": "completeness_in_adr",
+            "name": "completeness-in-adr-sub",
+            "extends": "completeness-in-adr",
             "fields": []
         }),
     )
@@ -344,13 +344,13 @@ async fn required_inbound_relationship_narrows_by_source_type() -> Result<()> {
     make_node(
         &svc,
         "ac012a23-2b8e-5fdc-9aca-df129fe90625",
-        "completeness_in_adr",
+        "completeness-in-adr",
     )
     .await?;
     make_node(
         &svc,
         "d7ac97fb-f0b6-5af0-bc46-80281a91c768",
-        "completeness_in_memo",
+        "completeness-in-memo",
     )
     .await?;
     svc.create_relationship(
@@ -373,7 +373,7 @@ async fn required_inbound_relationship_narrows_by_source_type() -> Result<()> {
     make_node(
         &svc,
         "b1beb18c-b5fa-5cd1-ad04-f8ca4b02745c",
-        "completeness_in_adr_sub",
+        "completeness-in-adr-sub",
     )
     .await?;
     svc.create_relationship(

@@ -242,7 +242,7 @@ async fn create_reconcile_base_and_subtype(svc: &Arc<NodeService>) -> Result<()>
     handle_create_schema(
         svc,
         json!({
-            "name": "reconcile_ext_base",
+            "name": "reconcile-ext-base",
             "fields": [{
                 "name": "email",
                 "type": "text",
@@ -258,8 +258,8 @@ async fn create_reconcile_base_and_subtype(svc: &Arc<NodeService>) -> Result<()>
     handle_create_schema(
         svc,
         json!({
-            "name": "reconcile_ext_sub",
-            "extends": "reconcile_ext_base",
+            "name": "reconcile-ext-sub",
+            "extends": "reconcile-ext-base",
             "fields": []
         }),
     )
@@ -284,16 +284,16 @@ async fn sweep_leaves_a_still_colliding_inherited_field_record_open() -> Result<
 
     let alice_id = svc
         .create_node(Node::new(
-            "reconcile_ext_sub".to_string(),
+            "reconcile-ext-sub".to_string(),
             "Alice".to_string(),
-            json!({ "reconcile_ext_sub": { "email": "alice@example.com" } }),
+            json!({ "reconcile-ext-sub": { "email": "alice@example.com" } }),
         ))
         .await?;
     let _bob_id = svc
         .create_node(Node::new(
-            "reconcile_ext_sub".to_string(),
+            "reconcile-ext-sub".to_string(),
             "Bob".to_string(),
-            json!({ "reconcile_ext_sub": { "email": "alice@example.com" } }),
+            json!({ "reconcile-ext-sub": { "email": "alice@example.com" } }),
         ))
         .await?;
 
@@ -328,16 +328,16 @@ async fn sweep_closes_an_inherited_field_collision_that_no_longer_holds() -> Res
 
     let alice_id = svc
         .create_node(Node::new(
-            "reconcile_ext_sub".to_string(),
+            "reconcile-ext-sub".to_string(),
             "Alice".to_string(),
-            json!({ "reconcile_ext_sub": { "email": "alice@example.com" } }),
+            json!({ "reconcile-ext-sub": { "email": "alice@example.com" } }),
         ))
         .await?;
     let bob_id = svc
         .create_node(Node::new(
-            "reconcile_ext_sub".to_string(),
+            "reconcile-ext-sub".to_string(),
             "Bob".to_string(),
-            json!({ "reconcile_ext_sub": { "email": "alice@example.com" } }),
+            json!({ "reconcile-ext-sub": { "email": "alice@example.com" } }),
         ))
         .await?;
 
@@ -349,7 +349,7 @@ async fn sweep_closes_an_inherited_field_collision_that_no_longer_holds() -> Res
         &bob_id,
         bob.version,
         NodeUpdate::new()
-            .with_properties(json!({ "reconcile_ext_sub": { "email": "bob@example.com" } })),
+            .with_properties(json!({ "reconcile-ext-sub": { "email": "bob@example.com" } })),
     )
     .await?;
 

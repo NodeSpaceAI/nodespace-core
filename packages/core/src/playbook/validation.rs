@@ -2661,10 +2661,10 @@ mod tests {
         #[tokio::test]
         async fn test_valid_play_passes_validation() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_widget", 1, json!([])).await;
+            create_schema(&svc, "vt-widget", 1, json!([])).await;
 
             let rules = vec![make_rule(
-                "vt_widget",
+                "vt-widget",
                 vec!["node.status == 'open'"],
                 vec![],
             )];
@@ -2674,13 +2674,13 @@ mod tests {
 
         // -- Derived attributes (ADR-094 §5) ---------------------------------
 
-        /// `vt_list -[boxes]-> checkbox` and `vt_list -[notes]-> vt_note`,
-        /// where `vt_note` is an ordinary type that derives nothing.
+        /// `vt-list -[boxes]-> checkbox` and `vt-list -[notes]-> vt-note`,
+        /// where `vt-note` is an ordinary type that derives nothing.
         async fn create_checklist_schemas(svc: &NodeService) {
-            create_schema(svc, "vt_note", 1, json!([])).await;
+            create_schema(svc, "vt-note", 1, json!([])).await;
             create_schema(
                 svc,
-                "vt_list",
+                "vt-list",
                 1,
                 json!([
                     {
@@ -2693,7 +2693,7 @@ mod tests {
                     },
                     {
                         "name": "notes",
-                        "targetType": "vt_note",
+                        "targetType": "vt-note",
                         "direction": "out",
                         "cardinality": "many",
                         "reverseName": "note_of",
@@ -2746,12 +2746,12 @@ mod tests {
                 ("checkbox", "node.checked"),
                 ("checkbox", "node.checked == false"),
                 // On the items of a relationship declared to reach checkboxes.
-                ("vt_list", "node.boxes.exists(b, b.checked == false)"),
-                ("vt_list", "node.boxes.all(b, b.checked)"),
+                ("vt-list", "node.boxes.exists(b, b.checked == false)"),
+                ("vt-list", "node.boxes.all(b, b.checked)"),
                 // Through a built-in relationship, whose far end may be any
                 // type: the rule the shipped workflow writes.
                 ("task", "node.has_child.exists(c, c.checked == false)"),
-                ("vt_note", "node.child_of.checked"),
+                ("vt-note", "node.child_of.checked"),
             ] {
                 let errors = condition_errors(&svc, node_type, condition).await;
                 assert!(errors.is_empty(), "{node_type}: {condition}: {errors:?}");
@@ -2766,17 +2766,17 @@ mod tests {
             // On the trigger node, in the two-segment form no other check reads.
             let errors = condition_errors(&svc, "task", "node.checked == false").await;
             only_derived_refusal(&errors, "task");
-            let errors = condition_errors(&svc, "vt_note", "node.checked").await;
-            only_derived_refusal(&errors, "vt_note");
+            let errors = condition_errors(&svc, "vt-note", "node.checked").await;
+            only_derived_refusal(&errors, "vt-note");
 
             // On the items of a relationship declared to reach another type.
             let errors =
-                condition_errors(&svc, "vt_list", "node.notes.exists(n, n.checked == false)").await;
-            only_derived_refusal(&errors, "vt_note");
+                condition_errors(&svc, "vt-list", "node.notes.exists(n, n.checked == false)").await;
+            only_derived_refusal(&errors, "vt-note");
 
             // Past a declared relationship, as a plain path.
-            let errors = condition_errors(&svc, "vt_note", "node.note_of.checked").await;
-            only_derived_refusal(&errors, "vt_list");
+            let errors = condition_errors(&svc, "vt-note", "node.note_of.checked").await;
+            only_derived_refusal(&errors, "vt-list");
         }
 
         /// A derived attribute is a value, so nothing is reached through it.
@@ -2801,19 +2801,19 @@ mod tests {
         async fn a_field_named_like_a_derived_attribute_is_still_a_field() {
             let (svc, _tmp) = create_test_service().await;
             let schema_node = Node::new_with_id(
-                "vt_survey".to_string(),
+                "vt-survey".to_string(),
                 "schema".to_string(),
-                "vt_survey".to_string(),
+                "vt-survey".to_string(),
                 json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "vt_survey schema",
+                    "description": "vt-survey schema",
                     "fields": [{"name": "checked", "type": "boolean"}]
                 }),
             );
             svc.create_node(schema_node).await.unwrap();
 
-            let errors = condition_errors(&svc, "vt_survey", "node.checked == true").await;
+            let errors = condition_errors(&svc, "vt-survey", "node.checked == true").await;
             assert!(errors.is_empty(), "{errors:?}");
         }
 
@@ -2824,7 +2824,7 @@ mod tests {
 
             let rules = |for_each: &str| {
                 vec![make_rule(
-                    "vt_list",
+                    "vt-list",
                     vec![],
                     vec![for_each_action(for_each)],
                 )]
@@ -2835,26 +2835,26 @@ mod tests {
 
             let errors = validate_play(&rules("trigger.node.notes.where(checked == false)"), &svc)
                 .await
-                .expect_err("vt_note derives no `checked`");
+                .expect_err("vt-note derives no `checked`");
             let (message, _) = only_where_error(&errors);
             assert!(
-                message.contains("'checked' is not a field of 'vt_note'"),
+                message.contains("'checked' is not a field of 'vt-note'"),
                 "{message}"
             );
         }
 
         // -- `.where(...)` collection filters --------------------------------
 
-        /// `vt_sprint -[tasks]-> vt_item`, where `vt_item` declares `status`.
+        /// `vt-sprint -[tasks]-> vt-item`, where `vt-item` declares `status`.
         async fn create_sprint_schemas(svc: &NodeService) {
-            create_schema(svc, "vt_item", 1, json!([])).await;
+            create_schema(svc, "vt-item", 1, json!([])).await;
             create_schema(
                 svc,
-                "vt_sprint",
+                "vt-sprint",
                 1,
                 json!([{
                     "name": "tasks",
-                    "targetType": "vt_item",
+                    "targetType": "vt-item",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "sprint",
@@ -2881,7 +2881,7 @@ mod tests {
         }
 
         async fn where_errors(svc: &NodeService, action: ParsedAction) -> Vec<PlayValidationError> {
-            let rules = vec![make_rule("vt_sprint", vec![], vec![action])];
+            let rules = vec![make_rule("vt-sprint", vec![], vec![action])];
             match validate_play(&rules, svc).await {
                 Ok(()) => Vec::new(),
                 Err(errors) => errors,
@@ -2937,7 +2937,7 @@ mod tests {
             .await;
             let (message, location) = only_where_error(&errors);
             assert!(
-                message.contains("'statuss' is not a field of 'vt_item'"),
+                message.contains("'statuss' is not a field of 'vt-item'"),
                 "{message}"
             );
             assert_eq!(location, "rule[0].action[0].for_each");
@@ -3044,7 +3044,7 @@ mod tests {
             create_sprint_schemas(&svc).await;
 
             let mut rule = (*make_rule(
-                "vt_sprint",
+                "vt-sprint",
                 vec![],
                 vec![for_each_action(
                     "trigger.node.tasks.where(status != today())",
@@ -3068,12 +3068,12 @@ mod tests {
         #[tokio::test]
         async fn test_bare_property_changed_key_is_rejected() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_widget", 1, json!([])).await;
+            create_schema(&svc, "vt-widget", 1, json!([])).await;
 
             // The obvious-looking spelling — no namespace at all. Indexed
-            // verbatim under (vt_widget, "status"), which no real
-            // PropertyChanged event (always "vt_widget.status") can match.
-            let rules = vec![make_property_changed_rule("vt_widget", Some("status"))];
+            // verbatim under (vt-widget, "status"), which no real
+            // PropertyChanged event (always "vt-widget.status") can match.
+            let rules = vec![make_property_changed_rule("vt-widget", Some("status"))];
             let result = validate_play(&rules, &svc).await;
             let errors = result.expect_err("bare property_key must be rejected");
             assert_eq!(errors.len(), 1);
@@ -3084,28 +3084,28 @@ mod tests {
                     expected,
                     location,
                 } => {
-                    assert_eq!(node_type, "vt_widget");
+                    assert_eq!(node_type, "vt-widget");
                     assert_eq!(property_key, "status");
-                    assert_eq!(expected, "vt_widget.status");
+                    assert_eq!(expected, "vt-widget.status");
                     assert_eq!(location, "rule[0].trigger");
                 }
                 other => panic!("expected UnnamespacedPropertyChangedKey, got {:?}", other),
             }
-            assert!(errors[0].to_string().contains("vt_widget.status"));
+            assert!(errors[0].to_string().contains("vt-widget.status"));
         }
 
         #[tokio::test]
         async fn test_property_key_namespaced_to_a_different_type_is_rejected() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_widget", 1, json!([])).await;
+            create_schema(&svc, "vt-widget", 1, json!([])).await;
 
             // Has a dot, so it LOOKS namespaced — but the namespace belongs to
             // some other type, not this trigger's own `node_type`. Still
             // matches no real event for this trigger and must be rejected the
             // same as a fully bare key.
             let rules = vec![make_property_changed_rule(
-                "vt_widget",
-                Some("vt_other.status"),
+                "vt-widget",
+                Some("vt-other.status"),
             )];
             let result = validate_play(&rules, &svc).await;
             let errors = result.expect_err("wrongly-namespaced property_key must be rejected");
@@ -3117,11 +3117,11 @@ mod tests {
                     expected,
                     ..
                 } => {
-                    assert_eq!(node_type, "vt_widget");
-                    assert_eq!(property_key, "vt_other.status");
+                    assert_eq!(node_type, "vt-widget");
+                    assert_eq!(property_key, "vt-other.status");
                     // The field portion (after the first dot) is preserved;
                     // only the namespace is corrected.
-                    assert_eq!(expected, "vt_widget.status");
+                    assert_eq!(expected, "vt-widget.status");
                 }
                 other => panic!("expected UnnamespacedPropertyChangedKey, got {:?}", other),
             }
@@ -3130,12 +3130,12 @@ mod tests {
         #[tokio::test]
         async fn test_namespaced_property_changed_key_passes_validation() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_widget", 1, json!([])).await;
+            create_schema(&svc, "vt-widget", 1, json!([])).await;
 
             // The only spelling a real event can ever carry.
             let rules = vec![make_property_changed_rule(
-                "vt_widget",
-                Some("vt_widget.status"),
+                "vt-widget",
+                Some("vt-widget.status"),
             )];
             let result = validate_play(&rules, &svc).await;
             assert!(
@@ -3148,11 +3148,11 @@ mod tests {
         #[tokio::test]
         async fn test_wildcard_property_changed_key_passes_validation() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_widget", 1, json!([])).await;
+            create_schema(&svc, "vt-widget", 1, json!([])).await;
 
             // `None` = wildcard, matches all property changes — nothing to
             // namespace, must not be flagged.
-            let rules = vec![make_property_changed_rule("vt_widget", None)];
+            let rules = vec![make_property_changed_rule("vt-widget", None)];
             let result = validate_play(&rules, &svc).await;
             assert!(
                 result.is_ok(),
@@ -3164,7 +3164,7 @@ mod tests {
         #[tokio::test]
         async fn test_bare_property_key_on_non_property_changed_trigger_is_not_flagged() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_widget", 1, json!([])).await;
+            create_schema(&svc, "vt-widget", 1, json!([])).await;
 
             // The namespace check is scoped to `property_changed` triggers
             // only — a `node_created` trigger's `property_key` (unused by the
@@ -3174,7 +3174,7 @@ mod tests {
                 class: RuleClass::Reactive,
                 trigger: ParsedTrigger::GraphEvent {
                     on: GraphEventType::NodeCreated,
-                    node_type: "vt_widget".to_string(),
+                    node_type: "vt-widget".to_string(),
                     property_key: Some("status".to_string()),
                 },
                 conditions: vec![],
@@ -3208,10 +3208,10 @@ mod tests {
         #[tokio::test]
         async fn test_unknown_action_node_type_fails() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_order", 1, json!([])).await;
+            create_schema(&svc, "vt-order", 1, json!([])).await;
 
             let rules = vec![make_rule(
-                "vt_order",
+                "vt-order",
                 vec![],
                 vec![make_create_action("nonexistent_type_abc", None)],
             )];
@@ -3226,14 +3226,14 @@ mod tests {
         #[tokio::test]
         async fn test_version_mismatch_fails() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_receipt", 2, json!([])).await;
-            create_schema(&svc, "vt_trigger", 1, json!([])).await;
+            create_schema(&svc, "vt-receipt", 2, json!([])).await;
+            create_schema(&svc, "vt-trigger", 1, json!([])).await;
 
             // Play declares version "3" but schema is at version 2
             let rules = vec![make_rule(
-                "vt_trigger",
+                "vt-trigger",
                 vec![],
-                vec![make_create_action("vt_receipt", Some("3"))],
+                vec![make_create_action("vt-receipt", Some("3"))],
             )];
             let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
@@ -3251,13 +3251,13 @@ mod tests {
         #[tokio::test]
         async fn test_matching_version_passes() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_bill", 2, json!([])).await;
-            create_schema(&svc, "vt_src", 1, json!([])).await;
+            create_schema(&svc, "vt-bill", 2, json!([])).await;
+            create_schema(&svc, "vt-src", 1, json!([])).await;
 
             let rules = vec![make_rule(
-                "vt_src",
+                "vt-src",
                 vec![],
-                vec![make_create_action("vt_bill", Some("2"))],
+                vec![make_create_action("vt-bill", Some("2"))],
             )];
             let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
@@ -3269,7 +3269,7 @@ mod tests {
             // Create schema with a known relationship
             create_schema(
                 &svc,
-                "vt_project",
+                "vt-project",
                 1,
                 json!([
                     {
@@ -3284,7 +3284,7 @@ mod tests {
             .await;
 
             let rules = vec![make_rule(
-                "vt_project",
+                "vt-project",
                 vec![],
                 vec![make_relationship_action("nonexistent_rel")],
             )];
@@ -3305,7 +3305,7 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(
                 &svc,
-                "vt_ticket",
+                "vt-ticket",
                 1,
                 json!([
                     {
@@ -3320,7 +3320,7 @@ mod tests {
             .await;
 
             let rules = vec![make_rule(
-                "vt_ticket",
+                "vt-ticket",
                 vec![],
                 vec![make_relationship_action("linked_to")],
             )];
@@ -3332,9 +3332,9 @@ mod tests {
         /// fixes for condition paths, in the sibling
         /// `validate_relationship_action` (an `add_relationship`/
         /// `remove_relationship` action's own `relationship_type` param):
-        /// `vt_ticket_base` declares relationship `linked_to`; `vt_ticket_sub`
-        /// `extends` `vt_ticket_base` with no relationships of its own
-        /// (inheriting, not redeclaring). An action on `vt_ticket_sub` using
+        /// `vt-ticket-base` declares relationship `linked_to`; `vt-ticket-sub`
+        /// `extends` `vt-ticket-base` with no relationships of its own
+        /// (inheriting, not redeclaring). An action on `vt-ticket-sub` using
         /// `relationship_type: "linked_to"` must validate successfully — the
         /// relationship genuinely resolves via the extends chain — not be
         /// rejected as `UnknownRelationshipType`.
@@ -3345,7 +3345,7 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vt_ticket_base",
+                    "name": "vt-ticket-base",
                     "fields": [],
                     "relationships": [{
                         "name": "linked_to",
@@ -3362,8 +3362,8 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vt_ticket_sub",
-                    "extends": "vt_ticket_base",
+                    "name": "vt-ticket-sub",
+                    "extends": "vt-ticket-base",
                     "fields": []
                 }),
             )
@@ -3371,7 +3371,7 @@ mod tests {
             .expect("subtype schema creation failed");
 
             let rules = vec![make_rule(
-                "vt_ticket_sub",
+                "vt-ticket-sub",
                 vec![],
                 vec![make_relationship_action("linked_to")],
             )];
@@ -3396,10 +3396,10 @@ mod tests {
         #[tokio::test]
         async fn test_builtin_relationship_type_in_action_passes_validation() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_builtin_rel", 1, json!([])).await;
+            create_schema(&svc, "vt-builtin-rel", 1, json!([])).await;
 
             let rules = vec![make_rule(
-                "vt_builtin_rel",
+                "vt-builtin-rel",
                 vec![],
                 vec![make_relationship_action("has_child")],
             )];
@@ -3439,11 +3439,11 @@ mod tests {
         #[tokio::test]
         async fn test_scheduled_trigger_node_type_validated() {
             let (svc, _tmp) = create_test_service().await;
-            // "vt_cron_target" doesn't exist
+            // "vt-cron-target" doesn't exist
 
             let rules = vec![make_scheduled_rule(
                 "0 * * * * * *",
-                "vt_cron_target",
+                "vt-cron-target",
                 vec![],
             )];
             let result = validate_play(&rules, &svc).await;
@@ -3451,17 +3451,17 @@ mod tests {
             let errors = result.unwrap_err();
             assert!(errors
                 .iter()
-                .any(|e| matches!(e, PlayValidationError::UnknownNodeType { node_type, .. } if node_type == "vt_cron_target")));
+                .any(|e| matches!(e, PlayValidationError::UnknownNodeType { node_type, .. } if node_type == "vt-cron-target")));
         }
 
         #[tokio::test]
         async fn test_invalid_cron_expression_rejected() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_cron_valid_target", 1, json!([])).await;
+            create_schema(&svc, "vt-cron-valid-target", 1, json!([])).await;
 
             let rules = vec![make_scheduled_rule(
                 "not a cron expression",
-                "vt_cron_valid_target",
+                "vt-cron-valid-target",
                 vec![],
             )];
             let result = validate_play(&rules, &svc).await;
@@ -3480,12 +3480,12 @@ mod tests {
         #[tokio::test]
         async fn test_wrong_field_count_cron_rejected() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_cron_field_count", 1, json!([])).await;
+            create_schema(&svc, "vt-cron-field-count", 1, json!([])).await;
 
             // Standard 5-field cron (no seconds) — this engine requires at least 6 fields
             let rules = vec![make_scheduled_rule(
                 "* * * * *",
-                "vt_cron_field_count",
+                "vt-cron-field-count",
                 vec![],
             )];
             let result = validate_play(&rules, &svc).await;
@@ -3503,11 +3503,11 @@ mod tests {
         #[tokio::test]
         async fn test_valid_cron_expression_passes() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_cron_ok_target", 1, json!([])).await;
+            create_schema(&svc, "vt-cron-ok-target", 1, json!([])).await;
 
             let rules = vec![make_scheduled_rule(
                 "0 * * * * * *",
-                "vt_cron_ok_target",
+                "vt-cron-ok-target",
                 vec![],
             )];
             let result = validate_play(&rules, &svc).await;
@@ -3526,7 +3526,7 @@ mod tests {
         #[tokio::test]
         async fn test_binding_template_node_type_skips_validation() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vt_dynamic", 1, json!([])).await;
+            create_schema(&svc, "vt-dynamic", 1, json!([])).await;
 
             // Action with binding template node_type — should not fail
             let action = ParsedAction {
@@ -3537,7 +3537,7 @@ mod tests {
                 }),
                 for_each: None,
             };
-            let rules = vec![make_rule("vt_dynamic", vec![], vec![action])];
+            let rules = vec![make_rule("vt-dynamic", vec![], vec![action])];
             let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
         }
@@ -3558,15 +3558,15 @@ mod tests {
         async fn test_valid_multi_hop_path_passes() {
             let (svc, _tmp) = create_test_service().await;
 
-            // Chain: vp_task -> story (rel) -> vp_story
-            create_schema(&svc, "vp_story", 1, json!([])).await;
+            // Chain: vp-task -> story (rel) -> vp-story
+            create_schema(&svc, "vp-story", 1, json!([])).await;
             create_schema(
                 &svc,
-                "vp_task",
+                "vp-task",
                 1,
                 json!([{
                     "name": "story",
-                    "targetType": "vp_story",
+                    "targetType": "vp-story",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "issues",
@@ -3575,9 +3575,9 @@ mod tests {
             )
             .await;
 
-            // Condition: node.story.status — "story" is a relationship, "status" is a field on vp_story
+            // Condition: node.story.status — "story" is a relationship, "status" is a field on vp-story
             let rules = vec![make_rule(
-                "vp_task",
+                "vp-task",
                 vec!["node.story.status == 'active'"],
                 vec![],
             )];
@@ -3592,11 +3592,11 @@ mod tests {
         #[tokio::test]
         async fn test_broken_path_unknown_segment_fails() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vp_task2", 1, json!([])).await;
+            create_schema(&svc, "vp-task2", 1, json!([])).await;
 
-            // "nonexistent" is neither a field nor relationship on vp_task2
+            // "nonexistent" is neither a field nor relationship on vp-task2
             let rules = vec![make_rule(
-                "vp_task2",
+                "vp-task2",
                 vec!["node.nonexistent.foo == 'bar'"],
                 vec![],
             )];
@@ -3616,11 +3616,11 @@ mod tests {
         #[tokio::test]
         async fn test_broken_path_field_as_non_terminal() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vp_task3", 1, json!([])).await;
+            create_schema(&svc, "vp-task3", 1, json!([])).await;
 
-            // "status" is a field on vp_task3 — can't traverse further
+            // "status" is a field on vp-task3 — can't traverse further
             let rules = vec![make_rule(
-                "vp_task3",
+                "vp-task3",
                 vec!["node.status.deeper == 'x'"],
                 vec![],
             )];
@@ -3644,7 +3644,7 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vp_linked",
+                    "name": "vp-linked",
                     "fields": [{ "name": "repository", "type": "link" }]
                 }),
             )
@@ -3652,7 +3652,7 @@ mod tests {
             .unwrap();
 
             let rules = vec![make_rule(
-                "vp_linked",
+                "vp-linked",
                 vec![
                     "has(node.repository)",
                     "node.repository.url.startsWith('https://')",
@@ -3664,7 +3664,7 @@ mod tests {
             assert!(result.is_ok(), "{result:?}");
 
             let rules = vec![make_rule(
-                "vp_linked",
+                "vp-linked",
                 vec!["node.repository.host == 'github.com'"],
                 vec![],
             )];
@@ -3682,11 +3682,11 @@ mod tests {
         #[tokio::test]
         async fn test_single_hop_property_path_skips_validation() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vp_task4", 1, json!([])).await;
+            create_schema(&svc, "vp-task4", 1, json!([])).await;
 
             // Single-hop (node.status) is handled by existing property-level evaluation
             // and should NOT be validated against the schema graph
-            let rules = vec![make_rule("vp_task4", vec!["node.status == 'open'"], vec![])];
+            let rules = vec![make_rule("vp-task4", vec!["node.status == 'open'"], vec![])];
             let result = validate_play(&rules, &svc).await;
             assert!(
                 result.is_ok(),
@@ -3703,15 +3703,15 @@ mod tests {
         /// directly-declared fields plus everything inherited across the
         /// `extends` chain — not just that schema's own fields.
         ///
-        /// Reproduces a realistic inheritance scenario: `vp_epic_base`
-        /// declares `priority`; `vp_epic` `extends` `vp_epic_base` with no
+        /// Reproduces a realistic inheritance scenario: `vp-epic-base`
+        /// declares `priority`; `vp-epic` `extends` `vp-epic-base` with no
         /// fields of its own (the normal, intended `extends` usage —
-        /// inheriting rather than redeclaring); `vp_task_epic` declares a
-        /// relationship `epic` targeting `vp_epic`. A Play condition
+        /// inheriting rather than redeclaring); `vp-task-epic` declares a
+        /// relationship `epic` targeting `vp-epic`. A Play condition
         /// `node.epic.priority == 'high'` references a field that is
         /// genuinely inherited, not redeclared. Before the fix this was
         /// rejected with `BrokenPath` ("'priority' is not a field or
-        /// relationship on schema 'vp_epic'") and the play could never be
+        /// relationship on schema 'vp-epic'") and the play could never be
         /// saved at all, even though `priority` resolves correctly via the
         /// extends chain everywhere else (the runtime engine, and the
         /// diagnostic candidate enumeration).
@@ -3722,7 +3722,7 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vp_epic_base",
+                    "name": "vp-epic-base",
                     "fields": [
                         { "name": "priority", "type": "text", "protection": "user", "indexed": false }
                     ]
@@ -3734,8 +3734,8 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vp_epic",
-                    "extends": "vp_epic_base",
+                    "name": "vp-epic",
+                    "extends": "vp-epic-base",
                     "fields": []
                 }),
             )
@@ -3744,11 +3744,11 @@ mod tests {
 
             create_schema(
                 &svc,
-                "vp_task_epic",
+                "vp-task-epic",
                 1,
                 json!([{
                     "name": "epic",
-                    "targetType": "vp_epic",
+                    "targetType": "vp-epic",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "tasks",
@@ -3758,7 +3758,7 @@ mod tests {
             .await;
 
             let rules = vec![make_rule(
-                "vp_task_epic",
+                "vp-task-epic",
                 vec!["node.epic.priority == 'high'"],
                 vec![],
             )];
@@ -3778,17 +3778,17 @@ mod tests {
         /// everything inherited across the `extends` chain — not just that
         /// schema's own relationships.
         ///
-        /// `vp_rel_target` declares field `status`; `vp_rel_base` declares
-        /// relationship `manager` targeting `vp_rel_target`; `vp_rel_sub`
-        /// `extends` `vp_rel_base` with no relationships of its own
-        /// (inheriting, not redeclaring); `vp_task_rel` declares relationship
-        /// `owner` targeting `vp_rel_sub`. A Play condition
+        /// `vp-rel-target` declares field `status`; `vp-rel-base` declares
+        /// relationship `manager` targeting `vp-rel-target`; `vp-rel-sub`
+        /// `extends` `vp-rel-base` with no relationships of its own
+        /// (inheriting, not redeclaring); `vp-task-rel` declares relationship
+        /// `owner` targeting `vp-rel-sub`. A Play condition
         /// `node.owner.manager.status == 'active'` traverses: `owner` (declared
-        /// directly on `vp_task_rel`) to `vp_rel_sub`, then `manager` — a
-        /// relationship genuinely inherited by `vp_rel_sub` from
-        /// `vp_rel_base`, not redeclared — to `vp_rel_target`, then reads the
+        /// directly on `vp-task-rel`) to `vp-rel-sub`, then `manager` — a
+        /// relationship genuinely inherited by `vp-rel-sub` from
+        /// `vp-rel-base`, not redeclared — to `vp-rel-target`, then reads the
         /// field `status`. Before fixing the relationship lookup, `manager`
-        /// resolved against `vp_rel_sub`'s own (empty) relationships list and
+        /// resolved against `vp-rel-sub`'s own (empty) relationships list and
         /// was rejected as `BrokenPath`.
         #[tokio::test]
         async fn test_inherited_relationship_through_relationship_passes_validation() {
@@ -3797,7 +3797,7 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vp_rel_target",
+                    "name": "vp-rel-target",
                     "fields": [
                         { "name": "status", "type": "text", "protection": "user", "indexed": false }
                     ]
@@ -3809,11 +3809,11 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vp_rel_base",
+                    "name": "vp-rel-base",
                     "fields": [],
                     "relationships": [{
                         "name": "manager",
-                        "targetType": "vp_rel_target",
+                        "targetType": "vp-rel-target",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "reports",
@@ -3827,8 +3827,8 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vp_rel_sub",
-                    "extends": "vp_rel_base",
+                    "name": "vp-rel-sub",
+                    "extends": "vp-rel-base",
                     "fields": []
                 }),
             )
@@ -3837,11 +3837,11 @@ mod tests {
 
             create_schema(
                 &svc,
-                "vp_task_rel",
+                "vp-task-rel",
                 1,
                 json!([{
                     "name": "owner",
-                    "targetType": "vp_rel_sub",
+                    "targetType": "vp-rel-sub",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "owned_tasks",
@@ -3851,7 +3851,7 @@ mod tests {
             .await;
 
             let rules = vec![make_rule(
-                "vp_task_rel",
+                "vp-task-rel",
                 vec!["node.owner.manager.status == 'active'"],
                 vec![],
             )];
@@ -3870,14 +3870,14 @@ mod tests {
         /// unconditionally prefer "is it a member of the whole merged field
         /// set" over "is it a member of the whole merged relationship set".
         ///
-        /// `vp_prec_target` declares field `label`; `vp_prec_base` ends up
-        /// declaring FIELD `owner`; `vp_prec_sub` `extends` `vp_prec_base`
+        /// `vp-prec-target` declares field `label`; `vp-prec-base` ends up
+        /// declaring FIELD `owner`; `vp-prec-sub` `extends` `vp-prec-base`
         /// and declares its OWN RELATIONSHIP also named `owner`, targeting
-        /// `vp_prec_target` — a name that is a field on an ancestor and a
+        /// `vp-prec-target` — a name that is a field on an ancestor and a
         /// relationship on the (nearer) subtype itself. A Play condition
-        /// `node.owner.label == 'active'` on `vp_prec_sub` must resolve
+        /// `node.owner.label == 'active'` on `vp-prec-sub` must resolve
         /// `owner` as the nearer, own-schema relationship declaration (and
-        /// traverse into `vp_prec_target` to find `label`), not as the
+        /// traverse into `vp-prec-target` to find `label`), not as the
         /// farther, inherited field declaration — which would wrongly
         /// terminate the path at `owner` and reject `label` as
         /// unreachable/broken.
@@ -3886,15 +3886,15 @@ mod tests {
         /// ADR-078 write-time enforcement now rejects a new field or
         /// relationship whose name is already claimed by the ancestor
         /// chain's *other* domain (the cross-domain counterpart to same-kind
-        /// redeclaration rejection), so `vp_prec_sub` cannot declare
-        /// relationship `owner` while `vp_prec_base` already has field
+        /// redeclaration rejection), so `vp-prec-sub` cannot declare
+        /// relationship `owner` while `vp-prec-base` already has field
         /// `owner`, or vice versa. The one channel ADR-078 leaves genuinely
         /// open is retroactive: nothing re-validates an existing
         /// descendant's declarations when an ancestor gains a new one later
         /// (see `flatten_chain_by_name`'s doc comment on this being the
         /// explicitly unresolved edge case), so the collision here is
-        /// produced by adding `vp_prec_base`'s `owner` field AFTER
-        /// `vp_prec_sub` already declares its own `owner` relationship —
+        /// produced by adding `vp-prec-base`'s `owner` field AFTER
+        /// `vp-prec-sub` already declares its own `owner` relationship —
         /// still a real, reachable state, just no longer one a single
         /// declaration can create.
         #[tokio::test]
@@ -3904,7 +3904,7 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vp_prec_target",
+                    "name": "vp-prec-target",
                     "fields": [
                         { "name": "label", "type": "text", "protection": "user", "indexed": false }
                     ]
@@ -3915,7 +3915,7 @@ mod tests {
 
             crate::schema::handle_create_schema(
                 &svc,
-                json!({ "name": "vp_prec_base", "fields": [] }),
+                json!({ "name": "vp-prec-base", "fields": [] }),
             )
             .await
             .expect("base schema creation failed");
@@ -3923,12 +3923,12 @@ mod tests {
             crate::schema::handle_create_schema(
                 &svc,
                 json!({
-                    "name": "vp_prec_sub",
-                    "extends": "vp_prec_base",
+                    "name": "vp-prec-sub",
+                    "extends": "vp-prec-base",
                     "fields": [],
                     "relationships": [{
                         "name": "owner",
-                        "targetType": "vp_prec_target",
+                        "targetType": "vp-prec-target",
                         "direction": "out",
                         "cardinality": "one",
                         "reverseName": "owned_subs",
@@ -3940,13 +3940,13 @@ mod tests {
             .expect("subtype schema creation failed");
 
             // Retroactively add the colliding FIELD to the ancestor —
-            // nothing re-validates `vp_prec_sub`'s already-declared
+            // nothing re-validates `vp-prec-sub`'s already-declared
             // relationship against it, so this succeeds and produces the
             // cross-domain collision this test exercises.
             crate::schema::handle_update_schema(
                 &svc,
                 json!({
-                    "schema_id": "vp_prec_base",
+                    "schema_id": "vp-prec-base",
                     "add_fields": [
                         { "name": "owner", "type": "text", "protection": "user", "indexed": false }
                     ]
@@ -3959,7 +3959,7 @@ mod tests {
             );
 
             let rules = vec![make_rule(
-                "vp_prec_sub",
+                "vp-prec-sub",
                 vec!["node.owner.label == 'active'"],
                 vec![],
             )];
@@ -3979,7 +3979,7 @@ mod tests {
             // Relationship with no target_type
             create_schema(
                 &svc,
-                "vp_task5",
+                "vp-task5",
                 1,
                 json!([{
                     "name": "linked",
@@ -3994,7 +3994,7 @@ mod tests {
 
             // Trying to traverse past a relationship without target_type
             let rules = vec![make_rule(
-                "vp_task5",
+                "vp-task5",
                 vec!["node.linked.status == 'x'"],
                 vec![],
             )];
@@ -4016,14 +4016,14 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             // "members" is deliberately declared on both ends of a collision:
-            // vp_trigger's own forward relationship, and a reverse name that
-            // vp_reverse_source's unrelated relationship happens to use for
-            // its far end, which also lands on vp_trigger. Mirrors the kind
+            // vp-trigger's own forward relationship, and a reverse name that
+            // vp-reverse-source's unrelated relationship happens to use for
+            // its far end, which also lands on vp-trigger. Mirrors the kind
             // of namespace collision `tasks` has among `project`/`person`
             // (and `cycle`, in the Linear Playbook) — dense enough that two
             // schemas reach the same relationship name from opposite
             // directions.
-            create_schema(&svc, "vp_forward_target", 1, json!([])).await;
+            create_schema(&svc, "vp-forward-target", 1, json!([])).await;
 
             // Deliberately fieldless — unlike `create_schema`'s fixtures,
             // which all carry a "status" field. If validation wrongly took
@@ -4032,27 +4032,27 @@ mod tests {
             // this test needs: forward and reverse must lead somewhere
             // observably different, or a precedence bug wouldn't show up.
             let reverse_source = Node::new_with_id(
-                "vp_reverse_source".to_string(),
+                "vp-reverse-source".to_string(),
                 "schema".to_string(),
-                "vp_reverse_source".to_string(),
+                "vp-reverse-source".to_string(),
                 json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "vp_reverse_source schema",
+                    "description": "vp-reverse-source schema",
                     "fields": []
                 }),
             );
             svc.create_node(reverse_source)
                 .await
-                .expect("Failed to create vp_reverse_source schema");
+                .expect("Failed to create vp-reverse-source schema");
 
             create_schema(
                 &svc,
-                "vp_trigger",
+                "vp-trigger",
                 1,
                 json!([{
                     "name": "members",
-                    "targetType": "vp_forward_target",
+                    "targetType": "vp-forward-target",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "roster_of",
@@ -4061,31 +4061,31 @@ mod tests {
             )
             .await;
 
-            // vp_reverse_source declares an unrelated forward relationship
-            // targeting vp_trigger, whose REVERSE name is "members" — so
-            // from vp_trigger's perspective, "members" is declarable both as
+            // vp-reverse-source declares an unrelated forward relationship
+            // targeting vp-trigger, whose REVERSE name is "members" — so
+            // from vp-trigger's perspective, "members" is declarable both as
             // its own forward relationship and as this reverse spelling.
             let reverse_declarations: Vec<crate::models::schema::SchemaRelationship> =
                 serde_json::from_value(json!([{
                     "name": "owns_member",
-                    "targetType": "vp_trigger",
+                    "targetType": "vp-trigger",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "members",
                     "reverseCardinality": "many"
                 }]))
                 .expect("valid relationship fixture");
-            svc.set_schema_relationships("vp_reverse_source", &reverse_declarations)
+            svc.set_schema_relationships("vp-reverse-source", &reverse_declarations)
                 .await
-                .expect("Failed to declare relationships on vp_reverse_source");
+                .expect("Failed to declare relationships on vp-reverse-source");
 
             // "members.status": forward must win, resolving through
-            // vp_trigger's OWN "members" relationship to vp_forward_target,
+            // vp-trigger's OWN "members" relationship to vp-forward-target,
             // where "status" exists (added by `create_schema`). Reverse-first
-            // would instead land on vp_reverse_source, which has no "status"
+            // would instead land on vp-reverse-source, which has no "status"
             // field, and report a broken path.
             let rules = vec![make_rule(
-                "vp_trigger",
+                "vp-trigger",
                 vec!["node.members.status == 'active'"],
                 vec![],
             )];
@@ -4108,8 +4108,8 @@ mod tests {
         /// it asserts the FORWARD name wins, so it passes whether or not the
         /// reverse branch works at all.
         ///
-        /// The fixture routes through a subtype (`vr_child extends vr_task`,
-        /// with the reverse name declared toward `vr_task`) because that is
+        /// The fixture routes through a subtype (`vr-child extends vr-task`,
+        /// with the reverse name declared toward `vr-task`) because that is
         /// the shape the Linear Playbook needs — `blocked_by` reaching an
         /// `issue` via `task.blocks`.
         ///
@@ -4126,46 +4126,46 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             // The parent, plus a subtype of it.
-            create_schema(&svc, "vr_task", 1, json!([])).await;
+            create_schema(&svc, "vr-task", 1, json!([])).await;
             let child = Node::new_with_id(
-                "vr_child".to_string(),
+                "vr-child".to_string(),
                 "schema".to_string(),
-                "vr_child".to_string(),
+                "vr-child".to_string(),
                 json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "vr_child schema",
+                    "description": "vr-child schema",
                     "fields": []
                 }),
             );
             svc.create_node(child)
                 .await
-                .expect("Failed to create vr_child schema");
+                .expect("Failed to create vr-child schema");
             let extends: Vec<crate::models::schema::SchemaRelationship> =
                 serde_json::from_value(json!([{
                     "name": "extends",
-                    "targetType": "vr_task",
+                    "targetType": "vr-task",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "extended_by",
                     "reverseCardinality": "many"
                 }]))
                 .expect("valid extends fixture");
-            svc.set_schema_relationships("vr_child", &extends)
+            svc.set_schema_relationships("vr-child", &extends)
                 .await
-                .expect("Failed to declare extends on vr_child");
+                .expect("Failed to declare extends on vr-child");
 
             // A third schema declares a forward relationship toward the
             // PARENT, whose reverse spelling is `blocked_by`. Nothing declares
-            // `blocked_by` on vr_child itself, so it is reachable only by
-            // walking to vr_task and reading the reverse side.
+            // `blocked_by` on vr-child itself, so it is reachable only by
+            // walking to vr-task and reading the reverse side.
             create_schema(
                 &svc,
-                "vr_blocker",
+                "vr-blocker",
                 1,
                 json!([{
                     "name": "blocks",
-                    "targetType": "vr_task",
+                    "targetType": "vr-task",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "blocked_by",
@@ -4174,11 +4174,11 @@ mod tests {
             )
             .await;
 
-            // `create_schema` gives vr_blocker a "status" field, so the path
+            // `create_schema` gives vr-blocker a "status" field, so the path
             // resolves only if the reverse walk lands there. A failure to
             // resolve the reverse name reports a broken path instead.
             let rules = vec![make_rule(
-                "vr_child",
+                "vr-child",
                 vec!["node.blocked_by.status == 'open'"],
                 vec![],
             )];
@@ -4201,42 +4201,42 @@ mod tests {
 
             let (svc, _tmp) = create_test_service().await;
 
-            create_schema(&svc, "vrs_task", 1, json!([])).await;
+            create_schema(&svc, "vrs-task", 1, json!([])).await;
             let child = Node::new_with_id(
-                "vrs_child".to_string(),
+                "vrs-child".to_string(),
                 "schema".to_string(),
-                "vrs_child".to_string(),
+                "vrs-child".to_string(),
                 json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "vrs_child schema",
+                    "description": "vrs-child schema",
                     "fields": []
                 }),
             );
             svc.create_node(child)
                 .await
-                .expect("Failed to create vrs_child schema");
+                .expect("Failed to create vrs-child schema");
             let extends: Vec<crate::models::schema::SchemaRelationship> =
                 serde_json::from_value(json!([{
                     "name": "extends",
-                    "targetType": "vrs_task",
+                    "targetType": "vrs-task",
                     "direction": "out",
                     "cardinality": "one",
                     "reverseName": "extended_by",
                     "reverseCardinality": "many"
                 }]))
                 .expect("valid extends fixture");
-            svc.set_schema_relationships("vrs_child", &extends)
+            svc.set_schema_relationships("vrs-child", &extends)
                 .await
-                .expect("Failed to declare extends on vrs_child");
+                .expect("Failed to declare extends on vrs-child");
 
             create_schema(
                 &svc,
-                "vrs_blocker",
+                "vrs-blocker",
                 1,
                 json!([{
                     "name": "blocks",
-                    "targetType": "vrs_task",
+                    "targetType": "vrs-task",
                     "direction": "out",
                     "cardinality": "many",
                     "reverseName": "blocked_by",
@@ -4247,7 +4247,7 @@ mod tests {
 
             let resolved = resolve_hop(
                 &svc,
-                Some("vrs_child"),
+                Some("vrs-child"),
                 &RelationshipHop::fixed("blocked_by"),
             )
             .await
@@ -4260,7 +4260,7 @@ mod tests {
                 );
             };
             assert_eq!(hop.relationship_type, "blocks");
-            assert_eq!(hop.far_type.as_deref(), Some("vrs_blocker"));
+            assert_eq!(hop.far_type.as_deref(), Some("vrs-blocker"));
         }
 
         /// A segment that matches no declared name anywhere in the chain is
@@ -4274,11 +4274,11 @@ mod tests {
             use nodespace_types::RelationshipHop;
 
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vrs_widget", 1, json!([])).await;
+            create_schema(&svc, "vrs-widget", 1, json!([])).await;
 
             let resolved = resolve_hop(
                 &svc,
-                Some("vrs_widget"),
+                Some("vrs-widget"),
                 &RelationshipHop::fixed("nonexistent_reverse_name"),
             )
             .await;
@@ -4306,14 +4306,14 @@ mod tests {
         fn test_schema_resolution_failed_from_reverse_segment_is_distinguishable_from_broken_path()
         {
             let db_error = PlayValidationError::SchemaResolutionFailed {
-                node_type: "vrs_child".to_string(),
+                node_type: "vrs-child".to_string(),
                 error: "transient DB error".to_string(),
                 location: "rule[0].condition[0]".to_string(),
             };
             let broken_path = PlayValidationError::BrokenPath {
                 path: "node.blocked_by".to_string(),
                 segment: "blocked_by".to_string(),
-                message: "'blocked_by' is not a field or relationship on schema 'vrs_child'"
+                message: "'blocked_by' is not a field or relationship on schema 'vrs-child'"
                     .to_string(),
                 location: "rule[0].condition[0]".to_string(),
             };
@@ -4348,16 +4348,16 @@ mod tests {
         #[tokio::test]
         async fn test_schema_impact_detects_affected_plays() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vi_task", 1, json!([])).await;
+            create_schema(&svc, "vi-task", 1, json!([])).await;
 
-            // Create a play that triggers on "vi_task"
+            // Create a play that triggers on "vi-task"
             create_play(
                 &svc,
                 "ac2ab371-c058-5784-80fb-d3ba0e2ebb68",
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi_task" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi-task" } },
                     "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                     "actions": []
                 }]),
@@ -4365,7 +4365,7 @@ mod tests {
             .await;
 
             let affected =
-                check_schema_change_impact("vi_task", SchemaChangeKind::Destructive, &svc)
+                check_schema_change_impact("vi-task", SchemaChangeKind::Destructive, &svc)
                     .await
                     .unwrap();
             assert_eq!(affected.len(), 1);
@@ -4376,7 +4376,7 @@ mod tests {
             // resolving exactly as before. Without this, a core Play triggering
             // on `task` (ADR-079) would make every user pass `force=true` to
             // add a status value.
-            let additive = check_schema_change_impact("vi_task", SchemaChangeKind::Additive, &svc)
+            let additive = check_schema_change_impact("vi-task", SchemaChangeKind::Additive, &svc)
                 .await
                 .unwrap();
             assert!(
@@ -4387,7 +4387,7 @@ mod tests {
                 affected[0]
                     .broken_paths
                     .iter()
-                    .any(|p| p.contains("vi_task")),
+                    .any(|p| p.contains("vi-task")),
                 "should list the trigger path: {:?}",
                 affected[0].broken_paths
             );
@@ -4396,26 +4396,26 @@ mod tests {
         #[tokio::test]
         async fn test_schema_impact_unrelated_schema_passes_clean() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vi_order", 1, json!([])).await;
-            create_schema(&svc, "vi_invoice", 1, json!([])).await;
+            create_schema(&svc, "vi-order", 1, json!([])).await;
+            create_schema(&svc, "vi-invoice", 1, json!([])).await;
 
-            // Create a play that triggers on "vi_order" only
+            // Create a play that triggers on "vi-order" only
             create_play(
                 &svc,
                 "a7d0f4c6-f08e-5bb7-b51e-aabd45cc9d5c",
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi_order" } },
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi-order" } },
                     "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                     "actions": []
                 }]),
             )
             .await;
 
-            // Changing "vi_invoice" should not affect the vi_order play
+            // Changing "vi-invoice" should not affect the vi-order play
             let affected =
-                check_schema_change_impact("vi_invoice", SchemaChangeKind::Destructive, &svc)
+                check_schema_change_impact("vi-invoice", SchemaChangeKind::Destructive, &svc)
                     .await
                     .unwrap();
             assert!(
@@ -4428,41 +4428,43 @@ mod tests {
         #[tokio::test]
         async fn test_schema_impact_detects_path_traversal() {
             let (svc, _tmp) = create_test_service().await;
-            // Create vi_epic first (target of relationship)
-            create_schema(&svc, "vi_epic", 1, json!([])).await;
-            // Create vi_story with a relationship to vi_epic, so the play passes validation
+            // Create viepic first (target of relationship). The impact check reads a
+            // path segment equal to the schema id as a traversal through it, and a
+            // path segment cannot hold a hyphen, so the id here is one word.
+            create_schema(&svc, "viepic", 1, json!([])).await;
+            // Create vi-story with a relationship to viepic, so the play passes validation
             // Note: SchemaRelationship uses camelCase serialization
             create_schema(
                 &svc,
-                "vi_story",
+                "vi-story",
                 1,
                 json!([{
-                    "name": "vi_epic",
+                    "name": "viepic",
                     "direction": "out",
                     "cardinality": "one",
-                    "targetType": "vi_epic",
+                    "targetType": "viepic",
                     "reverseName": "vi_children",
                     "reverseCardinality": "many"
                 }]),
             )
             .await;
 
-            // Play triggers on vi_story but has a condition traversing through vi_epic
+            // Play triggers on vi-story but has a condition traversing through viepic
             create_play(
                 &svc,
                 "6b693b96-4fad-5846-bca3-545b1a7e53a7",
                 json!([{
                     "name": "r1",
                     "description": "Test rule",
-                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi_story" } },
-                    "conditions": [{ "expr": "node.vi_epic.status == 'active'", "description": "Test condition" }],
+                    "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vi-story" } },
+                    "conditions": [{ "expr": "node.viepic.status == 'active'", "description": "Test condition" }],
                     "actions": []
                 }]),
             )
             .await;
 
             let affected =
-                check_schema_change_impact("vi_epic", SchemaChangeKind::Destructive, &svc)
+                check_schema_change_impact("viepic", SchemaChangeKind::Destructive, &svc)
                     .await
                     .unwrap();
             assert_eq!(affected.len(), 1);
@@ -4471,8 +4473,8 @@ mod tests {
                 affected[0]
                     .broken_paths
                     .iter()
-                    .any(|p| p.contains("vi_epic")),
-                "should detect path traversal through vi_epic: {:?}",
+                    .any(|p| p.contains("viepic")),
+                "should detect path traversal through viepic: {:?}",
                 affected[0].broken_paths
             );
         }
@@ -4489,7 +4491,7 @@ mod tests {
         #[tokio::test]
         async fn test_trigger_schema_lookup_failure_is_not_reported_as_unknown_node_type() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vp_flaky", 1, json!([])).await;
+            create_schema(&svc, "vp-flaky", 1, json!([])).await;
 
             svc.store()
                 .write()
@@ -4498,7 +4500,7 @@ mod tests {
                 .await
                 .expect("dropping the node table should succeed");
 
-            let rules = vec![make_rule("vp_flaky", vec![], vec![])];
+            let rules = vec![make_rule("vp-flaky", vec![], vec![])];
             let result = validate_play(&rules, &svc).await;
             let errors = result.expect_err("a schema lookup failure must still fail validation");
 
@@ -4506,7 +4508,7 @@ mod tests {
                 errors.iter().any(|e| matches!(
                     e,
                     PlayValidationError::SchemaResolutionFailed { node_type, .. }
-                        if node_type == "vp_flaky"
+                        if node_type == "vp-flaky"
                 )),
                 "a transient lookup failure must surface as SchemaResolutionFailed: {:?}",
                 errors
@@ -4529,7 +4531,7 @@ mod tests {
         /// missing schema returned early with no error at all, letting a
         /// Play save with an entirely unvalidated tail segment.
         ///
-        /// `vp_ghost` is a real node (so the relationship declaration's
+        /// `vp-ghost` is a real node (so the relationship declaration's
         /// `out_node` foreign key is satisfied) but not a `schema` node
         /// (`node_type: "text"`), so `get_schema_node("807c97fb-408d-5416-8add-19693b1c1748")` genuinely
         /// returns `Ok(None)` — reproducing a declared-but-schemaless
@@ -4549,7 +4551,7 @@ mod tests {
 
             create_schema(
                 &svc,
-                "vp_hub",
+                "vp-hub",
                 1,
                 json!([{
                     "name": "linked",
@@ -4563,7 +4565,7 @@ mod tests {
             .await;
 
             let rules = vec![make_rule(
-                "vp_hub",
+                "vp-hub",
                 vec!["node.linked.status == 'x'"],
                 vec![],
             )];
@@ -4664,7 +4666,7 @@ mod tests {
         #[tokio::test]
         async fn test_valid_play_accepted_on_create() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vg_widget", 1).await;
+            create_schema(&svc, "vg-widget", 1).await;
 
             let play_node = Node::new_with_id(
                 "10932b15-f316-53c8-95ba-6c4f83fdb10e".to_string(),
@@ -4674,7 +4676,7 @@ mod tests {
                     "rules": [{
                         "name": "r1",
                         "description": "Test rule",
-                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg_widget" } },
+                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg-widget" } },
                         "conditions": [{ "expr": "node.status == 'open'", "description": "Test condition" }],
                         "actions": []
                     }]
@@ -4692,7 +4694,7 @@ mod tests {
         #[tokio::test]
         async fn test_invalid_cel_rejected_on_create() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vg_item", 1).await;
+            create_schema(&svc, "vg-item", 1).await;
 
             let play_node = Node::new_with_id(
                 "a07b6b85-1fe7-5149-b662-bacc1dd23964".to_string(),
@@ -4702,7 +4704,7 @@ mod tests {
                     "rules": [{
                         "name": "r1",
                         "description": "Test rule",
-                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg_item" } },
+                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg-item" } },
                         "conditions": [{ "expr": "1 + + 2", "description": "Test condition" }],
                         "actions": []
                     }]
@@ -4722,7 +4724,7 @@ mod tests {
         #[tokio::test]
         async fn test_invalid_cron_rejected_on_create() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vg_cron_item", 1).await;
+            create_schema(&svc, "vg-cron-item", 1).await;
 
             let play_node = Node::new_with_id(
                 "7bcd7cfd-7daf-564c-aaa4-62f416157b68".to_string(),
@@ -4732,7 +4734,7 @@ mod tests {
                     "rules": [{
                         "name": "r1",
                         "description": "Test rule",
-                        "trigger": { "type": "scheduled", "cron": "not a cron expression", "select": { "target_type": "vg_cron_item" } },
+                        "trigger": { "type": "scheduled", "cron": "not a cron expression", "select": { "target_type": "vg-cron-item" } },
                         "conditions": [],
                         "actions": []
                     }]
@@ -4755,7 +4757,7 @@ mod tests {
         #[tokio::test]
         async fn test_update_with_broken_rules_rejected() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vg_part", 1).await;
+            create_schema(&svc, "vg-part", 1).await;
 
             // Create a valid play first
             let play_node = Node::new_with_id(
@@ -4766,7 +4768,7 @@ mod tests {
                     "rules": [{
                         "name": "r1",
                         "description": "Test rule",
-                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg_part" } },
+                        "trigger": { "type": "graph_event", "on": "node_created", "select": { "target_type": "vg-part" } },
                         "conditions": [],
                         "actions": []
                     }]
@@ -5339,17 +5341,17 @@ mod tests {
         #[tokio::test]
         async fn reactive_rule_bypasses_invariant_gate() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vi_react").await;
+            create_schema(&svc, "vi-react").await;
 
             // A REACTIVE rule (default class) that would violate §2 if invariant:
             // non-deterministic condition + self-chaining create_node of the same
             // type. Reactive rules are not gated → accepted.
             let rule = Arc::new(invariant_rule(
                 GraphEventType::NodeCreated,
-                "vi_react",
+                "vi-react",
                 None,
                 vec!["days_since(node.created) > 7"],
-                vec![create_action("vi_react")],
+                vec![create_action("vi-react")],
             ));
             let reactive = Arc::new(ParsedRule {
                 class: RuleClass::Reactive,
@@ -5366,17 +5368,17 @@ mod tests {
         #[tokio::test]
         async fn invariant_rule_gated_through_validate_play() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vi_inv").await;
+            create_schema(&svc, "vi-inv").await;
 
             // Same rule as above, but INVARIANT → the §2 gate fires with both a
             // non-determinism and a self-chaining error, proving the gate is wired
             // into validate_play.
             let rule = Arc::new(invariant_rule(
                 GraphEventType::NodeCreated,
-                "vi_inv",
+                "vi-inv",
                 None,
                 vec!["days_since(node.created) > 7"],
-                vec![create_action("vi_inv")],
+                vec![create_action("vi-inv")],
             ));
             let errors = validate_play(&[rule], &svc).await.unwrap_err();
             assert!(
@@ -5721,13 +5723,13 @@ mod tests {
             // actually wired into `validate_play`, not just unit-testable in
             // isolation.
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vi_reject_reactive").await;
+            create_schema(&svc, "vi-reject-reactive").await;
 
             let rule = Arc::new(ParsedRule {
                 class: RuleClass::Reactive,
                 ..invariant_rule(
                     GraphEventType::NodeCreated,
-                    "vi_reject_reactive",
+                    "vi-reject-reactive",
                     None,
                     vec![],
                     vec![reject_action("no")],
@@ -5746,11 +5748,11 @@ mod tests {
         #[tokio::test]
         async fn reject_action_without_message_fails_validate_play() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vi_reject_no_message").await;
+            create_schema(&svc, "vi-reject-no-message").await;
 
             let rule = Arc::new(invariant_rule(
                 GraphEventType::NodeCreated,
-                "vi_reject_no_message",
+                "vi-reject-no-message",
                 None,
                 vec![],
                 vec![ParsedAction {
@@ -5773,11 +5775,11 @@ mod tests {
         #[tokio::test]
         async fn reject_action_with_message_passes_validate_play() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vi_reject_ok").await;
+            create_schema(&svc, "vi-reject-ok").await;
 
             let rule = Arc::new(invariant_rule(
                 GraphEventType::NodeCreated,
-                "vi_reject_ok",
+                "vi-reject-ok",
                 None,
                 vec!["node.status == 'blocked'"],
                 vec![reject_action("cannot proceed while blocked")],
@@ -5789,11 +5791,11 @@ mod tests {
         #[tokio::test]
         async fn reject_action_without_for_each_passes_validate_play() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "vi_reject_no_for_each").await;
+            create_schema(&svc, "vi-reject-no-for-each").await;
 
             let rule = Arc::new(invariant_rule(
                 GraphEventType::NodeCreated,
-                "vi_reject_no_for_each",
+                "vi-reject-no-for-each",
                 None,
                 vec![],
                 vec![reject_action("no")],
@@ -5969,12 +5971,12 @@ mod tests {
         #[tokio::test]
         async fn duplicate_action_lists_reject_the_whole_play_through_validate_play() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "dup_check_reject").await;
+            create_schema(&svc, "dup-check-reject").await;
 
-            let rule_a = rule("dup-a", "dup_check_reject", vec![create_action("same")]);
+            let rule_a = rule("dup-a", "dup-check-reject", vec![create_action("same")]);
             let rule_b = with_property_changed_trigger(&rule(
                 "dup-b",
-                "dup_check_reject",
+                "dup-check-reject",
                 vec![create_action("same")],
             ));
 
@@ -5991,12 +5993,12 @@ mod tests {
         #[tokio::test]
         async fn distinct_action_lists_pass_validate_play() {
             let (svc, _tmp) = create_test_service().await;
-            create_schema(&svc, "dup_check_ok").await;
+            create_schema(&svc, "dup-check-ok").await;
 
-            let rule_a = rule("ok-a", "dup_check_ok", vec![create_action("hello")]);
+            let rule_a = rule("ok-a", "dup-check-ok", vec![create_action("hello")]);
             let rule_b = with_property_changed_trigger(&rule(
                 "ok-b",
-                "dup_check_ok",
+                "dup-check-ok",
                 vec![create_action("hello world")],
             ));
 

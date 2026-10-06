@@ -355,7 +355,7 @@ pub const TARGET_TYPE_MUST_EXIST: SchemaRule = SchemaRule {
         "rejected",
         "invoices",
         "Invoice (Customer)",
-        "snake_case",
+        "kebab-case",
         "never declare a second relationship",
         "blocked_by",
         "parent",

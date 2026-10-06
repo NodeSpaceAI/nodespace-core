@@ -10,6 +10,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   createPluginFromSchema,
+  humanizeSchemaId,
   registerSchemaPlugin,
   unregisterSchemaPlugin,
   initializeSchemaPluginSystem,
@@ -44,6 +45,7 @@ function createMockSchemaNode(
     isCore?: boolean;
     schemaVersion?: number;
     content?: string;
+    titleTemplate?: string;
   } = {}
 ): SchemaNode {
   return {
@@ -59,7 +61,8 @@ function createMockSchemaNode(
     isCore: options.isCore ?? false,
     schemaVersion: options.schemaVersion ?? 1,
     relationships: [],
-    fields: []
+    fields: [],
+    ...(options.titleTemplate ? { titleTemplate: options.titleTemplate } : {})
   };
 }
 
@@ -103,8 +106,15 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     expect(createPluginFromSchema(withContent).name).toBe('Invoice');
 
     // When content is empty (edge case), humanize the schema ID as last resort
-    const emptyContent: SchemaNode = { ...createMockSchemaNode('sales-invoice'), content: '' };
-    expect(createPluginFromSchema(emptyContent).name).toBe('Sales Invoice');
+    const emptyContent: SchemaNode = { ...createMockSchemaNode('customer-profile'), content: '' };
+    expect(createPluginFromSchema(emptyContent).name).toBe('Customer Profile');
+  });
+
+  it('humanizes a kebab-case type id, and only that form', () => {
+    expect(humanizeSchemaId('customer-profile')).toBe('Customer Profile');
+    expect(humanizeSchemaId('invoice')).toBe('Invoice');
+    expect(humanizeSchemaId('ai-chat-native')).toBe('Ai Chat Native');
+    expect(humanizeSchemaId('customer_profile')).not.toBe('Customer Profile');
   });
 
   it('should not generate a slash command for custom entities', () => {
@@ -174,6 +184,22 @@ describe('Schema Plugin Loader - registerSchemaPlugin()', () => {
 
   afterEach(() => {
     pluginRegistry.clear();
+  });
+
+  it('registers a schema whose kebab-case id has several words, named for its content', async () => {
+    const schemaNode = createMockSchemaNode('customer-profile', {
+      isCore: false,
+      content: 'Customer Profile',
+      titleTemplate: '{full_name}'
+    });
+    vi.mocked(backendAdapter.getSchema).mockResolvedValue(schemaNode);
+
+    await registerSchemaPlugin('customer-profile');
+
+    const plugin = pluginRegistry.getPlugin('customer-profile');
+    expect(plugin?.name).toBe('Customer Profile');
+    expect(plugin?.config.slashCommands).toEqual([]);
+    expect(pluginRegistry.hasTitleTemplate('customer-profile')).toBe(true);
   });
 
   it('should register non-core schema as plugin', async () => {

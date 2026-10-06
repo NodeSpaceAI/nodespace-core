@@ -22,7 +22,7 @@
 //!
 //!   [[turn.history]]
 //!   role = "system"
-//!   content = "Fact: one equipment_item node was created."
+//!   content = "Fact: one equipment-item node was created."
 //!
 //!   [[turn.tool]]
 //!   name = "resolve_query"
@@ -601,7 +601,7 @@ user = "u"
 
     #[test]
     fn normalization_is_idempotent_and_leaves_flat_text_untouched() {
-        let flat = "Fact: one equipment_item node was created.";
+        let flat = "Fact: one equipment-item node was created.";
         assert_eq!(normalize_case_text(flat), flat);
         let once = normalize_case_text("\n  a b\n  c\n  ");
         assert_eq!(normalize_case_text(&once), once);
