@@ -5,6 +5,8 @@
   import NavigationSidebar from './navigation-sidebar.svelte';
   import PaneManager from './pane-manager.svelte';
   import IncompatibleDatabaseBanner from './incompatible-database-banner.svelte';
+  import OtherDaemonBanner from './other-daemon-banner.svelte';
+  import ForeignRegistrationNotice from './foreign-registration-notice.svelte';
   import DatabaseRequiresExtension from '$lib/components/database-requires-extension.svelte';
   import StatusBar from '$lib/components/status-bar.svelte';
   import { statusBar } from '$lib/stores/status-bar.svelte';
@@ -64,6 +66,7 @@
   const daemonConnecting = $derived($daemonStatus.connecting);
   const daemonUnreachable = $derived($daemonStatus.unreachable);
   const daemonIncompatibleDatabase = $derived($daemonStatus.incompatibleDatabase);
+  const daemonOtherDaemon = $derived($daemonStatus.otherDaemon);
 
   // The refusal of the active database, while the daemon refuses to open it
   // because it requires an extension this build does not support (ADR-083 §2).
@@ -670,6 +673,8 @@
     <div class="app-container">
       {#if daemonIncompatibleDatabase}
         <IncompatibleDatabaseBanner />
+      {:else if daemonOtherDaemon}
+        <OtherDaemonBanner />
       {:else if daemonUnreachable}
         <div class="daemon-error-banner" role="alert">
           <span>
@@ -682,6 +687,7 @@
           <span>Connecting to local service…</span>
         </div>
       {/if}
+      <ForeignRegistrationNotice />
       <div
         class="app-shell"
         class:sidebar-collapsed={isCollapsed}

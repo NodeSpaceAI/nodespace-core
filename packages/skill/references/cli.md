@@ -973,6 +973,20 @@ nodespace seed take <node-id-or-title> --yes
 
 **Output:** `pending` prints one entry per item and part (`--json`: `{count, updates: [{node_id, kind, title, aspect, shipped_version, recorded_at, last_edited_at, shipped_available}]}`). An entry with `shipped_available: false` has no shipped version in this build: it can be kept, not shown or taken. `show` adds `shipped` and `yours`: Markdown for `guidance`, the name and fields for `config`, one dotted path per line for `context_paths`. `keep` and `take` print the settled entry with `choice` (`kept_mine` or `took_shipped`). `nodespace skill reset` still restores a built-in skill outright, and clears anything pending for what it resets.
 
+### Uninstalling NodeSpace
+
+`nodespace uninstall` stops the daemon and removes the binaries and service registration of the free NodeSpace. It keeps the databases in `~/.nodespace/database/`. With no app installed (a headless install), it proceeds.
+
+It removes only the free NodeSpace. On a Mac where `/Applications/NodeSpace.app` is a different NodeSpace product, or an older NodeSpace that does not say which product it is, it changes nothing, exits non-zero and prints:
+
+> The NodeSpace app on this Mac is a different NodeSpace product, or an older NodeSpace that does not say which product it is. This command removes only the free NodeSpace. To remove that app, move /Applications/NodeSpace.app to the Trash, then run this command again to remove the rest.
+
+**Pass that on; don't remove the app yourself.** Tell the person to move `/Applications/NodeSpace.app` to the Trash, and that their databases stay on the Mac: they are under `~/.nodespace`, not in the app. Once they say it is done, run `nodespace uninstall` again: with no app there it proceeds and removes the rest. Don't delete the binaries or `~/.nodespace` by hand in place of the command.
+
+NodeSpace's `.pkg` installer and its Homebrew cask refuse the same way over such an app, and name the same remedy: the person moves `/Applications/NodeSpace.app` to the Trash, then the install is run again.
+
+A run with `NODESPACE_HOME` set is not checked against the installed app. It removes only the binaries and sockets under that home, and leaves the daemon service, the agent skills and the app alone.
+
 ### Complete command surface
 
 <!-- BEGIN GENERATED: cli-surface (see packages/cli/src/lib.rs (clap derive), packages/cli/examples/gen_skill_md.rs) -->

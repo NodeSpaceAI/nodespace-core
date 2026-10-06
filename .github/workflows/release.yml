@@ -625,6 +625,19 @@ jobs:
           sudo installer -pkg "${PKG}" -target / -verbose
           verify_layout
 
+          # The second install ran the Distribution installation check against
+          # the community bundle the first one left. That check lets the install
+          # go on when its own script throws (preinstall then decides), which
+          # would quietly turn the Installer's refusal dialog off. It logs
+          # through system.log, which Installer writes to install.log, so fail
+          # the build if it ever reported a failure. A missing log matches
+          # nothing and passes.
+          if grep -a -q "NodeSpace installation check failed" /var/log/install.log 2>/dev/null; then
+            echo "::error::The Distribution installation check threw during install (see /var/log/install.log); the Installer's refusal dialog would be silently off"
+            grep -a "NodeSpace installation check failed" /var/log/install.log | tail -5
+            exit 1
+          fi
+
           # Bundle relocation itself needs a Spotlight/LaunchServices-known
           # decoy bundle elsewhere on disk to trigger — unreliable to fake
           # deterministically on an ephemeral runner within a CI-sized time

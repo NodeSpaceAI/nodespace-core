@@ -48,6 +48,13 @@
 //!     registration, waits for the socket to clear, and registers its own daemon
 //!     below. A report that cannot be had changes nothing. Windows has no such
 //!     check.
+//!   - Once its own daemon is registered and the socket answers, ask again. A
+//!     daemon outside the shared registration (a Homebrew service, one started
+//!     by hand) survives the boot-out and keeps the socket, while the app's own
+//!     daemon exits on the single-instance lock; the app then reports the other
+//!     daemon through [`crate::coexistence`], so the frontend shows a notice
+//!     naming it. Only the reported status changes: the app's client still
+//!     dials the same socket, so its requests reach that daemon meanwhile.
 //!   - If already healthy: no-op.
 //!   - If service is registered but daemon crashed: restart it.
 //!   - If service is missing (e.g. clean install): re-run first-launch setup.
@@ -66,7 +73,6 @@ use tonic::Request;
 
 use crate::daemon_profile::{self, DaemonProfile};
 use crate::services::GrpcClient;
-#[cfg(windows)]
 use crate::window_routing;
 
 const DAEMON_BIN_DIR: &str = ".nodespace/bin";
@@ -125,7 +131,7 @@ fn launch_agent_label_for(is_debug: bool) -> &'static str {
 
 /// macOS plist filename — label + ".plist", so label and filename are always in sync.
 #[cfg(target_os = "macos")]
-fn plist_filename() -> String {
+pub(crate) fn plist_filename() -> String {
     format!("{}.plist", launch_agent_label())
 }
 
@@ -635,7 +641,8 @@ fn boot_out_service_registration() {
 /// then removes the file only if nothing answers on it. A daemon this app does
 /// not register (a Homebrew service, one started by hand) survives the
 /// boot-out and keeps its socket, and the daemon registered afterwards then
-/// exits on the single-instance lock; the app keeps using the survivor.
+/// exits on the single-instance lock; [`ensure_daemon_running`] then reports
+/// the survivor as another daemon ([`crate::coexistence`]).
 ///
 /// `boot_out` is a parameter so a test can stand in for the service manager.
 #[cfg(unix)]
@@ -706,11 +713,72 @@ async fn evict_other_product_daemon(app: &AppHandle, socket_path: &Path) -> bool
     .await
 }
 
+/// The daemon holding `socket_path` once this app's own daemon is registered,
+/// when it is not the active profile's: its reported executable, empty if it
+/// named none.
+///
+/// Such a daemon is outside the shared service registration (a Homebrew
+/// service, or one started by hand). It survived the boot-out, and the daemon
+/// this app registered exits on the single-instance lock (ADR-084 §4.3).
+///
+/// `None` when the daemon is this app's, could not be asked, or the app dials
+/// another socket (`NODESPACED_SOCKET`), whose daemon says nothing about this
+/// registration.
+#[cfg(unix)]
+async fn other_daemon_on_socket(app: &AppHandle, socket_path: &Path) -> Option<String> {
+    use tauri::Manager;
+
+    if crate::services::grpc_client::resolve_socket_path() != socket_path {
+        return None;
+    }
+    let client = app.try_state::<GrpcClient>()?;
+    other_daemon_in(
+        running_daemon_executable(&client).await,
+        daemon_profile::active(),
+    )
+}
+
+/// `reported` when it names another executable than `profile`'s daemon.
+#[cfg(any(unix, test))]
+fn other_daemon_in(reported: Option<String>, profile: &DaemonProfile) -> Option<String> {
+    match product_check(reported.as_deref(), profile) {
+        ProductCheck::Mismatch => reported,
+        ProductCheck::Match | ProductCheck::Unknown => None,
+    }
+}
+
 /// Ensure nodespaced is installed as a user service (launchd/systemd) and running.
 ///
-/// Call this from the Tauri setup block. It is non-fatal: logs errors
-/// and returns them so the caller can emit an appropriate UI error state.
+/// It is non-fatal: it returns errors so the caller can show an appropriate UI
+/// error state. Callers that report the outcome to the frontend, the app's
+/// startup among them, use [`start_daemon_and_report`].
+///
+/// Returns `NotRunning` as well when another daemon, outside this app's service
+/// registration, holds the socket: this app's daemon is then not the one
+/// running, and [`crate::coexistence::other_daemon`] names the other one.
 pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
+    record_outcome(bring_up_daemon(app)).await
+}
+
+/// Awaits `bring_up`, then replaces the record of another daemon holding the
+/// socket with what it found (cleared when it failed), and returns its status.
+///
+/// The record changes only once the attempt has its answer, so a status check
+/// made meanwhile (another window's poll during a Retry, say) keeps reporting
+/// the last outcome rather than whichever daemon answers then.
+pub(crate) async fn record_outcome(
+    bring_up: impl std::future::Future<Output = Result<(DaemonStatus, Option<String>)>>,
+) -> Result<DaemonStatus> {
+    let outcome = bring_up.await;
+    crate::coexistence::record_other_daemon(
+        outcome.as_ref().ok().and_then(|(_, other)| other.clone()),
+    );
+    outcome.map(|(status, _)| status)
+}
+
+/// The body of [`ensure_daemon_running`]: the resulting status, with the
+/// executable of another daemon found holding the socket, if any.
+async fn bring_up_daemon(app: &AppHandle) -> Result<(DaemonStatus, Option<String>)> {
     let home = home_dir().context("Cannot resolve home directory")?;
     let bin_dir = home.join(DAEMON_BIN_DIR);
     let log_dir = home.join(DAEMON_LOG_DIR);
@@ -760,7 +828,7 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
         let status = check_daemon_socket(&socket_path).await;
         if status == DaemonStatus::Healthy {
             tracing::info!("nodespaced is already running and healthy");
-            return Ok(DaemonStatus::Healthy);
+            return Ok((DaemonStatus::Healthy, None));
         }
         if should_retry_before_spawn(&status) {
             // Give a busy-but-likely-healthy daemon a short window to answer
@@ -769,7 +837,7 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
             let retried = wait_for_daemon(&socket_path, Duration::from_secs(5)).await;
             if retried == DaemonStatus::Healthy {
                 tracing::info!("nodespaced was starting/busy, now healthy");
-                return Ok(DaemonStatus::Healthy);
+                return Ok((DaemonStatus::Healthy, None));
             }
             tracing::warn!(
                 ?retried,
@@ -857,7 +925,64 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
         crate::incompatible_database::refusal_recorded,
     )
     .await;
-    Ok(status)
+
+    #[cfg(unix)]
+    let outcome = start_outcome(status, other_daemon_on_socket(app, &socket_path)).await;
+    #[cfg(not(unix))]
+    let outcome = (status, None);
+    Ok(outcome)
+}
+
+/// What a start whose wait for the socket ended in `status` amounts to: that
+/// status, or `NotRunning` with the other daemon's executable when
+/// `other_daemon` finds one holding the socket.
+///
+/// An answer on the socket is not enough: a daemon outside this app's
+/// registration survives the boot-out and keeps the socket, and the daemon
+/// just registered exits on the single-instance lock. So a healthy socket is
+/// asked whose it is; one that does not answer is not asked.
+///
+/// `other_daemon` is a parameter so a test can stand in for the daemon.
+#[cfg(any(unix, test))]
+async fn start_outcome(
+    status: DaemonStatus,
+    other_daemon: impl std::future::Future<Output = Option<String>>,
+) -> (DaemonStatus, Option<String>) {
+    if status != DaemonStatus::Healthy {
+        return (status, None);
+    }
+    match other_daemon.await {
+        Some(executable) => {
+            tracing::warn!(
+                executable,
+                "another daemon, outside this app's service registration, holds the socket"
+            );
+            (DaemonStatus::NotRunning, Some(executable))
+        }
+        None => (status, None),
+    }
+}
+
+/// Starts the daemon as [`ensure_daemon_running`] does, then emits the result
+/// to the frontend as `daemon-status` and returns it: `healthy`, or why the
+/// daemon is down ([`crate::incompatible_database::daemon_down_status`]).
+pub async fn start_daemon_and_report(app: &AppHandle) -> &'static str {
+    let status = match ensure_daemon_running(app).await {
+        Ok(DaemonStatus::Healthy) => {
+            tracing::info!("nodespaced is running");
+            "healthy"
+        }
+        Ok(status) => {
+            tracing::warn!(?status, "nodespaced is not healthy");
+            crate::incompatible_database::daemon_down_status()
+        }
+        Err(e) => {
+            tracing::error!("Daemon start failed: {:#}", e);
+            crate::incompatible_database::daemon_down_status()
+        }
+    };
+    window_routing::emit_routed(app, "daemon-status", status, None);
+    status
 }
 
 /// Send SIGTERM to the process listening on the socket and wait for it to exit.
@@ -3866,11 +3991,74 @@ mod stale_socket_removal_tests {
 
 #[cfg(test)]
 mod product_check_tests {
-    use super::{product_check, ProductCheck};
+    use super::{other_daemon_in, product_check, start_outcome, DaemonStatus, ProductCheck};
     use crate::daemon_profile::DaemonProfile;
 
     fn community() -> DaemonProfile {
         DaemonProfile::community()
+    }
+
+    /// A healthy socket held by another daemon is not this app's daemon
+    /// running: the start ends `NotRunning` and names that daemon.
+    #[tokio::test]
+    async fn a_start_that_finds_another_daemon_on_a_healthy_socket_is_not_running() {
+        assert_eq!(
+            start_outcome(DaemonStatus::Healthy, async {
+                Some("/opt/bin/custom-daemon".to_owned())
+            })
+            .await,
+            (
+                DaemonStatus::NotRunning,
+                Some("/opt/bin/custom-daemon".to_owned())
+            )
+        );
+        assert_eq!(
+            start_outcome(DaemonStatus::Healthy, async { None }).await,
+            (DaemonStatus::Healthy, None)
+        );
+    }
+
+    /// A socket that does not answer has no daemon to ask, so the start keeps
+    /// its own status and the question is never put.
+    #[tokio::test]
+    async fn a_start_whose_socket_does_not_answer_asks_no_daemon() {
+        for status in [DaemonStatus::NotRunning, DaemonStatus::Starting] {
+            let mut asked = false;
+            let outcome = start_outcome(status.clone(), async {
+                asked = true;
+                Some("/opt/bin/custom-daemon".to_owned())
+            })
+            .await;
+            assert_eq!(outcome, (status, None));
+            assert!(!asked);
+        }
+    }
+
+    /// What the start reports as the other daemon holding the socket: only a
+    /// daemon that answered with another executable, or with none.
+    #[test]
+    fn only_another_reported_executable_is_an_other_daemon() {
+        assert_eq!(
+            other_daemon_in(
+                Some("/Users/me/.nodespace/bin/nodespaced".to_owned()),
+                &community()
+            ),
+            None
+        );
+        assert_eq!(
+            other_daemon_in(Some("/opt/bin/custom-daemon".to_owned()), &community()),
+            Some("/opt/bin/custom-daemon".to_owned())
+        );
+        assert_eq!(
+            other_daemon_in(Some(String::new()), &community()),
+            Some(String::new()),
+            "a daemon that names no executable is not this app's"
+        );
+        assert_eq!(
+            other_daemon_in(None, &community()),
+            None,
+            "a daemon that could not be asked is left alone"
+        );
     }
 
     fn named(binary_name: &'static str) -> DaemonProfile {

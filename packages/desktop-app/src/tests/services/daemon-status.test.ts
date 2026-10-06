@@ -141,7 +141,8 @@ describe('daemon-status service', () => {
     expect(get(daemonStatus)).toEqual({
       connecting: false,
       unreachable: false,
-      incompatibleDatabase: true
+      incompatibleDatabase: true,
+      otherDaemon: false
     });
 
     emitDaemonStatus('not_running');
@@ -193,7 +194,8 @@ describe('daemon-status service', () => {
     expect(get(daemonStatus)).toEqual({
       connecting: false,
       unreachable: false,
-      incompatibleDatabase: false
+      incompatibleDatabase: false,
+      otherDaemon: false
     });
   });
 
@@ -212,6 +214,105 @@ describe('daemon-status service', () => {
       'there is no incompatible database to reset'
     );
     expect(get(daemonStatus).incompatibleDatabase).toBe(true);
+  });
+
+  it('marks another daemon on the socket distinctly, and never as healthy', async () => {
+    const { daemonStatus, startDaemonStatusListener, onDaemonReconnect } = await import(
+      '$lib/services/daemon-status'
+    );
+    startDaemonStatusListener();
+    await Promise.resolve();
+    await Promise.resolve();
+    const callback = vi.fn();
+    onDaemonReconnect(callback);
+
+    emitDaemonStatus('other_daemon');
+
+    expect(get(daemonStatus)).toEqual({
+      connecting: false,
+      unreachable: false,
+      incompatibleDatabase: false,
+      otherDaemon: true
+    });
+    expect(callback).not.toHaveBeenCalled();
+
+    emitDaemonStatus('not_running');
+    expect(get(daemonStatus).otherDaemon).toBe(false);
+    expect(get(daemonStatus).unreachable).toBe(true);
+  });
+
+  it('retryDaemonStart applies the started status and fires reconnect listeners', async () => {
+    const { daemonStatus, startDaemonStatusListener, onDaemonReconnect, retryDaemonStart } =
+      await import('$lib/services/daemon-status');
+    startDaemonStatusListener();
+    await Promise.resolve();
+    await Promise.resolve();
+    emitDaemonStatus('other_daemon');
+
+    const callback = vi.fn();
+    onDaemonReconnect(callback);
+    mockInvoke.mockResolvedValue('healthy');
+
+    await expect(retryDaemonStart()).resolves.toBe('healthy');
+
+    expect(mockInvoke).toHaveBeenCalledWith('retry_daemon_start');
+    expect(get(daemonStatus).otherDaemon).toBe(false);
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds back statuses observed while a retry is in flight, then applies the final one', async () => {
+    const { daemonStatus, startDaemonStatusListener, retryDaemonStart } = await import(
+      '$lib/services/daemon-status'
+    );
+    startDaemonStatusListener();
+    await Promise.resolve();
+    await Promise.resolve();
+    emitDaemonStatus('other_daemon');
+
+    let finish: (value: string) => void = () => {};
+    mockInvoke.mockReturnValue(new Promise<string>((resolve) => (finish = resolve)));
+    const retry = retryDaemonStart();
+
+    // The daemon is still starting: a poll reporting not_running must not
+    // swap the banner for the generic one mid-retry.
+    emitDaemonStatus('not_running');
+    expect(get(daemonStatus).otherDaemon).toBe(true);
+    expect(get(daemonStatus).unreachable).toBe(false);
+
+    finish('other_daemon');
+    await retry;
+    expect(get(daemonStatus).otherDaemon).toBe(true);
+
+    // The hold ends with the retry.
+    emitDaemonStatus('healthy');
+    expect(get(daemonStatus).otherDaemon).toBe(false);
+  });
+
+  it('getOtherDaemon returns the executable, and null outside Tauri', async () => {
+    const { getOtherDaemon } = await import('$lib/services/daemon-status');
+    mockInvoke.mockResolvedValue('/opt/somewhere/other-daemon');
+    await expect(getOtherDaemon()).resolves.toBe('/opt/somewhere/other-daemon');
+    expect(mockInvoke).toHaveBeenCalledWith('get_other_daemon');
+
+    mockInvoke.mockResolvedValue(null);
+    await expect(getOtherDaemon()).resolves.toBeNull();
+
+    mockInvoke.mockClear();
+    mockIsTauri.mockReturnValue(false);
+    await expect(getOtherDaemon()).resolves.toBeNull();
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it('getForeignMachineWideRegistration asks the backend, and is false outside Tauri', async () => {
+    const { getForeignMachineWideRegistration } = await import('$lib/services/daemon-status');
+    mockInvoke.mockResolvedValue(true);
+    await expect(getForeignMachineWideRegistration()).resolves.toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith('foreign_machine_wide_registration');
+
+    mockInvoke.mockClear();
+    mockIsTauri.mockReturnValue(false);
+    await expect(getForeignMachineWideRegistration()).resolves.toBe(false);
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 
   it('getIncompatibleDatabase returns the record, and null outside Tauri', async () => {

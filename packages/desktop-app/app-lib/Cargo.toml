@@ -45,6 +45,11 @@ semver = "1"
 # (ADR-058's pinned digest).
 sha2 = "0.10"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Reads the machine-wide launchd registration (XML or binary) for the notice
+# about another product's service -- already in the lockfile through Tauri.
+plist = "1.10"
+
 [dev-dependencies]
 tempfile = "3"
 # `#[tokio::test(start_paused = true)]` lets the channel-rebuilt hook timeout be
