@@ -108,7 +108,7 @@ fn frontend_log(line: String) {
 /// the daemon answered. A reachable socket alone only proves something accepts
 /// connections.
 ///
-/// Core-internal: this event is not part of the versioned extension API
+/// Core-internal: this event is not part of the extension API
 /// (ADR-082 §3.5, §8), so core may rename or drop it. Extensions react to the
 /// daemon becoming healthy through the host API's `onDaemonReconnect`, which
 /// also fires on the first healthy status of the session.

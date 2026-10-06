@@ -67,8 +67,7 @@ const log = createLogger('UiExtensionRegistry');
 
 /**
  * Callbacks the host invokes at fixed points in the app's life. Where exactly,
- * and what each guarantees, is part of the versioned extension API and is
- * documented in `extension-lifecycle.ts`, which also implements the dispatch.
+ * and what each guarantees, is documented in `extension-lifecycle.ts`, which also implements the dispatch.
  */
 export interface ExtensionLifecycle {
   /**

@@ -1,7 +1,7 @@
 /**
  * Test helpers for extension code (ADR-082 §3.6), imported as
- * `@nodespace/extension-api/testing`. Part of the versioned host API; see the
- * compatibility policy in `./index.ts`.
+ * `@nodespace/extension-api/testing`. Part of the host API; see
+ * `./index.ts`.
  *
  * Test-only: it imports Vitest, and app code never imports this entry, so it
  * never reaches a bundle. The other entries never import it either;

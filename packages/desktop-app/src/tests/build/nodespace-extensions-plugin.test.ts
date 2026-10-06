@@ -232,7 +232,7 @@ describe('nodespace extensions build entry', () => {
       });
     });
 
-    it('resolves @nodespace/extension-api under the unit-tier config, exposing core functions', async () => {
+    it('resolves @nodespace/extension-api under the unit-tier config, exposing the host API', async () => {
       const api = await import('@nodespace/extension-api');
       expect(api.createLogger).toBeTypeOf('function');
     });
