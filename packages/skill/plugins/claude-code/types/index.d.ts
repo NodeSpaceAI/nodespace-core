@@ -69,10 +69,6 @@ export type NodespaceWatch = {
   lastCheckedAt: number
   /** Why tool calls are refused; cleared when the user next speaks. */
   blocked: string | null
-  /** The session's own commands that may write and have not reported back yet. */
-  writesInFlight: number
-  /** How many times one of the session's own writes has moved the baseline. */
-  ownMoves: number
 }
 
 declare module 'claude-code' {

@@ -143,11 +143,23 @@ the item being worked on.
 The item being worked on is the node of the session's latest context read
 (`nodespace node context <id>`, or a `query run --with-context` that returned
 one item), whatever its type: reading another node's context moves the watch
-to that node. The plugin reads the agent's shell lines to learn this, and to
-tell the session's own writes from someone else's. A write made where it
-cannot see one (inside a script, or by a command left running in the
-background) is read as someone else's and stops the session until the user
-replies.
+to that node. The plugin reads the agent's shell lines to learn this, and
+nothing else about them.
+
+The plugin tells the session's own writes from someone else's by a journal the
+CLI keeps. At session start it sets `NODESPACE_WRITE_JOURNAL` to the session's
+id, and every command the agent starts inherits it: a `nodespace` command that
+writes a node, wherever it runs (a script, a loop, a command left running in
+the background), appends the node id, the database and the node's new version
+to `<NodeSpace home>/.nodespace/journals/<session>.jsonl`. The journal holds
+ids and versions, never content, and no database records who changed a node.
+When the item's version differs from the one last seen, the plugin reads the
+journal: a version it holds is the session's own, and any other is a change
+made under the session, which stops it until the user replies. The same goes
+for an item that no longer exists: `nodespace node context <id> --json` prints
+`{"error": "not_found", ...}` for it, and any other failed read says nothing.
+The journal is removed when the session ends, and one a crashed session left is
+removed, once it has been idle for an hour, by the next session's start.
 
 ### Testing the plugin
 

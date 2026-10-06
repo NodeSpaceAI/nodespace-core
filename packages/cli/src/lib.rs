@@ -4,6 +4,7 @@
 //! against an in-process daemon without shelling out to the built binary.
 
 pub mod commands;
+pub mod journal;
 pub mod output;
 pub mod terminal;
 
@@ -126,6 +127,12 @@ pub enum Command {
     Node {
         #[command(subcommand)]
         action: commands::node::NodeAction,
+    },
+    /// A harness plugin's write journal (see `journal`); not for people.
+    #[command(hide = true)]
+    Journal {
+        #[command(subcommand)]
+        action: journal::JournalAction,
     },
     /// Manage the local inference model (list, load, recommended).
     Model {
@@ -622,10 +629,13 @@ async fn dispatch(cli: Cli) -> Result<()> {
                     .flatten()
                     .collect();
             }
-            let (interceptor, _) = resolve_routing(&sock, selection).await?;
+            let (interceptor, database_id) = resolve_routing(&sock, selection).await?;
             let mut client = connect(&sock, interceptor).await?;
-            commands::node::run(&mut client, action, json).await
+            let journal =
+                journal::WriteJournal::from_env(database_id.as_deref().unwrap_or_default());
+            commands::node::run(&mut client, action, json, &journal).await
         }
+        Command::Journal { action } => journal::run(action),
         Command::Model { action } => {
             let (interceptor, _) = resolve_routing(&sock, selection).await?;
             let mut client = connect_local_agent(&sock, interceptor).await?;

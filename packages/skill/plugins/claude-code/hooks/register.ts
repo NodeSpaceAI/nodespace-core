@@ -24,8 +24,6 @@ const watch = atom({ plugin: 'nodespace', key: 'watch' } as const, {
   item: null,
   lastCheckedAt: 0,
   blocked: null,
-  writesInFlight: 0,
-  ownMoves: 0,
 })
 
 const SECTION_ID = 'nodespace:context'
@@ -66,7 +64,7 @@ type Engine = EngineInterface
 
 type CliResult =
   | { ok: true; stdout: string }
-  | { ok: false; isMissing: boolean; detail: string }
+  | { ok: false; isMissing: boolean; detail: string; stdout: string }
 
 /** Runs one host command by argv. Never throws: a failure is a value. */
 async function run($: Engine, argv: readonly string[], cwd?: string): Promise<CliResult> {
@@ -77,9 +75,9 @@ async function run($: Engine, argv: readonly string[], cwd?: string): Promise<Cl
       return { ok: true, stdout: ran.stdout }
     }
 
-    return { ok: false, isMissing: false, detail: firstLine(ran.stderr || ran.stdout) }
+    return { ok: false, isMissing: false, detail: firstLine(ran.stderr || ran.stdout), stdout: ran.stdout }
   } catch (err) {
-    return { ok: false, isMissing: true, detail: firstLine(String(err)) }
+    return { ok: false, isMissing: true, detail: firstLine(String(err)), stdout: '' }
   }
 }
 
@@ -446,7 +444,8 @@ async function current($: Engine): Promise<NodespaceSession> {
   const isNew = !held || held.stale === 'clear'
 
   if (isNew) {
-    await update($, watch, () => ({ item: null, lastCheckedAt: 0, blocked: null, writesInFlight: 0, ownMoves: 0 }))
+    await update($, watch, () => ({ item: null, lastCheckedAt: 0, blocked: null }))
+    await nameSession($)
   }
 
   const loaded = await load($, await $.session.cwd(), held, isNew)
@@ -622,21 +621,6 @@ export function nodespaceInvocations(command: string): string[][] {
   }
 
   return invocations
-}
-
-/**
- * Commands that only read. Any other command may have written, and after one
- * the item's read is taken again so the session's own write is not mistaken
- * for someone else's. A read missing from this list costs one extra read; a
- * write wrongly listed here would stop the session over its own change.
- */
-function isRead(words: readonly string[]): boolean {
-  const [noun = '', verb = ''] = words
-
-  return (
-    ['search', 'query', 'skill', 'diagnostics', '--version', '--help'].includes(noun) ||
-    (noun === 'node' && ['get', 'context', 'children', 'export', 'query', 'batch-get'].includes(verb))
-  )
 }
 
 /** `node context <id> [--path p]...`, not the version-only form. */
@@ -818,13 +802,27 @@ function fieldChanges(before: NodespaceItem, after: NodespaceItem): string[] {
   return changes.slice(0, MAX_NOTE_ENTRIES)
 }
 
-function partChanges(before: NodespaceItem, after: NodespaceItem): string[] {
+/** Every version each node was written at by the session's own commands. */
+type Journal = ReadonlyMap<string, ReadonlySet<number>>
+
+/** Whether a part is at a version the session's own command wrote. */
+function isOwnPart(part: NodespaceContextPart, own: Journal): boolean {
+  const id = part.key.slice(part.key.lastIndexOf(':') + 1)
+
+  return own.get(id)?.has(Number(part.stamp)) === true
+}
+
+function partChanges(before: NodespaceItem, after: NodespaceItem, own: Journal): string[] {
   const was = new Map(before.parts.map(part => [part.key, part]))
   const now = new Map(after.parts.map(part => [part.key, part]))
   const changes: string[] = []
 
   for (const part of after.parts) {
     const old = was.get(part.key)
+
+    if (isOwnPart(part, own)) {
+      continue
+    }
 
     if (!old) {
       changes.push(`now applies: ${part.label}`)
@@ -844,6 +842,94 @@ function partChanges(before: NodespaceItem, after: NodespaceItem): string[] {
 
 type Verdict = { deny: string } | { note: string } | null
 
+/** Whether a failed `--version-only` read says the node no longer exists. */
+function isDeleted(stdout: string, id: string): boolean {
+  const parsed = parse(stdout)
+
+  return isRecord(parsed) && parsed.error === 'not_found' && text(parsed.node_id) === id
+}
+
+function deletedReason(item: NodespaceItem): string {
+  return [
+    `[NodeSpace] The item this session is working on (${clean(item.id, MAX_VALUE_CHARS)}) no longer exists: it was deleted.`,
+    'Stop here. Tell the user what happened and what you have done so far, and wait for their answer. Tool calls are refused until the user replies.',
+  ].join('\n')
+}
+
+/**
+ * Refuses tool calls over an item that no longer exists, and stops watching
+ * it: there is nothing left to compare once the user has replied. Does
+ * nothing new when a check run alongside this one already refused.
+ */
+async function refuse($: Engine, held: NodespaceWatch, reason: string): Promise<Verdict> {
+  const latest = await read($, watch)
+
+  if (latest.blocked) {
+    return { deny: latest.blocked }
+  }
+
+  await update($, watch, kept => ({ ...kept, item: null, lastCheckedAt: held.lastCheckedAt, blocked: reason }))
+
+  return { deny: reason }
+}
+
+/**
+ * Names this session to the commands the agent runs (`NODESPACE_WRITE_JOURNAL`): each
+ * `nodespace` command that writes a node then records it in the session's
+ * journal, wherever the command runs. A variable that cannot be set leaves the
+ * session's writes unrecorded, which is read as someone else's.
+ */
+async function nameSession($: Engine): Promise<void> {
+  await quietly(undefined, async () => {
+    await $.env.set('NODESPACE_WRITE_JOURNAL', await $.session.id())
+  })
+}
+
+/**
+ * The versions the session's own commands wrote each node at, from the
+ * journal the CLI keeps (`nodespace-cli`'s `journal` module). `null` when it
+ * cannot be read: nothing then says a change was not the session's own, so none
+ * is reported. A session that has written nothing has no journal, and reads as
+ * empty.
+ */
+async function readJournal($: Engine): Promise<Journal | null> {
+  return quietly(null, async () => {
+    const session = (await $.env.get('NODESPACE_WRITE_JOURNAL')) || ''
+    const home =
+      (await $.env.get('NODESPACE_HOME')) || (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
+
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(session) || home === '') {
+      return null
+    }
+
+    const path = `${home}/.nodespace/journals/${session}.jsonl`
+    const written = new Map<string, Set<number>>()
+
+    if (!(await $.fs.exists(path))) {
+      return written
+    }
+
+    for (const line of String(await $.fs.read(path)).split('\n')) {
+      const entry = parse(line)
+
+      if (isRecord(entry) && typeof entry.version === 'number') {
+        const id = text(entry.node_id)
+
+        written.set(id, (written.get(id) ?? new Set()).add(entry.version))
+      }
+    }
+
+    return written
+  })
+}
+
+/** Removes the session's journal, and with it any a crashed session left behind. */
+async function endJournal($: Engine, session: string): Promise<void> {
+  await quietly(undefined, async () => {
+    await run($, ['nodespace', 'journal', 'end', session])
+  })
+}
+
 /**
  * Compares the item's context with the one last seen. One command when
  * nothing moved, a second to read what did. The node itself changing (it was
@@ -858,7 +944,14 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
   }
 
   const ran = await nodespace($, database, [...contextArgs(item), '--version-only'])
-  const parsed = ran.ok ? parse(ran.stdout) : undefined
+
+  if (!ran.ok) {
+    // A deleted item is told apart from a failed read by the CLI's own
+    // answer: only that stops the session. Any other failure says nothing.
+    return isDeleted(ran.stdout, item.id) ? refuse($, held, deletedReason(item)) : null
+  }
+
+  const parsed = parse(ran.stdout)
   const version = isRecord(parsed) ? text(parsed.version) : ''
 
   if (version === '' || version === item.contextVersion) {
@@ -872,6 +965,7 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
   }
 
   const again = `\`nodespace ${contextArgs(item).join(' ')}\``
+  const own = await readJournal($)
 
   if (now.nodeVersion !== item.nodeVersion) {
     // The engine runs the tool calls of one step together.
@@ -882,11 +976,10 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
       return { deny: latest.blocked }
     }
 
-    // One of the session's own writes has not reported back yet, or reported
-    // back and moved the baseline while this check was reading: the change
-    // may be its doing, and becomes the baseline as it would once that write
-    // reported.
-    if (latest.writesInFlight > 0 || latest.ownMoves !== held.ownMoves) {
+    // The node is at a version one of the session's own commands wrote, or
+    // the journal could not be read and nothing says it was not: the change
+    // becomes the baseline.
+    if (own === null || own.get(item.id)?.has(now.nodeVersion)) {
       await update($, watch, kept => ({ ...kept, item: now }))
 
       return null
@@ -907,9 +1000,14 @@ async function checkItem($: Engine, database: string | null, held: NodespaceWatc
     return { deny: reason }
   }
 
-  const changes = partChanges(item, now)
+  const changes = partChanges(item, now, own ?? new Map())
 
   await update($, watch, kept => ({ ...kept, item: now }))
+
+  // Everything that moved is the session's own doing.
+  if (changes.length === 0 && own !== null && own.size > 0 && now.parts.some(part => isOwnPart(part, own))) {
+    return null
+  }
 
   return {
     note: [
@@ -953,28 +1051,10 @@ function shellLine(tool: string, input: Record<string, unknown>): string | null 
 }
 
 /**
- * Whether a shell line may write to NodeSpace: it holds a command that is not
- * a known read, or it names `nodespace` somewhere this module cannot read
- * (inside backticks, behind `xargs`, in a loop's body). Erring toward
- * "may write" costs one extra read; erring the other way stops the session
- * over its own change.
- */
-export function mayWrite(line: string): boolean {
-  const invocations = nodespaceInvocations(line)
-  const mentions = line.match(/(?:^|[\s`'"(;|&=/])nodespace\s+[a-z-]/g) ?? []
-
-  // More mentions than commands read: one of them is a command this module
-  // did not read (after `xargs`, `do` or `then`), and it may be a write.
-  return mentions.length > invocations.length || !invocations.every(isRead)
-}
-
-/**
  * What stands before a tool call: a refusal, a note for its result, or
- * nothing. The item is compared at most once per interval, and always before
- * a command that may write, since that command's own change becomes the new
- * baseline afterwards and would otherwise hide one made by someone else.
+ * nothing. The item is compared at most once per interval.
  */
-async function beforeTool($: Engine, intervalMs: number, tool: string, isWrite: boolean): Promise<Verdict> {
+async function beforeTool($: Engine, intervalMs: number, tool: string): Promise<Verdict> {
   const held = await read($, session)
 
   if (!held?.project) {
@@ -996,7 +1076,7 @@ async function beforeTool($: Engine, intervalMs: number, tool: string, isWrite: 
   let isClaimed = false
 
   await update($, watch, kept => {
-    isClaimed = kept.item !== null && (isWrite || now - kept.lastCheckedAt >= intervalMs)
+    isClaimed = kept.item !== null && now - kept.lastCheckedAt >= intervalMs
 
     return isClaimed ? { ...kept, lastCheckedAt: now } : kept
   })
@@ -1039,8 +1119,13 @@ export const register: Register = (on, options) => {
     // This also fires when the module reloads mid-session. What was read then
     // still stands: reading again would rewrite the system prompt and forget
     // what the conversation has fetched.
+    await nameSession($)
+
     await quietly(undefined, async () => {
       if ((await read($, session)) === null) {
+        // A journal left by a session that crashed goes with the new one's.
+        await endJournal($, await $.session.id())
+
         const loaded = await load($, e.cwd, null, true)
 
         await update($, session, () => loaded)
@@ -1056,6 +1141,8 @@ export const register: Register = (on, options) => {
   // compaction drops what the conversation held: both are read again at the
   // next prompt or system prompt, when the prompt cache is rebuilt anyway.
   on('session.end', async ($, e, next) => {
+    await endJournal($, e.sessionId)
+
     if (e.reason === 'clear') {
       await quietly(undefined, async () => {
         await markStale($, 'clear')
@@ -1097,10 +1184,7 @@ export const register: Register = (on, options) => {
     const isUser = e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'sdk'
     const notes = await quietly([], async () => {
       if (isUser) {
-        // A write the engine never reported back is over by the next prompt.
-        await update($, watch, kept =>
-          kept.blocked || kept.writesInFlight > 0 ? { ...kept, blocked: null, writesInFlight: 0 } : kept,
-        )
+        await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
       }
 
       // The list first: it reads the session again when it is stale, and that
@@ -1117,70 +1201,50 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const tool = String(e.tool)
     const line = shellLine(tool, e)
-    const isWrite = line !== null && mayWrite(line)
-    const verdict = await quietly(null, () => beforeTool($, intervalMs, tool, isWrite))
+    const verdict = await quietly(null, () => beforeTool($, intervalMs, tool))
 
     if (verdict && 'deny' in verdict) {
       return { deny: verdict.deny }
     }
 
-    // Counted from here until the call has reported back and the item has
-    // been read again: a write of the session's own is in flight.
-    const inFlight = (by: number) =>
-      quietly(undefined, async () => {
-        if (isWrite) {
-          await update($, watch, kept => ({ ...kept, writesInFlight: Math.max(0, kept.writesInFlight + by) }))
+    const ran = await next(e)
+
+    if (ran.deny !== undefined) {
+      return ran
+    }
+
+    // An answer given through a tool is the user's reply, as a prompt is.
+    if (USER_FACING_TOOLS.includes(tool)) {
+      await quietly(undefined, async () => {
+        await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
+      })
+    }
+
+    if (line !== null) {
+      await quietly(undefined, async () => {
+        const held = await read($, session)
+
+        if (held?.project) {
+          await learn($, held, nodespaceInvocations(line), ran.text ?? '')
         }
       })
-
-    await inFlight(1)
-
-    // Released however the call ends, so a call that fails in the engine
-    // cannot leave the watch taking every later change for the session's own.
-    try {
-      const ran = await next(e)
-
-      if (ran.deny !== undefined) {
-        return ran
-      }
-
-      // An answer given through a tool is the user's reply, as a prompt is.
-      if (USER_FACING_TOOLS.includes(tool)) {
-        await quietly(undefined, async () => {
-          await update($, watch, kept => (kept.blocked ? { ...kept, blocked: null } : kept))
-        })
-      }
-
-      if (line !== null) {
-        await quietly(undefined, async () => {
-          const held = await read($, session)
-
-          if (held?.project) {
-            await learn($, held, nodespaceInvocations(line), ran.text ?? '', isWrite)
-          }
-        })
-      }
-
-      return verdict ? { ...ran, context: [...(ran.context ?? []), verdict.note] } : ran
-    } finally {
-      await inFlight(-1)
     }
+
+    return verdict ? { ...ran, context: [...(ran.context ?? []), verdict.note] } : ran
   })
 }
 
 /**
  * What the session's own NodeSpace commands say about its work: the item it
  * read with its context is the one it is working on (the latest such read,
- * whatever node it names), a skill printed in full has been fetched, and
- * after a command that may have written, the item is read again so the
- * session's own change is the new baseline.
+ * whatever node it names), and a skill printed in full has been fetched.
+ * Which commands wrote is not read here: the CLI's journal says so.
  */
 async function learn(
   $: Engine,
   held: NodespaceSession,
   invocations: readonly string[][],
   output: string,
-  isWrite: boolean,
 ): Promise<void> {
   // A listing names every skill and hands over none: no task follows
   // `guidance`, only flags, their numeric values or an empty string.
@@ -1205,12 +1269,6 @@ async function learn(
     target = contextRead(words) ?? (queued ? { id: queued, paths: [] } : null) ?? target
   }
 
-  const watching = await read($, watch)
-
-  if (!target && watching.item && isWrite) {
-    target = watching.item
-  }
-
   if (!target) {
     return
   }
@@ -1220,11 +1278,6 @@ async function learn(
   if (item) {
     const now = await $.clock.now()
 
-    await update($, watch, kept => ({
-      ...kept,
-      item,
-      lastCheckedAt: now,
-      ownMoves: kept.ownMoves + (isWrite ? 1 : 0),
-    }))
+    await update($, watch, kept => ({ ...kept, item, lastCheckedAt: now }))
   }
 }
