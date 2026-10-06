@@ -114,6 +114,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     expect(humanizeSchemaId('customer-profile')).toBe('Customer Profile');
     expect(humanizeSchemaId('invoice')).toBe('Invoice');
     expect(humanizeSchemaId('ai-chat-native')).toBe('Ai Chat Native');
+    expect(humanizeSchemaId('customer_profile')).not.toBe('Customer Profile');
   });
 
   it('should not generate a slash command for custom entities', () => {

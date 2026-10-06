@@ -221,11 +221,11 @@ async fn schema_definition(
 ///
 /// Both `phrase` and `haystack` are tokenized identically, splitting on any
 /// non-alphanumeric character (not only whitespace) — a schema id like
-/// `release_plan` or `pull-request` must match a query that spells it with
+/// `release-plan` or `pull_request` must match a query that spells it with
 /// spaces, and vice versa, since ids and queries are not guaranteed to use
 /// the same separator. Single-token phrases (the common case: a type id
 /// like `ticket`) are checked by exact token match. Multi-token phrases (an
-/// id or display name like `release_plan` / `Pull Request`) are checked as
+/// id or display name like `release-plan` / `Pull Request`) are checked as
 /// a contiguous run of exact tokens, so `release` alone does not count as a
 /// match.
 pub(crate) fn mentions_phrase(haystack: &str, phrase: &str) -> bool {
@@ -284,7 +284,7 @@ pub(crate) fn mentions_phrase(haystack: &str, phrase: &str) -> bool {
 /// below for the corpora and pinned aggregate results):
 ///
 /// - Every non-core schema name with actual precedent in this codebase
-///   (`ticket`, `adr`, `release`, `release_plan`, `venue`, `invoice`,
+///   (`ticket`, `adr`, `release`, `release-plan`, `venue`, `invoice`,
 ///   `equipment` — drawn from `packages/agent/goldens/*.toml`, this
 ///   module's own tests, and the `Venue`/`Invoice` examples in ADR-063 and
 ///   `schema-management.md`) measures a **0% false-positive rate** against
@@ -1691,18 +1691,18 @@ mod tests {
     }
 
     #[test]
-    fn mentions_phrase_matches_a_snake_case_id_against_a_space_separated_query() {
-        // A multi-word type id like `release_plan` has no whitespace of its
+    fn mentions_phrase_matches_a_multi_word_id_against_a_space_separated_query() {
+        // A multi-word type id like `release-plan` has no whitespace of its
         // own, so it must be tokenized the same way the query is — on any
         // non-alphanumeric separator, not only whitespace — or it can never
         // match a query that spells the same words with spaces.
         assert!(mentions_phrase(
             "create a release plan for q3",
-            "release_plan"
+            "release-plan"
         ));
         assert!(!mentions_phrase(
             "create a release for the plan later",
-            "release_plan"
+            "release-plan"
         ));
     }
 
@@ -1805,7 +1805,7 @@ mod tests {
             ("ticket", "Ticket"),
             ("adr", "ADR"),
             ("release", "Release"),
-            ("release_plan", "Q3 Rollout"),
+            ("release-plan", "Q3 Rollout"),
             ("venue", "Venue"),
             ("invoice", "Invoice"),
             ("equipment", "Equipment Checkout Record"),
@@ -2078,10 +2078,10 @@ mod tests {
 
     #[test]
     fn a_schema_below_the_bar_is_returned_when_the_request_names_it() {
-        let found = vec![schema_entry("release_plan", "Release Plan", 0.4)];
+        let found = vec![schema_entry("release-plan", "Release Plan", 0.4)];
         assert_eq!(
             guidance_schema_ids(&found, "delete the release plan for Q3"),
-            ["release_plan"]
+            ["release-plan"]
         );
         assert!(guidance_schema_ids(&found, "delete a node").is_empty());
     }

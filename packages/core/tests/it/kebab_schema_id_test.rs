@@ -259,6 +259,7 @@ async fn a_schema_node_must_have_the_derived_id_on_every_create_path() -> Result
         "Customer Profile",
         "customer--profile",
         "-x",
+        "6B693B96-4FAD-5846-BCA3-545B1A7E53A7",
     ] {
         let error = svc
             .create_node(schema(refused))

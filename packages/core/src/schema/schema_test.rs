@@ -3288,7 +3288,7 @@ async fn test_create_schema_self_reference_reverse_edge_resolves() {
 async fn test_create_schema_self_reference_uses_normalized_schema_id() {
     let (svc, _tmp) = create_test_service().await;
 
-    // The exemption keys off the schema ID (snake_case of the name), which is
+    // The exemption keys off the schema ID (kebab-case of the name), which is
     // also the only string a later lookup could resolve. A multi-word name
     // must therefore self-reference by its normalized ID.
     handle_create_schema(

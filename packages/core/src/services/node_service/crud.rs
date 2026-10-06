@@ -327,7 +327,9 @@ impl NodeService {
     /// settings singleton has a fixed id. Every other node, seeded or not, has
     /// a UUID.
     pub(crate) async fn ensure_valid_node_id(&self, node: &Node) -> Result<(), NodeServiceError> {
-        if uuid::Uuid::parse_str(&node.id).is_ok() {
+        if !crate::models::CoreNodeType::Schema.is_exactly(&node.node_type)
+            && uuid::Uuid::parse_str(&node.id).is_ok()
+        {
             return Ok(());
         }
         if crate::models::CoreNodeType::Schema.is_exactly(&node.node_type) {

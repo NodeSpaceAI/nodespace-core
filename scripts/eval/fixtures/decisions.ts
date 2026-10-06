@@ -611,7 +611,7 @@ const FIXTURES: DecisionScenario[] = [
     // Measured on the locked model before `search_nodes` said where the full
     // list comes from: 3 of 3 reps answered with the two custom types and
     // called nothing. The custom type is matched loosely because the model
-    // escapes underscores in a list and may write the name with a space.
+    // splits or respaces a hyphenated id in a list and may write the name with a space.
     prompt: "What schemas do we have here?",
     expected: {
       decision: "outcome",

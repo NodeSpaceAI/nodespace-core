@@ -1924,7 +1924,7 @@ fn def_create_schema() -> ToolDefinition {
             record the workspace does not track yet, not a single instance of an existing kind. The \
             top-level 'name' parameter is REQUIRED — it is the display name of the entity type, in \
             the user's own words. \
-            The schema ID is auto-generated as lowercase snake_case from name (e.g. 'Release Plan' → 'release_plan'). \
+            The schema ID is auto-generated as lowercase kebab-case from name (e.g. 'Release Plan' → 'release-plan'). \
             After creation, use this ID as node_type when creating instances. The example shows one \
             field per detail the user mentioned, including a pointer at another record (e.g. \"blocks \
             another ticket\") as a field rather than a second type. Example call: {\"name\": \"Ticket\", \
