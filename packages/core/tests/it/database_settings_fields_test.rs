@@ -132,7 +132,6 @@ async fn a_flat_update_is_validated_like_the_typed_one() {
     for bad in [
         json!({ "capture_enabled": "yes" }),
         json!({ "capture_content": "everything" }),
-        json!({ "external_tools_enabled": true }),
         json!({ "providers": "none" }),
         json!({ "providers": [{ "name": "n", "base_url": "u" }] }),
         json!({ "providers": [{ "id": PROVIDER_ID, "name": "n", "base_url": "u", "extra": 1 }] }),
@@ -152,6 +151,26 @@ async fn a_flat_update_is_validated_like_the_typed_one() {
     assert_eq!(
         svc.database_settings().await.unwrap().0,
         nodespace_core::models::DatabaseSettingsFields::default()
+    );
+}
+
+/// External tools are enabled by the `nodespace mcp install` client config,
+/// not by a database setting, so the field is an undeclared key.
+#[tokio::test]
+async fn a_flat_update_naming_external_tools_enabled_is_rejected_as_undeclared() {
+    let (svc, _dir) = service().await;
+    let settings = svc.get_node(SETTINGS_ID).await.unwrap().unwrap();
+    let err = svc
+        .update_node(
+            SETTINGS_ID,
+            settings.version,
+            NodeUpdate::new().with_properties(json!({ "external_tools_enabled": true })),
+        )
+        .await
+        .expect_err("the removed field must be rejected");
+    assert!(
+        err.to_string().contains("external_tools_enabled"),
+        "the error must name the key: {err}"
     );
 }
 

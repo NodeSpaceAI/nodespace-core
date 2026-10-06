@@ -494,7 +494,11 @@ fn uninstall() -> Result<()> {
             println!("  {}: {}", skipped.agent, skipped.reason);
         }
     }
-    println!("The NodeSpace MCP passthrough tool is disabled.");
+    if outcome.skipped.is_empty() {
+        println!("The NodeSpace MCP passthrough tool is disabled.");
+    } else {
+        println!("Some client configs could not be removed (see above); those clients can still use the tool.");
+    }
     Ok(())
 }
 
@@ -969,6 +973,41 @@ mod tests {
         // alone.
         let argv = build_child_args("", Path::new("/s")).expect("empty is valid");
         assert_eq!(argv, vec!["--socket", "/s", "--json"]);
+    }
+
+    /// The refusal guard scans the call's words, so it depends on clap not
+    /// accepting abbreviated flags, abbreviated subcommands or aliases for
+    /// `--database`, `--socket` and `database`. Pin that.
+    #[test]
+    fn the_cli_accepts_no_abbreviation_or_alias_that_would_slip_past_the_guard() {
+        use clap::{CommandFactory, Parser};
+        let rejected: [&[&str]; 4] = [
+            &["nodespace", "--datab", "x", "search", "q"],
+            &["nodespace", "--sock", "x", "search", "q"],
+            &["nodespace", "datab", "list"],
+            &["nodespace", "db", "list"],
+        ];
+        for argv in rejected {
+            assert!(
+                crate::Cli::try_parse_from(argv).is_err(),
+                "{argv:?} must not parse"
+            );
+        }
+        let cmd = crate::Cli::command();
+        let database = cmd
+            .find_subcommand("database")
+            .expect("database subcommand");
+        assert_eq!(database.get_all_aliases().count(), 0);
+        for flag in ["database", "socket"] {
+            let arg = cmd
+                .get_arguments()
+                .find(|a| a.get_id() == flag)
+                .expect(flag);
+            assert!(
+                arg.get_all_aliases().is_none() && arg.get_short().is_none(),
+                "{flag}"
+            );
+        }
     }
 
     /// A call cannot select a database, in either flag spelling or position.

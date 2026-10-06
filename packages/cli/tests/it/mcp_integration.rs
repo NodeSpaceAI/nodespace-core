@@ -513,12 +513,8 @@ fn fake_nodespace_on_path(dir: &std::path::Path) -> String {
 /// `uninstall` removes it. Every command points at a socket nothing listens
 /// on, so none of them may need the daemon.
 ///
-/// Skipped (not failed) when `packages/skill/dist/install.js` isn't built --
-/// mirrors `commands::skill::tests::
-/// resolve_script_installer_errors_with_actionable_message_when_missing`'s
-/// own reasoning: CI does not run `bun run build:skill`/`bun run build`
-/// before `cargo test`, so this is exercised locally (`bun run build` inside
-/// `packages/skill`, then `cargo test`) rather than unconditionally in CI.
+/// Skipped (not failed) when `packages/skill/dist/install.js` isn't built;
+/// the merge gate's skill-installer tier builds it first.
 #[tokio::test]
 async fn mcp_install_status_uninstall_round_trip_needs_no_daemon() {
     let dist_install = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
