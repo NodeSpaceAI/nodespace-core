@@ -67,7 +67,10 @@ pub use core_type::{
     DerivedAttribute, DerivedValueType, ParentRule, ParticipationRules, StructuralRules,
     TypeCategory, WireShape,
 };
-pub use database_settings::{DatabaseSettingsNode, DatabaseSettingsNodeUpdate};
+pub use database_settings::{
+    CaptureContent, DatabaseSettingsFields, DatabaseSettingsNode, DatabaseSettingsNodeUpdate,
+    ProviderConfig, DATABASE_SETTINGS_NODE_ID, DATABASE_SETTINGS_NODE_TYPE,
+};
 pub use decision::{DecisionNode, DecisionNodeUpdate, DecisionStatus};
 pub use helpers::{is_valid_lifecycle_status, LIFECYCLE_STATUSES};
 pub use incompatible_database::IncompatibleDatabase;

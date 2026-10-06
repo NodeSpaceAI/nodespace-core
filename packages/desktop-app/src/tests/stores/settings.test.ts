@@ -9,6 +9,13 @@ vi.mock('$lib/utils/logger', () => ({
   })
 }));
 
+const readDatabaseSettings = vi.fn();
+const updateDatabaseSettings = vi.fn();
+vi.mock('$lib/services/database-settings', () => ({
+  readDatabaseSettings: (...args: unknown[]) => readDatabaseSettings(...args),
+  updateDatabaseSettings: (...args: unknown[]) => updateDatabaseSettings(...args)
+}));
+
 const mockInvoke = vi.fn();
 import { mockTauriCore } from '../helpers/mock-tauri-core';
 
@@ -20,9 +27,9 @@ import {
   settingsStore,
   loadSettings,
   updateDisplaySetting,
-  saveOpenAiConfigs,
+  getOpenAiConfigs,
 } from '$lib/stores/settings.svelte';
-import type { AppSettings } from '$lib/stores/settings.svelte';
+import type { AppSettings, ProviderConfig } from '$lib/stores/settings.svelte';
 
 describe('Settings Store', () => {
   const mockSettings: AppSettings = {
@@ -31,7 +38,6 @@ describe('Settings Store', () => {
       renderMarkdown: true,
       theme: 'light'
     },
-    openAiConfigs: [],
     defaultModelSelection: null,
   };
 
@@ -46,6 +52,8 @@ describe('Settings Store', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     settingsStore.appSettings = null;
+    settingsStore.openAiConfigs = [];
+    readDatabaseSettings.mockRejectedValue(new Error('no database settings'));
     localStorage.clear();
     disableTauri();
   });
@@ -134,80 +142,79 @@ describe('Settings Store', () => {
     });
   });
 
-  describe('OpenAI-compat config daemon persistence', () => {
-    it('loadSettings refreshes openAiConfigs from the daemon when running under Tauri', async () => {
+  describe("providers in the database's settings node", () => {
+    const provider: ProviderConfig = {
+      id: '0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d',
+      name: 'My Endpoint',
+      base_url: 'https://api.example.com/v1',
+      api_key: 'sk-test',
+      model: 'gpt-4o',
+      routing_ok: {}
+    };
+
+    it('loadSettings reads the providers from the settings node', async () => {
       enableTauri();
       const backendSettings = {
         activeDatabasePath: mockSettings.activeDatabasePath,
         display: mockSettings.display,
       };
-      const daemonConfigs = [
-        { id: 'abc', name: 'My Endpoint', baseUrl: 'https://api.example.com/v1', apiKey: 'sk-test', model: 'gpt-4o' },
-      ];
-      mockInvoke.mockImplementation((cmd: string) => {
-        if (cmd === 'get_settings') return Promise.resolve(backendSettings);
-        if (cmd === 'get_openai_compat_configs') return Promise.resolve(daemonConfigs);
-        return Promise.resolve(undefined);
-      });
-
-      await loadSettings();
-
-      expect(mockInvoke).toHaveBeenCalledWith('get_openai_compat_configs');
-      expect(settingsStore.appSettings?.openAiConfigs).toEqual(daemonConfigs);
-    });
-
-    it('loadSettings falls back to the local cache if the daemon call fails', async () => {
-      enableTauri();
-      const backendSettings = {
-        activeDatabasePath: mockSettings.activeDatabasePath,
-        display: mockSettings.display,
-      };
-      localStorage.setItem(
-        'nodespace-settings',
-        JSON.stringify({
-          openAiConfigs: [
-            { id: 'cached', name: 'Cached', baseUrl: 'https://cached.example.com', apiKey: '', model: 'cached-model' },
-          ],
-        })
+      mockInvoke.mockImplementation((cmd: string) =>
+        Promise.resolve(cmd === 'get_settings' ? backendSettings : undefined)
       );
-      mockInvoke.mockImplementation((cmd: string) => {
-        if (cmd === 'get_settings') return Promise.resolve(backendSettings);
-        if (cmd === 'get_openai_compat_configs') return Promise.reject(new Error('daemon unreachable'));
-        return Promise.resolve(undefined);
-      });
+      readDatabaseSettings.mockResolvedValue({ providers: [provider] });
 
       await loadSettings();
 
-      expect(settingsStore.appSettings?.openAiConfigs).toEqual([
-        { id: 'cached', name: 'Cached', baseUrl: 'https://cached.example.com', apiKey: '', model: 'cached-model' },
-      ]);
+      expect(readDatabaseSettings).toHaveBeenCalled();
+      expect(settingsStore.openAiConfigs).toEqual([provider]);
+      expect(getOpenAiConfigs()).toEqual([provider]);
+      expect(settingsStore.appSettings).toEqual(mockSettings);
     });
 
-    it('saveOpenAiConfigs writes to localStorage immediately and pushes to the daemon', async () => {
+    it('loadSettings still loads the app settings when the settings node cannot be read', async () => {
       enableTauri();
-      mockInvoke.mockResolvedValue([]);
-      const configs = [
-        { id: 'new-id', name: 'New Endpoint', baseUrl: 'https://new.example.com', apiKey: 'sk-new', model: 'gpt-4o' },
-      ];
+      mockInvoke.mockImplementation((cmd: string) =>
+        Promise.resolve(
+          cmd === 'get_settings'
+            ? { activeDatabasePath: '/tmp/test.db', display: mockSettings.display }
+            : undefined
+        )
+      );
+      readDatabaseSettings.mockRejectedValue(new Error('daemon unreachable'));
 
-      await saveOpenAiConfigs(configs);
+      await loadSettings();
 
-      expect(mockInvoke).toHaveBeenCalledWith('set_openai_compat_configs', { configs });
-      const cached = JSON.parse(localStorage.getItem('nodespace-settings') ?? '{}');
-      expect(cached.openAiConfigs).toEqual(configs);
+      expect(settingsStore.appSettings).toEqual(mockSettings);
+      expect(settingsStore.openAiConfigs).toEqual([]);
     });
 
-    it('saveOpenAiConfigs keeps the local write even if the daemon push fails', async () => {
-      enableTauri();
-      mockInvoke.mockRejectedValue(new Error('daemon unreachable'));
-      const configs = [
-        { id: 'x', name: 'X', baseUrl: 'https://x.example.com', apiKey: '', model: 'model-x' },
-      ];
+    it('saveProviders writes through the typed update and holds what the node holds', async () => {
+      const stored = { ...provider, routing_ok: { 'gpt-4o': true } };
+      updateDatabaseSettings.mockResolvedValue({ providers: [stored] });
 
-      await saveOpenAiConfigs(configs);
+      await settingsStore.saveProviders([provider]);
 
-      const cached = JSON.parse(localStorage.getItem('nodespace-settings') ?? '{}');
-      expect(cached.openAiConfigs).toEqual(configs);
+      expect(updateDatabaseSettings).toHaveBeenCalledWith({ providers: [provider] });
+      expect(settingsStore.openAiConfigs).toEqual([stored]);
+    });
+
+    it('never copies providers, or their keys, into localStorage', async () => {
+      updateDatabaseSettings.mockResolvedValue({ providers: [provider] });
+      readDatabaseSettings.mockResolvedValue({ providers: [provider] });
+
+      await settingsStore.saveProviders([provider]);
+      await settingsStore.loadProviders();
+
+      expect(JSON.stringify(localStorage.getItem('nodespace-settings'))).not.toContain('sk-test');
+    });
+
+    it('keeps the previous providers when the write fails', async () => {
+      settingsStore.openAiConfigs = [provider];
+      updateDatabaseSettings.mockRejectedValue(new Error('conflict'));
+
+      await settingsStore.saveProviders([]);
+
+      expect(settingsStore.openAiConfigs).toEqual([provider]);
     });
   });
 });

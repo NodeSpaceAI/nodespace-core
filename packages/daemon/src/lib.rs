@@ -95,8 +95,7 @@ pub fn resolve_db_path() -> Result<PathBuf> {
 ///
 /// Every daemon-owned path under `nodespace_dir()` should be created through
 /// this helper: it holds the UDS whose mode is the whole local-authorization
-/// boundary (ADR-052), the database file, the database registry, and the
-/// settings file (which carries third-party API keys).
+/// boundary (ADR-052), the database file, the database registry.
 ///
 /// `dir` is not always daemon-owned, though: `NODESPACED_SOCKET`,
 /// `NODESPACE_HOME` and `NODESPACED_DB_PATH` let a caller point straight at a
@@ -177,16 +176,14 @@ pub async fn create_dir_owner_only(dir: &std::path::Path) -> Result<()> {
 // consumers of `nodespace-daemon` types continue to work without changing imports.
 pub use nodespace_proto::nodespace;
 pub use nodespace_proto::{
-    AgentAvailability, AgentSessionServiceClient, AgentSessionServiceServer, CaptureContentLevel,
-    CaptureSettingsResponse, CheckAvailabilityRequest, CheckAvailabilityResponse,
-    DatabaseServiceClient, DatabaseServiceServer, EmbeddingsServiceClient, EmbeddingsServiceServer,
-    GetCaptureSettingsRequest, ImportServiceClient, ImportServiceServer, LaunchSessionRequest,
-    LaunchSessionResponse, ListSessionsRequest, ListSessionsResponse, LocalAgentServiceClient,
-    LocalAgentServiceServer, NodeData, NodeServiceClient, NodeServiceServer,
-    ReportHarnessSessionRequest, ReportHarnessSessionResponse, ResizeRequest, ResizeResponse,
-    SessionInfo, SettingsServiceClient, SettingsServiceServer, StreamOutputRequest,
-    TerminateSessionRequest, TerminateSessionResponse, UpdateCaptureSettingsRequest,
-    WriteInputRequest, WriteInputResponse,
+    AgentAvailability, AgentSessionServiceClient, AgentSessionServiceServer,
+    CheckAvailabilityRequest, CheckAvailabilityResponse, DatabaseServiceClient,
+    DatabaseServiceServer, EmbeddingsServiceClient, EmbeddingsServiceServer, ImportServiceClient,
+    ImportServiceServer, LaunchSessionRequest, LaunchSessionResponse, ListSessionsRequest,
+    ListSessionsResponse, LocalAgentServiceClient, LocalAgentServiceServer, NodeData,
+    NodeServiceClient, NodeServiceServer, ReportHarnessSessionRequest,
+    ReportHarnessSessionResponse, ResizeRequest, ResizeResponse, SessionInfo, StreamOutputRequest,
+    TerminateSessionRequest, TerminateSessionResponse, WriteInputRequest, WriteInputResponse,
 };
 
 pub use db_routing::{DbManagerLayer, DATABASE_ID_HEADER};
@@ -197,13 +194,9 @@ pub use services::{
     unrouted_services_if_default_refused, AgentSessionHandler, DaemonExtensions,
     DaemonExtensionsError, DatabaseManager, DatabaseRequiresExtensions, DatabaseServiceImpl,
     DatabaseServices, EmbeddingReady, EmbeddingsServiceImpl, ImportServiceImpl,
-    LocalAgentServiceImpl, McpConfig, NodeServiceImpl, RequiredExtensionsUnreadable,
-    SettingsServiceImpl, SharedContext, SharedLocalAgent, SharedServices, SubtreeGateFactory,
+    LocalAgentServiceImpl, NodeServiceImpl, RequiredExtensionsUnreadable, SharedContext,
+    SharedLocalAgent, SharedServices, SubtreeGateFactory,
 };
-// The `nodespace` CLI's `mcp` subcommand (a separate process from the
-// daemon) reads/writes these directly against `~/.nodespace/daemon.toml` --
-// see `packages/cli/src/commands/mcp.rs` and `McpConfig`'s doc comment.
-pub use services::settings_service::{read_mcp_settings, set_mcp_enabled};
 
 #[cfg(test)]
 mod tests {

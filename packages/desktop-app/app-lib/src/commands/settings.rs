@@ -1,21 +1,19 @@
 //! Settings commands for reading and updating app preferences.
 //!
-//! Daemon config (gRPC address) is owned by `nodespaced` and fetched/updated
-//! via the `SettingsService` gRPC RPC.
+//! The settings the daemon acts on (session capture, external tools, provider
+//! configs) are fields of each database's `database-settings` node and are
+//! read and written through that node's typed update (ADR-095); nothing here
+//! touches them.
 //!
-//! The active database path is not daemon config — it is read from the
-//! `DatabaseService` registry (ADR-053: one daemon, multiple local
-//! databases), which is the source of truth for which database is default.
+//! The active database path is read from the `DatabaseService` registry
+//! (ADR-053: one daemon, multiple local databases), which is the source of
+//! truth for which database is default.
 //!
 //! Display preferences (theme, render_markdown) are UI-only state that remain
 //! in Tauri local storage and are never sent to the daemon.
 
 use crate::services::GrpcClient;
-use nodespace_proto::nodespace::{
-    GetCaptureSettingsRequest, ListDatabasesRequest, ListOpenAiCompatConfigsRequest,
-    OpenAiCompatConfig as ProtoOpenAiCompatConfig, SetOpenAiCompatConfigsRequest,
-    UpdateCaptureSettingsRequest,
-};
+use nodespace_proto::nodespace::ListDatabasesRequest;
 use tauri::AppHandle;
 
 /// Settings response sent to the frontend.
@@ -110,168 +108,6 @@ pub async fn update_display_settings(
     );
 
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Capture settings
-// ---------------------------------------------------------------------------
-
-/// Capture settings response sent to the frontend.
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
-pub struct CaptureSettingsResult {
-    pub enabled: bool,
-    /// "metadata_only" | "summary" | "full"
-    pub content: String,
-}
-
-/// Get session capture settings from the daemon.
-#[tauri::command]
-pub async fn get_capture_settings(
-    grpc_client: tauri::State<'_, GrpcClient>,
-) -> Result<CaptureSettingsResult, String> {
-    let mut client = grpc_client.settings_client().await;
-    let resp = client
-        .get_capture_settings(GetCaptureSettingsRequest {})
-        .await
-        .map_err(|e| format!("Failed to get capture settings: {}", e))?
-        .into_inner();
-
-    Ok(CaptureSettingsResult {
-        enabled: resp.enabled,
-        content: content_level_to_str(resp.content),
-    })
-}
-
-/// Update session capture settings.
-#[tauri::command]
-pub async fn update_capture_settings(
-    grpc_client: tauri::State<'_, GrpcClient>,
-    enabled: Option<bool>,
-    content: Option<String>,
-) -> Result<CaptureSettingsResult, String> {
-    let content_i32 = content.as_deref().map(str_to_content_level).transpose()?;
-
-    let mut client = grpc_client.settings_client().await;
-    let resp = client
-        .update_capture_settings(UpdateCaptureSettingsRequest {
-            enabled,
-            content: content_i32,
-        })
-        .await
-        .map_err(|e| format!("Failed to update capture settings: {}", e))?
-        .into_inner();
-
-    Ok(CaptureSettingsResult {
-        enabled: resp.enabled,
-        content: content_level_to_str(resp.content),
-    })
-}
-
-fn content_level_to_str(level: i32) -> String {
-    match level {
-        1 => "summary".to_string(),
-        2 => "full".to_string(),
-        _ => "metadata_only".to_string(),
-    }
-}
-
-fn str_to_content_level(s: &str) -> Result<i32, String> {
-    match s {
-        "metadata_only" => Ok(0),
-        "summary" => Ok(1),
-        "full" => Ok(2),
-        other => Err(format!(
-            "Invalid content level '{}'. Must be metadata_only, summary, or full.",
-            other
-        )),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// OpenAI-compatible provider configs
-// ---------------------------------------------------------------------------
-
-/// An OpenAI-compatible provider config as sent to/from the frontend. Mirrors
-/// `OpenAiCompatConfig` in `$lib/types/ai-chat-node.ts`.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct OpenAiCompatConfigResult {
-    pub id: String,
-    pub name: String,
-    pub base_url: String,
-    pub api_key: String,
-    /// Model identifier sent as the wire-protocol "model" field — distinct
-    /// from `name`, which is only a cosmetic UI label.
-    pub model: String,
-}
-
-impl From<ProtoOpenAiCompatConfig> for OpenAiCompatConfigResult {
-    fn from(c: ProtoOpenAiCompatConfig) -> Self {
-        Self {
-            id: c.id,
-            name: c.name,
-            base_url: c.base_url,
-            api_key: c.api_key,
-            model: c.model,
-        }
-    }
-}
-
-impl From<OpenAiCompatConfigResult> for ProtoOpenAiCompatConfig {
-    fn from(c: OpenAiCompatConfigResult) -> Self {
-        Self {
-            id: c.id,
-            name: c.name,
-            base_url: c.base_url,
-            api_key: c.api_key,
-            model: c.model,
-        }
-    }
-}
-
-/// Get all configured OpenAI-compatible provider configs from the daemon.
-#[tauri::command]
-pub async fn get_openai_compat_configs(
-    grpc_client: tauri::State<'_, GrpcClient>,
-) -> Result<Vec<OpenAiCompatConfigResult>, String> {
-    let mut client = grpc_client.settings_client().await;
-    let resp = client
-        .list_open_ai_compat_configs(ListOpenAiCompatConfigsRequest {})
-        .await
-        .map_err(|e| format!("Failed to list OpenAI-compat configs: {}", e))?
-        .into_inner();
-
-    Ok(resp
-        .configs
-        .into_iter()
-        .map(OpenAiCompatConfigResult::from)
-        .collect())
-}
-
-/// Replace the full set of OpenAI-compatible provider configs on the daemon.
-#[tauri::command]
-pub async fn set_openai_compat_configs(
-    grpc_client: tauri::State<'_, GrpcClient>,
-    configs: Vec<OpenAiCompatConfigResult>,
-) -> Result<Vec<OpenAiCompatConfigResult>, String> {
-    let mut client = grpc_client.settings_client().await;
-    let resp = client
-        .set_open_ai_compat_configs(SetOpenAiCompatConfigsRequest {
-            configs: configs
-                .into_iter()
-                .map(ProtoOpenAiCompatConfig::from)
-                .collect(),
-        })
-        .await
-        .map_err(|e| format!("Failed to save OpenAI-compat configs: {}", e))?
-        .into_inner();
-
-    Ok(resp
-        .configs
-        .into_iter()
-        .map(OpenAiCompatConfigResult::from)
-        .collect())
 }
 
 // ---------------------------------------------------------------------------

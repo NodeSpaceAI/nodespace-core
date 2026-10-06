@@ -35,6 +35,7 @@ use nodespace_core::models::{
     NodeFilter, NodeUpdate,
 };
 use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceError};
+use nodespace_types::{DatabaseSettingsNodeUpdate, DATABASE_SETTINGS_NODE_ID};
 
 use crate::services::ai_chat_title;
 use crate::services::chat_idle_gate::ChatIdleGate;
@@ -116,7 +117,7 @@ const MODEL_SPEC_SNAPSHOT_TIMEOUT: std::time::Duration = std::time::Duration::fr
 const ROUTING_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// TTL for the OpenAI-compat discovery cache (see
-/// `SharedLocalAgent::openai_compat_discovery_cache`).
+/// `LocalAgentServiceInner::openai_compat_discovery_cache`).
 ///
 /// Short by design: long enough that the model selector's three call sites
 /// (`model-store`, `agent-store`, `ai-chat-model-selector`) mounting in quick
@@ -126,13 +127,12 @@ const ROUTING_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// sooner has the explicit "Refresh remote models" button, which sets
 /// `ListModelsRequest::force_refresh` to bypass this TTL entirely.
 ///
-/// No event-driven invalidation: `SettingsServiceImpl` and `SharedLocalAgent`
-/// share no state today, and this cache's only writer — Settings' config
+/// No event-driven invalidation: the cache's only writer — Settings' provider
 /// add/edit/delete — already calls `refreshRemoteModels` with
 /// `force_refresh: true` on the frontend right after saving, which gets the
 /// same "list reflects a config change immediately" behavior with none of the
 /// cross-service wiring. Deferred as YAGNI, not ruled out — revisit if a second
-/// config writer appears that can't reach for the same frontend hook.
+/// provider writer appears that can't reach for the same frontend hook.
 const OPENAI_COMPAT_DISCOVERY_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Attempts for an ai-chat read-modify-write before giving up. These writes
@@ -223,19 +223,6 @@ pub struct SharedLocalAgent {
     /// constant so tests can drive the timeout path without paying it in
     /// wall-clock time.
     model_spec_snapshot_timeout: std::time::Duration,
-    /// Path to `~/.nodespace/daemon.toml`, read to resolve OpenAI-compatible
-    /// provider configs by UUID when loading an `openai-compat:<uuid>` model.
-    daemon_config_path: std::path::PathBuf,
-    /// Short-TTL cache over `discover_openai_compat_models`'s result (see
-    /// `OPENAI_COMPAT_DISCOVERY_CACHE_TTL`). `None` until the first discovery
-    /// round completes. Bypassed (but still refreshed) when a `ListModels`
-    /// call sets `force_refresh`.
-    openai_compat_discovery_cache: Mutex<
-        Option<(
-            std::time::Instant,
-            Vec<nodespace_agent::agent_types::ModelInfo>,
-        )>,
-    >,
     /// Tracks live chat turns so background work can wait for the model to go
     /// idle. Lives here, on the process-global handle, because the engine it
     /// guards is process-global: a per-database counter would let one
@@ -246,7 +233,7 @@ pub struct SharedLocalAgent {
 impl SharedLocalAgent {
     /// Build the process-global inference state. Called once, from
     /// [`crate::build_shared_services`].
-    pub fn new(daemon_config_path: std::path::PathBuf) -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         // A failed model-manager init is a recoverable environmental condition
         // (`$HOME` unset, an unwritable/occupied models directory), not a
         // programming error: degrade the local-GGUF RPCs to `UNAVAILABLE` the
@@ -263,11 +250,7 @@ impl SharedLocalAgent {
                 None
             }
         };
-        Self::from_model_manager(
-            daemon_config_path,
-            model_manager,
-            MODEL_SPEC_SNAPSHOT_TIMEOUT,
-        )
+        Self::from_model_manager(model_manager, MODEL_SPEC_SNAPSHOT_TIMEOUT)
     }
 
     /// Shared construction path for [`Self::new`] and for tests, which use it to
@@ -277,7 +260,6 @@ impl SharedLocalAgent {
     /// stalled-`model_info` path is exercised without paying the production
     /// bound in wall-clock time.
     fn from_model_manager(
-        daemon_config_path: std::path::PathBuf,
         model_manager: Option<Arc<GgufModelManager>>,
         model_spec_snapshot_timeout: std::time::Duration,
     ) -> Arc<Self> {
@@ -290,8 +272,6 @@ impl SharedLocalAgent {
             active_model_routing_key: Mutex::new(None),
             loaded_model_spec: Mutex::new(None),
             model_spec_snapshot_timeout,
-            daemon_config_path,
-            openai_compat_discovery_cache: Mutex::new(None),
             idle_gate: ChatIdleGate::new(),
         })
     }
@@ -422,6 +402,17 @@ struct LocalAgentServiceInner {
     shared: Arc<SharedLocalAgent>,
     node_service: Arc<NodeService>,
     embedding_service: SharedEmbeddingService,
+    /// Short-TTL cache over `discover_openai_compat_models`'s result (see
+    /// `OPENAI_COMPAT_DISCOVERY_CACHE_TTL`). `None` until the first discovery
+    /// round completes. Bypassed (but still refreshed) when a `ListModels`
+    /// call sets `force_refresh`. Per database, because each database
+    /// configures its own providers (ADR-095).
+    openai_compat_discovery_cache: Mutex<
+        Option<(
+            std::time::Instant,
+            Vec<nodespace_agent::agent_types::ModelInfo>,
+        )>,
+    >,
     /// Broadcast channel for streaming tokens → all SubscribeTokenStream clients.
     token_tx: broadcast::Sender<AgentChunk>,
     /// Cancellation tokens keyed by node_id.
@@ -463,6 +454,7 @@ impl LocalAgentServiceImpl {
                 shared,
                 node_service,
                 embedding_service,
+                openai_compat_discovery_cache: Mutex::new(None),
                 token_tx,
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
                 shutdown_token: CancellationToken::new(),
@@ -491,6 +483,7 @@ impl LocalAgentServiceImpl {
                 shared,
                 node_service,
                 embedding_service,
+                openai_compat_discovery_cache: Mutex::new(None),
                 token_tx,
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
                 shutdown_token: CancellationToken::new(),
@@ -1860,7 +1853,7 @@ impl LocalAgentServiceImpl {
         force_refresh: bool,
     ) -> Vec<nodespace_agent::agent_types::ModelInfo> {
         {
-            let cache = self.inner.shared.openai_compat_discovery_cache.lock().await;
+            let cache = self.inner.openai_compat_discovery_cache.lock().await;
             if let Some((fetched_at, models)) = cache.as_ref() {
                 if !force_refresh && fetched_at.elapsed() < OPENAI_COMPAT_DISCOVERY_CACHE_TTL {
                     return models.clone();
@@ -1870,7 +1863,7 @@ impl LocalAgentServiceImpl {
 
         let discovered = self.discover_openai_compat_models_uncached().await;
 
-        let mut cache = self.inner.shared.openai_compat_discovery_cache.lock().await;
+        let mut cache = self.inner.openai_compat_discovery_cache.lock().await;
         *cache = Some((std::time::Instant::now(), discovered.clone()));
         discovered
     }
@@ -1883,12 +1876,8 @@ impl LocalAgentServiceImpl {
             discover_models_or_empty, discovered_model_info,
         };
 
-        let configs = match crate::services::settings_service::load_openai_compat_configs(
-            &self.inner.shared.daemon_config_path,
-        )
-        .await
-        {
-            Ok(c) => c,
+        let configs = match self.inner.node_service.database_settings().await {
+            Ok((settings, _)) => settings.providers,
             Err(e) => {
                 tracing::warn!(error = %e, "failed to read OpenAI-compat configs for discovery");
                 return Vec::new();
@@ -1948,7 +1937,8 @@ impl LocalAgentServiceImpl {
             }};
         }
 
-        // OpenAI-compat configs are user-defined (stored in daemon.toml), not part
+        // OpenAI-compat configs are user-defined (stored in the database's settings
+        // node), not part
         // of the model catalog `list()` returns — resolve and branch on them first
         // so they never fall through to the "Unknown model" / GGUF path below.
         if is_openai_compat(model_id) {
@@ -1963,30 +1953,28 @@ impl LocalAgentServiceImpl {
                 ..Default::default()
             });
 
-            let config = match crate::services::settings_service::find_openai_compat_config(
-                &self.inner.shared.daemon_config_path,
-                config_id,
-            )
-            .await
-            {
-                Ok(Some(c)) => c,
-                Ok(None) => {
-                    emit!(ModelLoadProgressEvent {
-                        event_type: "error".to_string(),
-                        model_id: model_id.to_string(),
-                        error_message: Some(format!(
-                            "No OpenAI-compatible provider config found for '{config_id}'. Check Settings > Integrations."
-                        )),
-                        ..Default::default()
-                    });
-                    return events;
-                }
+            let config = match self.inner.node_service.database_settings().await {
+                Ok((settings, _)) => settings.provider(config_id).cloned(),
                 Err(e) => {
                     emit!(ModelLoadProgressEvent {
                         event_type: "error".to_string(),
                         model_id: model_id.to_string(),
                         error_message: Some(format!(
                             "Failed to read OpenAI-compatible provider config: {e}"
+                        )),
+                        ..Default::default()
+                    });
+                    return events;
+                }
+            };
+            let config = match config {
+                Some(c) => c,
+                None => {
+                    emit!(ModelLoadProgressEvent {
+                        event_type: "error".to_string(),
+                        model_id: model_id.to_string(),
+                        error_message: Some(format!(
+                            "No OpenAI-compatible provider config found for '{config_id}'. Check Settings > Integrations."
                         )),
                         ..Default::default()
                     });
@@ -2076,15 +2064,14 @@ impl LocalAgentServiceImpl {
                                  this model; routing falls back to the full tool surface."
                             );
                         }
-                        if let Err(e) =
-                            crate::services::settings_service::record_routing_probe_verdict(
-                                &self.inner.shared.daemon_config_path,
-                                config_id,
-                                &config.base_url,
-                                &model,
-                                routing_ok,
-                            )
-                            .await
+                        if let Err(e) = record_routing_probe_verdict(
+                            &self.inner.node_service,
+                            config_id,
+                            &config.base_url,
+                            &model,
+                            routing_ok,
+                        )
+                        .await
                         {
                             tracing::warn!(
                                 error = %e,
@@ -2935,6 +2922,49 @@ fn resolved_entities_message(entities: &[ResolvedEntity]) -> Option<ChatMessage>
     ))
 }
 
+/// Store the routing probe's verdict for one served model on the provider
+/// config it was measured against, in the database's settings node
+/// (ADR-095).
+///
+/// The verdict describes `base_url`, so it is stored only when the provider
+/// still has that endpoint: a config edited while the probe ran keeps no
+/// verdict for an endpoint it no longer names. A lost race with a settings
+/// write reads the winning version and tries again.
+async fn record_routing_probe_verdict(
+    node_service: &Arc<NodeService>,
+    config_id: &str,
+    base_url: &str,
+    served_model: &str,
+    routing_ok: bool,
+) -> Result<(), NodeServiceError> {
+    for attempt in 0..MAX_WRITE_ATTEMPTS {
+        let (settings, version) = node_service.database_settings().await?;
+        let mut providers = settings.providers;
+        let Some(provider) = providers
+            .iter_mut()
+            .find(|p| p.id == config_id && p.base_url == base_url)
+        else {
+            return Ok(());
+        };
+        provider
+            .routing_ok
+            .insert(served_model.to_string(), routing_ok);
+        let update = DatabaseSettingsNodeUpdate {
+            providers: Some(Some(providers)),
+            ..Default::default()
+        };
+        match node_service
+            .update_database_settings_node(DATABASE_SETTINGS_NODE_ID, version, update)
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(NodeServiceError::VersionConflict { .. }) if attempt + 1 < MAX_WRITE_ATTEMPTS => {}
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the last attempt returns its own result")
+}
+
 /// Load a chat's stored conversation.
 ///
 /// The single read a turn makes of its own conversation. Both things a turn
@@ -3425,15 +3455,13 @@ mod tests {
     ) {
         let tempdir = tempfile::TempDir::new().expect("tempdir");
         let node_service = test_node_service(tempdir.path().join("daemon-db")).await;
-        let daemon_config_path = tempdir.path().join("daemon.toml");
         let shared = if model_manager {
             SharedLocalAgent::from_model_manager(
-                daemon_config_path,
                 GgufModelManager::new().ok().map(Arc::new),
                 spec_timeout,
             )
         } else {
-            SharedLocalAgent::from_model_manager(daemon_config_path, None, spec_timeout)
+            SharedLocalAgent::from_model_manager(None, spec_timeout)
         };
         let embedding: SharedEmbeddingService = Arc::new(RwLock::new(None));
         let svc = LocalAgentServiceImpl::new(shared.clone(), node_service.clone(), embedding);
@@ -3870,12 +3898,7 @@ mod tests {
     /// local, which is the state a model swap passes through.
     #[tokio::test]
     async fn local_engine_is_the_loaded_model_only_when_it_runs_on_this_machine() {
-        let tempdir = tempfile::TempDir::new().unwrap();
-        let shared = SharedLocalAgent::from_model_manager(
-            tempdir.path().join("daemon.toml"),
-            None,
-            MODEL_SPEC_SNAPSHOT_TIMEOUT,
-        );
+        let shared = SharedLocalAgent::from_model_manager(None, MODEL_SPEC_SNAPSHOT_TIMEOUT);
         assert!(shared.local_engine().await.is_none(), "no model loaded");
 
         shared
@@ -3915,12 +3938,7 @@ mod tests {
         use crate::services::capture_service::SessionSummarizer;
         use crate::services::terminal_summary::LocalModelSummarizer;
 
-        let tempdir = tempfile::TempDir::new().unwrap();
-        let shared = SharedLocalAgent::from_model_manager(
-            tempdir.path().join("daemon.toml"),
-            None,
-            MODEL_SPEC_SNAPSHOT_TIMEOUT,
-        );
+        let shared = SharedLocalAgent::from_model_manager(None, MODEL_SPEC_SNAPSHOT_TIMEOUT);
         let summarizer = LocalModelSummarizer::new(shared.clone());
         let output = "Edited parser.rs\nAll 42 tests pass";
 
@@ -4230,13 +4248,8 @@ mod tests {
 
         let mgr = Arc::new(GgufModelManager::with_dir(models_dir.clone()).expect("model manager"));
         mgr.load(&entry.id).await.expect("load");
-
-        let daemon_config_path = tempdir.path().join("daemon.toml");
-        let shared = SharedLocalAgent::from_model_manager(
-            daemon_config_path,
-            Some(mgr.clone()),
-            MODEL_SPEC_SNAPSHOT_TIMEOUT,
-        );
+        let shared =
+            SharedLocalAgent::from_model_manager(Some(mgr.clone()), MODEL_SPEC_SNAPSHOT_TIMEOUT);
         let node_service = test_node_service(tempdir.path().join("daemon-db")).await;
         let embedding: SharedEmbeddingService = Arc::new(RwLock::new(None));
         let svc = LocalAgentServiceImpl::new(shared, node_service, embedding);
@@ -4311,13 +4324,8 @@ mod tests {
 
         let mgr = Arc::new(GgufModelManager::with_dir(models_dir.clone()).expect("model manager"));
         mgr.load(&model_a.id).await.expect("load A");
-
-        let daemon_config_path = tempdir.path().join("daemon.toml");
-        let shared = SharedLocalAgent::from_model_manager(
-            daemon_config_path,
-            Some(mgr.clone()),
-            MODEL_SPEC_SNAPSHOT_TIMEOUT,
-        );
+        let shared =
+            SharedLocalAgent::from_model_manager(Some(mgr.clone()), MODEL_SPEC_SNAPSHOT_TIMEOUT);
         let node_service = test_node_service(tempdir.path().join("daemon-db")).await;
         let embedding: SharedEmbeddingService = Arc::new(RwLock::new(None));
         let svc = LocalAgentServiceImpl::new(shared, node_service, embedding);
@@ -4392,12 +4400,8 @@ mod tests {
             .expect("write fake model file");
 
         let mgr = Arc::new(GgufModelManager::with_dir(models_dir.clone()).expect("model manager"));
-        let daemon_config_path = tempdir.path().join("daemon.toml");
-        let shared = SharedLocalAgent::from_model_manager(
-            daemon_config_path,
-            Some(mgr.clone()),
-            MODEL_SPEC_SNAPSHOT_TIMEOUT,
-        );
+        let shared =
+            SharedLocalAgent::from_model_manager(Some(mgr.clone()), MODEL_SPEC_SNAPSHOT_TIMEOUT);
         let node_service = test_node_service(tempdir.path().join("daemon-db")).await;
         let embedding: SharedEmbeddingService = Arc::new(RwLock::new(None));
         let svc = LocalAgentServiceImpl::new(shared, node_service, embedding);
@@ -5380,11 +5384,7 @@ mod tests {
             model_load_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
             subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
-            local_agent: SharedLocalAgent::from_model_manager(
-                dir.path().join("daemon.toml"),
-                None,
-                MODEL_SPEC_SNAPSHOT_TIMEOUT,
-            ),
+            local_agent: SharedLocalAgent::from_model_manager(None, MODEL_SPEC_SNAPSHOT_TIMEOUT),
             extensions: crate::DaemonExtensions::none(),
         };
         let manager = Arc::new(
@@ -6622,11 +6622,14 @@ mod tests {
     async fn load_openai_compat_model_without_config_returns_clear_error() {
         let (svc, _node_service, _tempdir) = test_service().await;
 
-        // No daemon.toml exists yet, so the config lookup returns None. This
-        // must surface a specific "no config found" error, not fall through to
+        // The database has no providers yet, so the config lookup returns None.
+        // This must surface a specific "no config found" error, not fall through to
         // the GGUF path-resolution failure the bug report described.
         let events = svc
-            .load_model_and_collect_events("openai-compat:missing-uuid", None)
+            .load_model_and_collect_events(
+                "openai-compat:00000000-0000-4000-8000-000000000000",
+                None,
+            )
             .await;
 
         let error_event = events
@@ -6647,23 +6650,46 @@ mod tests {
         );
     }
 
+    const PROVIDER_ID: &str = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
+
+    fn provider(model: &str) -> nodespace_types::ProviderConfig {
+        nodespace_types::ProviderConfig {
+            id: PROVIDER_ID.to_string(),
+            name: "My Endpoint".to_string(),
+            base_url: "http://127.0.0.1:9999/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            model: model.to_string(),
+            routing_ok: Default::default(),
+        }
+    }
+
+    /// Replace the database's provider list through the settings node's typed
+    /// update, as the Settings screen does.
+    async fn set_providers(
+        node_service: &Arc<NodeService>,
+        providers: Vec<nodespace_types::ProviderConfig>,
+    ) {
+        let (_, version) = node_service.database_settings().await.expect("settings");
+        node_service
+            .update_database_settings_node(
+                DATABASE_SETTINGS_NODE_ID,
+                version,
+                DatabaseSettingsNodeUpdate {
+                    providers: Some(Some(providers)),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("write providers");
+    }
+
     #[tokio::test]
     async fn load_openai_compat_model_with_config_swaps_engine() {
-        let (svc, _node_service, tempdir) = test_service().await;
-        let config_path = tempdir.path().join("daemon.toml");
-        let toml = r#"
-[[openai_compat.configs]]
-id = "abc-123"
-name = "My Endpoint"
-base_url = "http://127.0.0.1:9999/v1"
-api_key = "sk-test"
-"#;
-        tokio::fs::write(&config_path, toml)
-            .await
-            .expect("write daemon.toml");
+        let (svc, node_service, _tempdir) = test_service().await;
+        set_providers(&node_service, vec![provider("")]).await;
 
         let events = svc
-            .load_model_and_collect_events("openai-compat:abc-123", None)
+            .load_model_and_collect_events(&format!("openai-compat:{PROVIDER_ID}"), None)
             .await;
 
         let ready_event = events
@@ -6690,25 +6716,13 @@ api_key = "sk-test"
     /// here could otherwise distinguish from a leaked stale verdict.
     #[tokio::test]
     async fn editing_model_on_an_undiscovered_config_forces_a_reprobe() {
-        let (svc, _node_service, tempdir) = test_service().await;
-        let config_path = tempdir.path().join("daemon.toml");
-        let toml = r#"
-[[openai_compat.configs]]
-id = "abc-123"
-name = "My Endpoint"
-base_url = "http://127.0.0.1:9999/v1"
-api_key = ""
-model = "model-a"
-"#;
-        tokio::fs::write(&config_path, toml)
-            .await
-            .expect("write daemon.toml");
+        let (svc, node_service, _tempdir) = test_service().await;
+        set_providers(&node_service, vec![provider("model-a")]).await;
+        let model_id = format!("openai-compat:{PROVIDER_ID}");
 
         // First load: no discovery segment in the id, so `model` resolves
         // from the config's pinned field.
-        let first = svc
-            .load_model_and_collect_events("openai-compat:abc-123", None)
-            .await;
+        let first = svc.load_model_and_collect_events(&model_id, None).await;
         assert!(
             first.iter().any(|e| e.event_type == "ready"),
             "first load should still reach ready even though the probe cannot reach anything: \
@@ -6729,27 +6743,15 @@ model = "model-a"
 
         // Edit `model` in place — same config id, same base_url, different
         // served model. The Settings GUI writes exactly this shape.
-        let edited_toml = r#"
-[[openai_compat.configs]]
-id = "abc-123"
-name = "My Endpoint"
-base_url = "http://127.0.0.1:9999/v1"
-api_key = ""
-model = "model-b"
-"#;
-        tokio::fs::write(&config_path, edited_toml)
-            .await
-            .expect("rewrite daemon.toml");
+        set_providers(&node_service, vec![provider("model-b")]).await;
 
-        // Second load uses the SAME model_id string ("openai-compat:abc-123")
+        // Second load uses the SAME model_id string (`openai-compat:<uuid>`)
         // as the first — this is the crux of the regression. If the routing
         // cache keyed on `swapped` (which will be `false`: same model_id,
         // engine already active), it would skip straight to the stale
         // `self.inner` state instead of consulting `config.routing_ok` or
         // re-probing.
-        let second = svc
-            .load_model_and_collect_events("openai-compat:abc-123", None)
-            .await;
+        let second = svc.load_model_and_collect_events(&model_id, None).await;
         assert!(
             second.iter().any(|e| e.event_type == "ready"),
             "second load should also reach ready: {second:?}"
@@ -6772,6 +6774,70 @@ model = "model-b"
              Some((base_url, \"model-a\")) it would mean the second load reused the first load's \
              state instead of re-evaluating for model-b"
         );
+    }
+
+    /// A provider is found only in the database that configured it (ADR-095):
+    /// a second database open in the same daemon, with its own settings node,
+    /// does not see the first one's providers, in the model list or by id.
+    #[tokio::test]
+    async fn a_provider_exists_only_in_the_database_that_configured_it() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        let (other_svc, _other_node_service, _other_tempdir) = test_service().await;
+        set_providers(&node_service, vec![provider("")]).await;
+
+        let model_id = format!("openai-compat:{PROVIDER_ID}");
+        let found = svc.load_model_and_collect_events(&model_id, None).await;
+        assert!(found.iter().any(|e| e.event_type == "ready"), "{found:?}");
+
+        let missing = other_svc
+            .load_model_and_collect_events(&model_id, None)
+            .await;
+        let message = missing
+            .iter()
+            .find(|e| e.event_type == "error")
+            .and_then(|e| e.error_message.as_deref())
+            .expect("the other database reports no such provider");
+        assert!(
+            message.contains("No OpenAI-compatible provider config found"),
+            "{message}"
+        );
+    }
+
+    /// The probe's verdict is stored on the provider it was measured against,
+    /// and is dropped when the provider's endpoint or model changes.
+    #[tokio::test]
+    async fn a_routing_verdict_is_stored_on_its_provider_and_dropped_on_an_edit() {
+        let (_svc, node_service, _tempdir) = test_service().await;
+        set_providers(&node_service, vec![provider("model-a")]).await;
+        let base_url = "http://127.0.0.1:9999/v1";
+
+        record_routing_probe_verdict(&node_service, PROVIDER_ID, base_url, "model-a", false)
+            .await
+            .expect("record");
+        let (settings, _) = node_service.database_settings().await.unwrap();
+        assert_eq!(
+            settings
+                .provider(PROVIDER_ID)
+                .unwrap()
+                .routing_ok
+                .get("model-a"),
+            Some(&false)
+        );
+
+        // A verdict for an endpoint the provider no longer names is not kept.
+        record_routing_probe_verdict(&node_service, PROVIDER_ID, "http://elsewhere/v1", "m", true)
+            .await
+            .expect("a stale endpoint is not an error");
+        let (settings, _) = node_service.database_settings().await.unwrap();
+        assert_eq!(settings.provider(PROVIDER_ID).unwrap().routing_ok.len(), 1);
+
+        set_providers(&node_service, vec![provider("model-b")]).await;
+        let (settings, _) = node_service.database_settings().await.unwrap();
+        assert!(settings
+            .provider(PROVIDER_ID)
+            .unwrap()
+            .routing_ok
+            .is_empty());
     }
 
     // -- Cross-turn duplicate-write guard --------------------------------
@@ -7898,12 +7964,12 @@ model = "model-b"
         fetched_at: std::time::Instant,
         models: Vec<nodespace_agent::agent_types::ModelInfo>,
     ) {
-        let mut cache = svc.inner.shared.openai_compat_discovery_cache.lock().await;
+        let mut cache = svc.inner.openai_compat_discovery_cache.lock().await;
         *cache = Some((fetched_at, models));
     }
 
-    /// A fresh cache entry is served as-is — no endpoint is queried, so an
-    /// empty `daemon.toml` (zero configured endpoints, which would otherwise
+    /// A fresh cache entry is served as-is — no endpoint is queried, so a
+    /// database with no providers (zero configured endpoints, which would otherwise
     /// make discovery trivially return the same empty result) cannot mask a
     /// bug here: the cached entry contains one fake model, which only comes
     /// back if the cache path is actually taken.
@@ -7978,7 +8044,6 @@ model = "model-b"
 
         let first_fetched_at = svc
             .inner
-            .shared
             .openai_compat_discovery_cache
             .lock()
             .await
@@ -7995,7 +8060,6 @@ model = "model-b"
         let _ = svc.discover_openai_compat_models(false).await;
         let second_fetched_at = svc
             .inner
-            .shared
             .openai_compat_discovery_cache
             .lock()
             .await
@@ -8060,14 +8124,9 @@ model = "model-b"
         .expect("create .nodespace dir");
         std::fs::write(&models_path, b"not a directory").expect("occupy the models path");
 
-        // Under a separate tempdir from `fake_home` so the config path and the
-        // (broken) models directory don't collide.
-        let config_tempdir = tempfile::TempDir::new().expect("config tempdir");
-        let daemon_config_path = config_tempdir.path().join("daemon.toml");
-
         let original_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", fake_home.path());
-        let shared = SharedLocalAgent::new(daemon_config_path);
+        let shared = SharedLocalAgent::new();
         match original_home {
             Some(h) => std::env::set_var("HOME", h),
             None => std::env::remove_var("HOME"),

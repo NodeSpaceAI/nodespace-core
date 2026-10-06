@@ -74,12 +74,15 @@ export { nodeToQueryNode } from './query';
 
 // These types' wire shapes are generated from Rust's `nodespace-types`.
 export type {
+  CaptureContent,
   CollectionNode,
   CollectionNodeUpdate,
+  DatabaseSettingsFields,
   DatabaseSettingsNode,
   DatabaseSettingsNodeUpdate,
   PlayNode,
   PlayNodeUpdate,
+  ProviderConfig,
   SkillNode,
   SkillNodeUpdate
 } from './generated';

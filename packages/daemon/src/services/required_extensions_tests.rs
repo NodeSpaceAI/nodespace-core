@@ -32,11 +32,7 @@ pub(crate) fn context(supported: &[&str]) -> SharedContext {
         model_load_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         scheduler: Arc::new(EmbeddingScheduler::new()),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
-        local_agent: crate::SharedLocalAgent::new(
-            crate::nodespace_dir()
-                .expect("nodespace dir")
-                .join("daemon.toml"),
-        ),
+        local_agent: crate::SharedLocalAgent::new(),
         extensions: supported
             .iter()
             .fold(crate::DaemonExtensions::none(), |extensions, id| {

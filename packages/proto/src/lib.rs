@@ -101,15 +101,12 @@ pub use nodespace::local_agent_service_client::LocalAgentServiceClient;
 pub use nodespace::local_agent_service_server::LocalAgentServiceServer;
 pub use nodespace::node_service_client::NodeServiceClient;
 pub use nodespace::node_service_server::NodeServiceServer;
-pub use nodespace::settings_service_client::SettingsServiceClient;
-pub use nodespace::settings_service_server::SettingsServiceServer;
 pub use nodespace::{
-    AgentAvailability, CaptureContentLevel, CaptureSettingsResponse, CheckAvailabilityRequest,
-    CheckAvailabilityResponse, CreateDatabaseRequest, DatabaseInfo, DatabaseStatus,
-    GetCaptureSettingsRequest, LaunchSessionRequest, LaunchSessionResponse, ListDatabasesRequest,
-    ListDatabasesResponse, ListSessionsRequest, ListSessionsResponse, NodeData,
-    RegisterDatabaseRequest, RemoveDatabaseRequest, RemoveDatabaseResponse, RenameDatabaseRequest,
-    ReportHarnessSessionRequest, ReportHarnessSessionResponse, ResizeRequest, ResizeResponse,
-    SessionInfo, SetDefaultDatabaseRequest, StreamOutputRequest, TerminateSessionRequest,
-    TerminateSessionResponse, UpdateCaptureSettingsRequest, WriteInputRequest, WriteInputResponse,
+    AgentAvailability, CheckAvailabilityRequest, CheckAvailabilityResponse, CreateDatabaseRequest,
+    DatabaseInfo, DatabaseStatus, LaunchSessionRequest, LaunchSessionResponse,
+    ListDatabasesRequest, ListDatabasesResponse, ListSessionsRequest, ListSessionsResponse,
+    NodeData, RegisterDatabaseRequest, RemoveDatabaseRequest, RemoveDatabaseResponse,
+    RenameDatabaseRequest, ReportHarnessSessionRequest, ReportHarnessSessionResponse,
+    ResizeRequest, ResizeResponse, SessionInfo, SetDefaultDatabaseRequest, StreamOutputRequest,
+    TerminateSessionRequest, TerminateSessionResponse, WriteInputRequest, WriteInputResponse,
 };

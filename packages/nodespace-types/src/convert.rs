@@ -3,7 +3,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use crate::ai_chat::{AiChatMessageNode, AiChatNativeNode, AiChatPtyNode};
 use crate::collection::CollectionNode;
 use crate::core_type::CoreNodeType;
-use crate::database_settings::DatabaseSettingsNode;
+use crate::database_settings::{DatabaseSettingsFields, DatabaseSettingsNode};
 use crate::decision::DecisionNode;
 use crate::node::{Node, NodeEnvelope};
 use crate::person::PersonNode;
@@ -389,7 +389,15 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
             }
         }
         CoreNodeType::DatabaseSettings => {
-            const { &[F::new("required_extensions", "requiredExtensions", Array)] }
+            const {
+                &[
+                    F::new("required_extensions", "requiredExtensions", Array),
+                    F::new("capture_enabled", "captureEnabled", Boolean),
+                    F::text("capture_content", "captureContent"),
+                    F::new("external_tools_enabled", "externalToolsEnabled", Boolean),
+                    F::new("providers", "providers", Array),
+                ]
+            }
         }
         CoreNodeType::Query => {
             const {
@@ -742,25 +750,22 @@ fn skill_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     serde_json::to_value(&skill).map_err(|e| format!("Failed to serialize skill node: {}", e))
 }
 
-/// A stored list that is not a list of strings reads as empty here. Writes are
+/// A stored settings node whose fields do not decode keeps its node in the
+/// batch with the schema defaults, as a malformed query does. Writes are
 /// checked by `DatabaseSettingsNodeBehavior::validate`, and the open guard
-/// reads the stored value itself rather than this shape.
+/// reads the stored extension list itself rather than this shape.
 fn database_settings_node_to_value(node: Node) -> Result<serde_json::Value, String> {
-    let required_extensions = node
-        .properties
-        .get("required_extensions")
-        .and_then(|v| v.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
+    let fields = DatabaseSettingsFields::from_properties(&node.properties).unwrap_or_else(|e| {
+        eprintln!(
+            "database-settings node '{}' has unreadable fields: {e}",
+            node.id
+        );
+        DatabaseSettingsFields::default()
+    });
 
     let settings = DatabaseSettingsNode {
         envelope: extension_envelope(node, CoreNodeType::DatabaseSettings),
-        required_extensions,
+        fields,
     };
 
     serde_json::to_value(&settings)

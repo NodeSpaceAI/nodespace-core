@@ -2388,10 +2388,10 @@ impl NodeBehavior for PersonNodeBehavior {
 
 /// Built-in behavior for the database-settings singleton node
 ///
-/// DatabaseSettingsNode is the singleton anchor for database-level configuration
-/// and for the owner `has_role` edge (ADR-037): the edge runs PersonNode →
-/// DatabaseSettingsNode and marks that person as the local user. Its one field,
-/// `required_extensions`, lists the extensions a reader needs (ADR-083 §2).
+/// DatabaseSettingsNode is the singleton anchor for the database's own
+/// settings (ADR-095) and for the owner `has_role` edge (ADR-037): the edge
+/// runs PersonNode → DatabaseSettingsNode and marks that person as the local
+/// user.
 pub struct DatabaseSettingsNodeBehavior;
 
 impl NodeBehavior for DatabaseSettingsNodeBehavior {
@@ -2399,31 +2399,17 @@ impl NodeBehavior for DatabaseSettingsNodeBehavior {
         "database-settings"
     }
 
-    /// Rejects a `required_extensions` that is not a list of strings (null
-    /// clears it). The daemon's open guard refuses a database whose list it
-    /// cannot read, so a malformed value must not be stored. Checked in the
-    /// node's own bucket and at the top level, where a write that does not
-    /// normalize flat properties (`bulk_create`) leaves the field.
+    /// Rejects a settings field of the wrong shape (null clears one): an
+    /// extension list that is not strings, a provider with an undeclared key,
+    /// no id or an id that is not a UUID. The daemon's open guard refuses a
+    /// database whose extension list it cannot read, and every consumer reads
+    /// these fields through one decoder, so a malformed value must not be
+    /// stored. Read from the node's own bucket or, for a write that does not
+    /// normalize flat properties (`bulk_create`), from the top level.
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        let field = crate::models::core_schemas::REQUIRED_EXTENSIONS_FIELD;
-        let values = [
-            node.properties
-                .get(self.type_name())
-                .and_then(|bucket| bucket.get(field)),
-            node.properties.get(field),
-        ];
-        for value in values.into_iter().flatten() {
-            let is_list_of_strings = value.is_null()
-                || value
-                    .as_array()
-                    .is_some_and(|items| items.iter().all(serde_json::Value::is_string));
-            if !is_list_of_strings {
-                return Err(NodeValidationError::InvalidProperties(format!(
-                    "{field} must be a list of strings, found {value}"
-                )));
-            }
-        }
-        Ok(())
+        nodespace_types::DatabaseSettingsFields::from_properties(&node.properties)
+            .map(|_| ())
+            .map_err(|e| NodeValidationError::InvalidProperties(e.to_string()))
     }
 
     fn supports_markdown(&self) -> bool {
@@ -5688,6 +5674,47 @@ mod tests {
                     "{props} must be rejected"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn database_settings_checks_capture_tools_and_provider_shapes() {
+        let behavior = DatabaseSettingsNodeBehavior;
+        let id = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d";
+        let provider =
+            json!({ "id": id, "name": "n", "base_url": "u", "routing_ok": { "m": true } });
+        for props in [
+            json!({ "capture_enabled": true, "capture_content": "full" }),
+            json!({ "external_tools_enabled": true }),
+            json!({ "providers": [provider.clone()] }),
+            json!({ "providers": [] }),
+            json!({ "capture_enabled": null, "providers": null }),
+        ] {
+            for props in [props.clone(), json!({ "database-settings": props })] {
+                assert!(
+                    behavior
+                        .validate(&database_settings_node(props.clone()))
+                        .is_ok(),
+                    "{props} must be valid"
+                );
+            }
+        }
+        for props in [
+            json!({ "capture_enabled": "yes" }),
+            json!({ "capture_content": "everything" }),
+            json!({ "external_tools_enabled": 1 }),
+            json!({ "providers": "none" }),
+            json!({ "providers": [{ "name": "n", "base_url": "u" }] }),
+            json!({ "providers": [{ "id": "not-a-uuid", "name": "n", "base_url": "u" }] }),
+            json!({ "providers": [{ "id": id, "name": "n", "base_url": "u", "extra": 1 }] }),
+            json!({ "providers": [{ "id": id, "name": "n", "base_url": "u", "routing_ok": { "m": "yes" } }] }),
+        ] {
+            assert!(
+                behavior
+                    .validate(&database_settings_node(props.clone()))
+                    .is_err(),
+                "{props} must be rejected"
+            );
         }
     }
 

@@ -14,8 +14,8 @@ use std::time::Duration;
 use nodespace_proto::nodespace::GetNodeRequest;
 use nodespace_proto::{
     with_message_limits, AgentSessionServiceClient, DatabaseServiceClient, EmbeddingsServiceClient,
-    ImportServiceClient, LocalAgentServiceClient, NodeServiceClient, SettingsServiceClient,
-    CLIENT_ID_HEADER, DATABASE_ID_HEADER,
+    ImportServiceClient, LocalAgentServiceClient, NodeServiceClient, CLIENT_ID_HEADER,
+    DATABASE_ID_HEADER,
 };
 use tokio::sync::{watch, RwLock};
 use tonic::metadata::{Ascii, MetadataValue};
@@ -154,9 +154,8 @@ struct GrpcClientInner {
     embeddings: EmbeddingsClient,
     agent_session: AgentSessionClient,
     local_agent: LocalAgentClient,
-    // Unrouted clients — registry-global (database_service) or daemon-global
-    // (settings); they never carry the routing header.
-    settings: SettingsServiceClient<Channel>,
+    // Unrouted client — registry-global (database_service); it never carries
+    // the routing header.
     database_service: DatabaseServiceClient<Channel>,
     /// The desktop-local "which database am I viewing" selection. `None` = the
     /// daemon's default database. Distinct from the daemon-wide default set via
@@ -280,7 +279,6 @@ impl GrpcClient {
                 channel.clone(),
                 interceptor
             )),
-            settings: with_message_limits!(SettingsServiceClient::new(channel.clone())),
             database_service: with_message_limits!(DatabaseServiceClient::new(channel.clone())),
             active_database_id: None,
             client_id,
@@ -356,12 +354,6 @@ impl GrpcClient {
         (inner.import.clone(), inner.active_database_id.clone())
     }
 
-    /// Borrow a clone of the `SettingsServiceClient`. Settings are daemon-global
-    /// and never routed by database.
-    pub async fn settings_client(&self) -> SettingsServiceClient<Channel> {
-        self.inner.read().await.settings.clone()
-    }
-
     /// Borrow a clone of the routed `EmbeddingsService` client.
     ///
     /// Embeddings are always available in the daemon (unlike the old in-process
@@ -401,7 +393,7 @@ impl GrpcClient {
     /// the header so requests route to the daemon's default database.
     ///
     /// Only the routed clients are rebuilt — over the SAME channel, so no
-    /// reconnection happens. `settings`/`database_service` stay unrouted. Bumps
+    /// reconnection happens. `database_service` stays unrouted. Bumps
     /// a generation counter so the node-event watcher re-opens its `WatchNodes`
     /// stream against the newly-active database.
     pub async fn set_active_database(&self, id: Option<String>) {
@@ -547,7 +539,6 @@ impl GrpcClient {
                 channel.clone(),
                 interceptor
             ));
-            inner.settings = with_message_limits!(SettingsServiceClient::new(channel.clone()));
             inner.database_service =
                 with_message_limits!(DatabaseServiceClient::new(channel.clone()));
             inner.channel = channel;

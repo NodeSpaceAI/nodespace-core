@@ -44,7 +44,24 @@ use nodespace_core::services::{NodeService as CoreNodeService, NodeServiceError}
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::services::settings_service::{CaptureConfig, CaptureContentSetting};
+use nodespace_types::{CaptureContent, DatabaseSettingsFields};
+
+/// What capture reads from the session's database when a session starts
+/// (ADR-095): whether a finished session is saved and how much of it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CaptureConfig {
+    pub enabled: bool,
+    pub content: CaptureContent,
+}
+
+impl From<&DatabaseSettingsFields> for CaptureConfig {
+    fn from(settings: &DatabaseSettingsFields) -> Self {
+        Self {
+            enabled: settings.capture_enabled,
+            content: settings.capture_content,
+        }
+    }
+}
 
 /// How many times the write is attempted when another writer changes the node
 /// between the read of its version and the write.
@@ -84,9 +101,9 @@ pub struct CompletedSession {
 /// Callers should log errors and continue — a failed write must not affect
 /// session teardown.
 ///
-/// The caller is responsible for reading `CaptureConfig` once at session-launch
-/// time and passing the snapshot in here, so this function doesn't re-read
-/// daemon.toml on every session end.
+/// The caller is responsible for reading `CaptureConfig` from the session's
+/// database once at session-launch time and passing the snapshot in here, so
+/// this function doesn't re-read the settings on every session end.
 ///
 /// Only a terminal chat is written: `LaunchSession` takes any node id, and a
 /// node of another type is refused here rather than left to its schema, which
@@ -177,7 +194,7 @@ fn saves_summary(config: &CaptureConfig) -> bool {
     config.enabled
         && matches!(
             config.content,
-            CaptureContentSetting::Summary | CaptureContentSetting::Full
+            CaptureContent::Summary | CaptureContent::Full
         )
 }
 
@@ -283,7 +300,7 @@ fn build_session_end_properties(
     capture: &SessionCapture,
     config: &CaptureConfig,
 ) -> serde_json::Value {
-    let saves_transcript = config.enabled && config.content == CaptureContentSetting::Full;
+    let saves_transcript = config.enabled && config.content == CaptureContent::Full;
     json!({
         "session_status": AiChatSessionStatus::Ended,
         "last_active": session.ended_at.to_rfc3339(),
@@ -366,7 +383,7 @@ mod tests {
         c
     }
 
-    fn capturing(content: CaptureContentSetting) -> CaptureConfig {
+    fn capturing(content: CaptureContent) -> CaptureConfig {
         CaptureConfig {
             enabled: true,
             content,
@@ -376,7 +393,7 @@ mod tests {
     fn not_capturing() -> CaptureConfig {
         CaptureConfig {
             enabled: false,
-            content: CaptureContentSetting::Full,
+            content: CaptureContent::Full,
         }
     }
 
@@ -426,9 +443,9 @@ mod tests {
             |config: &CaptureConfig| build_session_end_properties(&session, &capture, config);
 
         let off = build(&not_capturing());
-        let metadata = build(&capturing(CaptureContentSetting::MetadataOnly));
-        let summary = build(&capturing(CaptureContentSetting::Summary));
-        let full = build(&capturing(CaptureContentSetting::Full));
+        let metadata = build(&capturing(CaptureContent::MetadataOnly));
+        let summary = build(&capturing(CaptureContent::Summary));
+        let full = build(&capturing(CaptureContent::Full));
 
         for properties in [&off, &metadata, &summary, &full] {
             // Every field that describes a session is written every time.
@@ -478,7 +495,7 @@ mod tests {
         let props = build_session_end_properties(
             &make_session(),
             &make_capture_with("hello world"),
-            &capturing(CaptureContentSetting::Full),
+            &capturing(CaptureContent::Full),
         );
         let chain: Vec<&str> = CoreNodeType::AiChatPty
             .chain()
@@ -517,7 +534,7 @@ mod tests {
             &session,
             &capture,
             &node_service,
-            &capturing(CaptureContentSetting::Full),
+            &capturing(CaptureContent::Full),
             &summarizer,
         )
         .await
@@ -575,7 +592,7 @@ mod tests {
             &session,
             &make_capture_with(raw),
             &node_service,
-            &capturing(CaptureContentSetting::Full),
+            &capturing(CaptureContent::Full),
             &summarizer,
         )
         .await
@@ -619,7 +636,7 @@ mod tests {
             &session,
             &capture,
             &node_service,
-            &capturing(CaptureContentSetting::Summary),
+            &capturing(CaptureContent::Summary),
             &summarizer,
         )
         .await
@@ -651,7 +668,7 @@ mod tests {
             &session,
             &make_capture_with("first session"),
             &node_service,
-            &capturing(CaptureContentSetting::Summary),
+            &capturing(CaptureContent::Summary),
             &RecordingSummarizer::answering("The first session."),
         )
         .await
@@ -661,7 +678,7 @@ mod tests {
             &session,
             &make_capture_with("\x1b[31msecond session\x1b[0m"),
             &node_service,
-            &capturing(CaptureContentSetting::Summary),
+            &capturing(CaptureContent::Summary),
             &RecordingSummarizer::unavailable(),
         )
         .await
@@ -685,10 +702,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let node_service = test_node_service(&tmp).await;
 
-        for config in [
-            not_capturing(),
-            capturing(CaptureContentSetting::MetadataOnly),
-        ] {
+        for config in [not_capturing(), capturing(CaptureContent::MetadataOnly)] {
             let node_id = create_chat(&node_service, "ai-chat-pty", "claude-code").await;
             let mut session = make_session();
             session.node_id = Some(node_id.clone());
@@ -818,8 +832,8 @@ mod tests {
 
         for config in [
             not_capturing(),
-            capturing(CaptureContentSetting::MetadataOnly),
-            capturing(CaptureContentSetting::Summary),
+            capturing(CaptureContent::MetadataOnly),
+            capturing(CaptureContent::Summary),
         ] {
             let node_id = create_chat(&node_service, "ai-chat-pty", "claude-code").await;
             let mut session = make_session();
@@ -829,7 +843,7 @@ mod tests {
                 &session,
                 &make_capture_with("first session"),
                 &node_service,
-                &capturing(CaptureContentSetting::Full),
+                &capturing(CaptureContent::Full),
                 &RecordingSummarizer::answering("The first session."),
             )
             .await
@@ -903,7 +917,7 @@ mod tests {
                         &next,
                         &make_capture_with("second session"),
                         &self.node_service,
-                        &capturing(CaptureContentSetting::Full),
+                        &capturing(CaptureContent::Full),
                         &RecordingSummarizer::unavailable(),
                     )
                     .await
@@ -925,7 +939,7 @@ mod tests {
                 &first,
                 &make_capture_with("first session"),
                 &node_service,
-                &capturing(CaptureContentSetting::Summary),
+                &capturing(CaptureContent::Summary),
                 &Overtaken {
                     node_service: node_service.clone(),
                     node_id: node_id.clone(),
@@ -1097,7 +1111,7 @@ mod tests {
             &session,
             &SessionCapture::new(),
             &node_service,
-            &capturing(CaptureContentSetting::Full),
+            &capturing(CaptureContent::Full),
             &RecordingSummarizer::unavailable(),
         )
         .await

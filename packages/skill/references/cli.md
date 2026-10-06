@@ -887,6 +887,28 @@ A database is addressed by **name or id**. When a name is ambiguous (shared by m
 
 **Refused databases.** A database can list an extension this NodeSpace build doesn't support. The daemon then refuses to open it and changes nothing in its file. `database list` shows its status as `requires_extension` and appends what it needs after the path; with `--json` the entry carries `unsupported_extensions` and a `refusal` message (`null` for any other database). `nodespace diagnostics` lists every database the same way, in both forms. `database use` accepts such a database and prints a `Warning:` line on stderr: once it is the default, every command without `--database` is refused. Any command routed to such a database, without `--database` when it is the default or with `--database` naming it, exits non-zero with that refusal message and a `Download …` line. Relay the message to the user verbatim, with the download line; the `refusal` field is the message alone, so when relaying from a listing, say the download link comes with the error of any command run against that database. Do not retry, and never move, rename, copy or edit the file to get around it. To keep working, target another database with `--database`. Ask the user before `database use`: it changes the default for every client, the desktop app included.
 
+### Database settings
+
+Each database holds its own settings in its `database-settings` node, id `database-settings-singleton`. There is no machine-wide settings file: a setting applies to the database a command is routed to (`--database`, else the default), and two databases open in one daemon each behave by their own.
+
+| Field | Meaning | Default |
+|---|---|---|
+| `capture_enabled` | save a finished terminal session to its chat node | `false` |
+| `capture_content` | how much a captured session saves: `metadata_only`, `summary` or `full` | `metadata_only` |
+| `external_tools_enabled` | whether `nodespace mcp` serves this database | `false` |
+| `providers` | OpenAI-compatible providers: a list of `{id, name, base_url, api_key, model, routing_ok}`, `id` a UUID | `[]` |
+
+```bash
+# Read a database's settings
+nodespace --database work node get database-settings-singleton
+
+# Change one (the same typed validation as the Settings screen applies)
+nodespace --database work node update database-settings-singleton --property capture_enabled=true
+nodespace --database work node update database-settings-singleton --property capture_content=summary
+```
+
+A provider's `api_key` is node data: every read of the settings node returns it. A new database starts with capture off, external tools off and no providers; nothing is copied from another database. `nodespace mcp install` and `uninstall` set `external_tools_enabled` for the database they are run for and print which database that is, and `nodespace mcp` serves only a database that has it on.
+
 ### Conflicts
 
 Reads and resolves records from the conflict journal — durable evidence that two nodes collide (e.g. two active `person` nodes share a unique-flagged field's value, or two collections share a name). This is a second client onto the same journal the desktop app's Conflicts view reads and writes, so a dismiss/adopt/merge made here is immediately visible there and vice versa.
@@ -1365,14 +1387,14 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 
 ### `nodespace mcp`
 
-Host a stdio MCP server exposing one passthrough tool, for bash-less MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this CLI directly — see `commands::mcp` for the architecture and its ADR-038 trust-boundary controls. Disabled until `nodespace mcp install` explicitly turns it on. With no subcommand, hosts the stdio server itself — what a client config launches, not something a person types directly
+Host a stdio MCP server exposing one passthrough tool, for bash-less MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this CLI directly — see `commands::mcp` for the architecture and its ADR-038 trust-boundary controls. Enabled per database: a database serves tools only once `nodespace mcp install` has turned it on for that database (`--database`, else the default), and every `mcp` command says which database it read or changed. With no subcommand, hosts the stdio server itself — what a client config launches, not something a person types directly
 
-**`nodespace mcp install`** — Configure a detected bash-less MCP client (currently Claude Desktop) to launch `nodespace mcp`, and enable the passthrough tool. Safe to re-run
+**`nodespace mcp install`** — Configure a detected bash-less MCP client (currently Claude Desktop) to launch `nodespace mcp`, and enable the passthrough tool for the selected database (`--database`, else the default). Safe to re-run. The client launches the server for the default database, so install for the database the client should use
 
 - `--yes` — Install without prompting for confirmation. Implied automatically when stdin/stdout isn't a terminal — mirrors `nodespace skill install`'s `--yes`
 
-**`nodespace mcp uninstall`** — Remove the MCP config this wrote from every detected client and disable the passthrough tool again
+**`nodespace mcp uninstall`** — Remove the MCP config this wrote from every detected client and disable the passthrough tool again for the selected database
 
-**`nodespace mcp status`** — Report whether the passthrough tool is enabled and which clients currently have a config pointing at it
+**`nodespace mcp status`** — Report whether the passthrough tool is enabled for the selected database and which clients currently have a config pointing at it
 
 <!-- END GENERATED: cli-surface -->

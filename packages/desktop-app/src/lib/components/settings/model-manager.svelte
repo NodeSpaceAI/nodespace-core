@@ -3,17 +3,13 @@
   import { onMount } from 'svelte';
   import { modelStore, formatBytes } from '$lib/stores/model-store.svelte';
   import {
-    getOpenAiConfigs,
-    saveOpenAiConfigs,
+    settingsStore,
     getDefaultModelSelection,
     saveDefaultModelSelection,
     type ModelSelection,
   } from '$lib/stores/settings.svelte';
-  import {
-    chatModelList,
-    getOpenAiCompatConfigsFromDaemon,
-  } from '$lib/services/tauri-commands';
-  import type { OpenAiCompatConfig } from '$lib/types/ai-chat-node';
+  import { chatModelList } from '$lib/services/tauri-commands';
+  import type { ProviderConfig } from '$lib/types';
   import { createLogger } from '$lib/utils/logger';
 
   const log = createLogger('ModelManager');
@@ -57,9 +53,9 @@
   }
 
   // --- OpenAI-compat configs ---
-  let openAiConfigs = $state<OpenAiCompatConfig[]>([]);
-  let editingConfig = $state<OpenAiCompatConfig | null>(null);
-  let editForm = $state({ name: '', baseUrl: '', apiKey: '', model: '' });
+  let openAiConfigs = $state<ProviderConfig[]>([]);
+  let editingConfig = $state<ProviderConfig | null>(null);
+  let editForm = $state({ name: '', base_url: '', api_key: '', model: '' });
   let isNewConfig = $state(false);
 
   // --- Default model ---
@@ -98,22 +94,16 @@
 
   onMount(async () => {
     if (models.length === 0) modelStore.refreshModels();
-    // Show the local cache immediately, then refresh from the daemon (source
-    // of truth) — avoids a blank list while the round-trip is in flight.
-    openAiConfigs = getOpenAiConfigs();
+    // Show what is already loaded immediately, then read the database's
+    // providers (source of truth) — avoids a blank list while the round-trip
+    // is in flight.
+    openAiConfigs = settingsStore.openAiConfigs;
     defaultModel = getDefaultModelSelection();
     try {
-      const daemonConfigs = await getOpenAiCompatConfigsFromDaemon();
-      openAiConfigs = daemonConfigs.map((c) => ({
-        id: c.id,
-        name: c.name,
-        baseUrl: c.baseUrl,
-        apiKey: c.apiKey,
-        model: c.model,
-      }));
+      openAiConfigs = await settingsStore.loadProviders();
       buildDefaultOptions();
     } catch (e) {
-      log.warn('Failed to refresh OpenAI-compat configs from daemon', e);
+      log.warn("Failed to read the database's providers", e);
     }
 
     await refreshRemoteModels();
@@ -161,23 +151,24 @@
   // --- OpenAI-compat CRUD ---
   function startAdd() {
     isNewConfig = true;
-    editForm = { name: '', baseUrl: '', apiKey: '', model: '' };
+    editForm = { name: '', base_url: '', api_key: '', model: '' };
     editingConfig = {
       id: globalThis.crypto.randomUUID(),
       name: '',
-      baseUrl: '',
-      apiKey: '',
+      base_url: '',
+      api_key: '',
       model: '',
+      routing_ok: {},
     };
   }
 
-  function startEdit(config: OpenAiCompatConfig) {
+  function startEdit(config: ProviderConfig) {
     isNewConfig = false;
     editingConfig = config;
     editForm = {
       name: config.name,
-      baseUrl: config.baseUrl,
-      apiKey: config.apiKey,
+      base_url: config.base_url,
+      api_key: config.api_key,
       model: config.model,
     };
   }
@@ -190,7 +181,7 @@
     } else {
       openAiConfigs = openAiConfigs.map((c) => (c.id === updated.id ? updated : c));
     }
-    await saveOpenAiConfigs(openAiConfigs);
+    await settingsStore.saveProviders(openAiConfigs);
     editingConfig = null;
     buildDefaultOptions();
     await refreshRemoteModels(true);
@@ -198,7 +189,7 @@
 
   async function deleteConfig(id: string) {
     openAiConfigs = openAiConfigs.filter((c) => c.id !== id);
-    await saveOpenAiConfigs(openAiConfigs);
+    await settingsStore.saveProviders(openAiConfigs);
     if (defaultModel?.configId === id) {
       defaultModel = null;
       saveDefaultModelSelection(null);
@@ -373,7 +364,7 @@
       <div class="config-card">
         <div class="config-card-info">
           <span class="config-name">{config.name}</span>
-          <span class="config-url">{config.baseUrl}</span>
+          <span class="config-url">{config.base_url}</span>
         </div>
         <div class="config-card-actions">
           <button class="btn btn--sm" onclick={() => startEdit(config)}>Edit</button>
@@ -391,7 +382,7 @@
         </label>
         <label class="form-label">
           Base URL
-          <input class="form-input" type="url" bind:value={editForm.baseUrl} placeholder="https://api.openai.com/v1" />
+          <input class="form-input" type="url" bind:value={editForm.base_url} placeholder="https://api.openai.com/v1" />
         </label>
         <label class="form-label">
           Model
@@ -400,10 +391,10 @@
         <p class="mm-desc">The exact model identifier the endpoint expects — required by the real OpenAI API and any server hosting more than one model.</p>
         <label class="form-label">
           API Key
-          <input class="form-input" type="password" bind:value={editForm.apiKey} placeholder="sk-…" />
+          <input class="form-input" type="password" bind:value={editForm.api_key} placeholder="sk-…" />
         </label>
         <div class="form-actions">
-          <button class="btn btn--primary btn--sm" onclick={saveConfig} disabled={!editForm.name || !editForm.baseUrl || !editForm.model}>Save</button>
+          <button class="btn btn--primary btn--sm" onclick={saveConfig} disabled={!editForm.name || !editForm.base_url || !editForm.model}>Save</button>
           <button class="btn btn--sm" onclick={cancelEdit}>Cancel</button>
         </div>
       </div>

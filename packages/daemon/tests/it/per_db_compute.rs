@@ -40,11 +40,7 @@ fn test_context() -> (SharedContext, Arc<EmbeddingScheduler>) {
         model_load_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         scheduler: scheduler.clone(),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
-        local_agent: nodespace_daemon::SharedLocalAgent::new(
-            nodespace_daemon::nodespace_dir()
-                .expect("nodespace dir")
-                .join("daemon.toml"),
-        ),
+        local_agent: nodespace_daemon::SharedLocalAgent::new(),
         extensions: nodespace_daemon::DaemonExtensions::none(),
     };
     (context, scheduler)

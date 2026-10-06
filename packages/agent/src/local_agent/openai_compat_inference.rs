@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Prefix used to identify OpenAI-compatible provider configs. The suffix is
-/// the UUID of the config stored in daemon.toml (`[[openai_compat.configs]]`).
+/// the UUID of a config in the `providers` of the database's settings node.
 pub const OPENAI_COMPAT_PREFIX: &str = "openai-compat:";
 
 /// Check if a model ID represents an OpenAI-compatible provider config.

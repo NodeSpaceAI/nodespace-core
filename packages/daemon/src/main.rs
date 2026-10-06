@@ -1300,7 +1300,7 @@ mod open_default_database_tests {
             dir.path().join("databases.toml"),
             &marker,
             &db_path,
-            test_context(dir.path()),
+            test_context(),
         )
         .await
         .expect("startup continues");
@@ -1313,7 +1313,7 @@ mod open_default_database_tests {
         assert!(!marker.exists());
     }
 
-    fn test_context(home: &std::path::Path) -> SharedContext {
+    fn test_context() -> SharedContext {
         let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
         SharedContext {
             pty_manager: Arc::new(nodespace_agent::pty::PtySessionManager::new()),
@@ -1322,7 +1322,7 @@ mod open_default_database_tests {
             model_load_failed: Arc::new(AtomicBool::new(false)),
             scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
             subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
-            local_agent: nodespace_daemon::SharedLocalAgent::new(home.join("daemon.toml")),
+            local_agent: nodespace_daemon::SharedLocalAgent::new(),
             extensions: DaemonExtensions::none(),
         }
     }
@@ -1369,7 +1369,7 @@ mod open_default_database_tests {
             dir.path().join("databases.toml"),
             &marker,
             &db_path,
-            test_context(dir.path()),
+            test_context(),
         )
         .await
         {
@@ -1481,7 +1481,7 @@ mod open_default_database_tests {
                 dir.path().join("databases.toml"),
                 &marker,
                 &db_path,
-                test_context(dir.path()),
+                test_context(),
             )
             .await
             {
@@ -1547,7 +1547,7 @@ mod open_default_database_tests {
             dir.path().join("databases.toml"),
             &marker,
             &db_path,
-            test_context(dir.path()),
+            test_context(),
         )
         .await
         .expect("this build's own database opens");
@@ -1717,7 +1717,6 @@ async fn serve_headless() -> Result<()> {
         node_service: bundle.node_service_grpc.clone(),
         agent_session: bundle.agent_session.clone(),
         import: bundle.import.clone(),
-        settings: shared.settings,
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
@@ -1811,7 +1810,6 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         node_service: bundle.node_service_grpc.clone(),
         agent_session: bundle.agent_session.clone(),
         import: bundle.import.clone(),
-        settings: shared.settings,
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
@@ -1984,7 +1982,6 @@ async fn serve_headless() -> Result<()> {
         node_service: bundle.node_service_grpc.clone(),
         agent_session: bundle.agent_session.clone(),
         import: bundle.import.clone(),
-        settings: shared.settings,
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
@@ -2103,7 +2100,6 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         node_service: bundle.node_service_grpc.clone(),
         agent_session: bundle.agent_session.clone(),
         import: bundle.import.clone(),
-        settings: shared.settings,
         local_agent: bundle.local_agent.clone(),
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),

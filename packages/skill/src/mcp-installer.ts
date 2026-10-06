@@ -19,10 +19,10 @@ import type { McpClientName } from './mcp-clients.js';
  * must not be registered until a user has explicitly turned it on. The only
  * callers are `install.ts`'s `mcp-install`/`mcp-uninstall`/`mcp-status`
  * commands, invoked by `nodespace mcp install`/`uninstall`/`status`
- * (`packages/cli/src/commands/mcp.rs`), which also flips the
- * `~/.nodespace/daemon.toml` `[mcp] enabled` flag that
- * `nodespace mcp`'s own server checks at startup -- so writing a client
- * config here is necessary but not sufficient for the tool to go live.
+ * (`packages/cli/src/commands/mcp.rs`), which also sets the database's
+ * `external_tools_enabled` setting that `nodespace mcp`'s own server checks
+ * at startup -- so writing a client config here is necessary but not
+ * sufficient for the tool to go live.
  */
 
 export interface McpInstallResult {
@@ -103,7 +103,7 @@ function readJsonObject(path: string): Record<string, unknown> {
  * an atomic rename, so a client reading `path` mid-write (or a crash
  * partway through) never sees truncated/partial JSON -- the same
  * crash-safety shape `packages/daemon`'s `write_config_atomic` uses for
- * `daemon.toml`, at the rigor this file's own risk warrants (a client
+ * settings files, at the rigor this file's own risk warrants (a client
  * config, not a file carrying API keys, so no owner-only permissions step).
  */
 function writeJsonObjectAtomic(path: string, obj: Record<string, unknown>): void {

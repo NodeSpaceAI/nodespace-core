@@ -30,11 +30,12 @@ notes. Two traps, both of which have bitten before:
    (ADR-053)". Observed behavior: the daemon still served the real DB.
 
 **`NODESPACE_HOME` is the correct lever.** It relocates the whole state
-directory — database, registry, embedding model, and `daemon.toml` (provider
-settings and API keys) — in one variable. Chat models still load from `$HOME`.
-An isolated daemon therefore starts with no API keys; to test against a
-provider, put a throwaway `daemon.toml` at `$NODESPACE_HOME/.nodespace/` (never
-a symlink or copy of the real one, which the daemon writes to).
+directory — database, registry and embedding model — in one variable. Chat
+models still load from `$HOME`. Provider settings and API keys are fields of
+each database's own settings node (ADR-095), so an isolated daemon's database
+starts with none; to test against a provider, add it in the isolated database
+(the Settings screen, or the settings node's typed update), never by copying a
+real database over it.
 
 ## Launch sequence
 

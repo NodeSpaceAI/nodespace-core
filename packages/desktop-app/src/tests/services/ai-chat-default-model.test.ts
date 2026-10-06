@@ -14,7 +14,7 @@ vi.mock('$lib/services/backend-adapter', () => ({
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { createSchemaInstance } from '$lib/services/schema-authoring';
 import { getDefaultAiChatModelProperties } from '$lib/services/ai-chat-default-model';
-import { saveDefaultModelSelection } from '$lib/stores/settings.svelte';
+import { saveDefaultModelSelection, settingsStore } from '$lib/stores/settings.svelte';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { shouldSkipStaleAiChatUpdate } from '$lib/services/remote-update-policy';
 
@@ -24,13 +24,14 @@ const getNodeMock = vi.mocked(backendAdapter.getNode);
 const CONFIG_ID = '11111111-2222-3333-4444-555555555555';
 
 function seedConfigs(ids: string[]): void {
-  localStorage.setItem(
-    'nodespace-settings',
-    JSON.stringify({
-      ...JSON.parse(localStorage.getItem('nodespace-settings') ?? '{}'),
-      openAiConfigs: ids.map((id) => ({ id, name: id, baseUrl: 'http://x', apiKey: '', model: 'm' }))
-    })
-  );
+  settingsStore.openAiConfigs = ids.map((id) => ({
+    id,
+    name: id,
+    base_url: 'http://x',
+    api_key: '',
+    model: 'm',
+    routing_ok: {}
+  }));
 }
 
 function created(id: string, props: Record<string, unknown>): Node {
@@ -49,6 +50,7 @@ function created(id: string, props: Record<string, unknown>): Node {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  settingsStore.openAiConfigs = [];
   createNodeMock.mockImplementation(async (input) => ({ id: (input as Node).id, placement: null }));
   getNodeMock.mockImplementation(async (id: string) => created(id, {}));
 });

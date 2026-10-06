@@ -25,14 +25,16 @@
   import type { AiChatPtyNode } from '$lib/types/ai-chat-node';
   import { isProjectNode, type ProjectNode } from '$lib/types/project-node';
   import {
-    getCaptureSettings,
-    updateCaptureSettings,
+    readDatabaseSettings,
+    updateDatabaseSettings,
+  } from '$lib/services/database-settings';
+  import {
     ptyCheckAgentAvailability,
     ptyLaunchSession,
     ptyListSessions,
     type AgentAvailabilityInfo,
-    type CaptureContentLevel,
   } from '$lib/services/tauri-commands';
+  import type { CaptureContent } from '$lib/types';
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
 
@@ -48,7 +50,7 @@
     { id: 'opencode', label: 'OpenCode' },
   ];
 
-  const CONTENT_LEVELS: { value: CaptureContentLevel; label: string }[] = [
+  const CONTENT_LEVELS: { value: CaptureContent; label: string }[] = [
     { value: 'metadata_only', label: 'Metadata only' },
     { value: 'summary', label: 'Summary' },
     { value: 'full', label: 'Full transcript' },
@@ -131,7 +133,7 @@
   let error = $state<string | null>(null);
 
   let captureEnabled = $state(false);
-  let captureContent = $state<CaptureContentLevel>('metadata_only');
+  let captureContent = $state<CaptureContent>('metadata_only');
 
   let availability = $state<Record<string, AgentAvailabilityInfo>>({});
   let availabilityLoading = $state(true);
@@ -195,11 +197,11 @@
   async function loadLaunchSettings(): Promise<void> {
     try {
       const [settings, availResult] = await Promise.all([
-        getCaptureSettings(),
+        readDatabaseSettings(),
         ptyCheckAgentAvailability(),
       ]);
-      captureEnabled = settings.enabled;
-      captureContent = settings.content;
+      captureEnabled = settings.captureEnabled;
+      captureContent = settings.captureContent;
       const map: Record<string, AgentAvailabilityInfo> = {};
       for (const agent of availResult.agents) {
         map[agent.agentType] = agent;
@@ -239,9 +241,9 @@
 
   async function saveCaptureSettings() {
     try {
-      await updateCaptureSettings({
-        enabled: captureEnabled,
-        content: captureContent,
+      await updateDatabaseSettings({
+        captureEnabled,
+        captureContent,
       });
     } catch (e) {
       log.error('Failed to save capture settings', e);

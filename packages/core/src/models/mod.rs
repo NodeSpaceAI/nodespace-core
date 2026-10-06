@@ -68,9 +68,9 @@ pub use nodespace_types::{
 // Defined once in nodespace-types so the Tauri command layer deserializes the
 // same struct the service consumes.
 pub use nodespace_types::{
-    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, DecisionNodeUpdate, PersonNodeUpdate,
-    PlanNodeUpdate, ProjectNodeUpdate, QueryNodeUpdate, SkillNodeUpdate, SpecNodeUpdate,
-    TaskNodeUpdate,
+    CaptureContent, CollectionNodeUpdate, DatabaseSettingsFields, DatabaseSettingsNodeUpdate,
+    DecisionNodeUpdate, PersonNodeUpdate, PlanNodeUpdate, ProjectNodeUpdate, ProviderConfig,
+    QueryNodeUpdate, SkillNodeUpdate, SpecNodeUpdate, TaskNodeUpdate,
 };
 
 // The vocabularies of the task and project fields: each type's own status,

@@ -268,66 +268,6 @@ export async function ptyListSessions(): Promise<PtyListSessionsResult> {
 }
 
 // ============================================================================
-// Session Capture Settings Commands
-// ============================================================================
-
-export type CaptureContentLevel = 'metadata_only' | 'summary' | 'full';
-
-export interface CaptureSettings {
-  enabled: boolean;
-  content: CaptureContentLevel;
-}
-
-export async function getCaptureSettings(): Promise<CaptureSettings> {
-  if (!isTauri()) {
-    return { enabled: false, content: 'metadata_only' };
-  }
-  return invoke<CaptureSettings>('get_capture_settings');
-}
-
-export async function updateCaptureSettings(
-  settings: Partial<CaptureSettings>
-): Promise<CaptureSettings> {
-  if (!isTauri()) {
-    return {
-      enabled: false,
-      content: 'metadata_only',
-      ...settings,
-    } as CaptureSettings;
-  }
-  return invoke<CaptureSettings>('update_capture_settings', {
-    enabled: settings.enabled ?? null,
-    content: settings.content ?? null,
-  });
-}
-
-// ============================================================================
-// OpenAI-compatible Provider Config Commands
-// ============================================================================
-
-export interface OpenAiCompatConfigDto {
-  id: string;
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-}
-
-/** Read all OpenAI-compatible provider configs from the daemon (source of truth). */
-export async function getOpenAiCompatConfigsFromDaemon(): Promise<OpenAiCompatConfigDto[]> {
-  if (!isTauri()) return [];
-  return invoke<OpenAiCompatConfigDto[]>('get_openai_compat_configs');
-}
-
-/** Replace the full set of OpenAI-compatible provider configs on the daemon. */
-export async function setOpenAiCompatConfigsOnDaemon(
-  configs: OpenAiCompatConfigDto[]
-): Promise<OpenAiCompatConfigDto[]> {
-  if (!isTauri()) return configs;
-  return invoke<OpenAiCompatConfigDto[]>('set_openai_compat_configs', { configs });
-}
-
-// ============================================================================
 // PTY Agent Availability Commands
 // ============================================================================
 

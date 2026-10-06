@@ -27,7 +27,7 @@ use tokio_stream::wrappers::UnixListenerStream;
 use tonic::service::Interceptor;
 use tonic::transport::Server;
 
-fn context(home: &Path) -> SharedContext {
+fn context() -> SharedContext {
     let (_tx, model) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
     SharedContext {
         pty_manager: Arc::new(PtySessionManager::new()),
@@ -36,7 +36,7 @@ fn context(home: &Path) -> SharedContext {
         model_load_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
-        local_agent: nodespace_daemon::SharedLocalAgent::new(home.join("daemon.toml")),
+        local_agent: nodespace_daemon::SharedLocalAgent::new(),
         extensions: nodespace_daemon::DaemonExtensions::none(),
     }
 }
@@ -95,7 +95,7 @@ async fn spawn_daemon() -> Daemon {
 /// [`spawn_daemon`], with `intercept` run before every node-service call.
 async fn spawn_daemon_with(intercept: impl Interceptor + Clone + Send + 'static) -> Daemon {
     let home = TempDir::new().unwrap();
-    let context = context(home.path());
+    let context = context();
     let (default_path, _) = database_requiring(home.path(), "marked", &["sync"]).await;
     let (other_path, other_node_id) = database_requiring(home.path(), "other", &[]).await;
 

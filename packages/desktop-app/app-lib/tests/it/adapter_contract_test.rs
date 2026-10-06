@@ -446,6 +446,10 @@ async fn database_settings_typed_update_matches_the_http_adapter_contract() {
         .expect("get_node failed")
         .expect("the settings singleton must exist");
     assert_eq!(settings["requiredExtensions"], json!([]));
+    assert_eq!(settings["captureEnabled"], json!(false));
+    assert_eq!(settings["captureContent"], json!("metadata_only"));
+    assert_eq!(settings["externalToolsEnabled"], json!(false));
+    assert_eq!(settings["providers"], json!([]));
     let version = settings["version"]
         .as_i64()
         .expect("version must be a number");
@@ -456,11 +460,26 @@ async fn database_settings_typed_update_matches_the_http_adapter_contract() {
         version,
         DatabaseSettingsNodeUpdate {
             required_extensions: Some(Some(vec!["contract-fixture".to_string()])),
+            capture_enabled: Some(Some(true)),
+            providers: Some(Some(vec![nodespace_types::ProviderConfig {
+                id: "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d".to_string(),
+                name: "Local".to_string(),
+                base_url: "http://127.0.0.1:1/v1".to_string(),
+                api_key: String::new(),
+                model: "m".to_string(),
+                routing_ok: Default::default(),
+            }])),
+            ..Default::default()
         },
     )
     .await
     .expect("update_database_settings_node (set) failed");
     assert_eq!(updated["requiredExtensions"], json!(["contract-fixture"]));
+    assert_eq!(updated["captureEnabled"], json!(true));
+    assert_eq!(
+        updated["providers"][0]["base_url"],
+        json!("http://127.0.0.1:1/v1")
+    );
     assert_eq!(updated["properties"], json!({}));
     let version = updated["version"]
         .as_i64()
@@ -472,11 +491,16 @@ async fn database_settings_typed_update_matches_the_http_adapter_contract() {
         version,
         DatabaseSettingsNodeUpdate {
             required_extensions: Some(None),
+            capture_enabled: Some(None),
+            providers: Some(None),
+            ..Default::default()
         },
     )
     .await
     .expect("update_database_settings_node (clear) failed");
     assert_eq!(cleared["requiredExtensions"], json!([]));
+    assert_eq!(cleared["captureEnabled"], json!(false));
+    assert_eq!(cleared["providers"], json!([]));
 }
 
 /// Mirrors `adapter-contract.e2e.ts`'s "createNode honors an explicit

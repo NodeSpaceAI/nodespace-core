@@ -6,7 +6,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "proto/node_service.proto",
             "proto/agent_session_service.proto",
             "proto/import_service.proto",
-            "proto/settings_service.proto",
             "proto/local_agent_service.proto",
             "proto/database_service.proto",
         ],
