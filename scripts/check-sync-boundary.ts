@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// Enforces the Pro / sync boundary of ADR-081: core is the complete free
-// product and ships no Pro code. This is a hard ban (ADR-081 section 8): any
+// Enforces the sync boundary of ADR-081: core is the complete free
+// product and ships no Sync code. This is a hard ban (ADR-081 section 8): any
 // line that matches a marker, and any file whose basename has a `pro`
 // segment, fails the check. There are no baselines to raise and no
 // exemptions. A false positive gets a narrow, tested fix to the marker's
@@ -15,8 +15,8 @@
 //
 // ALLOWLIST is the only way a hit passes. ADR-081 section 8 allows exactly one
 // file in it: the module holding core's display names for known extension
-// ids, which maps `pro` to the paid product's name for the Pro-database
-// refusal. An entry removes only its exact string from that file's lines
+// ids, which maps `sync` to the paid offering's name for the refusal of a
+// database that needs it. An entry removes only its exact string from that file's lines
 // before the markers are tested, so every other marker in the file still
 // counts. The installer and CLI coexistence checks (ADR-081 section 2d)
 // compare the installed product with `community` and name no other product,
@@ -24,7 +24,7 @@
 //
 // A test that proves Pro code is absent builds its needle from fragments
 // (`["pro", "tier"].join("_")`), so it does not contain the marker it looks
-// for. CLAUDE.md, under "Pro / Sync Boundary", states these rules; this file
+// for. CLAUDE.md, under "Sync Boundary", states these rules; this file
 // enforces them.
 
 import { spawnSync } from "node:child_process";
@@ -59,7 +59,7 @@ export const SCANNED_EXTENSIONS: ReadonlySet<string> = new Set([
 
 // This checker's own source and test necessarily name the patterns they scan
 // for, and the checker's own name has a `pro` segment.
-export const EXCLUDED_FILES: readonly string[] = ["scripts/check-pro-boundary.ts", "scripts/check-pro-boundary.test.ts"];
+export const EXCLUDED_FILES: readonly string[] = ["scripts/check-sync-boundary.ts", "scripts/check-sync-boundary.test.ts"];
 
 // The Tauri commands of the removed Pro layer, by full name, and its two
 // modules. Whole identifiers, so a core name that merely starts with `pro_`
@@ -186,8 +186,8 @@ export const MARKERS = {
     summary: 'the word Pro, except chip and model names such as "M2 Pro", "DeepSeek V4 Pro"',
   },
   productName: {
-    pattern: /\bNodeSpace[ ]Pro\b/,
-    summary: "the paid product's name, NodeSpace[ ]Pro (case-sensitive, whole word)",
+    pattern: /\bNodeSpace[ ](?:Pro|Sync)\b/,
+    summary: "the paid offering's name, NodeSpace[ ]Sync, and its retired name NodeSpace[ ]Pro (case-sensitive, whole word)",
   },
 } satisfies Record<string, { pattern: RegExp; summary: string }>;
 
@@ -210,10 +210,10 @@ export function isProNamedFile(path: string): boolean {
 }
 
 // See the file-level comment. The one entry ADR-081 section 8 allows: the
-// display-name module for the Pro-database refusal may name the product, and
+// display-name module for the refusal of a sync database may name the offering, and
 // nothing else in it is exempt.
 export const ALLOWLIST: readonly { file: string; exempt: string }[] = [
-  { file: "packages/proto/src/extension_names.rs", exempt: "NodeSpace Pro" },
+  { file: "packages/proto/src/extension_names.rs", exempt: "NodeSpace Sync" },
 ];
 
 export type AllowlistEntry = (typeof ALLOWLIST)[number];
@@ -261,7 +261,7 @@ export function listScannedFiles(repoRoot: string = REPO): string[] {
     output = git(repoRoot, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
   } catch (err) {
     throw new Error(
-      `check-pro-boundary needs a git checkout: it lists files with git so that gitignored build output stays out of the scan (${err instanceof Error ? err.message : String(err)})`,
+      `check-sync-boundary needs a git checkout: it lists files with git so that gitignored build output stays out of the scan (${err instanceof Error ? err.message : String(err)})`,
     );
   }
   return [...new Set(output.split("\0").filter((path) => path !== "" && isScanned(path)))].sort();
@@ -363,9 +363,9 @@ export function changedFilesSinceMain(repoRoot: string = REPO): string[] {
 }
 
 const GUIDANCE =
-  "Core ships no Pro code (ADR-081): Pro features and Pro fixes belong in the Pro repository (ADR-081 section 5), and core may only expose a generic extension point (ADR-082). " +
+  "Core ships no Sync code (ADR-081): Sync features and Sync fixes belong in the Sync repository (ADR-081 section 5), and core may only expose a generic extension point (ADR-082). " +
   "A test that proves something is absent builds its needle from fragments. " +
-  "A false positive gets a narrow, tested fix to the marker's pattern in scripts/check-pro-boundary.ts.";
+  "A false positive gets a narrow, tested fix to the marker's pattern in scripts/check-sync-boundary.ts.";
 
 /** The file a hit belongs to: `path:line: text` for a line marker, the bare path for `proNamedFiles`. */
 function hitFile(hit: string): string {
@@ -415,7 +415,7 @@ function printGrouped(hits: readonly string[]): void {
 function usage(): never {
   console.error(
     [
-      "Usage: bun run scripts/check-pro-boundary.ts [--list <marker> | --changed]",
+      "Usage: bun run scripts/check-sync-boundary.ts [--list <marker> | --changed]",
       "  (no arguments)   print the hits per marker; exit 1 if there is any",
       "  --list <marker>  print every hit for one marker, grouped by file",
       "  --changed        print, per marker, the hits in files this branch changed",
@@ -458,6 +458,6 @@ if (import.meta.main) {
     const problems = [...allowlistProblems(), ...hitFailures(hits, changedFilesSinceMain())];
     for (const problem of problems) console.error(`\n❌ ${problem}`);
     if (problems.length > 0) process.exit(1);
-    console.log("\n✅ No Pro marker in core (ADR-081 section 8 hard ban).");
+    console.log("\n✅ No sync-boundary marker in core (ADR-081 section 8 hard ban).");
   }
 }

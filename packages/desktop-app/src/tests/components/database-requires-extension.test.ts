@@ -28,7 +28,7 @@ import type { RequiresExtensionPayload } from '$lib/types/requires-extension';
 
 /** A refusal for an extension id the app binary has a display name for. */
 const NAMED_EXTENSION: RequiresExtensionPayload = {
-  unsupportedExtensions: ['pro'],
+  unsupportedExtensions: ['sync'],
   message: 'This database needs Fixture App',
   downloadLabel: 'Download Fixture App',
   downloadUrl: 'https://example.test/fixture-app'

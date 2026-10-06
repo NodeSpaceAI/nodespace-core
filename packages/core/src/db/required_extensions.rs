@@ -234,7 +234,7 @@ mod tests {
         let path = closed_database(
             dir.path(),
             "database-settings",
-            r#"{"database-settings": {"required_extensions": ["pro"]}}"#,
+            r#"{"database-settings": {"required_extensions": ["sync"]}}"#,
         )
         .await;
         let cwd = std::env::current_dir().unwrap();
@@ -247,7 +247,7 @@ mod tests {
 
         assert_eq!(
             read_required_extensions(&relative).await.unwrap(),
-            vec!["pro".to_string()]
+            vec!["sync".to_string()]
         );
         assert!(read_only_uri(&relative, "immutable=1")
             .unwrap()
@@ -374,7 +374,7 @@ mod tests {
         let path = closed_database(
             dir.path(),
             "database-settings",
-            r#"{"database-settings": {"required_extensions": ["pro"]}}"#,
+            r#"{"database-settings": {"required_extensions": ["sync"]}}"#,
         )
         .await;
         let before = std::fs::read(&path).unwrap();
@@ -382,7 +382,7 @@ mod tests {
 
         let required = read_required_extensions(&path).await.unwrap();
 
-        assert_eq!(required, vec!["pro".to_string()]);
+        assert_eq!(required, vec!["sync".to_string()]);
         assert_eq!(
             std::fs::read(&path).unwrap(),
             before,
@@ -401,12 +401,12 @@ mod tests {
         let path = closed_database(
             dir.path(),
             "fixture-settings",
-            r#"{"database-settings": {"required_extensions": ["pro"]}, "fixture-settings": {"x": 1}}"#,
+            r#"{"database-settings": {"required_extensions": ["sync"]}, "fixture-settings": {"x": 1}}"#,
         )
         .await;
         assert_eq!(
             read_required_extensions(&path).await.unwrap(),
-            vec!["pro".to_string()]
+            vec!["sync".to_string()]
         );
     }
 
@@ -423,7 +423,7 @@ mod tests {
             &writer,
             DATABASE_SETTINGS_NODE_ID,
             "database-settings",
-            r#"{"database-settings": {"required_extensions": ["pro"]}}"#,
+            r#"{"database-settings": {"required_extensions": ["sync"]}}"#,
         )
         .await;
         assert!(wal_path(&path).exists(), "the write is still in the WAL");
@@ -431,7 +431,7 @@ mod tests {
 
         let required = read_required_extensions(&path).await.unwrap();
 
-        assert_eq!(required, vec!["pro".to_string()]);
+        assert_eq!(required, vec!["sync".to_string()]);
         assert_eq!(
             std::fs::read(&path).unwrap(),
             before,
@@ -460,10 +460,10 @@ mod tests {
     #[tokio::test]
     async fn a_value_that_is_not_a_list_of_strings_is_an_error() {
         for properties in [
-            r#"{"database-settings": {"required_extensions": "pro"}}"#,
-            r#"{"database-settings": {"required_extensions": "[\"pro\"]"}}"#,
+            r#"{"database-settings": {"required_extensions": "sync"}}"#,
+            r#"{"database-settings": {"required_extensions": "[\"sync\"]"}}"#,
             r#"{"database-settings": {"required_extensions": 42}}"#,
-            r#"{"database-settings": {"required_extensions": ["pro", 1]}}"#,
+            r#"{"database-settings": {"required_extensions": ["sync", 1]}}"#,
         ] {
             let dir = tempfile::tempdir().unwrap();
             let path = closed_database(dir.path(), "database-settings", properties).await;

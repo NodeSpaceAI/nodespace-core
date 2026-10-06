@@ -86,7 +86,7 @@ impl Drop for Daemon {
     }
 }
 
-/// Boot a daemon whose default database requires `pro`, with a second
+/// Boot a daemon whose default database requires `sync`, with a second
 /// database `other` holding one node.
 async fn spawn_daemon() -> Daemon {
     spawn_daemon_with(Ok::<_, tonic::Status>).await
@@ -96,7 +96,7 @@ async fn spawn_daemon() -> Daemon {
 async fn spawn_daemon_with(intercept: impl Interceptor + Clone + Send + 'static) -> Daemon {
     let home = TempDir::new().unwrap();
     let context = context(home.path());
-    let (default_path, _) = database_requiring(home.path(), "marked", &["pro"]).await;
+    let (default_path, _) = database_requiring(home.path(), "marked", &["sync"]).await;
     let (other_path, other_node_id) = database_requiring(home.path(), "other", &[]).await;
 
     let manager = Arc::new(
@@ -192,7 +192,7 @@ async fn a_command_routed_to_a_refused_database_exits_non_zero_with_the_refusal(
         assert!(!out.status.success(), "{args:?} must fail");
         assert_eq!(
             String::from_utf8_lossy(&out.stderr),
-            format!("Error: {}\n", refusal(&["pro"])),
+            format!("Error: {}\n", refusal(&["sync"])),
             "{args:?}"
         );
         assert!(out.stdout.is_empty(), "{args:?}");
@@ -224,7 +224,7 @@ async fn database_list_marks_the_refused_database() {
         .expect("the refused database is listed");
     assert!(marked.contains("requires_extension"), "{marked}");
     assert!(
-        marked.ends_with(&format!("  ({})", extension_names::requirement(&["pro"]))),
+        marked.ends_with(&format!("  ({})", extension_names::requirement(&["sync"]))),
         "{marked}"
     );
     let other = stdout.lines().find(|line| line.contains("other")).unwrap();
@@ -240,10 +240,13 @@ async fn database_list_marks_the_refused_database() {
         .find(|d| d["name"] == "marked")
         .unwrap();
     assert_eq!(marked["status"], "requires_extension");
-    assert_eq!(marked["unsupported_extensions"], serde_json::json!(["pro"]));
+    assert_eq!(
+        marked["unsupported_extensions"],
+        serde_json::json!(["sync"])
+    );
     assert_eq!(
         marked["refusal"],
-        serde_json::json!(extension_names::refusal_message(&["pro"]))
+        serde_json::json!(extension_names::refusal_message(&["sync"]))
     );
     let other = listed["databases"]
         .as_array()
@@ -328,7 +331,7 @@ async fn diagnostics_says_what_a_refused_database_needs() {
         .find(|line| line.contains("[requires_extension]"))
         .unwrap_or_else(|| panic!("the refused database is listed: {stdout}"));
     assert!(
-        marked.ends_with(&format!("  ({})", extension_names::requirement(&["pro"]))),
+        marked.ends_with(&format!("  ({})", extension_names::requirement(&["sync"]))),
         "{marked}"
     );
     let other = stdout
@@ -341,10 +344,13 @@ async fn diagnostics_says_what_a_refused_database_needs() {
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     let databases = report["databases"].as_array().unwrap();
     let marked = databases.iter().find(|d| d["name"] == "marked").unwrap();
-    assert_eq!(marked["unsupported_extensions"], serde_json::json!(["pro"]));
+    assert_eq!(
+        marked["unsupported_extensions"],
+        serde_json::json!(["sync"])
+    );
     assert_eq!(
         marked["refusal"],
-        serde_json::json!(extension_names::refusal_message(&["pro"]))
+        serde_json::json!(extension_names::refusal_message(&["sync"]))
     );
     let other = databases.iter().find(|d| d["name"] == "other").unwrap();
     assert_eq!(other["unsupported_extensions"], serde_json::json!([]));
@@ -367,7 +373,7 @@ async fn database_use_warns_when_the_new_default_is_refused() {
     assert!(
         stderr.starts_with(&format!(
             "Warning: {}.",
-            extension_names::refusal_message(&["pro"])
+            extension_names::refusal_message(&["sync"])
         )),
         "{stderr}"
     );

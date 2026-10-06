@@ -69,16 +69,16 @@ mod tests {
 
     #[test]
     fn the_status_round_trips_its_ids_and_carries_the_refusal_message() {
-        let status = status(&ids(&["pro", "fixture"]));
+        let status = status(&ids(&["sync", "fixture"]));
 
         assert_eq!(status.code(), Code::FailedPrecondition);
         assert_eq!(
             status.message(),
-            crate::extension_names::refusal_message(&["pro", "fixture"])
+            crate::extension_names::refusal_message(&["sync", "fixture"])
         );
         assert_eq!(
             unsupported_extensions(&status),
-            Some(ids(&["pro", "fixture"]))
+            Some(ids(&["sync", "fixture"]))
         );
     }
 

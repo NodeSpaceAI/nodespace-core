@@ -120,7 +120,7 @@ async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
     let tempdir = TempDir::new().unwrap();
     let home = tempdir.path();
     let context = test_context(home);
-    let default_path = database_requiring(home, "default", &["pro"]).await;
+    let default_path = database_requiring(home, "default", &["sync"]).await;
     let default_dir = default_path.parent().unwrap().to_path_buf();
     let other_path = database_requiring(home, "other", &[]).await;
     let before = contents(&default_dir);
@@ -191,7 +191,10 @@ async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
         default_info.status,
         ProtoDatabaseStatus::RequiresExtension as i32
     );
-    assert_eq!(default_info.unsupported_extensions, vec!["pro".to_string()]);
+    assert_eq!(
+        default_info.unsupported_extensions,
+        vec!["sync".to_string()]
+    );
 
     // A request for the default, with or without its id, receives the refusal.
     let refused = node
@@ -203,11 +206,11 @@ async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
     assert_eq!(refused.code(), Code::FailedPrecondition);
     assert_eq!(
         refused.message(),
-        extension_names::refusal_message(&["pro"])
+        extension_names::refusal_message(&["sync"])
     );
     assert_eq!(
         requires_extension::unsupported_extensions(&refused),
-        Some(vec!["pro".to_string()])
+        Some(vec!["sync".to_string()])
     );
     let refused_by_id = node
         .create_node(with_db_header(
@@ -218,7 +221,7 @@ async fn a_refused_default_leaves_the_daemon_serving_the_other_databases() {
         .unwrap_err();
     assert_eq!(
         requires_extension::unsupported_extensions(&refused_by_id),
-        Some(vec!["pro".to_string()])
+        Some(vec!["sync".to_string()])
     );
 
     // Another registered database is served.

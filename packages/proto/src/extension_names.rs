@@ -9,23 +9,23 @@
 //! desktop app all render that refusal from this module, so every surface says
 //! the same thing.
 //!
-//! This is the one file in the repository that may name the paid product
-//! (ADR-081 §8): it holds the display name of the `pro` extension id, used
+//! This is the one file in the repository that may name the paid offering
+//! (ADR-081 §8): it holds the display name of the `sync` extension id, used
 //! only by the refusal.
 
 /// The extension id whose display name this build knows.
-const PAID_PRODUCT_ID: &str = "pro";
+const SYNC_ID: &str = "sync";
 
 /// The display name of a known extension id, or `None` for any other id.
 pub fn display_name(id: &str) -> Option<&'static str> {
     match id {
-        PAID_PRODUCT_ID => Some("NodeSpace Pro"),
+        SYNC_ID => Some("NodeSpace Sync"),
         _ => None,
     }
 }
 
 /// The label of the refusal's download link.
-pub const DOWNLOAD_LABEL: &str = "Download NodeSpace Pro";
+pub const DOWNLOAD_LABEL: &str = "Get NodeSpace Sync";
 
 /// Where the refusal's download link points. A compile-time constant
 /// (ADR-084 §1): it points at the website until a direct download link exists,
@@ -63,33 +63,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_paid_product_id_has_a_display_name_and_no_other_id_does() {
-        assert_eq!(display_name("pro"), Some("NodeSpace Pro"));
+    fn the_sync_id_has_a_display_name_and_no_other_id_does() {
+        assert_eq!(display_name("sync"), Some("NodeSpace Sync"));
         assert_eq!(display_name("fixture"), None);
-        assert_eq!(display_name("PRO"), None, "ids are matched exactly");
+        assert_eq!(
+            display_name(&["p", "ro"].concat()),
+            None,
+            "the retired id is unknown"
+        );
+        assert_eq!(display_name("SYNC"), None, "ids are matched exactly");
         assert_eq!(display_name(""), None);
     }
 
     #[test]
     fn the_download_link_is_pinned() {
-        assert_eq!(DOWNLOAD_LABEL, "Download NodeSpace Pro");
+        assert_eq!(DOWNLOAD_LABEL, "Get NodeSpace Sync");
         assert_eq!(DOWNLOAD_URL, "https://nodespace.ai");
     }
 
     #[test]
-    fn a_database_requiring_the_paid_product_names_it() {
+    fn a_database_requiring_sync_names_it() {
         assert_eq!(
-            refusal_message(&["pro"]),
-            "This database needs NodeSpace Pro"
+            refusal_message(&["sync"]),
+            "This database needs NodeSpace Sync"
         );
-        assert_eq!(requirement(&["pro"]), "needs NodeSpace Pro");
+        assert_eq!(requirement(&["sync"]), "needs NodeSpace Sync");
     }
 
     #[test]
-    fn the_paid_product_is_named_even_beside_other_ids() {
+    fn sync_is_named_even_beside_other_ids() {
         assert_eq!(
-            refusal_message(&["fixture", "pro"]),
-            "This database needs NodeSpace Pro"
+            refusal_message(&["fixture", "sync"]),
+            "This database needs NodeSpace Sync"
         );
     }
 

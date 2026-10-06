@@ -851,7 +851,7 @@ mod tests {
     #[test]
     fn a_database_requiring_an_extension_is_marked() {
         let mut marked = listing_with_default("Marked", DatabaseStatus::RequiresExtension, true);
-        marked.unsupported_extensions = vec!["pro".to_string()];
+        marked.unsupported_extensions = vec!["sync".to_string()];
         let mut other = listing("Other", DatabaseStatus::RequiresExtension);
         other.unsupported_extensions = vec!["fixture".to_string()];
 
@@ -860,7 +860,7 @@ mod tests {
         let requirement = nodespace_proto::extension_names::requirement;
         assert_eq!(
             entries[0].label,
-            format!("Marked — default · {}", requirement(&["pro"]))
+            format!("Marked — default · {}", requirement(&["sync"]))
         );
         assert_eq!(
             entries[1].label,
