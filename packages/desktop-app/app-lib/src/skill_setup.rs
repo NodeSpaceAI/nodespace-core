@@ -1790,12 +1790,8 @@ mod tests {
 
         // The user (or some other tool) deletes ONLY the antigravity skill
         // directory -- claude-code's install must be unaffected.
-        std::fs::remove_dir_all(
-            fake_home
-                .path()
-                .join(".gemini/antigravity-cli/skills/nodespace"),
-        )
-        .expect("delete antigravity's skill directory to simulate manual removal");
+        std::fs::remove_dir_all(fake_home.path().join(".gemini/config/skills/nodespace"))
+            .expect("delete antigravity's skill directory to simulate manual removal");
 
         let status_output = installer_command(&installer_path, "bun", "status")
             .env("HOME", fake_home.path())
@@ -1907,7 +1903,7 @@ mod tests {
         let claude_skill = fake_home.path().join(".claude/skills/nodespace/SKILL.md");
         let antigravity_skill = fake_home
             .path()
-            .join(".gemini/antigravity-cli/skills/nodespace/SKILL.md");
+            .join(".gemini/config/skills/nodespace/SKILL.md");
         assert!(claude_skill.exists(), "precondition: claude-code installed");
         assert!(
             antigravity_skill.exists(),

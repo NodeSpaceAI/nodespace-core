@@ -144,11 +144,16 @@ export const AGENTS: AgentConfig[] = [
   },
   {
     name: 'antigravity',
-    // Antigravity CLI stores its config, plugins, and skills under the
-    // Gemini config dir (a holdover from its Gemini CLI lineage) —
-    // ~/.gemini/antigravity-cli/, not a separate ~/.antigravity.
+    // ~/.gemini/antigravity-cli/ is the CLI's own data folder (state, logs,
+    // its built-in skills), so its presence is what shows the CLI is
+    // installed. Skills for every project are read from the shared config
+    // directory, `~/.gemini/config/skills/<name>/`, which Antigravity's
+    // documentation names (and where `skills.json` is not needed). Checked against Antigravity CLI 1.3.0: a skill in
+    // that folder is listed to the agent with no `skills.json` entry, and one
+    // in `antigravity-cli/skills/` is not.
     detectionDir: join(home, '.gemini', 'antigravity-cli'),
-    installDir: join(home, '.gemini', 'antigravity-cli', 'skills', 'nodespace'),
+    installDir: join(antigravityConfigDir, 'skills', 'nodespace'),
+    pruneRoot: antigravityConfigDir,
     instructionsFile: join(antigravityConfigDir, 'AGENTS.md'),
     skillFrontmatter: SKILL_FRONTMATTER,
   },

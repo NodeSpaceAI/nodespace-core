@@ -684,7 +684,7 @@ export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT
         const path = removeRecordedFile(pluginRoot, rel);
         if (path !== undefined) removed.push(path);
       }
-      removeIfEmpty(pluginRoot, config.detectionDir);
+      removeIfEmpty(pluginRoot, config.pruneRoot ?? config.detectionDir);
     }
 
     // The block, in the file the record names and the one the harness reads
@@ -705,7 +705,7 @@ export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT
 
     // Last, so an uninstall interrupted part-way can be run again.
     removeInstalledFile(root, INSTALL_RECORD);
-    removeIfEmpty(root, config.detectionDir);
+    removeIfEmpty(root, config.pruneRoot ?? config.detectionDir);
 
     results.push({ agent: agentName, removed });
   }
@@ -715,18 +715,18 @@ export function uninstall(targetAgents?: AgentName[], packageRoot = PACKAGE_ROOT
 
 /**
  * Removes `dir` once nothing is left in it, and then the directories between
- * it and the harness's own (`detectionDir`) that this leaves empty.
+ * it and the harness's own directory (`pruneRoot`) that this leaves empty.
  *
  * Install makes any missing directory on the way (`skills/`,
  * `extensions/`). One left empty goes too, whoever made it: nothing records
  * which were ours, and an empty one holds nothing to lose. The harness's own
  * directory is never touched.
  */
-function removeIfEmpty(dir: string, detectionDir: string): void {
+function removeIfEmpty(dir: string, pruneRoot: string): void {
   try {
     if (readdirSync(dir).length > 0) return;
     rmdirSync(dir);
-    pruneEmptyParents(resolve(detectionDir), dir);
+    pruneEmptyParents(resolve(pruneRoot), dir);
   } catch {
     // A symlinked directory (a dotfile manager's link) cannot be rmdir'd.
     // Leaving the empty directory is the smaller failure than aborting the

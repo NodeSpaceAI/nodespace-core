@@ -5,6 +5,12 @@ export interface AgentConfig {
   detectionDir: string;
   installDir: string;
   /**
+   * The directory uninstall stops pruning empty folders at, never removing it,
+   * for a harness whose skills folder lies outside `detectionDir`. It defaults
+   * to `detectionDir`.
+   */
+  pruneRoot?: string;
+  /**
    * The harness plugin (ADR-093 §5): `dir` is its folder under the package
    * root, and each of `files`, a path relative to `dir`, installs at that
    * same path. `shared` names files of `SHARED_PLUGIN_DIR` the plugin

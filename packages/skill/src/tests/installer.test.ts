@@ -276,6 +276,12 @@ describe('AGENTS config', () => {
     expect(plugin.files).toContain(join(manifest.types));
   });
 
+  it('installs the Antigravity skill where it reads skills for every project, not in the CLI data folder', () => {
+    const antigravity = AGENTS.find(a => a.name === 'antigravity')!;
+    expect(antigravity.installDir).toBe(join(TMP, '.gemini', 'config', 'skills', 'nodespace'));
+    expect(antigravity.detectionDir).toBe(join(TMP, '.gemini', 'antigravity-cli'));
+  });
+
   it('install paths are under the expected agent dir', () => {
     const expectedDirs: Record<string, string> = {
       'claude-code': '.claude',
@@ -710,6 +716,21 @@ describe('uninstall', () => {
       ).toBe(false);
       expect(existsSync(config.detectionDir), `${config.name}: harness directory removed`).toBe(true);
     }
+  });
+
+  it('prunes Antigravity up to its config directory, which stays', () => {
+    const config = AGENTS.find(a => a.name === 'antigravity')!;
+    mkdirSync(config.detectionDir, { recursive: true });
+    seedPkgRoot(FAKE_PKG_ROOT, config);
+    install([config.name], FAKE_PKG_ROOT);
+    expect(existsSync(join(config.installDir, 'SKILL.md'))).toBe(true);
+
+    uninstall([config.name]);
+
+    const configDir = join(TMP, '.gemini', 'config');
+    expect(existsSync(join(configDir, 'skills'))).toBe(false);
+    expect(existsSync(configDir)).toBe(true);
+    expect(existsSync(config.detectionDir)).toBe(true);
   });
 
   it('keeps the skills directory when another skill is installed beside ours', () => {

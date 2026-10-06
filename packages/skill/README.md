@@ -65,7 +65,7 @@ directory — it has no source-relative sibling directory to find
 |-------|-----------|-------|------------------|
 | Claude Code | `~/.claude/` exists (`CLAUDE_CONFIG_DIR` moves it) | `~/.claude/skills/nodespace/SKILL.md` | Plugin, in the skill folder |
 | Codex | `~/.codex/` exists (`CODEX_HOME` moves it) | `~/.codex/skills/nodespace/SKILL.md` | Instructions block in `~/.codex/AGENTS.md` |
-| Antigravity CLI | `~/.gemini/antigravity-cli/` exists | `~/.gemini/antigravity-cli/skills/nodespace/SKILL.md` | Instructions block in `~/.gemini/config/AGENTS.md` |
+| Antigravity CLI | `~/.gemini/antigravity-cli/` exists | `~/.gemini/config/skills/nodespace/SKILL.md` | Instructions block in `~/.gemini/config/AGENTS.md` |
 | OpenCode | `~/.config/opencode/` exists (`XDG_CONFIG_HOME` moves it) | `~/.config/opencode/skills/nodespace/SKILL.md` | Plugin, in `~/.config/opencode/plugins/` |
 | Pi | `~/.pi/agent/` exists (`PI_CODING_AGENT_DIR` moves it) | `~/.pi/agent/skills/nodespace/SKILL.md` | Extension, in `~/.pi/agent/extensions/nodespace/` |
 
