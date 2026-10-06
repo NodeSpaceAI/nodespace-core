@@ -479,6 +479,26 @@ describe('daemon-status service', () => {
     expect(callback).toHaveBeenCalledTimes(1);
   });
 
+  it('retryDaemonStart outside Tauri re-reads the status instead of invoking a start', async () => {
+    mockInvoke.mockResolvedValue('not_running');
+    const { daemonStatus, startDaemonStatusListener, retryDaemonStart } = await import(
+      '$lib/services/daemon-status'
+    );
+    startDaemonStatusListener();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(get(daemonStatus).unreachable).toBe(true);
+
+    mockIsTauri.mockReturnValue(false);
+    mockInvoke.mockClear();
+    mockInvoke.mockResolvedValue('healthy');
+    await expect(retryDaemonStart()).resolves.toBe('healthy');
+
+    expect(mockInvoke).not.toHaveBeenCalledWith('retry_daemon_start');
+    expect(get(daemonStatus).unreachable).toBe(false);
+  });
+
   it('refreshDaemonStatus is a no-op before the listener has started', async () => {
     const { refreshDaemonStatus } = await import('$lib/services/daemon-status');
     await expect(refreshDaemonStatus()).resolves.toBeUndefined();

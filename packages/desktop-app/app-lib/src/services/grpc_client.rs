@@ -23,6 +23,8 @@ use tonic::service::interceptor::InterceptedService;
 use tonic::service::Interceptor;
 use tonic::transport::Channel;
 
+use super::startup_hold::{StartupHold, StartupHoldState, STARTUP_HOLD_LIMIT};
+
 /// Stamps the ADR-053 `x-ns-database-id` routing header and the ADR-026 C5
 /// extension's `x-ns-client-id` identity header on every outgoing request.
 ///
@@ -209,6 +211,10 @@ pub struct GrpcClient {
     /// watcher can re-open its `WatchNodes` stream against the newly-active
     /// database. `watch::Sender` is not `Clone`, hence the `Arc`.
     db_generation: Arc<watch::Sender<u64>>,
+    /// What the channel's connector waits on before it dials the socket. The
+    /// app's own client holds until a start attempt finds this app's daemon
+    /// answering; every other client is built released.
+    hold: StartupHold,
 }
 
 impl GrpcClient {
@@ -226,7 +232,7 @@ impl GrpcClient {
 
         tracing::info!(socket = %sock.display(), "Connected to nodespaced");
 
-        Ok(Self::from_channel(channel))
+        Ok(Self::from_channel(channel, StartupHold::released()))
     }
 
     /// Connect to the `nodespaced` daemon over a Named Pipe and return
@@ -239,13 +245,14 @@ impl GrpcClient {
             .await
             .map_err(GrpcClientError::Connect)?;
         tracing::info!(pipe = %pipe, "Connected to nodespaced");
-        Ok(Self::from_channel(channel))
+        Ok(Self::from_channel(channel, StartupHold::released()))
     }
 
     /// Wrap an established (or lazy) channel in the full service-client bundle.
     /// Shared by [`connect`] and [`connect_lazy`] so the set of service clients
     /// stays in sync as new services are added. `Channel` is platform-agnostic.
-    fn from_channel(channel: Channel) -> Self {
+    /// `hold` must be the one the channel's connector waits on.
+    fn from_channel(channel: Channel, hold: StartupHold) -> Self {
         // One stable id for this GrpcClient's whole lifetime (ADR-026's C5 extension) —
         // generated once here, never regenerated on a database switch.
         let client_id = generate_client_id();
@@ -288,6 +295,7 @@ impl GrpcClient {
         Self {
             inner: Arc::new(RwLock::new(inner)),
             db_generation: Arc::new(db_generation),
+            hold,
         }
     }
 
@@ -298,21 +306,54 @@ impl GrpcClient {
     /// the async `connect()` had run, getting a fatal "state not managed for field
     /// `client`" that closed the view. With a lazy client managed up front, an
     /// early call instead waits / yields a retryable transport error.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     pub fn connect_lazy() -> Self {
-        let sock = resolve_socket_path();
-        tracing::info!(socket = %sock.display(), "gRPC client (lazy) — connects on first use");
-        let channel = uds_channel_lazy(&sock);
-        Self::from_channel(channel)
+        Self::lazy_at(&resolve_socket_path(), StartupHold::released())
     }
 
-    /// Lazy Named Pipe variant for Windows — connects on the first RPC.
-    #[cfg(windows)]
-    pub fn connect_lazy() -> Self {
-        let pipe = resolve_pipe_name();
-        tracing::info!(pipe = %pipe, "gRPC client (lazy) — connects on first use");
-        let channel = pipe_channel_lazy(&pipe);
-        Self::from_channel(channel)
+    /// [`connect_lazy`](Self::connect_lazy), with the channel held until
+    /// [`release_startup_hold`](Self::release_startup_hold): its connector
+    /// does not dial the socket before then, so no call on the channel reaches
+    /// any daemon. Calls made meanwhile wait, and fail with `UNAVAILABLE` only
+    /// once [`STARTUP_HOLD_LIMIT`] has passed without a release. This is the
+    /// app's own client, held until a start attempt has found this app's
+    /// daemon answering on the socket (ADR-084 §4.3).
+    ///
+    /// The hold covers the calls made through this client and its channel,
+    /// and nothing else that dials the socket.
+    #[cfg(any(unix, windows))]
+    pub(crate) fn connect_lazy_held() -> Self {
+        Self::lazy_at(
+            &resolve_socket_path(),
+            StartupHold::holding(STARTUP_HOLD_LIMIT),
+        )
+    }
+
+    /// A lazy client dialing `endpoint` (a socket path, or a pipe name on
+    /// Windows) once `hold` is released.
+    #[cfg(any(unix, windows))]
+    pub(crate) fn lazy_at(endpoint: &std::path::Path, hold: StartupHold) -> Self {
+        tracing::info!(
+            endpoint = %endpoint.display(),
+            held = hold.state() != StartupHoldState::Released,
+            "gRPC client (lazy) — connects on first use"
+        );
+        let channel = channel_lazy(endpoint, hold.clone());
+        Self::from_channel(channel, hold)
+    }
+
+    /// Ends the startup hold: calls waiting on the channel go out, and later
+    /// ones dial at once. Called by a start attempt that found this app's
+    /// daemon answering on the socket, or nothing answering at all
+    /// ([`crate::daemon_setup::start_attempt`]). Crate-only, so an extension
+    /// holding this client cannot open the channel early.
+    pub(crate) fn release_startup_hold(&self) {
+        self.hold.release();
+    }
+
+    /// Where the startup hold on this client's channel stands.
+    pub(crate) fn startup_hold(&self) -> StartupHoldState {
+        self.hold.state()
     }
 
     /// Borrow a clone of the routed `NodeService` client (carries the active
@@ -490,7 +531,7 @@ impl GrpcClient {
     #[cfg(unix)]
     pub async fn reconnect(&self) {
         let sock = resolve_socket_path();
-        let channel = uds_channel_lazy(&sock);
+        let channel = uds_channel_lazy(&sock, self.hold.clone());
         self.swap_channel(channel).await;
         tracing::info!(socket = %sock.display(), "gRPC client: channel rebuilt (reconnect)");
     }
@@ -499,7 +540,7 @@ impl GrpcClient {
     #[cfg(windows)]
     pub async fn reconnect(&self) {
         let pipe = resolve_pipe_name();
-        let channel = pipe_channel_lazy(&pipe);
+        let channel = pipe_channel_lazy(&pipe, self.hold.clone());
         self.swap_channel(channel).await;
         tracing::info!(pipe = %pipe, "gRPC client: channel rebuilt (reconnect)");
     }
@@ -626,9 +667,10 @@ async fn uds_channel(sock: &std::path::Path) -> Result<Channel, tonic::transport
 }
 
 /// Lazy variant of [`uds_channel`] — builds the channel without connecting; the
-/// first RPC establishes (and later re-establishes) the UDS connection.
+/// first RPC establishes (and later re-establishes) the UDS connection, once
+/// `hold` is released.
 #[cfg(unix)]
-fn uds_channel_lazy(sock: &std::path::Path) -> Channel {
+fn uds_channel_lazy(sock: &std::path::Path, hold: StartupHold) -> Channel {
     use hyper_util::rt::TokioIo;
     use tokio::net::UnixStream;
     use tonic::transport::{Endpoint, Uri};
@@ -638,16 +680,48 @@ fn uds_channel_lazy(sock: &std::path::Path) -> Channel {
     Endpoint::from_static("http://localhost").connect_with_connector_lazy(service_fn(
         move |_: Uri| {
             let sock = sock.clone();
-            async move { UnixStream::connect(&sock).await.map(TokioIo::new) }
+            let hold = hold.clone();
+            async move {
+                hold.wait().await?;
+                UnixStream::connect(&sock).await.map(TokioIo::new)
+            }
         },
     ))
 }
 
-/// Build a tonic `Channel` connected over a Named Pipe (Windows).
+#[cfg(unix)]
+fn channel_lazy(endpoint: &std::path::Path, hold: StartupHold) -> Channel {
+    uds_channel_lazy(endpoint, hold)
+}
+
+#[cfg(windows)]
+fn channel_lazy(endpoint: &std::path::Path, hold: StartupHold) -> Channel {
+    pipe_channel_lazy(&endpoint.to_string_lossy(), hold)
+}
+
+/// Dials `endpoint` (a socket path, or a pipe name on Windows) on a connection
+/// of its own, outside any client's startup hold. For the start attempt's
+/// check of which daemon holds the socket, which runs while the app's own
+/// channel is still held.
+#[cfg(unix)]
+pub(crate) async fn dial_once(
+    endpoint: &std::path::Path,
+) -> Result<Channel, tonic::transport::Error> {
+    uds_channel(endpoint).await
+}
+
+#[cfg(windows)]
+pub(crate) async fn dial_once(
+    endpoint: &std::path::Path,
+) -> Result<Channel, tonic::transport::Error> {
+    pipe_channel(&endpoint.to_string_lossy()).await
+}
+
+/// Build a tonic `Channel` connected over a Named Pipe (Windows). It waits out
+/// a busy pipe ([`open_pipe_when_free`]) rather than failing on it.
 #[cfg(windows)]
 async fn pipe_channel(pipe: &str) -> Result<Channel, tonic::transport::Error> {
     use hyper_util::rt::TokioIo;
-    use tokio::net::windows::named_pipe::ClientOptions;
     use tonic::transport::{Endpoint, Uri};
     use tower::service_fn;
 
@@ -655,14 +729,49 @@ async fn pipe_channel(pipe: &str) -> Result<Channel, tonic::transport::Error> {
     Endpoint::from_static("http://localhost")
         .connect_with_connector(service_fn(move |_: Uri| {
             let pipe = pipe.clone();
-            async move { ClientOptions::new().open(&pipe).map(TokioIo::new) }
+            async move { open_pipe_when_free(&pipe).await.map(TokioIo::new) }
         }))
         .await
 }
 
-/// Lazy variant of [`pipe_channel`] — builds the channel without connecting.
+/// Win32 `ERROR_PIPE_BUSY`: every instance of the pipe is taken.
 #[cfg(windows)]
-fn pipe_channel_lazy(pipe: &str) -> Channel {
+pub(crate) const ERROR_PIPE_BUSY: i32 = 231;
+
+/// How long [`open_pipe_when_free`] keeps retrying a busy pipe.
+#[cfg(windows)]
+const PIPE_BUSY_WAIT: Duration = Duration::from_secs(2);
+
+/// Opens the client end of `pipe`, retrying for up to [`PIPE_BUSY_WAIT`]
+/// while every instance is busy, then failing with the busy error.
+///
+/// The daemon creates the next pipe instance only after it has accepted a
+/// connection, so a client that dials in between gets `ERROR_PIPE_BUSY` even
+/// though the daemon is up. The startup check dials right after a probe has
+/// connected, which is exactly that moment.
+#[cfg(windows)]
+async fn open_pipe_when_free(
+    pipe: &str,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let deadline = tokio::time::Instant::now() + PIPE_BUSY_WAIT;
+    loop {
+        let opened = ClientOptions::new().open(pipe);
+        match opened {
+            Err(error)
+                if error.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                    && tokio::time::Instant::now() < deadline => {}
+            opened => return opened,
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Lazy variant of [`pipe_channel`] — builds the channel without connecting,
+/// and connects once `hold` is released.
+#[cfg(windows)]
+fn pipe_channel_lazy(pipe: &str, hold: StartupHold) -> Channel {
     use hyper_util::rt::TokioIo;
     use tokio::net::windows::named_pipe::ClientOptions;
     use tonic::transport::{Endpoint, Uri};
@@ -672,7 +781,11 @@ fn pipe_channel_lazy(pipe: &str) -> Channel {
     Endpoint::from_static("http://localhost").connect_with_connector_lazy(service_fn(
         move |_: Uri| {
             let pipe = pipe.clone();
-            async move { ClientOptions::new().open(&pipe).map(TokioIo::new) }
+            let hold = hold.clone();
+            async move {
+                hold.wait().await?;
+                ClientOptions::new().open(&pipe).map(TokioIo::new)
+            }
         },
     ))
 }
@@ -877,7 +990,7 @@ mod data_plane_round_trip_tests {
         let channel = Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
             .expect("a loopback URI is valid")
             .connect_lazy();
-        GrpcClient::from_channel(channel)
+        GrpcClient::from_channel(channel, super::StartupHold::released())
     }
 
     #[tokio::test]

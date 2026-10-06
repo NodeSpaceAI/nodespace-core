@@ -126,36 +126,87 @@ pub(crate) const DATA_PLANE_READY_EVENT: &str = "daemon:data-plane-ready";
 /// holds the socket). The frontend uses this to decide which error state to
 /// show.
 #[tauri::command]
-async fn check_daemon_status() -> String {
-    daemon_status_body().await
+async fn check_daemon_status(app: tauri::AppHandle) -> String {
+    daemon_status(&app).await
 }
 
-/// The body of [`check_daemon_status`], factored out and made `pub` so the
-/// readiness integration test in `tests/` — a separate crate — can call the
-/// exact same logic the Tauri command invokes, including its
-/// `resolve_socket_path()` call. Kept out of the `#[tauri::command]`-
+/// What [`check_daemon_status`] reports, for the start attempt to report the
+/// same once it is over ([`daemon_setup::start_daemon_and_report`]).
+pub(crate) async fn daemon_status(app: &tauri::AppHandle) -> String {
+    use tauri::Manager;
+
+    match app.try_state::<services::GrpcClient>() {
+        #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+        Some(client) => {
+            crate::coexistence::status_unless_other_daemon(daemon_status_of(
+                &client,
+                &services::grpc_client::resolve_socket_path(),
+            ))
+            .await
+        }
+        _ => daemon_status_body().await,
+    }
+}
+
+/// The daemon's status for the app's managed `client`, which dials `dialed`,
+/// when no other daemon is on record.
+///
+/// While the client's startup hold is on, no start attempt has found this
+/// app's daemon answering, so whatever answers on the socket does not count as
+/// healthy:
+///
+/// - Holding: "starting". The frontend reloads only when the status turns
+///   healthy, and probes the channel only while it is healthy, so it neither
+///   reloads against an unchecked daemon nor sends a probe into the held
+///   channel.
+/// - Past its limit: the daemon is reported down, so the banner and its Retry
+///   show. Retry runs a new start attempt, which ends the hold if it finds
+///   this app's daemon answering.
+///
+/// Once the hold has ended, the status is what a connect to the socket finds.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+pub(crate) async fn daemon_status_of(
+    client: &services::GrpcClient,
+    dialed: &std::path::Path,
+) -> String {
+    use services::StartupHoldState;
+
+    match client.startup_hold() {
+        StartupHoldState::Holding => "starting".to_string(),
+        StartupHoldState::Overdue => incompatible_database::daemon_down_status().to_string(),
+        StartupHoldState::Released => socket_status(dialed).await,
+    }
+}
+
+/// The body of [`check_daemon_status`] without a managed client, factored out
+/// and made `pub` so the readiness integration test in `tests/` — a separate
+/// crate — can call the exact same logic the Tauri command invokes, including
+/// its `resolve_socket_path()` call. Kept out of the `#[tauri::command]`-
 /// annotated function itself: that macro generates hidden crate-scoped
 /// items keyed to the function's identifier, and marking the annotated
 /// function `pub` collides with them (`E0255`, defined multiple times).
 pub async fn daemon_status_body() -> String {
+    // Probe the SAME socket the gRPC client dials (honors NODESPACED_SOCKET).
     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
     let status = crate::coexistence::status_unless_other_daemon(async {
-        use daemon_setup::{check_daemon_socket, DaemonStatus};
-
-        // Probe the SAME socket the gRPC client dials (honors NODESPACED_SOCKET).
-        let socket_path = crate::services::grpc_client::resolve_socket_path();
-        match check_daemon_socket(socket_path.as_path()).await {
-            DaemonStatus::Healthy => "healthy".to_string(),
-            DaemonStatus::Starting => "starting".to_string(),
-            DaemonStatus::NotRunning => {
-                crate::incompatible_database::daemon_down_status().to_string()
-            }
-        }
+        socket_status(&crate::services::grpc_client::resolve_socket_path()).await
     })
     .await;
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     let status = "healthy".to_string();
     status
+}
+
+/// "healthy", "starting", or why the daemon is down, from a connect to `socket`.
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+async fn socket_status(socket: &std::path::Path) -> String {
+    use daemon_setup::{check_daemon_socket, DaemonStatus};
+
+    match check_daemon_socket(socket).await {
+        DaemonStatus::Healthy => "healthy".to_string(),
+        DaemonStatus::Starting => "starting".to_string(),
+        DaemonStatus::NotRunning => crate::incompatible_database::daemon_down_status().to_string(),
+    }
 }
 
 // Include test module
@@ -167,6 +218,11 @@ mod tests;
 // MockRuntime to drive real RunEvent delivery, not just plain unit tests.
 #[cfg(test)]
 mod shutdown_tests;
+
+// The startup ordering around the product check, against stand-in daemons on
+// a Unix socket.
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod startup_ordering_tests;
 
 /// Shared shutdown token for graceful background task termination.
 ///
@@ -568,7 +624,18 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
             // field `client`", closing the view. With the client
             // managed up front, an early call instead yields a retryable transport
             // error until the daemon is reachable.
-            #[cfg(any(unix, windows))]
+            //
+            // The channel is held: it does not dial the socket until the start
+            // attempt below has found this app's own daemon answering on it,
+            // so an early call waits rather than reaching another product's
+            // daemon (ADR-084 §4.3). Only the targets that run that start
+            // attempt hold it; nothing would end the hold anywhere else.
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+            app.manage(crate::services::GrpcClient::connect_lazy_held());
+            #[cfg(all(
+                any(unix, windows),
+                not(any(target_os = "macos", target_os = "linux", target_os = "windows"))
+            ))]
             app.manage(crate::services::GrpcClient::connect_lazy());
 
             // Best-effort update check against the app's update source: on a
@@ -615,6 +682,8 @@ fn run_app(extensions: AppExtensions, context: tauri::Context<tauri::Wry>) {
                     // starts, so the bundled copy goes in place first.
                     bundled_model::provision_bundled_model(&app_handle).await;
 
+                    // The start attempt also ends the hold on the managed
+                    // client's channel, once it knows which daemon answers.
                     daemon_setup::start_daemon_and_report(&app_handle).await;
 
                     // Windows only: periodically re-check the live daemon log files for

@@ -655,6 +655,11 @@ pub async fn find_duplicate(
 /// the re-probe, so anything an extension cached on the old channel is replaced
 /// before this returns (see [`AppExtensions::on_channel_rebuilt`]).
 ///
+/// While the channel's startup hold is on, this returns `false` without
+/// probing: the held probe would sit out its timeout and pass for a wedge, and
+/// the rebuild would replace a channel that is only waiting for a start
+/// attempt to find this app's daemon.
+///
 /// [`AppExtensions::on_channel_rebuilt`]: crate::extensions::AppExtensions::on_channel_rebuilt
 #[tauri::command]
 pub async fn probe_and_recover_channel(
@@ -670,7 +675,11 @@ pub async fn probe_and_recover<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     client: &GrpcClient,
 ) -> bool {
-    use crate::services::{DataPlaneRoundTrip, DATA_PLANE_PROBE_TIMEOUT};
+    use crate::services::{DataPlaneRoundTrip, StartupHoldState, DATA_PLANE_PROBE_TIMEOUT};
+
+    if client.startup_hold() != StartupHoldState::Released {
+        return false;
+    }
 
     // A completed RPC (any status, including NotFound) means the channel is
     // alive; only a timeout indicates a wedge.

@@ -76,8 +76,7 @@ function harnessStatusSource(h: DaemonTestHarness): DaemonStatusSource {
       return (await h.isDaemonReachable()) ? 'healthy' : 'not_running';
     },
     // No push transport in this harness (no Tauri event bus) — recovery is
-    // observed via refreshDaemonStatus() re-pulling getCurrent(), same as
-    // the manual "Retry" affordance does in production.
+    // observed via refreshDaemonStatus() re-pulling getCurrent().
     subscribe() {
       return () => {};
     }
