@@ -29,7 +29,7 @@ NodeSpace takes you to step four, without building it yourself.
 
 - **A local knowledge graph with semantic search.** Typed nodes, links between them, and search that understands what an agent is asking for. It runs on your machine and works offline.
 - **Skills for coding agents.** Agents fetch skills and schemas for the task at hand through the CLI (`nodespace skill guidance`, `nodespace skill get`). The skill installer sets this up for Claude Code, Codex, Antigravity CLI, OpenCode and Pi. MCP covers surfaces with no shell.
-- **Plays.** Rules that run on every change: reject a write or update, create and link nodes. View them in the app and switch them on and off. The workflow is data, so you edit it rather than fork it.
+- **Plays.** Automated workflows. A play reacts to a change or a schedule, checks conditions over the graph, and then acts: reject a write or update, update a node, create and link nodes. Plays are data, so you edit them rather than fork anything. View them in the app and switch them on and off.
 - **Saved queries and boards.** Kanban, lists and tables over any query.
 - **A desktop app.** Where you review, edit and organize what agents use. Agents and people work on the same graph.
 
