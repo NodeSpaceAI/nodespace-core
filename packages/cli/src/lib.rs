@@ -212,10 +212,10 @@ pub enum Command {
     /// Host a stdio MCP server exposing one passthrough tool, for bash-less
     /// MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this
     /// CLI directly — see `commands::mcp` for the architecture and its
-    /// ADR-038 trust-boundary controls. Enabled per database: a database
-    /// serves tools only once `nodespace mcp install` has turned it on for
-    /// that database (`--database`, else the default), and every `mcp`
-    /// command says which database it read or changed. With no subcommand,
+    /// ADR-038 trust-boundary controls. Enabled by `nodespace mcp install`, which
+    /// writes the client config (`uninstall` removes it, `status` reports
+    /// it); none of the three needs the daemon. Calls act on whichever
+    /// database is active and cannot select another. With no subcommand,
     /// hosts the stdio server itself — what a client config launches, not
     /// something a person types directly.
     Mcp {
@@ -748,15 +748,10 @@ async fn dispatch(cli: Cli) -> Result<()> {
             }
             other => commands::skill::run(other),
         },
-        // `mcp` takes the resolved socket path and raw database selection
-        // rather than a client: each dispatched call shells back out to this
-        // same binary (see `commands::mcp`). The command itself connects to
-        // the selected database once, to read (the server, `status`) or set
-        // (`install`, `uninstall`) its `external_tools_enabled` setting, and
-        // `install`/`uninstall` also touch a client's own MCP config.
-        Command::Mcp { action } => {
-            commands::mcp::run(action, sock.clone(), cli.database.clone()).await
-        }
+        // `mcp` takes the resolved socket path and no database: each
+        // dispatched call shells back out to this same binary (see
+        // `commands::mcp`) and acts on the daemon's active database.
+        Command::Mcp { action } => commands::mcp::run(action, sock.clone()).await,
     }
 }
 

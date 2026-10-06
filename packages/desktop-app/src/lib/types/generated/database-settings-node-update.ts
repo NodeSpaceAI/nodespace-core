@@ -14,6 +14,5 @@ export type DatabaseSettingsNodeUpdate = {
   requiredExtensions?: Array<string> | null;
   captureEnabled?: boolean | null;
   captureContent?: CaptureContent | null;
-  externalToolsEnabled?: boolean | null;
   providers?: Array<ProviderConfig> | null;
 };

@@ -7,8 +7,7 @@
 //! over its stdin/stdout — the MCP stdio transport, one message per line,
 //! no embedded newlines. The daemon is not involved in this transport: this
 //! process is just one more `nodespace` invocation against `daemon.sock`,
-//! same as every other subcommand, using the same `--socket`/`--database`
-//! resolution.
+//! same as every other subcommand, using the same `--socket` resolution.
 //!
 //! The server exposes exactly one tool, `nodespace(args: string)`, where
 //! `args` is the argument list that would follow `nodespace` on a shell
@@ -16,9 +15,11 @@
 //!
 //! 1. Splits `args` the way a POSIX shell would ([`shell_words::split`]), so
 //!    quoting behaves the same as every other CLI invocation.
-//! 2. Prepends the resolved `--socket`/`--database` this `mcp` process was
-//!    started with (unless `args` sets them), and appends `--json` (unless
-//!    already present), so the tool result is always structured.
+//! 2. Prepends the resolved `--socket` this `mcp` process was started with,
+//!    and appends `--json` (unless already present), so the tool result is
+//!    always structured. No database is named: the CLI routes each call to
+//!    the daemon's active (default) database at that moment, as it does for
+//!    any other command.
 //! 3. Shells out to this same compiled `nodespace` binary with that argv.
 //!
 //! Step 3 is deliberately a subprocess, not an in-process call to the
@@ -43,14 +44,16 @@
 //! section anticipates, scoped to what "one passthrough tool, potentially
 //! multiple external consumers" actually needs:
 //!
-//! - **Explicit user enablement.** [`run_server`] refuses to serve anything
-//!   -- not even `initialize` -- unless the selected database's
-//!   `external_tools_enabled` setting is `true` (see [`enforce_enabled`]).
-//!   The setting is a field of that database's settings node (ADR-095),
-//!   defaults to `false`, and is only ever set by [`install`]/[`uninstall`]
-//!   below, so a client pointed at this binary (whether via the installer or
-//!   a hand-edited config) cannot get a live connection to a database until
-//!   a user has actually run `nodespace mcp install` for it.
+//! - **Explicit user enablement.** Enablement is machine-level: the client
+//!   config that `nodespace mcp install` writes is the opt-in, and
+//!   `uninstall` removes it. Nothing is stored in a database and the server
+//!   itself reads no setting, so a client reaches this binary only because a
+//!   user ran `nodespace mcp install` (or hand-wrote the same config).
+//! - **Active database only.** The server does not bind a database. A call
+//!   cannot select one: [`build_child_args`] refuses `--database`, a `--socket`
+//!   other than the server's own, and the `database` subcommand, so which
+//!   database `nodespace mcp` acts on is always the user's decision (the
+//!   daemon's default), never a client's.
 //! - **Provenance marking.** Every `tools/list` entry carries
 //!   `_meta.source: "external"` ([`TOOL_SOURCE`]) -- see that constant's doc
 //!   comment for why this is the scoped analog of ADR-038's registry-node
@@ -63,13 +66,12 @@
 //! # Installer (`nodespace mcp install`/`uninstall`/`status`)
 //!
 //! Configures a bash-less MCP client (currently Claude Desktop) to launch
-//! this server and flips the enablement setting above in the database the
-//! command is run for (the `--database` selection, else the default) -- the
-//! CLI-only equivalent, for this transport, of what `nodespace skill install`
-//! already does for the skill files. See [`install`], [`uninstall`], [`status`], and
-//! `packages/skill/src/mcp-installer.ts` (the client-config writer these
-//! subcommands shell out to, via the same compiled installer
-//! `commands::skill::resolve_installer` already resolves).
+//! this server -- the CLI-only equivalent, for this transport, of what
+//! `nodespace skill install` already does for the skill files. None of the
+//! three commands connects to the daemon or takes a database. See [`install`],
+//! [`uninstall`], [`status`], and `packages/skill/src/mcp-installer.ts` (the
+//! client-config writer these subcommands shell out to, via the same compiled
+//! installer `commands::skill::resolve_installer` already resolves).
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -77,7 +79,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
-use nodespace_types::{DatabaseSettingsFields, DATABASE_SETTINGS_NODE_ID};
 use regex::Regex;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -383,16 +384,15 @@ fn find_unbounded_pattern_property(map: &serde_json::Map<String, Value>) -> Opti
 #[derive(Subcommand, Debug)]
 pub enum McpAction {
     /// Configure a detected bash-less MCP client (currently Claude Desktop)
-    /// to launch `nodespace mcp`, and enable the passthrough tool for the
-    /// selected database (`--database`, else the default). Safe to re-run.
-    /// The client launches the server for the default database, so install
-    /// for the database the client should use.
+    /// to launch `nodespace mcp`. The config is what enables the passthrough
+    /// tool; it acts on whichever database is active when a client calls it.
+    /// Needs no daemon. Safe to re-run.
     Install(InstallArgs),
-    /// Remove the MCP config this wrote from every detected client and
-    /// disable the passthrough tool again for the selected database.
+    /// Remove the MCP config this wrote from every detected client, which
+    /// disables the passthrough tool. Needs no daemon.
     Uninstall,
-    /// Report whether the passthrough tool is enabled for the selected
-    /// database and which clients currently have a config pointing at it.
+    /// Report whether a detected client has a config pointing at this server
+    /// (that is what enables the tool). Needs no daemon.
     Status,
 }
 
@@ -408,101 +408,19 @@ pub struct InstallArgs {
 /// Top-level dispatch for `nodespace mcp [install|uninstall|status]`. With no
 /// subcommand — how a client config (e.g. `claude_desktop_config.json`)
 /// invokes this binary — hosts the stdio server; see [`run_server`].
-pub async fn run(action: Option<McpAction>, sock: PathBuf, database: Option<String>) -> Result<()> {
+pub async fn run(action: Option<McpAction>, sock: PathBuf) -> Result<()> {
     match action {
-        None => run_server(sock, database).await,
-        Some(McpAction::Install(args)) => install(args, &sock, database.as_deref()).await,
-        Some(McpAction::Uninstall) => uninstall(&sock, database.as_deref()).await,
-        Some(McpAction::Status) => status(&sock, database.as_deref()).await,
+        None => run_server(sock).await,
+        Some(McpAction::Install(args)) => install(args),
+        Some(McpAction::Uninstall) => uninstall(),
+        Some(McpAction::Status) => status(),
     }
-}
-
-/// The database a `mcp` command acts on: a node client routed to it, and how
-/// to name it to the user.
-struct SettingsTarget {
-    client: crate::NodeClient,
-    /// The registry id of the database, `None` only when the daemon has no
-    /// default and none was selected.
-    id: Option<String>,
-    label: String,
-}
-
-/// Route to the `--database` selection (else the daemon's default) and name
-/// it. The enablement setting is a field of that database's settings node
-/// (ADR-095), so every `mcp` command needs the daemon and says which database
-/// it read or changed.
-async fn connect_settings_target(sock: &Path, database: Option<&str>) -> Result<SettingsTarget> {
-    let (interceptor, id) = crate::resolve_routing(sock, database).await?;
-    let client = crate::connect(sock, interceptor).await?;
-    let label = match &id {
-        Some(id) => {
-            let mut registry = crate::connect_database(sock).await?;
-            let listed = registry
-                .list(nodespace_daemon::nodespace::ListDatabasesRequest {})
-                .await
-                .context("List RPC failed")?
-                .into_inner();
-            match listed.databases.iter().find(|d| &d.id == id) {
-                Some(info) => format!("database '{}' ({})", info.name, info.id),
-                None => format!("database {id}"),
-            }
-        }
-        None => "the daemon's default database".to_string(),
-    };
-    Ok(SettingsTarget { client, id, label })
-}
-
-/// The database's settings and the version of the node that holds them.
-async fn read_settings(client: &mut crate::NodeClient) -> Result<(DatabaseSettingsFields, i64)> {
-    let response = client
-        .get_node(nodespace_daemon::nodespace::GetNodeRequest {
-            node_id: DATABASE_SETTINGS_NODE_ID.to_string(),
-        })
-        .await
-        .context("GetNode RPC failed for the database's settings")?
-        .into_inner();
-    let node = response
-        .node_data
-        .context("the database's settings node is missing")?;
-    let properties: Value =
-        serde_json::from_str(&node.properties).context("parse the settings node's properties")?;
-    let settings = DatabaseSettingsFields::from_properties(&properties)
-        .context("read the database's settings")?;
-    Ok((settings, node.version))
-}
-
-/// Write `external_tools_enabled` through the settings node's typed update. A
-/// lost race with another settings write reads the winning version and tries
-/// once more.
-async fn set_external_tools_enabled(client: &mut crate::NodeClient, enabled: bool) -> Result<()> {
-    for attempt in 0..2 {
-        let (_, version) = read_settings(client).await?;
-        let result = client
-            .update_database_settings_node(
-                nodespace_daemon::nodespace::UpdateDatabaseSettingsNodeRequest {
-                    node_id: DATABASE_SETTINGS_NODE_ID.to_string(),
-                    version,
-                    update_json: json!({ "externalToolsEnabled": enabled }).to_string(),
-                },
-            )
-            .await;
-        match result {
-            Ok(_) => return Ok(()),
-            Err(status) if attempt == 0 && status.code() == tonic::Code::FailedPrecondition => {}
-            Err(status) => {
-                return Err(
-                    anyhow::Error::new(status).context("UpdateDatabaseSettingsNode RPC failed")
-                )
-            }
-        }
-    }
-    unreachable!("the second attempt returns its own result")
 }
 
 /// Prompt on a real terminal; auto-confirm (stating that the prompt was
 /// skipped, so the choice is visible in captured output) when stdin or
 /// stdout isn't one — mirrors `commands::skill::confirm_install`.
-fn confirm_enable(label: &str) -> Result<bool> {
+fn confirm_enable() -> Result<bool> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         println!(
             "No interactive terminal detected -- proceeding with install (pass --yes to silence \
@@ -512,9 +430,9 @@ fn confirm_enable(label: &str) -> Result<bool> {
     }
 
     print!(
-        "Enable the NodeSpace MCP passthrough tool for {label} and configure detected clients \
-         (e.g. Claude Desktop) to launch `nodespace mcp`? A configured client will be able to \
-         run any `nodespace` CLI command through this connection. [Y/n] "
+        "Configure detected clients (e.g. Claude Desktop) to launch `nodespace mcp`? A \
+         configured client will be able to run any `nodespace` CLI command, against whichever \
+         database is active when it calls. [Y/n] "
     );
     use std::io::Write;
     std::io::stdout().flush().ok();
@@ -528,14 +446,10 @@ fn confirm_enable(label: &str) -> Result<bool> {
 }
 
 /// Writes a detected client's MCP config (via the shared skill/MCP
-/// installer — see `commands::skill::resolve_installer`) and, only once at
-/// least one client was actually configured, enables the passthrough tool.
-/// This ordering is the explicit-user-enablement gate itself: a run that
-/// configures nothing (nothing detected, or every candidate skipped) leaves
-/// the tool disabled, exactly as it was before.
-async fn install(args: InstallArgs, sock: &Path, database: Option<&str>) -> Result<()> {
-    let mut target = connect_settings_target(sock, database).await?;
-    if !args.yes && !confirm_enable(&target.label)? {
+/// installer — see `commands::skill::resolve_installer`). The config is the
+/// enablement: nothing else is stored, and no daemon is involved.
+fn install(args: InstallArgs) -> Result<()> {
+    if !args.yes && !confirm_enable()? {
         println!("Skipped.");
         return Ok(());
     }
@@ -555,24 +469,18 @@ async fn install(args: InstallArgs, sock: &Path, database: Option<&str>) -> Resu
     }
     if outcome.installed.is_empty() {
         println!("Nothing was configured -- the passthrough tool stays disabled.");
-        return Ok(());
+    } else {
+        println!(
+            "The NodeSpace MCP passthrough tool is enabled. It acts on whichever database is \
+             active when a client calls it."
+        );
     }
-
-    set_external_tools_enabled(&mut target.client, true)
-        .await
-        .context("enable the NodeSpace MCP passthrough tool")?;
-    println!(
-        "The NodeSpace MCP passthrough tool is now enabled for {}.",
-        target.label
-    );
     Ok(())
 }
 
-/// Removes every detected client's MCP config and always disables the
-/// passthrough tool afterward — unconditionally, not just when a config was
-/// actually found, so this is a reliable way back to "definitely disabled"
-/// regardless of what state the client configs are in.
-async fn uninstall(sock: &Path, database: Option<&str>) -> Result<()> {
+/// Removes every detected client's MCP config, which disables the
+/// passthrough tool. Needs no daemon.
+fn uninstall() -> Result<()> {
     let installer = super::skill::resolve_installer()?;
     let outcome = super::skill::run_installer_subcommand(&installer, "mcp-uninstall")?;
 
@@ -586,40 +494,24 @@ async fn uninstall(sock: &Path, database: Option<&str>) -> Result<()> {
             println!("  {}: {}", skipped.agent, skipped.reason);
         }
     }
-
-    // The client configs are already gone, so a daemon that is down only
-    // leaves the setting, which no client can reach, for the next run.
-    let mut target = connect_settings_target(sock, database).await?;
-    set_external_tools_enabled(&mut target.client, false)
-        .await
-        .context("disable the NodeSpace MCP passthrough tool")?;
-    println!(
-        "The NodeSpace MCP passthrough tool is now disabled for {}.",
-        target.label
-    );
+    println!("The NodeSpace MCP passthrough tool is disabled.");
     Ok(())
 }
 
-/// Reports the enablement flag plus which detected clients currently have a
-/// config pointing at this server. Read-only — touches neither the flag nor
-/// any client config.
-async fn status(sock: &Path, database: Option<&str>) -> Result<()> {
-    let mut target = connect_settings_target(sock, database).await?;
-    let (settings, _) = read_settings(&mut target.client)
-        .await
-        .context("read NodeSpace MCP settings")?;
-    println!(
-        "Passthrough tool enabled for {}: {}",
-        target.label,
-        if settings.external_tools_enabled {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-
+/// Reports which detected clients currently have a config pointing at this
+/// server; a present config is what enables the tool. Read-only, and needs no
+/// daemon.
+fn status() -> Result<()> {
     let installer = super::skill::resolve_installer()?;
     let outcome = super::skill::run_installer_subcommand(&installer, "mcp-status")?;
+    println!(
+        "Passthrough tool enabled: {}",
+        if outcome.installed.is_empty() {
+            "no"
+        } else {
+            "yes"
+        }
+    );
     for client in &outcome.installed {
         println!("✓ {client}: config present");
     }
@@ -629,56 +521,18 @@ async fn status(sock: &Path, database: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// The trust-boundary gate itself: `nodespace mcp` (this whole server) must
-/// not be live/registered until a user has explicitly turned it on (ADR-038
-/// Trust Boundary, "Registration is gated… external tools require explicit
-/// user enablement"). Pure so the message is unit-testable without file I/O
-/// — [`run_server`] is the only caller that actually reads the setting.
-fn enforce_enabled(settings: &DatabaseSettingsFields, label: &str) -> Result<()> {
-    if settings.external_tools_enabled {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "The NodeSpace MCP passthrough tool is not enabled for {label}. Run `nodespace mcp \
-         install` to enable it and configure a client (e.g. Claude Desktop), or `nodespace mcp \
-         status` to check the current state."
-    )
-}
-
 /// Hosts the stdio MCP server: reads JSON-RPC requests from stdin, one per
 /// line, dispatches them, and writes JSON-RPC responses to stdout, one per
 /// line, until stdin closes (the client disconnected).
 ///
 /// `sock` is the already-resolved daemon socket path — honoring `--socket` /
 /// `NODESPACED_SOCKET` / auto-discovery, exactly as every other subcommand
-/// resolves it via [`crate::resolve_socket_path`] — and `database` is the
-/// raw `--database` selection, if any. Both are forwarded to every
-/// dispatched child invocation, so the whole MCP session targets one
-/// consistent daemon/database: the one `nodespace mcp` itself was started
-/// with.
-///
-/// Refuses to serve anything — not even `initialize` — unless the
-/// passthrough tool is explicitly enabled (see [`enforce_enabled`]),
-/// checked once before entering the request loop: this is the strongest
-/// form the trust boundary can take, since a disabled server never accepts a
-/// client's first message at all rather than accepting a connection and
-/// gating individual calls.
-pub async fn run_server(sock: PathBuf, database: Option<String>) -> Result<()> {
-    let mut target = connect_settings_target(&sock, database.as_deref()).await?;
-    let (settings, _) = read_settings(&mut target.client)
-        .await
-        .context("read NodeSpace MCP settings")?;
-    enforce_enabled(&settings, &target.label)?;
-    // Every dispatched call is bound to the database checked here, by id, so
-    // neither a later change of the daemon's default nor a flag in a call can
-    // move it to one that never enabled external tools.
-    let database = Some(
-        target
-            .id
-            .clone()
-            .context("the daemon has no default database; select one with --database")?,
-    );
-
+/// resolves it via [`crate::resolve_socket_path`]. It is forwarded to every
+/// dispatched child invocation, so the whole MCP session talks to the one
+/// daemon `nodespace mcp` was started with. No database is bound and the
+/// daemon is not contacted here: the server starts with the daemon down, and
+/// each call is routed by the CLI to the active database at that moment.
+pub async fn run_server(sock: PathBuf) -> Result<()> {
     let exe = std::env::current_exe().context("resolve the nodespace executable's own path")?;
 
     let stdin = tokio::io::stdin();
@@ -690,7 +544,7 @@ pub async fn run_server(sock: PathBuf, database: Option<String>) -> Result<()> {
         if line.is_empty() {
             continue;
         }
-        if let Some(response) = handle_message(line, &exe, &sock, database.as_deref()).await {
+        if let Some(response) = handle_message(line, &exe, &sock).await {
             let text = serde_json::to_string(&response).context("serialize JSON-RPC response")?;
             stdout.write_all(text.as_bytes()).await?;
             stdout.write_all(b"\n").await?;
@@ -707,12 +561,7 @@ pub async fn run_server(sock: PathBuf, database: Option<String>) -> Result<()> {
 /// Never panics: every failure becomes either a JSON-RPC error object or,
 /// for a recognized tool call that fails, a tool result with
 /// `isError: true`.
-async fn handle_message(
-    line: &str,
-    exe: &Path,
-    sock: &Path,
-    database: Option<&str>,
-) -> Option<Value> {
+async fn handle_message(line: &str, exe: &Path, sock: &Path) -> Option<Value> {
     let request: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => {
@@ -759,7 +608,7 @@ async fn handle_message(
             let params = request.get("params").cloned().unwrap_or(Value::Null);
             Some(match extract_tool_call(&params) {
                 Ok(args_str) => {
-                    let result = call_tool(exe, &args_str, sock, database).await;
+                    let result = call_tool(exe, &args_str, sock).await;
                     success_response(id, result)
                 }
                 Err(msg) => error_response(id, -32602, &msg),
@@ -847,24 +696,20 @@ fn extract_tool_call(params: &Value) -> Result<String, String> {
         .ok_or_else(|| format!("the \"{TOOL_NAME}\" tool requires a string \"args\" argument"))
 }
 
-/// Builds the child argv for one dispatched call: the `--socket`/`--database`
-/// this `mcp` process is bound to, then the shell-split `args`, then `--json`
+/// Builds the child argv for one dispatched call: the `--socket` this `mcp`
+/// process was started with, then the shell-split `args`, then `--json`
 /// (unless already present) so the tool result is always structured.
 ///
-/// The server is bound to the one database whose `external_tools_enabled` it
-/// checked at start (ADR-038, ADR-095), so a call may not name another daemon
-/// or database: a client enabled for one database must not reach one that
-/// never enabled it, nor turn the setting on there. A call that repeats the
-/// flag with the very value it is bound to (a delete preview's
-/// `confirm_command` carries both) is accepted; any other value is refused.
+/// A call acts on the active database and cannot choose another (ADR-038,
+/// ADR-095): `--database` (either spelling) is refused, `--socket` is
+/// accepted only when it names the server's own daemon (a delete preview's
+/// `confirm_command` repeats it), and the `database` subcommand, which
+/// changes the registry and the active database, is refused. Which database
+/// is active is the user's decision, not a client's.
 ///
 /// Pure and synchronous so quoting/splitting behavior is unit-testable
 /// without spawning a process.
-fn build_child_args(
-    args_str: &str,
-    sock: &Path,
-    database: Option<&str>,
-) -> Result<Vec<String>, String> {
+fn build_child_args(args_str: &str, sock: &Path) -> Result<Vec<String>, String> {
     let words = shell_words::split(args_str)
         .map_err(|e| format!("could not parse \"args\" as shell-style arguments: {e}"))?;
     let mut words = words.into_iter().peekable();
@@ -884,34 +729,49 @@ fn build_child_args(
             }
             _ => (word.clone(), None),
         };
-        let bound = match flag.as_str() {
-            "--socket" => Some(Some(bound_socket.as_str())),
-            "--database" => Some(database),
-            _ => None,
-        };
-        let Some(bound) = bound else {
-            tail.push(word);
-            continue;
-        };
-        let value = match inline {
-            Some(value) => value,
-            None => words
-                .next()
-                .ok_or_else(|| format!("{flag} needs a value"))?,
-        };
-        if bound != Some(value.as_str()) {
-            return Err(format!(
-                "{flag} cannot be set in a call: this server is bound to one daemon and database. \
-                 Run `nodespace mcp` for the one you want."
-            ));
+        match flag.as_str() {
+            "--database" => {
+                return Err(
+                    "--database cannot be set in a call: this tool acts on the active \
+                     database. The user chooses it with `nodespace database use`."
+                        .to_string(),
+                );
+            }
+            "--socket" => {
+                let value = match inline {
+                    Some(value) => value,
+                    None => words
+                        .next()
+                        .ok_or_else(|| format!("{flag} needs a value"))?,
+                };
+                if value != bound_socket {
+                    return Err(
+                        "--socket cannot name another daemon in a call: this server is bound to \
+                         the one it was started with."
+                            .to_string(),
+                    );
+                }
+            }
+            _ => tail.push(word),
         }
     }
 
-    let mut argv = vec!["--socket".to_string(), bound_socket];
-    if let Some(db) = database {
-        argv.push("--database".to_string());
-        argv.push(db.to_string());
+    // The subcommand is the first word that is not a flag (the only global
+    // flag taking a value, `--socket`, was consumed above).
+    if tail
+        .iter()
+        .find(|w| !w.starts_with('-'))
+        .map(String::as_str)
+        == Some("database")
+    {
+        return Err(
+            "the `database` subcommand cannot be run through this tool: the user \
+             chooses the active database."
+                .to_string(),
+        );
     }
+
+    let mut argv = vec!["--socket".to_string(), bound_socket];
     argv.extend(tail);
 
     if !argv.iter().any(|a| a == "--json") {
@@ -921,8 +781,8 @@ fn build_child_args(
     Ok(argv)
 }
 
-async fn call_tool(exe: &Path, args_str: &str, sock: &Path, database: Option<&str>) -> Value {
-    match build_child_args(args_str, sock, database) {
+async fn call_tool(exe: &Path, args_str: &str, sock: &Path) -> Value {
+    match build_child_args(args_str, sock) {
         Ok(argv) => run_child(exe, &argv, DISPATCH_TIMEOUT).await,
         Err(msg) => tool_error(msg),
     }
@@ -952,7 +812,10 @@ async fn run_child(exe: &Path, argv: &[String], timeout: Duration) -> Value {
     command
         .args(argv)
         .kill_on_drop(true)
-        .stdin(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null())
+        // A database named in the environment `nodespace mcp` was started with
+        // must not pin the calls: they act on the active database.
+        .env_remove(nodespace_proto::DATABASE_ENV_VAR);
 
     match tokio::time::timeout(timeout, command.output()).await {
         Ok(Ok(output)) if output.status.success() => {
@@ -1013,12 +876,8 @@ mod tests {
 
     #[test]
     fn build_child_args_splits_quoted_args_and_appends_json() {
-        let argv = build_child_args(
-            r#"search "auth tokens""#,
-            Path::new("/tmp/daemon.sock"),
-            None,
-        )
-        .expect("valid shell syntax");
+        let argv = build_child_args(r#"search "auth tokens""#, Path::new("/tmp/daemon.sock"))
+            .expect("valid shell syntax");
         assert_eq!(
             argv,
             vec![
@@ -1031,21 +890,18 @@ mod tests {
         );
     }
 
+    /// A call names no database: the argv carries the socket and the call
+    /// only, so the CLI routes to the active database as it does for any
+    /// other command.
     #[test]
-    fn build_child_args_forwards_database_selection() {
-        let argv = build_child_args(
-            "node get abc-123",
-            Path::new("/tmp/daemon.sock"),
-            Some("work"),
-        )
-        .expect("valid shell syntax");
+    fn build_child_args_forwards_the_socket_and_names_no_database() {
+        let argv = build_child_args("node get abc-123", Path::new("/tmp/daemon.sock"))
+            .expect("valid shell syntax");
         assert_eq!(
             argv,
             vec![
                 "--socket",
                 "/tmp/daemon.sock",
-                "--database",
-                "work",
                 "node",
                 "get",
                 "abc-123",
@@ -1066,25 +922,17 @@ mod tests {
             descendant_count: 2,
             ..Default::default()
         };
-        // The preview itself ran through this tool, so it was given both
-        // routing flags and repeats them.
-        let routing = [
-            "--socket".to_string(),
-            "/s".to_string(),
-            "--database".to_string(),
-            "work".to_string(),
-        ];
+        // The preview itself ran through this tool, so it carries the one
+        // routing flag the tool passes.
+        let routing = ["--socket".to_string(), "/s".to_string()];
         let command = crate::output::delete_confirm_command(&preview, &routing);
 
-        let argv =
-            build_child_args(&command, Path::new("/s"), Some("work")).expect("valid shell syntax");
+        let argv = build_child_args(&command, Path::new("/s")).expect("valid shell syntax");
         assert_eq!(
             argv,
             vec![
                 "--socket",
                 "/s",
-                "--database",
-                "work",
                 "node",
                 "delete",
                 "abc",
@@ -1101,14 +949,14 @@ mod tests {
 
     #[test]
     fn build_child_args_does_not_duplicate_an_explicit_json_flag() {
-        let argv = build_child_args("node get abc-123 --json", Path::new("/s"), None)
+        let argv = build_child_args("node get abc-123 --json", Path::new("/s"))
             .expect("valid shell syntax");
         assert_eq!(argv.iter().filter(|a| *a == "--json").count(), 1);
     }
 
     #[test]
     fn build_child_args_rejects_unterminated_quotes() {
-        let err = build_child_args(r#"search "unterminated"#, Path::new("/s"), None)
+        let err = build_child_args(r#"search "unterminated"#, Path::new("/s"))
             .expect_err("unterminated quote must not panic or silently truncate");
         assert!(err.contains("could not parse"));
     }
@@ -1119,61 +967,80 @@ mod tests {
         // syntax (zero tokens) — the dispatched binary is responsible for
         // rejecting "no subcommand given", the same as running `nodespace`
         // alone.
-        let argv = build_child_args("", Path::new("/s"), None).expect("empty is valid");
+        let argv = build_child_args("", Path::new("/s")).expect("empty is valid");
         assert_eq!(argv, vec!["--socket", "/s", "--json"]);
     }
 
-    /// A call is bound to the daemon and database the server checked at
-    /// start: naming another is refused, in either flag spelling, so a client
-    /// enabled for one database cannot reach, or enable tools on, another.
+    /// A call cannot select a database, in either flag spelling or position.
     #[test]
-    fn build_child_args_refuses_a_call_that_names_another_daemon_or_database() {
+    fn build_child_args_refuses_a_call_that_names_a_database() {
         for args in [
-            "--socket /explicit/other.sock node get abc",
-            "--socket=/explicit/other.sock node get abc",
             "--database other node get abc",
             "--database=other node get abc",
             "nodespace --database other node get abc",
+            "node get abc --database other",
+            "node get abc --database=other",
             "node get abc -- --database other",
             r#""--database" "other" node get abc"#,
-            "node update database-settings-singleton --database other --property external_tools_enabled=true",
+            "node get abc --database",
         ] {
-            let err = build_child_args(args, Path::new("/default.sock"), Some("work"))
-                .expect_err("another daemon or database must be refused");
-            assert!(err.contains("cannot be set in a call"), "{args}: {err}");
+            let err = build_child_args(args, Path::new("/default.sock"))
+                .expect_err("a database selection must be refused");
+            assert!(err.contains("--database cannot be set"), "{args}: {err}");
         }
-        // A server with no resolved database refuses any --database too.
-        build_child_args("--database work node get abc", Path::new("/s"), None)
-            .expect_err("no database is bound");
-        build_child_args("node get abc --database", Path::new("/s"), Some("work"))
-            .expect_err("a flag with no value is refused");
     }
 
-    /// Repeating the bound value is how a printed command replays unedited.
+    /// A call cannot name a daemon other than the server's own; naming its own
+    /// (how a printed command replays) is accepted and sent once.
     #[test]
-    fn build_child_args_accepts_the_bound_routing_flags_and_sets_them_once() {
+    fn build_child_args_accepts_only_the_servers_own_socket() {
         use clap::Parser;
-        let argv = build_child_args(
-            "--socket /s --database=work node get abc",
-            Path::new("/s"),
-            Some("work"),
-        )
-        .expect("the bound values are accepted");
-        assert_eq!(
-            argv,
-            vec![
-                "--socket",
-                "/s",
-                "--database",
-                "work",
-                "node",
-                "get",
-                "abc",
-                "--json"
-            ]
-        );
+        for args in [
+            "--socket /explicit/other.sock node get abc",
+            "--socket=/explicit/other.sock node get abc",
+            "node get abc --socket /explicit/other.sock",
+        ] {
+            let err = build_child_args(args, Path::new("/default.sock"))
+                .expect_err("another daemon must be refused");
+            assert!(
+                err.contains("--socket cannot name another daemon"),
+                "{args}: {err}"
+            );
+        }
+        build_child_args("node get abc --socket", Path::new("/s"))
+            .expect_err("a flag with no value is refused");
+
+        let argv = build_child_args("--socket=/s node get abc", Path::new("/s"))
+            .expect("the server's own socket is accepted");
+        assert_eq!(argv, vec!["--socket", "/s", "node", "get", "abc", "--json"]);
         crate::Cli::try_parse_from(std::iter::once("nodespace".to_string()).chain(argv))
             .expect("the dispatched argv must parse");
+    }
+
+    /// The `database` subcommand changes the registry and the active
+    /// database, which is the user's decision; every form of it is refused.
+    #[test]
+    fn build_child_args_refuses_the_database_subcommand() {
+        for args in [
+            "database use work",
+            "database list",
+            "nodespace database use work",
+            "--json database use work",
+            "--socket /s database use work",
+            "  database   remove work",
+        ] {
+            let err = build_child_args(args, Path::new("/s"))
+                .expect_err("the database subcommand must be refused");
+            assert!(err.contains("`database` subcommand"), "{args}: {err}");
+        }
+        // Other commands that merely mention the word are not the subcommand.
+        for args in [
+            "search database",
+            "node get database",
+            "node create text database",
+        ] {
+            build_child_args(args, Path::new("/s")).expect(args);
+        }
     }
 
     #[test]
@@ -1586,27 +1453,6 @@ mod tests {
             .contains("additionalProperties"));
     }
 
-    // --- enforce_enabled -----------------------------------------------
-
-    #[test]
-    fn enforce_enabled_rejects_a_disabled_config_with_an_actionable_message() {
-        let err = enforce_enabled(&DatabaseSettingsFields::default(), "database 'work'")
-            .expect_err("disabled must be rejected");
-        let msg = err.to_string();
-        assert!(msg.contains("not enabled"), "got: {msg}");
-        assert!(msg.contains("database 'work'"), "got: {msg}");
-        assert!(msg.contains("nodespace mcp install"), "got: {msg}");
-    }
-
-    #[test]
-    fn enforce_enabled_accepts_an_enabled_config() {
-        let enabled = DatabaseSettingsFields {
-            external_tools_enabled: true,
-            ..Default::default()
-        };
-        assert!(enforce_enabled(&enabled, "database 'work'").is_ok());
-    }
-
     #[test]
     fn extract_tool_call_rejects_unknown_tool_name() {
         let params = json!({"name": "not-nodespace", "arguments": {"args": "search x"}});
@@ -1666,7 +1512,6 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
             Path::new("/bin/true"),
             Path::new("/tmp/daemon.sock"),
-            None,
         )
         .await
         .expect("initialize is a request, not a notification");
@@ -1681,7 +1526,6 @@ mod tests {
             r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
             Path::new("/bin/true"),
             Path::new("/tmp/daemon.sock"),
-            None,
         )
         .await;
         assert!(
@@ -1696,7 +1540,6 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":7,"method":"resources/list","params":{}}"#,
             Path::new("/bin/true"),
             Path::new("/tmp/daemon.sock"),
-            None,
         )
         .await
         .expect("a request always gets a response");
@@ -1709,7 +1552,6 @@ mod tests {
             "not json at all",
             Path::new("/bin/true"),
             Path::new("/tmp/daemon.sock"),
-            None,
         )
         .await
         .expect("a parse failure must still be reported");
@@ -1723,7 +1565,6 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"bogus","arguments":{}}}"#,
             Path::new("/bin/true"),
             Path::new("/tmp/daemon.sock"),
-            None,
         )
         .await
         .expect("a request always gets a response");
@@ -1736,7 +1577,6 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}"#,
             Path::new("/bin/true"),
             Path::new("/tmp/daemon.sock"),
-            None,
         )
         .await
         .expect("a request always gets a response");
@@ -1758,6 +1598,24 @@ mod process_tests {
         .await;
         assert_eq!(result["isError"], false);
         assert_eq!(result["content"][0]["text"], "hello");
+    }
+
+    /// A database named in the environment the server started with must not
+    /// reach a call: the child routes to the active database.
+    #[tokio::test]
+    async fn run_child_does_not_inherit_the_database_environment_variable() {
+        std::env::set_var(nodespace_proto::DATABASE_ENV_VAR, "pinned");
+        let result = run_child(
+            Path::new("/bin/sh"),
+            &[
+                "-c".to_string(),
+                format!("echo \"${{{}-unset}}\"", nodespace_proto::DATABASE_ENV_VAR),
+            ],
+            Duration::from_secs(5),
+        )
+        .await;
+        std::env::remove_var(nodespace_proto::DATABASE_ENV_VAR);
+        assert_eq!(result["content"][0]["text"], "unset");
     }
 
     #[tokio::test]

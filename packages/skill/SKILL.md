@@ -40,7 +40,7 @@ Date nodes make temporal retrieval reliable: if a finding is time-bound, attach 
 How you run a `nodespace` command depends on the tools you were given. Decide from your tool list:
 
 - **A shell tool**: run `nodespace <args>` on a shell line.
-- **No shell, but a `nodespace` tool** (one `args: string` parameter, the MCP passthrough): call it with the argument list that would follow `nodespace` on a shell line. `nodespace search "auth tokens"` becomes `args: "search \"auth tokens\""`. Every command in this skill, its references and the instructions you fetch works the same way through it.
+- **No shell, but a `nodespace` tool** (one `args: string` parameter, the MCP passthrough): call it with the argument list that would follow `nodespace` on a shell line. `nodespace search "auth tokens"` becomes `args: "search \"auth tokens\""`. Every command in this skill, its references and the instructions you fetch works the same way through it. It acts on whichever database is active when you call it: `--database` and `--socket` naming another daemon, and the `database` subcommand, are refused, so ask the user to switch databases.
 - **Neither**: NodeSpace is not reachable from this surface. Run nothing and guess at no result. Tell the user so, and point them at the NodeSpace desktop app or a shell- or MCP-capable agent.
 
 The CLI talks to the `nodespaced` daemon on this machine, and a command that cannot reach it says so. `nodespace diagnostics` reports the database's health: when it lists `errors`, report them to the user before continuing.

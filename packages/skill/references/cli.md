@@ -897,7 +897,6 @@ Each database holds its own settings in its `database-settings` node, id `databa
 |---|---|---|
 | `capture_enabled` | save a finished terminal session to its chat node | `false` |
 | `capture_content` | how much a captured session saves: `metadata_only`, `summary` or `full` | `metadata_only` |
-| `external_tools_enabled` | whether `nodespace mcp` serves this database | `false` |
 | `providers` | OpenAI-compatible providers: a list of `{id, name, base_url, api_key, model, routing_ok}`, `id` a UUID | `[]` |
 
 ```bash
@@ -909,7 +908,7 @@ nodespace --database work node update database-settings-singleton --property cap
 nodespace --database work node update database-settings-singleton --property capture_content=summary
 ```
 
-A provider's `api_key` is node data: every read of the settings node returns it. A new database starts with capture off, external tools off and no providers; nothing is copied from another database. `nodespace mcp install` and `uninstall` set `external_tools_enabled` for the database they are run for and print which database that is, and `nodespace mcp` serves only a database that has it on.
+A provider's `api_key` is node data: every read of the settings node returns it. A new database starts with capture off and no providers; nothing is copied from another database. Whether `nodespace mcp` is enabled is not a database setting: it is the client config `nodespace mcp install` writes, on this machine, and `nodespace mcp` acts on whichever database is active when a call is made.
 
 ### Conflicts
 
@@ -1403,14 +1402,14 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 
 ### `nodespace mcp`
 
-Host a stdio MCP server exposing one passthrough tool, for bash-less MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this CLI directly — see `commands::mcp` for the architecture and its ADR-038 trust-boundary controls. Enabled per database: a database serves tools only once `nodespace mcp install` has turned it on for that database (`--database`, else the default), and every `mcp` command says which database it read or changed. With no subcommand, hosts the stdio server itself — what a client config launches, not something a person types directly
+Host a stdio MCP server exposing one passthrough tool, for bash-less MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this CLI directly — see `commands::mcp` for the architecture and its ADR-038 trust-boundary controls. Enabled by `nodespace mcp install`, which writes the client config (`uninstall` removes it, `status` reports it); none of the three needs the daemon. Calls act on whichever database is active and cannot select another. With no subcommand, hosts the stdio server itself — what a client config launches, not something a person types directly
 
-**`nodespace mcp install`** — Configure a detected bash-less MCP client (currently Claude Desktop) to launch `nodespace mcp`, and enable the passthrough tool for the selected database (`--database`, else the default). Safe to re-run. The client launches the server for the default database, so install for the database the client should use
+**`nodespace mcp install`** — Configure a detected bash-less MCP client (currently Claude Desktop) to launch `nodespace mcp`. The config is what enables the passthrough tool; it acts on whichever database is active when a client calls it. Needs no daemon. Safe to re-run
 
 - `--yes` — Install without prompting for confirmation. Implied automatically when stdin/stdout isn't a terminal — mirrors `nodespace skill install`'s `--yes`
 
-**`nodespace mcp uninstall`** — Remove the MCP config this wrote from every detected client and disable the passthrough tool again for the selected database
+**`nodespace mcp uninstall`** — Remove the MCP config this wrote from every detected client, which disables the passthrough tool. Needs no daemon
 
-**`nodespace mcp status`** — Report whether the passthrough tool is enabled for the selected database and which clients currently have a config pointing at it
+**`nodespace mcp status`** — Report whether a detected client has a config pointing at this server (that is what enables the tool). Needs no daemon
 
 <!-- END GENERATED: cli-surface -->

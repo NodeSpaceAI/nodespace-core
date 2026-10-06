@@ -5685,7 +5685,6 @@ mod tests {
             json!({ "id": id, "name": "n", "base_url": "u", "routing_ok": { "m": true } });
         for props in [
             json!({ "capture_enabled": true, "capture_content": "full" }),
-            json!({ "external_tools_enabled": true }),
             json!({ "providers": [provider.clone()] }),
             json!({ "providers": [] }),
             json!({ "capture_enabled": null, "providers": null }),
@@ -5702,7 +5701,6 @@ mod tests {
         for props in [
             json!({ "capture_enabled": "yes" }),
             json!({ "capture_content": "everything" }),
-            json!({ "external_tools_enabled": 1 }),
             json!({ "providers": "none" }),
             json!({ "providers": [{ "name": "n", "base_url": "u" }] }),
             json!({ "providers": [{ "id": "not-a-uuid", "name": "n", "base_url": "u" }] }),
