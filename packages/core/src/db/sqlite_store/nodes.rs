@@ -133,11 +133,14 @@ const ENTITY_RESOLUTION_MAX_TOKENS: usize = 6;
 ///
 /// "Create a new task called …" shares "task" with every title that mentions
 /// one, and with nothing the user named. A type word is the neighbourhood of a
-/// kind, not a mention, so it never carries a match: it is left out of the
-/// lookup, and a message made only of type words resolves nothing. "turn off
+/// kind, not a mention, so a title that shares only type words with the
+/// message is not listed, unless the title is made of nothing else. "turn off
 /// the rollover play" still resolves its play by "rollover".
+///
+/// Covers the built-in record types a request names, as the Stage-1 type line
+/// does; a user-defined type's name is not covered.
 fn is_record_type_word(token: &str) -> bool {
-    const TYPE_WORDS: [&str; 11] = [
+    const TYPE_WORDS: &[&str] = &[
         "task",
         "project",
         "spec",
@@ -4321,14 +4324,48 @@ impl SqliteStore {
         message: &str,
         limit: i64,
     ) -> Result<Vec<ResolvedEntity>> {
-        let tokens: Vec<String> = select_entity_tokens(message)
-            .into_iter()
-            .filter(|t| !is_record_type_word(t))
-            .collect();
+        let tokens = select_entity_tokens(message);
         if tokens.is_empty() {
             return Ok(Vec::new());
         }
+        let found = self.title_search(&tokens, limit).await?;
 
+        // A record-type word ("task", "plan") names a kind, not a record, so a
+        // title that shares only such words with the message is not mentioned
+        // by it. A title made wholly of type words ("Project plan") is the
+        // exception: those words are its name.
+        let name_tokens: Vec<String> = tokens
+            .iter()
+            .filter(|t| !is_record_type_word(t))
+            .cloned()
+            .collect();
+        if name_tokens.len() == tokens.len() {
+            return Ok(found);
+        }
+        let named: std::collections::HashSet<String> = if name_tokens.is_empty() {
+            Default::default()
+        } else {
+            self.title_search(&name_tokens, limit)
+                .await?
+                .into_iter()
+                .map(|e| e.id)
+                .collect()
+        };
+        Ok(found
+            .into_iter()
+            .filter(|e| {
+                named.contains(&e.id)
+                    || e.title
+                        .split(|c: char| !c.is_alphanumeric())
+                        .filter(|w| !w.is_empty())
+                        .all(is_record_type_word)
+            })
+            .collect())
+    }
+
+    /// The index lookup behind [`Self::resolve_entities_by_title`]: titles
+    /// sharing any of `tokens`, best first.
+    async fn title_search(&self, tokens: &[String], limit: i64) -> Result<Vec<ResolvedEntity>> {
         // `OR` rather than `AND`: "the Northwind deal" should still reach a
         // node titled "Northwind Trading" on the one token they share. bm25
         // ranking is what separates a two-token match from a one-token one,

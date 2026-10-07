@@ -499,7 +499,20 @@ mod entity_resolution_tests {
     #[tokio::test]
     async fn a_type_word_alone_does_not_resolve_seeded_plays() -> Result<()> {
         let (store, service, _t) = create_test_store().await?;
-        seed_entity(&service, "text", "Plan the release task list").await?;
+        for title in [
+            "Block starting a task that is blocked",
+            "Require a completed checklist before finishing a task",
+            "Complete a parent task when all its children are done",
+        ] {
+            seed_entity(&service, "play", title).await?;
+        }
+        let control = store
+            .resolve_entities_by_title("turn off the Block starting play", 12)
+            .await?;
+        assert!(
+            control.iter().any(|h| h.node_type == "play"),
+            "the plays must be findable by their own words: {control:?}"
+        );
 
         for message in [
             "Create a new task called 'Review the sync protocol spec'",
@@ -514,6 +527,22 @@ mod entity_resolution_tests {
         }
         let only_type_words = store.resolve_entities_by_title("the tasks", 12).await?;
         assert!(only_type_words.is_empty(), "got: {only_type_words:?}");
+        Ok(())
+    }
+
+    /// A record whose whole title is type words is named by them.
+    #[tokio::test]
+    async fn a_record_titled_with_type_words_still_resolves() -> Result<()> {
+        let (store, service, _t) = create_test_store().await?;
+        let record = seed_entity(&service, "text", "Project plan").await?;
+
+        let hits = store
+            .resolve_entities_by_title("open the project plan", 12)
+            .await?;
+        assert!(
+            hits.iter().any(|h| h.id == record),
+            "the record must resolve, got: {hits:?}"
+        );
         Ok(())
     }
 
