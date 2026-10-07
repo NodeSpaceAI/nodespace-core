@@ -142,19 +142,6 @@ type Expected =
    */
   | { decision: "outcome"; listsTypes: RegExp[] }
   /**
-   * For a request whose record is of a type outside the linked set: the turn
-   * must be held to its skills' linked types, no call naming a type outside
-   * them may run, and the record must not then be written as an offered type.
-   *
-   * An outcome assertion because the property is the system's, not the
-   * model's: the model may still name a type that was never offered, and what
-   * is worth pinning is that dispatch stopped it and that the refusal did not
-   * turn a wrong type into a wrong record. Fails when the turn was not held at
-   * all, which is a retrieval result (an unlinked skill cleared its bar
-   * alongside the linked ones) rather than a model one, and says so.
-   */
-  | { decision: "outcome"; heldToOfferedTypes: true }
-  /**
    * For a request to change an existing record of a type outside the linked
    * set: the turn must be held, no call on a node of an off-menu type may run,
    * and no write may land at all.
@@ -1024,20 +1011,11 @@ const FIXTURES: DecisionScenario[] = [
     expected: { decision: "schema", onMenu: true },
     linkedSkills: true,
   },
-  {
-    id: "held-off-menu-type",
-    scenario: "Held turn: a type outside the linked set does not run",
-    // Asks for a kind of record the linked skills are not about, in their
-    // vocabulary, so retrieval still leads with them. Unheld, the model names
-    // `task` and the call runs. Held, a call naming `task` is refused, and the
-    // turn should end with the user asked or told. Creating the reminder as a
-    // bug report instead fails, whether the model does it after a refusal
-    // or by following the `enum` on its first call.
-    prompt:
-      "For the Aurora renderer bug report, add a task to ring the reporter back on Friday.",
-    expected: { decision: "outcome", heldToOfferedTypes: true },
-    linkedSkills: true,
-  },
+  // No scenario asks for a create of a type outside the linked set: naming
+  // `task` puts it on the menu (a built-in skill links it), and the model
+  // never names a type that is off it, so nothing is refused. A refused
+  // off-menu call is covered by `held-off-menu-node` and the `off_menu_type`
+  // unit tests.
   {
     id: "held-off-menu-node",
     scenario: "Held turn: a record of a type outside the linked set is not changed",
@@ -1222,42 +1200,6 @@ function persisted(call: ToolCallRecord): boolean {
   return !call.isError && (call.fieldCount !== undefined || call.contentOnly === true);
 }
 
-/** Whether a `create_node` landed anywhere on these turns. */
-function createdRecord(turns: TurnRecord[]): boolean {
-  return turns
-    .flatMap((t) => t.toolCalls ?? [])
-    .some((c) => c.name === "create_node" && persisted(c));
-}
-
-/**
- * What a turn did after dispatch first refused a call for its type.
- *
- *   created    a `create_node` landed afterwards: the record the user asked
- *              for was created as one of the offered types
- *   clarified  the turn put the choice to the user
- *   replied    neither: the turn ended in a prose reply
- *
- * `undefined` when nothing was refused. This is one cost of holding a turn: a
- * refusal that is followed by a create has turned a wrong type into a wrong
- * record. The other cost needs no refusal (see `createdRecord`, which counts
- * the same event wherever in the turn it happens).
- *
- * Only a create is counted. An `update_node` after a refusal changes a record
- * that exists; it does not write the requested one as another type.
- */
-function afterRefusal(turns: TurnRecord[]): "created" | "clarified" | "replied" | undefined {
-  const calls = turns.flatMap((t) => t.toolCalls ?? []);
-  const first = calls.findIndex((c) => c.typeRefused);
-  if (first === -1) return undefined;
-  const later = calls.slice(first + 1);
-  if (later.some((c) => c.name === "create_node" && persisted(c))) return "created";
-  const reply = turns.at(-1)?.reply ?? "";
-  if (later.some((c) => c.name === "route_clarify") || reply.startsWith(CLARIFICATION_OPENER)) {
-    return "clarified";
-  }
-  return "replied";
-}
-
 /** The verdict for a linked-skill scenario whose turn was not held. */
 function notHeld(turns: TurnRecord[]): Verdict {
   const skill = firstDecision(turns, "skill");
@@ -1268,38 +1210,6 @@ function notHeld(turns: TurnRecord[]): Verdict {
       `A turn is held only when every tool-bearing skill that clears its bar is linked. ` +
       `Retrieved: ${skill?.candidates.join(", ") || "(nothing)"}`,
   };
-}
-
-/**
- * Score a turn whose request is for a record of a type outside the linked set.
- * The turn must be held, no call on an off-menu type may run, and no record
- * may be created at all: on a held turn any record created is of an offered
- * type, which is not the type the user asked for. That holds whether the model
- * was refused first or followed the `enum` on its first call.
- */
-function assertHeldToOfferedTypes(turns: TurnRecord[]): Verdict {
-  if (!turns.some(turnHeld)) return notHeld(turns);
-  const tools = turns.flatMap((t) => t.toolsCalled).join(", ");
-  if (turns.some(offMenuCallRan)) {
-    const schema = firstDecision(turns, "schema");
-    return {
-      passed: false,
-      failure:
-        `A call naming a type outside the offered set ran on a held turn ` +
-        `(offered: ${schema?.candidates.join(", ")}). Tools: ${tools}`,
-    };
-  }
-  if (createdRecord(turns)) {
-    return {
-      passed: false,
-      failure:
-        `A record was created on a turn held to types the request was not for, so it ` +
-        `was written as a type the user did not ask for ` +
-        `(${afterRefusal(turns) === "created" ? "after a refusal" : "not after a refusal"}). ` +
-        `Tools: ${tools}`,
-    };
-  }
-  return { passed: true };
 }
 
 /** The tools that write a record's own fields or content. */
@@ -1344,7 +1254,6 @@ function assertFixture(
 ): Verdict {
   const { expected } = fixture;
   if (expected.decision === "outcome") {
-    if ("heldToOfferedTypes" in expected) return assertHeldToOfferedTypes(turns);
     if ("heldRecordUnchanged" in expected) return assertHeldRecordUnchanged(turns);
     if ("listsTypes" in expected) {
       return assertListsTypes(expected.listsTypes, turns);
@@ -1569,10 +1478,6 @@ const fixture: EvalFixture = {
         .flatMap((t) => t.toolCalls ?? [])
         .filter((c) => c.typeRefused).length,
       offMenuRan: turns.some(offMenuCallRan),
-      // A record created on a linked-skill turn, refusal or not. For the
-      // off-menu scenario that is the record written as the wrong type.
-      createdRecord: createdRecord(turns),
-      afterRefusal: afterRefusal(turns) ?? null,
       toolsCalled: turns.flatMap((t) => t.toolsCalled),
       latencyMs: turns.reduce((sum, t) => sum + t.latencyMs, 0),
       // The decision's own cost, separate from the turn's. One generative pass
@@ -1594,18 +1499,6 @@ const fixture: EvalFixture = {
     );
     const offMenuRan = results.filter(
       (r) => r.extra?.offMenuRan === true,
-    ).length;
-    const after = (what: string) =>
-      results.filter((r) => r.extra?.afterRefusal === what).length;
-    // Held turns whose request was for a type outside the set, and how many of
-    // them created a record anyway: of an offered type, so the wrong one.
-    const offMenuRequests = results.filter(
-      (r) =>
-        r.extra?.held === true &&
-        (r.extra.expected as { heldToOfferedTypes?: boolean })?.heldToOfferedTypes === true,
-    );
-    const wrongTypeRecords = offMenuRequests.filter(
-      (r) => r.extra?.createdRecord === true,
     ).length;
     const routing = results
       .map((r) => Number(r.extra?.routingMs ?? 0))
@@ -1629,10 +1522,6 @@ const fixture: EvalFixture = {
       `Off-menu type named: ${offMenu}`,
       `Held to an offered set: ${held} (${count((e) => e.linkedSkills === true)} of the linked-skill scenarios passed); ` +
         `${typeRefusals} off-menu call(s) refused at dispatch, ${offMenuRan} ran`,
-      `After a refusal: ${after("clarified")} asked the user, ${after("replied")} replied in prose, ` +
-        `${after("created")} created the record as an offered type`,
-      `Requests for a type outside a held turn's set: ${offMenuRequests.length}; ` +
-        `${wrongTypeRecords} created a record as an offered type instead`,
       `Stage-1 decision cost: ${meanRouting}ms mean (one or two generative passes for a 4-way structural choice)`,
     ];
   },
