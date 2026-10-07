@@ -1176,7 +1176,7 @@ pub fn is_valid_node_id(node_id: &str) -> bool {
 /// "Customer Profile" → "customer-profile") so they can be referenced
 /// predictably by type name rather than an opaque UUID. A type id is
 /// kebab-case: lowercase words joined by `-`.
-pub(crate) fn normalize_schema_id(name: &str) -> String {
+pub fn normalize_schema_id(name: &str) -> String {
     name.to_lowercase()
         .replace([' ', '_'], "-")
         .chars()
