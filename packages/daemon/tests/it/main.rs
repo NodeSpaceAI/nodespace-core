@@ -18,6 +18,7 @@ mod grpc_round_trip;
 mod home_isolation;
 mod import_round_trip;
 mod live_terminal_summary;
+mod no_model_search;
 mod per_db_compute;
 mod per_db_settings;
 mod per_db_subtree_gate;

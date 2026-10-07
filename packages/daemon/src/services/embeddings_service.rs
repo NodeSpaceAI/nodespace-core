@@ -71,7 +71,7 @@ impl EmbeddingsServiceImpl {
                 "embedding model failed to load — semantic search unavailable",
             )
         } else {
-            Status::unavailable("embedding model loading, please retry")
+            super::assembly::embedding_model_unavailable()
         }
     }
 

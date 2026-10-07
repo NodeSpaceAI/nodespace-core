@@ -757,7 +757,7 @@ impl GrpcNodeService for NodeServiceImpl {
             guard
                 .as_ref()
                 .map(|r| Arc::clone(&r.embedding_service))
-                .ok_or_else(|| Status::unavailable("embedding model loading, please retry"))?
+                .ok_or_else(super::assembly::embedding_model_unavailable)?
         };
 
         let guidance = skill_ops::find_skill_guidance(
@@ -1134,7 +1134,7 @@ impl GrpcNodeService for NodeServiceImpl {
             guard
                 .as_ref()
                 .map(|r| Arc::clone(&r.embedding_service))
-                .ok_or_else(|| Status::unavailable("embedding model loading, please retry"))?
+                .ok_or_else(super::assembly::embedding_model_unavailable)?
         };
 
         if !req.semantic {
