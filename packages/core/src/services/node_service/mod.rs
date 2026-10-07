@@ -1054,7 +1054,7 @@ pub(crate) fn is_open_key(key: &str) -> bool {
 /// This function validates both format AND semantic validity:
 /// - Format: YYYY-MM-DD pattern (10 chars, correct positions for digits/dashes)
 /// - Semantics: Must be a valid calendar date (no month 13, no day 45, etc.)
-fn is_date_node_id(id: &str) -> bool {
+pub(crate) fn is_date_node_id(id: &str) -> bool {
     // Must be exactly 10 characters: YYYY-MM-DD
     if id.len() != 10 {
         return false;

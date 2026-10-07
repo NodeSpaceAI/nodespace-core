@@ -288,6 +288,33 @@ async fn a_name_that_derives_a_core_types_id_is_refused_naming_the_conflict() ->
 }
 
 #[tokio::test]
+async fn a_name_that_derives_a_date_shaped_id_is_refused_and_leaves_nothing_behind() -> Result<()> {
+    let (svc, _tmp) = create_test_service().await?;
+    for name in ["2026-10-06", "2026_10_06", "2026 10 06"] {
+        let error = handle_create_schema(&svc, json!({ "name": name, "fields": [] }))
+            .await
+            .expect_err(name)
+            .to_string();
+        assert!(
+            error.contains("cannot be a schema name") && error.contains("date"),
+            "{name}: {error}"
+        );
+    }
+    assert!(svc.get_schema_node("2026-10-06").await?.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_name_that_merely_contains_digits_is_accepted() -> Result<()> {
+    let (svc, _tmp) = create_test_service().await?;
+    for (name, id) in [("Invoice 2026", "invoice-2026"), ("Q4-2026", "q4-2026")] {
+        create_schema(&svc, json!({ "name": name, "fields": [] })).await?;
+        assert!(svc.get_schema_node(id).await?.is_some(), "{name}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_play_selects_the_type_and_a_condition_reads_its_fields() -> Result<()> {
     let (svc, _tmp) = create_test_service().await?;
     create_schema(
