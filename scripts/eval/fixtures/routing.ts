@@ -177,7 +177,7 @@ const FIXTURES: RoutingScenario[] = [
 
   // ── Existing-type instance vs new-type (critical distinction) ────────────
   {
-    id: "instance-not-schema-invoice",
+    id: "instance-not-schema-spec",
     scenario:
       "Instance vs schema: 'add a spec for offline sync' → Node Creation, not Schema Creation",
     // Context: spec schema already exists (set up in prior turn)

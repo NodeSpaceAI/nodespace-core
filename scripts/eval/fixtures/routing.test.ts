@@ -270,7 +270,7 @@ describe("record-creating scenarios are scored on the record", () => {
   test("a record or a type an earlier turn created does not count", () => {
     // The scenario's prior turn sets up the type. A call it made is context,
     // not what the scored request left behind.
-    const s = byId("instance-not-schema-invoice");
+    const s = byId("instance-not-schema-spec");
     const prior = turn({
       routingDecision: "query",
       toolsCalled: ["create_node"],
