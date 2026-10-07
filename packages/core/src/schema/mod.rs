@@ -2036,6 +2036,16 @@ pub async fn create_schema(
         )));
     }
 
+    // A date node is keyed by its date, so a schema whose id has that shape
+    // would share the id space with real date nodes.
+    if crate::services::node_service::is_date_node_id(&schema_id) {
+        return Err(MarkdownError::invalid_params(format!(
+            "'{}' cannot be a schema name: its id '{}' is a date, and date nodes use that id \
+             space. Add a letter or a word, such as 'Log {}'.",
+            params.name, schema_id, schema_id
+        )));
+    }
+
     // Reject reserved relationship names and dangling targetTypes BEFORE the
     // schema node exists, so a bad declaration can't leave a half-created
     // schema behind. (`set_schema_relationships` re-checks reserved names —
