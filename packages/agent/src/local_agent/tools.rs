@@ -1794,6 +1794,42 @@ pub(crate) fn off_menu_type<'a>(
     (!offered.iter().any(|id| id == named)).then_some(named)
 }
 
+/// The one offered type id that a call's existing-type parameter names by its
+/// display name, with the parameter's name, or `None` when it names an offered
+/// id exactly or no single offered type.
+///
+/// The model copies the quoted display name from the `EXISTING SCHEMAS` line
+/// (`feature_spec "feature spec"`) as often as the id. A type id is derived
+/// from its name, so the two agree once both are normalized (case and
+/// separators are ignored). A type whose display name differs from its derived
+/// id is not resolved. Resolving here
+/// does what the parameter's description asks and stays inside `offered`: a
+/// name that matches no offered type, or more than one, is left for
+/// [`off_menu_type`] to refuse.
+pub(crate) fn resolve_display_name<'a>(
+    tool_name: &str,
+    args: &Value,
+    offered: &'a [String],
+) -> Option<(&'static str, &'a str)> {
+    let parameter = existing_type_parameter_tool(tool_name)?;
+    let named = args.get(parameter)?.as_str()?;
+    if offered.iter().any(|id| id == named) {
+        return None;
+    }
+    let key = nodespace_core::services::normalize_schema_id(named);
+    if key.is_empty() {
+        return None;
+    }
+    let mut matches = offered
+        .iter()
+        .filter(|id| nodespace_core::services::normalize_schema_id(id) == key);
+    let found = matches.next()?;
+    matches
+        .next()
+        .is_none()
+        .then_some((parameter, found.as_str()))
+}
+
 /// A second name the executor accepts for a node id parameter called `id`
 /// (the `alias` on [`AgentUpdateNodeParams`]). [`held_node_id`] reads it for
 /// every held tool, which is right while `update_node` is the only one: a
@@ -7058,6 +7094,40 @@ mod tests {
                 def.name
             );
         }
+    }
+
+    #[test]
+    fn a_display_name_resolves_only_to_exactly_one_offered_type() {
+        let offered = vec!["feature_spec".to_string(), "invoice".to_string()];
+        let resolve = |tool: &str, args: Value| {
+            resolve_display_name(tool, &args, &offered).map(|(p, id)| (p, id.to_string()))
+        };
+        assert_eq!(
+            resolve("create_node", json!({"node_type": "feature spec"})),
+            Some(("node_type", "feature_spec".to_string()))
+        );
+        // An exact id, no match, and a tool with no type parameter are left alone.
+        assert_eq!(
+            resolve("create_node", json!({"node_type": "invoice"})),
+            None
+        );
+        assert_eq!(resolve("create_node", json!({"node_type": "album"})), None);
+        assert_eq!(resolve("create_node", json!({"node_type": " "})), None);
+        assert_eq!(
+            resolve("get_node", json!({"node_type": "feature spec"})),
+            None
+        );
+
+        // Two offered ids that normalize alike: the name is ambiguous.
+        let ambiguous = vec!["feature_spec".to_string(), "feature-spec".to_string()];
+        assert_eq!(
+            resolve_display_name(
+                "create_node",
+                &json!({"node_type": "feature spec"}),
+                &ambiguous
+            ),
+            None
+        );
     }
 
     #[test]

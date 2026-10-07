@@ -4406,6 +4406,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 let mut target_node_type: Option<String> = None;
                 // Set when that lookup failed. The call is then not run.
                 let mut target_node_unread: Option<crate::agent_types::ToolError> = None;
+                // Set when the call named an offered type by its display name
+                // and dispatch sent its id instead: (sent, id).
+                let mut resolved_type: Option<(String, String)> = None;
                 let (args, tool_result) = match parsed_args {
                     Ok(mut args) => {
                         consecutive_malformed_calls = 0;
@@ -4422,6 +4425,23 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         // through the same helper, so the set of malformations
                         // handled cannot drift apart as new ones are found.
                         repair_parsed_tool_arguments(&mut args);
+
+                        // A display name that is exactly one offered type's
+                        // name is that type; see `resolve_display_name`.
+                        if let Some((parameter, id)) =
+                            offered_types.as_deref().and_then(|offered| {
+                                super::tools::resolve_display_name(
+                                    &tc.function_name,
+                                    &args,
+                                    offered,
+                                )
+                            })
+                        {
+                            let sent = args[parameter].as_str().unwrap_or_default().to_string();
+                            let id = id.to_string();
+                            args[parameter] = serde_json::json!(id);
+                            resolved_type = Some((sent, id));
+                        }
 
                         if let Some((question, options)) = &stage2_clarify {
                             // A well-formed route_clarify call is present
@@ -4739,10 +4759,27 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
                 let duration_ms = start.elapsed().as_millis() as u64;
 
-                let (result_value, is_error) = match tool_result {
+                let (mut result_value, is_error) = match tool_result {
                     Ok(tr) => (tr.result, tr.is_error),
                     Err(e) => (serde_json::json!({"error": e.to_string()}), true),
                 };
+                if let (Some((sent, id)), false, Some(object)) =
+                    (&resolved_type, is_error, result_value.as_object_mut())
+                {
+                    let note = format!("'{sent}' is the type '{id}', so it was used as '{id}'.");
+                    match object.get_mut("notes") {
+                        Some(serde_json::Value::Array(notes)) => {
+                            notes.push(serde_json::json!(note))
+                        }
+                        // A `notes` of another shape is not ours to replace.
+                        Some(_) => {
+                            object.insert("type_resolved".to_string(), serde_json::json!(note));
+                        }
+                        None => {
+                            object.insert("notes".to_string(), serde_json::json!([note]));
+                        }
+                    }
+                }
 
                 // Field count from the tool RESULT, not its arguments: the result is the
                 // executor's report of what it persisted, while args are only the model's
@@ -16479,6 +16516,47 @@ mod tests {
             assert_eq!(executed, [tool_name], "{tool_name} should have run");
             assert!(!result.tool_calls_made[0].is_error);
         }
+    }
+
+    #[tokio::test]
+    async fn a_display_name_of_an_offered_type_runs_as_that_type_and_says_so() {
+        for named in ["retainer invoice", "Retainer Invoice"] {
+            let (_, executed, result) = run_typed_turn(
+                vec![billing_candidate(true)],
+                false,
+                "create_node",
+                json!({"node_type": named, "content": "March"}),
+            )
+            .await;
+
+            assert_eq!(executed, ["create_node"], "'{named}' should have run");
+            let call = &result.tool_calls_made[0];
+            assert!(!call.is_error, "'{named}': {:?}", call.result);
+            assert_eq!(call.args["node_type"], json!("retainer_invoice"));
+            let notes = call.result["notes"].to_string();
+            assert!(
+                notes.contains(named) && notes.contains("retainer_invoice"),
+                "the result must say what was used: {notes}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_display_name_outside_the_offered_set_is_still_refused() {
+        // "album" is a display name too, of a type this turn does not offer.
+        let (_, executed, result) = run_typed_turn(
+            vec![billing_candidate(true)],
+            false,
+            "create_node",
+            json!({"node_type": "Album", "content": "March"}),
+        )
+        .await;
+
+        assert!(executed.is_empty(), "{executed:?}");
+        assert_eq!(
+            result.tool_calls_made[0].result["error"],
+            json!("type_not_offered")
+        );
     }
 
     /// No offered set: the tool schemas and dispatch are what they were.
