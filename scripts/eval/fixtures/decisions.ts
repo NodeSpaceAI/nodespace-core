@@ -1011,14 +1011,11 @@ const FIXTURES: DecisionScenario[] = [
     expected: { decision: "schema", onMenu: true },
     linkedSkills: true,
   },
-  // There is no scenario for a create of a type outside the linked set. One
-  // was tried and removed: naming `task` put it on the menu (the built-in
-  // "Implementing a Task" skill links it, with `checkbox` and `text`), and
-  // asking for a `person` kept it off the menu but the model never named it,
-  // searching and updating the bug report instead, so nothing was refused and
-  // the pass said nothing about the hold. A refused off-menu call is covered
-  // end to end by `held-off-menu-node` and by the unit tests of
-  // `off_menu_type`.
+  // No scenario asks for a create of a type outside the linked set: naming
+  // `task` puts it on the menu (a built-in skill links it), and the model
+  // never names a type that is off it, so nothing is refused. A refused
+  // off-menu call is covered by `held-off-menu-node` and the `off_menu_type`
+  // unit tests.
   {
     id: "held-off-menu-node",
     scenario: "Held turn: a record of a type outside the linked set is not changed",
