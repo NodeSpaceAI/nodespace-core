@@ -300,6 +300,7 @@ async fn a_name_that_derives_a_date_shaped_id_is_refused_and_leaves_nothing_behi
             "{name}: {error}"
         );
     }
+    // All three names derive the same id, so one lookup covers them.
     assert!(svc.get_schema_node("2026-10-06").await?.is_none());
     Ok(())
 }
