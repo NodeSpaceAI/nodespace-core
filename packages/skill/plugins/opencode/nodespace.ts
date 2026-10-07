@@ -144,7 +144,8 @@ export const NodeSpace: Plugin = async ({ client, directory }) => {
     // The environment of every command OpenCode runs for a session: without
     // the launch's variables, and with the one that names the session to the
     // CLI. OpenCode merges this over its own environment, so a launch
-    // variable cannot be removed: it is blanked, which the CLI reads as no launch.
+    // variable cannot be removed: it is blanked, which the CLI reads as no
+    // launch.
     'shell.env': async (input, output) => {
       await quietly(async () => {
         const env = input.sessionID ? (await sessionFor(input.sessionID)).commandEnv(output.env) : { ...output.env }

@@ -233,7 +233,7 @@ itself for the launched session.
   never substituted for it, so a launch variable cannot be removed there and
   is set to empty instead. The plugin and the CLI both read an empty
   `NODESPACE_SESSION` as no launch: `session report-harness-session` refuses
-  it with "a value is required for '--session'" and sends nothing. OpenCode
+  it as a missing `--session` and sends nothing. OpenCode
   sends no event when it exits, so a journal is removed on `session.deleted`
   or by the next session's start once it has been idle for an hour.
 
@@ -256,8 +256,9 @@ What a run of each showed, against a daemon-registered session with
   how the merge shows.
 
 The run did not read the `ai-chat-pty` node: a session started with
-`nodespace session launch` has none, and the daemon writes the harness id to
-the node when the session ends.
+`nodespace session launch` has none. The daemon keeps the reported id on the
+session and, by its design, writes it to the node when the session ends; that
+write needs a launch from the desktop app to see.
 
 The installed layout differs from the repository's. Pi loads
 `extensions/nodespace/index.ts` and the shared module sits beside it. OpenCode
