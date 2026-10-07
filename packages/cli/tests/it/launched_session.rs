@@ -535,3 +535,23 @@ async fn a_stored_folder_that_is_not_absolute_refuses_the_launch() {
     assert_eq!(refused.code(), Code::FailedPrecondition);
     assert!(refused.message().contains("absolute path"), "{refused}");
 }
+
+/// A harness that can only blank the launch's variables for the commands it
+/// runs leaves `NODESPACE_SESSION` empty. That is no session: the report is
+/// refused before any daemon is dialled.
+#[test]
+fn a_report_with_an_empty_session_variable_is_refused_before_any_call() {
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_nodespace"))
+        .args(["session", "report-harness-session", "h-1"])
+        .env("NODESPACE_SESSION", "")
+        .env("NODESPACED_SOCKET", "/nonexistent/not-a-daemon.sock")
+        .output()
+        .expect("run the CLI");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert!(!out.status.success());
+    assert!(
+        stderr.contains("--session") && !stderr.contains("Could not connect"),
+        "{stderr}"
+    );
+}

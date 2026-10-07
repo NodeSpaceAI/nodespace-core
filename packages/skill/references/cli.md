@@ -1345,7 +1345,7 @@ Manage PTY agent sessions (launch, attach, list, kill)
 **`nodespace session report-harness-session`** — Tell NodeSpace the agent's own id for the conversation running in a launched session. An agent's plugin runs this when the session starts
 
 - `<HARNESS_SESSION_ID>` — The agent's own id for the conversation: the one its resume flag takes (required)
-- `--session <SESSION>` — The launched session to report for. A launched session's environment names it in `NODESPACE_SESSION` (required, env: `NODESPACE_SESSION`)
+- `--session <SESSION>` — The launched session to report for. A launched session's environment names it in `NODESPACE_SESSION`. An empty value is no session: a harness that can only blank the variable for the commands it runs (it cannot remove it) leaves an empty one, which is not a launch (required, env: `NODESPACE_SESSION`)
 
 ### `nodespace database`
 

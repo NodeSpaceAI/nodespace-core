@@ -229,13 +229,36 @@ itself for the launched session.
   settings: a Pi user who sets either loses it for bash while the extension is
   loaded. A Pi reload replaces the extension, so it starts again with no item
   watched; a conversation that continues is not opened a second time.
-- **OpenCode**'s `shell.env` output is not documented to replace the process's
-  environment, so the launch variables are set to empty there rather than
-  removed. The plugin reads an empty value as no launch; the CLI may still
-  take an empty `NODESPACE_SESSION` for a value, so a harness started from the
-  agent's shell can report an empty session id. OpenCode sends no event when it
-  exits, so a journal is removed on `session.deleted` or by the next session's
-  start once it has been idle for an hour.
+- **OpenCode**'s `shell.env` output is merged over the process's environment,
+  never substituted for it, so a launch variable cannot be removed there and
+  is set to empty instead. The plugin and the CLI both read an empty
+  `NODESPACE_SESSION` as no launch: `session report-harness-session` refuses
+  it as a missing `--session` and sends nothing. OpenCode
+  sends no event when it exits, so a journal is removed on `session.deleted`
+  or by the next session's start once it has been idle for an hour.
+
+What a run of each showed, against a daemon-registered session with
+`NODESPACE_SESSION` and `NODESPACE_LAUNCHED_FOR` set and a scripted model
+(Pi 1.0.4, OpenCode 1.18.35):
+
+- **Pi.** The task's context arrived in the first request, with no command.
+  The id reported with `report-harness-session` was Pi's own session id, and
+  the daemon accepted it. A command the agent ran had `NODESPACE_WRITE_JOURNAL`
+  set to that id and neither launch variable, so registering the tool under
+  the built-in name does replace Pi's bash tool and the `spawnHook`'s
+  environment reaches the command. A write from `bash -c 'nodespace node
+  update …'` did not stop the session. Pi 1.0.4 needs a Node with
+  `zlib.createZstdDecompress` (22.15 or later): on Node 22.14 it exits at
+  start on its first network call, unless it is offline (`PI_OFFLINE=1`).
+- **OpenCode.** The same three checks held, with OpenCode's `ses_…` session id.
+  The agent's commands had both launch variables set to empty and
+  `NODESPACE_WRITE_JOURNAL` set, beside the process's own variables, which is
+  how the merge shows.
+
+The run did not read the `ai-chat-pty` node: a session started with
+`nodespace session launch` has none. The daemon keeps the reported id on the
+session and, by its design, writes it to the node when the session ends; that
+write needs a launch from the desktop app to see.
 
 The installed layout differs from the repository's. Pi loads
 `extensions/nodespace/index.ts` and the shared module sits beside it. OpenCode
