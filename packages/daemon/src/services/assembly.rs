@@ -303,6 +303,7 @@ pub async fn build_shared_services(
     // wiring exits quietly with semantic search disabled.
     let model_path = resolve_model_path();
     let has_model = model_path.is_some();
+    SHARED_MODEL_MISSING.store(!has_model, Ordering::SeqCst);
     let (model_tx, model_rx) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
     let model_load_failed = Arc::new(AtomicBool::new(false));
     let model_task = model_path.map(|path| {
@@ -735,6 +736,27 @@ fn resolve_model_path() -> Option<std::path::PathBuf> {
 /// [`shared_model_load_in_flight`]. Process-global because the model is: one
 /// load per process, shared by every database, never per-database state.
 static SHARED_MODEL_LOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Whether the daemon found no embedding model file at startup. Process-global
+/// for the same reason as [`SHARED_MODEL_LOAD_IN_FLIGHT`]: the model is.
+static SHARED_MODEL_MISSING: AtomicBool = AtomicBool::new(false);
+
+/// The status an embedding-backed RPC returns while no model is available.
+///
+/// `UNAVAILABLE` (safe to retry) while a model may still be loading;
+/// `FAILED_PRECONDITION` (not safe to retry) when there is no model file, since
+/// no retry can ever produce one.
+pub fn embedding_model_unavailable() -> tonic::Status {
+    if SHARED_MODEL_MISSING.load(Ordering::SeqCst) {
+        tonic::Status::failed_precondition(
+            "semantic search has no embedding model: no model file was found. \
+             The NodeSpace app copies its bundled model on launch; \
+             a CLI-only install ships none",
+        )
+    } else {
+        tonic::Status::unavailable("embedding model loading, please retry")
+    }
+}
 
 /// Whether the shared embedding model's native load is still running.
 ///
