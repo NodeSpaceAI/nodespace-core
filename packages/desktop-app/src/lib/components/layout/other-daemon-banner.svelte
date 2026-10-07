@@ -14,7 +14,7 @@
 
   const log = createLogger('OtherDaemonBanner');
 
-  /** The other daemon's executable; empty or null when it is not known. */
+  /** The extension ids the other daemon reported; empty or null when none. */
   let executable = $state<string | null>(null);
   let retrying = $state(false);
   let error = $state<string | null>(null);

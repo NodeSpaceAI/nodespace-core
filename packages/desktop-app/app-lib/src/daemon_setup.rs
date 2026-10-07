@@ -41,9 +41,9 @@
 //! [`run_periodic_checks`] for the timer loop itself.
 //!
 //! On subsequent launches:
-//!   - First, if a daemon responds on the socket, ask it which executable it
-//!     runs and compare that with the active [`DaemonProfile`]'s binary (see
-//!     [`product_check`]). A daemon running another binary is evicted: the app
+//!   - First, if a daemon responds on the socket, ask it which extension
+//!     ids it supports and compare that set with the active [`DaemonProfile`]'s
+//!     (see [`product_check`]). A daemon with another set is evicted: the app
 //!     boots out its own service registration, waits for the socket to clear,
 //!     and registers its own daemon below. A report that cannot be had changes
 //!     nothing. Windows has no such eviction.
@@ -67,7 +67,7 @@
 //! The hold covers that one channel only: the CLI, the skill and agent sessions
 //! dial the socket themselves.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -521,59 +521,63 @@ mod daemon_starting_retry_tests {
     }
 }
 
-/// Whether the daemon answering on the socket runs the binary the active
-/// profile installs, judged from the executable path it reports.
+/// Whether the daemon answering on the socket supports the extension ids the
+/// active profile expects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProductCheck {
-    /// The reported executable is the profile's daemon binary.
+    /// The reported set is the profile's.
     Match,
-    /// The daemon runs another binary, or reported none, as a daemon built
-    /// before the report existed does.
+    /// The daemon reported another set.
     Mismatch,
     /// No report could be had, so nothing is known about the daemon.
     Unknown,
 }
 
-/// Compares the executable a running daemon reports with the daemon binary of
-/// `profile`, by file name with any `.exe` suffix removed. `reported` is `None`
-/// when asking the daemon failed.
-///
-/// An empty report is a [`ProductCheck::Mismatch`], not an unknown: a daemon
-/// that answers but names no executable predates the report, and this app
-/// cannot vouch for it. Only the final `.exe` is dropped, so a name such as
-/// `nodespaced.old` does not pass for `nodespaced`.
-pub fn product_check(reported: Option<&str>, profile: &DaemonProfile) -> ProductCheck {
+/// Compares the extension ids a running daemon reports with `profile`'s. The
+/// sets are compared, not the order or repeats of the ids, and no id is named:
+/// core's profile expects the empty set, so any extension-carrying daemon is a
+/// mismatch. `reported` is `None` when asking the daemon failed.
+pub fn product_check(reported: Option<&[String]>, profile: &DaemonProfile) -> ProductCheck {
     let Some(reported) = reported else {
         return ProductCheck::Unknown;
     };
-    let name = Path::new(reported)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.strip_suffix(".exe").unwrap_or(name));
-    if name == Some(profile.binary_name) {
+    fn ids(ids: &[String]) -> BTreeSet<&String> {
+        ids.iter().collect()
+    }
+    if ids(reported) == ids(&profile.extensions) {
         ProductCheck::Match
     } else {
         ProductCheck::Mismatch
     }
 }
 
-/// How long [`running_daemon_executable`] waits for the daemon to answer.
+/// Whether `program`, the path a service registration runs, is `profile`'s
+/// daemon binary, by file name with any `.exe` suffix removed. Only the final
+/// `.exe` is dropped, so a name such as `nodespaced.old` does not pass for
+/// `nodespaced`.
+pub(crate) fn runs_profile_binary(program: &str, profile: &DaemonProfile) -> bool {
+    Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.strip_suffix(".exe").unwrap_or(name))
+        == Some(profile.binary_name)
+}
+
+/// How long [`running_daemon_extensions`] waits for the daemon to answer.
 const PRODUCT_CHECK_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Asks the daemon on `socket` (a pipe name on Windows) for the path of its own
-/// executable.
+/// Asks the daemon on `socket` (a pipe name on Windows) which extension ids it
+/// supports.
 ///
 /// It dials a connection of its own rather than riding the app's shared
 /// channel: that channel is held until the daemon answering has passed this
 /// check, so a check on it would wait for itself.
 ///
 /// `None` when the call fails or does not finish within
-/// [`PRODUCT_CHECK_TIMEOUT`]; either way the answer is unknown. A daemon built
-/// before the report existed answers with an empty string, which is `Some("")`
-/// here and not `None`. A failure is logged at debug only, since
-/// [`answering_daemon`] asks again on every poll; the callers say what they
-/// make of no answer.
-pub async fn running_daemon_executable(socket: &Path) -> Option<String> {
+/// [`PRODUCT_CHECK_TIMEOUT`]; either way the answer is unknown. A failure is
+/// logged at debug only, since [`answering_daemon`] asks again on every poll;
+/// the callers say what they make of no answer.
+pub async fn running_daemon_extensions(socket: &Path) -> Option<Vec<String>> {
     let ask = async {
         let channel = crate::services::grpc_client::dial_once(socket)
             .await
@@ -583,19 +587,24 @@ pub async fn running_daemon_executable(socket: &Path) -> Option<String> {
             .await
     };
     match timeout(PRODUCT_CHECK_TIMEOUT, ask).await {
-        Ok(Ok(response)) => Some(response.into_inner().executable_path),
+        Ok(Ok(response)) => Some(response.into_inner().supported_extensions),
         Ok(Err(status)) => {
-            tracing::debug!(%status, "could not read the running daemon's executable");
+            tracing::debug!(%status, "could not read the running daemon's extensions");
             None
         }
         Err(_) => {
             tracing::debug!(
                 timeout = ?PRODUCT_CHECK_TIMEOUT,
-                "timed out reading the running daemon's executable"
+                "timed out reading the running daemon's extensions"
             );
             None
         }
     }
+}
+
+/// The extension ids another daemon reported, as the record of it keeps them.
+fn describe_extensions(reported: &[String]) -> String {
+    reported.join(", ")
 }
 
 /// How long eviction waits for a booted-out daemon to stop answering.
@@ -657,7 +666,8 @@ fn boot_out_service_registration() {
 }
 
 /// Acts on what the running daemon reported about itself. Returns true when it
-/// is another binary's daemon and `boot_out` removed its registration.
+/// supports another set of extensions than `profile` expects and `boot_out`
+/// removed its registration.
 ///
 /// After a boot-out this waits up to `exit_grace` for the socket to clear and
 /// then removes the file only if nothing answers on it. A daemon this app does
@@ -670,7 +680,7 @@ fn boot_out_service_registration() {
 #[cfg(unix)]
 async fn evict_if_other_product(
     socket_path: &Path,
-    reported: Option<&str>,
+    reported: Option<&[String]>,
     profile: &DaemonProfile,
     exit_grace: Duration,
     boot_out: impl FnOnce() + Send + 'static,
@@ -683,8 +693,8 @@ async fn evict_if_other_product(
         }
         ProductCheck::Mismatch => {
             tracing::warn!(
-                reported = reported.unwrap_or_default(),
-                expected = profile.binary_name,
+                reported = describe_extensions(reported.unwrap_or_default()),
+                expected = describe_extensions(&profile.extensions),
                 "the running daemon is not this app's daemon; booting out the registration"
             );
             let _ = tokio::task::spawn_blocking(boot_out).await;
@@ -695,8 +705,8 @@ async fn evict_if_other_product(
 }
 
 /// The first step of a start: if a daemon answers on `socket_path`, asks it
-/// which executable it runs and evicts it when that is not `profile`'s daemon.
-/// Returns true when it did.
+/// which extension ids it supports and evicts it when that is not `profile`'s
+/// set. Returns true when it did.
 ///
 /// This step only evicts. It never ends the startup hold on the app's channel,
 /// whatever the daemon answers: [`start_attempt`] asks again once the start has
@@ -726,7 +736,7 @@ pub(crate) async fn evict_other_product_daemon(
     if check_daemon_socket(socket_path).await != DaemonStatus::Healthy {
         return false;
     }
-    let reported = running_daemon_executable(socket_path).await;
+    let reported = running_daemon_extensions(socket_path).await;
     evict_if_other_product(
         socket_path,
         reported.as_deref(),
@@ -741,10 +751,10 @@ pub(crate) async fn evict_other_product_daemon(
 /// done what it can.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Answering {
-    /// A daemon running the active profile's binary.
+    /// A daemon supporting the active profile's extension ids.
     ThisApp,
-    /// A daemon running another binary: its reported executable, empty if it
-    /// named none. Such a daemon is outside the shared service registration (a
+    /// A daemon supporting other ids: the ids it reported, comma-separated,
+    /// empty when it reported none. Such a daemon is outside the shared service registration (a
     /// Homebrew service, or one started by hand): it survived the boot-out, and
     /// the daemon this app registered exits on the single-instance lock
     /// (ADR-084 §4.3).
@@ -767,7 +777,7 @@ const DAEMON_START_WAIT: Duration = Duration::from_secs(30);
 const ANSWER_POLL: Duration = Duration::from_millis(250);
 
 /// Waits up to `max_wait` for a daemon to answer on `dialed` (a pipe name on
-/// Windows) and say which executable it runs, and reports who answers.
+/// Windows) and say which extensions it supports, and reports who answers.
 ///
 /// A daemon that accepts but does not answer the question is asked again on
 /// every poll until the wait is over: no answer is not a pass. The wait also
@@ -785,10 +795,12 @@ pub(crate) async fn answering_daemon(
     loop {
         let status = check_daemon_socket(dialed).await;
         if status == DaemonStatus::Healthy {
-            let reported = running_daemon_executable(dialed).await;
+            let reported = running_daemon_extensions(dialed).await;
             match product_check(reported.as_deref(), profile) {
                 ProductCheck::Match => return Answering::ThisApp,
-                ProductCheck::Mismatch => return Answering::Other(reported.unwrap_or_default()),
+                ProductCheck::Mismatch => {
+                    return Answering::Other(describe_extensions(&reported.unwrap_or_default()))
+                }
                 ProductCheck::Unknown => {}
             }
         }
@@ -811,17 +823,16 @@ pub(crate) async fn answering_daemon(
 }
 
 /// What a start attempt that ended with `answering` on the socket amounts to:
-/// the daemon's status, with the executable of another daemon holding the
+/// the daemon's status, with the extension ids of another daemon holding the
 /// socket, if one does.
 ///
 /// An answer on the socket is not enough to call the daemon healthy: only this
 /// app's own daemon is. Another daemon there means this app's is not the one
-/// running, and [`crate::coexistence`] reports it by the executable returned
-/// here.
+/// running, and [`crate::coexistence`] reports it by the ids returned here.
 fn start_outcome(answering: Answering) -> (DaemonStatus, Option<String>) {
     match answering {
         Answering::ThisApp => (DaemonStatus::Healthy, None),
-        Answering::Other(executable) => (DaemonStatus::NotRunning, Some(executable)),
+        Answering::Other(extensions) => (DaemonStatus::NotRunning, Some(extensions)),
         Answering::Unchecked => (DaemonStatus::Starting, None),
         Answering::Nobody => (DaemonStatus::NotRunning, None),
     }
@@ -830,7 +841,8 @@ fn start_outcome(answering: Answering) -> (DaemonStatus, Option<String>) {
 /// Runs `bring_up`, the launcher's steps, then finds out who answers on
 /// `dialed`, the socket the app's client dials ([`answering_daemon`]), and
 /// ends the startup hold on `client` when the answer allows it. Returns the
-/// resulting status, with the executable of another daemon holding the socket.
+/// resulting status, with the extension ids of another daemon holding the
+/// socket.
 ///
 /// The hold ends on exactly two answers: the daemon answering is `profile`'s,
 /// or nothing answers at all (the calls then fail as they do whenever the
@@ -871,9 +883,9 @@ pub(crate) async fn start_attempt(
                 client.release_startup_hold();
             }
         }
-        Answering::Other(executable) => tracing::warn!(
-            executable,
-            expected = profile.binary_name,
+        Answering::Other(extensions) => tracing::warn!(
+            extensions,
+            expected = describe_extensions(&profile.extensions),
             "another daemon, outside this app's service registration, holds the socket"
         ),
         Answering::Unchecked => tracing::warn!(
@@ -4066,16 +4078,29 @@ mod stale_socket_removal_tests {
 
 #[cfg(test)]
 mod product_check_tests {
-    use super::{product_check, start_outcome, Answering, DaemonStatus, ProductCheck};
+    use super::{
+        product_check, runs_profile_binary, start_outcome, Answering, DaemonStatus, ProductCheck,
+    };
     use crate::daemon_profile::DaemonProfile;
 
     fn community() -> DaemonProfile {
         DaemonProfile::community()
     }
 
+    fn expecting(ids: &[&str]) -> DaemonProfile {
+        DaemonProfile {
+            extensions: ids.iter().map(|id| (*id).to_owned()).collect(),
+            ..DaemonProfile::community()
+        }
+    }
+
+    fn ids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
     /// Only this app's own daemon answering makes a start healthy. Another
-    /// daemon there ends it `NotRunning` and names that daemon, even one that
-    /// named no executable; one that never said which it is leaves it
+    /// daemon there ends it `NotRunning` and names that daemon's ids, even
+    /// when it reported none; one that never said which it is leaves it
     /// `Starting`, and names nobody.
     #[test]
     fn a_start_is_healthy_only_when_this_apps_daemon_answers() {
@@ -4084,16 +4109,13 @@ mod product_check_tests {
             (DaemonStatus::Healthy, None)
         );
         assert_eq!(
-            start_outcome(Answering::Other("/opt/bin/custom-daemon".to_owned())),
-            (
-                DaemonStatus::NotRunning,
-                Some("/opt/bin/custom-daemon".to_owned())
-            )
+            start_outcome(Answering::Other("fixture, other".to_owned())),
+            (DaemonStatus::NotRunning, Some("fixture, other".to_owned()))
         );
         assert_eq!(
             start_outcome(Answering::Other(String::new())),
             (DaemonStatus::NotRunning, Some(String::new())),
-            "a daemon that names no executable is not this app's"
+            "a daemon that reports no ids is not this app's when the app expects some"
         );
         assert_eq!(
             start_outcome(Answering::Unchecked),
@@ -4105,63 +4127,47 @@ mod product_check_tests {
         );
     }
 
-    fn named(binary_name: &'static str) -> DaemonProfile {
-        DaemonProfile {
-            binary_name,
-            ..DaemonProfile::community()
-        }
-    }
-
     #[test]
-    fn the_profiles_own_binary_name_matches() {
+    fn an_equal_set_matches() {
         assert_eq!(
-            product_check(Some("nodespaced"), &community()),
+            product_check(Some(&[]), &community()),
+            ProductCheck::Match,
+            "core expects the empty set"
+        );
+        assert_eq!(
+            product_check(Some(&ids(&["fixture"])), &expecting(&["fixture"])),
             ProductCheck::Match
         );
     }
 
     #[test]
-    fn a_full_path_matches_on_its_file_name() {
+    fn order_and_repeats_do_not_matter() {
         assert_eq!(
-            product_check(Some("/Users/me/.nodespace/bin/nodespaced"), &community()),
+            product_check(Some(&ids(&["b", "a", "b"])), &expecting(&["a", "b"])),
             ProductCheck::Match
         );
     }
 
     #[test]
-    fn an_exe_suffix_is_ignored() {
+    fn a_different_set_is_a_mismatch() {
         assert_eq!(
-            product_check(Some("nodespaced.exe"), &community()),
-            ProductCheck::Match
-        );
-        assert_eq!(
-            product_check(Some("/opt/nodespace/nodespaced.exe"), &community()),
-            ProductCheck::Match
-        );
-    }
-
-    #[test]
-    fn another_binary_name_is_a_mismatch() {
-        assert_eq!(
-            product_check(Some("/opt/bin/custom-daemon"), &community()),
-            ProductCheck::Mismatch
-        );
-        assert_eq!(
-            product_check(Some("/opt/bin/nodespaced"), &named("custom-daemon")),
-            ProductCheck::Mismatch
-        );
-        assert_eq!(
-            product_check(Some("/opt/bin/custom-daemon.exe"), &named("custom-daemon")),
-            ProductCheck::Match
-        );
-    }
-
-    #[test]
-    fn an_empty_report_is_a_mismatch_not_an_unknown() {
-        assert_eq!(
-            product_check(Some(""), &community()),
+            product_check(Some(&ids(&["fixture"])), &community()),
             ProductCheck::Mismatch,
-            "a daemon built before the report existed answers with an empty path"
+            "an extension-carrying daemon is not core's"
+        );
+        assert_eq!(
+            product_check(Some(&[]), &expecting(&["fixture"])),
+            ProductCheck::Mismatch,
+            "a core daemon is not the extension-carrying one"
+        );
+        assert_eq!(
+            product_check(Some(&ids(&["other"])), &expecting(&["fixture"])),
+            ProductCheck::Mismatch
+        );
+        assert_eq!(
+            product_check(Some(&ids(&["fixture"])), &expecting(&["fixture", "other"])),
+            ProductCheck::Mismatch,
+            "a subset is not the same set"
         );
     }
 
@@ -4171,16 +4177,27 @@ mod product_check_tests {
     }
 
     #[test]
-    fn only_the_file_name_counts() {
+    fn a_registration_runs_the_profiles_binary_by_file_name() {
+        assert!(runs_profile_binary("nodespaced", &community()));
+        assert!(runs_profile_binary(
+            "/Users/me/.nodespace/bin/nodespaced",
+            &community()
+        ));
+        assert!(runs_profile_binary("nodespaced.exe", &community()));
+        assert!(runs_profile_binary(
+            "/opt/nodespace/nodespaced.exe",
+            &community()
+        ));
+        assert!(!runs_profile_binary("/opt/bin/custom-daemon", &community()));
         // A directory called like the binary does not make its contents match.
-        assert_eq!(
-            product_check(Some("/opt/nodespaced/other-daemon"), &community()),
-            ProductCheck::Mismatch
-        );
+        assert!(!runs_profile_binary(
+            "/opt/nodespaced/other-daemon",
+            &community()
+        ));
     }
 
     #[test]
-    fn lookalike_names_are_a_mismatch() {
+    fn lookalike_names_are_not_the_profiles_binary() {
         for lookalike in [
             "nodespaced.old",
             "nodespaced-extra",
@@ -4188,17 +4205,17 @@ mod product_check_tests {
             "nodespaced.exe.bak",
             "nodespaced (deleted)",
             ".exe",
+            "",
         ] {
-            assert_eq!(
-                product_check(Some(lookalike), &community()),
-                ProductCheck::Mismatch,
+            assert!(
+                !runs_profile_binary(lookalike, &community()),
                 "{lookalike} must not pass for the community daemon"
             );
         }
     }
 }
 
-/// What the app does about a running daemon that reports another executable.
+/// What the app does about a running daemon that reports another set of extensions.
 /// The service manager is stood in for by a closure, since the real one would
 /// act on this machine's own daemon; real Unix sockets held by this test
 /// process stand in for the daemons.
@@ -4235,7 +4252,7 @@ mod product_eviction_tests {
 
         let evicted = evict_if_other_product(
             &socket,
-            Some("/Users/me/.nodespace/bin/nodespaced"),
+            Some(&[]),
             &DaemonProfile::community(),
             GRACE,
             boot_out,
@@ -4264,8 +4281,18 @@ mod product_eviction_tests {
     }
 
     #[tokio::test]
-    async fn a_mismatched_or_empty_report_boots_out_and_clears_the_socket() {
-        for reported in [Some("/opt/bin/custom-daemon"), Some("")] {
+    async fn a_mismatched_report_boots_out_and_clears_the_socket() {
+        let other = vec!["fixture".to_owned()];
+        for (reported, profile) in [
+            (&other[..], DaemonProfile::community()),
+            (
+                &[][..],
+                DaemonProfile {
+                    extensions: other.clone(),
+                    ..DaemonProfile::community()
+                },
+            ),
+        ] {
             let dir = tempfile::tempdir().expect("tempdir");
             let socket = socket_in(&dir);
             let serving = UnixListener::bind(&socket).expect("bind test socket");
@@ -4279,8 +4306,8 @@ mod product_eviction_tests {
 
             let evicted = evict_if_other_product(
                 &socket,
-                reported,
-                &DaemonProfile::community(),
+                Some(reported),
+                &profile,
                 Duration::from_secs(5),
                 boot_out,
             )
@@ -4306,7 +4333,7 @@ mod product_eviction_tests {
 
         let evicted = evict_if_other_product(
             &socket,
-            Some("/opt/bin/custom-daemon"),
+            Some(&["fixture".to_owned()]),
             &DaemonProfile::community(),
             GRACE,
             boot_out,

@@ -9,6 +9,7 @@ use tauri::test::{mock_builder, mock_context, noop_assets, MockRuntime};
 fn an_app_crate_names_its_own_daemon_profile() {
     let profile = DaemonProfile {
         binary_name: "custom-daemon",
+        extensions: vec!["custom".to_string()],
         service_env: vec![("CUSTOM_MODE".to_string(), "on".to_string())],
     };
     let extensions = AppExtensions::<MockRuntime>::none().daemon_profile(profile);
@@ -23,6 +24,7 @@ fn an_app_crate_names_its_own_daemon_profile() {
 fn an_app_crate_cannot_replace_the_socket_core_registers() {
     let profile = DaemonProfile {
         binary_name: "custom-daemon",
+        extensions: Vec::new(),
         service_env: vec![(
             "NODESPACED_SOCKET".to_string(),
             "/tmp/elsewhere.sock".to_string(),

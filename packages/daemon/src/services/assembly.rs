@@ -454,6 +454,7 @@ pub async fn build_database_services(
         embedding_state.clone(),
         shared.scheduler.clone(),
     )
+    .with_supported_extensions(shared.extensions.supported_extensions().to_vec())
     .with_database_id(database_id.to_string())
     .with_shutdown_token(shutdown_token.clone())
     .with_playbook_lifecycle(playbook_engine.lifecycle().clone());
@@ -595,7 +596,8 @@ async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServi
         node_service.clone(),
         embedding_state.clone(),
         shared.scheduler.clone(),
-    );
+    )
+    .with_supported_extensions(shared.extensions.supported_extensions().to_vec());
     let embeddings_service_grpc = shared
         .has_model
         .then(|| EmbeddingsServiceImpl::new(node_service.clone(), embedding_state.clone()));

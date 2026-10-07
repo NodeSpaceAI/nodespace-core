@@ -29,10 +29,13 @@ pub(crate) const CORE_SERVICE_ENV: [&str; 2] = [SOCKET_ENV_VAR, UI_BINARY_ENV_VA
 /// Which daemon this app installs, registers and starts, and what it expects of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonProfile {
-    /// Sidecar the launcher installs, registers and starts, and the executable
-    /// name the startup product check expects the running daemon to report;
-    /// no `.exe`.
+    /// Sidecar the launcher installs, registers and starts; no `.exe`. Core and
+    /// every app built on it use `nodespaced`, so the name does not tell the
+    /// products apart: [`Self::extensions`] does.
     pub binary_name: &'static str,
+    /// The extension ids the running daemon must report supporting, which the
+    /// startup product check compares as a set. Empty for core's daemon.
+    pub extensions: Vec<String>,
     /// Extra environment in the service registration, after core's own
     /// `NODESPACED_SOCKET` and `NODESPACE_UI_BINARY`. Rendered into the macOS
     /// launchd plist only, as today; the systemd unit and the Windows spawn
@@ -45,6 +48,7 @@ impl DaemonProfile {
     pub fn community() -> Self {
         Self {
             binary_name: DAEMON_BINARY_NAME,
+            extensions: Vec::new(),
             service_env: Vec::new(),
         }
     }
@@ -132,6 +136,7 @@ mod tests {
     fn custom() -> DaemonProfile {
         DaemonProfile {
             binary_name: "custom-daemon",
+            extensions: vec!["custom".to_string()],
             service_env: vec![("CUSTOM_MODE".to_string(), "on".to_string())],
         }
     }
@@ -139,11 +144,12 @@ mod tests {
     /// The whole struct, not field by field: a field added to the profile
     /// fails to compile here until this test states core's value for it.
     #[test]
-    fn community_profile_is_the_core_daemon_with_no_service_env() {
+    fn community_profile_is_the_core_daemon_with_no_extensions_or_service_env() {
         assert_eq!(
             DaemonProfile::community(),
             DaemonProfile {
                 binary_name: "nodespaced",
+                extensions: Vec::new(),
                 service_env: Vec::new(),
             }
         );

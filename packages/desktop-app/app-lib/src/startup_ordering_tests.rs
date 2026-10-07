@@ -48,10 +48,12 @@ const VERSION: &str = "/nodespace.NodeService/GetDaemonVersion";
 const GET_NODE: &str = "/nodespace.NodeService/GetNode";
 const LIST: &str = "/nodespace.DatabaseService/List";
 
-/// What a daemon of another product reports as its executable.
-const OTHER_PRODUCT: &str = "/opt/other/bin/other-daemon";
-/// What a daemon of this app's community profile reports.
-const THIS_APP: &str = "/Users/someone/.nodespace/bin/nodespaced";
+/// The extension ids a daemon of another product reports.
+const OTHER_PRODUCT: &[&str] = &["fixture"];
+/// How the app records [`OTHER_PRODUCT`] when it holds the socket.
+const OTHER_PRODUCT_RECORD: &str = "fixture";
+/// The extension ids a daemon of this app's community profile reports: none.
+const THIS_APP: &[&str] = &[];
 
 /// How long a test lets the boot calls try to go out before the start attempt
 /// runs. It only gives a call that wrongly goes out the time to do so: every
@@ -71,10 +73,10 @@ struct MockDaemon {
 }
 
 impl MockDaemon {
-    /// Serves `socket`, answering `GetDaemonVersion` with `executable` and every
+    /// Serves `socket`, answering `GetDaemonVersion` with `extensions` and every
     /// other call with `NOT_FOUND`.
-    fn serve(socket: &Path, executable: &'static str) -> Self {
-        Self::serve_answering(socket, Some(executable), 0)
+    fn serve(socket: &Path, extensions: &'static [&'static str]) -> Self {
+        Self::serve_answering(socket, Some(extensions), 0)
     }
 
     /// Serves `socket` like [`serve`](Self::serve), but answers
@@ -85,15 +87,23 @@ impl MockDaemon {
 
     /// Serves `socket` like [`serve`](Self::serve), once it has answered the
     /// first `unanswered` `GetDaemonVersion` calls with an error.
-    fn serve_saying_late(socket: &Path, executable: &'static str, unanswered: usize) -> Self {
-        Self::serve_answering(socket, Some(executable), unanswered)
+    fn serve_saying_late(
+        socket: &Path,
+        extensions: &'static [&'static str],
+        unanswered: usize,
+    ) -> Self {
+        Self::serve_answering(socket, Some(extensions), unanswered)
     }
 
-    fn serve_answering(socket: &Path, executable: Option<&'static str>, unanswered: usize) -> Self {
+    fn serve_answering(
+        socket: &Path,
+        extensions: Option<&'static [&'static str]>,
+        unanswered: usize,
+    ) -> Self {
         let listener = UnixListener::bind(socket).expect("bind the stand-in daemon's socket");
         let seen = Seen::default();
         let answers = Answers {
-            executable,
+            extensions,
             unanswered: Arc::new(AtomicUsize::new(unanswered)),
             seen: Arc::clone(&seen),
         };
@@ -136,7 +146,7 @@ impl Drop for MockDaemon {
 
 #[derive(Clone)]
 struct Answers {
-    executable: Option<&'static str>,
+    extensions: Option<&'static [&'static str]>,
     /// How many more `GetDaemonVersion` calls get an error for an answer.
     unanswered: Arc<AtomicUsize>,
     seen: Seen,
@@ -195,7 +205,7 @@ impl<N> Service<http::Request<BoxBody>> for Named<N> {
     fn call(&mut self, request: http::Request<BoxBody>) -> Self::Future {
         let path = request.uri().path().to_owned();
         self.answers.seen.lock().unwrap().push(path.clone());
-        let executable = self.answers.executable;
+        let extensions = self.answers.extensions;
         let unanswered = Arc::clone(&self.answers.unanswered);
         Box::pin(async move {
             if path != VERSION {
@@ -208,14 +218,17 @@ impl<N> Service<http::Request<BoxBody>> for Named<N> {
                     left.checked_sub(1)
                 })
                 .is_ok();
-            let Some(executable) = executable.filter(|_| !busy) else {
+            let Some(extensions) = extensions.filter(|_| !busy) else {
                 return Ok(tonic::Status::unavailable("the stand-in daemon is busy").into_http());
             };
             let version = tower::service_fn(
                 move |_: tonic::Request<GetDaemonVersionRequest>| async move {
                     Ok::<_, tonic::Status>(tonic::Response::new(GetDaemonVersionResponse {
                         version: "0.0.0".to_string(),
-                        executable_path: executable.to_string(),
+                        supported_extensions: extensions
+                            .iter()
+                            .map(|id| (*id).to_owned())
+                            .collect(),
                     }))
                 },
             );
@@ -410,7 +423,10 @@ async fn another_products_daemon_that_survives_the_boot_out_keeps_the_hold_on() 
 
     assert_eq!(
         outcome.expect("start"),
-        (DaemonStatus::NotRunning, Some(OTHER_PRODUCT.to_owned())),
+        (
+            DaemonStatus::NotRunning,
+            Some(OTHER_PRODUCT_RECORD.to_owned())
+        ),
         "the start names the daemon that kept the socket, for the notice"
     );
     assert_eq!(hold_of(&app), StartupHoldState::Holding);
@@ -419,6 +435,42 @@ async fn another_products_daemon_that_survives_the_boot_out_keeps_the_hold_on() 
         [VERSION, VERSION],
         "it answers the check before and after the launcher's steps, and nothing else"
     );
+}
+
+fn expecting_fixture() -> DaemonProfile {
+    DaemonProfile {
+        extensions: OTHER_PRODUCT.iter().map(|id| (*id).to_owned()).collect(),
+        ..community()
+    }
+}
+
+#[tokio::test]
+async fn a_daemon_without_the_profiles_extensions_is_booted_out_and_an_equal_set_is_kept() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("daemon.sock");
+    let core_daemon = MockDaemon::serve(&socket, THIS_APP);
+    let boot_out = core_daemon.stopper();
+
+    let evicted = evict_other_product_daemon(&socket, &socket, &expecting_fixture(), move || {
+        boot_out.abort()
+    })
+    .await;
+    assert!(
+        evicted,
+        "a daemon reporting no extensions is not the one a profile expecting some wants"
+    );
+    core_daemon.stopped().await;
+
+    let matching = MockDaemon::serve(&socket, OTHER_PRODUCT);
+    let evicted = evict_other_product_daemon(
+        &socket,
+        &socket,
+        &expecting_fixture(),
+        unexpected_boot_out(),
+    )
+    .await;
+    assert!(!evicted, "an equal set is kept");
+    assert_eq!(matching.seen(), [VERSION]);
 }
 
 #[tokio::test]
@@ -445,7 +497,10 @@ async fn another_products_daemon_that_binds_during_the_start_keeps_the_hold_on()
 
     assert_eq!(
         outcome.expect("start"),
-        (DaemonStatus::NotRunning, Some(OTHER_PRODUCT.to_owned()))
+        (
+            DaemonStatus::NotRunning,
+            Some(OTHER_PRODUCT_RECORD.to_owned())
+        )
     );
     assert_eq!(hold_of(&app), StartupHoldState::Holding);
     assert_eq!(
@@ -640,7 +695,10 @@ async fn a_start_that_fails_beside_another_products_daemon_names_it_and_keeps_th
 
     assert_eq!(
         outcome.expect("the other daemon is the outcome, not the failure"),
-        (DaemonStatus::NotRunning, Some(OTHER_PRODUCT.to_owned()))
+        (
+            DaemonStatus::NotRunning,
+            Some(OTHER_PRODUCT_RECORD.to_owned())
+        )
     );
     assert_eq!(hold_of(&app), StartupHoldState::Holding);
     assert_eq!(other.seen(), [VERSION]);
@@ -687,7 +745,10 @@ async fn a_retry_ends_a_hold_left_on_once_the_other_daemon_is_gone() {
     let first = attempt(&app, &socket, ANSWERED, async { Ok(()) }).await;
     assert_eq!(
         first.expect("start"),
-        (DaemonStatus::NotRunning, Some(OTHER_PRODUCT.to_owned()))
+        (
+            DaemonStatus::NotRunning,
+            Some(OTHER_PRODUCT_RECORD.to_owned())
+        )
     );
     assert_eq!(hold_of(&app), StartupHoldState::Holding);
 

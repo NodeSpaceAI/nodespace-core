@@ -1060,9 +1060,10 @@ message GetDaemonVersionRequest {}
 message GetDaemonVersionResponse {
   // The daemon binary's semver (its compiled CARGO_PKG_VERSION).
   string version = 1;
-  // The serving process's own executable path, for the app's product check;
-  // empty from daemons built before this field existed.
-  string executable_path = 2;
+  // The extension ids this daemon supports, as declared through
+  // `DaemonExtensions::supported_extension`. The app's product check compares
+  // this set with the set its daemon profile expects. Empty for core's daemon.
+  repeated string supported_extensions = 2;
 }
 
 message GetDaemonMemoryRequest {}

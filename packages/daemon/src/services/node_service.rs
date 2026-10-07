@@ -149,6 +149,9 @@ pub struct NodeServiceImpl {
     /// to a token nobody ever cancels, so a caller that doesn't wire one up
     /// (tests, a directly-constructed instance) is unaffected.
     shutdown_token: tokio_util::sync::CancellationToken,
+    /// The extension ids this daemon supports, reported by `GetDaemonVersion`
+    /// for the app's product check. Empty for core's own daemon.
+    supported_extensions: Vec<String>,
     /// This database's Play engine lifecycle manager (`TriggerIndex`,
     /// `CronRegistry`, active plays) — shared with the running
     /// `PlaybookEngine` instance, not a separate copy. `None` only in tests
@@ -170,8 +173,17 @@ impl NodeServiceImpl {
             database_id: String::new(),
             scheduler,
             shutdown_token: tokio_util::sync::CancellationToken::new(),
+            supported_extensions: Vec::new(),
             playbook_lifecycle: None,
         }
+    }
+
+    /// Set the extension ids `GetDaemonVersion` reports. Set by
+    /// [`crate::build_database_services`] from the daemon's
+    /// [`crate::DaemonExtensions`]; an impl built any other way reports none.
+    pub fn with_supported_extensions(mut self, supported_extensions: Vec<String>) -> Self {
+        self.supported_extensions = supported_extensions;
+        self
     }
 
     /// Wire this database's Play engine lifecycle manager, for
@@ -1806,14 +1818,12 @@ impl GrpcNodeService for NodeServiceImpl {
         &self,
         _request: Request<GetDaemonVersionRequest>,
     ) -> Result<Response<GetDaemonVersionResponse>, Status> {
-        // The daemon's own compiled version and executable — not database-scoped,
-        // so no routing. The path is read at run time from the serving process
-        // itself, so whichever binary answers reports its own location.
+        // The daemon's own compiled version and supported extension ids — not
+        // database-scoped, so no routing. Every impl a daemon builds carries the
+        // same set.
         Ok(Response::new(GetDaemonVersionResponse {
             version: env!("CARGO_PKG_VERSION").to_string(),
-            executable_path: std::env::current_exe()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+            supported_extensions: self.supported_extensions.clone(),
         }))
     }
 
@@ -5728,22 +5738,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_daemon_version_reports_its_own_executable_path() {
+    async fn get_daemon_version_reports_the_supported_extensions() {
         let (svc, _tmp) = make_service().await;
-        let resp = svc
+        let none = svc
             .get_daemon_version(Request::new(crate::nodespace::GetDaemonVersionRequest {}))
             .await
             .unwrap()
             .into_inner();
-        let own_exe = std::env::current_exe()
-            .expect("the test process has an executable path")
-            .to_string_lossy()
-            .into_owned();
-        assert!(!own_exe.is_empty());
-        assert_eq!(
-            resp.executable_path, own_exe,
-            "the daemon must report the path of the process serving the call"
+        assert!(
+            none.supported_extensions.is_empty(),
+            "core's daemon supports no extension"
         );
+
+        let svc = NodeServiceImpl::new(
+            svc.node_service(),
+            Arc::new(tokio::sync::RwLock::new(None)),
+            Arc::new(EmbeddingScheduler::new()),
+        )
+        .with_supported_extensions(vec!["fixture".to_string()]);
+        let some = svc
+            .get_daemon_version(Request::new(crate::nodespace::GetDaemonVersionRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(some.supported_extensions, ["fixture"]);
     }
 
     #[tokio::test]
