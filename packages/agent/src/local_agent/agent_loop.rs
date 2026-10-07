@@ -974,7 +974,8 @@ fn comparable_title(s: &str) -> String {
 
 /// Whether a create titled `title` names the record titled `existing`, both
 /// already through [`comparable_title`]: the same name, or that name followed
-/// by more words ("Kestrel Gateway" and "Kestrel Gateway Update").
+/// by more words ("Kestrel Gateway" and "Kestrel Gateway Update", or
+/// "Kestrel Gateway: Update").
 ///
 /// The extension counts because it is the retry a refused duplicate gets: the
 /// model keeps the record's name and adds a word, which an exact comparison
@@ -985,7 +986,7 @@ fn names_the_same_record(title: &str, existing: &str) -> bool {
     title == existing
         || title
             .strip_prefix(existing)
-            .is_some_and(|rest| rest.starts_with(' '))
+            .is_some_and(|rest| rest.starts_with(|c: char| !c.is_alphanumeric()))
 }
 
 /// The mentioned entity a `create_node` call would duplicate, if any.
@@ -12913,6 +12914,8 @@ mod tests {
                 .is_some()
         };
         assert!(duplicated("company_sold_to", "Northwind Trading Update"));
+        assert!(duplicated("company_sold_to", "Northwind Trading: Update"));
+        assert!(duplicated("company_sold_to", "Northwind Trading - Update"));
         assert!(!duplicated("company_sold_to", "Northwind Tradingpost"));
         assert!(!duplicated("event_venue", "Northwind Trading Update"));
         assert!(!duplicated("company_sold_to", "Update Northwind Trading"));
@@ -12937,6 +12940,20 @@ mod tests {
             !duplicated(json!({"content": "Tailspin Toys"})),
             "a title the user did not refer to is the executor's error to report"
         );
+    }
+
+    #[test]
+    fn an_answered_clarification_disarms_the_match_on_an_extended_title() {
+        let session = session_mentioning_northwind();
+        let asked = vec!["Did you mean nodespace://nw-1 or a new one?".to_string()];
+        let args = json!({"node_type": "company_sold_to", "content": "Northwind Trading Update"});
+        assert!(mentioned_entity_duplicated_by(
+            &session.mentioned_entities,
+            &asked,
+            "create_node",
+            &args
+        )
+        .is_none());
     }
 
     #[test]
