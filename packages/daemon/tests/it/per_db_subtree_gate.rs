@@ -63,7 +63,6 @@ fn gated_context() -> (SharedContext, Arc<Mutex<Vec<String>>>) {
         pty_manager: Arc::new(PtySessionManager::new()),
         model,
         has_model: false,
-        model_load_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         scheduler: Arc::new(EmbeddingScheduler::new()),
         subtree_gate_factory: Arc::new(factory),
         local_agent: nodespace_daemon::SharedLocalAgent::new(),

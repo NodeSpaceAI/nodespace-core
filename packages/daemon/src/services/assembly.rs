@@ -46,14 +46,6 @@ pub struct SharedContext {
     /// Whether an NLP model file was found at startup. Gates both the
     /// per-database embedding wiring and the `EmbeddingsService` registration.
     pub has_model: bool,
-    /// Set once, permanently, by `load_shared_embedding_model_bg` if the
-    /// background load fails (corrupt file, engine init error). A closed
-    /// `model` channel alone is ambiguous -- it also looks that way while
-    /// still loading, since nothing has been sent on it yet -- so
-    /// `EmbeddingsServiceImpl` reads this flag to distinguish "still
-    /// loading, retry later" from "failed, retrying will never help" when
-    /// answering an RPC while `model` has not yielded a value.
-    pub model_load_failed: Arc<AtomicBool>,
     /// Process-global embedding scheduler (ADR-053: per-database compute
     /// scoping). Grants the active database's embedding batches priority over
     /// other open databases so foreground work is not blocked by another
@@ -305,14 +297,13 @@ pub async fn build_shared_services(
     let has_model = model_path.is_some();
     SHARED_MODEL_MISSING.store(!has_model, Ordering::SeqCst);
     let (model_tx, model_rx) = watch::channel::<Option<Arc<EmbeddingService>>>(None);
-    let model_load_failed = Arc::new(AtomicBool::new(false));
+    SHARED_MODEL_LOAD_FAILED.store(false, Ordering::SeqCst);
     let model_task = model_path.map(|path| {
-        let model_load_failed = model_load_failed.clone();
         // Flagged in flight at scheduling time, not when the task first runs, so
         // a shutdown that finishes before then still sees the pending load.
         let in_flight = SharedModelLoadGuard::start();
         tokio::spawn(async move {
-            load_shared_embedding_model_bg(path, model_tx, model_load_failed, in_flight).await;
+            load_shared_embedding_model_bg(path, model_tx, in_flight).await;
         })
     });
 
@@ -332,7 +323,6 @@ pub async fn build_shared_services(
                 pty_manager,
                 model: model_rx,
                 has_model,
-                model_load_failed,
                 subtree_gate_factory: Arc::new(OnceLock::new()),
                 scheduler,
                 local_agent,
@@ -471,13 +461,9 @@ pub async fn build_database_services(
     // EmbeddingsService is only registered when a model file exists at startup
     // (the shared model). If the model appears later, the endpoint is absent
     // until daemon restart — intentional, not a regression from prior behavior.
-    let embeddings_service_grpc = shared.has_model.then(|| {
-        EmbeddingsServiceImpl::new(
-            node_service.clone(),
-            embedding_state.clone(),
-            shared.model_load_failed.clone(),
-        )
-    });
+    let embeddings_service_grpc = shared
+        .has_model
+        .then(|| EmbeddingsServiceImpl::new(node_service.clone(), embedding_state.clone()));
 
     let agent_session = AgentSessionHandler::new(
         shared.pty_manager.clone(),
@@ -610,13 +596,9 @@ async fn build_unrouted_services(shared: &SharedContext) -> Result<DatabaseServi
         embedding_state.clone(),
         shared.scheduler.clone(),
     );
-    let embeddings_service_grpc = shared.has_model.then(|| {
-        EmbeddingsServiceImpl::new(
-            node_service.clone(),
-            embedding_state.clone(),
-            shared.model_load_failed.clone(),
-        )
-    });
+    let embeddings_service_grpc = shared
+        .has_model
+        .then(|| EmbeddingsServiceImpl::new(node_service.clone(), embedding_state.clone()));
     let agent_session = AgentSessionHandler::new(
         shared.pty_manager.clone(),
         node_service.clone(),
@@ -742,13 +724,24 @@ static SHARED_MODEL_LOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 /// [`build_shared_services`], which runs once per process.
 static SHARED_MODEL_MISSING: AtomicBool = AtomicBool::new(false);
 
+/// Whether the shared model's background load failed (corrupt file, engine
+/// init error). Process-global for the same reason as
+/// [`SHARED_MODEL_LOAD_IN_FLIGHT`]. A closed `model` channel cannot tell a
+/// failed load from one still running, so this is what separates them. Cleared
+/// by [`build_shared_services`], set by the load task.
+static SHARED_MODEL_LOAD_FAILED: AtomicBool = AtomicBool::new(false);
+
 /// The status an embedding-backed RPC returns while no model is available.
 ///
-/// `FAILED_PRECONDITION` (not safe to retry) when startup found no model file,
-/// since no retry can ever produce one; `UNAVAILABLE` (safe to retry) otherwise,
-/// while a model may still be loading.
+/// `FAILED_PRECONDITION` (not safe to retry) when startup found no model file
+/// or the load failed, since no retry can fix either; `UNAVAILABLE` (safe to
+/// retry) otherwise, while a model may still be loading.
 pub fn embedding_model_unavailable() -> tonic::Status {
-    if SHARED_MODEL_MISSING.load(Ordering::SeqCst) {
+    if SHARED_MODEL_LOAD_FAILED.load(Ordering::SeqCst) {
+        tonic::Status::failed_precondition(
+            "embedding model failed to load — semantic search unavailable",
+        )
+    } else if SHARED_MODEL_MISSING.load(Ordering::SeqCst) {
         tonic::Status::failed_precondition(
             "semantic search has no embedding model: no model file was found. \
              The NodeSpace app copies its bundled model on launch; \
@@ -791,14 +784,13 @@ impl Drop for SharedModelLoadGuard {
 
 /// Background task: load the NLP embedding model once for the whole process and
 /// publish it over `model_tx`. Non-fatal — on failure the channel simply never
-/// yields a model and embeddings stay disabled everywhere, but `load_failed`
-/// is set first so `EmbeddingsServiceImpl` can tell a client the load is
+/// yields a model and embeddings stay disabled everywhere, but
+/// `SHARED_MODEL_LOAD_FAILED` is set first so a client is told the load is
 /// never going to complete, instead of a channel that just looks the same as
 /// "still loading" forever.
 async fn load_shared_embedding_model_bg(
     model_path: std::path::PathBuf,
     model_tx: watch::Sender<Option<Arc<EmbeddingService>>>,
-    load_failed: Arc<AtomicBool>,
     in_flight: SharedModelLoadGuard,
 ) {
     tracing::info!(path = %model_path.display(), "Loading shared embedding model in background");
@@ -828,7 +820,7 @@ async fn load_shared_embedding_model_bg(
     {
         Ok(Ok(svc)) => Arc::new(svc),
         Ok(Err(_)) | Err(_) => {
-            load_failed.store(true, Ordering::SeqCst);
+            SHARED_MODEL_LOAD_FAILED.store(true, Ordering::SeqCst);
             return;
         }
     };

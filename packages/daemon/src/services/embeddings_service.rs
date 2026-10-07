@@ -10,7 +10,6 @@
 //! polling caller knows to stop retrying. Once loaded, they work normally
 //! without any client reconnect.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use nodespace_core::models::EmbeddingConfig;
@@ -40,39 +39,20 @@ pub struct EmbeddingsServiceImpl {
     node_service: Arc<NodeService>,
     /// `None` while the model is still loading; populated by the background task.
     state: Arc<RwLock<Option<EmbeddingReady>>>,
-    /// Set once, permanently, if the shared background load fails. `state`
-    /// alone cannot distinguish "still loading" from "failed, will never
-    /// complete" -- both leave it `None` forever -- so `unavailable()` reads
-    /// this to decide which of the two an RPC caller is actually looking at.
-    load_failed: Arc<AtomicBool>,
 }
 
 impl EmbeddingsServiceImpl {
-    pub fn new(
-        node_service: Arc<NodeService>,
-        state: Arc<RwLock<Option<EmbeddingReady>>>,
-        load_failed: Arc<AtomicBool>,
-    ) -> Self {
+    pub fn new(node_service: Arc<NodeService>, state: Arc<RwLock<Option<EmbeddingReady>>>) -> Self {
         Self {
             node_service,
             state,
-            load_failed,
         }
     }
 
-    /// `UNAVAILABLE` (a status gRPC clients conventionally treat as safe to
-    /// retry) while the model is still loading; `FAILED_PRECONDITION` (not
-    /// safe to retry) once the load has permanently failed -- so a client
-    /// polling this actually gets to stop polling instead of retrying a load
-    /// that will never happen.
+    /// See [`super::assembly::embedding_model_unavailable`]: `UNAVAILABLE`
+    /// (safe to retry) only while the model is genuinely still loading.
     fn unavailable(&self) -> Status {
-        if self.load_failed.load(Ordering::SeqCst) {
-            Status::failed_precondition(
-                "embedding model failed to load — semantic search unavailable",
-            )
-        } else {
-            super::assembly::embedding_model_unavailable()
-        }
+        super::assembly::embedding_model_unavailable()
     }
 
     /// Resolve which database this request targets (ADR-053) and return that
@@ -325,7 +305,7 @@ mod tests {
     use nodespace_core::services::NodeService as CoreNodeService;
     use tempfile::TempDir;
 
-    async fn test_service(load_failed: bool) -> (EmbeddingsServiceImpl, TempDir) {
+    async fn test_service() -> (EmbeddingsServiceImpl, TempDir) {
         let tmp = TempDir::new().expect("tempdir");
         let mut store = Arc::new(
             SqliteStore::new(tmp.path().join("test.db"))
@@ -333,11 +313,7 @@ mod tests {
                 .expect("SqliteStore"),
         );
         let node_service = Arc::new(CoreNodeService::new(&mut store).await.expect("NodeService"));
-        let svc = EmbeddingsServiceImpl::new(
-            node_service,
-            Arc::new(RwLock::new(None)),
-            Arc::new(AtomicBool::new(load_failed)),
-        );
+        let svc = EmbeddingsServiceImpl::new(node_service, Arc::new(RwLock::new(None)));
         (svc, tmp)
     }
 
@@ -346,28 +322,12 @@ mod tests {
     /// expected to treat as safe to retry.
     #[tokio::test]
     async fn unavailable_reports_loading_when_not_failed() {
-        let (svc, _tmp) = test_service(false).await;
+        let (svc, _tmp) = test_service().await;
         let status = svc.unavailable();
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert!(
             status.message().contains("loading"),
             "expected a loading message, got: {}",
-            status.message()
-        );
-    }
-
-    /// The bug this exists to prevent: once the background load has
-    /// permanently failed, RPCs must stop claiming the model is "loading" --
-    /// a client that retries `UNAVAILABLE` forever never learns the load
-    /// isn't coming. `FAILED_PRECONDITION` signals "don't retry" instead.
-    #[tokio::test]
-    async fn unavailable_reports_failed_precondition_once_load_failed() {
-        let (svc, _tmp) = test_service(true).await;
-        let status = svc.unavailable();
-        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
-        assert!(
-            status.message().contains("failed to load"),
-            "expected a failure message distinct from 'loading', got: {}",
             status.message()
         );
     }
@@ -383,7 +343,7 @@ mod tests {
     /// caller learns the request itself is wrong, not that it should retry.
     #[tokio::test]
     async fn batch_queue_embeddings_rejects_oversized_batch() {
-        let (svc, _tmp) = test_service(false).await;
+        let (svc, _tmp) = test_service().await;
         let status = svc
             .batch_queue_embeddings(batch_request(MAX_BATCH_SIZE + 1))
             .await
@@ -400,7 +360,7 @@ mod tests {
     /// model-state check (here: still loading).
     #[tokio::test]
     async fn batch_queue_embeddings_accepts_batch_at_cap() {
-        let (svc, _tmp) = test_service(false).await;
+        let (svc, _tmp) = test_service().await;
         let status = svc
             .batch_queue_embeddings(batch_request(MAX_BATCH_SIZE))
             .await
