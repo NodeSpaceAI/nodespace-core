@@ -960,10 +960,10 @@ const DUPLICATE_ENTITY_ERROR: &str = "duplicate_of_mentioned_entity";
 /// stripped the way the service derives a stored title from `content`,
 /// whitespace collapsed, case folded.
 ///
-/// Deliberately no fuzzier than that. A near-miss ("Northwind Traders" against
-/// "Northwind Trading") may well be a distinct record the user wants, and
-/// refusing it would be a new failure mode for ordinary creates; only a name
-/// that is the same name is treated as the same thing.
+/// Deliberately no fuzzier than that, apart from [`names_the_same_record`]. A
+/// near-miss ("Northwind Traders" against "Northwind Trading") may well be a
+/// distinct record the user wants, and refusing it would be a new failure mode
+/// for ordinary creates.
 fn comparable_title(s: &str) -> String {
     nodespace_core::utils::strip_markdown(s)
         .split_whitespace()
@@ -972,9 +972,27 @@ fn comparable_title(s: &str) -> String {
         .to_lowercase()
 }
 
+/// Whether a create titled `title` names the record titled `existing`, both
+/// already through [`comparable_title`]: the same name, or that name followed
+/// by more words ("Kestrel Gateway" and "Kestrel Gateway Update", or
+/// "Kestrel Gateway: Update").
+///
+/// The extension counts because it is the retry a refused duplicate gets: the
+/// model keeps the record's name and adds a word, which an exact comparison
+/// lets through as a second record. Whole words only, so "Northwind" does not
+/// claim "Northwinds". Refusing a genuinely distinct longer title costs the
+/// user one question, which the refusal asks.
+fn names_the_same_record(title: &str, existing: &str) -> bool {
+    title == existing
+        || title
+            .strip_prefix(existing)
+            .is_some_and(|rest| rest.starts_with(|c: char| !c.is_alphanumeric()))
+}
+
 /// The mentioned entity a `create_node` call would duplicate, if any.
 ///
-/// Matches on the same type and the same title (see [`comparable_title`]).
+/// Matches on the same type and the same title or that title with words added
+/// (see [`names_the_same_record`]).
 /// Consults only `session.mentioned_entities` — what the entity tier resolved
 /// against this turn's message — not the whole graph, so a create naming
 /// something the user did not refer to is never touched.
@@ -1028,7 +1046,7 @@ fn mentioned_entity_duplicated_by<'a>(
     // ending the search: without a type, several entities can share the title.
     mentioned_entities.iter().find(|e| {
         node_type.is_none_or(|t| e.node_type == t)
-            && comparable_title(&e.title) == title
+            && names_the_same_record(&title, &comparable_title(&e.title))
             && !composed_clarifications
                 .iter()
                 .any(|asked| asked.contains(e.id.as_str()))
@@ -12888,6 +12906,22 @@ mod tests {
     }
 
     #[test]
+    fn a_title_that_adds_whole_words_to_a_mentioned_entitys_is_a_duplicate() {
+        let session = session_mentioning_northwind();
+        let duplicated = |node_type: &str, content: &str| {
+            let args = json!({"node_type": node_type, "content": content});
+            mentioned_entity_duplicated_by(&session.mentioned_entities, &[], "create_node", &args)
+                .is_some()
+        };
+        assert!(duplicated("company_sold_to", "Northwind Trading Update"));
+        assert!(duplicated("company_sold_to", "Northwind Trading: Update"));
+        assert!(duplicated("company_sold_to", "Northwind Trading - Update"));
+        assert!(!duplicated("company_sold_to", "Northwind Tradingpost"));
+        assert!(!duplicated("event_venue", "Northwind Trading Update"));
+        assert!(!duplicated("company_sold_to", "Update Northwind Trading"));
+    }
+
+    #[test]
     fn a_create_naming_no_type_matches_a_mentioned_entity_by_title() {
         let session = session_mentioning_northwind();
         let duplicated = |args: serde_json::Value| {
@@ -12906,6 +12940,20 @@ mod tests {
             !duplicated(json!({"content": "Tailspin Toys"})),
             "a title the user did not refer to is the executor's error to report"
         );
+    }
+
+    #[test]
+    fn an_answered_clarification_disarms_the_match_on_an_extended_title() {
+        let session = session_mentioning_northwind();
+        let asked = vec!["Did you mean nodespace://nw-1 or a new one?".to_string()];
+        let args = json!({"node_type": "company_sold_to", "content": "Northwind Trading Update"});
+        assert!(mentioned_entity_duplicated_by(
+            &session.mentioned_entities,
+            &asked,
+            "create_node",
+            &args
+        )
+        .is_none());
     }
 
     #[test]
