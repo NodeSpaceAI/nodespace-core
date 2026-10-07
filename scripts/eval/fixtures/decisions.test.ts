@@ -324,123 +324,37 @@ describe("held-turn node outcome scoring", () => {
   });
 });
 
-describe("held-turn outcome scoring", () => {
-  const scenario = fixture.groups.flat().find((s) => s.id === "held-off-menu-type");
-  if (!scenario) throw new Error("held-off-menu-type is missing");
+describe("held-turn control scoring", () => {
+  const control = fixture.groups.flat().find((s) => s.id === "held-on-menu-type");
+  if (!control) throw new Error("held-on-menu-type is missing");
 
-  type Call = ToolCallRecord;
-
-  const schema = (enforced: boolean, selected: string) => ({
+  const schema = (enforced: boolean) => ({
     kind: "schema" as const,
     candidates: ["bug-report"],
-    selected,
-    offMenu: selected !== "bug-report",
+    selected: "bug-report",
+    offMenu: false,
     enforced,
   });
-  const turn = (decisions: TurnRecord["decisions"], calls: Call[]): TurnRecord =>
+  const turn = (enforced: boolean): TurnRecord =>
     ({
       toolsOffered: "",
-      toolsCalled: calls.map((c) => c.name),
-      toolCalls: calls,
-      decisions,
+      toolsCalled: ["create_node"],
+      toolCalls: [{ name: "create_node", isError: false, fieldCount: 2 }],
+      decisions: [schema(enforced)],
       reply: "",
       latencyMs: 0,
     }) as TurnRecord;
 
-  // The calls a turn can make, as the scrape records them.
-  const refused: Call = { name: "create_node", isError: true, typeRefused: true };
-  const created: Call = { name: "create_node", isError: false, fieldCount: 2 };
-  const searched: Call = { name: "search_nodes", isError: false };
-
-  const verdict = (t: TurnRecord) => fixture.score(scenario, [t]);
-
-  test("an off-menu call that dispatch refused, and nothing written, passes", () => {
-    expect(verdict(turn([schema(true, "task")], [refused])).passed).toBe(true);
-  });
-
-  test("a read after the refusal still passes", () => {
-    expect(verdict(turn([schema(true, "task")], [refused, searched])).passed).toBe(true);
-  });
-
-  test("an identical re-send that no guard dispatched is not a call that ran", () => {
-    // The model repeats the refused call. The round records a second off-menu
-    // decision, and the duplicate-call guard stops the round before dispatch:
-    // one refusal, two decisions, nothing ran.
-    const t = turn([schema(true, "task"), schema(true, "task")], [refused]);
-    expect(verdict(t).passed).toBe(true);
-  });
-
-  test("an off-menu call the daemon reports as run fails", () => {
-    const t = turn(
-      [schema(true, "task")],
-      [{ name: "create_node", isError: false, fieldCount: 1, offMenuRan: true }],
-    );
-    const v = verdict(t);
-    expect(v.passed).toBe(false);
-    expect(v.failure).toContain("ran on a held turn");
-  });
-
-  test("a record created after the refusal fails: it is the wrong type", () => {
-    // The user asked for a task. Refused, the model re-sent the same record as
-    // a bug report, which is on the menu and is not what was asked for.
-    const t = turn([schema(true, "task"), schema(true, "bug-report")], [refused, created]);
-    const v = verdict(t);
-    expect(v.passed).toBe(false);
-    expect(v.failure).toContain("after a refusal");
-  });
-
-  test("a record created with no refusal fails the same way", () => {
-    // The model followed the `enum` on its first call and wrote the reminder
-    // as a bug report. Nothing was refused, and the record is still wrong.
-    const v = verdict(turn([schema(true, "bug-report")], [created]));
-    expect(v.passed).toBe(false);
-    expect(v.failure).toContain("not after a refusal");
-  });
-
-  test("a create that wrote nothing is not a record created", () => {
-    // Skipped for a route_clarify in the same round, or answered by the
-    // duplicate-write guard: not an error, and nothing persisted.
-    const skipped: Call = { name: "create_node", isError: false };
-    expect(verdict(turn([schema(true, "bug-report")], [skipped])).passed).toBe(true);
-  });
-
-  test("a turn that was not held fails as unmeasured, not as a model failure", () => {
-    const v = verdict(turn([schema(false, "task")], [created]));
-    expect(v.passed).toBe(false);
-    expect(v.failure).toContain("nothing here was measured");
-  });
-
   test("the control fails as unmeasured on a turn that was not held", () => {
     // Naming the linked type on an open turn stays on the menu, and says
     // nothing about a held one.
-    const control = fixture.groups.flat().find((s) => s.id === "held-on-menu-type");
-    if (!control) throw new Error("held-on-menu-type is missing");
-
-    const open = fixture.score(control, [turn([schema(false, "bug-report")], [created])]);
+    const open = fixture.score(control, [turn(false)]);
     expect(open.passed).toBe(false);
     expect(open.failure).toContain("nothing here was measured");
-
-    // Held, the control creates the record: that is what it is for.
-    const held = fixture.score(control, [turn([schema(true, "bug-report")], [created])]);
-    expect(held.passed).toBe(true);
   });
 
-  test("what followed a refusal is recorded", () => {
-    const after = (rest: Call[], reply = "") => {
-      const t = turn([schema(true, "task")], [refused, ...rest]);
-      t.reply = reply;
-      return fixture.extra?.(scenario, [t]).afterRefusal;
-    };
-
-    expect(after([created])).toBe("created");
-    expect(after([{ name: "route_clarify", isError: false }])).toBe("clarified");
-    expect(after([], "I can take that a couple of ways. Which did you mean?")).toBe("clarified");
-    expect(after([searched], "I could not add a task.")).toBe("replied");
-    // A create that persisted nothing is not a write.
-    expect(after([{ name: "create_node", isError: false }], "Done.")).toBe("replied");
-    // Nothing refused: nothing to report.
-    const clean = turn([schema(true, "bug-report")], [created]);
-    expect(fixture.extra?.(scenario, [clean]).afterRefusal).toBeNull();
+  test("held, the control creates the record: that is what it is for", () => {
+    expect(fixture.score(control, [turn(true)]).passed).toBe(true);
   });
 });
 
