@@ -178,23 +178,55 @@ and changes between Claude Code releases: run it again after an upgrade.
 ## The Pi extension and the OpenCode plugin
 
 Both do what the Claude Code plugin does, through their own harness's hooks.
-`plugins/shared/nodespace-session.ts` holds the behaviour behind three things a
-harness supplies (a way to run a command, the environment, a clock), and each
-harness file is the hooks around it:
+`plugins/shared/nodespace-session.ts` holds the behaviour behind four things a
+harness supplies (a way to run a command, the environment, a clock, a way to
+read a file), and each harness file is the hooks around it:
 
 | | Pi (`plugins/pi/index.ts`) | OpenCode (`plugins/opencode/nodespace.ts`) |
 |---|---|---|
 | Session start | `session_start` | `session.created`, or the first hook of a session that was resumed |
+| The harness's session id | `ctx.sessionManager.getSessionId()` | the `sessionID` the hooks carry (`info.id` of `session.created`) |
+| Session end | `session_shutdown` | `session.deleted` |
 | System prompt | a `nodespace` section, set on every `before_agent_start` | pushed in `experimental.chat.system.transform` on each request |
-| Skill list changed | a message returned from `before_agent_start` | a text part added in `chat.message` |
+| Skill list changed, and the launched task | a message returned from `before_agent_start` | a text part added in `chat.message` |
 | Refusing a tool call | `{ block: true, reason }` from `tool_call` | an error thrown from `tool.execute.before` |
 | A note on a tool result | content appended in `tool_result` | text appended in `tool.execute.after` |
+| A command's environment | the bash tool's `spawnHook`: Pi's own bash tool is registered again with it | the `shell.env` hook |
 | Status | a status entry, when the session has a UI | one toast: OpenCode has no status line |
 
 The skill list is read again on each prompt, so the section always holds the
 list as of the latest prompt. `NODESPACE_DATABASE` selects the database for
 every command, and `NODESPACE_WATCH_INTERVAL_SECONDS` (default 60) is how
 often at most a tool call checks the item being worked on.
+
+In a session NodeSpace launched (`NODESPACE_SESSION` is set), a session start
+reports the harness's own session id with `nodespace session report-harness-session`,
+so the conversation can be resumed from NodeSpace, and reports again for each
+conversation the harness starts in the same process (Pi's `session_start` with
+reason `new`, `resume` or `fork`). When the launch names a task
+(`NODESPACE_LAUNCHED_FOR`), its context is handed to the agent with the first
+prompt, once, inside the graph-data marker, and the task is the item watched
+from then on. A launch for the session's own chat node opens with nothing and
+watches nothing. A task that cannot be read adds nothing and blocks nothing.
+A session started from a terminal reports nothing. OpenCode serves child
+sessions from the one plugin instance: only the first session that is not a
+child's takes the launch.
+
+Writes are attributed through the CLI's journal, as the Claude Code plugin
+does: each plugin names the session to the commands the agent runs
+(`NODESPACE_WRITE_JOURNAL`, set to the harness's session id) and reads
+`<NodeSpace home>/.nodespace/journals/<session>.jsonl` when the watched item's
+version moved. The shared module reads no shell line to learn whether a command
+wrote. The same hook removes `NODESPACE_SESSION` and `NODESPACE_LAUNCHED_FOR`
+from those commands, so a harness started from the agent's shell does not take
+itself for the launched session.
+
+- **Pi** sets both through its bash tool's `spawnHook`. The `powershell` tool
+  is not replaced: a write made from it is read as someone else's, and the
+  launch variables reach it.
+- **OpenCode**'s `shell.env` output is not documented to replace the process's
+  environment, so the launch variables are set to empty there, which the
+  CLI and the plugin read as no launch, rather than removed.
 
 The installed layout differs from the repository's. Pi loads
 `extensions/nodespace/index.ts` and the shared module sits beside it. OpenCode
@@ -227,6 +259,11 @@ harness changes its plugin API:
    the agent can say which skills the graph holds without running a command,
    and that after `nodespace node context <id>` on a task, changing that task
    from another terminal makes the agent's next tool call fail with the reason.
+4. Start it again with `NODESPACE_SESSION` (a launched session's id) and
+   `NODESPACE_LAUNCHED_FOR` (a task's id) set, and check that the agent knows
+   the task without a command, that the session's `ai-chat-pty` node holds the
+   harness's session id, and that a write from a script
+   (`bash -c 'nodespace node update <id> ...'`) does not stop the session.
 
 ## Prerequisites
 

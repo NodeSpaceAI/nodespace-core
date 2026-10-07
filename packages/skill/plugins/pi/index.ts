@@ -4,6 +4,9 @@
 // installed beside this file. Pi loads `extensions/nodespace/index.ts` from
 // its agent directory with no flag.
 
+import { readFile } from 'node:fs/promises'
+
+import { createBashToolDefinition } from '@earendil-works/pi-coding-agent'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 
 import { createSession, DEFAULT_WATCH_INTERVAL_SECONDS } from './nodespace-session'
@@ -40,18 +43,49 @@ export default function nodespace(pi: ExtensionAPI): void {
     },
     env: name => process.env[name],
     now: () => Date.now(),
+    readFile: async path => {
+      try {
+        return await readFile(path, 'utf8')
+      } catch (err) {
+        if ((err as { code?: unknown }).code === 'ENOENT') {
+          return null
+        }
+
+        throw err
+      }
+    },
   }
   const session = createSession(host, watchIntervalMs())
   /** A note for a tool call's result, by the call's id. */
   const notes = new Map<string, string>()
   const refused = new Set<string>()
 
-  pi.on('session_start', async (_event, ctx) => {
-    const reach = await session.start(ctx.cwd)
+  // Pi's own bash tool, with the one change that its commands start without
+  // the launch's variables and with the one that names this session to the
+  // CLI. The environment is read as the command starts, so a conversation
+  // Pi starts later names its own. The powershell tool's environment is not
+  // set: a write made from it is read as someone else's.
+  const bash = createBashToolDefinition(process.cwd(), {
+    spawnHook: context => ({ ...context, env: session.commandEnv(context.env) }),
+  })
+
+  pi.registerTool(bash)
+
+  pi.on('session_start', async (event, ctx) => {
+    // Pi starts a new conversation in the same process on `new`, `resume` and
+    // `fork`: each is reported and opened afresh. A reload keeps the one it had.
+    const reach = await session.start(ctx.cwd, {
+      sessionId: ctx.sessionManager.getSessionId(),
+      opens: event.reason !== 'reload',
+    })
 
     if (ctx.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, reach.text)
     }
+  })
+
+  pi.on('session_shutdown', async () => {
+    await session.end()
   })
 
   // Pi builds the system prompt afresh for each agent run, so the section is
@@ -68,7 +102,7 @@ export default function nodespace(pi: ExtensionAPI): void {
   })
 
   pi.on('tool_call', async event => {
-    const verdict = await session.beforeTool(shellLine(event.toolName, event.input))
+    const verdict = await session.beforeTool()
 
     if (verdict && 'deny' in verdict) {
       refused.add(event.toolCallId)
