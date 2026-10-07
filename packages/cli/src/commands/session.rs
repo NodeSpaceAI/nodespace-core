@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{Local, TimeZone};
+use clap::builder::NonEmptyStringValueParser;
 use clap::{Args, Subcommand};
 use crossterm::terminal;
 use nodespace_agent::agent_types::AgentType;
@@ -95,8 +96,10 @@ pub struct ReportHarnessSessionArgs {
     pub harness_session_id: String,
 
     /// The launched session to report for. A launched session's environment
-    /// names it in `NODESPACE_SESSION`.
-    #[arg(long, env = SESSION_ENV_VAR)]
+    /// names it in `NODESPACE_SESSION`. An empty value is no session: a
+    /// harness that can only blank the variable for the commands it runs (it
+    /// cannot remove it) leaves an empty one, which is not a launch.
+    #[arg(long, env = SESSION_ENV_VAR, value_parser = NonEmptyStringValueParser::new())]
     pub session: String,
 }
 
@@ -380,6 +383,13 @@ mod tests {
         assert_eq!(report.harness_session_id, "h-1");
         assert_eq!(report.session, "s-1");
         assert_eq!(SESSION_ENV_VAR, "NODESPACE_SESSION");
+    }
+
+    /// An empty session is no session, whether it came from a flag or from
+    /// the blanked variable a harness leaves in the commands it runs.
+    #[test]
+    fn a_report_refuses_an_empty_session() {
+        assert!(Report::try_parse_from(["report", "h-1", "--session", ""]).is_err());
     }
 
     #[test]
