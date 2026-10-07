@@ -224,9 +224,18 @@ itself for the launched session.
 - **Pi** sets both through its bash tool's `spawnHook`. The `powershell` tool
   is not replaced: a write made from it is read as someone else's, and the
   launch variables reach it.
+  Pi's own bash tool is registered again to carry the hook, built with the
+  session's directory and none of Pi's `shellPath` or `shellCommandPrefix`
+  settings: a Pi user who sets either loses it for bash while the extension is
+  loaded. A Pi reload replaces the extension, so it starts again with no item
+  watched; a conversation that continues is not opened a second time.
 - **OpenCode**'s `shell.env` output is not documented to replace the process's
-  environment, so the launch variables are set to empty there, which the
-  CLI and the plugin read as no launch, rather than removed.
+  environment, so the launch variables are set to empty there rather than
+  removed. The plugin reads an empty value as no launch; the CLI may still
+  take an empty `NODESPACE_SESSION` for a value, so a harness started from the
+  agent's shell can report an empty session id. OpenCode sends no event when it
+  exits, so a journal is removed on `session.deleted` or by the next session's
+  start once it has been idle for an hour.
 
 The installed layout differs from the repository's. Pi loads
 `extensions/nodespace/index.ts` and the shared module sits beside it. OpenCode

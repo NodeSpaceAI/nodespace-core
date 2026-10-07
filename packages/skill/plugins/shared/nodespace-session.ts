@@ -1,6 +1,6 @@
 // What the Pi extension and the OpenCode plugin both do (ADR-093 §5), behind
 // the few things a harness has to supply: a way to run a command, the
-// environment and a clock. It is installed beside each of them as a file of
+// environment, a clock and a way to read a file. It is installed beside each of them as a file of
 // its own, and imports nothing.
 //
 // It is glue around `nodespace` commands and holds no retrieval or assembly
