@@ -4767,8 +4767,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     (&resolved_type, is_error, result_value.as_object_mut())
                 {
                     let note = format!("'{sent}' is the type '{id}', so it was used as '{id}'.");
-                    match object.get_mut("notes").and_then(|n| n.as_array_mut()) {
-                        Some(notes) => notes.push(serde_json::json!(note)),
+                    match object.get_mut("notes") {
+                        Some(serde_json::Value::Array(notes)) => {
+                            notes.push(serde_json::json!(note))
+                        }
+                        // A `notes` of another shape is not ours to replace.
+                        Some(_) => {
+                            object.insert("type_resolved".to_string(), serde_json::json!(note));
+                        }
                         None => {
                             object.insert("notes".to_string(), serde_json::json!([note]));
                         }

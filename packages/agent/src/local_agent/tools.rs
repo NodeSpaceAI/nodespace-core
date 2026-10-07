@@ -1800,7 +1800,9 @@ pub(crate) fn off_menu_type<'a>(
 ///
 /// The model copies the quoted display name from the `EXISTING SCHEMAS` line
 /// (`feature_spec "feature spec"`) as often as the id. A type id is derived
-/// from its name, so the two agree once both are normalized. Resolving here
+/// from its name, so the two agree once both are normalized (case and
+/// separators are ignored). A type whose display name differs from its derived
+/// id is not resolved. Resolving here
 /// does what the parameter's description asks and stays inside `offered`: a
 /// name that matches no offered type, or more than one, is left for
 /// [`off_menu_type`] to refuse.
