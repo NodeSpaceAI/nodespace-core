@@ -1972,11 +1972,13 @@ const NOTHING_SAVED_NOTICE: &str =
 const CREATED_NOT_UPDATED_NOTICE: &str =
     "This turn only created records; it did not change an existing one, so describing it as a change wasn't accurate. Here's what actually ran:";
 
-/// Phrases that claim an existing record was changed. Narrower than
-/// [`contains_action_claim`] on purpose: "I created a follow-up with the
-/// corrected date" is a true account of a create, and a bare "updated" or
-/// "corrected" in a sentence that also claims a create must not read as a
-/// claim of an update.
+/// Only phrases that assert the change itself, so "I created a follow-up with
+/// the corrected date" (a true account of a create) is not read as a claim of
+/// an update. Narrower than [`contains_action_claim`] on purpose.
+///
+/// Known limits, both on the safe side or rare: a bare "Updated the date." and
+/// other phrasings not listed pass through unchanged, and "was created and
+/// updated with …" is replaced although it can be true.
 const UPDATE_CLAIMS: &[&str] = &[
     "has been updated",
     "was updated",
@@ -2863,11 +2865,24 @@ fn created_record_lines(executions: &[ToolExecutionRecord]) -> String {
         .filter_map(|r| {
             let id = r.result.get("id")?.as_str()?;
             let uri = super::tools::node_uri(id);
-            Some(match r.args.get("content").and_then(|c| c.as_str()) {
-                Some(title) if !title.trim().is_empty() => {
-                    format!("• new record: [{}]({uri})", title.trim())
+            // First line only, bounded, and without the brackets that would
+            // end the link text early: `content` is the model's, and may be a
+            // paragraph.
+            let first_line = r
+                .args
+                .get("content")
+                .and_then(|c| c.as_str())
+                .and_then(|c| c.lines().next())
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
+            Some(match first_line {
+                Some(line) => {
+                    let (shown, truncated) = char_preview(line, 80);
+                    let shown = shown.replace(['[', ']'], "");
+                    let ellipsis = if truncated { "…" } else { "" };
+                    format!("• new record: [{shown}{ellipsis}]({uri})")
                 }
-                _ => format!("• new record: {uri}"),
+                None => format!("• new record: {uri}"),
             })
         })
         .collect::<Vec<_>>()
@@ -4177,10 +4192,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         response_preview_truncated = preview_truncated,
                         "Created-not-updated: model described a create as a change to an existing record — replacing response"
                     );
+                    let records = created_record_lines(&all_tool_executions);
+                    let separator = if records.is_empty() { "" } else { "\n" };
                     format!(
-                        "{CREATED_NOT_UPDATED_NOTICE}\n\n{}\n{}",
-                        summarize_executions(&all_tool_executions),
-                        created_record_lines(&all_tool_executions)
+                        "{CREATED_NOT_UPDATED_NOTICE}\n\n{}{separator}{records}",
+                        summarize_executions(&all_tool_executions)
                     )
                 } else {
                     normalized
@@ -10598,6 +10614,17 @@ mod tests {
         assert_eq!(
             created_record_lines(&[create("a", "One"), create("nodespace://b", "Two")]),
             "• new record: [One](nodespace://a)\n• new record: [Two](nodespace://b)"
+        );
+        assert_eq!(
+            created_record_lines(&[create("a", "A [draft]\nsecond line")]),
+            "• new record: [A draft](nodespace://a)"
+        );
+        let long = "x".repeat(200);
+        let line = created_record_lines(&[create("a", &long)]);
+        assert!(line.contains('…') && line.len() < 140, "{line}");
+        assert_eq!(
+            created_record_lines(&[exec_record("create_node", false)]),
+            ""
         );
     }
 
