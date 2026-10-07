@@ -354,9 +354,9 @@ export async function resetIncompatibleDatabase(): Promise<ResetIncompatibleData
 }
 
 /**
- * The executable of the other daemon holding the socket, as it reported it
- * (empty when it named none), or `null` when there is none on record (or
- * outside Tauri).
+ * The extension ids the other daemon holding the socket reported,
+ * comma-separated (empty when it reported none), or `null` when there is none
+ * on record (or outside Tauri).
  */
 export async function getOtherDaemon(): Promise<string | null> {
   if (!isTauri()) return null;

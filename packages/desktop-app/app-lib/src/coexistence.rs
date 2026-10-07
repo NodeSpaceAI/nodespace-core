@@ -9,8 +9,8 @@
 //!
 //! - **Another daemon outside the shared label** (a Homebrew service, or one
 //!   started by hand) keeps the socket, and the daemon this app registered
-//!   exits on the single-instance lock. The startup records that daemon's
-//!   executable here, and the app reports [`OTHER_DAEMON_STATUS`] until a
+//!   exits on the single-instance lock. The startup records the extension ids
+//!   that daemon reported here, and the app reports [`OTHER_DAEMON_STATUS`] until a
 //!   retry ([`retry_daemon_start`]) finds the socket free of it.
 //! - **A foreign machine-wide registration** (macOS): the plist under
 //!   `/Library/LaunchAgents` with this app's label runs another binary, so it
@@ -27,16 +27,17 @@ use tauri::AppHandle;
 /// Status string reported while another daemon holds the socket.
 pub const OTHER_DAEMON_STATUS: &str = "other_daemon";
 
-/// The executable of the other daemon holding the socket, as it reported it.
+/// The extension ids the other daemon holding the socket reported,
+/// comma-separated; empty when it reported none.
 static OTHER_DAEMON: Mutex<Option<String>> = Mutex::new(None);
 
 /// Records the other daemon holding the socket, or clears the record (`None`).
-pub(crate) fn record_other_daemon(executable: Option<String>) {
-    *OTHER_DAEMON.lock().unwrap_or_else(PoisonError::into_inner) = executable;
+pub(crate) fn record_other_daemon(extensions: Option<String>) {
+    *OTHER_DAEMON.lock().unwrap_or_else(PoisonError::into_inner) = extensions;
 }
 
-/// The executable of the other daemon the last start found holding the
-/// socket. Empty when that daemon named none.
+/// The extension ids of the other daemon the last start found holding the
+/// socket. Empty when that daemon reported none.
 pub fn other_daemon() -> Option<String> {
     OTHER_DAEMON
         .lock()
@@ -59,8 +60,8 @@ pub(crate) async fn status_unless_other_daemon(
     probe.await
 }
 
-/// The other daemon's executable, for the notice. `None` when there is none on
-/// record.
+/// The other daemon's extension ids, for the notice. `None` when there is none
+/// on record.
 #[tauri::command]
 pub async fn get_other_daemon() -> Option<String> {
     other_daemon()
@@ -106,8 +107,8 @@ pub async fn foreign_machine_wide_registration() -> bool {
 const MACHINE_WIDE_LAUNCH_AGENTS: &str = "/Library/LaunchAgents";
 
 /// The program the launchd job at `plist` runs, when it is not `profile`'s
-/// daemon binary (compared as [`crate::daemon_setup::product_check`] compares
-/// a running daemon). launchd runs `Program` when it is set and the first of
+/// daemon binary (compared by file name,
+/// [`crate::daemon_setup::runs_profile_binary`]). launchd runs `Program` when it is set and the first of
 /// `ProgramArguments` otherwise.
 ///
 /// `None` when there is no file, it cannot be read as a property list, it
@@ -118,7 +119,7 @@ fn foreign_program(
     plist: &std::path::Path,
     profile: &crate::daemon_profile::DaemonProfile,
 ) -> Option<String> {
-    use crate::daemon_setup::{product_check, ProductCheck};
+    use crate::daemon_setup::runs_profile_binary;
 
     if !plist.exists() {
         return None;
@@ -140,7 +141,7 @@ fn foreign_program(
             .and_then(plist::Value::as_string),
     }
     .filter(|program| !program.is_empty())?;
-    (product_check(Some(program), profile) != ProductCheck::Match).then(|| program.to_owned())
+    (!runs_profile_binary(program, profile)).then(|| program.to_owned())
 }
 
 #[cfg(test)]

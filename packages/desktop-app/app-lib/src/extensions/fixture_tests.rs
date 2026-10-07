@@ -130,6 +130,7 @@ mod daemon_profile {
     fn fixture_daemon_profile() -> DaemonProfile {
         DaemonProfile {
             binary_name: "fixture-daemon",
+            extensions: vec!["fixture".to_string()],
             service_env: vec![("FIXTURE_DAEMON_MODE".to_string(), "fixture".to_string())],
         }
     }

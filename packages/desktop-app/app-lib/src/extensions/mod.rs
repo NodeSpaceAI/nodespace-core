@@ -284,9 +284,13 @@ impl<R: Runtime> AppExtensions<R> {
     /// What each field controls:
     ///
     /// * **`binary_name`**: the daemon binary the app installs, registers and
-    ///   starts, and the image name it kills on Windows. At startup the app
-    ///   also asks the daemon answering on the socket which executable it runs,
-    ///   and boots out the registration when that is not this binary.
+    ///   starts, and the image name it kills on Windows. Core and every app
+    ///   built on it use `nodespaced`.
+    /// * **`extensions`**: the extension ids the running daemon must report
+    ///   supporting, the set the daemon declares through
+    ///   `DaemonExtensions::supported_extension`. At startup the app asks the
+    ///   daemon answering on the socket for its set and boots out the
+    ///   registration when it differs. Core's default is empty.
     /// * **`service_env`**: extra environment in the daemon's launchd
     ///   registration, after core's own variables. The systemd unit and the
     ///   Windows spawn do not carry it.
