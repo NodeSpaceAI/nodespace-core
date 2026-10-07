@@ -738,14 +738,15 @@ fn resolve_model_path() -> Option<std::path::PathBuf> {
 static SHARED_MODEL_LOAD_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// Whether the daemon found no embedding model file at startup. Process-global
-/// for the same reason as [`SHARED_MODEL_LOAD_IN_FLIGHT`]: the model is.
+/// for the same reason as [`SHARED_MODEL_LOAD_IN_FLIGHT`]: the model is. Set by
+/// [`build_shared_services`], which runs once per process.
 static SHARED_MODEL_MISSING: AtomicBool = AtomicBool::new(false);
 
 /// The status an embedding-backed RPC returns while no model is available.
 ///
-/// `UNAVAILABLE` (safe to retry) while a model may still be loading;
-/// `FAILED_PRECONDITION` (not safe to retry) when there is no model file, since
-/// no retry can ever produce one.
+/// `FAILED_PRECONDITION` (not safe to retry) when startup found no model file,
+/// since no retry can ever produce one; `UNAVAILABLE` (safe to retry) otherwise,
+/// while a model may still be loading.
 pub fn embedding_model_unavailable() -> tonic::Status {
     if SHARED_MODEL_MISSING.load(Ordering::SeqCst) {
         tonic::Status::failed_precondition(
