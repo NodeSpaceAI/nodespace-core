@@ -2684,6 +2684,9 @@ fn ungrounded_node_uris(text: &str, grounded: &HashSet<String>) -> Vec<String> {
 
 /// The ids of the schemas the turn's searches returned, as the
 /// `nodespace://<id>` references the agent links them with.
+///
+/// Read from this turn's calls only: a type listed in an earlier turn is not
+/// here, and a `schema:` link to it is left for the fabricated-id guard.
 fn listed_type_uris(executions: &[ToolExecutionRecord]) -> HashSet<String> {
     executions
         .iter()
@@ -9848,21 +9851,90 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unlink_reduces_a_link_to_a_listed_multi_word_type_id() {
-        let listed = HashSet::from(["nodespace://customer-profile".to_string()]);
-        for target in [
-            "nodespace://customer-profile",
-            "nodespace://schema:customer-profile",
-        ] {
-            let (out, dropped) = unlink_ungrounded_node_links(
-                &format!("See [Customer Profile]({target})."),
-                &HashSet::new(),
-                &listed,
-            );
-            assert_eq!(out, "See Customer Profile.");
-            assert_eq!(dropped, vec![target.to_string()]);
+    fn schema_search_record(
+        name: &str,
+        node_type: &str,
+        is_error: bool,
+        result: serde_json::Value,
+    ) -> ToolExecutionRecord {
+        ToolExecutionRecord {
+            tool_call_id: "tc".into(),
+            name: name.into(),
+            args: json!({"node_type": node_type, "query": "*"}),
+            result,
+            is_error,
+            duration_ms: 0,
         }
+    }
+
+    /// A listing grounds the bare id it returns, so after a real search only
+    /// the `schema:` form of a listed multi-word id is both listed and
+    /// ungrounded. The bare form is a link to a real node and stays.
+    #[test]
+    fn unlink_reduces_a_schema_prefixed_link_to_a_listed_multi_word_type_id() {
+        let result = json!({"nodes": [
+            {"id": "nodespace://customer-profile", "title": "Customer Profile", "type": "schema"}
+        ]});
+        let listed = listed_type_uris(&[schema_search_record(
+            "search_nodes",
+            "schema",
+            false,
+            result.clone(),
+        )]);
+        let mut grounded = HashSet::new();
+        collect_node_uris(&result, &mut grounded);
+
+        let (out, dropped) = unlink_ungrounded_node_links(
+            "See [Customer Profile](nodespace://schema:customer-profile).",
+            &grounded,
+            &listed,
+        );
+        assert_eq!(out, "See Customer Profile.");
+        assert_eq!(
+            dropped,
+            vec!["nodespace://schema:customer-profile".to_string()]
+        );
+
+        let bare = "See [Customer Profile](nodespace://customer-profile).";
+        let (out, dropped) = unlink_ungrounded_node_links(bare, &grounded, &listed);
+        assert_eq!(out, bare);
+        assert!(dropped.is_empty());
+    }
+
+    /// Membership alone admits a multi-word id, when nothing grounds it.
+    #[test]
+    fn unlink_reduces_a_bare_link_to_a_listed_multi_word_type_id_that_is_not_grounded() {
+        let listed = HashSet::from(["nodespace://customer-profile".to_string()]);
+        let (out, dropped) = unlink_ungrounded_node_links(
+            "See [Customer Profile](nodespace://customer-profile).",
+            &HashSet::new(),
+            &listed,
+        );
+        assert_eq!(out, "See Customer Profile.");
+        assert_eq!(dropped, vec!["nodespace://customer-profile".to_string()]);
+    }
+
+    #[test]
+    fn listed_type_uris_reads_only_successful_schema_searches() {
+        let nodes = json!({"nodes": [{"id": "nodespace://a-b"}, {"title": "no id"}]});
+        let listed = listed_type_uris(&[
+            schema_search_record("search_nodes", "schema", false, nodes.clone()),
+            schema_search_record(
+                "search_nodes",
+                "schema",
+                false,
+                json!({"nodes": [{"id": "nodespace://c-d"}]}),
+            ),
+            // errored, wrong tool, not a schema search, no node array
+            schema_search_record("search_nodes", "schema", true, nodes.clone()),
+            schema_search_record("get_node", "schema", false, nodes.clone()),
+            schema_search_record("search_nodes", "task", false, nodes.clone()),
+            schema_search_record("search_nodes", "schema", false, json!({"count": 0})),
+        ]);
+        assert_eq!(
+            listed,
+            HashSet::from(["nodespace://a-b".to_string(), "nodespace://c-d".to_string()])
+        );
     }
 
     #[test]
