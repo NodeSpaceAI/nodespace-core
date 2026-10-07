@@ -2682,18 +2682,41 @@ fn ungrounded_node_uris(text: &str, grounded: &HashSet<String>) -> Vec<String> {
         .collect()
 }
 
+/// The ids of the schemas the turn's searches returned, as the
+/// `nodespace://<id>` references the agent links them with.
+fn listed_type_uris(executions: &[ToolExecutionRecord]) -> HashSet<String> {
+    executions
+        .iter()
+        .filter(|r| {
+            !r.is_error
+                && crate::local_agent::tools::Tool::from_name(&r.name)
+                    == Some(crate::local_agent::tools::Tool::SearchNodes)
+                && r.args
+                    .get("node_type")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| nodespace_core::models::CoreNodeType::Schema.is_exactly(t))
+        })
+        .filter_map(|r| r.result.get("nodes")?.as_array())
+        .flatten()
+        .filter_map(|node| node.get("id")?.as_str())
+        .map(str::to_string)
+        .collect()
+}
+
 /// Matches a titled node link, `[Label](nodespace://target)`.
 fn node_link_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\[([^\]]+)\]\((nodespace://[^)\s]*)\)").unwrap())
 }
 
-/// Matches a link target that is a type name: lowercase letters and
-/// underscores, optionally behind a `schema:` prefix.
+/// Matches a link target shaped like a single-word type name: lowercase
+/// letters and underscores, optionally behind a `schema:` prefix.
 ///
-/// This is the one shape the unlink step repairs, so it is deliberately
-/// narrow. A generated id has digits and hyphens and can never match, and
-/// neither can a miscounted, shortened or otherwise malformed one.
+/// This is deliberately narrow, and it covers only a type the turn has not
+/// listed. A generated id has digits and hyphens and can never match, and
+/// neither can a miscounted, shortened or otherwise malformed one. A kebab-case
+/// type id is recognised by membership in the listed types instead
+/// ([`listed_type_uris`]), which a malformed id never is.
 fn type_name_target_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"^nodespace://(?:schema:)?[a-z][a-z_]*$").unwrap())
@@ -2717,16 +2740,29 @@ fn type_name_target_re() -> &'static Regex {
 /// invented id written bare has no label to fall back on and is likewise left
 /// for the guard.
 ///
+/// A target is a type name when it is one of `listed_types` (with or without a
+/// `schema:` prefix) or has the single-word shape of [`type_name_target_re`].
+/// Membership, not shape, is what admits a multi-word id such as
+/// `customer-profile`: a hyphen is also what a malformed node id looks like.
+///
 /// The whole target must be grounded, not just the id `node_uri_re` reads out
 /// of it: `nodespace://schema:invoice` is not the node `nodespace://schema`.
 /// `node_uri_re` stops at `:` and `.`, so a real id containing either could
 /// never be linked; ids are alphanumeric plus `-` and `_`, so none does.
-fn unlink_ungrounded_node_links(text: &str, grounded: &HashSet<String>) -> (String, Vec<String>) {
+fn unlink_ungrounded_node_links(
+    text: &str,
+    grounded: &HashSet<String>,
+    listed_types: &HashSet<String>,
+) -> (String, Vec<String>) {
+    let is_type_name = |target: &str| {
+        type_name_target_re().is_match(target)
+            || listed_types.contains(&target.replacen("nodespace://schema:", "nodespace://", 1))
+    };
     let mut dropped: Vec<String> = Vec::new();
     let unlinked = node_link_re()
         .replace_all(text, |caps: &regex::Captures| {
             let target = &caps[2];
-            if grounded.contains(target) || !type_name_target_re().is_match(target) {
+            if grounded.contains(target) || !is_type_name(target) {
                 caps[0].to_string()
             } else {
                 if !dropped.iter().any(|seen| seen == target) {
@@ -3921,8 +3957,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // and is judged here like a bare id.
                 let normalized = if !normalized.is_empty() && normalized.contains("nodespace://") {
                     let grounded = &session.grounded_node_uris;
-                    let (normalized, dropped_links) =
-                        unlink_ungrounded_node_links(&normalized, grounded);
+                    let (normalized, dropped_links) = unlink_ungrounded_node_links(
+                        &normalized,
+                        grounded,
+                        &listed_type_uris(&all_tool_executions),
+                    );
                     if !dropped_links.is_empty() {
                         tracing::warn!(
                             session_id = %session.id,
@@ -9749,7 +9788,7 @@ mod tests {
     fn unlink_keeps_a_link_to_a_grounded_id() {
         let grounded = HashSet::from(["nodespace://real-1".to_string()]);
         let text = "Created [Ship the release](nodespace://real-1).";
-        let (out, dropped) = unlink_ungrounded_node_links(text, &grounded);
+        let (out, dropped) = unlink_ungrounded_node_links(text, &grounded, &HashSet::new());
         assert_eq!(out, text);
         assert!(dropped.is_empty());
     }
@@ -9760,6 +9799,7 @@ mod tests {
         let (out, dropped) = unlink_ungrounded_node_links(
             "The type [Event Venue](nodespace://event_venue) holds [Ship it](nodespace://real-1).",
             &grounded,
+            &HashSet::new(),
         );
         assert_eq!(
             out,
@@ -9776,6 +9816,7 @@ mod tests {
         let (out, dropped) = unlink_ungrounded_node_links(
             "It exists as [invoice](nodespace://schema:invoice).",
             &grounded,
+            &HashSet::new(),
         );
         assert_eq!(out, "It exists as invoice.");
         assert_eq!(dropped, vec!["nodespace://schema:invoice".to_string()]);
@@ -9800,9 +9841,49 @@ mod tests {
             "nodespace://Budget",
         ] {
             let text = format!("I found [Budget 2025]({target}).");
-            let (out, dropped) = unlink_ungrounded_node_links(&text, &HashSet::new());
+            let (out, dropped) =
+                unlink_ungrounded_node_links(&text, &HashSet::new(), &HashSet::new());
             assert_eq!(out, text, "{target} must be left for the guard");
             assert!(dropped.is_empty(), "{target} must not be dropped");
+        }
+    }
+
+    #[test]
+    fn unlink_reduces_a_link_to_a_listed_multi_word_type_id() {
+        let listed = HashSet::from(["nodespace://customer-profile".to_string()]);
+        for target in [
+            "nodespace://customer-profile",
+            "nodespace://schema:customer-profile",
+        ] {
+            let (out, dropped) = unlink_ungrounded_node_links(
+                &format!("See [Customer Profile]({target})."),
+                &HashSet::new(),
+                &listed,
+            );
+            assert_eq!(out, "See Customer Profile.");
+            assert_eq!(dropped, vec![target.to_string()]);
+        }
+    }
+
+    #[test]
+    fn unlink_leaves_ids_that_are_not_ungrounded_listed_types() {
+        let listed = HashSet::from(["nodespace://customer-profile".to_string()]);
+        let grounded = HashSet::from([
+            "nodespace://customer-profile".to_string(),
+            "nodespace://node-1".to_string(),
+        ]);
+        for target in [
+            "nodespace://node-1",
+            "nodespace://customer-profile",
+            "nodespace://3f2a9c1e-7b4d-4e8f-9a1b-2c3d4e5f6a7b",
+            "nodespace://2025-01-31",
+            "nodespace://customer-profil",
+            "nodespace://schema:order-line",
+        ] {
+            let text = format!("See [Thing]({target}).");
+            let (out, dropped) = unlink_ungrounded_node_links(&text, &grounded, &listed);
+            assert_eq!(out, text, "{target} must be left alone");
+            assert!(dropped.is_empty());
         }
     }
 
@@ -9810,6 +9891,7 @@ mod tests {
     fn unlink_reports_a_repeated_target_once() {
         let (out, dropped) = unlink_ungrounded_node_links(
             "[venue](nodespace://schema:venue) and again [venue](nodespace://schema:venue).",
+            &HashSet::new(),
             &HashSet::new(),
         );
         assert_eq!(out, "venue and again venue.");
@@ -9819,7 +9901,7 @@ mod tests {
     #[test]
     fn unlink_leaves_a_bare_ungrounded_id_for_the_fabricated_id_guard() {
         let text = "Created as nodespace://invented-id.";
-        let (out, dropped) = unlink_ungrounded_node_links(text, &HashSet::new());
+        let (out, dropped) = unlink_ungrounded_node_links(text, &HashSet::new(), &HashSet::new());
         assert_eq!(out, text);
         assert!(dropped.is_empty());
     }
