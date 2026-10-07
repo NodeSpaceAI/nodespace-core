@@ -620,6 +620,11 @@ message ResetSeedNodeRequest {
   bool reset_guidance = 4;
   // When true, report what would be reset without changing anything.
   bool dry_run = 5;
+  // A skill's `attached_to` links: make them exactly the shipped ones.
+  bool reset_links = 6;
+  // A core schema's context paths: put them back to the shipped list. For
+  // this, `node_type` is "schema" and `seed_key` is the schema's id.
+  bool reset_context_paths = 7;
 }
 
 message ResetSeedNodeResponse {
@@ -636,6 +641,12 @@ message ResetSeedNodeResponse {
   // for guidance. Empty string when that aspect was not requested.
   string config_summary = 4;
   string guidance_summary = 5;
+  // Whether the links / context paths were (or, under dry_run, would be)
+  // reset, with the same before-state summaries.
+  bool links_reset = 6;
+  bool context_paths_reset = 7;
+  string links_summary = 8;
+  string context_paths_summary = 9;
 }
 
 // ---------------------------------------------------------------------------
@@ -650,7 +661,8 @@ message PendingSeedUpdate {
   string node_type = 2;
   string title = 3;
   // "config" (the node's name and fields), "guidance" (its body) or
-  // "context_paths" (a core type's context paths).
+  // "context_paths" (a core type's context paths) or "links" (a skill's
+  // `attached_to` links).
   string aspect = 4;
   // Fingerprint of the shipped version that was held back.
   string shipped_version = 5;

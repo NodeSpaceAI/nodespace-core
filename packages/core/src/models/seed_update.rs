@@ -23,6 +23,9 @@ pub enum SeedAspect {
     /// A core schema's context paths (ADR-094 §2): the one part of a core
     /// schema that ships with a value a user may change.
     ContextPaths,
+    /// A built-in skill's `attached_to` links: the nodes it is handed over
+    /// with (ADR-094 §3).
+    Links,
 }
 
 impl SeedAspect {
@@ -31,6 +34,7 @@ impl SeedAspect {
             SeedAspect::Config => "config",
             SeedAspect::Guidance => "guidance",
             SeedAspect::ContextPaths => "context_paths",
+            SeedAspect::Links => "links",
         }
     }
 
@@ -41,6 +45,7 @@ impl SeedAspect {
             SeedAspect::Config => "config_version",
             SeedAspect::Guidance => "guidance_version",
             SeedAspect::ContextPaths => "context_paths_version",
+            SeedAspect::Links => "links_version",
         }
     }
 
@@ -50,6 +55,7 @@ impl SeedAspect {
             SeedAspect::Config => "config_modified",
             SeedAspect::Guidance => "guidance_modified",
             SeedAspect::ContextPaths => "context_paths_modified",
+            SeedAspect::Links => "links_modified",
         }
     }
 }
@@ -62,8 +68,9 @@ impl FromStr for SeedAspect {
             "config" => Ok(SeedAspect::Config),
             "guidance" => Ok(SeedAspect::Guidance),
             "context_paths" => Ok(SeedAspect::ContextPaths),
+            "links" => Ok(SeedAspect::Links),
             other => Err(format!(
-                "unknown seed aspect '{other}' (expected 'config', 'guidance' or 'context_paths')"
+                "unknown seed aspect '{other}' (expected 'config', 'guidance', 'context_paths' or 'links')"
             )),
         }
     }

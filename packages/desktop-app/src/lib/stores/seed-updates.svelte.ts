@@ -5,9 +5,9 @@ const log = createLogger('SeedUpdates');
 
 /**
  * The part of a built-in item an update is about: its name and fields, its
- * body, or, for a built-in type, its context paths.
+ * body, its attached links (a skill), or, for a built-in type, its context paths.
  */
-export type SeedAspect = 'config' | 'guidance' | 'context_paths';
+export type SeedAspect = 'config' | 'guidance' | 'context_paths' | 'links';
 
 /**
  * A shipped change to a built-in item the user has edited (ADR-094 §8). The
@@ -56,7 +56,8 @@ export function seedKindLabel(nodeType: string): string {
 const SEED_PART_LABELS: Record<SeedAspect, string> = {
   config: 'Name and settings',
   guidance: 'Body',
-  context_paths: 'Context paths'
+  context_paths: 'Context paths',
+  links: 'Attached links'
 };
 
 /** A display name for the part of a built-in item an update is about. */

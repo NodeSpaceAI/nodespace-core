@@ -27,13 +27,11 @@
 
 use crate::skill_rules::{resolve_includes, RuleForm};
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
-use nodespace_core::models::{
-    CoreNodeType, SkillFields, SkillRole, SKILL_APPLIES_TO, SKILL_ATTACHED_TO,
-};
+use nodespace_core::models::{CoreNodeType, SkillFields, SkillRole, SKILL_APPLIES_TO};
 use nodespace_core::services::query_service::core_queries::{
     AWAITING_REVIEW_QUERY_ID, IN_PROGRESS_QUERY_ID, READY_TASKS_QUERY_ID,
 };
-use nodespace_core::services::{NodeService, NodeServiceError};
+use nodespace_core::services::{NodeService, NodeServiceError, ShippedLinks};
 
 /// The Play Authoring skill's fixed id. A chat opened to edit a play pins it
 /// (ADR-090 §3).
@@ -953,43 +951,64 @@ pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
 /// `applies_to`, and to the seeded nodes it is handed over with, through
 /// `attached_to`.
 ///
-/// Runs after the skills are seeded, on every open, like the seeding itself:
-/// a link that is already there is left alone, and one that was removed is
-/// made again.
+/// Runs after the skills are seeded, on every open. The `applies_to` links
+/// are reasserted each time: one that was removed is made again. The
+/// `attached_to` links follow the rule every other seeded aspect follows
+/// (ADR-072): one the user deleted stays deleted, a shipped change to them is
+/// put to the user as pending when they edited them, and a reset of the skill
+/// restores them ([`NodeService::reconcile_seeded_links`]).
 pub async fn link_seeded_skills(node_service: &NodeService) -> Result<(), NodeServiceError> {
-    link_seeded_skills_through(node_service, SKILL_APPLIES_TO, |seed| seed.applies_to).await?;
-    link_seeded_skills_through(node_service, SKILL_ATTACHED_TO, |seed| seed.attached_to).await
+    link_applies_to(node_service).await?;
+    node_service
+        .reconcile_seeded_links(&shipped_attached_to())
+        .await
 }
 
-/// Make the `relationship` links each seed's row names in `targets`.
-async fn link_seeded_skills_through(
-    node_service: &NodeService,
-    relationship: &str,
-    targets: impl Fn(&SkillSeed) -> &'static [&'static str],
-) -> Result<(), NodeServiceError> {
+/// What every built-in skill ships attached to, a skill with none included so
+/// that a shipped change removing its last link reaches an existing database.
+pub fn shipped_attached_to() -> Vec<ShippedLinks<'static>> {
+    SKILL_SEEDS
+        .iter()
+        .map(|seed| ShippedLinks {
+            skill_id: seed.id,
+            targets: seed.attached_to,
+        })
+        .collect()
+}
+
+/// What the built-in skill `skill_id` ships attached to. `None` when no
+/// built-in skill has that id.
+pub fn shipped_attached_to_for(skill_id: &str) -> Option<ShippedLinks<'static>> {
+    shipped_attached_to()
+        .into_iter()
+        .find(|links| links.skill_id == skill_id)
+}
+
+/// Make the `applies_to` links each seed's row names.
+async fn link_applies_to(node_service: &NodeService) -> Result<(), NodeServiceError> {
     let linked: Vec<&SkillSeed> = SKILL_SEEDS
         .iter()
-        .filter(|seed| !targets(seed).is_empty())
+        .filter(|seed| !seed.applies_to.is_empty())
         .collect();
     let skill_ids: Vec<String> = linked.iter().map(|seed| seed.id.to_string()).collect();
     let existing = node_service
         .store()
-        .get_edge_targets_by_source(&skill_ids, relationship)
+        .get_edge_targets_by_source(&skill_ids, SKILL_APPLIES_TO)
         .await
         .map_err(NodeServiceError::from_store)?;
 
     for seed in linked {
         let linked_already = existing.get(seed.id);
-        for target_id in targets(seed) {
+        for target_id in seed.applies_to {
             if linked_already.is_some_and(|linked| linked.iter().any(|t| t == target_id)) {
                 continue;
             }
             // One link that fails does not cost the other skills theirs.
             if let Err(e) = node_service
-                .create_relationship(seed.id, relationship, target_id, serde_json::json!({}))
+                .create_relationship(seed.id, SKILL_APPLIES_TO, target_id, serde_json::json!({}))
                 .await
             {
-                tracing::warn!(skill = seed.title, relationship, target = target_id, error = %e, "Failed to link a seeded skill");
+                tracing::warn!(skill = seed.title, target = target_id, error = %e, "Failed to link a seeded skill");
             }
         }
     }

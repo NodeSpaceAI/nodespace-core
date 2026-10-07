@@ -69,6 +69,7 @@ mod schema_hydration_test;
 mod schema_relationship_declarations_test;
 mod schema_test;
 mod search_result_scaling_test;
+mod seeded_links_test;
 mod sibling_order_rebalance_test;
 mod skill_applies_to_test;
 mod skill_attached_to_test;

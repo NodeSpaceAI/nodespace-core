@@ -11,7 +11,8 @@
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::nodespace::{
-    DeleteNodeRequest, GetAllSchemasRequest, GetSchemaDefinitionRequest, SchemaParamsRequest,
+    DeleteNodeRequest, GetAllSchemasRequest, GetSchemaDefinitionRequest, ResetSeedNodeRequest,
+    SchemaParamsRequest,
 };
 
 use crate::output;
@@ -34,6 +35,23 @@ pub enum SchemaAction {
     /// that point at this one — the daemon refuses the delete while any
     /// remain, naming the count.
     Delete(SchemaDeleteArgs),
+    /// Put a built-in type's context paths back to the shipped list.
+    ///
+    /// Discards any path you added or removed, and the type follows shipped
+    /// changes to its paths again. Asks for confirmation unless `--yes` is
+    /// passed.
+    ResetContextPaths(SchemaResetArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SchemaResetArgs {
+    /// Built-in schema ID (e.g. `task`).
+    pub id: String,
+
+    /// Reset without prompting for confirmation. Required when there is no
+    /// interactive terminal: a reset discards your paths.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Args, Debug)]
@@ -86,7 +104,64 @@ pub async fn run(client: &mut NodeClient, action: SchemaAction, json: bool) -> R
         SchemaAction::Create(args) => create(client, args, json).await,
         SchemaAction::Update(args) => update(client, args, json).await,
         SchemaAction::Delete(args) => delete(client, args, json).await,
+        SchemaAction::ResetContextPaths(args) => reset_context_paths(client, args, json).await,
     }
+}
+
+async fn reset_context_paths(
+    client: &mut NodeClient,
+    args: SchemaResetArgs,
+    json: bool,
+) -> Result<()> {
+    let request = |dry_run| ResetSeedNodeRequest {
+        node_type: "schema".to_string(),
+        seed_key: args.id.clone(),
+        reset_context_paths: true,
+        dry_run,
+        ..Default::default()
+    };
+    let preview = client
+        .reset_seed_node(request(true))
+        .await
+        .context("ResetSeedNode RPC failed")?
+        .into_inner();
+    if !preview.found {
+        println!("No built-in type found with id \"{}\".", args.id);
+        return Ok(());
+    }
+
+    if !args.yes {
+        let summary = format!(
+            "About to reset the context paths of \"{}\":\n  current: {}\n\
+             This discards your paths and cannot be undone.",
+            args.id, preview.context_paths_summary
+        );
+        if !super::skill::confirm_reset(&summary)? {
+            println!("Skipped.");
+            return Ok(());
+        }
+    }
+
+    let result = client
+        .reset_seed_node(request(false))
+        .await
+        .context("ResetSeedNode RPC failed")?
+        .into_inner();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": args.id,
+                "context_paths_reset": result.context_paths_reset,
+            }))?
+        );
+    } else if result.context_paths_reset {
+        println!(
+            "✓ Context paths reset to the shipped list for \"{}\".",
+            args.id
+        );
+    }
+    Ok(())
 }
 
 async fn create(client: &mut NodeClient, args: SchemaParamsArgs, json: bool) -> Result<()> {

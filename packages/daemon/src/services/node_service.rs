@@ -796,16 +796,16 @@ impl GrpcNodeService for NodeServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
+        // A core schema's context paths ship with its definition, not with a
+        // seed template: the schema's id is the key.
+        if nodespace_core::models::CoreNodeType::Schema.is_exactly(&req.node_type) {
+            return reset_schema_context_paths(&this.node_service, &req).await;
+        }
+
         let Some(template) =
             resolve_seed_template(&req.node_type, &req.seed_key).map_err(Status::internal)?
         else {
-            return Ok(Response::new(ResetSeedNodeResponse {
-                found: false,
-                config_reset: false,
-                guidance_reset: false,
-                config_summary: String::new(),
-                guidance_summary: String::new(),
-            }));
+            return Ok(Response::new(ResetSeedNodeResponse::default()));
         };
 
         let prepared = match nodespace_core::markdown::prepare_nodes_from_template(&template) {
@@ -829,13 +829,15 @@ impl GrpcNodeService for NodeServiceImpl {
             .map_err(service_error_to_status)?;
 
         let Some(existing_node) = existing else {
-            return Ok(Response::new(ResetSeedNodeResponse {
-                found: false,
-                config_reset: false,
-                guidance_reset: false,
-                config_summary: String::new(),
-                guidance_summary: String::new(),
-            }));
+            return Ok(Response::new(ResetSeedNodeResponse::default()));
+        };
+
+        // Links ship with a built-in skill's table row, so only a skill has
+        // any to reset.
+        let shipped_links = if req.reset_links {
+            Some(shipped_links_for(&template.id).map_err(|status| *status)?)
+        } else {
+            None
         };
 
         let config_summary = if req.reset_config {
@@ -862,6 +864,20 @@ impl GrpcNodeService for NodeServiceImpl {
         } else {
             String::new()
         };
+        let links_summary = if req.reset_links {
+            let current = this
+                .node_service
+                .current_links(&existing_node.id)
+                .await
+                .map_err(service_error_to_status)?;
+            this.node_service
+                .links_text(&current)
+                .await
+                .map_err(service_error_to_status)?
+                .replace('\n', ", ")
+        } else {
+            String::new()
+        };
 
         if req.dry_run {
             return Ok(Response::new(ResetSeedNodeResponse {
@@ -870,6 +886,9 @@ impl GrpcNodeService for NodeServiceImpl {
                 guidance_reset: req.reset_guidance,
                 config_summary,
                 guidance_summary,
+                links_reset: req.reset_links,
+                links_summary,
+                ..Default::default()
             }));
         }
 
@@ -878,6 +897,14 @@ impl GrpcNodeService for NodeServiceImpl {
             .reset_seed_node(&prepared, req.reset_config, req.reset_guidance)
             .await
             .map_err(service_error_to_status)?;
+        let links_reset = match shipped_links {
+            Some(links) => this
+                .node_service
+                .reset_links(links)
+                .await
+                .map_err(service_error_to_status)?,
+            None => false,
+        };
 
         Ok(Response::new(ResetSeedNodeResponse {
             found: true,
@@ -885,6 +912,9 @@ impl GrpcNodeService for NodeServiceImpl {
             guidance_reset,
             config_summary,
             guidance_summary,
+            links_reset,
+            links_summary,
+            ..Default::default()
         }))
     }
 
@@ -908,6 +938,12 @@ impl GrpcNodeService for NodeServiceImpl {
                     let shipped_available = match update.aspect {
                         nodespace_core::models::SeedAspect::ContextPaths => {
                             shipped_core_schema(&update.node_id).is_some()
+                        }
+                        nodespace_core::models::SeedAspect::Links => {
+                            nodespace_agent::skill_pipeline::shipped_attached_to_for(
+                                &update.node_id,
+                            )
+                            .is_some()
                         }
                         _ => compiled.contains(&update.node_id),
                     };
@@ -944,6 +980,10 @@ impl GrpcNodeService for NodeServiceImpl {
                 this.node_service
                     .compare_pending_context_paths_update(&schema)
                     .await
+            }
+            nodespace_core::models::SeedAspect::Links => {
+                let links = shipped_links_for(&req.node_id).map_err(|s| *s)?;
+                this.node_service.compare_pending_links_update(links).await
             }
             _ => {
                 let template = prepared_seed_template(&req.node_id).map_err(|status| *status)?;
@@ -989,6 +1029,13 @@ impl GrpcNodeService for NodeServiceImpl {
                     .await
                     .map_err(service_error_to_status)?
             }
+            (SeedUpdateChoice::TakeShipped, nodespace_core::models::SeedAspect::Links) => {
+                let links = shipped_links_for(&req.node_id).map_err(|s| *s)?;
+                this.node_service
+                    .take_links_update(links)
+                    .await
+                    .map_err(service_error_to_status)?
+            }
             (SeedUpdateChoice::TakeShipped, _) => {
                 let template = prepared_seed_template(&req.node_id).map_err(|status| *status)?;
                 this.node_service
@@ -1009,6 +1056,9 @@ impl GrpcNodeService for NodeServiceImpl {
         let shipped_available = match aspect {
             nodespace_core::models::SeedAspect::ContextPaths => {
                 shipped_core_schema(&req.node_id).is_some()
+            }
+            nodespace_core::models::SeedAspect::Links => {
+                nodespace_agent::skill_pipeline::shipped_attached_to_for(&req.node_id).is_some()
             }
             _ => compiled_seed_templates().any(|t| t.id == req.node_id),
         };
@@ -3412,6 +3462,71 @@ fn shipped_context_paths_schema(
              be shown or taken"
         )))
     })
+}
+
+/// What the built-in skill `skill_id` ships attached to, as a pending update
+/// to its links is compared with and taken from.
+///
+/// `FAILED_PRECONDITION` when this build ships no skill of that id, as
+/// [`prepared_seed_template`] answers for a seed in no compiled table.
+fn shipped_links_for(
+    skill_id: &str,
+) -> Result<nodespace_core::services::ShippedLinks<'static>, Box<Status>> {
+    nodespace_agent::skill_pipeline::shipped_attached_to_for(skill_id).ok_or_else(|| {
+        Box::new(Status::failed_precondition(format!(
+            "this build ships no skill '{skill_id}', so its shipped links cannot be shown or \
+             taken"
+        )))
+    })
+}
+
+/// A reset of a core schema's context paths: `req.seed_key` is the schema's
+/// id. The only part of a core schema that ships with a value a user may
+/// change.
+async fn reset_schema_context_paths(
+    node_service: &nodespace_core::services::NodeService,
+    req: &ResetSeedNodeRequest,
+) -> Result<Response<ResetSeedNodeResponse>, Status> {
+    if !req.reset_context_paths {
+        return Err(Status::invalid_argument(
+            "a core type's only resettable part is its context paths",
+        ));
+    }
+    let Some(shipped) = shipped_core_schema(&req.seed_key) else {
+        return Ok(Response::new(ResetSeedNodeResponse::default()));
+    };
+    let Some(current) = node_service
+        .get_schema_node(&req.seed_key)
+        .await
+        .map_err(service_error_to_status)?
+    else {
+        return Ok(Response::new(ResetSeedNodeResponse::default()));
+    };
+    let context_paths_summary = current
+        .context_paths
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if req.dry_run {
+        return Ok(Response::new(ResetSeedNodeResponse {
+            found: true,
+            context_paths_reset: true,
+            context_paths_summary,
+            ..Default::default()
+        }));
+    }
+    let context_paths_reset = node_service
+        .reset_context_paths(&shipped)
+        .await
+        .map_err(service_error_to_status)?;
+    Ok(Response::new(ResetSeedNodeResponse {
+        found: true,
+        context_paths_reset,
+        context_paths_summary,
+        ..Default::default()
+    }))
 }
 
 fn parse_seed_aspect(aspect: &str) -> Result<nodespace_core::models::SeedAspect, Box<Status>> {
