@@ -129,6 +129,36 @@ fn knowledge_listing_conditions(row: &str, listing: KnowledgeListing) -> Vec<Str
 /// spent the same way, just further along.
 const ENTITY_RESOLUTION_MAX_TOKENS: usize = 6;
 
+/// Words a request uses to name a KIND of record rather than one record.
+///
+/// "Create a new task called …" shares "task" with every title that mentions
+/// one, and with nothing the user named. A type word is the neighbourhood of a
+/// kind, not a mention, so it never carries a match: it is left out of the
+/// lookup, and a message made only of type words resolves nothing. "turn off
+/// the rollover play" still resolves its play by "rollover".
+fn is_record_type_word(token: &str) -> bool {
+    const TYPE_WORDS: [&str; 11] = [
+        "task",
+        "project",
+        "spec",
+        "plan",
+        "decision",
+        "person",
+        "people",
+        "collection",
+        "query",
+        "play",
+        "text",
+    ];
+    let token = token.to_lowercase();
+    let singular = token
+        .strip_suffix("ies")
+        .map(|stem| format!("{stem}y"))
+        .or_else(|| token.strip_suffix('s').map(str::to_string))
+        .unwrap_or_else(|| token.clone());
+    TYPE_WORDS.contains(&token.as_str()) || TYPE_WORDS.contains(&singular.as_str())
+}
+
 /// Choose which of `message`'s tokens an entity-resolution query searches for,
 /// lowercased and in message order.
 ///
@@ -4291,7 +4321,10 @@ impl SqliteStore {
         message: &str,
         limit: i64,
     ) -> Result<Vec<ResolvedEntity>> {
-        let tokens = select_entity_tokens(message);
+        let tokens: Vec<String> = select_entity_tokens(message)
+            .into_iter()
+            .filter(|t| !is_record_type_word(t))
+            .collect();
         if tokens.is_empty() {
             return Ok(Vec::new());
         }

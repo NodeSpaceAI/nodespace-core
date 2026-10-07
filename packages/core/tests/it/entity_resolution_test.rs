@@ -492,4 +492,44 @@ mod entity_resolution_tests {
         );
         Ok(())
     }
+
+    /// A type word names a kind of record, not one record. "task" is shared by
+    /// every seeded play that mentions a task, so a request to create a task
+    /// must not list them as the things it mentions.
+    #[tokio::test]
+    async fn a_type_word_alone_does_not_resolve_seeded_plays() -> Result<()> {
+        let (store, service, _t) = create_test_store().await?;
+        seed_entity(&service, "text", "Plan the release task list").await?;
+
+        for message in [
+            "Create a new task called 'Review the sync protocol spec'",
+            "add a task for the release",
+            "show my tasks",
+        ] {
+            let hits = store.resolve_entities_by_title(message, 12).await?;
+            assert!(
+                hits.iter().all(|h| h.node_type != "play"),
+                "{message:?} resolved a play on a type word: {hits:?}"
+            );
+        }
+        let only_type_words = store.resolve_entities_by_title("the tasks", 12).await?;
+        assert!(only_type_words.is_empty(), "got: {only_type_words:?}");
+        Ok(())
+    }
+
+    /// Dropping the type word must not lose a play the message names.
+    #[tokio::test]
+    async fn a_play_named_by_its_own_words_still_resolves() -> Result<()> {
+        let (store, service, _t) = create_test_store().await?;
+        let play = seed_entity(&service, "play", "Roll over unfinished tasks daily").await?;
+
+        let hits = store
+            .resolve_entities_by_title("turn off the unfinished tasks play", 12)
+            .await?;
+        assert!(
+            hits.iter().any(|h| h.id == play),
+            "the named play must resolve, got: {hits:?}"
+        );
+        Ok(())
+    }
 }
