@@ -342,8 +342,8 @@ pub use embedding_service::{NodeEmbeddingService, EMBEDDING_DIMENSION};
 pub use error::NodeServiceError;
 pub use node_service::{
     render_subtree_markdown, CompletenessResult, CreateNodeParams, CreatedRelationship,
-    DryRunVerdict, NewRelationship, NodeService, StoredEdge, SubtreeData, WriteVerificationFault,
-    DEFAULT_QUERY_LIMIT,
+    DryRunVerdict, NewRelationship, NodeService, ShippedLinks, StoredEdge, SubtreeData,
+    WriteVerificationFault, DEFAULT_QUERY_LIMIT,
 };
 pub use query_service::{
     FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipHop,

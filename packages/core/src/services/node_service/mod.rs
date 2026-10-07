@@ -58,7 +58,8 @@ pub use hierarchy::render_subtree_markdown;
 pub use invariants::DryRunVerdict;
 pub use relationship::{CreatedRelationship, NewRelationship, StoredEdge};
 pub use seed_updates::{
-    context_paths_version, shipped_core_schema, shipped_seed_aspect_text, SeedUpdateComparison,
+    context_paths_version, links_version, shipped_core_schema, shipped_seed_aspect_text,
+    SeedUpdateComparison, ShippedLinks,
 };
 
 /// Reserved ID for the DatabaseSettingsNode singleton instance.

@@ -195,7 +195,7 @@ CREATE INDEX IF NOT EXISTS idx_conflict_participant_node ON conflict_participant
 -- reads nodes can see it. A deleted seed takes its rows with it.
 CREATE TABLE IF NOT EXISTS pending_seed_update (
     node_id         TEXT NOT NULL REFERENCES node(id) ON DELETE CASCADE,
-    aspect          TEXT NOT NULL CHECK (aspect IN ('config', 'guidance', 'context_paths')),
+    aspect          TEXT NOT NULL CHECK (aspect IN ('config', 'guidance', 'context_paths', 'links')),
     shipped_version TEXT NOT NULL,
     recorded_at     TEXT NOT NULL,
     PRIMARY KEY (node_id, aspect)

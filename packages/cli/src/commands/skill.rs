@@ -132,7 +132,7 @@ pub struct GetArgs {
 #[derive(Args, Debug)]
 #[command(group(
     clap::ArgGroup::new("reset_scope")
-        .args(["guidance", "config", "all"])
+        .args(["guidance", "config", "links", "all"])
         .required(true)
         .multiple(true)
 ))]
@@ -152,7 +152,14 @@ pub struct ResetArgs {
     #[arg(long)]
     pub config: bool,
 
-    /// Reset both guidance and config — equivalent to passing both flags.
+    /// Reset the `attached_to` links (the nodes the skill is handed over
+    /// with) to the currently-compiled set: a link you deleted comes back and
+    /// one you added is removed.
+    #[arg(long)]
+    pub links: bool,
+
+    /// Reset guidance, config and links — equivalent to passing all three
+    /// flags.
     #[arg(long)]
     pub all: bool,
 
@@ -195,6 +202,7 @@ pub fn run(action: SkillAction) -> Result<()> {
 pub async fn run_reset(client: &mut NodeClient, args: ResetArgs, json: bool) -> Result<()> {
     let reset_config = args.config || args.all;
     let reset_guidance = args.guidance || args.all;
+    let reset_links = args.links || args.all;
 
     let preview = client
         .reset_seed_node(nodespace_daemon::nodespace::ResetSeedNodeRequest {
@@ -203,6 +211,8 @@ pub async fn run_reset(client: &mut NodeClient, args: ResetArgs, json: bool) -> 
             reset_config,
             reset_guidance,
             dry_run: true,
+            reset_links,
+            reset_context_paths: false,
         })
         .await
         .context("Failed to look up seed node for reset (ResetSeedNode RPC)")?
@@ -214,7 +224,15 @@ pub async fn run_reset(client: &mut NodeClient, args: ResetArgs, json: bool) -> 
     }
 
     if !args.yes {
-        let summary = format_reset_summary(&args.key, reset_config, reset_guidance, &preview);
+        let summary = format_reset_summary(
+            &args.key,
+            ResetScope {
+                config: reset_config,
+                guidance: reset_guidance,
+                links: reset_links,
+            },
+            &preview,
+        );
         if !confirm_reset(&summary)? {
             println!("Skipped.");
             return Ok(());
@@ -228,6 +246,8 @@ pub async fn run_reset(client: &mut NodeClient, args: ResetArgs, json: bool) -> 
             reset_config,
             reset_guidance,
             dry_run: false,
+            reset_links,
+            reset_context_paths: false,
         })
         .await
         .context("Failed to reset seed node (ResetSeedNode RPC)")?
@@ -240,6 +260,7 @@ pub async fn run_reset(client: &mut NodeClient, args: ResetArgs, json: bool) -> 
                 "key": args.key,
                 "config_reset": result.config_reset,
                 "guidance_reset": result.guidance_reset,
+                "links_reset": result.links_reset,
             }))?
         );
     } else {
@@ -255,22 +276,37 @@ pub async fn run_reset(client: &mut NodeClient, args: ResetArgs, json: bool) -> 
                 args.key
             );
         }
+        if result.links_reset {
+            println!(
+                "✓ Attached links reset to the current set for \"{}\".",
+                args.key
+            );
+        }
     }
     Ok(())
 }
 
+/// The parts of a seeded skill a reset was asked for.
+struct ResetScope {
+    config: bool,
+    guidance: bool,
+    links: bool,
+}
+
 fn format_reset_summary(
     key: &str,
-    reset_config: bool,
-    reset_guidance: bool,
+    scope: ResetScope,
     preview: &nodespace_daemon::nodespace::ResetSeedNodeResponse,
 ) -> String {
     let mut lines = vec![format!("About to reset seeded skill \"{key}\":")];
-    if reset_config {
+    if scope.config {
         lines.push(format!("  config:   {}", preview.config_summary));
     }
-    if reset_guidance {
+    if scope.guidance {
         lines.push(format!("  guidance: {}", preview.guidance_summary));
+    }
+    if scope.links {
+        lines.push(format!("  links:    {}", preview.links_summary));
     }
     lines.push(
         "This discards any customization to the listed aspect(s) and cannot be undone.".to_string(),
@@ -290,7 +326,7 @@ fn format_reset_summary(
 /// write a `--json` result to stdout after this returns, and a caller
 /// piping stdout for that JSON must never see prompt text interleaved with
 /// it, even on a real terminal.
-fn confirm_reset(summary: &str) -> Result<bool> {
+pub(super) fn confirm_reset(summary: &str) -> Result<bool> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!(
             "No interactive terminal detected -- refusing to reset without confirmation. \

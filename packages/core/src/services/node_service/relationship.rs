@@ -840,21 +840,34 @@ impl NodeService {
             let source_id = source_id.to_string();
             let relationship_name = relationship_name.to_string();
             let target_id = target_id.to_string();
-            return service
-                .with_transaction(move |tx| {
-                    Box::pin(async move {
-                        service_for_tx
-                            .create_relationship_in_tx(
-                                tx,
-                                &source_id,
-                                &relationship_name,
-                                &target_id,
-                                edge_data,
-                            )
-                            .await
-                    })
+            let created = service
+                .with_transaction({
+                    let (source_id, relationship_name, target_id) = (
+                        source_id.clone(),
+                        relationship_name.clone(),
+                        target_id.clone(),
+                    );
+                    move |tx| {
+                        Box::pin(async move {
+                            service_for_tx
+                                .create_relationship_in_tx(
+                                    tx,
+                                    &source_id,
+                                    &relationship_name,
+                                    &target_id,
+                                    edge_data,
+                                )
+                                .await
+                        })
+                    }
                 })
+                .await?;
+            // A user's link on a built-in skill is theirs; seeding writes
+            // through the transaction twin and never reaches here.
+            service
+                .mark_seeded_links_modified(&relationship_name, &source_id, &target_id)
                 .await;
+            return Ok(created);
         }
 
         // Another build's fields on this built-in relationship (ADR-082 §2.2).
@@ -2167,20 +2180,31 @@ impl NodeService {
             let source_id = source_id.to_string();
             let relationship_name = relationship_name.to_string();
             let target_id = target_id.to_string();
-            return service
-                .with_transaction(move |tx| {
-                    Box::pin(async move {
-                        service_for_tx
-                            .remove_relationship_in_tx(
-                                tx,
-                                &source_id,
-                                &relationship_name,
-                                &target_id,
-                            )
-                            .await
-                    })
+            service
+                .with_transaction({
+                    let (source_id, relationship_name, target_id) = (
+                        source_id.clone(),
+                        relationship_name.clone(),
+                        target_id.clone(),
+                    );
+                    move |tx| {
+                        Box::pin(async move {
+                            service_for_tx
+                                .remove_relationship_in_tx(
+                                    tx,
+                                    &source_id,
+                                    &relationship_name,
+                                    &target_id,
+                                )
+                                .await
+                        })
+                    }
                 })
+                .await?;
+            service
+                .mark_seeded_links_modified(&relationship_name, &source_id, &target_id)
                 .await;
+            return Ok(());
         }
 
         // Built-in structural relationships are not schema-declared: no

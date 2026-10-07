@@ -16,6 +16,10 @@ pub const SKILL_APPLIES_TO: &str = "applies_to";
 /// skill and does not scope it.
 pub const SKILL_ATTACHED_TO: &str = "attached_to";
 
+/// The reverse name of [`SKILL_ATTACHED_TO`]: an edge written under it is the
+/// same link.
+pub const SKILL_ATTACHED_SKILLS: &str = "attached_skills";
+
 /// `max_iterations` when a skill doesn't set one — the core schema's default.
 pub const DEFAULT_SKILL_MAX_ITERATIONS: u32 = 2;
 

@@ -467,3 +467,56 @@ async fn a_pending_update_is_settled_when_the_shipped_paths_match_again() -> Res
     );
     Ok(())
 }
+
+/// A reset puts the paths back to the shipped list whether or not a shipped
+/// change is pending, clears the mark so the paths follow what ships again,
+/// and clears a pending record.
+#[tokio::test]
+async fn a_reset_puts_the_paths_back_and_clears_the_mark() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let shipped = get_core_schemas();
+    update_schema(
+        &service,
+        json!({ "schema_id": "task", "remove_context_paths": ["plan"] }),
+    )
+    .await?;
+    assert_eq!(seed_block(&service).await?["context_paths_modified"], true);
+
+    // Nothing pending, and the reset still restores the list.
+    assert!(service.reset_context_paths(task_of(&shipped)).await?);
+    assert_eq!(stored_paths(&service).await?, TASK_PATHS);
+    let seed = seed_block(&service).await?;
+    assert_eq!(seed["context_paths_modified"], false);
+    assert_eq!(
+        seed["context_paths_version"],
+        json!(context_paths_version(&task_of(&shipped).context_paths))
+    );
+
+    // Edited again, with a shipped change pending: the reset clears both.
+    update_schema(
+        &service,
+        json!({ "schema_id": "task", "remove_context_paths": ["project"] }),
+    )
+    .await?;
+    service
+        .reconcile_core_context_paths(&shipping(&["spec"]))
+        .await?;
+    assert!(pending(&service).await?.is_some());
+    assert!(service.reset_context_paths(task_of(&shipped)).await?);
+    assert_eq!(pending(&service).await?, None);
+    assert_eq!(stored_paths(&service).await?, TASK_PATHS);
+    assert_eq!(seed_block(&service).await?["context_paths_modified"], false);
+
+    // Following what ships again: the next shipped change is applied.
+    service
+        .reconcile_core_context_paths(&shipping(&["spec"]))
+        .await?;
+    assert_eq!(stored_paths(&service).await?, ["spec"]);
+    assert_eq!(pending(&service).await?, None);
+
+    // A type that is not in this database has nothing to reset.
+    let mut unknown = task_of(&shipped).clone();
+    unknown.envelope.id = "no-such-type".to_string();
+    assert!(!service.reset_context_paths(&unknown).await?);
+    Ok(())
+}

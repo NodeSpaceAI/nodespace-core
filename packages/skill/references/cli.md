@@ -1209,6 +1209,11 @@ Inspect and manage node type schema definitions
 
 - `<ID>` — Schema ID to delete (node type identifier, e.g. `adr`, `person`) (required)
 
+**`nodespace schema reset-context-paths`** — Put a built-in type's context paths back to the shipped list
+
+- `<ID>` — Built-in schema ID (e.g. `task`) (required)
+- `--yes` — Reset without prompting for confirmation. Required when there is no interactive terminal: a reset discards your paths
+
 ### `nodespace playbook`
 
 Inspect and control Play automation rule-sets (list, enable, disable, get-workflow-state)
@@ -1286,7 +1291,7 @@ Inspect and resolve the local conflict journal (list, show, dismiss, adopt, merg
 
 Review shipped changes to built-in items you have edited (pending, show, take, keep)
 
-**`nodespace seed pending`** — List the built-in items you have edited that have a newer shipped version: kind, title, which part (config, guidance or context paths), and when you last edited it
+**`nodespace seed pending`** — List the built-in items you have edited that have a newer shipped version: kind, title, which part (config, guidance, links or context paths), and when you last edited it
 
 **`nodespace seed show`** — Show one pending item's shipped version and your version
 
@@ -1294,6 +1299,7 @@ Review shipped changes to built-in items you have edited (pending, show, take, k
 - `--config` — The item's config: its name and its fields
 - `--guidance` — The item's guidance: its body
 - `--context-paths` — A built-in type's context paths: what a context read of a node of that type follows
+- `--links` — A built-in skill's `attached_to` links: the nodes it is handed over with
 
 **`nodespace seed take`** — Replace your version of one part of one item with the shipped version. Discards your edit to that part; asks for confirmation unless `--yes` is passed
 
@@ -1301,6 +1307,7 @@ Review shipped changes to built-in items you have edited (pending, show, take, k
 - `--config` — The item's config: its name and its fields
 - `--guidance` — The item's guidance: its body
 - `--context-paths` — A built-in type's context paths: what a context read of a node of that type follows
+- `--links` — A built-in skill's `attached_to` links: the nodes it is handed over with
 - `--yes` — Take the shipped version without prompting. Required when there is no interactive terminal: taking discards an edit, so it is never done unattended without this flag
 
 **`nodespace seed keep`** — Keep your version of one part of one item. It stops being pending until the shipped version changes again
@@ -1309,6 +1316,7 @@ Review shipped changes to built-in items you have edited (pending, show, take, k
 - `--config` — The item's config: its name and its fields
 - `--guidance` — The item's guidance: its body
 - `--context-paths` — A built-in type's context paths: what a context read of a node of that type follows
+- `--links` — A built-in skill's `attached_to` links: the nodes it is handed over with
 
 ### `nodespace session`
 
@@ -1397,7 +1405,8 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 - `<KEY>` — The seed key to reset — a seeded skill's exact title (e.g. "Research & Search"), matching what `nodespace skill guidance` fetches under. Case-sensitive, no normalization (required)
 - `--guidance` — Reset the procedural guidance (markdown children) to the currently- compiled template, discarding any customization
 - `--config` — Reset the config (use_for/not_for/tool_whitelist/max_iterations) to the currently-compiled template, discarding any customization
-- `--all` — Reset both guidance and config — equivalent to passing both flags
+- `--links` — Reset the `attached_to` links (the nodes the skill is handed over with) to the currently-compiled set: a link you deleted comes back and one you added is removed
+- `--all` — Reset guidance, config and links — equivalent to passing all three flags
 - `--yes` — Reset without prompting for confirmation. Required in a non-interactive context (no `--yes` there is a hard error, not an auto-proceed) — unlike `install`/`mcp enable`, this is the one destructive path in the system (ADR-072), and auto-confirming a content discard with no one watching would defeat the point of requiring confirmation at all
 
 ### `nodespace mcp`

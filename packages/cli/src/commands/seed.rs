@@ -24,7 +24,7 @@ use crate::NodeClient;
 #[derive(Subcommand, Debug)]
 pub enum SeedAction {
     /// List the built-in items you have edited that have a newer shipped
-    /// version: kind, title, which part (config, guidance or context paths),
+    /// version: kind, title, which part (config, guidance, links or context paths),
     /// and when you last edited it.
     Pending,
     /// Show one pending item's shipped version and your version.
@@ -77,6 +77,11 @@ pub struct AspectArgs {
     /// that type follows.
     #[arg(long)]
     pub context_paths: bool,
+
+    /// A built-in skill's `attached_to` links: the nodes it is handed over
+    /// with.
+    #[arg(long)]
+    pub links: bool,
 }
 
 impl AspectArgs {
@@ -87,6 +92,8 @@ impl AspectArgs {
             Some("guidance")
         } else if self.context_paths {
             Some("context_paths")
+        } else if self.links {
+            Some("links")
         } else {
             None
         }

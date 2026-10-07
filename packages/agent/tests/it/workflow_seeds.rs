@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use nodespace_agent::local_agent::tools::GraphToolExecutor;
 use nodespace_agent::skill_pipeline::{
-    link_seeded_skills, seed_skill_nodes, seed_tool_nodes, IMPLEMENTING_A_TASK_SKILL_ID,
-    REVIEWING_A_TASK_SKILL_ID, SKILL_SEEDS,
+    link_seeded_skills, seed_skill_nodes, seed_tool_nodes, shipped_attached_to_for,
+    IMPLEMENTING_A_TASK_SKILL_ID, REVIEWING_A_TASK_SKILL_ID, SKILL_SEEDS,
 };
 use nodespace_agent::{AgentToolExecutor, ToolResult};
 use nodespace_core::db::SqliteStore;
@@ -666,4 +666,59 @@ async fn an_edited_procedure_survives_an_open_and_a_reset_restores_it() {
     .await
     .unwrap();
     assert_eq!(body(&h).await, shipped);
+}
+
+/// ADR-072: a procedure the user detached from a queue stays detached across
+/// an open, including one that replaces the skill's config, and a reset of
+/// its links restores it.
+#[tokio::test]
+async fn a_detached_procedure_stays_detached_and_a_reset_restores_it() {
+    let h = start().await;
+    let attached = |h: &Harness| {
+        let ns = h.ns.clone();
+        async move {
+            let mut targets = ns
+                .current_links(IMPLEMENTING_A_TASK_SKILL_ID)
+                .await
+                .unwrap();
+            targets.sort();
+            targets
+        }
+    };
+    let mut shipped = vec![
+        READY_TASKS_QUERY_ID.to_string(),
+        IN_PROGRESS_QUERY_ID.to_string(),
+    ];
+    shipped.sort();
+    assert_eq!(attached(&h).await, shipped);
+
+    h.ns.delete_relationship(
+        IMPLEMENTING_A_TASK_SKILL_ID,
+        SKILL_ATTACHED_TO,
+        READY_TASKS_QUERY_ID,
+    )
+    .await
+    .unwrap();
+
+    // A restart, and a config reset that rewrites the skill's `_seed`.
+    seed_agent_tables(&h.ns).await;
+    let template = seed_skill_nodes()
+        .into_iter()
+        .find(|template| template.id == IMPLEMENTING_A_TASK_SKILL_ID)
+        .unwrap();
+    h.ns.reset_seed_node(
+        &prepare_nodes_from_template(&template).unwrap(),
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+    seed_agent_tables(&h.ns).await;
+    assert_eq!(attached(&h).await, [IN_PROGRESS_QUERY_ID]);
+
+    let links = shipped_attached_to_for(IMPLEMENTING_A_TASK_SKILL_ID).unwrap();
+    assert!(h.ns.reset_links(links).await.unwrap());
+    assert_eq!(attached(&h).await, shipped);
+    seed_agent_tables(&h.ns).await;
+    assert_eq!(attached(&h).await, shipped);
 }
