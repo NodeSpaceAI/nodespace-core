@@ -18,12 +18,8 @@ use super::*;
 use crate::markdown::PreparedNode;
 use crate::models::schema_node::{is_core_schema, CONTEXT_PATHS_KEY};
 use crate::models::seed_update::{PendingSeedUpdate, PendingSeedUpdateRow};
-use crate::models::{SchemaNode, SKILL_ATTACHED_TO};
+use crate::models::{SchemaNode, SKILL_ATTACHED_SKILLS, SKILL_ATTACHED_TO};
 use nodespace_types::RelationshipPath;
-
-/// The reverse name of [`SKILL_ATTACHED_TO`]: an edge written under it is the
-/// same link.
-const SKILL_ATTACHED_SKILLS: &str = "attached_skills";
 
 /// What a built-in skill ships attached to: the skill's id, and the ids of the
 /// nodes its `attached_to` links reach.
@@ -483,10 +479,14 @@ impl NodeService {
                     "Shipped links changed but the skill's were user-modified; kept, recorded \
                      as pending"
                 );
-                self.store
+                // One skill that fails does not cost the others theirs.
+                if let Err(e) = self
+                    .store
                     .record_pending_seed_update(links.skill_id, SeedAspect::Links, &version)
                     .await
-                    .map_err(NodeServiceError::from_store)?;
+                {
+                    tracing::warn!(skill_id = links.skill_id, error = %e, "Failed to record a pending update to a seeded skill's links");
+                }
             } else {
                 let current = linked.get(links.skill_id).map(Vec::as_slice).unwrap_or(&[]);
                 match self.write_shipped_links(links, current, false).await {
@@ -611,7 +611,9 @@ impl NodeService {
     /// links are the shipped ones again, by the user's choice.
     ///
     /// Written through the transaction twins of the relationship calls, which
-    /// do not mark a seeded skill's links as the user's.
+    /// do not mark a seeded skill's links as the user's. `current` is read
+    /// before the transaction opens: a user edit landing between the two is
+    /// reconciled by the next open, as for the other seeded aspects.
     async fn write_shipped_links(
         &self,
         shipped: &ShippedLinks<'_>,
@@ -680,7 +682,10 @@ impl NodeService {
     }
 
     /// Mark the links of a seeded skill as the user's, when a call that is
-    /// not seeding created or deleted one. `source_id` and `target_id` are
+    /// not seeding created or deleted one. The public relationship calls (the
+    /// CLI, the agent's tools, the daemon) mark; the transaction twins do not,
+    /// so seeding, a reset and a play's own `add_relationship` and
+    /// `remove_relationship` actions leave the flag alone. `source_id` and `target_id` are
     /// the edge as the caller named it, under `relationship_name` or its
     /// reverse name. Best-effort, like the other `_seed` stamps: a failure to
     /// stamp is logged and does not fail the edit it follows.

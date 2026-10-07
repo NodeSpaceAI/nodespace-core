@@ -1879,7 +1879,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     direction: RelationshipDirection::Out,
                     cardinality: RelationshipCardinality::Many,
                     required: None,
-                    reverse_name: "attached_skills".to_string(),
+                    reverse_name: crate::models::SKILL_ATTACHED_SKILLS.to_string(),
                     reverse_cardinality: RelationshipCardinality::Many,
                     edge_fields: None,
                     description: Some(

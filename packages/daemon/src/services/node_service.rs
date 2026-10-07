@@ -4753,6 +4753,111 @@ mod tests {
             .is_none());
     }
 
+    /// The reset RPC puts a core type's context paths back to the shipped
+    /// list, and previews it first under `dry_run`.
+    #[tokio::test]
+    async fn resetting_a_types_context_paths_restores_the_shipped_list() {
+        use nodespace_core::models::SeedAspect;
+
+        let (svc, _tmp) = make_service().await;
+        nodespace_core::schema::handle_update_schema(
+            &svc.node_service,
+            serde_json::json!({ "schema_id": "task", "remove_context_paths": ["plan"] }),
+        )
+        .await
+        .unwrap();
+        let reset = |dry_run| {
+            svc.reset_seed_node(Request::new(ResetSeedNodeRequest {
+                node_type: "schema".to_string(),
+                seed_key: "task".to_string(),
+                reset_context_paths: true,
+                dry_run,
+                ..Default::default()
+            }))
+        };
+        let stored = || async {
+            svc.node_service
+                .get_schema_node("task")
+                .await
+                .unwrap()
+                .unwrap()
+                .context_paths
+                .len()
+        };
+
+        let preview = reset(true).await.unwrap().into_inner();
+        assert!(preview.found && preview.context_paths_reset);
+        assert!(!preview.context_paths_summary.contains("plan"));
+        assert_eq!(stored().await, 4, "a preview changes nothing");
+
+        let done = reset(false).await.unwrap().into_inner();
+        assert!(done.found && done.context_paths_reset);
+        assert_eq!(stored().await, 5);
+        let node = svc.node_service.get_node("task").await.unwrap().unwrap();
+        assert_eq!(
+            node.properties["_seed"][SeedAspect::ContextPaths.modified_key()],
+            false
+        );
+
+        // A type this build does not ship is not found; a reset of anything
+        // but its context paths is refused.
+        let unknown = svc
+            .reset_seed_node(Request::new(ResetSeedNodeRequest {
+                node_type: "schema".to_string(),
+                seed_key: "no-such-type".to_string(),
+                reset_context_paths: true,
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(!unknown.found);
+        let refused = svc
+            .reset_seed_node(Request::new(ResetSeedNodeRequest {
+                node_type: "schema".to_string(),
+                seed_key: "task".to_string(),
+                reset_config: true,
+                ..Default::default()
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code(), tonic::Code::InvalidArgument);
+    }
+
+    /// A pending update to a skill's links that this build cannot show is
+    /// answered with a precondition failure, as for any seed in no table.
+    #[tokio::test]
+    async fn a_pending_links_update_of_an_unshipped_skill_cannot_be_shown() {
+        let (svc, _tmp) = make_service().await;
+        let skill = nodespace_core::models::SkillFields::new("Use.", &["get_node"], 2)
+            .into_node("Not shipped");
+        let id = svc.node_service.create_node(skill).await.unwrap();
+        svc.node_service
+            .store()
+            .record_pending_seed_update(&id, nodespace_core::models::SeedAspect::Links, "v")
+            .await
+            .unwrap();
+
+        let listed = svc
+            .list_pending_seed_updates(Request::new(ListPendingSeedUpdatesRequest {}))
+            .await
+            .unwrap()
+            .into_inner()
+            .updates;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].aspect, "links");
+        assert!(!listed[0].shipped_available);
+
+        let shown = svc
+            .get_pending_seed_update(Request::new(PendingSeedUpdateRef {
+                node_id: id,
+                aspect: "links".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(shown.code(), tonic::Code::FailedPrecondition);
+    }
+
     #[tokio::test]
     async fn get_local_person_rpc_resolves_the_seeded_owner() {
         let (svc, _tmp) = make_service().await;

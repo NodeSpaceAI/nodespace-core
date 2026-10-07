@@ -160,6 +160,8 @@ async fn reset_context_paths(
             "✓ Context paths reset to the shipped list for \"{}\".",
             args.id
         );
+    } else {
+        println!("Nothing was reset for \"{}\".", args.id);
     }
     Ok(())
 }
