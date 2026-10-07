@@ -4799,6 +4799,24 @@ impl GraphToolExecutor {
         let ns = self.node_service()?;
         let node_id = strip_node_uri(&params.id).to_string();
 
+        // A play's content is its description, and its rules and switch are
+        // changed through `update_play`. Replacing the text here would leave a
+        // seeded play describing something it does not do, which is what
+        // happened when a create request's title was written onto one.
+        if params.content.is_some() {
+            if let Ok(Some(node)) = ns.get_node(&node_id).await {
+                if CoreNodeType::Play.is_exactly(&node.node_type) {
+                    return Err(ToolError::InvalidArguments {
+                        tool: "update_node".into(),
+                        reason: format!(
+                            "{node_id} is a play; its content is not changed with update_node. \
+                             Use update_play to change its rules or switch it on or off."
+                        ),
+                    });
+                }
+            }
+        }
+
         // The node's type decides which keys its bucket takes. A node that
         // cannot be read is the update's own error to report.
         let node_type = if props.is_empty() {
@@ -9588,6 +9606,36 @@ mod tests {
             assert_eq!(result.result["updated"], true);
             let properties = stored(&executor, &id).await;
             assert_eq!(properties["custom:registrar"], "Gandi");
+        }
+
+        /// A create request's text must not land on a play: its content is
+        /// changed through `update_play`, not `update_node`.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn update_node_does_not_replace_a_plays_content() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+            let play = nodespace_core::models::Node::new(
+                "play".to_string(),
+                "Roll over unfinished tasks daily".to_string(),
+                json!({}),
+            );
+            let id = play.id.clone();
+            ns.create_node(play).await.unwrap();
+
+            let outcome = executor
+                .execute(
+                    "update_node",
+                    json!({ "id": id, "content": "Review the sync protocol spec" }),
+                )
+                .await;
+            match outcome {
+                Err(ToolError::InvalidArguments { reason, .. }) => {
+                    assert!(reason.contains("update_play"), "{reason}");
+                }
+                other => panic!("expected a refusal naming update_play, got {other:?}"),
+            }
+            let stored = ns.get_node(&id).await.unwrap().unwrap();
+            assert_eq!(stored.content, "Roll over unfinished tasks daily");
         }
 
         /// Two values would claim one stored field, so neither is moved and
