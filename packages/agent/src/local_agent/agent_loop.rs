@@ -1961,6 +1961,17 @@ const WRITE_MISREPORTED_NOTICE: &str =
 const NOTHING_SAVED_NOTICE: &str =
     "That change ran, but none of the details you asked for were saved. Could you tell me exactly which details you'd like recorded?";
 
+/// Replacement when the model described a turn that only created records as
+/// a change to an existing one. The write is real and stands; what is false is
+/// the account of it. A held turn refuses `update_node` for a record outside
+/// its offered set, and the model's fallback is a create on that record's own
+/// type, which it then narrates as the update it was asked for.
+///
+/// Worded to avoid every [`contains_action_claim`] phrase, for the reason
+/// [`WRITE_MISREPORTED_NOTICE`] gives.
+const CREATED_NOT_UPDATED_NOTICE: &str =
+    "This turn made a new record and left the existing one as it was, so calling it a change wasn't accurate. Here's what actually ran:";
+
 /// What replaces a response a guard suppressed for misreporting the turn.
 ///
 /// Whether the user should be asked to confirm depends on the turn, not the
@@ -2794,6 +2805,30 @@ fn unlink_ungrounded_node_links(
         })
         .into_owned();
     (unlinked, dropped)
+}
+
+/// Whether `text` reports changing an existing record on a turn whose landed
+/// writes were all creates.
+///
+/// Judged per sentence, so a negation or a question in one sentence ("Nothing
+/// else was updated.") cannot waive a claim in another, with the same
+/// qualifiers [`contains_action_claim`] applies to the sentence it is given.
+/// A turn with no landed write is not this guard's: the anti-fabrication
+/// guard owns it. A turn that landed any write other than a create is not
+/// either, since an update may be what the text describes.
+fn claims_update_after_only_creating(executions: &[ToolExecutionRecord], text: &str) -> bool {
+    let mut landed = executions
+        .iter()
+        .filter(|r| super::deletion_confirmation::landed_write(r))
+        .peekable();
+    if landed.peek().is_none() || !landed.all(|r| r.name == "create_node") {
+        return false;
+    }
+    const UPDATE_WORDS: &[&str] = &["updated", "changed", "corrected"];
+    text.split_inclusive(['.', '!', '?', '\n']).any(|sentence| {
+        let lower = sentence.to_ascii_lowercase();
+        UPDATE_WORDS.iter().any(|w| lower.contains(w)) && contains_action_claim(sentence)
+    })
 }
 
 fn persisted_field_count(tool: &str, result: &serde_json::Value) -> Option<usize> {
@@ -4079,6 +4114,30 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         "No-op success: model claimed an action backed only by writes that persisted nothing — replacing response"
                     );
                     NOTHING_SAVED_NOTICE.to_string()
+                } else {
+                    normalized
+                };
+
+                // Created-not-updated guard: a turn whose only writes were
+                // creates, narrated as a change to an existing record. The
+                // no-op guard above cannot see it, because the create did
+                // persist its fields. The create stands and is listed; the
+                // false account of it is what is replaced.
+                let normalized = if !normalized.is_empty()
+                    && claims_update_after_only_creating(&all_tool_executions, &normalized)
+                {
+                    let (preview, preview_truncated) = char_preview(&normalized, 120);
+                    tracing::warn!(
+                        session_id = %session.id,
+                        iteration = iteration,
+                        response_preview = %preview,
+                        response_preview_truncated = preview_truncated,
+                        "Created-not-updated: model described a create as a change to an existing record — replacing response"
+                    );
+                    format!(
+                        "{CREATED_NOT_UPDATED_NOTICE}\n\n{}",
+                        summarize_executions(&all_tool_executions)
+                    )
                 } else {
                     normalized
                 };
@@ -10391,6 +10450,77 @@ mod tests {
             .await
             .unwrap()
             .response
+    }
+
+    const CREATE_ARGS: &str = r#"{"node_type":"feature_spec","content":"Kestrel Gateway Update","field_values":{"signed_off_date":"2025-05-02"}}"#;
+
+    /// The held turn's fallback: the update was refused, a create landed, and
+    /// the reply called it the update the user asked for.
+    #[tokio::test]
+    async fn a_create_reported_as_a_change_is_not_passed_off_as_one() {
+        let response = run_guard_turn(
+            "create_node",
+            CREATE_ARGS,
+            json!({"id": "nodespace://n1", "property_count": 1}),
+            "The signed-off date for Kestrel Gateway has been updated to May 2, 2025.",
+        )
+        .await;
+        assert_eq!(
+            response,
+            format!("{CREATED_NOT_UPDATED_NOTICE}\n\n• node creation completed")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_create_described_as_a_create_is_left_alone() {
+        let response = run_guard_turn(
+            "create_node",
+            CREATE_ARGS,
+            json!({"id": "nodespace://n1", "property_count": 1}),
+            "Here is a new follow-up record for Kestrel Gateway.",
+        )
+        .await;
+        assert_eq!(
+            response,
+            "Here is a new follow-up record for Kestrel Gateway."
+        );
+    }
+
+    #[tokio::test]
+    async fn an_update_reported_after_a_real_update_is_left_alone() {
+        let response = run_guard_turn(
+            "update_node",
+            r#"{"id":"abc","field_values":{"due_date":"2026-08-06"}}"#,
+            json!({"id": "nodespace://abc", "updated": true, "property_count": 1}),
+            "The due date has been updated to 2026-08-06.",
+        )
+        .await;
+        assert_eq!(response, "The due date has been updated to 2026-08-06.");
+    }
+
+    #[test]
+    fn a_negated_or_questioned_update_is_not_a_claim_after_a_create() {
+        let created = [exec_record_with(
+            "create_node",
+            serde_json::from_str(CREATE_ARGS).unwrap(),
+            json!({"id": "nodespace://n1", "property_count": 1}),
+        )];
+        assert!(!claims_update_after_only_creating(
+            &created,
+            "Here is the new record. Nothing else was updated."
+        ));
+        assert!(!claims_update_after_only_creating(
+            &created,
+            "Do you know when it was updated?"
+        ));
+        assert!(claims_update_after_only_creating(
+            &created,
+            "Nothing else was updated. The date has been updated."
+        ));
+        assert!(!claims_update_after_only_creating(
+            &[],
+            "The date has been updated."
+        ));
     }
 
     #[tokio::test]
