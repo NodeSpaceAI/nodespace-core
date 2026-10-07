@@ -1970,7 +1970,31 @@ const NOTHING_SAVED_NOTICE: &str =
 /// Worded to avoid every [`contains_action_claim`] phrase, for the reason
 /// [`WRITE_MISREPORTED_NOTICE`] gives.
 const CREATED_NOT_UPDATED_NOTICE: &str =
-    "This turn made a new record and left the existing one as it was, so calling it a change wasn't accurate. Here's what actually ran:";
+    "This turn only created records; it did not change an existing one, so describing it as a change wasn't accurate. Here's what actually ran:";
+
+/// Phrases that claim an existing record was changed. Narrower than
+/// [`contains_action_claim`] on purpose: "I created a follow-up with the
+/// corrected date" is a true account of a create, and a bare "updated" or
+/// "corrected" in a sentence that also claims a create must not read as a
+/// claim of an update.
+const UPDATE_CLAIMS: &[&str] = &[
+    "has been updated",
+    "was updated",
+    "were updated",
+    "i updated",
+    "i've updated",
+    "i have updated",
+    "successfully updated",
+    "has been changed",
+    "was changed",
+    "were changed",
+    "i changed",
+    "i've changed",
+    "i have changed",
+    "was corrected",
+    "i corrected",
+    "i've corrected",
+];
 
 /// What replaces a response a guard suppressed for misreporting the turn.
 ///
@@ -2824,11 +2848,30 @@ fn claims_update_after_only_creating(executions: &[ToolExecutionRecord], text: &
     if landed.peek().is_none() || !landed.all(|r| r.name == "create_node") {
         return false;
     }
-    const UPDATE_WORDS: &[&str] = &["updated", "changed", "corrected"];
     text.split_inclusive(['.', '!', '?', '\n']).any(|sentence| {
         let lower = sentence.to_ascii_lowercase();
-        UPDATE_WORDS.iter().any(|w| lower.contains(w)) && contains_action_claim(sentence)
+        UPDATE_CLAIMS.iter().any(|p| lower.contains(p)) && contains_action_claim(sentence)
     })
+}
+
+/// One line per record the turn's landed creates made, so the replacement
+/// still tells the user where the new record is.
+fn created_record_lines(executions: &[ToolExecutionRecord]) -> String {
+    executions
+        .iter()
+        .filter(|r| r.name == "create_node" && super::deletion_confirmation::landed_write(r))
+        .filter_map(|r| {
+            let id = r.result.get("id")?.as_str()?;
+            let uri = super::tools::node_uri(id);
+            Some(match r.args.get("content").and_then(|c| c.as_str()) {
+                Some(title) if !title.trim().is_empty() => {
+                    format!("• new record: [{}]({uri})", title.trim())
+                }
+                _ => format!("• new record: {uri}"),
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn persisted_field_count(tool: &str, result: &serde_json::Value) -> Option<usize> {
@@ -4135,8 +4178,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         "Created-not-updated: model described a create as a change to an existing record — replacing response"
                     );
                     format!(
-                        "{CREATED_NOT_UPDATED_NOTICE}\n\n{}",
-                        summarize_executions(&all_tool_executions)
+                        "{CREATED_NOT_UPDATED_NOTICE}\n\n{}\n{}",
+                        summarize_executions(&all_tool_executions),
+                        created_record_lines(&all_tool_executions)
                     )
                 } else {
                     normalized
@@ -10320,6 +10364,7 @@ mod tests {
             CONFIRMATION_REQUEST,
             WRITE_MISREPORTED_NOTICE,
             NOTHING_SAVED_NOTICE,
+            CREATED_NOT_UPDATED_NOTICE,
         ] {
             assert!(!contains_action_claim(msg), "{msg}");
         }
@@ -10467,7 +10512,10 @@ mod tests {
         .await;
         assert_eq!(
             response,
-            format!("{CREATED_NOT_UPDATED_NOTICE}\n\n• node creation completed")
+            format!(
+                "{CREATED_NOT_UPDATED_NOTICE}\n\n• node creation completed\n\
+                 • new record: [Kestrel Gateway Update](nodespace://n1)"
+            )
         );
     }
 
@@ -10521,6 +10569,36 @@ mod tests {
             &[],
             "The date has been updated."
         ));
+        // A true account of a create that merely mentions an updated value.
+        for honest in [
+            "I created a follow-up with the corrected date.",
+            "The task has been created with the updated due date.",
+            "I've created it and set the changed title to X.",
+        ] {
+            assert!(
+                !claims_update_after_only_creating(&created, honest),
+                "{honest}"
+            );
+        }
+        assert!(claims_update_after_only_creating(
+            &created,
+            "I updated the signed-off date."
+        ));
+    }
+
+    #[test]
+    fn the_replacement_names_every_record_the_turn_created() {
+        let create = |id: &str, content: &str| {
+            exec_record_with(
+                "create_node",
+                json!({"node_type": "task", "content": content}),
+                json!({"id": id, "property_count": 1}),
+            )
+        };
+        assert_eq!(
+            created_record_lines(&[create("a", "One"), create("nodespace://b", "Two")]),
+            "• new record: [One](nodespace://a)\n• new record: [Two](nodespace://b)"
+        );
     }
 
     #[tokio::test]
