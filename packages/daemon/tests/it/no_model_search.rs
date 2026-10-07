@@ -52,3 +52,33 @@ async fn search_distinguishes_missing_model_from_loading() {
     assert!(missing.message().contains("no embedding model"));
     assert!(!missing.message().contains("retry"));
 }
+
+#[tokio::test]
+async fn search_reports_a_failed_model_load_as_non_retryable() {
+    let tempdir = TempDir::new().unwrap();
+    let mut store = Arc::new(SqliteStore::new(tempdir.path().join("db")).await.unwrap());
+    let node_service = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
+    let service = NodeServiceImpl::new(
+        node_service,
+        Arc::new(RwLock::new(None)),
+        Arc::new(EmbeddingScheduler::new()),
+    );
+
+    // A file is there, but it is not a model, so the background load fails.
+    let not_a_model = tempdir.path().join("not-a-model.gguf");
+    std::fs::write(&not_a_model, b"this is not a model").unwrap();
+    std::env::set_var("NODESPACED_MODEL_PATH", &not_a_model);
+    let (shared, model_task) = build_shared_services(DaemonExtensions::none())
+        .await
+        .unwrap();
+    assert!(shared.context.has_model);
+    model_task
+        .expect("a model file exists, so a load is spawned")
+        .await
+        .unwrap();
+
+    let failed = service.search_nodes(search()).await.unwrap_err();
+    assert_eq!(failed.code(), Code::FailedPrecondition);
+    assert!(failed.message().contains("failed to load"));
+    assert!(!failed.message().contains("retry"));
+}

@@ -1325,7 +1325,6 @@ mod open_default_database_tests {
             pty_manager: Arc::new(nodespace_agent::pty::PtySessionManager::new()),
             model,
             has_model: false,
-            model_load_failed: Arc::new(AtomicBool::new(false)),
             scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
             subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
             local_agent: nodespace_daemon::SharedLocalAgent::new(),

@@ -26,7 +26,6 @@ fn context() -> SharedContext {
         pty_manager: Arc::new(PtySessionManager::new()),
         model,
         has_model: false,
-        model_load_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
         local_agent: nodespace_daemon::SharedLocalAgent::new(),

@@ -5381,7 +5381,6 @@ mod tests {
             pty_manager: Arc::new(nodespace_agent::pty::PtySessionManager::new()),
             model,
             has_model: false,
-            model_load_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             scheduler: Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
             subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
             local_agent: SharedLocalAgent::from_model_manager(None, MODEL_SPEC_SNAPSHOT_TIMEOUT),
