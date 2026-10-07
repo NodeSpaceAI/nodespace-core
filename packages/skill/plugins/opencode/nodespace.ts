@@ -6,10 +6,11 @@
 // export of one as a plugin: this file exports the plugin and nothing else.
 
 import { execFile } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 
 import type { Plugin } from '@opencode-ai/plugin'
 
-import { createSession, DEFAULT_WATCH_INTERVAL_SECONDS } from './nodespace/nodespace-session'
+import { createSession, DEFAULT_WATCH_INTERVAL_SECONDS, LAUNCH_VARIABLES } from './nodespace/nodespace-session'
 import type { Host, NodespaceSession } from './nodespace/nodespace-session'
 
 /** The tool that runs a shell line, with the line in `command`. */
@@ -59,8 +60,21 @@ export const NodeSpace: Plugin = async ({ client, directory }) => {
       }),
     env: name => process.env[name],
     now: () => Date.now(),
+    readFile: async path => {
+      try {
+        return await readFile(path, 'utf8')
+      } catch (err) {
+        if ((err as { code?: unknown }).code === 'ENOENT') {
+          return null
+        }
+
+        throw err
+      }
+    },
   }
   const intervalMs = watchIntervalMs()
+  /** Whether the launch has been given to a session: only the one it started is the launched one. */
+  let hasClaimedLaunch = false
   /** One per OpenCode session, started on first use: a resumed session sends no `session.created`. */
   const sessions = new Map<string, Promise<NodespaceSession>>()
   /** A note for a tool call's result, by the call's id. */
@@ -72,8 +86,13 @@ export const NodeSpace: Plugin = async ({ client, directory }) => {
 
     if (!held) {
       const session = createSession(host, intervalMs)
+      // The first session that is not a child's takes the launch. A resumed
+      // one is first seen in a hook other than `session.created`, and is not a child's.
+      const isLaunched = !isChild && !hasClaimedLaunch
 
-      held = session.start(directory).then(async reach => {
+      hasClaimedLaunch ||= isLaunched
+
+      held = session.start(directory, { sessionId: sessionID, isLaunched }).then(async reach => {
         // OpenCode has no status line. Reachability and the project are
         // shown once, for the first session the user opened themselves.
         if (!hasShownReach && !isChild) {
@@ -115,9 +134,35 @@ export const NodeSpace: Plugin = async ({ client, directory }) => {
         if (event.type === 'session.created') {
           await sessionFor(event.properties.info.id, event.properties.info.parentID !== undefined)
         } else if (event.type === 'session.deleted') {
+          const ended = sessions.get(event.properties.info.id)
+
           sessions.delete(event.properties.info.id)
+          await (await ended)?.end()
         }
       }),
+
+    // The environment of every command OpenCode runs for a session: without
+    // the launch's variables, and with the one that names the session to the
+    // CLI. OpenCode may merge this over its own environment, so a launch
+    // variable is blanked here, which the CLI reads as no launch.
+    'shell.env': async (input, output) => {
+      await quietly(async () => {
+        const env = input.sessionID ? (await sessionFor(input.sessionID)).commandEnv(output.env) : { ...output.env }
+
+        for (const name of LAUNCH_VARIABLES) {
+          delete env[name]
+
+          if (process.env[name] !== undefined) {
+            env[name] = ''
+          }
+        }
+
+        output.env = Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined)) as Record<
+          string,
+          string
+        >
+      })
+    },
 
     // A user message: the skill list is read again, and a change to it is
     // added to the message as a part of its own.
@@ -148,12 +193,12 @@ export const NodeSpace: Plugin = async ({ client, directory }) => {
         }
       }),
 
-    'tool.execute.before': async (input, output) => {
+    'tool.execute.before': async input => {
       let refusal: string | null = null
 
       await quietly(async () => {
         const session = await sessionFor(input.sessionID)
-        const verdict = await session.beforeTool(shellLine(input.tool, output.args))
+        const verdict = await session.beforeTool()
 
         if (verdict && 'deny' in verdict) {
           refusal = verdict.deny
