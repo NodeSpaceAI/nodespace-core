@@ -13,6 +13,7 @@
  */
 
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
+import { coreTypeEntry } from '$lib/types/core-node-types';
 import { resolveTitleOrContent } from '$lib/utils/node-display-title';
 
 /**
@@ -60,9 +61,13 @@ export function hasEntityNounName(nodeType: string): boolean {
  * registered a hardcoded, type-specific schema form for it.
  *
  * `task` and `person` have hardcoded forms; `project` and every user-defined type fall
- * back to the generic one.
+ * back to the generic one. A core primitive (`date`, `text`, …) declares no fields — its
+ * data is content — so it has no properties form and no relationships bar to show (ADR-086 §4).
+ * Only the exact core type is consulted: a user-defined type extending a primitive can add
+ * fields of its own.
  */
 export function needsGenericSchemaForm(nodeType: string): boolean {
+  if (coreTypeEntry(nodeType)?.category === 'primitive') return false;
   return !pluginRegistry.hasSchemaForm(nodeType);
 }
 

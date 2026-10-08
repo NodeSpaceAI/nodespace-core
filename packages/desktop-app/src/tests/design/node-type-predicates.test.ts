@@ -111,6 +111,12 @@ describe('node-type-predicates', () => {
       expect(needsGenericSchemaForm('project')).toBe(true);
     });
 
+    it('is false for core primitives, which declare no fields', () => {
+      for (const primitive of ['date', 'text', 'header']) {
+        expect(needsGenericSchemaForm(primitive)).toBe(false);
+      }
+    });
+
     it('is true for user-defined schema types', () => {
       expect(needsGenericSchemaForm('7b1c2d3e-4f56-7890-abcd-ef1234567890')).toBe(true);
     });

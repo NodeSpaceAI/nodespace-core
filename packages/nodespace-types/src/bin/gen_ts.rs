@@ -223,6 +223,9 @@ struct CoreTypeEntry {
     /// Whether nodes of exactly this type may exist.
     #[serde(rename = "abstract")]
     is_abstract: bool,
+    /// What "strongly typed" amounts to for the type: a primitive declares no
+    /// fields and keeps its data as `content`.
+    category: TypeCategory,
     /// Offered by the `@` mention picker (the effective rule: it narrows down the chain).
     mentionable: bool,
     /// Left out of default queries, counts and lists, a page outline among
@@ -301,6 +304,7 @@ fn core_node_types_file() -> File {
             id: core,
             parent: core.parent(),
             is_abstract: core.is_abstract(),
+            category: core.category(),
             mentionable: core.participation().mentionable,
             excluded_from_default_queries: core.participation().excluded_from_default_queries,
             typed_update: core.wire() == (WireShape::Typed { update: true }),
