@@ -166,7 +166,7 @@ describe('renderMermaid', () => {
   it.each([
     ['light', false],
     ['dark', true]
-  ])('renders flowchart labels as visible <text> with no foreignObject (%s)', async (_n, isDark) => {
+  ])('renders flowchart labels as visible <text> with no foreignObject (%s)', async (label, isDark) => {
     // Real mermaid, real sanitizer: the mock delegates to the actual module so
     // renderMermaid's own initialize() config is what drives the layout.
     const { default: mermaid } = await import('mermaid');
@@ -176,7 +176,7 @@ describe('renderMermaid', () => {
 
     try {
       const { renderMermaid } = await import('../../lib/services/mermaid-render.js');
-      const result = await renderMermaid('graph TD; Alpha-->Beta;', `real-${_n}`, isDark);
+      const result = await renderMermaid('graph TD; Alpha-->Beta;', `real-${label}`, isDark);
       expect(result).not.toBeNull();
       expect(result).not.toContain('foreignObject');
       const doc = new window.DOMParser().parseFromString(result as string, 'image/svg+xml');
