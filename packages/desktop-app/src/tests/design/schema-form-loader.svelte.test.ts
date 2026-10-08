@@ -94,12 +94,11 @@ describe('SchemaFormLoader', () => {
   );
 
   it('still loads the generic schema for a user-defined type', async () => {
-    const id = CUSTOM_TYPE;
-    getSchema.mockResolvedValue(schemaFor(id));
+    getSchema.mockResolvedValue(schemaFor(CUSTOM_TYPE));
     const loader = new SchemaFormLoader();
 
-    expect(await loader.loadForm(id)).toBe(false);
-    await vi.waitFor(() => expect(loader.genericSchema?.id).toBe(id));
+    expect(await loader.loadForm(CUSTOM_TYPE)).toBe(false);
+    await vi.waitFor(() => expect(loader.genericSchema?.id).toBe(CUSTOM_TYPE));
   });
 
   describe('hasTitleTemplate — hardcoded-form types', () => {
@@ -218,8 +217,7 @@ describe('SchemaFormLoader', () => {
     getSchema.mockRejectedValue(new Error('schema not found'));
     const loader = new SchemaFormLoader();
 
-    // A type with no schema must not
-    // issue a backend round trip per navigation.
+    // A type with no schema must not issue a backend round trip per navigation.
     await loader.loadForm(CUSTOM_TYPE);
     await vi.waitFor(() => expect(getSchema).toHaveBeenCalledTimes(1));
 

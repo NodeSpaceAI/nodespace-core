@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { CORE_NODE_TYPES } from '$lib/types/core-node-types';
 import {
   computeHeaderDisplayValue,
   hasInlineNodeComponent,
@@ -112,8 +113,10 @@ describe('node-type-predicates', () => {
     });
 
     it('is false for core primitives, which declare no fields', () => {
-      for (const primitive of ['date', 'text', 'header']) {
-        expect(needsGenericSchemaForm(primitive)).toBe(false);
+      const primitives = CORE_NODE_TYPES.filter((t) => t.category === 'primitive');
+      expect(primitives.length).toBeGreaterThan(0);
+      for (const { id } of primitives) {
+        expect(needsGenericSchemaForm(id)).toBe(false);
       }
     });
 
