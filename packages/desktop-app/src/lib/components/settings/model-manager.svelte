@@ -11,6 +11,7 @@
   import { chatModelList } from '$lib/services/tauri-commands';
   import type { ProviderConfig } from '$lib/types';
   import { createLogger } from '$lib/utils/logger';
+  import { discoveredModelNames, remoteModelOptions } from '$lib/utils/remote-model-options';
 
   const log = createLogger('ModelManager');
 
@@ -58,25 +59,22 @@
   let editForm = $state({ name: '', base_url: '', api_key: '', model: '' });
   let isNewConfig = $state(false);
 
+  // The models discovered at the endpoint being edited, offered as
+  // suggestions for the Model field. Discovery covers saved providers, so a
+  // provider that has never been saved has none.
+  const editingModelSuggestions = $derived(
+    editingConfig ? discoveredModelNames(remoteModels, editingConfig.id) : []
+  );
+
   // --- Default model ---
   let defaultModel = $state<ModelSelection | null>(null);
   let availableSelectionsForDefault = $state<{ label: string; value: string }[]>([]);
 
   function encodeSelection(s: ModelSelection): string {
-    // openai-compat: the daemon's own id, fully qualified as
-    //   "openai-compat:<uuid>" or "openai-compat:<uuid>:<model>".
+    // openai-compat: "openai-compat:<uuid>:<model>", the id of a configured
+    //   provider's option.
     // native: "native:<model-id>"
-    //
-    // `modelId` is normalized rather than passed through: a ModelSelection can
-    // legitimately carry a bare config UUID (older persisted defaults stored
-    // one, and configId is the only id a config with no discovered models
-    // has). Returning that unqualified would match no <option>, so the select
-    // would silently fall back to "None" and quietly forget the saved default.
-    if (s.provider === 'openai-compat') {
-      return s.modelId.startsWith('openai-compat:')
-        ? s.modelId
-        : `openai-compat:${s.configId ?? s.modelId}`;
-    }
+    if (s.provider === 'openai-compat') return s.modelId;
     return `native:${s.modelId}`;
   }
   function decodeSelection(v: string): ModelSelection | null {
@@ -121,29 +119,9 @@
         opts.push({ label: `Local — ${m.name}`, value: encodeSelection({ provider: 'native', modelId: m.id }) });
       }
     }
-    // Remote models — the daemon ID is already fully qualified. Discovery
-    // covers every endpoint that answered, so a config only earns its own
-    // fallback row when it contributed no discovered models (endpoint down, or
-    // a server with no /models listing). Otherwise it would appear twice.
-    for (const m of remoteModels) {
-      opts.push({
-        label: m.name,
-        value: encodeSelection({ provider: 'openai-compat', modelId: m.id }),
-      });
-    }
-    const discoveredConfigIds = new Set(
-      remoteModels.map((m) => m.id.slice('openai-compat:'.length).split(':')[0])
-    );
-    for (const c of openAiConfigs) {
-      if (discoveredConfigIds.has(c.id)) continue;
-      opts.push({
-        label: c.name,
-        value: encodeSelection({
-          provider: 'openai-compat',
-          modelId: `openai-compat:${c.id}`,
-          configId: c.id,
-        }),
-      });
+    // Remote models: one per configured provider, as in the chat selector.
+    for (const o of remoteModelOptions(openAiConfigs)) {
+      opts.push({ label: o.label, value: o.value });
     }
     availableSelectionsForDefault = opts;
   }
@@ -386,9 +364,28 @@
         </label>
         <label class="form-label">
           Model
-          <input class="form-input" type="text" bind:value={editForm.model} placeholder="e.g. gpt-4o" />
+          <input
+            class="form-input"
+            type="text"
+            list="provider-model-suggestions"
+            bind:value={editForm.model}
+            placeholder="e.g. gpt-4o"
+          />
+          <datalist id="provider-model-suggestions">
+            {#each editingModelSuggestions as name (name)}
+              <option value={name}></option>
+            {/each}
+          </datalist>
         </label>
-        <p class="mm-desc">The exact model identifier the endpoint expects — required by the real OpenAI API and any server hosting more than one model.</p>
+        <p class="mm-desc">
+          The exact model identifier the endpoint expects — required by the real OpenAI API and any server hosting more than one model.
+          {#if editingModelSuggestions.length > 0}
+            This endpoint lists {editingModelSuggestions.length} models; clear the field to see them all.
+          {:else if isNewConfig}
+            Once the provider is saved, its endpoint's models are suggested when you edit it.
+          {/if}
+          For another model of the same endpoint, add another provider.
+        </p>
         <label class="form-label">
           API Key
           <input class="form-input" type="password" bind:value={editForm.api_key} placeholder="sk-…" />
