@@ -32,13 +32,11 @@
   const ramTooLow = $derived(systemRamGb > 0 && systemRamGb < minRequiredGb);
 
   // --- Models discovered at configured OpenAI-compatible endpoints ---
-  // The daemon queries each endpoint's /models and returns one row per model,
-  // so "did it answer" is simply whether any rows came back.
+  // The daemon queries each endpoint's /models and returns one row per model.
+  // They are only suggestions for a provider's Model field, never listed.
   let remoteModels = $state<{ id: string; name: string }[]>([]);
-  let remoteChecking = $state(true);
 
   async function refreshRemoteModels(forceRefresh = false) {
-    remoteChecking = true;
     try {
       const list = await chatModelList(forceRefresh);
       remoteModels = list
@@ -47,9 +45,6 @@
     } catch (e) {
       log.warn('Failed to list remote models', e);
       remoteModels = [];
-    } finally {
-      buildDefaultOptions();
-      remoteChecking = false;
     }
   }
 
@@ -283,45 +278,6 @@
           </div>
         </div>
       {/each}
-    {/if}
-  </section>
-
-  <hr class="mm-divider" />
-
-  <!-- ── Discovered remote models ────────────────────────────────── -->
-  <section class="mm-section">
-    <div class="mm-section-header">
-      <h3>Available remote models</h3>
-      <button
-        class="refresh-btn"
-        onclick={() => refreshRemoteModels(true)}
-        disabled={remoteChecking}
-        aria-label="Refresh remote models"
-      >
-        <svg class:spinning={remoteChecking} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-          <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
-        </svg>
-      </button>
-    </div>
-
-    {#if remoteChecking}
-      <p class="mm-empty">Checking…</p>
-    {:else if remoteModels.length > 0}
-      <ul class="remote-list">
-        {#each remoteModels as m (m.id)}
-          <li class="remote-item">{m.name}</li>
-        {/each}
-      </ul>
-    {:else if openAiConfigs.length === 0}
-      <p class="mm-empty">
-        No endpoints configured. Add one below — a local Ollama server is
-        reached at <code>http://localhost:11434/v1</code>.
-      </p>
-    {:else}
-      <p class="mm-notice">
-        No models found. Check that each configured endpoint is running and its
-        base URL is correct.
-      </p>
     {/if}
   </section>
 
@@ -583,25 +539,6 @@
   .model-card-actions {
     display: flex;
     gap: 0.5rem;
-  }
-
-  /* Remote model list */
-  .remote-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-  }
-
-  .remote-item {
-    font-size: 0.8125rem;
-    color: hsl(var(--foreground));
-    padding: 0.375rem 0.625rem;
-    border: 1px solid hsl(var(--border));
-    border-radius: 0.375rem;
-    background: hsl(var(--muted) / 0.3);
   }
 
   /* Config card */
