@@ -40,6 +40,7 @@
   import { settingsStore } from '$lib/stores/settings.svelte';
   import { addTab, navigationStore, setActiveTab } from '$lib/stores/navigation.svelte';
   import { createLogger } from '$lib/utils/logger';
+  import { remoteModelOptions } from '$lib/utils/remote-model-options';
   import type { ProviderConfig } from '$lib/types';
   import { agentStore, isLocalAgent } from '$lib/stores/agent-store.svelte';
 
@@ -79,7 +80,14 @@
   // Models discovered at a configured OpenAI-compatible endpoint (Ollama's
   // /v1, LM Studio, vLLM, ...). The daemon returns one row per discovered
   // model, already carrying the full "openai-compat:<config>:<model>" id.
-  const remoteModels = $derived(models.filter((m) => m.backend === 'openai-compat'));
+  // A configured provider's own model is listed too, so it stays selectable
+  // when /models discovery fails, times out or comes back empty.
+  const remoteOptions = $derived(
+    remoteModelOptions(
+      models.filter((m) => m.backend === 'openai-compat'),
+      openAiConfigs
+    )
+  );
 
   // PTY agents (Claude Code, Antigravity CLI, Codex, ...) — excludes agentStore's
   // "local:" entries, which are in-process llama.cpp models already surfaced
@@ -101,13 +109,6 @@
   /** Build the value string used in the <select> for a given model entry. */
   function nativeValue(m: ChatModelEntry): string {
     return `native:${m.id}`;
-  }
-
-  // Discovered model IDs from the daemon already carry the full
-  // "openai-compat:<config>:<model>" prefix. Use the raw ID as the option
-  // value so handleChange can pass it straight through without rebuilding it.
-  function remoteValue(m: ChatModelEntry): string {
-    return m.id;
   }
 
   const isTauri =
@@ -292,15 +293,16 @@
       </optgroup>
 
       <!-- ── Remote endpoints (OpenAI-compatible: Ollama /v1, LM Studio, …) ── -->
-      {#if remoteModels.length > 0}
+      {#if remoteOptions.length > 0}
         <optgroup label="Remote endpoints">
-          {#each remoteModels as m (m.id)}
-            <option value={remoteValue(m)}>{m.name}</option>
+          {#each remoteOptions as o (o.value)}
+            <option value={o.value}>{o.label}</option>
           {/each}
         </optgroup>
       {:else if openAiConfigs.length > 0}
-        <!-- Endpoints are configured but none answered /models: the server is
-             down or the base URL is wrong. Say so rather than showing nothing. -->
+        <!-- Endpoints are configured with no model of their own and none
+             answered /models: the server is down or the base URL is wrong.
+             Say so rather than showing nothing. -->
         <optgroup label="Remote endpoints">
           <option value={`${HEADER_SENTINEL_PREFIX}no-remote`} disabled>
             No models found — check that the endpoint is running
