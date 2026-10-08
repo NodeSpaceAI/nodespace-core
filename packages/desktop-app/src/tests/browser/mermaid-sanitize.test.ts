@@ -179,7 +179,7 @@ describe('renderMermaid', () => {
       const result = await renderMermaid('graph TD; Alpha-->Beta;', `real-${_n}`, isDark);
       expect(result).not.toBeNull();
       expect(result).not.toContain('foreignObject');
-      const doc = new DOMParser().parseFromString(result as string, 'image/svg+xml');
+      const doc = new window.DOMParser().parseFromString(result as string, 'image/svg+xml');
       const text = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent);
       expect(text.join(' ')).toContain('Alpha');
       expect(text.join(' ')).toContain('Beta');
