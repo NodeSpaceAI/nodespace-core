@@ -94,10 +94,12 @@
     defaultModel = getDefaultModelSelection();
     try {
       openAiConfigs = await settingsStore.loadProviders();
-      buildDefaultOptions();
     } catch (e) {
       log.warn("Failed to read the database's providers", e);
     }
+    // Built whether or not the read succeeded: local models fill the list
+    // either way.
+    buildDefaultOptions();
 
     await refreshRemoteModels();
   });

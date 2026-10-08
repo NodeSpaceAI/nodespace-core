@@ -94,12 +94,10 @@ const MAX_TITLE_CHARS: usize = 80;
 /// repetition on short outputs.
 const TITLE_TEMPERATURE: f32 = 0.3;
 
-/// Token budget for the reply. Generous relative to six words so a model that
-/// adds a preamble still emits the title itself before being cut off —
-/// [`sanitize_title`] strips the preamble afterwards.
-///
-/// It also has to cover a reasoning model's thinking, which counts against the
-/// same budget and arrives before any answer token: a measured served
+/// Token budget for the reply. It has to cover a model that adds a preamble
+/// before the title ([`sanitize_title`] strips it afterwards) and a reasoning
+/// model's thinking, which counts against the same budget and arrives before
+/// any answer token: a measured served
 /// reasoning model needed about 165 tokens for this prompt, and at 48 it
 /// finished with no answer text at all. A model that answers directly stops
 /// at the title and spends none of the headroom.
