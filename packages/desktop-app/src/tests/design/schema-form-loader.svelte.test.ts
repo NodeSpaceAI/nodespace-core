@@ -21,6 +21,8 @@ vi.mock('$lib/services/backend-adapter', () => ({
 
 const getSchema = vi.mocked(backendAdapter.getSchema);
 
+const CUSTOM_TYPE = '7b1c2d3e-4f56-7890-abcd-ef1234567890';
+
 function schemaFor(id: string): SchemaNode {
   return {
     lifecycleStatus: 'active' as const,
@@ -77,6 +79,26 @@ describe('SchemaFormLoader', () => {
     expect(await loader.loadForm('task')).toBe(true);
     expect(getSchema).not.toHaveBeenCalled();
     expect(loader.genericSchema).toBeNull();
+  });
+
+  it.each(['date', 'text', 'header'])(
+    'never fetches or publishes a generic schema for the primitive type %s',
+    async (primitive) => {
+      getSchema.mockResolvedValue(schemaFor(primitive));
+      const loader = new SchemaFormLoader();
+
+      expect(await loader.loadForm(primitive)).toBe(false);
+      expect(getSchema).not.toHaveBeenCalled();
+      expect(loader.genericSchema).toBeNull();
+    }
+  );
+
+  it('still loads the generic schema for a user-defined type', async () => {
+    getSchema.mockResolvedValue(schemaFor(CUSTOM_TYPE));
+    const loader = new SchemaFormLoader();
+
+    expect(await loader.loadForm(CUSTOM_TYPE)).toBe(false);
+    await vi.waitFor(() => expect(loader.genericSchema?.id).toBe(CUSTOM_TYPE));
   });
 
   describe('hasTitleTemplate — hardcoded-form types', () => {
@@ -195,14 +217,13 @@ describe('SchemaFormLoader', () => {
     getSchema.mockRejectedValue(new Error('schema not found'));
     const loader = new SchemaFormLoader();
 
-    // Structural types (text, header, …) have no schema. Navigating between them must not
-    // issue a backend round trip per navigation.
-    await loader.loadForm('horizontal-line');
+    // A type with no schema must not issue a backend round trip per navigation.
+    await loader.loadForm(CUSTOM_TYPE);
     await vi.waitFor(() => expect(getSchema).toHaveBeenCalledTimes(1));
 
     loader.resetGenericSchema();
-    await loader.loadForm('horizontal-line');
-    await loader.loadForm('horizontal-line');
+    await loader.loadForm(CUSTOM_TYPE);
+    await loader.loadForm(CUSTOM_TYPE);
 
     expect(getSchema).toHaveBeenCalledTimes(1);
     expect(loader.genericSchema).toBeNull();
@@ -214,17 +235,17 @@ describe('SchemaFormLoader', () => {
 
     // A type with no schema at all must not render an empty form shell — the lookup is
     // swallowed and genericSchema stays null, so the viewer renders no properties panel.
-    expect(await loader.loadForm('horizontal-line')).toBe(false);
-    await vi.waitFor(() => expect(getSchema).toHaveBeenCalledWith('horizontal-line'));
+    expect(await loader.loadForm(CUSTOM_TYPE)).toBe(false);
+    await vi.waitFor(() => expect(getSchema).toHaveBeenCalledWith(CUSTOM_TYPE));
     expect(loader.genericSchema).toBeNull();
   });
 
   it('ignores a response that is not a schema node', async () => {
-    getSchema.mockResolvedValue({ id: 'text', nodeType: 'text' } as unknown as SchemaNode);
+    getSchema.mockResolvedValue({ id: CUSTOM_TYPE, nodeType: 'schema' } as unknown as SchemaNode);
     const loader = new SchemaFormLoader();
 
-    await loader.loadForm('text');
-    await vi.waitFor(() => expect(getSchema).toHaveBeenCalledWith('text'));
+    await loader.loadForm(CUSTOM_TYPE);
+    await vi.waitFor(() => expect(getSchema).toHaveBeenCalledWith(CUSTOM_TYPE));
     expect(loader.genericSchema).toBeNull();
   });
 

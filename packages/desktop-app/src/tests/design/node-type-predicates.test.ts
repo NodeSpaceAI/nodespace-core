@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { CORE_NODE_TYPES } from '$lib/types/core-node-types';
 import {
   computeHeaderDisplayValue,
   hasInlineNodeComponent,
@@ -109,6 +110,14 @@ describe('node-type-predicates', () => {
     it('is true for a core type with no hardcoded form', () => {
       // The bug this fixes: `project` was denied the generic form because it is core.
       expect(needsGenericSchemaForm('project')).toBe(true);
+    });
+
+    it('is false for core primitives, which declare no fields', () => {
+      const primitives = CORE_NODE_TYPES.filter((t) => t.category === 'primitive');
+      expect(primitives.length).toBeGreaterThan(0);
+      for (const { id } of primitives) {
+        expect(needsGenericSchemaForm(id)).toBe(false);
+      }
     });
 
     it('is true for user-defined schema types', () => {
