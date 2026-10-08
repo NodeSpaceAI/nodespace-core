@@ -80,14 +80,9 @@
   // Models discovered at a configured OpenAI-compatible endpoint (Ollama's
   // /v1, LM Studio, vLLM, ...). The daemon returns one row per discovered
   // model, already carrying the full "openai-compat:<config>:<model>" id.
-  // A configured provider's own model is listed too, so it stays selectable
-  // when /models discovery fails, times out or comes back empty.
-  const remoteOptions = $derived(
-    remoteModelOptions(
-      models.filter((m) => m.backend === 'openai-compat'),
-      openAiConfigs
-    )
-  );
+  // One row per configured provider (its endpoint and the model it targets),
+  // independent of what the endpoint's /models lists.
+  const remoteOptions = $derived(remoteModelOptions(openAiConfigs));
 
   // PTY agents (Claude Code, Antigravity CLI, Codex, ...) — excludes agentStore's
   // "local:" entries, which are in-process llama.cpp models already surfaced
@@ -298,15 +293,6 @@
           {#each remoteOptions as o (o.value)}
             <option value={o.value}>{o.label}</option>
           {/each}
-        </optgroup>
-      {:else if openAiConfigs.length > 0}
-        <!-- Endpoints are configured with no model of their own and none
-             answered /models: the server is down or the base URL is wrong.
-             Say so rather than showing nothing. -->
-        <optgroup label="Remote endpoints">
-          <option value={`${HEADER_SENTINEL_PREFIX}no-remote`} disabled>
-            No models found — check that the endpoint is running
-          </option>
         </optgroup>
       {/if}
 
