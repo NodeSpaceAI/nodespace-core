@@ -137,8 +137,10 @@ export async function renderMermaid(
         // sanitizeSvg() runs DOMPurify's `svg` profile, which drops <foreignObject>
         // (it can host arbitrary HTML) — so with mermaid's default htmlLabels:true
         // every label is stripped and diagrams render as empty, wordless boxes.
-        // flowchart and class are the diagram types that use foreignObject labels;
+        // Mermaid v11 reads the root-level flag for the shared layout, so the
+        // per-diagram flags alone leave labels in <foreignObject>; set all three.
         // sequence/state/er emit <text> natively and need no flag.
+        htmlLabels: false,
         flowchart: { htmlLabels: false },
         class: { htmlLabels: false }
       });

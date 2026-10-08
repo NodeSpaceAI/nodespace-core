@@ -153,3 +153,4 @@ packages/agent/tests/stage1-compound-intent-latest.txt
 # The declarations Claude Code lays beside a plugin it loads from a folder
 packages/skill/plugins/*/.claude-plugin/types/
 packages/skill/plugins/*/tsconfig.json
+__screenshots__/
