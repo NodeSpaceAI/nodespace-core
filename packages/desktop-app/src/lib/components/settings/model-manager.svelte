@@ -71,20 +71,10 @@
   let availableSelectionsForDefault = $state<{ label: string; value: string }[]>([]);
 
   function encodeSelection(s: ModelSelection): string {
-    // openai-compat: the daemon's own id, fully qualified as
-    //   "openai-compat:<uuid>" or "openai-compat:<uuid>:<model>".
+    // openai-compat: "openai-compat:<uuid>:<model>", the id of a configured
+    //   provider's option.
     // native: "native:<model-id>"
-    //
-    // `modelId` is normalized rather than passed through: a ModelSelection can
-    // legitimately carry a bare config UUID (older persisted defaults stored
-    // one, and configId is the only id a config with no discovered models
-    // has). Returning that unqualified would match no <option>, so the select
-    // would silently fall back to "None" and quietly forget the saved default.
-    if (s.provider === 'openai-compat') {
-      return s.modelId.startsWith('openai-compat:')
-        ? s.modelId
-        : `openai-compat:${s.configId ?? s.modelId}`;
-    }
+    if (s.provider === 'openai-compat') return s.modelId;
     return `native:${s.modelId}`;
   }
   function decodeSelection(v: string): ModelSelection | null {
@@ -390,9 +380,9 @@
         <p class="mm-desc">
           The exact model identifier the endpoint expects — required by the real OpenAI API and any server hosting more than one model.
           {#if editingModelSuggestions.length > 0}
-            Start typing to pick from the {editingModelSuggestions.length} models this endpoint lists.
+            This endpoint lists {editingModelSuggestions.length} models; clear the field to see them all.
           {:else if isNewConfig}
-            Save the provider once and its models are offered here when you edit it.
+            Once the provider is saved, its endpoint's models are suggested when you edit it.
           {/if}
           For another model of the same endpoint, add another provider.
         </p>

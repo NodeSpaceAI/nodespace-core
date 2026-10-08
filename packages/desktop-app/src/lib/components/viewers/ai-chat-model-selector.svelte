@@ -77,10 +77,8 @@
 
   // --- Derived subsets ---
   const nativeModels = $derived(models.filter((m) => m.backend === 'gguf'));
-  // Models discovered at a configured OpenAI-compatible endpoint (Ollama's
-  // /v1, LM Studio, vLLM, ...). The daemon returns one row per discovered
-  // model, already carrying the full "openai-compat:<config>:<model>" id.
-  // One row per configured provider (its endpoint and the model it targets),
+  // One row per configured OpenAI-compatible provider (Ollama's /v1, LM
+  // Studio, vLLM, OpenRouter, ...): its endpoint and the model it targets,
   // independent of what the endpoint's /models lists.
   const remoteOptions = $derived(remoteModelOptions(openAiConfigs));
 
