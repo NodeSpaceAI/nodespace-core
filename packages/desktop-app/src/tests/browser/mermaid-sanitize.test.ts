@@ -154,10 +154,38 @@ describe('renderMermaid', () => {
 
     expect(mermaid.initialize).toHaveBeenCalled();
     const cfg = (mermaid.initialize as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0] as {
+      htmlLabels?: boolean;
       flowchart?: { htmlLabels?: boolean };
       class?: { htmlLabels?: boolean };
     };
+    expect(cfg.htmlLabels).toBe(false);
     expect(cfg.flowchart?.htmlLabels).toBe(false);
     expect(cfg.class?.htmlLabels).toBe(false);
+  });
+
+  it.each([
+    ['light', false],
+    ['dark', true]
+  ])('renders flowchart labels as visible <text> with no foreignObject (%s)', async (_n, isDark) => {
+    // Real mermaid, real sanitizer: the mock delegates to the actual module so
+    // renderMermaid's own initialize() config is what drives the layout.
+    const { default: mermaid } = await import('mermaid');
+    const actual = (await vi.importActual<typeof import('mermaid')>('mermaid')).default;
+    (mermaid.initialize as ReturnType<typeof vi.fn>).mockImplementation(actual.initialize);
+    (mermaid.render as ReturnType<typeof vi.fn>).mockImplementation(actual.render);
+
+    try {
+      const { renderMermaid } = await import('../../lib/services/mermaid-render.js');
+      const result = await renderMermaid('graph TD; Alpha-->Beta;', `real-${_n}`, isDark);
+      expect(result).not.toBeNull();
+      expect(result).not.toContain('foreignObject');
+      const doc = new DOMParser().parseFromString(result as string, 'image/svg+xml');
+      const text = Array.from(doc.querySelectorAll('text')).map((t) => t.textContent);
+      expect(text.join(' ')).toContain('Alpha');
+      expect(text.join(' ')).toContain('Beta');
+    } finally {
+      (mermaid.initialize as ReturnType<typeof vi.fn>).mockReset();
+      (mermaid.render as ReturnType<typeof vi.fn>).mockReset();
+    }
   });
 });
