@@ -283,10 +283,69 @@ async fn an_unrelated_property_beside_an_id_is_not_read_as_a_relationship() {
                 }]
             }),
         )
-        .await;
+        .await
+        .expect("an unknown property runs and matches nothing");
 
-    if let Ok(result) = result {
-        assert!(result.result.get("filters_rewritten").is_none());
+    assert!(result.result.get("filters_rewritten").is_none());
+    assert_eq!(result.result["count"], 0);
+}
+
+/// A relationship filter whose id sits beside a label for an id is repaired; one
+/// whose value sits beside a real property name is a comparison on the far
+/// node, and keeps it.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_id_label_makes_the_value_the_node_to_reach() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    let labelled = executor
+        .execute(
+            "search_nodes",
+            json!({
+                "node_type": "task",
+                "filters": [{
+                    "type": "relationship", "operator": "equals",
+                    "path": ["assignee"], "property": "person-id", "value": ANOOP
+                }]
+            }),
+        )
+        .await
+        .expect("search_nodes must run");
+    assert_eq!(ids(&labelled.result), [TASK_A, TASK_B]);
+    assert!(labelled.result.get("filters_rewritten").is_some());
+
+    // `first_name` is a property of the person reached, so the value is what it
+    // is compared with, not a node to reach: nothing is repaired.
+    let compared = executor
+        .execute(
+            "search_nodes",
+            json!({
+                "node_type": "task",
+                "filters": [{
+                    "type": "relationship", "operator": "equals",
+                    "path": ["assignee"], "property": "first_name", "value": ANOOP
+                }]
+            }),
+        )
+        .await;
+    if let Ok(compared) = compared {
+        assert!(compared.result.get("filters_rewritten").is_none());
+    }
+
+    // Not an equality: left for the query to refuse, not repaired.
+    let negated = executor
+        .execute(
+            "search_nodes",
+            json!({
+                "node_type": "task",
+                "filters": [{
+                    "type": "relationship", "operator": "equals", "negate": true,
+                    "path": ["assignee"], "property": "person-id", "value": ANOOP
+                }]
+            }),
+        )
+        .await;
+    if let Ok(negated) = negated {
+        assert!(negated.result.get("filters_rewritten").is_none());
     }
 }
 

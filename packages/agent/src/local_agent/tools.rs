@@ -4170,11 +4170,18 @@ impl GraphToolExecutor {
         // The node it names is the one the path must reach.
         let mut repaired = Vec::with_capacity(filters.len());
         for mut filter in filters {
-            if filter.path.is_some() && filter.node_id.is_none() {
+            // Only an equality names a node to reach; a negated or `contains`
+            // filter is left for the query to refuse.
+            if filter.path.is_some()
+                && filter.node_id.is_none()
+                && filter.operator == "equals"
+                && filter.negate != Some(true)
+            {
                 // A value beside a real property name is a comparison on the
                 // far node, which happens to be a UUID; only a missing
-                // property, or a label for an id (`person-id`), makes the
-                // value the node to reach.
+                // property, or a label that ends in `id` after a separator
+                // (`person-id`, `person_id`), makes the value the node to
+                // reach. Other spellings (`personId`) are not guessed at.
                 let in_property = filter.property.as_deref().and_then(uuid_in);
                 let value_names_node = filter.property.as_deref().is_none_or(|p| {
                     let p = p.to_ascii_lowercase();
