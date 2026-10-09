@@ -94,10 +94,14 @@ const MAX_TITLE_CHARS: usize = 80;
 /// repetition on short outputs.
 const TITLE_TEMPERATURE: f32 = 0.3;
 
-/// Token budget for the reply. Generous relative to six words so a model that
-/// adds a preamble still emits the title itself before being cut off —
-/// [`sanitize_title`] strips the preamble afterwards.
-const TITLE_MAX_TOKENS: u32 = 48;
+/// Token budget for the reply. It has to cover a model that adds a preamble
+/// before the title ([`sanitize_title`] strips it afterwards) and a reasoning
+/// model's thinking, which counts against the same budget and arrives before
+/// any answer token: a measured served
+/// reasoning model needed about 165 tokens for this prompt, and at 48 it
+/// finished with no answer text at all. A model that answers directly stops
+/// at the title and spends none of the headroom.
+const TITLE_MAX_TOKENS: u32 = 512;
 
 /// Whether `content` is a title background titling may replace.
 ///
@@ -228,12 +232,19 @@ pub async fn generate_title(
     });
 
     if let Err(e) = engine.generate(request, on_chunk).await {
-        tracing::debug!(chat_id = %chat.envelope.id, error = %e, "ai-chat title generation failed");
+        tracing::warn!(chat_id = %chat.envelope.id, error = %e, "ai-chat title generation failed");
         return None;
     }
 
     let raw = collected.lock().ok()?.clone();
-    sanitize_title(&raw)
+    let title = sanitize_title(&raw);
+    if title.is_none() {
+        tracing::warn!(
+            chat_id = %chat.envelope.id,
+            "ai-chat title generation returned no usable title"
+        );
+    }
+    title
 }
 
 /// Write `title` to the chat's `content`, re-checking the untitled guard
@@ -420,5 +431,70 @@ mod tests {
         // Truncated at a boundary, so the last word is not sliced in half.
         assert!(!title.ends_with(' '));
         assert!(rambling.starts_with(&title));
+    }
+
+    /// Stands in for a served reasoning model: it spends `reasoning_tokens` of
+    /// the request's budget thinking before it emits any answer token, so a
+    /// budget at or below that yields no answer text.
+    struct ReasoningEngine {
+        reasoning_tokens: u32,
+    }
+
+    #[async_trait::async_trait]
+    impl ChatInferenceEngine for ReasoningEngine {
+        async fn generate(
+            &self,
+            request: InferenceRequest,
+            on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+        ) -> Result<
+            nodespace_agent::agent_types::InferenceUsage,
+            nodespace_agent::agent_types::InferenceError,
+        > {
+            let budget = request.max_tokens.unwrap_or(u32::MAX);
+            if budget > self.reasoning_tokens {
+                on_chunk(StreamingChunk::Token {
+                    text: "Tasks assigned to Anoop".to_string(),
+                });
+            }
+            Ok(nodespace_agent::agent_types::InferenceUsage::default())
+        }
+
+        async fn model_info(
+            &self,
+        ) -> Result<
+            Option<nodespace_agent::agent_types::ChatModelSpec>,
+            nodespace_agent::agent_types::InferenceError,
+        > {
+            Ok(None)
+        }
+
+        async fn token_count(
+            &self,
+            _text: &str,
+        ) -> Result<u32, nodespace_agent::agent_types::InferenceError> {
+            Ok(0)
+        }
+    }
+
+    /// A reasoning model measured at about 165 thinking tokens for the titling
+    /// prompt returned no title at the old 48-token budget, and the chat stayed
+    /// "Untitled" with nothing in the log. The budget has to clear that.
+    #[tokio::test]
+    async fn a_reasoning_model_still_gets_a_title() {
+        let engine: Arc<dyn ChatInferenceEngine> = Arc::new(ReasoningEngine {
+            reasoning_tokens: 165,
+        });
+        let msgs = vec![
+            message(
+                AiChatMessageRole::User,
+                "How many tasks are assigned to Anoop?",
+            ),
+            message(AiChatMessageRole::Assistant, "One task."),
+            message(AiChatMessageRole::User, "Assign it to me."),
+        ];
+
+        let title = generate_title(&engine, &chat(UNTITLED_CHAT_TITLE), &msgs).await;
+
+        assert_eq!(title.as_deref(), Some("Tasks assigned to Anoop"));
     }
 }
