@@ -38,6 +38,7 @@ mod routing_latency;
 mod run_query_tool;
 mod search_nodes_enumerate;
 mod search_nodes_excludes_conversations;
+mod search_nodes_relationship_as_property;
 mod search_skills_latency;
 mod seed_tables;
 mod skill_confusion_matrix;

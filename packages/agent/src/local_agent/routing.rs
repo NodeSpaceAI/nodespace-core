@@ -1257,6 +1257,29 @@ pub fn all_candidate_scores(candidates: &[SkillCandidate]) -> String {
         .join(", ")
 }
 
+/// The candidates a lookup turn can use: those that whitelist no write tool.
+///
+/// A lookup reads. The procedures of a skill that writes (Node Deletion,
+/// Implementing a Task) ride along when retrieval places them second or third,
+/// and with them the schema-writing and node-writing tools they whitelist:
+/// thousands of tokens of prompt and tool schema a read cannot use, which a
+/// local model pays for as time before its first token. When no candidate is
+/// read-only, or none that is clears the score gate, the candidates are
+/// returned as retrieved: narrowing must never leave the turn without a
+/// procedure.
+pub fn read_only_candidates(candidates: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
+    let read_only: Vec<SkillCandidate> = candidates
+        .iter()
+        .filter(|c| !c.tools.iter().any(|t| super::tools::is_write_tool(t)))
+        .cloned()
+        .collect();
+    if read_only.iter().any(clears_score_gate) {
+        read_only
+    } else {
+        candidates
+    }
+}
+
 /// Render retrieved candidates for injection into the Stage-2 prompt.
 ///
 /// Delivered **in the prompt** rather than as a tool result. ADR-064 rule 4

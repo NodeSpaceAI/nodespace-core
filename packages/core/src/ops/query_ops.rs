@@ -5,7 +5,7 @@
 //! and delegates to `QueryService::execute`.
 
 use crate::models::Node;
-use crate::ops::path_ops::resolve_path;
+use crate::ops::path_ops::{self, resolve_path};
 use crate::ops::OpsError;
 use crate::services::node_service::NodeService;
 use crate::services::query_service::{
@@ -316,6 +316,9 @@ async fn resolve_property(
         .filter(|owner| owner.as_str() != target_type)
         .cloned();
     if segments.len() < 2 {
+        if !fields.iter().any(|field| field.name == name) {
+            refuse_relationship_as_field(node_service, target_type, name, label).await?;
+        }
         // An enum has no path into it, so a path has no subtype buckets.
         let subtypes = subtype_buckets(node_service, declared_fields, target_type, name).await?;
         return Ok(PropertyScope { bucket, subtypes });
@@ -361,6 +364,84 @@ async fn resolve_property(
         bucket,
         subtypes: Vec::new(),
     })
+}
+
+/// What `name` resolves to as a relationship of `target_type`, forward or from
+/// the other side, or `None` when the type has no relationship by that name.
+///
+/// It does not look at the type's fields: a caller asking whether a name that
+/// is not a field is a relationship checks the fields first.
+pub async fn relationship_named(
+    node_service: &NodeService,
+    target_type: &str,
+    name: &str,
+) -> Result<Option<nodespace_types::ResolvedHop>, OpsError> {
+    let hop = nodespace_types::RelationshipHop::fixed(name);
+    let resolution = path_ops::resolve_hop(node_service, Some(target_type), &hop)
+        .await
+        .map_err(|e| OpsError::Internal(e.to_string()))?;
+    Ok(match resolution {
+        path_ops::HopResolution::Resolved(resolved) => Some(resolved),
+        path_ops::HopResolution::Undeclared | path_ops::HopResolution::TypeUnknown => None,
+    })
+}
+
+/// The relationships a filter on `target_type` can follow, as
+/// `(name, type at the far end)`: the ones the type declares or inherits, and
+/// the ones other types declare toward it, under their reverse names (a task's
+/// `assignee`, read from a person's `tasks`). The built-in names (`has_child`,
+/// `mentions`) apply to every type and are not listed.
+pub async fn relationship_names_of(
+    node_service: &NodeService,
+    target_type: &str,
+) -> Result<Vec<(String, Option<String>)>, OpsError> {
+    let internal = |e: crate::services::NodeServiceError| OpsError::Internal(e.to_string());
+    let (declared, _owners) = node_service
+        .resolve_relationships(target_type)
+        .await
+        .map_err(internal)?;
+    let inbound = node_service
+        .get_inbound_relationships(target_type)
+        .await
+        .map_err(internal)?;
+    let mut names: Vec<(String, Option<String>)> = declared
+        .into_iter()
+        .map(|rel| (rel.name, rel.target_type))
+        .collect();
+    for (source_type, rel) in inbound {
+        if !names.iter().any(|(name, _)| *name == rel.reverse_name) {
+            names.push((rel.reverse_name, Some(source_type)));
+        }
+    }
+    Ok(names)
+}
+
+/// Refuse a field name that `target_type` does not declare as a field but does
+/// have as a relationship, forward or derived from the other side (a task's
+/// `assignee` is the other end of a person's `tasks`).
+///
+/// Such a name matches nothing as a property, and an empty result reads as an
+/// answer: "no tasks are assigned to them". The message gives the filter that
+/// does reach the nodes, so the caller's next attempt is the right one.
+async fn refuse_relationship_as_field(
+    node_service: &NodeService,
+    target_type: &str,
+    name: &str,
+    label: &str,
+) -> Result<(), OpsError> {
+    let Some(resolved) = relationship_named(node_service, target_type, name).await? else {
+        return Ok(());
+    };
+    let reaches = resolved
+        .far_type
+        .map(|far| format!(" (to a '{far}' node)"))
+        .unwrap_or_default();
+    Err(OpsError::InvalidParams(format!(
+        "{label} '{name}': '{name}' is a relationship of '{target_type}'{reaches}, not a field, so \
+         it holds no value to compare. To select '{target_type}' nodes by it, use a filter \
+         {{\"type\":\"relationship\",\"path\":[\"{name}\"],\"node_id\":\"<id of the node it must \
+         reach>\"}} with that node's id from a search"
+    )))
 }
 
 /// The subtypes of `target_type` whose rows keep `field` in a bucket of
@@ -4135,6 +4216,58 @@ mod tests {
                     refused.contains("only its 'title' and 'url' can be read"),
                     "{property}: {refused}"
                 );
+            }
+        }
+
+        /// A relationship named as a property is refused with the filter that
+        /// reaches the nodes, whichever end declares it: a task's `assignee` is
+        /// only the other side of a person's `tasks`, and as a property it
+        /// matches nothing, which reads as "no tasks are assigned".
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_relationship_named_as_a_property_is_refused_with_the_filter_that_works() {
+            let (svc, _tmp) = make_test_service().await;
+
+            for (target_type, name) in [("task", "assignee"), ("person", "tasks")] {
+                let input: ExecuteQueryInput = serde_json::from_value(json!({
+                    "target_type": target_type,
+                    "filters": [{
+                        "type": "property", "operator": "equals",
+                        "property": name, "value": "someone"
+                    }]
+                }))
+                .unwrap();
+                let refused = execute_query(&svc, input).await.unwrap_err();
+                assert!(matches!(refused, OpsError::InvalidParams(_)), "{refused:?}");
+                let message = refused.to_string();
+                assert!(message.contains("is a relationship"), "{message}");
+                assert!(
+                    message.contains(&format!("\"path\":[\"{name}\"]")),
+                    "{message}"
+                );
+            }
+
+            let sorted: ExecuteQueryInput = serde_json::from_value(json!({
+                "target_type": "task",
+                "filters": [],
+                "sorting": [{ "field": "assignee", "direction": "asc" }]
+            }))
+            .unwrap();
+            let refused = execute_query(&svc, sorted).await.unwrap_err().to_string();
+            assert!(refused.contains("sort field 'assignee'"), "{refused}");
+
+            // A declared field and a name that is no relationship at all still
+            // run: the second matches nothing, as it always has.
+            for property in ["status", "no_such_field"] {
+                let input: ExecuteQueryInput = serde_json::from_value(json!({
+                    "target_type": "task",
+                    "filters": [{
+                        "type": "property", "operator": "exists", "property": property
+                    }]
+                }))
+                .unwrap();
+                execute_query(&svc, input)
+                    .await
+                    .unwrap_or_else(|e| panic!("{property}: {e}"));
             }
         }
 
