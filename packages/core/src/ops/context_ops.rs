@@ -73,6 +73,20 @@ pub struct WorkspaceContext {
     /// resolver that never ran mean opposite things to the model — see
     /// [`EntityResolution`].
     pub resolved_entities: EntityResolution,
+    /// How nodes of other types are reached from the resolved entities' types
+    /// (may be empty). A core type's schema is not in the prompt, so without
+    /// this a message such as "tasks assigned to Anoop" gives the model the
+    /// person's id and nothing saying a task points at a person through
+    /// `assignee`.
+    pub entity_links: Vec<EntityLinks>,
+}
+
+/// The relationships by which nodes of other types reach nodes of `node_type`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityLinks {
+    pub node_type: String,
+    /// `(source type, relationship names on it)`, in the order found.
+    pub from: Vec<(String, Vec<String>)>,
 }
 
 /// Outcome of the entity-resolution tier.
@@ -277,6 +291,14 @@ pub const EXISTING_SCHEMAS_HEADER: &str =
 /// node existed.
 pub const RESOLVED_ENTITIES_HEADER: &str =
     "MENTIONED ENTITIES (already resolved — use these ids directly, do not ask for one):";
+
+/// Header for the links into the resolved entities' types.
+pub const ENTITY_LINKS_HEADER: &str =
+    "LINKS TO THE MENTIONED ENTITIES (to list nodes by one, search them with a relationship filter on its id):";
+
+/// Most entity types, and most source types per entity type, the links block lists.
+const MAX_LINK_TYPES: usize = 4;
+const MAX_LINK_SOURCES: usize = 3;
 
 /// Rendered when resolution ran and matched nothing.
 ///
@@ -708,6 +730,65 @@ async fn resolve_entities(
 ///
 /// A caller with only one string may pass it for both; the blend helps
 /// embeddings and merely costs tokens here.
+/// How other types' nodes reach each type among the resolved entities.
+///
+/// A failed read leaves the type out: the block helps the model, and a turn
+/// without it is no worse than before.
+async fn entity_links_of(
+    node_service: &Arc<NodeService>,
+    resolution: &EntityResolution,
+    message: &str,
+) -> Vec<EntityLinks> {
+    let EntityResolution::Resolved { entities, .. } = resolution else {
+        return Vec::new();
+    };
+    let mut types: Vec<&str> = Vec::new();
+    for entity in entities {
+        if !types.contains(&entity.node_type.as_str()) {
+            types.push(&entity.node_type);
+        }
+    }
+    let mut links = Vec::new();
+    for node_type in types.into_iter().take(MAX_LINK_TYPES) {
+        let reaching = match crate::ops::query_ops::relationships_reaching(node_service, node_type)
+            .await
+        {
+            Ok(reaching) => reaching,
+            Err(e) => {
+                tracing::debug!(node_type, error = %e, "workspace_context: reading the links into an entity type failed");
+                continue;
+            }
+        };
+        let mut from: Vec<(String, Vec<String>)> = Vec::new();
+        for (source, name) in reaching {
+            match from.iter_mut().find(|(existing, _)| *existing == source) {
+                Some((_, names)) => names.push(name),
+                None => from.push((source, vec![name])),
+            }
+        }
+        // A person is reached from chat messages, pins and skills as well as
+        // tasks. When the message names a source type ("tasks assigned to
+        // Anoop"), that is the link it is about and the rest is noise to the
+        // model; when it names none, nothing here helps it, and a list of
+        // whatever else points at the entity would only be read as relevant.
+        let lowered = message.to_lowercase();
+        let named = |source: &str| {
+            let source = source.to_lowercase();
+            crate::ops::skill_ops::mentions_phrase(&lowered, &source)
+                || crate::ops::skill_ops::mentions_phrase(&lowered, &format!("{source}s"))
+        };
+        from.retain(|(source, _)| named(source));
+        from.truncate(MAX_LINK_SOURCES);
+        if !from.is_empty() {
+            links.push(EntityLinks {
+                node_type: node_type.to_string(),
+                from,
+            });
+        }
+    }
+    links
+}
+
 pub async fn build_workspace_context(
     node_service: &Arc<NodeService>,
     embedding_service: Option<&Arc<NodeEmbeddingService>>,
@@ -869,6 +950,9 @@ pub async fn build_workspace_context(
         _ => (vec![], vec![]),
     };
 
+    let entity_links =
+        entity_links_of(node_service, &resolved_entities, entity_query.unwrap_or("")).await;
+
     Ok(WorkspaceContext {
         collections,
         active_playbooks,
@@ -876,6 +960,7 @@ pub async fn build_workspace_context(
         related_schemas,
         semantic_schema_count,
         resolved_entities,
+        entity_links,
     })
 }
 
@@ -988,6 +1073,23 @@ impl WorkspaceContext {
             }
         }
 
+        // Links into the resolved entities' types. Follows the entities it is
+        // about, and is dropped whole rather than cut mid-list.
+        if !self.entity_links.is_empty() {
+            let mut block = format!("\n{ENTITY_LINKS_HEADER}\n");
+            for links in &self.entity_links {
+                let sources: Vec<String> = links
+                    .from
+                    .iter()
+                    .map(|(source, names)| format!("{source} via {}", names.join(", ")))
+                    .collect();
+                block.push_str(&format!("- {}: {}\n", links.node_type, sources.join("; ")));
+            }
+            if out.len() + block.len() <= max_chars {
+                out.push_str(&block);
+            }
+        }
+
         // Relevant schemas section (query-matched via semantic retrieval)
         if !self.relevant_schemas.is_empty() {
             let header = format!("\n{EXISTING_SCHEMAS_HEADER}\n");
@@ -1067,6 +1169,7 @@ mod tests {
             related_schemas: vec![],
             semantic_schema_count: 0,
             resolved_entities: EntityResolution::NotRun,
+            entity_links: vec![],
         }
     }
 
@@ -1138,6 +1241,7 @@ mod tests {
             related_schemas: vec![],
             semantic_schema_count: 0,
             resolved_entities: EntityResolution::NotRun,
+            entity_links: vec![],
         };
 
         let rendered = ctx.format_for_prompt(4000);
@@ -1553,6 +1657,7 @@ mod tests {
             related_schemas: vec![],
             semantic_schema_count: 0,
             resolved_entities: EntityResolution::NotRun,
+            entity_links: vec![],
         };
         let output = ctx.format_for_prompt(4000);
         assert!(output.contains("invoice \"Invoice\"\n"));
@@ -1577,6 +1682,7 @@ mod tests {
             related_schemas: vec![],
             semantic_schema_count: 0,
             resolved_entities: EntityResolution::NotRun,
+            entity_links: vec![],
         };
         let output = ctx.format_for_prompt(4000);
         assert!(output.is_empty());
@@ -2088,6 +2194,7 @@ mod tests {
     fn ctx_with(resolution: EntityResolution) -> WorkspaceContext {
         WorkspaceContext {
             resolved_entities: resolution,
+            entity_links: vec![],
             ..Default::default()
         }
     }

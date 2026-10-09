@@ -416,6 +416,37 @@ pub async fn relationship_names_of(
     Ok(names)
 }
 
+/// The types whose nodes a node of `node_type` is reached from, and the
+/// relationship name a filter on those nodes follows: a person's `tasks` is
+/// reached from a task by `assignee`, and a customer reaches an invoice by the
+/// invoice's `billed_to`.
+///
+/// Each pair is `(source type, relationship name on the source)`.
+pub async fn relationships_reaching(
+    node_service: &NodeService,
+    node_type: &str,
+) -> Result<Vec<(String, String)>, OpsError> {
+    let internal = |e: crate::services::NodeServiceError| OpsError::Internal(e.to_string());
+    let (declared, _owners) = node_service
+        .resolve_relationships(node_type)
+        .await
+        .map_err(internal)?;
+    let inbound = node_service
+        .get_inbound_relationships(node_type)
+        .await
+        .map_err(internal)?;
+    let mut reaching: Vec<(String, String)> = Vec::new();
+    for rel in declared {
+        if let Some(far) = rel.target_type {
+            reaching.push((far, rel.reverse_name));
+        }
+    }
+    for (source_type, rel) in inbound {
+        reaching.push((source_type, rel.name));
+    }
+    Ok(reaching)
+}
+
 /// Refuse a field name that `target_type` does not declare as a field but does
 /// have as a relationship, forward or derived from the other side (a task's
 /// `assignee` is the other end of a person's `tasks`).
