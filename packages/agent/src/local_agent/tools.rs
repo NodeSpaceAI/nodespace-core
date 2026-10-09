@@ -813,6 +813,56 @@ fn strip_node_uri(id: &str) -> &str {
     id.strip_prefix("nodespace://").unwrap_or(id)
 }
 
+/// The relationship of `node_type` that a property name written against a node
+/// of `target_type` stands for, when exactly one does.
+///
+/// The name itself, when it is a relationship of the type. Otherwise, among
+/// the relationships that reach `target_type`, the one whose name begins the
+/// way the written name does (`assigned_to` and `assignee` share `assign`),
+/// when it is the only best match of at least four letters. A name that fits
+/// two relationships equally, or none, stands for none: guessing between
+/// `assignee` and `creator` would answer a different question.
+async fn relationship_meant(
+    ns: &NodeService,
+    node_type: &str,
+    name: &str,
+    target_type: &str,
+) -> Option<String> {
+    if let Ok(Some(_)) = query_ops::relationship_named(ns, node_type, name).await {
+        return Some(name.to_string());
+    }
+    let reaching: Vec<String> = query_ops::relationship_names_of(ns, node_type)
+        .await
+        .ok()?
+        .into_iter()
+        .filter(|(_, to)| to.as_deref().is_none_or(|to| to == target_type))
+        .map(|(candidate, _)| candidate)
+        .collect();
+    let shared = |candidate: &str| {
+        name.chars()
+            .zip(candidate.chars())
+            .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+            .count()
+    };
+    let best = reaching.iter().map(|c| shared(c)).max()?;
+    let mut leaders = reaching.iter().filter(|c| shared(c) == best);
+    match (leaders.next(), leaders.next()) {
+        (Some(leader), None) if best >= 4 => Some(leader.clone()),
+        _ => None,
+    }
+}
+
+/// The first UUID written anywhere in `text`, as the model wrote it into a
+/// value (`"Anoop Nair's id=bd91fb9e-…"`).
+fn uuid_in(text: &str) -> Option<String> {
+    const UUID_LEN: usize = 36;
+    text.char_indices()
+        .map(|(start, _)| start)
+        .filter_map(|start| text.get(start..start + UUID_LEN))
+        .find_map(|window| uuid::Uuid::parse_str(window).ok())
+        .map(|id| id.to_string())
+}
+
 /// The node type of a node as the ops layer returns it. `nodeType` is the wire
 /// spelling: `Node` is camelCase-serialized. A schema node has no such field,
 /// so a type row reports no type.
@@ -1080,8 +1130,8 @@ fn def_search_nodes() -> ToolDefinition {
             Dates use YYYY-MM-DD. Prefer this over search_semantic when you know the name/type or want structured results; \
             use search_semantic only for meaning-based / fuzzy questions. \
             A name shown after '~>' in an EXISTING SCHEMAS line is a relationship, not a filterable property — \
-            'filters' only accepts a type's own fields (before '~>'). To find a node connected via a relationship \
-            (e.g. 'the contract a given vendor signed'), use get_related_nodes with that relationship's name, not a filter here."
+            a property filter compares a type's own fields (before '~>'). To find a node connected via a relationship \
+            (e.g. 'the contract a given vendor signed'), use get_related_nodes with that relationship's name, not a property filter."
             .into(),
         parameters_schema: json!({
             "type": "object",
@@ -4095,6 +4145,144 @@ impl GraphToolExecutor {
         Ok(output.nodes.iter().map(search_result_summary).collect())
     }
 
+    /// Turn a property filter that names a relationship into the relationship
+    /// filter it was asking for, when it carries the id of the node to reach.
+    ///
+    /// A task's `assignee` is the other end of a person's `tasks`, so
+    /// `{"property":"assignee","value":"<name> (id <uuid>)"}` matches nothing,
+    /// and an empty result reads as an answer. The model has the id by then (it
+    /// is in the prompt), so the call is run as the relationship filter it
+    /// meant, and each rewrite is reported on the result as a fact. A filter
+    /// that names no node that exists is left alone, and the query then refuses
+    /// it with the filter shape to use.
+    async fn relationship_filters_from_properties(
+        &self,
+        node_type: Option<&str>,
+        filters: Vec<query_ops::AgentFilterItem>,
+    ) -> (Vec<query_ops::AgentFilterItem>, Vec<String>) {
+        let Ok(ns) = self.node_service() else {
+            return (filters, Vec::new());
+        };
+        let mut rewrites = Vec::new();
+
+        // A relationship filter that names the node to reach somewhere other
+        // than `node_id`: the model writes the id into `value` or `property`.
+        // The node it names is the one the path must reach.
+        let mut repaired = Vec::with_capacity(filters.len());
+        for mut filter in filters {
+            // Only an equality names a node to reach; a negated or `contains`
+            // filter is left for the query to refuse.
+            if filter.path.is_some()
+                && filter.node_id.is_none()
+                && filter.operator == "equals"
+                && filter.negate != Some(true)
+            {
+                // A value beside a real property name is a comparison on the
+                // far node, which happens to be a UUID; only a missing
+                // property, or a label that ends in `id` after a separator
+                // (`person-id`, `person_id`), makes the value the node to
+                // reach. Other spellings (`personId`) are not guessed at.
+                let in_property = filter.property.as_deref().and_then(uuid_in);
+                let value_names_node = filter.property.as_deref().is_none_or(|p| {
+                    let p = p.to_ascii_lowercase();
+                    p == "id" || p.ends_with("-id") || p.ends_with("_id")
+                });
+                let in_value = filter
+                    .value
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .and_then(uuid_in)
+                    .filter(|_| value_names_node);
+                if let Some(id) = in_property.or(in_value) {
+                    if ns.get_node(&id).await.ok().flatten().is_some() {
+                        rewrites.push(format!(
+                            "the relationship filter named {id} outside 'node_id'; used it as \
+                             'node_id'"
+                        ));
+                        filter.node_id = Some(id);
+                        filter.filter_type = Some("relationship".to_string());
+                        filter.property = None;
+                        filter.value = None;
+                    }
+                }
+            }
+            repaired.push(filter);
+        }
+        let filters = repaired;
+
+        let Some(node_type) = node_type.filter(|t| !t.is_empty() && *t != "*") else {
+            return (filters, rewrites);
+        };
+        let Ok((fields, _, _)) = ns.resolve_field_owners(node_type).await else {
+            return (filters, rewrites);
+        };
+        let mut out = Vec::with_capacity(filters.len());
+        for filter in filters {
+            // Only an equality is a relationship to a node. A negated filter,
+            // or `contains`, rewritten into one would answer the opposite
+            // question and report it as what was asked.
+            let is_equality = filter.operator == "equals" && filter.negate != Some(true);
+            let name = match (filter.filter_type.as_deref(), filter.property.as_deref()) {
+                (None | Some("property"), Some(name))
+                    if is_equality
+                        && !name.contains('.')
+                        && !fields.iter().any(|f| f.name == name) =>
+                {
+                    name.to_string()
+                }
+                _ => {
+                    out.push(filter);
+                    continue;
+                }
+            };
+            let target = filter
+                .value
+                .as_ref()
+                .and_then(Value::as_str)
+                .and_then(uuid_in);
+            let found = match &target {
+                Some(id) => ns.get_node(id).await.ok().flatten(),
+                None => None,
+            };
+            let Some(found) = found else {
+                out.push(filter);
+                continue;
+            };
+            let Some(relationship) =
+                relationship_meant(&ns, node_type, &name, &found.node_type).await
+            else {
+                out.push(filter);
+                continue;
+            };
+            let rewritten = serde_json::from_value::<query_ops::AgentFilterItem>(json!({
+                "type": "relationship",
+                "operator": "equals",
+                "path": [relationship],
+                "node_id": found.id,
+            }));
+            match rewritten {
+                Ok(item) => {
+                    let reading = if relationship == name {
+                        format!("'{name}' is a relationship of '{node_type}', not a field")
+                    } else {
+                        format!(
+                            "'{name}' is not a field of '{node_type}'; read as its relationship \
+                             '{relationship}'"
+                        )
+                    };
+                    rewrites.push(format!(
+                        "{reading}: matched {node_type} nodes whose '{relationship}' is {} ({})",
+                        found.title.as_deref().unwrap_or(&found.content),
+                        found.id
+                    ));
+                    out.push(item);
+                }
+                Err(_) => out.push(filter),
+            }
+        }
+        (out, rewrites)
+    }
+
     async fn exec_search_nodes(
         &self,
         tool_call_id: &str,
@@ -4110,11 +4298,14 @@ impl GraphToolExecutor {
         // type was scoped after `params` is consumed by the query.
         let queried_type = params.node_type.clone();
 
+        let (filters, rewrites) = self
+            .relationship_filters_from_properties(queried_type.as_deref(), params.filters)
+            .await;
         let summaries = self
             .run_node_query(
                 params.node_type,
                 params.query,
-                params.filters,
+                filters,
                 params.sorting,
                 limit,
                 "search_nodes",
@@ -4122,6 +4313,9 @@ impl GraphToolExecutor {
             .await?;
 
         let mut result = json!({ "count": summaries.len(), "nodes": summaries });
+        if !rewrites.is_empty() {
+            result["filters_rewritten"] = json!(rewrites);
+        }
 
         // A zero-result type-scoped search is the one outcome the model cannot
         // read: "no node matches this filter" and "the field I filtered on
@@ -4161,6 +4355,22 @@ impl GraphToolExecutor {
                         if let Some(obj) = result.as_object_mut() {
                             obj.insert("filterable_properties".to_string(), json!(fields));
                         }
+                    }
+                }
+                // The relationships too, the derived ones included: a name
+                // that is neither a field nor a relationship matches nothing,
+                // and the model reads that as "none". Naming the relationships
+                // says what a filter through one is called.
+                if let Ok(relationships) = query_ops::relationship_names_of(&ns, &node_type).await {
+                    let relationships: Vec<Value> = relationships
+                        .into_iter()
+                        .map(|(name, to)| match to {
+                            Some(to) => json!({ "name": name, "to": to }),
+                            None => json!({ "name": name }),
+                        })
+                        .collect();
+                    if !relationships.is_empty() {
+                        result["filterable_relationships"] = json!(relationships);
                     }
                 }
             }

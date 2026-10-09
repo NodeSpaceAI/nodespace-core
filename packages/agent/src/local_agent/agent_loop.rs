@@ -3219,7 +3219,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // caller's point of view — announce it before the routing turn rather
         // than leaving the UI idle through it.
         on_status(LocalAgentStatus::Thinking);
-        let routed = self.route(session, user_message, &turn_cx, &cancel).await;
+        let mut routed = self.route(session, user_message, &turn_cx, &cancel).await;
 
         if let Some(clarification) = routed.clarification {
             // Stage 1 chose to clarify and the contract permits it. Answer with
@@ -3239,6 +3239,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 },
                 TurnEnd::default(),
             ));
+        }
+
+        // A lookup reads, so the procedures and tools of the skills that write
+        // are left out of the turn. See `routing::read_only_candidates`.
+        if routed.lookup_topic.is_some() {
+            routed.candidates =
+                routing::read_only_candidates(std::mem::take(&mut routed.candidates));
         }
 
         // Stage 2's surface: scoped to what the eligible candidates permit, so

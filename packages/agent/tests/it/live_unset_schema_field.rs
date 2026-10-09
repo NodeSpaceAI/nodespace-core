@@ -302,7 +302,12 @@ async fn deterministic_empty_search_returns_facts_not_instructions() {
         .expect("search_nodes must succeed");
 
     let obj = found.result.as_object().expect("result must be an object");
-    let allowed = ["count", "nodes", "filterable_properties"];
+    let allowed = [
+        "count",
+        "nodes",
+        "filterable_properties",
+        "filterable_relationships",
+    ];
     let unexpected: Vec<&String> = obj
         .keys()
         .filter(|k| !allowed.contains(&k.as_str()))

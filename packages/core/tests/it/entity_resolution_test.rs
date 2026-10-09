@@ -459,6 +459,42 @@ mod entity_resolution_tests {
         Ok(())
     }
 
+    /// A message naming a person gets, beside the person's id, how a task
+    /// reaches a person. A task's `assignee` is the other end of the person's
+    /// `tasks`, declared on neither schema the prompt shows, so the id alone
+    /// leaves the model to guess a property for it.
+    #[tokio::test]
+    async fn a_resolved_person_brings_the_links_from_tasks() -> Result<()> {
+        let (_store, service, _t) = create_test_store().await?;
+        service
+            .create_node(Node::new(
+                "person".to_string(),
+                String::new(),
+                json!({ "first_name": "Anoop", "last_name": "Nair" }),
+            ))
+            .await?;
+        let q = "How many tasks are assigned to Anoop?";
+
+        let ctx = build_workspace_context(&service, None, Some(q), Some(q)).await?;
+
+        let links = ctx
+            .entity_links
+            .iter()
+            .find(|l| l.node_type == "person")
+            .expect("a resolved person has links");
+        // The message is about tasks, so the person's other links (chat
+        // messages, pins) are left out: tasks are the only source listed.
+        let sources: Vec<&str> = links.from.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(sources, ["task"], "{links:?}");
+        let names = &links.from[0].1;
+        assert!(names.contains(&"assignee".to_string()), "{names:?}");
+
+        let out = ctx.format_for_prompt(4000);
+        assert!(out.contains("person: task via"), "{out}");
+        assert!(out.contains("assignee"), "{out}");
+        Ok(())
+    }
+
     /// The limit is honoured, so one common word cannot flood the caller.
     #[tokio::test]
     async fn the_limit_bounds_the_result_set() -> Result<()> {

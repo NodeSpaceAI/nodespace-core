@@ -110,7 +110,7 @@ use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate, Prepar
 use nodespace_core::models::schema::EnumValue;
 use nodespace_core::models::{Node, SchemaField, SchemaProtectionLevel, SkillFields};
 use nodespace_core::ops::context_ops::{
-    CollectionSummary, EntityResolution, PlaybookInfo, WorkspaceContext,
+    CollectionSummary, EntityLinks, EntityResolution, PlaybookInfo, WorkspaceContext,
 };
 use nodespace_core::ops::entity_types_block::EntityTypeDescriptor;
 use nodespace_core::services::{render_subtree_markdown, NodeService};
@@ -331,6 +331,11 @@ fn fixture_workspace_context() -> WorkspaceContext {
             }],
             not_shown: 1,
         },
+        // Pinned for the same reason as the entity tier above.
+        entity_links: vec![EntityLinks {
+            node_type: "company_sold_to".to_string(),
+            from: vec![("ticket".to_string(), vec!["raised_by".to_string()])],
+        }],
     }
 }
 
