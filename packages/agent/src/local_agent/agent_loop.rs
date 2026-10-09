@@ -2712,6 +2712,18 @@ impl AgentSession {
         self.tool_executions.push(record);
     }
 
+    /// Take this turn's resolved entities as the session's mentioned entities,
+    /// and ground their ids: the system resolved them from the graph and put
+    /// them in the prompt, so a reply that links one names a node that exists,
+    /// not an invented id. Without this, "how many tasks are in the Apollo
+    /// project?" answered correctly was replaced because the project's id came
+    /// from the prompt and not from a tool result.
+    pub fn set_mentioned_entities(&mut self, entities: Vec<crate::agent_types::MentionedEntity>) {
+        self.grounded_node_uris
+            .extend(entities.iter().map(|e| super::tools::node_uri(&e.id)));
+        self.mentioned_entities = entities;
+    }
+
     /// Append a system message whose text the system wrote, grounding every id
     /// in it, by the same rule a starting history is read with (so text that
     /// opens as the conversation summary, which is the model's, grounds
@@ -6149,7 +6161,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
     ) {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
-            session.mentioned_entities = mentioned_entities;
+            session.set_mentioned_entities(mentioned_entities);
         }
     }
 
@@ -9618,6 +9630,25 @@ mod tests {
         assert_eq!(last.role, Role::Tool);
         assert_eq!(last.name.as_deref(), Some("update_node"));
         assert!(last.content.contains("nodespace://real-1"));
+    }
+
+    #[test]
+    fn a_resolved_entity_grounds_its_id_for_the_reply() {
+        let mut session = new_session();
+        session.set_mentioned_entities(vec![crate::agent_types::MentionedEntity {
+            id: "e7cc3e4b-9217-4eb4-ae54-a24c417dea37".to_string(),
+            title: "Apollo launch".to_string(),
+            node_type: "project".to_string(),
+        }]);
+
+        let text =
+            "Found 2 tasks in [Apollo launch](nodespace://e7cc3e4b-9217-4eb4-ae54-a24c417dea37).";
+        assert!(ungrounded_node_uris(text, &session.grounded_node_uris).is_empty());
+        let invented = "See nodespace://00000000-0000-0000-0000-000000000000.";
+        assert_eq!(
+            ungrounded_node_uris(invented, &session.grounded_node_uris).len(),
+            1
+        );
     }
 
     #[test]

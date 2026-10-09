@@ -268,7 +268,13 @@ pub fn asks_about_the_message_first(
 ///
 /// - a message that does not end in a question mark. "When the review is
 ///   done, mark it signed off" and "Which reminds me, add a note about the
-///   offsite" open with the same words and ask for a write;
+///   offsite" open with the same words and ask for a write. Three openings
+///   are read as a question without the mark, provided no word in the message
+///   names a change: "tell me" / "let me know" before the question word,
+///   "how many" / "how much", and a polite request to read ("could you check
+///   the status of …", "please list …"). Left to Stage 1, those questions
+///   were routed as queries and carried the write skills and tools, which was
+///   about three times the prompt for the same answer;
 /// - a suggestion: "How about a task for that?", "What about adding Harbour
 ///   as a planning cycle?", "What if we moved it?", "Why not close it?",
 ///   "Why don't we close it?";
@@ -310,27 +316,101 @@ pub fn asks_what_the_workspace_holds(message: &str) -> bool {
         "assistant",
     ];
     // The full-width form is what a CJK keyboard types.
-    if !message.trim_end().ends_with(['?', '？']) {
-        return false;
-    }
+    let marked = message.trim_end().ends_with(['?', '？']);
     let lowered = message.to_lowercase();
-    let mut words = lowered
+    let words: Vec<&str> = lowered
         .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty());
-    if !words
-        .next()
-        .is_some_and(|first| QUESTION_WORDS.contains(&first))
-    {
+        .filter(|w| !w.is_empty())
+        .collect();
+    let (opening, rest) = split_request_opening(&words);
+    let Some((&first, after)) = rest.split_first() else {
+        return false;
+    };
+    if THE_ASSISTANT.iter().any(|w| rest.contains(w)) {
         return false;
     }
-    let mut rest = words.peekable();
-    if rest
-        .peek()
-        .is_some_and(|second| SUGGESTING.contains(second))
-    {
-        return false;
+    if QUESTION_WORDS.contains(&first) {
+        if after
+            .first()
+            .is_some_and(|second| SUGGESTING.contains(second))
+        {
+            return false;
+        }
+        // Without a question mark a question word opens a clause as readily as
+        // a question ("When the review is done, mark it signed off"). Three
+        // things say it is a question anyway: "tell me" or "let me know" in
+        // front of it, "how many" / "how much", which open no clause that
+        // asks for a write, and no word in the message that asks for one.
+        let counts = first == "how" && after.first().is_some_and(|w| ["many", "much"].contains(w));
+        return marked || (!asks_for_a_write(&words) && (opening.asked || counts));
     }
-    !rest.any(|w| THE_ASSISTANT.contains(&w))
+    // A polite request to read, with no question mark and no question word:
+    // "Could you check the status of tasks assigned to Anoop". Only when it
+    // opens with a request and names a verb that reads, and nothing in it asks
+    // for a write ("could you list the tasks and delete the old ones").
+    opening.polite
+        && !asks_for_a_write(&words)
+        && match first {
+            "find" | "list" | "show" | "search" | "look" => true,
+            "check" => matches!(
+                after,
+                ["the", "status", ..]
+                    | ["on", ..]
+                    | ["how", ..]
+                    | ["if", ..]
+                    | ["whether", ..]
+                    | ["what", ..]
+            ),
+            _ => false,
+        }
+}
+
+/// How a message opens before the words it asks with.
+struct RequestOpening {
+    /// "tell me" or "let me know": a question is being put.
+    asked: bool,
+    /// "could you", "can you", "would you", "will you" or "please".
+    polite: bool,
+}
+
+/// Split the openings that ask for something off the front of `words`.
+fn split_request_opening<'a>(words: &'a [&'a str]) -> (RequestOpening, &'a [&'a str]) {
+    let mut opening = RequestOpening {
+        asked: false,
+        polite: false,
+    };
+    let mut rest = words;
+    loop {
+        rest = match rest {
+            ["could" | "can" | "would" | "will", "you", tail @ ..] => {
+                opening.polite = true;
+                tail
+            }
+            ["please", tail @ ..] => {
+                opening.polite = true;
+                tail
+            }
+            ["tell", "me", tail @ ..] => {
+                opening.asked = true;
+                tail
+            }
+            ["let", "me", "know", tail @ ..] => {
+                opening.asked = true;
+                tail
+            }
+            _ => return (opening, rest),
+        };
+    }
+}
+
+/// Whether any word of the message names a change to the graph. Used only
+/// where the message has no question mark to say it is a question.
+fn asks_for_a_write(words: &[&str]) -> bool {
+    const WRITING: [&str; 17] = [
+        "add", "create", "make", "update", "change", "set", "mark", "assign", "move", "delete",
+        "remove", "archive", "rename", "close", "reopen", "link", "unassign",
+    ];
+    words.iter().any(|w| WRITING.contains(w))
 }
 
 /// The decision for a message Stage 1 was asked about by itself, with no
@@ -3147,6 +3227,14 @@ mod tests {
             "Who approves a change to a cycle's capacity?",
             "When did we sign off Kestrel?",
             "What's the weather like in Tokyo today?",
+            // Asked without a question mark: after "tell me", as "how many",
+            // or as a polite request to read.
+            "Tell me how many tasks are assigned Anoop",
+            "Let me know what is due on Friday",
+            "How many tasks are assigned to Norbert",
+            "Could you check the status of tasks assigned to Anoop",
+            "Please list the tasks assigned to Anoop",
+            "Can you show me the open tasks",
         ] {
             assert!(asks_what_the_workspace_holds(message), "{message:?}");
         }
@@ -3173,6 +3261,12 @@ mod tests {
             "Which reminds me, add a note about the offsite",
             "What I need is a new task to call the vendor",
             "how do we decide which cycle a slipped spec moves into",
+            // Without a question mark, and asking for a change as well.
+            "Tell me when it is Friday and mark the task done",
+            "How many tasks are open, close the old ones",
+            "Could you list the tasks and delete the old ones",
+            "Could you check off the pricing task",
+            "Could you check the status of the task and mark it done",
             // No question word.
             "Could you add Harbour as a planning cycle?",
             "find the record for the Lisbon offsite",

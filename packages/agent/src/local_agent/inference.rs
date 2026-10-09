@@ -5,10 +5,11 @@
 //! `StreamingChunk` and `ToolDefinition`). `ChatMessage` is the canonical type
 //! shared by both crates — no conversion needed on the message path.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use nodespace_nlp_engine::chat::{ChatChunk, ChatConfig, ChatEngine, ToolSpec};
+use nodespace_nlp_engine::chat::{ChatChunk, ChatConfig, ChatEngine, Role, ToolSpec};
 
 use crate::agent_types::{
     ChatInferenceEngine, ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage,
@@ -87,6 +88,46 @@ impl ChatInferenceEngine for LlamaChatInferenceEngine {
                 .collect()
         });
 
+        // What this request sends, in characters, logged with how long it took.
+        // The tool schemas are sized by name here because the local engine
+        // renders them into the prompt, where they count against the window.
+        let started = std::time::Instant::now();
+        let system_chars: usize = request
+            .messages
+            .iter()
+            .filter(|m| matches!(m.role, Role::System))
+            .map(|m| m.content.len())
+            .sum();
+        let conversation_chars: usize = request
+            .messages
+            .iter()
+            .filter(|m| !matches!(m.role, Role::System))
+            .map(|m| m.content.len())
+            .sum();
+        let mut per_tool: Vec<(usize, String)> = tools
+            .iter()
+            .flatten()
+            .map(|t| {
+                let schema = serde_json::to_string(&t.parameters_schema)
+                    .map(|j| j.len())
+                    .unwrap_or(0);
+                (t.name.len() + t.description.len() + schema, t.name.clone())
+            })
+            .collect();
+        let tool_schema_chars: usize = per_tool.iter().map(|(n, _)| n).sum();
+        per_tool.sort_by_key(|b| std::cmp::Reverse(b.0));
+        let largest_tools = per_tool
+            .iter()
+            .take(3)
+            .map(|(n, name)| format!("{name}={n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        // Milliseconds to the first chunk of any kind, 0 until one arrives
+        // (stored +1 so a first chunk at 0 ms is told from none).
+        let first_chunk_ms = Arc::new(AtomicU64::new(0));
+        let reasoning_chars = Arc::new(AtomicU64::new(0));
+        let (first_seen, reasoning_seen) = (first_chunk_ms.clone(), reasoning_chars.clone());
+
         let temperature = request.temperature.unwrap_or(self.default_temperature);
         // 2048 fallback for GGUF path when no cap is requested (tool-calling iterations
         // pass max_tokens: None to avoid truncating argument JSON mid-field). Ollama uses
@@ -107,10 +148,35 @@ impl ChatInferenceEngine for LlamaChatInferenceEngine {
                 tools,
                 temperature,
                 max_tokens,
-                move |chunk| bridge_chat_chunk(chunk, on_chunk.as_ref()),
+                move |chunk| {
+                    let _ = first_seen.compare_exchange(
+                        0,
+                        started.elapsed().as_millis() as u64 + 1,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    );
+                    if let ChatChunk::Reasoning(text) = &chunk {
+                        reasoning_seen.fetch_add(text.len() as u64, Ordering::Relaxed);
+                    }
+                    bridge_chat_chunk(chunk, on_chunk.as_ref());
+                },
             )
             .await
             .map_err(|e| InferenceError::Engine(e.to_string()))?;
+
+        let first = first_chunk_ms.load(Ordering::Relaxed);
+        tracing::info!(
+            duration_ms = started.elapsed().as_millis() as u64,
+            first_chunk_ms = (first > 0).then(|| first - 1),
+            prompt_tokens = usage_result.prompt_tokens,
+            completion_tokens = usage_result.completion_tokens,
+            reasoning_chars = reasoning_chars.load(Ordering::Relaxed),
+            system_chars,
+            conversation_chars,
+            tool_schema_chars,
+            largest_tools = %largest_tools,
+            "Local inference request finished"
+        );
 
         Ok(InferenceUsage {
             prompt_tokens: usage_result.prompt_tokens,
