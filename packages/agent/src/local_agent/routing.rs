@@ -1267,6 +1267,12 @@ pub fn all_candidate_scores(candidates: &[SkillCandidate]) -> String {
 /// read-only, or none that is clears the score gate, the candidates are
 /// returned as retrieved: narrowing must never leave the turn without a
 /// procedure.
+///
+/// The saving is prompt text, not safety: destructive tools were already
+/// offered only from the winning candidate. The cost is accepted: a message
+/// Stage 1 labels a lookup but that also asks for a change ("find the task and
+/// mark it done") runs the turn without the write skills, and the model says
+/// it cannot, rather than acting.
 pub fn read_only_candidates(candidates: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
     let read_only: Vec<SkillCandidate> = candidates
         .iter()
@@ -1830,6 +1836,43 @@ mod tests {
             role: Default::default(),
             pinned: false,
         }
+    }
+
+    #[test]
+    fn a_lookup_keeps_the_read_only_candidates_in_their_order() {
+        let kept = read_only_candidates(vec![
+            candidate("Node Deletion", 0.99, &["search_nodes", "delete_node"]),
+            candidate("Research & Search", 0.97, &["search_nodes", "get_node"]),
+            candidate("Implementing a Task", 0.96, &["update_task_status"]),
+            candidate("Play Workflow State", 0.95, &["get_workflow_state"]),
+        ]);
+        let names: Vec<&str> = kept.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Research & Search", "Play Workflow State"]);
+    }
+
+    #[test]
+    fn a_lookup_with_no_read_only_candidate_keeps_what_was_retrieved() {
+        let retrieved = vec![
+            candidate("Node Deletion", 0.99, &["delete_node"]),
+            candidate("Organization", 0.97, &["create_relationship"]),
+        ];
+        let kept = read_only_candidates(retrieved.clone());
+        assert_eq!(kept.len(), retrieved.len());
+    }
+
+    #[test]
+    fn a_read_only_candidate_below_the_score_gate_does_not_replace_the_retrieved_set() {
+        let retrieved = vec![
+            candidate("Node Deletion", 0.99, &["delete_node"]),
+            candidate("Research & Search", 0.01, &["search_nodes"]),
+        ];
+        assert!(!clears_score_gate(&retrieved[1]));
+        let kept = read_only_candidates(retrieved);
+        assert_eq!(
+            kept.len(),
+            2,
+            "narrowing must not leave a procedure the gate rejects"
+        );
     }
 
     #[test]

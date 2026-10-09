@@ -217,8 +217,9 @@ export function assertScenario(
 ): Verdict {
   const turn = turns[turns.length - 1];
   if (!turn) return { passed: false, failure: "No turn recorded." };
+  // A lookup changes nothing; any tool named for a change fails the turn.
   const wrote = turn.toolsCalled.filter((t) =>
-    ["create_node", "update_node", "update_task_status", "create_relationship"].includes(t),
+    /^(create|update|delete|set|move|archive|restore|merge|add|remove)_/.test(t),
   );
   if (wrote.length > 0) {
     return {

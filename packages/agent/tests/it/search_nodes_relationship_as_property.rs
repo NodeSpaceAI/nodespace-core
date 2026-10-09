@@ -237,6 +237,59 @@ async fn a_relationship_filter_and_a_real_property_filter_are_left_as_written() 
     assert!(by_status.result.get("filters_rewritten").is_none());
 }
 
+/// Only an equality is read as a relationship to a node. "Tasks not assigned to
+/// Anoop" run as "assigned to Anoop" would answer the opposite question, so a
+/// negated or non-equality filter is left as written and refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_negated_or_non_equality_filter_is_not_read_as_the_relationship() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    for (operator, negate) in [("equals", true), ("contains", false)] {
+        let refused = executor
+            .execute(
+                "search_nodes",
+                json!({
+                    "node_type": "task",
+                    "filters": [{
+                        "type": "property", "operator": operator, "negate": negate,
+                        "property": "assignee", "value": ANOOP
+                    }]
+                }),
+            )
+            .await
+            .expect_err("a filter that is not an equality must not be rewritten")
+            .to_string();
+        assert!(
+            refused.contains("is a relationship of 'task'"),
+            "{operator}: {refused}"
+        );
+    }
+}
+
+/// A property that is no relationship, written beside an id, is not guessed
+/// into one just because the type has a relationship to that kind of node.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unrelated_property_beside_an_id_is_not_read_as_a_relationship() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    let result = executor
+        .execute(
+            "search_nodes",
+            json!({
+                "node_type": "task",
+                "filters": [{
+                    "type": "property", "operator": "equals",
+                    "property": "notes", "value": ANOOP
+                }]
+            }),
+        )
+        .await;
+
+    if let Ok(result) = result {
+        assert!(result.result.get("filters_rewritten").is_none());
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_relationship_named_as_a_property_without_a_node_is_refused_with_the_filter_to_use() {
     let (executor, _tmp) = executor_with_assigned_tasks().await;

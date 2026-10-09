@@ -838,9 +838,6 @@ async fn relationship_meant(
         .filter(|(_, to)| to.as_deref().is_none_or(|to| to == target_type))
         .map(|(candidate, _)| candidate)
         .collect();
-    if let [only] = reaching.as_slice() {
-        return Some(only.clone());
-    }
     let shared = |candidate: &str| {
         name.chars()
             .zip(candidate.chars())
@@ -4174,14 +4171,22 @@ impl GraphToolExecutor {
         let mut repaired = Vec::with_capacity(filters.len());
         for mut filter in filters {
             if filter.path.is_some() && filter.node_id.is_none() {
-                let written = [
-                    filter.value.as_ref().and_then(Value::as_str),
-                    filter.property.as_deref(),
-                ]
-                .into_iter()
-                .flatten()
-                .find_map(uuid_in);
-                if let Some(id) = written {
+                // A value beside a real property name is a comparison on the
+                // far node, which happens to be a UUID; only a missing
+                // property, or a label for an id (`person-id`), makes the
+                // value the node to reach.
+                let in_property = filter.property.as_deref().and_then(uuid_in);
+                let value_names_node = filter.property.as_deref().is_none_or(|p| {
+                    let p = p.to_ascii_lowercase();
+                    p == "id" || p.ends_with("-id") || p.ends_with("_id")
+                });
+                let in_value = filter
+                    .value
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .and_then(uuid_in)
+                    .filter(|_| value_names_node);
+                if let Some(id) = in_property.or(in_value) {
                     if ns.get_node(&id).await.ok().flatten().is_some() {
                         rewrites.push(format!(
                             "the relationship filter named {id} outside 'node_id'; used it as \
@@ -4206,9 +4211,15 @@ impl GraphToolExecutor {
         };
         let mut out = Vec::with_capacity(filters.len());
         for filter in filters {
+            // Only an equality is a relationship to a node. A negated filter,
+            // or `contains`, rewritten into one would answer the opposite
+            // question and report it as what was asked.
+            let is_equality = filter.operator == "equals" && filter.negate != Some(true);
             let name = match (filter.filter_type.as_deref(), filter.property.as_deref()) {
                 (None | Some("property"), Some(name))
-                    if !name.contains('.') && !fields.iter().any(|f| f.name == name) =>
+                    if is_equality
+                        && !name.contains('.')
+                        && !fields.iter().any(|f| f.name == name) =>
                 {
                     name.to_string()
                 }

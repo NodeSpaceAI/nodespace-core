@@ -482,19 +482,16 @@ mod entity_resolution_tests {
             .iter()
             .find(|l| l.node_type == "person")
             .expect("a resolved person has links");
-        let (_, names) = links
-            .from
-            .iter()
-            .find(|(source, _)| source == "task")
-            .expect("tasks reach a person");
+        // The message is about tasks, so the person's other links (chat
+        // messages, pins) are left out: tasks are the only source listed.
+        let sources: Vec<&str> = links.from.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(sources, ["task"], "{links:?}");
+        let names = &links.from[0].1;
         assert!(names.contains(&"assignee".to_string()), "{names:?}");
 
         let out = ctx.format_for_prompt(4000);
         assert!(out.contains("person: task via"), "{out}");
         assert!(out.contains("assignee"), "{out}");
-        // The message is about tasks, so the person's other links (chat
-        // messages, pins) are left out.
-        assert!(!out.contains("ai-chat"), "{out}");
         Ok(())
     }
 

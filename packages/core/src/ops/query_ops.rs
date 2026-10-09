@@ -444,6 +444,10 @@ pub async fn relationships_reaching(
     for (source_type, rel) in inbound {
         reaching.push((source_type, rel.name));
     }
+    // A relationship read from both ends, or inherited, is reported once; the
+    // order is the same on every turn, so the prompt it reaches is too.
+    reaching.sort();
+    reaching.dedup();
     Ok(reaching)
 }
 

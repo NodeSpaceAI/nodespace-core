@@ -296,7 +296,9 @@ pub const RESOLVED_ENTITIES_HEADER: &str =
 pub const ENTITY_LINKS_HEADER: &str =
     "LINKS TO THE MENTIONED ENTITIES (to list nodes by one, search them with a relationship filter on its id):";
 
-/// Most entity types, and most source types per entity type, the links block lists.
+/// What bounds the links block. A turn carries at most five entities, which
+/// rarely span more than four types; three source types per type keeps the line
+/// short enough that the block stays a hint beside the id, not a schema.
 const MAX_LINK_TYPES: usize = 4;
 const MAX_LINK_SOURCES: usize = 3;
 
@@ -713,27 +715,14 @@ async fn resolve_entities(
     }
 }
 
-/// `query` is the BLENDED retrieval query (prior turns plus the current
-/// message) — schema retrieval embeds it, and the blend is what lets a
-/// follow-up referring to its subject by pronoun still retrieve the right
-/// schema.
-///
-/// `entity_query` is the CURRENT MESSAGE ALONE, and the separation is
-/// load-bearing. Entity resolution is a lexical lookup over a bounded number of
-/// tokens, so prepending prior turns does not add recall — it consumes the
-/// budget. With even one prior turn, "Add Northwind Trading to the companies we
-/// sell to" tokenises to `set up new type places hold` (the prior turn's
-/// opening words) and the entity never reaches the index. The tier then reports
-/// `NoMatch`, which renders as a positive claim that the named thing does not
-/// exist — so a truncation would be laundered into an instruction to create a
-/// duplicate.
-///
-/// A caller with only one string may pass it for both; the blend helps
-/// embeddings and merely costs tokens here.
 /// How other types' nodes reach each type among the resolved entities.
 ///
-/// A failed read leaves the type out: the block helps the model, and a turn
-/// without it is no worse than before.
+/// Best effort. The source types listed are the ones the message names by
+/// their type id, singular or with a plain `s`; a message that names a type
+/// another way ("to-dos", "issues") gets no block, and the search tool's own
+/// repair of a relationship written as a property is what covers it. A failed
+/// read leaves the type out: the block helps the model, and a turn without it
+/// is no worse than before.
 async fn entity_links_of(
     node_service: &Arc<NodeService>,
     resolution: &EntityResolution,
@@ -741,6 +730,12 @@ async fn entity_links_of(
 ) -> Vec<EntityLinks> {
     let EntityResolution::Resolved { entities, .. } = resolution else {
         return Vec::new();
+    };
+    let lowered = message.to_lowercase();
+    let named = |source: &str| {
+        let source = source.to_lowercase();
+        crate::ops::skill_ops::mentions_phrase(&lowered, &source)
+            || crate::ops::skill_ops::mentions_phrase(&lowered, &format!("{source}s"))
     };
     let mut types: Vec<&str> = Vec::new();
     for entity in entities {
@@ -759,25 +754,18 @@ async fn entity_links_of(
                 continue;
             }
         };
-        let mut from: Vec<(String, Vec<String>)> = Vec::new();
-        for (source, name) in reaching {
-            match from.iter_mut().find(|(existing, _)| *existing == source) {
-                Some((_, names)) => names.push(name),
-                None => from.push((source, vec![name])),
-            }
-        }
         // A person is reached from chat messages, pins and skills as well as
         // tasks. When the message names a source type ("tasks assigned to
         // Anoop"), that is the link it is about and the rest is noise to the
         // model; when it names none, nothing here helps it, and a list of
         // whatever else points at the entity would only be read as relevant.
-        let lowered = message.to_lowercase();
-        let named = |source: &str| {
-            let source = source.to_lowercase();
-            crate::ops::skill_ops::mentions_phrase(&lowered, &source)
-                || crate::ops::skill_ops::mentions_phrase(&lowered, &format!("{source}s"))
-        };
-        from.retain(|(source, _)| named(source));
+        let mut from: Vec<(String, Vec<String>)> = Vec::new();
+        for (source, name) in reaching.into_iter().filter(|(source, _)| named(source)) {
+            match from.iter_mut().find(|(existing, _)| *existing == source) {
+                Some((_, names)) => names.push(name),
+                None => from.push((source, vec![name])),
+            }
+        }
         from.truncate(MAX_LINK_SOURCES);
         if !from.is_empty() {
             links.push(EntityLinks {
@@ -789,6 +777,23 @@ async fn entity_links_of(
     links
 }
 
+/// `query` is the BLENDED retrieval query (prior turns plus the current
+/// message) — schema retrieval embeds it, and the blend is what lets a
+/// follow-up referring to its subject by pronoun still retrieve the right
+/// schema.
+///
+/// `entity_query` is the CURRENT MESSAGE ALONE, and the separation is
+/// load-bearing. Entity resolution is a lexical lookup over a bounded number of
+/// tokens, so prepending prior turns does not add recall — it consumes the
+/// budget. With even one prior turn, "Add Northwind Trading to the companies we
+/// sell to" tokenises to `set up new type places hold` (the prior turn's
+/// opening words) and the entity never reaches the index. The tier then reports
+/// `NoMatch`, which renders as a positive claim that the named thing does not
+/// exist — so a truncation would be laundered into an instruction to create a
+/// duplicate.
+///
+/// A caller with only one string may pass it for both; the blend helps
+/// embeddings and merely costs tokens here.
 pub async fn build_workspace_context(
     node_service: &Arc<NodeService>,
     embedding_service: Option<&Arc<NodeEmbeddingService>>,
