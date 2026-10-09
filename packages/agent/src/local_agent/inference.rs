@@ -11,6 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nodespace_nlp_engine::chat::{ChatChunk, ChatConfig, ChatEngine, Role, ToolSpec};
 
+use super::openai_compat_inference::RequestSizes;
 use crate::agent_types::{
     ChatInferenceEngine, ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage,
     ModelFamily, StreamingChunk, ToolDefinition,
@@ -88,40 +89,28 @@ impl ChatInferenceEngine for LlamaChatInferenceEngine {
                 .collect()
         });
 
-        // What this request sends, in characters, logged with how long it took.
-        // The tool schemas are sized by name here because the local engine
-        // renders them into the prompt, where they count against the window.
+        // What this request sends, logged with how long it took. The local
+        // engine renders the tool schemas into the prompt, where they count
+        // against the window.
         let started = std::time::Instant::now();
-        let system_chars: usize = request
-            .messages
-            .iter()
-            .filter(|m| matches!(m.role, Role::System))
-            .map(|m| m.content.len())
-            .sum();
-        let conversation_chars: usize = request
-            .messages
-            .iter()
-            .filter(|m| !matches!(m.role, Role::System))
-            .map(|m| m.content.len())
-            .sum();
-        let mut per_tool: Vec<(usize, String)> = tools
-            .iter()
-            .flatten()
-            .map(|t| {
-                let schema = serde_json::to_string(&t.parameters_schema)
-                    .map(|j| j.len())
-                    .unwrap_or(0);
-                (t.name.len() + t.description.len() + schema, t.name.clone())
-            })
-            .collect();
-        let tool_schema_chars: usize = per_tool.iter().map(|(n, _)| n).sum();
-        per_tool.sort_by_key(|b| std::cmp::Reverse(b.0));
-        let largest_tools = per_tool
-            .iter()
-            .take(3)
-            .map(|(n, name)| format!("{name}={n}"))
-            .collect::<Vec<_>>()
-            .join(",");
+        let bytes = |system: bool| -> usize {
+            request
+                .messages
+                .iter()
+                .filter(|m| matches!(m.role, Role::System) == system)
+                .map(|m| m.content.len())
+                .sum()
+        };
+        let sizes = RequestSizes::new(
+            bytes(true),
+            bytes(false),
+            tools.iter().flatten().map(|t| {
+                (
+                    t.name.clone(),
+                    RequestSizes::tool_bytes_of(&t.name, &t.description, &t.parameters_schema),
+                )
+            }),
+        );
         // Milliseconds to the first chunk of any kind, 0 until one arrives
         // (stored +1 so a first chunk at 0 ms is told from none).
         let first_chunk_ms = Arc::new(AtomicU64::new(0));
@@ -162,21 +151,27 @@ impl ChatInferenceEngine for LlamaChatInferenceEngine {
                 },
             )
             .await
-            .map_err(|e| InferenceError::Engine(e.to_string()))?;
+            .map_err(|e| InferenceError::Engine(e.to_string()));
 
         let first = first_chunk_ms.load(Ordering::Relaxed);
+        let (prompt_tokens, completion_tokens) = usage_result
+            .as_ref()
+            .map(|u| (u.prompt_tokens, u.completion_tokens))
+            .unwrap_or_default();
         tracing::info!(
+            ok = usage_result.is_ok(),
             duration_ms = started.elapsed().as_millis() as u64,
             first_chunk_ms = (first > 0).then(|| first - 1),
-            prompt_tokens = usage_result.prompt_tokens,
-            completion_tokens = usage_result.completion_tokens,
+            prompt_tokens,
+            completion_tokens,
             reasoning_chars = reasoning_chars.load(Ordering::Relaxed),
-            system_chars,
-            conversation_chars,
-            tool_schema_chars,
-            largest_tools = %largest_tools,
+            system_bytes = sizes.system_bytes,
+            conversation_bytes = sizes.conversation_bytes,
+            tool_schema_bytes = sizes.tool_bytes,
+            largest_tools = %sizes.largest_tools,
             "Local inference request finished"
         );
+        let usage_result = usage_result?;
 
         Ok(InferenceUsage {
             prompt_tokens: usage_result.prompt_tokens,

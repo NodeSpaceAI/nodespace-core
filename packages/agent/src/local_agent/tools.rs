@@ -3928,12 +3928,18 @@ async fn refuse_relationship_keys(
         // A field the type declares is a field, whatever a relationship toward
         // it is called: a user's `incident-report` may hold a `resolved` field
         // while another type's relationship reaches reports under that name.
-        if ns.declares_field(node_type, name).await.unwrap_or(false) {
+        // A schema that cannot be read is not grounds to refuse a write.
+        if !matches!(ns.declares_field(node_type, name).await, Ok(false)) {
             continue;
         }
         let Ok(Some(hop)) = query_ops::relationship_named(ns, node_type, name).await else {
             continue;
         };
+        // A built-in inbound name (`child_of`, `mentioned_by`) is not written
+        // from either end the way a declared one is: left to the store.
+        if query_ops::is_built_in_inbound(&hop) {
+            continue;
+        }
         let reaches = hop
             .far_type
             .as_ref()

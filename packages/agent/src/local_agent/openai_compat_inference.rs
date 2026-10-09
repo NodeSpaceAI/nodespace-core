@@ -311,54 +311,73 @@ struct WireStats {
     reasoning_tokens: u32,
 }
 
-/// The sizes of what a request sent, in characters: the messages by role and
-/// the tool schemas by tool.
-struct RequestSizes {
-    system_chars: usize,
-    conversation_chars: usize,
-    tool_chars: usize,
-    largest_tools: String,
+/// The sizes of what a request sent, in bytes: the messages by role and the
+/// tool schemas by tool. Bytes, not characters: `len()` of the text, which is
+/// what a prompt costs to send. Assistant tool-call arguments replayed in the
+/// conversation are not counted.
+pub(crate) struct RequestSizes {
+    pub(crate) system_bytes: usize,
+    pub(crate) conversation_bytes: usize,
+    pub(crate) tool_bytes: usize,
+    /// The three largest tools, `name=bytes`, largest first.
+    pub(crate) largest_tools: String,
 }
 
 impl RequestSizes {
-    fn of(messages: &[OpenAiMessage], tools: Option<&[OpenAiTool]>) -> Self {
-        let system_chars = messages
-            .iter()
-            .filter(|m| m.role == "system")
-            .map(|m| m.content.len())
-            .sum();
-        let conversation_chars = messages
-            .iter()
-            .filter(|m| m.role != "system")
-            .map(|m| m.content.len())
-            .sum();
-        let mut per_tool: Vec<(usize, &str)> = tools
-            .unwrap_or_default()
-            .iter()
-            .map(|t| {
-                let schema = serde_json::to_string(&t.function.parameters)
-                    .map(|j| j.len())
-                    .unwrap_or(0);
-                (
-                    t.function.name.len() + t.function.description.len() + schema,
-                    t.function.name.as_str(),
-                )
-            })
-            .collect();
-        let tool_chars = per_tool.iter().map(|(n, _)| n).sum();
-        per_tool.sort_by_key(|b| std::cmp::Reverse(b.0));
+    /// From the sizes of the parts; `tools` is `(name, bytes)` per tool.
+    pub(crate) fn new(
+        system_bytes: usize,
+        conversation_bytes: usize,
+        tools: impl IntoIterator<Item = (String, usize)>,
+    ) -> Self {
+        let mut per_tool: Vec<(String, usize)> = tools.into_iter().collect();
+        let tool_bytes = per_tool.iter().map(|(_, n)| n).sum();
+        per_tool.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
         let largest_tools = per_tool
             .iter()
             .take(3)
-            .map(|(n, name)| format!("{name}={n}"))
+            .map(|(name, n)| format!("{name}={n}"))
             .collect::<Vec<_>>()
             .join(",");
         Self {
-            system_chars,
-            conversation_chars,
-            tool_chars,
+            system_bytes,
+            conversation_bytes,
+            tool_bytes,
             largest_tools,
         }
+    }
+
+    /// A tool's size: its name, description and parameter schema.
+    pub(crate) fn tool_bytes_of(
+        name: &str,
+        description: &str,
+        schema: &serde_json::Value,
+    ) -> usize {
+        name.len() + description.len() + serde_json::to_string(schema).map_or(0, |j| j.len())
+    }
+
+    fn of(messages: &[OpenAiMessage], tools: Option<&[OpenAiTool]>) -> Self {
+        let bytes = |system: bool| -> usize {
+            messages
+                .iter()
+                .filter(|m| (m.role == "system") == system)
+                .map(|m| m.content.len())
+                .sum()
+        };
+        Self::new(
+            bytes(true),
+            bytes(false),
+            tools.unwrap_or_default().iter().map(|t| {
+                (
+                    t.function.name.clone(),
+                    Self::tool_bytes_of(
+                        &t.function.name,
+                        &t.function.description,
+                        &t.function.parameters,
+                    ),
+                )
+            }),
+        )
     }
 }
 
@@ -417,12 +436,7 @@ impl ChatInferenceEngine for OpenAiCompatInferenceEngine {
             .as_ref()
             .map(|u| (u.prompt_tokens, u.completion_tokens))
             .unwrap_or_default();
-        let sizes: RequestSizes = sizes.unwrap_or(RequestSizes {
-            system_chars: 0,
-            conversation_chars: 0,
-            tool_chars: 0,
-            largest_tools: String::new(),
-        });
+        let sizes = sizes.unwrap_or_else(|| RequestSizes::new(0, 0, []));
         tracing::info!(
             model = %self.model_name,
             ok = result.is_ok(),
@@ -432,9 +446,9 @@ impl ChatInferenceEngine for OpenAiCompatInferenceEngine {
             prompt_tokens,
             completion_tokens,
             reasoning_tokens = stats.reasoning_tokens,
-            system_chars = sizes.system_chars,
-            conversation_chars = sizes.conversation_chars,
-            tool_schema_chars = sizes.tool_chars,
+            system_bytes = sizes.system_bytes,
+            conversation_bytes = sizes.conversation_bytes,
+            tool_schema_bytes = sizes.tool_bytes,
             largest_tools = %sizes.largest_tools,
             "OpenAI-compatible request finished"
         );
@@ -1236,13 +1250,13 @@ mod tests {
 
         let sizes = RequestSizes::of(&messages, Some(&tools));
 
-        assert_eq!(sizes.system_chars, 4);
-        assert_eq!(sizes.conversation_chars, 3);
+        assert_eq!(sizes.system_bytes, 4);
+        assert_eq!(sizes.conversation_bytes, 3);
         assert!(
             sizes.largest_tools.starts_with("big="),
             "{}",
             sizes.largest_tools
         );
-        assert!(sizes.tool_chars > 100);
+        assert!(sizes.tool_bytes > 100);
     }
 }

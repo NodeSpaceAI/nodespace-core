@@ -386,6 +386,13 @@ pub async fn relationship_named(
     })
 }
 
+/// Whether `hop` is a built-in name read from the target end (`child_of`,
+/// `mentioned_by`): no schema declares it, so there is no declaring end to
+/// write it from.
+pub fn is_built_in_inbound(hop: &nodespace_types::ResolvedHop) -> bool {
+    hop.source_type.is_none() && matches!(hop.direction, nodespace_types::HopDirection::Inbound)
+}
+
 /// The relationships a filter on `target_type` can follow, as
 /// `(name, type at the far end)`: the ones the type declares or inherits, and
 /// the ones other types declare toward it, under their reverse names (a task's

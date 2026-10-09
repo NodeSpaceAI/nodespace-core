@@ -405,10 +405,50 @@ fn split_request_opening<'a>(words: &'a [&'a str]) -> (RequestOpening, &'a [&'a 
 
 /// Whether any word of the message names a change to the graph. Used only
 /// where the message has no question mark to say it is a question.
+///
+/// The list is closed, so a verb missing from it lets a write through as a
+/// read; "then" is in it because a second step is another request. The cost of
+/// a miss is a turn that has the read tools only and says it cannot write, and
+/// the next message routes on its own.
 fn asks_for_a_write(words: &[&str]) -> bool {
-    const WRITING: [&str; 17] = [
-        "add", "create", "make", "update", "change", "set", "mark", "assign", "move", "delete",
-        "remove", "archive", "rename", "close", "reopen", "link", "unassign",
+    const WRITING: [&str; 37] = [
+        "add",
+        "create",
+        "make",
+        "update",
+        "change",
+        "set",
+        "mark",
+        "assign",
+        "move",
+        "delete",
+        "remove",
+        "archive",
+        "rename",
+        "close",
+        "reopen",
+        "link",
+        "unassign",
+        "complete",
+        "finish",
+        "fix",
+        "edit",
+        "tag",
+        "schedule",
+        "reschedule",
+        "cancel",
+        "approve",
+        "put",
+        "send",
+        "start",
+        "save",
+        "write",
+        "record",
+        "log",
+        "copy",
+        "merge",
+        "restore",
+        "then",
     ];
     words.iter().any(|w| WRITING.contains(w))
 }
@@ -3235,6 +3275,7 @@ mod tests {
             "Could you check the status of tasks assigned to Anoop",
             "Please list the tasks assigned to Anoop",
             "Can you show me the open tasks",
+            "Please could you list the tasks assigned to Anoop",
         ] {
             assert!(asks_what_the_workspace_holds(message), "{message:?}");
         }
@@ -3267,6 +3308,9 @@ mod tests {
             "Could you list the tasks and delete the old ones",
             "Could you check off the pricing task",
             "Could you check the status of the task and mark it done",
+            "Please list the tasks, then complete the old ones",
+            "Could you show the open tasks and reschedule them",
+            "Tell me how many tasks are open and cancel the rest",
             // No question word.
             "Could you add Harbour as a planning cycle?",
             "find the record for the Lisbon offsite",
