@@ -161,6 +161,37 @@ for an item that no longer exists: `nodespace node context <id> --json` prints
 The journal is removed when the session ends, and one a crashed session left is
 removed, once it has been idle for an hour, by the next session's start.
 
+### The gate
+
+Before the file-writing tools (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) run,
+the plugin's `tool.call` hook runs `nodespace gate check --action repo_write`
+with the file's path, and in a launched session the launch's session id (the
+launch variables are removed from the environment once the plugin holds them).
+The verdict, the reason and the deciding rule come from the command, and the
+plugin evaluates none:
+
+- `deny` refuses the call with the gate's reason, and tells the agent the edit
+  was not made and not to retry it unchanged.
+- `allow` with a "would have denied" note (an advisory rule) lets the call run
+  and adds the note to its result.
+- A check that did not run (the CLI or daemon did not answer, it timed out, or
+  it answered in a shape the plugin does not read) allows the call and adds a
+  warning to its result: a broken gate must not stop work.
+
+Only a session with a project for its checkout is asked. The tools that reach
+the user, `nodespace` commands, reads and every tool outside the four above
+never reach the check. **Shell commands that write files (`sed -i`, redirects,
+`tee`) are not covered**, and the gate is client-side: it prevents mistakes and
+drift and is not access control (ADR-097 §4, §7, §9).
+
+The gate runs in the plugin's own `tool.call` hook, not in a `PreToolUse`
+command hook in the user's settings. The plugin is already the module that
+refuses a tool call (ADR-093 §5), so a harness release that breaks its API
+breaks the plugin whole whichever route carries the gate, and a settings entry
+would be a second install target the installer does not own. A command hook
+also cannot see the launch's session id, which is held only in the plugin's
+state once the variables are removed.
+
 ### Testing the plugin
 
 The plugin's tests run inside Claude Code's own engine, so they are not part of

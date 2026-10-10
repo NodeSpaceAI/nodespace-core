@@ -626,6 +626,16 @@ Because they share the one `relationship_type` column with schema-declared relat
 
 **Output:** confirmation of the created or deleted edge, or the list of related nodes with `count`/`direction`/`relationship_name`.
 
+### When an edit is refused
+
+In Claude Code, the NodeSpace plugin asks `nodespace gate check` before the file-writing tools (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) run, and acts on the answer. It holds no rule of its own.
+
+- **Refused.** The edit was not made. The message gives the reason and the next step. Do that step first, then make the edit again. Do not retry the same edit unchanged: it will be refused again.
+- **"Would have refused".** The rule is advisory, so the edit was made. Do what the note says before your next edit.
+- **"The gate check did not run".** The daemon could not be reached or the check timed out. The edit was made and was not checked.
+
+Shell commands that write files (`sed -i`, redirects, `tee`) are not checked, and neither are reads, `nodespace` commands, or writes outside the project folder.
+
 ### Authoring a skill
 
 A `skill` node is guidance an agent finds by search: its name and `use_for` are what a request is matched against, and its markdown children are the procedure to follow. Write `use_for` as the requests the skill should handle, in the words someone would ask them, short and specific. Where a request that belongs to another skill keeps matching this one, name that request in `not_for`; it lowers this skill only on requests closer to `not_for` than to `use_for`. Create the root, then add the guidance beneath it as markdown children:

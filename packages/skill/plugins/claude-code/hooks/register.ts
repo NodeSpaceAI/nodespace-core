@@ -1040,6 +1040,91 @@ async function quietly<T>(fallback: T, step: () => Promise<T>): Promise<T> {
 const USER_FACING_TOOLS = ['AskUserQuestion', 'SendUserMessage']
 
 /**
+ * The file-writing tools the gate checks, each with the input field that names
+ * the file it writes. Shell commands that write files are not covered
+ * (ADR-097 §4): reads, `nodespace` commands and the tools that reach the user
+ * are none of these, so they never reach the check.
+ */
+const FILE_WRITE_PATH_FIELDS: Readonly<Record<string, string>> = {
+  Edit: 'file_path',
+  Write: 'file_path',
+  MultiEdit: 'file_path',
+  NotebookEdit: 'notebook_path',
+}
+const MAX_REASON_CHARS = 1000
+
+/**
+ * Asks `nodespace gate check` whether a file write may proceed (ADR-097 §9).
+ * The verdict, the reason and the rule that decided all come from the command:
+ * nothing here knows a rule. A check that did not run, or answered in a shape
+ * this does not read, allows the write and says so (ADR-097 §5).
+ */
+async function gateCheck(
+  $: Engine,
+  held: NodespaceSession,
+  tool: string,
+  input: Record<string, unknown>,
+): Promise<Verdict> {
+  const field = FILE_WRITE_PATH_FIELDS[tool]
+  const path = field ? text(input[field]) : ''
+
+  if (path === '') {
+    return null
+  }
+
+  const ran = await nodespace($, held.database, [
+    'gate',
+    'check',
+    '--action',
+    'repo_write',
+    // The launch's variables are removed from the environment once the
+    // session's state holds them, so the command is told the session.
+    ...(held.launch ? ['--session', held.launch.session] : []),
+    '--path',
+    path,
+  ])
+  // A denial may exit non-zero: the answer is read from stdout either way.
+  const parsed = parse(ran.stdout)
+  const verdict = isRecord(parsed) ? text(parsed.verdict) : ''
+  const reason = isRecord(parsed) ? clean(text(parsed.reason), MAX_REASON_CHARS) : ''
+  const shownPath = clean(path, MAX_VALUE_CHARS)
+
+  if (verdict === 'deny') {
+    return {
+      deny: [
+        `[NodeSpace] This edit was not made: the gate refused a write to ${shownPath}.`,
+        `<${GRAPH_MARKER}>`,
+        reason || 'no reason was given',
+        `</${GRAPH_MARKER}>`,
+        'Do not retry the same edit. Do what the reason says first, then make the edit again.',
+      ].join('\n'),
+    }
+  }
+
+  if (verdict === 'allow' && isRecord(parsed) && parsed.checked !== false) {
+    const note = parsed.would_deny === true || text(parsed.note) !== ''
+
+    return note
+      ? {
+          note: [
+            `[NodeSpace] The gate would have refused this write to ${shownPath}. The rule is advisory, so the edit was made.`,
+            `<${GRAPH_MARKER}>`,
+            reason || clean(text(parsed.note), MAX_REASON_CHARS),
+            `</${GRAPH_MARKER}>`,
+            'Do what that says before your next edit.',
+          ].join('\n'),
+        }
+      : null
+  }
+
+  const why = ran.ok ? clean(text(isRecord(parsed) ? parsed.reason : ''), MAX_VALUE_CHARS) : ran.detail
+
+  return {
+    note: `[NodeSpace] The gate check did not run${why ? ` (${clean(why, MAX_VALUE_CHARS)})` : ''}, so this write to ${shownPath} was not checked.`,
+  }
+}
+
+/**
  * The shell line a tool call runs `nodespace` with: Bash's own command, or the
  * `nodespace` passthrough tool's argument list read as one. `null` for any
  * other tool.
@@ -1209,6 +1294,19 @@ export const register: Register = (on, options) => {
       return { deny: verdict.deny }
     }
 
+    // After the watch: a session it stopped is refused without asking the gate.
+    const gate = await quietly(null, async () => {
+      const held = await read($, session)
+
+      return held?.project ? gateCheck($, held, tool, e) : null
+    })
+
+    if (gate && 'deny' in gate) {
+      return { deny: gate.deny }
+    }
+
+    const notes = [verdict, gate].flatMap(found => (found && 'note' in found ? [found.note] : []))
+
     const ran = await next(e)
 
     if (ran.deny !== undefined) {
@@ -1232,7 +1330,7 @@ export const register: Register = (on, options) => {
       })
     }
 
-    return verdict ? { ...ran, context: [...(ran.context ?? []), verdict.note] } : ran
+    return notes.length > 0 ? { ...ran, context: [...(ran.context ?? []), ...notes] } : ran
   })
 }
 
