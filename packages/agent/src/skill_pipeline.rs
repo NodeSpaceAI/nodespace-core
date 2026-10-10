@@ -213,6 +213,10 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // named record to a list, with that record already in the graph
         // and rendered in MENTIONED ENTITIES, produced `create_node` and
         // a silent duplicate on 3 of 3 reps.
+        //
+        // `create_relationship` is here because `create_node` and `update_node`
+        // refuse a relationship given as a field (a task's `assignee`) and tell
+        // the caller to make the edge with it.
         tools: &["create_node", "update_node", "update_task_status", "create_relationship", "search_semantic", "search_nodes", "get_node", "route_clarify"],
         max_iterations: 3,
         not_for: None,
@@ -376,6 +380,9 @@ pub const SKILL_SEEDS: &[SkillSeed] = &[
         // skill can win retrieval on either phrasing. Pairing them means
         // whichever one places, the turn can still write. See
         // `no_write_tool_is_reachable_from_only_one_skill`.
+        //
+        // `create_relationship` is here for the same reason as on the skill it
+        // is paired with: the refusal of a relationship given as a field names it.
         tools: &["update_node", "update_task_status", "create_node", "create_relationship", "get_node", "search_nodes", "search_semantic", "resolve_query", "route_clarify"],
         max_iterations: 3,
         // "remove the resolved tickets" still out-ranked Node Deletion

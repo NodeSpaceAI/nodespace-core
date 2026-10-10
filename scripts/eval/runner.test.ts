@@ -1156,6 +1156,11 @@ describe("checkUniformity: full pass with reply diversity", () => {
     expect(checkUniformity(7, 7, undefined, 0, 7)).not.toBeNull();
   });
 
+  test("needs two kinds of tool beside the varied replies, straddling the floor", () => {
+    expect(checkUniformity(7, 7, undefined, 1, 7)).not.toBeNull();
+    expect(checkUniformity(7, 7, undefined, 2, 7)).toBeNull();
+  });
+
   test("still flags the same reply every turn, tools or not", () => {
     expect(checkUniformity(7, 7, undefined, 2, 1)).not.toBeNull();
   });

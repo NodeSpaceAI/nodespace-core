@@ -682,7 +682,7 @@ export function preflight(
   const remote = providerOf(env.model) === "openai-compat";
   if (remote) assertRemoteProvider(env);
 
-  // 3. A model must be loaded, and it must be the one being scored.
+  // 4. A model must be loaded, and it must be the one being scored.
   if (!status.loaded) {
     throw new EnvironmentError(
       "The daemon is running but has no chat model loaded, so every turn would " +
@@ -724,7 +724,7 @@ export function preflight(
     );
   }
 
-  // 4. The granted window must hold the system prompt with room to work. A
+  // 5. The granted window must hold the system prompt with room to work. A
   // remote model's window is the provider's, not one the daemon grants.
   const required = systemPromptTokens + CONTEXT_HEADROOM_TOKENS;
   if (!remote && status.grantedNCtx < required) {

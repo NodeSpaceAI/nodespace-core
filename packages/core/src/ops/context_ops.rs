@@ -716,6 +716,10 @@ async fn resolve_entities(
 }
 
 /// The words by which a message refers to the person using the workspace.
+///
+/// English only, and matched wherever they stand, quoted or pasted text
+/// included ("a note titled \"Tell me more\""). A false match costs one entity
+/// line for the owner; a miss costs the grounding this adds, as before it.
 const FIRST_PERSON_WORDS: [&str; 4] = ["me", "my", "mine", "myself"];
 
 fn refers_to_current_user(query: &str) -> bool {
@@ -732,9 +736,17 @@ fn refers_to_current_user(query: &str) -> bool {
 /// Resolution reads names, and "me" is no name, so the person the message is
 /// about would otherwise get none of what a named person gets: no id to filter
 /// by and no links from the types that reach people. Searching for their name
-/// instead finds nothing, since a task's title does not hold its assignee's. An
-/// owner whose resolution was empty becomes a resolution with one entity, so
-/// "none found" is not told about a person who was named.
+/// instead finds nothing, since a task's title does not hold its assignee's.
+///
+/// An empty resolution becomes one with the owner in it. That drops the "none
+/// found" statement for any other name in the same message ("assign Foo Corp to
+/// me"); the guidance to check each name against the list covers a name that is
+/// not in it, as it does when another name matched.
+///
+/// The owner goes first and the cap still holds: when the list is full the
+/// weakest match is cut and counted as not shown. The owner is a resolved
+/// entity like the others, so the duplicate-create guard sees it; one with no
+/// title is listed as "Current user".
 async fn include_current_user(
     node_service: &Arc<NodeService>,
     resolved: EntityResolution,
@@ -760,8 +772,13 @@ async fn include_current_user(
             mut entities,
             not_shown,
         } => {
+            let mut not_shown = not_shown;
             if !entities.iter().any(|e| e.id == me.id) {
                 entities.insert(0, me);
+                if entities.len() > MAX_RESOLVED_ENTITIES {
+                    entities.truncate(MAX_RESOLVED_ENTITIES);
+                    not_shown += 1;
+                }
             }
             EntityResolution::Resolved {
                 entities,

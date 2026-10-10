@@ -706,10 +706,19 @@ const MIN_DISTINCT_TOOLS_FOR_REAL_PASS = 3;
  * tools however well the model does, so tool variety cannot tell it from a
  * broken run; what separates them is that a broken run says the same thing
  * every turn (the same error text) while a working one answers each question
- * in its own words. Used only beside at least one tool call, so a run in which
- * nothing was ever called is still flagged.
+ * in its own words. Used only beside tool calls of at least two kinds
+ * (MIN_DISTINCT_TOOLS_WITH_VARIED_REPLIES), so a run in which nothing was ever
+ * called is still flagged.
  */
 const MIN_DISTINCT_REPLIES_FOR_REAL_PASS = 4;
+
+/**
+ * How many distinct tools must have been called beside varied replies. Two: a
+ * run that read and wrote (or searched two ways) is a run that acted, and one
+ * where a single scenario called a tool and every other turn died with an error
+ * text that embeds an id is not.
+ */
+const MIN_DISTINCT_TOOLS_WITH_VARIED_REPLIES = 2;
 
 /**
  * Decide whether a scored run's pass rate is uniform enough to be a harness
@@ -757,7 +766,7 @@ export function checkUniformity(
   }
   if (
     passed === total &&
-    distinctToolsCalled >= 1 &&
+    distinctToolsCalled >= MIN_DISTINCT_TOOLS_WITH_VARIED_REPLIES &&
     distinctReplies >= MIN_DISTINCT_REPLIES_FOR_REAL_PASS
   ) {
     return null;
