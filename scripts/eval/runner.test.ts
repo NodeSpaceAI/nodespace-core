@@ -1140,6 +1140,31 @@ describe("checkUniformity: full pass with tool diversity", () => {
   });
 });
 
+// A narrow suite calls few tools however well the model does. What tells a
+// working run from a broken one there is that a broken one repeats itself.
+describe("checkUniformity: full pass with reply diversity", () => {
+  test("believes a full pass that called a tool and answered in varied words", () => {
+    expect(checkUniformity(7, 7, undefined, 2, 6)).toBeNull();
+  });
+
+  test("accepts at exactly the reply threshold and flags one below", () => {
+    expect(checkUniformity(7, 7, undefined, 2, 4)).toBeNull();
+    expect(checkUniformity(7, 7, undefined, 2, 3)).not.toBeNull();
+  });
+
+  test("still flags varied replies when no tool was ever called", () => {
+    expect(checkUniformity(7, 7, undefined, 0, 7)).not.toBeNull();
+  });
+
+  test("still flags the same reply every turn, tools or not", () => {
+    expect(checkUniformity(7, 7, undefined, 2, 1)).not.toBeNull();
+  });
+
+  test("never excuses a uniform ZERO", () => {
+    expect(checkUniformity(0, 7, undefined, 2, 7)).not.toBeNull();
+  });
+});
+
 describe("selectScenarios", () => {
   const sc = (id: string, setup = false): Scenario =>
     ({ id, scenario: id, prompt: id, ...(setup ? { setup: true } : {}) }) as Scenario;

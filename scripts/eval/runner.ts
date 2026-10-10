@@ -701,6 +701,17 @@ export function aggregateReps(reps: ScenarioResult[][]): RunAggregate {
 const MIN_DISTINCT_TOOLS_FOR_REAL_PASS = 3;
 
 /**
+ * How many distinct replies a full-pass run that called few tools must have
+ * produced to be believed. A suite of lookups and one assignment calls two
+ * tools however well the model does, so tool variety cannot tell it from a
+ * broken run; what separates them is that a broken run says the same thing
+ * every turn (the same error text) while a working one answers each question
+ * in its own words. Used only beside at least one tool call, so a run in which
+ * nothing was ever called is still flagged.
+ */
+const MIN_DISTINCT_REPLIES_FOR_REAL_PASS = 4;
+
+/**
  * Decide whether a scored run's pass rate is uniform enough to be a harness
  * signature rather than a result. Returns `null` when the run is fine, or an
  * `EnvironmentError` when it should abort.
@@ -724,6 +735,9 @@ export function checkUniformity(
   // (every uniform run is suspicious); callers that can measure diversity pass
   // it and get the narrower check.
   distinctToolsCalled = 0,
+  // Number of DISTINCT replies across the scored scenarios; see
+  // MIN_DISTINCT_REPLIES_FOR_REAL_PASS. Defaulted to 0 like the above.
+  distinctReplies = 0,
 ): EnvironmentError | null {
   if (total < minScenarios) return null;
   if (passed !== 0 && passed !== total) return null;
@@ -739,6 +753,13 @@ export function checkUniformity(
   // results were all-fail, and a model that calls varied tools and still fails
   // every scenario is exactly the "same unhandled code path" case.
   if (passed === total && distinctToolsCalled >= MIN_DISTINCT_TOOLS_FOR_REAL_PASS) {
+    return null;
+  }
+  if (
+    passed === total &&
+    distinctToolsCalled >= 1 &&
+    distinctReplies >= MIN_DISTINCT_REPLIES_FOR_REAL_PASS
+  ) {
     return null;
   }
   return new EnvironmentError(
@@ -1527,11 +1548,15 @@ export async function runEval(fullFixture: EvalFixture): Promise<never> {
       const distinctToolsCalled = new Set(
         scored.flatMap((r) => (r.turns ?? []).flatMap((t) => t.toolsCalled ?? [])),
       ).size;
+      const distinctReplies = new Set(
+        scored.flatMap((r) => (r.turns ?? []).map((t) => t.reply)),
+      ).size;
       const uniformityError = checkUniformity(
         passed,
         scored.length,
         undefined,
         distinctToolsCalled,
+        distinctReplies,
       );
       // Not applied to a partial run. The guard reads a uniform result as a
       // harness signature because a whole suite is varied enough that a real

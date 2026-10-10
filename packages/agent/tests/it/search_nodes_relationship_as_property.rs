@@ -454,3 +454,62 @@ async fn creating_a_node_refuses_a_relationship_key_and_a_built_in_inbound_name_
         );
     }
 }
+
+/// A task's `assignee` is read from the person's `tasks`. Written under its
+/// reverse name from either end it fails in the store with a message naming
+/// neither; the tool names the call that works.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reverse_name_given_to_create_relationship_is_answered_with_the_forward_call() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    for (from, to) in [(TASK_C, NORBERT), (NORBERT, TASK_C)] {
+        let refused = executor
+            .execute(
+                "create_relationship",
+                json!({ "from_id": from, "to_id": to, "relationship_type": "assignee" }),
+            )
+            .await
+            .expect_err("'assignee' is not created under its reverse name")
+            .to_string();
+        assert!(
+            refused.contains("from_id the 'person' node's id, to_id the 'task' node's id, relationship_type 'tasks'"),
+            "{from} -> {to}: {refused}"
+        );
+    }
+
+    // A name that is no relationship of either node keeps the store's message.
+    let unknown = executor
+        .execute(
+            "create_relationship",
+            json!({ "from_id": NORBERT, "to_id": TASK_C, "relationship_type": "no_such_name" }),
+        )
+        .await
+        .expect_err("an undeclared name is refused")
+        .to_string();
+    assert!(!unknown.contains("relationship_type 'tasks'"), "{unknown}");
+}
+
+/// Quote marks alone are an empty query, not a search for quote marks: the
+/// filter decides what comes back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_query_of_quote_marks_alone_does_not_hide_the_rows_a_filter_selects() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    for query in ["", "*", "\"\"", "''"] {
+        let found = executor
+            .execute(
+                "search_nodes",
+                json!({
+                    "node_type": "task",
+                    "query": query,
+                    "filters": [{ "type": "relationship", "operator": "equals",
+                                  "path": ["assignee"], "node_id": ANOOP }]
+                }),
+            )
+            .await
+            .expect("search_nodes must run");
+        let mut got = ids(&found.result);
+        got.sort();
+        assert_eq!(got, [TASK_A, TASK_B], "query {query:?}");
+    }
+}
