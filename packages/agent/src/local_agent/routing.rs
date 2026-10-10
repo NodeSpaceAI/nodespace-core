@@ -488,6 +488,36 @@ pub fn decision_on_the_message_alone(
     }
 }
 
+/// The lookup a message is decided to be without asking Stage 1, when the
+/// answer is already settled.
+///
+/// A message Stage 1 is asked about by itself (one with no turns ahead of it,
+/// or one shaped like a lookup, and not the answer to a clarifying question)
+/// that [`asks_what_the_workspace_holds`] is read as a lookup of the message,
+/// whatever query Stage 1 wrote for it: [`decision_on_the_message_alone`]
+/// overrides that one answer. What it leaves alone is a clarification and a
+/// split, and those are for requests that ask for something to be done, which
+/// this one never is. So the generation is spent to learn what is already
+/// known, and it is the first of the turn's sequential requests.
+///
+/// `None` for every other message, which Stage 1 is asked about as before.
+pub fn lookup_without_stage1(
+    blended_query: &str,
+    message: &str,
+    answering_a_clarification: bool,
+) -> Option<RouteDecision> {
+    let asked_alone = !answering_a_clarification
+        && (blended_query == message
+            || asks_about_the_message_first(blended_query, message, answering_a_clarification));
+    if !asked_alone {
+        return None;
+    }
+    match decision_on_the_message_alone(message, Some(RouteDecision::Query(String::new()))) {
+        decided @ Some(RouteDecision::Lookup(_)) => decided,
+        _ => None,
+    }
+}
+
 /// The retrieval query for a lookup: the capability, then the topic.
 ///
 /// A topic alone embeds nearest whichever skill shares a noun with it ("the
@@ -3374,6 +3404,72 @@ mod tests {
             decision_on_the_message_alone("How about a task for that?", suggestion.clone()),
             suggestion,
             "a suggestion that opens with a question word stays a query"
+        );
+    }
+
+    #[test]
+    fn a_settled_lookup_is_decided_without_asking_stage_one() {
+        let first = "How many tasks are assigned to Anoop?";
+        // A chat's first message: the one pass is the message by itself.
+        assert_eq!(
+            lookup_without_stage1(first, first, false),
+            Some(RouteDecision::Lookup(
+                "How many tasks are assigned to Anoop".to_string()
+            ))
+        );
+        // Turns ahead of it: asked by itself first, because it is a lookup.
+        let blended = "Earlier we set up cycles.\nHow many tasks are assigned to Anoop?";
+        assert_eq!(
+            lookup_without_stage1(blended, first, false),
+            Some(RouteDecision::Lookup(
+                "How many tasks are assigned to Anoop".to_string()
+            ))
+        );
+        // Without a question mark, in the openings the override reads.
+        assert!(lookup_without_stage1(
+            "Tell me how many tasks are assigned Anoop",
+            "Tell me how many tasks are assigned Anoop",
+            false
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn a_message_stage_one_must_still_be_asked_about_is_left_to_it() {
+        // The answer to a clarifying question is read in the light of what was
+        // asked, not by itself.
+        let first = "How many tasks are assigned to Anoop?";
+        assert_eq!(lookup_without_stage1(first, first, true), None);
+        // A request that asks for a change, however it ends.
+        for message in [
+            "Could you add Harbour as a planning cycle?",
+            "Tell me how many tasks are open and cancel the rest",
+            "Assign the Plan the offsite task to Ingrid Solberg",
+            "organize my design docs",
+        ] {
+            assert_eq!(
+                lookup_without_stage1(message, message, false),
+                None,
+                "{message}"
+            );
+        }
+        // A suggestion, and a question about the assistant.
+        for message in ["How about a task for that?", "Which skills do you have?"] {
+            assert_eq!(
+                lookup_without_stage1(message, message, false),
+                None,
+                "{message}"
+            );
+        }
+        // A message that is not lookup-shaped, with turns ahead of it, is
+        // decided on the blended view as before.
+        assert_eq!(
+            lookup_without_stage1(
+                "Earlier we set up cycles.\nand who approved it",
+                "and who approved it",
+                false
+            ),
+            None
         );
     }
 

@@ -504,6 +504,43 @@ async fn a_reverse_name_given_to_create_relationship_is_answered_with_the_forwar
     assert!(unknown.contains("not defined in schema"), "{unknown}");
 }
 
+/// A small model copies a label and an id together into the id argument. The
+/// node is found by the id written, so the refusal that names the working call
+/// is reached and the edge can be made.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_id_written_with_its_label_still_reaches_the_node() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    let refused = executor
+        .execute(
+            "update_node",
+            json!({
+                "id": format!("Plan the offsite task ID ({TASK_C})"),
+                "field_values": { "assignee": format!("Norbert Weber's id ({NORBERT})") }
+            }),
+        )
+        .await
+        .expect_err("a relationship is not a field")
+        .to_string();
+    assert!(
+        refused.contains("is a relationship of 'task'"),
+        "the node was found, so the refusal was reached: {refused}"
+    );
+
+    let created = executor
+        .execute(
+            "create_relationship",
+            json!({
+                "from_id": format!("person ID ({NORBERT})"),
+                "to_id": format!("task ID ({TASK_C})"),
+                "relationship_type": "tasks"
+            }),
+        )
+        .await
+        .expect("the ids are read through their labels");
+    assert_eq!(created.result["created"], true);
+}
+
 /// A reverse name is explained only between the types it relates. A project
 /// holds a `tasks` relationship of its own, but a task and a project are not
 /// a task and a person, so the caller is not sent to a node that is neither.
