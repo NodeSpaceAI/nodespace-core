@@ -120,7 +120,10 @@ fn by_priority_then_age() -> Value {
 /// whether the change to `in_progress` would be allowed (ADR-094 §9), so a
 /// task with no approved spec that is not marked `requires_spec: false`
 /// (ADR-097 §6) is left out however its checklist looks. The conditions
-/// before it are the ones a Play does not state. Each of the three
+/// before it are statements, not a second rule: a checklist is not a Play's
+/// concern, and the blocker and plan conditions are kept as cheap
+/// prefilters that bound the dry runs, one per candidate. Switching off a
+/// gate Play therefore loosens the dry run and not these. Each of the three
 /// relationship conditions is a negation or an existence over the nodes a
 /// path reaches:
 ///
