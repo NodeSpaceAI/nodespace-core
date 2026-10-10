@@ -321,6 +321,7 @@ export interface TaskNodeUpdatePatch {
   completedAt: ClearableField<string>;
   pullRequest: OptionalJsonClear | undefined;
   commits: OptionalJsonClear | undefined;
+  requiresSpec?: boolean;
 }
 
 function clearable(value: string | null | undefined): ClearableField<string> {
@@ -355,7 +356,8 @@ const TYPED_UPDATE_FIELDS = {
     startedAt: true,
     completedAt: true,
     pullRequest: true,
-    commits: true
+    commits: true,
+    requiresSpec: true
   } satisfies Record<keyof TaskNodeUpdate, true>,
   person: {
     firstName: true,
@@ -408,6 +410,7 @@ export function buildTaskNodeUpdatePatch(update: TaskNodeUpdate): TaskNodeUpdate
     completedAt: clearable(update.completedAt),
     pullRequest: jsonClearable(update.pullRequest),
     commits: jsonClearable(update.commits),
+    requiresSpec: update.requiresSpec
   };
 }
 

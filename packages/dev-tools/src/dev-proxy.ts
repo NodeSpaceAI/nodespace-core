@@ -538,7 +538,8 @@ async function handleRequest(req: Request): Promise<Response> {
         startedAt: patch.startedAt ?? null,
         completedAt: patch.completedAt ?? null,
         pullRequest: patch.pullRequest ?? null,
-        commits: patch.commits ?? null
+        commits: patch.commits ?? null,
+        requiresSpec: patch.requiresSpec ?? null
       };
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateTaskNode,

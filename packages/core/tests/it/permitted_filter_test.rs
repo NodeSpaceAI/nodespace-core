@@ -172,8 +172,11 @@ async fn sort_and_limit_apply_to_what_the_filter_keeps() -> Result<()> {
     let mut by_priority = Vec::new();
     for priority in ["highest", "high", "medium", "low"] {
         by_priority.push(
-            h.create("task", json!({ "status": "open", "priority": priority }))
-                .await?,
+            h.create(
+                "task",
+                json!({ "status": "open", "priority": priority, "requires_spec": false }),
+            )
+            .await?,
         );
     }
     // The most urgent task is blocked, by a task the other filters leave out.

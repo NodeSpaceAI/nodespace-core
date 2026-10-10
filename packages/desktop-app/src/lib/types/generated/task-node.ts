@@ -24,6 +24,12 @@ export type TaskNode = {
    * The commits that delivered the task.
    */
   commits?: Array<LinkValue>;
+  /**
+   * Whether the task must link an approved spec before it is started.
+   * `false` is the light lane for chores and small fixes (ADR-097 §6).
+   * Absent reads as `true`, the schema default.
+   */
+  requiresSpec: boolean;
   id: string;
   nodeType: string;
   content: string;

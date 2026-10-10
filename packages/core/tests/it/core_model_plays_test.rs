@@ -14,7 +14,7 @@ use nodespace_core::db::SqliteStore;
 use nodespace_core::models::{Node, NodeUpdate};
 use nodespace_core::playbook::core_plays::{
     CORE_PLAY_IDS, PLAN_APPROVAL_PLAY_ID, SPEC_APPROVAL_PLAY_ID, SUPERSEDED_LOCK_PLAY_ID,
-    TASK_BLOCKERS_PLAY_ID, TASK_CRITERIA_PLAY_ID, TASK_LINEAGE_PLAY_ID,
+    TASK_BLOCKERS_PLAY_ID, TASK_CRITERIA_PLAY_ID, TASK_LINEAGE_PLAY_ID, TASK_SPEC_PLAY_ID,
 };
 use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{NodeService, NodeServiceError};
@@ -30,6 +30,7 @@ const SPEC_NEEDS_CRITERIA: &str = "cannot be approved until it has success crite
 const PLAN_NEEDS_APPROVED_SPEC: &str = "cannot be approved until it is linked to an approved spec";
 const PLAN_CREATED_APPROVED: &str = "cannot be created already approved";
 const TASK_NEEDS_LINEAGE: &str = "until that plan is approved and the task is linked";
+const TASK_NEEDS_APPROVED_SPEC: &str = "it is not linked to an approved spec";
 const TASK_IS_BLOCKED: &str = "blocked by a task that is not finished";
 const TASK_HAS_UNCHECKED_ITEM: &str = "its checklist has an unchecked item";
 const TASK_NEEDS_CRITERIA: &str = "cannot be marked done without acceptance criteria";
@@ -91,7 +92,17 @@ impl Harness {
             .await?)
     }
 
+    /// An open task in the light lane (`requires_spec: false`), so the tests
+    /// of every other rule can start it without first linking an approved
+    /// spec. The spec rule's own tests use [`Self::spec_gated_task`].
     pub(crate) async fn task(&self) -> Result<String> {
+        self.create("task", json!({ "status": "open", "requires_spec": false }))
+            .await
+    }
+
+    /// An open task as a user creates it: nothing marks it as not needing a
+    /// spec, so the schema default (a spec is required) applies.
+    pub(crate) async fn spec_gated_task(&self) -> Result<String> {
         self.create("task", json!({ "status": "open" })).await
     }
 
@@ -216,10 +227,10 @@ fn assert_rejected<T: std::fmt::Debug>(
 // Seeding
 // ---------------------------------------------------------------------------
 
-/// Every database is seeded with the six rules, under their fixed ids,
+/// Every database is seeded with the seven rules, under their fixed ids,
 /// switched on.
 #[tokio::test]
-async fn the_six_plays_are_seeded_with_fixed_ids_and_enabled() -> Result<()> {
+async fn the_seven_plays_are_seeded_with_fixed_ids_and_enabled() -> Result<()> {
     let h = Harness::start().await?;
     for id in [
         SPEC_APPROVAL_PLAY_ID,
@@ -228,6 +239,7 @@ async fn the_six_plays_are_seeded_with_fixed_ids_and_enabled() -> Result<()> {
         TASK_BLOCKERS_PLAY_ID,
         TASK_CRITERIA_PLAY_ID,
         SUPERSEDED_LOCK_PLAY_ID,
+        TASK_SPEC_PLAY_ID,
     ] {
         assert!(CORE_PLAY_IDS.contains(&id));
         let play = h
@@ -695,6 +707,109 @@ async fn a_blocked_task_can_be_cancelled() -> Result<()> {
     let blocked = h.task().await?;
     h.link(&blocker, "blocks", &blocked).await?;
     h.set_status(&blocked, "cancelled").await?;
+    h.stop().await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Task spec (ADR-097)
+// ---------------------------------------------------------------------------
+
+/// A task nobody marked cannot start with no spec linked, and the refusal
+/// says what to do next. Cancelling is still allowed, and the task starts
+/// once an approved spec is linked.
+#[tokio::test]
+async fn a_task_with_no_spec_cannot_start() -> Result<()> {
+    let h = Harness::start().await?;
+    let task = h.spec_gated_task().await?;
+    assert_rejected(
+        h.set_status(&task, "in_progress").await,
+        TASK_NEEDS_APPROVED_SPEC,
+        "no spec is linked",
+    );
+    let refused = h.set_status(&task, "in_progress").await;
+    let Err(NodeServiceError::PlayRuleRejected { message, .. }) = refused else {
+        panic!("expected a refusal, got {refused:?}");
+    };
+    assert!(message.contains("Writing a Spec"), "{message}");
+    assert!(message.contains("nodespace "), "{message}");
+    assert!(message.contains("do not retry"), "{message}");
+
+    h.set_status(&task, "cancelled").await?;
+
+    let other = h.spec_gated_task().await?;
+    let spec = h.approved_spec().await?;
+    h.link(&spec, "tasks", &other).await?;
+    h.set_status(&other, "in_progress").await?;
+    h.stop().await;
+    Ok(())
+}
+
+/// A linked spec that is still a draft does not count, whether or not the
+/// task has a plan. This is the case the lineage rule does not reach.
+#[tokio::test]
+async fn a_task_with_a_draft_spec_and_no_plan_cannot_start() -> Result<()> {
+    let h = Harness::start().await?;
+    let task = h.spec_gated_task().await?;
+    let spec = h.create("spec", json!({})).await?;
+    h.link(&spec, "tasks", &task).await?;
+    assert_rejected(
+        h.set_status(&task, "in_progress").await,
+        TASK_NEEDS_APPROVED_SPEC,
+        "the spec is a draft",
+    );
+
+    h.child(&spec, "checkbox", "- [ ] It works").await?;
+    h.set(&spec, json!({ "spec_status": "approved" })).await?;
+    h.set_status(&task, "in_progress").await?;
+    h.stop().await;
+    Ok(())
+}
+
+/// The light lane: a task marked as not needing a spec starts with none
+/// linked, and one explicitly marked as needing one is held to the rule.
+#[tokio::test]
+async fn a_task_marked_as_not_needing_a_spec_can_start() -> Result<()> {
+    let h = Harness::start().await?;
+    let chore = h.task().await?;
+    h.set_status(&chore, "in_progress").await?;
+
+    let task = h.spec_gated_task().await?;
+    h.set(&task, json!({ "requires_spec": false })).await?;
+    h.set_status(&task, "in_progress").await?;
+    h.set_status(&task, "open").await?;
+    h.set(&task, json!({ "requires_spec": true })).await?;
+    assert_rejected(
+        h.set_status(&task, "in_progress").await,
+        TASK_NEEDS_APPROVED_SPEC,
+        "the task is marked as needing a spec",
+    );
+    h.stop().await;
+    Ok(())
+}
+
+/// The rule is the user's: switched off, or edited to say nothing, it no
+/// longer refuses anything (ADR-072).
+#[tokio::test]
+async fn the_spec_play_switched_off_or_emptied_stops_rejecting() -> Result<()> {
+    let h = Harness::start().await?;
+    let task = h.spec_gated_task().await?;
+    assert_rejected(
+        h.set_status(&task, "in_progress").await,
+        TASK_NEEDS_APPROVED_SPEC,
+        "the rule is on",
+    );
+
+    h.set(TASK_SPEC_PLAY_ID, json!({ "enabled": false }))
+        .await?;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    h.set_status(&task, "in_progress").await?;
+    h.set_status(&task, "open").await?;
+
+    h.set(TASK_SPEC_PLAY_ID, json!({ "enabled": true, "rules": [] }))
+        .await?;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    h.set_status(&task, "in_progress").await?;
     h.stop().await;
     Ok(())
 }
@@ -1204,7 +1319,11 @@ async fn started_at_is_stamped_on_the_first_start() -> Result<()> {
     let restarted = h
         .create(
             "task",
-            json!({ "status": "open", "started_at": "2026-01-02" }),
+            json!({
+                "status": "open",
+                "requires_spec": false,
+                "started_at": "2026-01-02"
+            }),
         )
         .await?;
     h.set_status(&restarted, "in_progress").await?;

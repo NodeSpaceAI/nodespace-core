@@ -1,6 +1,6 @@
 This is the whole procedure for doing a task, from taking it to handing it over for review. Reviewing it is separate work with its own procedure: do not review a task you implemented, and do not mark it done.
 
-STEP 1, TAKE A READY TASK: <!-- include: task-implement-take --> A ready task is open, has a checklist, is not blocked, and has no plan waiting on approval. A small change needs no spec or plan: a task with a checklist of its own is taken and worked the same way. When the user names a task, or you are resuming one already in progress, read that task. <!-- include: task-context-read -->
+STEP 1, TAKE A READY TASK: <!-- include: task-implement-take --> A ready task is open, has a checklist, is not blocked, and has no plan waiting on approval. A small change needs no spec or plan: a task with a checklist of its own and `requires_spec` set to false is taken and worked the same way. When the user names a task, or you are resuming one already in progress, read that task. <!-- include: task-context-read -->
 
 STEP 2, START IT WITH THE VERSION YOU READ: <!-- include: task-implement-start --> Starting is how a task is claimed: of two sessions that read the same task, the second start is refused.
 
