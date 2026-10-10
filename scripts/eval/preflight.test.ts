@@ -11,10 +11,13 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { providerOf } from "./env.ts";
 import {
   awaitSkillIndex,
   embeddedSkillCount,
   extractSeedEntries,
+  providerIdsIn,
+  remoteConfigId,
   seededSkillCount,
 } from "./preflight.ts";
 
@@ -282,5 +285,48 @@ describe("embeddedSkillCount", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("remote provider ids", () => {
+  test("a remote model id names its provider config, with or without a model", () => {
+    expect(remoteConfigId("openai-compat:abc-123:google/gemma-4-31b-it")).toBe(
+      "abc-123",
+    );
+    expect(remoteConfigId("openai-compat:abc-123")).toBe("abc-123");
+  });
+
+  test("a model whose name contains colons keeps the config id whole", () => {
+    expect(remoteConfigId("openai-compat:abc-123:qwen/qwen3:free")).toBe(
+      "abc-123",
+    );
+  });
+
+  test("provider ids are found wherever the store hoists the providers array", () => {
+    const nested = JSON.stringify({
+      properties: {
+        "database-settings": {
+          providers: [{ id: "p1", api_key: "secret" }, { id: "p2" }],
+        },
+      },
+    });
+    const flat = JSON.stringify({ properties: { providers: [{ id: "p1" }] } });
+    expect(providerIdsIn(nested)).toEqual(["p1", "p2"]);
+    expect(providerIdsIn(flat)).toEqual(["p1"]);
+  });
+
+  test("no providers, bad JSON and entries without an id yield none", () => {
+    expect(providerIdsIn(JSON.stringify({ properties: {} }))).toEqual([]);
+    expect(providerIdsIn("not json")).toEqual([]);
+    expect(
+      providerIdsIn(JSON.stringify({ providers: [{ name: "x" }, null] })),
+    ).toEqual([]);
+  });
+
+  test("the provider of a chat follows its model id", () => {
+    expect(providerOf("openai-compat:abc:google/gemma-4-31b-it")).toBe(
+      "openai-compat",
+    );
+    expect(providerOf("gemma-4-e4b-q4km")).toBe("native");
   });
 });

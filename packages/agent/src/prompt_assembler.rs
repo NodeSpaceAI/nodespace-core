@@ -250,8 +250,11 @@ impl PromptAssembler {
     /// Resolve the local user for [`TemplateContext::current_user`].
     ///
     /// Reads the local person node on every call rather than caching it.
-    /// `None` when neither a name nor an email is set, and on a lookup
-    /// failure: the turn runs without the identity line rather than failing.
+    /// `None` when there is no local person, and on a lookup failure: the turn
+    /// runs without the identity line rather than failing. A person with no
+    /// name or email still names themselves by id: "me" must resolve to a node
+    /// the agent can filter by, and a skipped setup step is no reason to make
+    /// it ask the user for an id.
     ///
     /// Both values are collapsed to single-spaced text. The template gives
     /// the identity one line, and a stored value holding a newline would
@@ -274,9 +277,6 @@ impl PromptAssembler {
                 .and_then(|v| v.as_str())
                 .unwrap_or(""),
         );
-        if name.is_empty() && email.is_empty() {
-            return None;
-        }
         Some(CurrentUser {
             id: person.id,
             name,
@@ -802,19 +802,29 @@ mod tests {
         );
     }
 
-    /// The seeded person starts with no name or email. The line is left out
-    /// whole, with no empty line where it would have been.
+    /// The seeded person starts with no name or email. The line still names
+    /// the person by id, so "me" resolves without a name to look up and
+    /// without asking the user for an id.
     #[tokio::test]
-    async fn assembled_prompt_omits_the_current_user_when_identity_is_blank() {
-        let (assembler, _node_service, _tmp) = seeded_assembler().await;
+    async fn assembled_prompt_names_the_current_user_by_id_when_identity_is_blank() {
+        let (assembler, node_service, _tmp) = seeded_assembler().await;
+        let person = node_service
+            .get_local_person()
+            .await
+            .unwrap()
+            .expect("the seed holds a local person");
 
-        assert_eq!(assembler.current_user().await, None);
         let prompt = assemble_turn(&assembler).await;
 
-        assert!(!prompt.contains("Current user"), "{prompt}");
+        let expected = format!(
+            "Active model: test\n\
+             Current user: (person node {}). \
+             \"me\", \"my\" and \"I\" refer to this person.\n\nCOLLECTIONS:",
+            person.id
+        );
         assert!(
-            prompt.contains("Active model: test\n\nCOLLECTIONS:"),
-            "a blank identity must leave the template's spacing unchanged.\n--- PROMPT ---\n{prompt}"
+            prompt.contains(&expected),
+            "a blank identity still names the person.\n--- PROMPT ---\n{prompt}"
         );
     }
 
@@ -894,10 +904,15 @@ mod tests {
         );
         assert!(!next.contains("Ada"), "{next}");
 
-        node_service
+        let person = node_service
             .set_local_person_identity("", "", "")
             .await
             .unwrap();
-        assert!(!assemble_turn(&assembler).await.contains("Current user"));
+        let cleared = assemble_turn(&assembler).await;
+        assert!(
+            cleared.contains(&format!("Current user: (person node {})", person.id)),
+            "{cleared}"
+        );
+        assert!(!cleared.contains("Grace"), "{cleared}");
     }
 }

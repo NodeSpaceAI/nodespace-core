@@ -23,7 +23,7 @@
  * no results file is written.
  */
 
-import type { EvalEnv } from "./env.ts";
+import { providerOf, REMOTE_MODEL_PREFIX, type EvalEnv } from "./env.ts";
 import type { GuidanceProvenance } from "./types.ts";
 
 /** Scenario assertions failed. */
@@ -498,6 +498,9 @@ function readServedDatabasePath(env: EvalEnv): string {
  */
 const SEEDED_GUIDANCE_TYPES = ["agent-guidance", "skill"];
 
+/** The id of a database's settings node, where its provider configs live. */
+const DATABASE_SETTINGS_ID = "database-settings-singleton";
+
 /**
  * Read back which seeded prompt/skill content the daemon is actually serving.
  *
@@ -574,6 +577,72 @@ export function extractSeedEntries(
 }
 
 /**
+ * The provider config a remote model id names: `<config-id>` in
+ * `openai-compat:<config-id>[:<model>]`.
+ */
+export function remoteConfigId(model: string): string {
+  return model.slice(REMOTE_MODEL_PREFIX.length).split(":")[0] ?? "";
+}
+
+/**
+ * The ids of the provider configs in a `node get --json` payload of the
+ * database settings node. Where the providers sit in the payload depends on how
+ * the store hoists the settings fields, so this finds the `providers` array
+ * wherever it is. Returns `[]` on unparseable input or no providers.
+ */
+export function providerIdsIn(settingsJson: string): string[] {
+  const find = (value: unknown): unknown[] | undefined => {
+    if (typeof value !== "object" || value === null) return undefined;
+    for (const [key, inner] of Object.entries(value)) {
+      if (key === "providers" && Array.isArray(inner)) return inner;
+      const found = find(inner);
+      if (found) return found;
+    }
+    return undefined;
+  };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(settingsJson);
+  } catch {
+    return [];
+  }
+  return (find(parsed) ?? [])
+    .map((p) => (p as { id?: unknown } | null)?.id)
+    .filter((id): id is string => typeof id === "string");
+}
+
+/**
+ * A remote model needs the provider it names to be configured on the database
+ * the daemon serves; otherwise every turn fails to find its endpoint, makes no
+ * tool calls, and a negative assertion passes.
+ */
+function assertRemoteProvider(env: EvalEnv): void {
+  const configId = remoteConfigId(env.model);
+  const r = Bun.spawnSync(
+    [
+      env.nsBin,
+      "--socket",
+      env.socket,
+      "--json",
+      "node",
+      "get",
+      DATABASE_SETTINGS_ID,
+    ],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const ids = r.exitCode === 0 ? providerIdsIn(r.stdout.toString()) : [];
+  if (!ids.includes(configId)) {
+    throw new EnvironmentError(
+      `NS_MODEL names provider config "${configId}", but the served database ` +
+        `configures ${ids.length === 0 ? "none" : ids.join(", ")}. Every turn would ` +
+        `fail to reach an endpoint and call no tools.`,
+      `Add the provider to the isolated database's settings (never to the real\n` +
+        `  one), then use its id in NS_MODEL=openai-compat:<config-id>:<model>.`,
+    );
+  }
+}
+
+/**
  * Assert the environment can produce a valid result.
  *
  * `systemPromptTokens` is the eval's own system-prompt size — the thing the
@@ -606,6 +675,12 @@ export function preflight(
         `  Then confirm with: grep served_db_path <daemon log>`,
     );
   }
+
+  // 3. A remote model must name a provider configured on this database. It is
+  // loaded like a local one (the daemon connects to the endpoint), so the
+  // checks below apply to it too, except for the window it is granted.
+  const remote = providerOf(env.model) === "openai-compat";
+  if (remote) assertRemoteProvider(env);
 
   // 3. A model must be loaded, and it must be the one being scored.
   if (!status.loaded) {
@@ -649,9 +724,10 @@ export function preflight(
     );
   }
 
-  // 4. The granted window must hold the system prompt with room to work.
+  // 4. The granted window must hold the system prompt with room to work. A
+  // remote model's window is the provider's, not one the daemon grants.
   const required = systemPromptTokens + CONTEXT_HEADROOM_TOKENS;
-  if (status.grantedNCtx < required) {
+  if (!remote && status.grantedNCtx < required) {
     throw new EnvironmentError(
       `The granted context window (${status.grantedNCtx} tokens) is too small for this ` +
         `eval's system prompt (~${systemPromptTokens} tokens plus ${CONTEXT_HEADROOM_TOKENS} ` +

@@ -25,11 +25,17 @@ const ENUMERATE_PAGE_CAP: usize = 1000;
 /// rather than a literal search term, so `search_nodes` (agent path) and
 /// `search_nodes`/`search_semantic` (CLI/gRPC path) agree on what counts as
 /// an enumerate request. Returns `None` for an enumerate query (empty,
-/// whitespace-only, or the conventional wildcard `"*"`); returns
-/// `Some(trimmed)` for anything else, to be used as a literal search term.
+/// whitespace-only, quote marks alone, or the conventional wildcard `"*"`);
+/// returns `Some(trimmed)` for anything else, to be used as a literal search
+/// term. Quote marks alone are what a model sends when it writes an empty
+/// string as JSON text (`"\"\""`): searched for literally they match nothing,
+/// and an otherwise correct filter then reads as "no results".
 pub fn normalize_enumerate_query(query: &str) -> Option<String> {
     let trimmed = query.trim();
-    if trimmed.is_empty() || trimmed == "*" {
+    let unquoted = trimmed
+        .trim_matches(|c| matches!(c, '"' | '\'' | '`'))
+        .trim();
+    if unquoted.is_empty() || unquoted == "*" {
         None
     } else {
         Some(trimmed.to_string())
@@ -1074,6 +1080,21 @@ mod tests {
         assert_eq!(normalize_enumerate_query("\t\n"), None);
         assert_eq!(normalize_enumerate_query("*"), None);
         assert_eq!(normalize_enumerate_query("  *  "), None);
+    }
+
+    #[test]
+    fn test_normalize_enumerate_query_reads_quote_marks_alone_as_empty() {
+        // What a model sends when it writes an empty string as JSON text.
+        assert_eq!(normalize_enumerate_query("\"\""), None);
+        assert_eq!(normalize_enumerate_query("''"), None);
+        assert_eq!(normalize_enumerate_query("\""), None);
+        assert_eq!(normalize_enumerate_query(" `` "), None);
+        assert_eq!(normalize_enumerate_query("\"*\""), None);
+        // A quoted term is still a term.
+        assert_eq!(
+            normalize_enumerate_query("\"invoice\""),
+            Some("\"invoice\"".to_string())
+        );
     }
 
     #[test]

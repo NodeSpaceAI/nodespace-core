@@ -3906,6 +3906,51 @@ async fn store_undeclared_keys(
     moved
 }
 
+/// The `create_relationship` arguments that write a relationship from the type
+/// that declares it. A reverse name (a task's `assignee`) is not written from
+/// its own end: the declaring type (a person) writes it under the forward name
+/// (`tasks`), the node it is read from being the target.
+fn reverse_relationship_call(declaring: &str, read_from: &str, forward: &str) -> String {
+    format!(
+        "from_id the '{declaring}' node's id, to_id the '{read_from}' node's id, \
+         relationship_type '{forward}'"
+    )
+}
+
+/// Why `create_relationship` cannot write `name` between these two nodes, when
+/// the reason is that `name` is a reverse name read from one of them: the call
+/// that does write it. `None` when `name` is no such name, leaving the store's
+/// own error to stand.
+async fn reverse_name_hint(
+    ns: &NodeService,
+    from_id: &str,
+    to_id: &str,
+    name: &str,
+) -> Option<String> {
+    for id in [from_id, to_id] {
+        let Ok(Some(node)) = ns.get_node(id).await else {
+            continue;
+        };
+        let Ok(Some(hop)) = query_ops::relationship_named(ns, &node.node_type, name).await else {
+            continue;
+        };
+        if query_ops::is_built_in_inbound(&hop) {
+            continue;
+        }
+        if let Some(declaring) = &hop.source_type {
+            let call =
+                reverse_relationship_call(declaring, &node.node_type, &hop.relationship_type);
+            return Some(format!(
+                "'{name}' is how a '{}' node reads a relationship that '{declaring}' declares, so \
+                 it cannot be created under that name from either end. Call create_relationship \
+                 with {call}.",
+                node.node_type
+            ));
+        }
+    }
+    None
+}
+
 /// Refuse a key that names a relationship of `node_type`, with the call that
 /// sets it.
 ///
@@ -3948,11 +3993,9 @@ async fn refuse_relationship_keys(
         // A reverse name (a task's `assignee`) is written from the type that
         // declared it, under the forward name (a person's `tasks`).
         let call = match &hop.source_type {
-            Some(declaring) => format!(
-                "from_id the '{declaring}' node's id, to_id the '{node_type}' node's id, \
-                 relationship_type '{}'",
-                hop.relationship_type
-            ),
+            Some(declaring) => {
+                reverse_relationship_call(declaring, node_type, &hop.relationship_type)
+            }
             None => format!(
                 "from_id the '{node_type}' node's id, to_id the id of the node it must reach, \
                  relationship_type '{}'",
@@ -5283,9 +5326,25 @@ impl GraphToolExecutor {
             edge_data: None,
         };
 
-        let output = rel_ops::create_relationship(&ns, input)
-            .await
-            .map_err(|e| ops_error_to_tool(e, "create_relationship"))?;
+        let output = match rel_ops::create_relationship(&ns, input).await {
+            Ok(output) => output,
+            Err(e) => {
+                let hint = reverse_name_hint(
+                    &ns,
+                    strip_node_uri(&params.from_id),
+                    strip_node_uri(&params.to_id),
+                    &params.relationship_type,
+                )
+                .await;
+                return Err(match hint {
+                    Some(reason) => ToolError::InvalidArguments {
+                        tool: "create_relationship".to_string(),
+                        reason,
+                    },
+                    None => ops_error_to_tool(e, "create_relationship"),
+                });
+            }
+        };
 
         // The edge as stored, in the same form as its `replaced` entries: a
         // write through an `in` declaration's name comes back on the forward

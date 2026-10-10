@@ -527,6 +527,63 @@ mod entity_resolution_tests {
         Ok(())
     }
 
+    /// "me" names no title, so resolution by name finds nothing for it. The
+    /// person using the workspace is brought in anyway, with the same id and
+    /// links a named person gets: a task's assignee is the derived other side
+    /// of the person's `tasks`, which no schema line the prompt shows spells out.
+    #[tokio::test]
+    async fn a_message_saying_me_brings_the_owner_with_the_links_from_tasks() -> Result<()> {
+        let (_store, service, _t) = create_test_store().await?;
+        let owner = service
+            .set_local_person_identity("Mara", "Quint", "")
+            .await?
+            .id;
+        let q = "How many tasks are assigned to me?";
+
+        let ctx = build_workspace_context(&service, None, Some(q), Some(q)).await?;
+
+        match &ctx.resolved_entities {
+            EntityResolution::Resolved { entities, .. } => {
+                assert_eq!(entities.len(), 1, "{entities:?}");
+                assert_eq!(entities[0].id, owner, "{entities:?}");
+                assert_eq!(entities[0].node_type, "person");
+            }
+            other => panic!("expected the owner resolved, got {other:?}"),
+        }
+        let links = ctx
+            .entity_links
+            .iter()
+            .find(|l| l.node_type == "person")
+            .expect("the owner has links");
+        assert!(
+            links.from.iter().any(|(source, _)| source == "task"),
+            "{links:?}"
+        );
+        let out = ctx.format_for_prompt(4000);
+        assert!(out.contains(&owner), "{out}");
+        Ok(())
+    }
+
+    /// Only the first-person words count, not words that contain them.
+    #[tokio::test]
+    async fn words_that_merely_contain_me_or_my_do_not_bring_the_owner() -> Result<()> {
+        let (_store, service, _t) = create_test_store().await?;
+        service
+            .set_local_person_identity("Mara", "Quint", "")
+            .await?;
+        let q = "Schedule the meeting about the mystery";
+
+        let ctx = build_workspace_context(&service, None, Some(q), Some(q)).await?;
+
+        assert!(
+            !matches!(&ctx.resolved_entities, EntityResolution::Resolved { entities, .. }
+                if entities.iter().any(|e| e.node_type == "person")),
+            "{:?}",
+            ctx.resolved_entities
+        );
+        Ok(())
+    }
+
     /// The limit is honoured, so one common word cannot flood the caller.
     #[tokio::test]
     async fn the_limit_bounds_the_result_set() -> Result<()> {
