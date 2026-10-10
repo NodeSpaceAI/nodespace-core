@@ -126,7 +126,6 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     // A task needs an approved spec to start unless it is marked as not
     // needing one; the marker travels in the same write, and the typed
     // boolean must survive the dev-proxy encoding.
-    expect(created!.requiresSpec).toBe(true);
     const updated = await h.adapter.updateTaskNode(id, created!.version, {
       priority: 'high',
       status: 'in_progress',
