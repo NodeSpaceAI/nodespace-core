@@ -1228,8 +1228,7 @@ describe('the gate', () => {
       'check',
       '--action',
       'repo_write',
-      '--path',
-      '/repo/src/a.ts',
+      '--path=/repo/src/a.ts',
     ])
   })
 
@@ -1261,7 +1260,11 @@ describe('the gate', () => {
       expect((await $.tool.call(call)).deny).toContain('This edit was not made')
     }
 
-    expect(gateCalls(w).map(argv => argv[argv.length - 1])).toEqual(['/repo/a', '/repo/b', '/repo/c.ipynb'])
+    expect(gateCalls(w).map(argv => argv[argv.length - 1])).toEqual([
+      '--path=/repo/a',
+      '--path=/repo/b',
+      '--path=/repo/c.ipynb',
+    ])
 
     await $.tool.call({ tool: 'Read', file_path: '/repo/a' } as never)
     await $.tool.call(bash('sed -i s/a/b/ /repo/a'))
@@ -1309,6 +1312,50 @@ describe('the gate', () => {
     expect(ran.context?.join('\n')).toContain('The gate check did not run (the check timed out)')
   })
 
+  test('output the plugin cannot read is a warning, never a block', async ($, on) => {
+    const w = world({ gate: {} })
+
+    host(on, w)
+    await $.session.start(START)
+
+    const ran = await $.tool.call(edit())
+
+    expect(ran.deny).toBeUndefined()
+    expect(ran.context?.join('\n')).toContain('The gate check did not run')
+  })
+
+  test('a check that cannot be started allows the edit with a warning', async ($, on) => {
+    const w = world()
+    const h = host(on, w)
+
+    await $.session.start(START)
+    w.hasCli = false
+
+    const ran = await $.tool.call(edit())
+
+    expect(h.seen.tools).toBe(1)
+    expect(ran.deny).toBeUndefined()
+    expect(ran.context?.join('\n')).toContain('The gate check did not run')
+  })
+
+  test('the watch note and the gate note are both delivered', async ($, on) => {
+    const w = world({ gate: { verdict: 'allow', would_deny: true, reason: 'No spec is approved.', rule: 'r' } })
+    const { clock } = host(on, w)
+
+    await $.session.start(START)
+    await $.tool.call(bash('nodespace node context t1'))
+    w.governing = [{ id: 'spec1', version: 3, title: 'Gauge spec, revised' }]
+    w.contextVersion = 'c2'
+    await clock.advance(120_000)
+
+    const ran = await $.tool.call(edit())
+    const notes = ran.context?.join('\n') ?? ''
+
+    expect(ran.deny).toBeUndefined()
+    expect(notes).toContain('What governs the item you are working on')
+    expect(notes).toContain('would have refused this write')
+  })
+
   test('a launched session names itself, since its variables were removed', async ($, on) => {
     const w = world()
 
@@ -1339,6 +1386,7 @@ describe('the gate', () => {
     const denied = (await $.tool.call(edit())).deny ?? ''
 
     expect(denied.split('</nodespace-graph-data>')).toHaveLength(2)
+    expect(denied).toContain('never waives a confirmation rule')
   })
 
   test('a stopped session is refused without asking the gate', async ($, on) => {
