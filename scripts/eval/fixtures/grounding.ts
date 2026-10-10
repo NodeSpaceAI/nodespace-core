@@ -21,11 +21,15 @@ import type { EvalFixture, Scenario, TurnRecord, Verdict } from "../types.ts";
 
 const PERSON_TYPE = "person";
 const TASK_TYPE = "task";
+const PROJECT_TYPE = "project";
+const PROJECT_TITLE = "Apollo launch";
 
 interface SeededTask {
   title: string;
   status: string;
   assignee: string | null;
+  /** Title of the project this task belongs to, when it belongs to one. */
+  project?: string;
 }
 
 interface SeededPerson {
@@ -36,16 +40,28 @@ interface SeededPerson {
 const PEOPLE: SeededPerson[] = [
   { first: "Anoop", last: "Nair" },
   { first: "Norbert", last: "Weber" },
+  { first: "Ingrid", last: "Solberg" },
 ];
 
 const TASKS: SeededTask[] = [
-  { title: "Draft the vendor contract", status: "open", assignee: "Nair" },
-  { title: "Review the pricing page", status: "in_progress", assignee: "Nair" },
+  {
+    title: "Draft the vendor contract",
+    status: "open",
+    assignee: "Nair",
+    project: PROJECT_TITLE,
+  },
+  {
+    title: "Review the pricing page",
+    status: "in_progress",
+    assignee: "Nair",
+    project: PROJECT_TITLE,
+  },
   { title: "Plan the offsite", status: "open", assignee: null },
 ];
 
 type Expected =
   | { kind: "count"; count: number }
+  | { kind: "assigned" }
   | { kind: "statuses"; statuses: RegExp[] };
 
 interface GroundingScenario extends Scenario {
@@ -84,6 +100,18 @@ const FIXTURES: GroundingScenario[] = [
     scenario: "Status of the tasks assigned to a person",
     prompt: "Could you check the status of tasks assigned to Anoop",
     expected: { kind: "statuses", statuses: [/open/i, /in[ _-]?progress/i] },
+  },
+  {
+    id: "count-in-project",
+    scenario: "Count of tasks in a project (a task's project is the derived side)",
+    prompt: "How many tasks are in the Apollo launch project?",
+    expected: { kind: "count", count: 2 },
+  },
+  {
+    id: "assign-to-person",
+    scenario: "Assigning a task writes the relationship, not a stray property",
+    prompt: "Assign the Plan the offsite task to Ingrid Solberg",
+    expected: { kind: "assigned" },
   },
 ];
 
@@ -151,6 +179,18 @@ function seedWorkspace(env: EvalEnv): void {
     people.set(p.last, bareId(id));
   }
 
+  const existingProjects = listType(env, PROJECT_TYPE);
+  const projectId =
+    existingProjects.find(
+      (n) => (n.title ?? n.content ?? "").toLowerCase() === PROJECT_TITLE.toLowerCase(),
+    )?.id ??
+    (
+      runNs(env, ["node", "create", "--type", PROJECT_TYPE, "--content", PROJECT_TITLE]) as {
+        id?: string;
+      } | null
+    )?.id;
+  if (!projectId) throw new Error(`seeding project '${PROJECT_TITLE}' returned no id`);
+
   const existingTasks = listType(env, TASK_TYPE);
   for (const t of TASKS) {
     const present = existingTasks.find(
@@ -171,6 +211,22 @@ function seedWorkspace(env: EvalEnv): void {
         ]) as { id?: string } | null
       )?.id;
     if (!id) throw new Error(`seeding task '${t.title}' returned no id`);
+    if (t.project) {
+      try {
+        runNs(env, [
+          "relationship",
+          "create",
+          "--from",
+          bareId(projectId),
+          "--type",
+          "tasks",
+          "--to",
+          bareId(id),
+        ]);
+      } catch (e) {
+        if (!/exist|already|duplicate/i.test(String(e))) throw e;
+      }
+    }
     if (t.assignee) {
       const person = people.get(t.assignee);
       if (!person) throw new Error(`no seeded person '${t.assignee}'`);
@@ -217,6 +273,17 @@ export function assertScenario(
 ): Verdict {
   const turn = turns[turns.length - 1];
   if (!turn) return { passed: false, failure: "No turn recorded." };
+  if (scenario.expected.kind === "assigned") {
+    // Assigning is a write, and the right one is an edge to the person; the
+    // stray `custom:assignee` property is refused by the tool, so the turn can
+    // only pass by making the edge call.
+    return turn.toolsCalled.includes("create_relationship")
+      ? { passed: true }
+      : {
+          passed: false,
+          failure: `No create_relationship call; tools called: ${turn.toolsCalled.join(", ") || "none"}. Reply: ${turn.reply.slice(0, 200)}`,
+        };
+  }
   // A lookup changes nothing; any tool named for a change fails the turn.
   const wrote = turn.toolsCalled.filter((t) =>
     /^(create|update|delete|set|move|archive|restore|merge|add|remove)_/.test(t),

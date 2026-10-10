@@ -3906,6 +3906,71 @@ async fn store_undeclared_keys(
     moved
 }
 
+/// Refuse a key that names a relationship of `node_type`, with the call that
+/// sets it.
+///
+/// A relationship holds no value: a task's `assignee` is an edge to a person
+/// node. Stored as a property it succeeds, changes nothing a reader sees, and
+/// the reply describes the intent rather than the outcome. The key may arrive
+/// bare, under `custom:`, or with the type in front (`task__assignee`), so all
+/// three are read as the name. Refused rather than rewritten: the edge needs
+/// the other node's id, which a field value does not carry.
+async fn refuse_relationship_keys(
+    ns: &NodeService,
+    tool: &str,
+    node_type: &str,
+    props: &serde_json::Map<String, Value>,
+) -> Result<(), ToolError> {
+    let typed = format!("{node_type}__");
+    for sent in props.keys() {
+        let name = sent.strip_prefix("custom:").unwrap_or(sent);
+        let name = name.strip_prefix(&typed).unwrap_or(name);
+        // A field the type declares is a field, whatever a relationship toward
+        // it is called: a user's `incident-report` may hold a `resolved` field
+        // while another type's relationship reaches reports under that name.
+        // A schema that cannot be read is not grounds to refuse a write.
+        if !matches!(ns.declares_field(node_type, name).await, Ok(false)) {
+            continue;
+        }
+        let Ok(Some(hop)) = query_ops::relationship_named(ns, node_type, name).await else {
+            continue;
+        };
+        // A built-in inbound name (`child_of`, `mentioned_by`) is not written
+        // from either end the way a declared one is: left to the store.
+        if query_ops::is_built_in_inbound(&hop) {
+            continue;
+        }
+        let reaches = hop
+            .far_type
+            .as_ref()
+            .map(|far| format!(" (to a '{far}' node)"))
+            .unwrap_or_default();
+        // A reverse name (a task's `assignee`) is written from the type that
+        // declared it, under the forward name (a person's `tasks`).
+        let call = match &hop.source_type {
+            Some(declaring) => format!(
+                "from_id the '{declaring}' node's id, to_id the '{node_type}' node's id, \
+                 relationship_type '{}'",
+                hop.relationship_type
+            ),
+            None => format!(
+                "from_id the '{node_type}' node's id, to_id the id of the node it must reach, \
+                 relationship_type '{}'",
+                hop.relationship_type
+            ),
+        };
+        return Err(ToolError::InvalidArguments {
+            tool: tool.to_string(),
+            reason: format!(
+                "'{sent}': '{name}' is a relationship of '{node_type}'{reaches}, not a field, so it \
+                 cannot be set as a value and nothing was stored. To set it, call \
+                 create_relationship with {call}; take the ids from a search."
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// `result` with a note naming each key [`store_undeclared_keys`] rewrote,
 /// when it rewrote any. Under `notes`, like [`with_created_as_text_note`]:
 /// what the tool did, stated as a fact about the stored record.
@@ -4870,6 +4935,7 @@ impl GraphToolExecutor {
         let requested_any_properties = !props.is_empty();
 
         let ns = self.node_service()?;
+        refuse_relationship_keys(&ns, "create_node", &params.node_type, &props).await?;
         let stored_as = store_undeclared_keys(&ns, &params.node_type, &mut props).await;
         let node_type = params.node_type.clone();
         let properties = Value::Object(props);
@@ -5038,6 +5104,9 @@ impl GraphToolExecutor {
                 .flatten()
                 .map(|node| node.node_type)
         };
+        if let Some(node_type) = &node_type {
+            refuse_relationship_keys(&ns, "update_node", node_type, &props).await?;
+        }
         let stored_as = match &node_type {
             Some(node_type) => store_undeclared_keys(&ns, node_type, &mut props).await,
             None => Vec::new(),

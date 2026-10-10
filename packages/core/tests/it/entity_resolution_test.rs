@@ -495,6 +495,38 @@ mod entity_resolution_tests {
         Ok(())
     }
 
+    /// The same holds for a second core type: a project's tasks are declared on
+    /// the project, so a task's `project` is the derived other side and appears
+    /// on no schema line the prompt shows.
+    #[tokio::test]
+    async fn a_resolved_project_brings_the_links_from_tasks() -> Result<()> {
+        let (_store, service, _t) = create_test_store().await?;
+        service
+            .create_node(Node::new(
+                "project".to_string(),
+                "Apollo launch".to_string(),
+                json!({}),
+            ))
+            .await?;
+        let q = "How many tasks are in the Apollo launch project?";
+
+        let ctx = build_workspace_context(&service, None, Some(q), Some(q)).await?;
+
+        let links = ctx
+            .entity_links
+            .iter()
+            .find(|l| l.node_type == "project")
+            .expect("a resolved project has links");
+        let sources: Vec<&str> = links.from.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(sources, ["task"], "{links:?}");
+        let names = &links.from[0].1;
+        assert!(names.contains(&"project".to_string()), "{names:?}");
+
+        let out = ctx.format_for_prompt(4000);
+        assert!(out.contains("project: task via"), "{out}");
+        Ok(())
+    }
+
     /// The limit is honoured, so one common word cannot flood the caller.
     #[tokio::test]
     async fn the_limit_bounds_the_result_set() -> Result<()> {

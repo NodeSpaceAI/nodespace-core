@@ -281,6 +281,104 @@ struct OpenAiUsage {
     prompt_tokens: u32,
     #[serde(default)]
     completion_tokens: u32,
+    #[serde(default)]
+    completion_tokens_details: Option<OpenAiCompletionDetails>,
+}
+
+impl OpenAiUsage {
+    fn reasoning_tokens(&self) -> u32 {
+        self.completion_tokens_details
+            .as_ref()
+            .map_or(0, |d| d.reasoning_tokens)
+    }
+}
+
+#[derive(Deserialize)]
+struct OpenAiCompletionDetails {
+    #[serde(default)]
+    reasoning_tokens: u32,
+}
+
+/// What one request cost, filled in as [`OpenAiCompatInference::generate_inner`]
+/// runs and logged once when it ends, so a slow turn can be split into prompt
+/// size, reasoning, and waiting on the provider.
+#[derive(Default)]
+struct WireStats {
+    /// Until the response headers arrive, retries and throttling included.
+    first_byte: Option<Duration>,
+    /// Until the first streamed chunk; unset for a non-streaming request.
+    first_chunk: Option<Duration>,
+    reasoning_tokens: u32,
+}
+
+/// The sizes of what a request sent, in bytes: the messages by role and the
+/// tool schemas by tool. Bytes, not characters: `len()` of the text, which is
+/// what a prompt costs to send. Assistant tool-call arguments replayed in the
+/// conversation are not counted.
+pub(crate) struct RequestSizes {
+    pub(crate) system_bytes: usize,
+    pub(crate) conversation_bytes: usize,
+    pub(crate) tool_bytes: usize,
+    /// The three largest tools, `name=bytes`, largest first.
+    pub(crate) largest_tools: String,
+}
+
+impl RequestSizes {
+    /// From the sizes of the parts; `tools` is `(name, bytes)` per tool.
+    pub(crate) fn new(
+        system_bytes: usize,
+        conversation_bytes: usize,
+        tools: impl IntoIterator<Item = (String, usize)>,
+    ) -> Self {
+        let mut per_tool: Vec<(String, usize)> = tools.into_iter().collect();
+        let tool_bytes = per_tool.iter().map(|(_, n)| n).sum();
+        per_tool.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+        let largest_tools = per_tool
+            .iter()
+            .take(3)
+            .map(|(name, n)| format!("{name}={n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        Self {
+            system_bytes,
+            conversation_bytes,
+            tool_bytes,
+            largest_tools,
+        }
+    }
+
+    /// A tool's size: its name, description and parameter schema.
+    pub(crate) fn tool_bytes_of(
+        name: &str,
+        description: &str,
+        schema: &serde_json::Value,
+    ) -> usize {
+        name.len() + description.len() + serde_json::to_string(schema).map_or(0, |j| j.len())
+    }
+
+    fn of(messages: &[OpenAiMessage], tools: Option<&[OpenAiTool]>) -> Self {
+        let bytes = |system: bool| -> usize {
+            messages
+                .iter()
+                .filter(|m| (m.role == "system") == system)
+                .map(|m| m.content.len())
+                .sum()
+        };
+        Self::new(
+            bytes(true),
+            bytes(false),
+            tools.unwrap_or_default().iter().map(|t| {
+                (
+                    t.function.name.clone(),
+                    Self::tool_bytes_of(
+                        &t.function.name,
+                        &t.function.description,
+                        &t.function.parameters,
+                    ),
+                )
+            }),
+        )
+    }
 }
 
 /// Convert a captured `provider_extra` map into the `Option<Value>` carried on
@@ -327,6 +425,64 @@ impl ChatInferenceEngine for OpenAiCompatInferenceEngine {
         request: InferenceRequest,
         on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
     ) -> Result<InferenceUsage, InferenceError> {
+        let started = std::time::Instant::now();
+        let mut stats = WireStats::default();
+        let mut sizes = None;
+        let result = self
+            .generate_inner(request, on_chunk, &mut stats, &mut sizes, started)
+            .await;
+        let ms = |d: Option<Duration>| d.map(|d| d.as_millis() as u64);
+        let (prompt_tokens, completion_tokens) = result
+            .as_ref()
+            .map(|u| (u.prompt_tokens, u.completion_tokens))
+            .unwrap_or_default();
+        let sizes = sizes.unwrap_or_else(|| RequestSizes::new(0, 0, []));
+        tracing::info!(
+            model = %self.model_name,
+            ok = result.is_ok(),
+            duration_ms = started.elapsed().as_millis() as u64,
+            first_byte_ms = ms(stats.first_byte),
+            first_chunk_ms = ms(stats.first_chunk),
+            prompt_tokens,
+            completion_tokens,
+            reasoning_tokens = stats.reasoning_tokens,
+            system_bytes = sizes.system_bytes,
+            conversation_bytes = sizes.conversation_bytes,
+            tool_schema_bytes = sizes.tool_bytes,
+            largest_tools = %sizes.largest_tools,
+            "OpenAI-compatible request finished"
+        );
+        result
+    }
+
+    async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError> {
+        // OpenAI-compatible servers have no standard equivalent of Ollama's
+        // /api/show for context-window introspection. Callers fall back to a
+        // conservative default via the None case.
+        Ok(Some(ChatModelSpec {
+            model_id: self.model_name.clone(),
+            family: ModelFamily::OpenAiCompat,
+            context_window: 32_768,
+            default_temperature: 0.7,
+            type_k: None,
+            type_v: None,
+        }))
+    }
+
+    async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
+        Ok((text.len() / 4) as u32)
+    }
+}
+
+impl OpenAiCompatInferenceEngine {
+    async fn generate_inner(
+        &self,
+        request: InferenceRequest,
+        on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+        stats: &mut WireStats,
+        sizes_out: &mut Option<RequestSizes>,
+        started: std::time::Instant,
+    ) -> Result<InferenceUsage, InferenceError> {
         let messages: Vec<OpenAiMessage> = request.messages.iter().map(to_openai_message).collect();
 
         let tools = request.tools.map(|tool_defs| {
@@ -355,6 +511,11 @@ impl ChatInferenceEngine for OpenAiCompatInferenceEngine {
             temperature: request.temperature,
             max_tokens: request.max_tokens,
         };
+
+        *sizes_out = Some(RequestSizes::of(
+            &openai_request.messages,
+            openai_request.tools.as_deref(),
+        ));
 
         if tracing::enabled!(tracing::Level::DEBUG) {
             if let Ok(json) = serde_json::to_string_pretty(&openai_request) {
@@ -443,6 +604,7 @@ impl ChatInferenceEngine for OpenAiCompatInferenceEngine {
             attempt += 1;
         };
 
+        stats.first_byte = Some(started.elapsed());
         let mut final_usage = InferenceUsage {
             prompt_tokens: 0,
             completion_tokens: 0,
@@ -467,6 +629,7 @@ impl ChatInferenceEngine for OpenAiCompatInferenceEngine {
 
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk.map_err(|e| InferenceError::Engine(e.to_string()))?;
+                stats.first_chunk.get_or_insert_with(|| started.elapsed());
                 let lines = buffer
                     .push(&chunk)
                     .map_err(|e| InferenceError::Engine(e.to_string()))?;
@@ -496,6 +659,7 @@ impl ChatInferenceEngine for OpenAiCompatInferenceEngine {
                     match serde_json::from_str::<OpenAiChatResponse>(data) {
                         Ok(resp) => {
                             if let Some(usage) = &resp.usage {
+                                stats.reasoning_tokens = usage.reasoning_tokens();
                                 final_usage = InferenceUsage {
                                     prompt_tokens: usage.prompt_tokens,
                                     completion_tokens: usage.completion_tokens,
@@ -568,6 +732,7 @@ impl ChatInferenceEngine for OpenAiCompatInferenceEngine {
             match serde_json::from_str::<OpenAiChatResponse>(&body) {
                 Ok(resp) => {
                     if let Some(usage) = &resp.usage {
+                        stats.reasoning_tokens = usage.reasoning_tokens();
                         final_usage = InferenceUsage {
                             prompt_tokens: usage.prompt_tokens,
                             completion_tokens: usage.completion_tokens,
@@ -611,24 +776,6 @@ impl ChatInferenceEngine for OpenAiCompatInferenceEngine {
         }
 
         Ok(final_usage)
-    }
-
-    async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError> {
-        // OpenAI-compatible servers have no standard equivalent of Ollama's
-        // /api/show for context-window introspection. Callers fall back to a
-        // conservative default via the None case.
-        Ok(Some(ChatModelSpec {
-            model_id: self.model_name.clone(),
-            family: ModelFamily::OpenAiCompat,
-            context_window: 32_768,
-            default_temperature: 0.7,
-            type_k: None,
-            type_v: None,
-        }))
-    }
-
-    async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
-        Ok((text.len() / 4) as u32)
     }
 }
 
@@ -1060,5 +1207,56 @@ mod tests {
             replayed["extra_content"]["google"]["thought_signature"], "tok",
             "thought_signature must survive the full parse-then-replay round trip"
         );
+    }
+
+    #[test]
+    fn usage_reads_reasoning_tokens_when_the_provider_reports_them() {
+        let with: OpenAiChatResponse = serde_json::from_str(
+            r#"{"usage":{"prompt_tokens":10,"completion_tokens":50,
+                "completion_tokens_details":{"reasoning_tokens":42}}}"#,
+        )
+        .unwrap();
+        assert_eq!(with.usage.unwrap().reasoning_tokens(), 42);
+
+        let without: OpenAiChatResponse =
+            serde_json::from_str(r#"{"usage":{"prompt_tokens":10,"completion_tokens":5}}"#)
+                .unwrap();
+        assert_eq!(without.usage.unwrap().reasoning_tokens(), 0);
+    }
+
+    #[test]
+    fn request_sizes_split_system_conversation_and_tools_by_size() {
+        let msg = |role: &str, content: &str| OpenAiMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_call_id: None,
+            name: None,
+            tool_calls: None,
+        };
+        let tool = |name: &str, description: &str| OpenAiTool {
+            tool_type: "function".to_string(),
+            function: OpenAiFunction {
+                name: name.to_string(),
+                description: description.to_string(),
+                parameters: serde_json::json!({}),
+            },
+        };
+        let messages = [
+            msg("system", "abcd"),
+            msg("user", "xy"),
+            msg("assistant", "z"),
+        ];
+        let tools = [tool("small", "s"), tool("big", &"d".repeat(100))];
+
+        let sizes = RequestSizes::of(&messages, Some(&tools));
+
+        assert_eq!(sizes.system_bytes, 4);
+        assert_eq!(sizes.conversation_bytes, 3);
+        assert!(
+            sizes.largest_tools.starts_with("big="),
+            "{}",
+            sizes.largest_tools
+        );
+        assert!(sizes.tool_bytes > 100);
     }
 }

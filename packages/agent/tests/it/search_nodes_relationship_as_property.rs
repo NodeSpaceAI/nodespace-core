@@ -371,3 +371,86 @@ async fn a_relationship_named_as_a_property_without_a_node_is_refused_with_the_f
     assert!(refused.contains("is a relationship of 'task'"), "{refused}");
     assert!(refused.contains("\"path\":[\"assignee\"]"), "{refused}");
 }
+
+/// Writing a relationship's name as a field value stores a property that
+/// changes nothing a reader sees. The call from a real chat, `custom:assignee`
+/// on a task, is refused with the call that sets it, and that call works.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_field_value_naming_a_relationship_is_refused_and_the_edge_is_set_the_named_way() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    for key in ["custom:assignee", "assignee", "task__assignee"] {
+        let refused = executor
+            .execute(
+                "update_node",
+                json!({ "id": TASK_C, "field_values": { key: "Norbert Weber" } }),
+            )
+            .await
+            .expect_err("a relationship is not a field")
+            .to_string();
+        assert!(
+            refused.contains("is a relationship of 'task'"),
+            "{key}: {refused}"
+        );
+        assert!(
+            refused.contains("relationship_type 'tasks'"),
+            "{key}: {refused}"
+        );
+    }
+
+    let created = executor
+        .execute(
+            "create_relationship",
+            json!({ "from_id": NORBERT, "to_id": TASK_C, "relationship_type": "tasks" }),
+        )
+        .await
+        .expect("the named call sets the assignee");
+    assert_eq!(created.result["created"], true);
+
+    let found = executor
+        .execute(
+            "search_nodes",
+            json!({
+                "node_type": "task",
+                "filters": [{ "type": "relationship", "operator": "equals",
+                              "path": ["assignee"], "node_id": NORBERT }]
+            }),
+        )
+        .await
+        .expect("search_nodes must run");
+    assert_eq!(ids(&found.result), [TASK_C]);
+}
+
+/// The refusal is on creation as well, and a built-in inbound name (`child_of`)
+/// is not one a field value is refused for: it has no declaring end to write
+/// from, so the store decides.
+#[tokio::test(flavor = "multi_thread")]
+async fn creating_a_node_refuses_a_relationship_key_and_a_built_in_inbound_name_is_left_alone() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    let refused = executor
+        .execute(
+            "create_node",
+            json!({
+                "node_type": "task", "content": "plan",
+                "field_values": { "custom:assignee": "Norbert Weber" }
+            }),
+        )
+        .await
+        .expect_err("a relationship is not a field")
+        .to_string();
+    assert!(refused.contains("is a relationship of 'task'"), "{refused}");
+
+    let left = executor
+        .execute(
+            "update_node",
+            json!({ "id": TASK_C, "field_values": { "child_of": "x" } }),
+        )
+        .await;
+    if let Err(e) = left {
+        assert!(
+            !e.to_string().contains("is a relationship of 'task'"),
+            "{e}"
+        );
+    }
+}
