@@ -30,6 +30,8 @@ import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { providerOf } from "./eval/env.ts";
+
 const WORKTREE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const NS_BIN = process.env.NS_BIN ?? join(WORKTREE, "target/release/nodespace");
 const SOCKET =
@@ -104,7 +106,7 @@ function getNode(id: string): NodeJson {
 function defaultAiChat(): AiChat {
   return {
     agent: "nodespace",
-    provider: "native",
+    provider: providerOf(NS_MODEL),
     model: NS_MODEL,
     turn_status: "idle",
   };

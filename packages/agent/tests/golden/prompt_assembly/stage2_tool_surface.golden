@@ -786,6 +786,32 @@ parameters_schema:
   "type": "object"
 }
 
+### create_relationship
+description: Record a named relationship between two existing records, given both ids. Use this whenever the user describes one record standing in a relation to another — superseding, blocking, belonging to — rather than writing that relation into a text field.
+parameters_schema:
+{
+  "properties": {
+    "from_id": {
+      "description": "Id of the record that acts — the one doing the superseding, blocking, or belonging. Copied exactly from a tool result.",
+      "type": "string"
+    },
+    "relationship_type": {
+      "description": "The relation's name, lowercase snake_case. Must be either a relationship DECLARED on the source record's own type (e.g. 'supersedes', 'has_task'), or one of these four universal names, which are legal between any two records: member_of, has_child, mentions, has_role. Any other name is rejected — when no declared relation fits, use 'mentions'.",
+      "type": "string"
+    },
+    "to_id": {
+      "description": "Id of the record acted upon — the one being superseded, blocked, or belonged to. Copied exactly from a tool result.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "from_id",
+    "to_id",
+    "relationship_type"
+  ],
+  "type": "object"
+}
+
 ### route_clarify
 description: Ask the user one specific clarifying question when a request can't be completed as understood — e.g. a search returned more than one plausible match and nothing already said picks one, the request's wording could mean more than one thing, or none of the available tools can do what was asked. Any question for the user goes through this tool — never ask one in a plain reply. Ends the turn with the question; do not call another tool in the same turn.
 parameters_schema:

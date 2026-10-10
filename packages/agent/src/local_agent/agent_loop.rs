@@ -5493,7 +5493,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         //
         // So a message shaped like a lookup — a question, or one that opens
         // with a retrieval verb — is put to Stage 1 by itself first. A lookup
-        // is taken as it stands. Anything else, such as a request that only
+        // is taken as it stands. (A question about what the workspace holds,
+        // with no word that asks for a change, is not put to Stage 1 at all:
+        // `routing::lookup_without_stage1`. A follow-up that leans on its
+        // context is a lookup of the message then too, as Stage 1 on the
+        // message alone made it, and Stage 2 searches with the conversation
+        // in view.) Anything else, such as a request that only
         // happens to end in a question mark, is decided on the blended view
         // exactly as before, at the cost of that first pass.
         //
@@ -5517,7 +5522,21 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             .is_some_and(|t| t.outcome == AiChatTurnOutcome::Clarified);
         let message_alone = user_message.trim();
         let mut passes = 0usize;
-        if routing::asks_about_the_message_first(
+        let mut stage1_skipped = false;
+        // A message whose decision is already settled is not put to Stage 1 at
+        // all: the generation is the first of the turn's sequential requests,
+        // and its answer would be overridden. See `routing::lookup_without_stage1`.
+        if let Some(decision) =
+            routing::lookup_without_stage1(&routing_query, message_alone, answering_a_clarification)
+        {
+            stage1_skipped = true;
+            span.set_attribute(KeyValue::new("routing.stage1_skipped", true));
+            stage1 = Some(Stage1Decision {
+                decision: Some(decision),
+                tool_calls: Vec::new(),
+                usage: InferenceUsage::default(),
+            });
+        } else if routing::asks_about_the_message_first(
             &routing_query,
             message_alone,
             answering_a_clarification,
@@ -5762,6 +5781,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             routing_latency_ms = elapsed_ms,
             routing_decided_on = decided_on,
             routing_passes = passes,
+            routing_stage1_skipped = stage1_skipped,
             candidates = outcome.candidates.len(),
             routed_skills = %routing::routed_skill_names(&outcome.candidates),
             all_scores = %routing::all_candidate_scores(&outcome.candidates),
@@ -15946,7 +15966,7 @@ mod tests {
         loop_
             .run_turn(
                 &mut session,
-                "how many invoices do we have?",
+                "Find how many invoices we have",
                 |_| {},
                 |_| {},
                 CancellationToken::new(),
@@ -18358,15 +18378,25 @@ mod tests {
         );
     }
 
-    /// Runs a question through Stage 1 as `stage1` routes it, then `stage2`,
-    /// on a surface offering `search_semantic`. Returns the result, how many
+    /// Runs a lookup through Stage 1 as `stage1` routes it, then `stage2`, on a
+    /// surface offering `search_semantic`. Returns the result, how many
     /// generations ran, and the arguments each `search_semantic` call carried.
+    ///
+    /// The message is a request to find, not a question about what the
+    /// workspace holds: a question like that is decided without Stage 1 and
+    /// would leave `stage1` unused.
     async fn run_question_turn(
         session: &mut AgentSession,
         stage1: Vec<StreamingChunk>,
         stage2: Vec<Vec<StreamingChunk>>,
     ) -> (AgentTurnResult, usize, Vec<serde_json::Value>) {
-        run_turn_asking(session, "how does our retry policy work?", stage1, stage2).await
+        run_turn_asking(
+            session,
+            "Find out how our retry policy works",
+            stage1,
+            stage2,
+        )
+        .await
     }
 
     /// [`run_question_turn`] for `message`.
@@ -18613,7 +18643,7 @@ mod tests {
         loop_
             .run_turn(
                 &mut new_session(),
-                "how does our retry policy work?",
+                "Find out how our retry policy works",
                 |_| {},
                 |_| {},
                 CancellationToken::new(),
@@ -18675,7 +18705,7 @@ mod tests {
         stage1: Vec<StreamingChunk>,
         stage2: Vec<Vec<StreamingChunk>>,
     ) -> String {
-        streamed_text_asking("how does our retry policy work?", stage1, stage2).await
+        streamed_text_asking("Find out how our retry policy works", stage1, stage2).await
     }
 
     /// [`streamed_text`] for `message`.
@@ -18761,7 +18791,7 @@ mod tests {
         loop_
             .run_turn(
                 &mut new_session(),
-                "how does our retry policy work?",
+                "Find out how our retry policy works",
                 |_| {},
                 move |chunk| sink.lock().unwrap().push(chunk),
                 CancellationToken::new(),
@@ -18861,7 +18891,7 @@ mod tests {
         let result = loop_
             .run_turn(
                 &mut new_session(),
-                "how does our retry policy work?",
+                "Find out how our retry policy works",
                 |_| {},
                 |_| {},
                 CancellationToken::new(),
@@ -18974,7 +19004,7 @@ mod tests {
     #[tokio::test]
     async fn a_question_with_history_is_routed_on_the_message_alone() {
         let routed = route_after_an_earlier_exchange(
-            "  How do we onboard a new sponsor?  ",
+            "  Find my notes on how we onboard a new sponsor  ",
             false,
             vec![
                 lookup_round("how we onboard a new sponsor"),
@@ -18984,7 +19014,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            routed.asked[0], "How do we onboard a new sponsor?",
+            routed.asked[0], "Find my notes on how we onboard a new sponsor",
             "Stage 1 is asked about the message, trimmed, with nothing blended in"
         );
         assert_eq!(
@@ -18998,6 +19028,70 @@ mod tests {
             routed.generations, 2,
             "one Stage-1 pass and one Stage-2 generation"
         );
+    }
+
+    /// A question about what the workspace holds is a lookup of the message
+    /// whatever Stage 1 would say of it, so Stage 1 is not asked: the one
+    /// generation is Stage 2's. With turns ahead of it and without.
+    #[tokio::test]
+    async fn a_settled_lookup_is_not_put_to_stage_one() {
+        let with_history = route_after_an_earlier_exchange(
+            "How do we onboard a new sponsor?",
+            false,
+            vec![text_round("Done.")],
+        )
+        .await;
+        assert_eq!(
+            with_history.retrieved,
+            vec![
+                "find, look up, or search stored knowledge for How do we onboard a new sponsor"
+                    .to_string()
+            ]
+        );
+        assert_eq!(with_history.generations, 1, "Stage 2 alone");
+
+        let first = route_in(
+            new_session(),
+            "How many tasks are assigned to Anoop?",
+            vec![text_round("Two.")],
+        )
+        .await;
+        assert_eq!(first.generations, 1, "Stage 2 alone");
+
+        // The answer to a clarifying question is still put to Stage 1, however
+        // it is worded: its topic is the one Stage 1 wrote, not the message.
+        let clarified = route_after_an_earlier_exchange(
+            "How do we onboard a new sponsor?",
+            true,
+            vec![
+                lookup_round("how we onboard a new sponsor"),
+                tool_round("tc_1", "search_nodes", r#"{"query":"sponsor"}"#),
+                text_round("Done."),
+            ],
+        )
+        .await;
+        assert_eq!(
+            clarified.retrieved,
+            vec![
+                "find, look up, or search stored knowledge for how we onboard a new sponsor"
+                    .to_string()
+            ],
+            "Stage 1 was asked: its topic, not the raw message, is retrieved on"
+        );
+        assert_eq!(clarified.generations, 3, "Stage 1, the search, the answer");
+
+        // A question that also asks for a change keeps its Stage-1 pass.
+        let compound = route_after_an_earlier_exchange(
+            "What is the status of the offsite task, and should we mark it done?",
+            false,
+            vec![
+                lookup_round("the offsite task"),
+                tool_round("tc_2", "search_nodes", r#"{"query":"offsite"}"#),
+                text_round("Done."),
+            ],
+        )
+        .await;
+        assert_eq!(compound.generations, 3, "Stage 1, the search, the answer");
     }
 
     /// A question about how something is done names an action, and Stage 1
@@ -19069,7 +19163,7 @@ mod tests {
     #[tokio::test]
     async fn a_query_decided_in_context_is_not_read_as_a_lookup() {
         let routed = route_after_an_earlier_exchange(
-            "How do we onboard a new reviewer?",
+            "Find how we onboard a new reviewer",
             false,
             vec![
                 // On the message alone: no routing tool called.
@@ -19221,7 +19315,7 @@ mod tests {
         loop_
             .run_turn(
                 &mut new_session(),
-                "what is the merge gate?",
+                "Find the merge gate",
                 |_| {},
                 |_| {},
                 CancellationToken::new(),

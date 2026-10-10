@@ -813,6 +813,40 @@ fn strip_node_uri(id: &str) -> &str {
     id.strip_prefix("nodespace://").unwrap_or(id)
 }
 
+/// A node id as the model wrote it into an argument: the id itself, with a
+/// `nodespace://` prefix or prose around it removed (`"Plan the offsite task ID
+/// (409f9787-…)"`, which a small model writes when it copies a label and its
+/// id together from the entities it was shown).
+///
+/// The prose is dropped only when it holds exactly one UUID, so the id read is
+/// the one written. Anything else is returned as written: an id that is no
+/// UUID (a date's, the settings singleton's), and text naming two nodes, where
+/// either could be meant.
+fn node_id_arg(id: &str) -> String {
+    const UUID_LEN: usize = 36;
+    let id = strip_node_uri(id.trim());
+    if id.len() < UUID_LEN || uuid::Uuid::parse_str(id).is_ok() {
+        return id.to_string();
+    }
+    let mut found: Vec<String> = id
+        .char_indices()
+        .map(|(start, _)| start)
+        .filter_map(|start| id.get(start..start + UUID_LEN))
+        .filter_map(|window| uuid::Uuid::parse_str(window).ok())
+        .map(|uuid| uuid.to_string())
+        .collect();
+    found.dedup();
+    match found.as_slice() {
+        [only] => {
+            // A repaired argument is visible in the log: a model that
+            // decorates every id shows up here.
+            tracing::debug!(written = id, read_as = %only, "node id argument read through its prose");
+            only.clone()
+        }
+        _ => id.to_string(),
+    }
+}
+
 /// The relationship of `node_type` that a property name written against a node
 /// of `target_type` stands for, when exactly one does.
 ///
@@ -3906,6 +3940,63 @@ async fn store_undeclared_keys(
     moved
 }
 
+/// The `create_relationship` arguments that write a relationship from the type
+/// that declares it. A reverse name (a task's `assignee`) is not written from
+/// its own end: the declaring type (a person) writes it under the forward name
+/// (`tasks`), the node it is read from being the target.
+fn reverse_relationship_call(declaring: &str, target_type: &str, forward: &str) -> String {
+    format!(
+        "from_id the '{declaring}' node's id, to_id the '{target_type}' node's id, \
+         relationship_type '{forward}'"
+    )
+}
+
+/// Why `create_relationship` cannot write `name` between these two nodes, when
+/// the reason is that `name` is a reverse name read from one of them: the call
+/// that does write it. `None` when `name` is no such name, or when the other
+/// node is not of the type that declares the relationship (a hint sending the
+/// caller to a node neither of these is would mislead), leaving the store's
+/// own error to stand.
+async fn reverse_name_hint(
+    ns: &NodeService,
+    from_id: &str,
+    to_id: &str,
+    name: &str,
+) -> Option<String> {
+    for (id, other_id) in [(from_id, to_id), (to_id, from_id)] {
+        let Ok(Some(node)) = ns.get_node(id).await else {
+            continue;
+        };
+        let Ok(Some(hop)) = query_ops::relationship_named(ns, &node.node_type, name).await else {
+            continue;
+        };
+        if query_ops::is_built_in_inbound(&hop) {
+            continue;
+        }
+        let Some(declaring) = &hop.source_type else {
+            continue;
+        };
+        // The other node must be of the type that declares the relationship,
+        // or one that extends it. Another type may hold a relationship of the
+        // same forward name (a project's `tasks`), which is no reason to send
+        // the caller to it.
+        let Ok(Some(other)) = ns.get_node(other_id).await else {
+            continue;
+        };
+        if !query_ops::type_extends(ns, &other.node_type, declaring).await {
+            continue;
+        }
+        let call = reverse_relationship_call(declaring, &node.node_type, &hop.relationship_type);
+        return Some(format!(
+            "'{name}' is how a '{}' node reads a relationship that '{declaring}' declares, so \
+             it cannot be created under that name from either end. Call create_relationship \
+             with {call}.",
+            node.node_type
+        ));
+    }
+    None
+}
+
 /// Refuse a key that names a relationship of `node_type`, with the call that
 /// sets it.
 ///
@@ -3948,11 +4039,9 @@ async fn refuse_relationship_keys(
         // A reverse name (a task's `assignee`) is written from the type that
         // declared it, under the forward name (a person's `tasks`).
         let call = match &hop.source_type {
-            Some(declaring) => format!(
-                "from_id the '{declaring}' node's id, to_id the '{node_type}' node's id, \
-                 relationship_type '{}'",
-                hop.relationship_type
-            ),
+            Some(declaring) => {
+                reverse_relationship_call(declaring, node_type, &hop.relationship_type)
+            }
             None => format!(
                 "from_id the '{node_type}' node's id, to_id the id of the node it must reach, \
                  relationship_type '{}'",
@@ -4777,7 +4866,7 @@ impl GraphToolExecutor {
                 tool: "get_node".to_string(),
                 reason: e.to_string(),
             })?;
-        let id = strip_node_uri(&params.id).to_string();
+        let id = node_id_arg(&params.id);
         let format = params.format.unwrap_or_else(|| "json".to_string());
 
         let ns = self.node_service()?;
@@ -5073,7 +5162,7 @@ impl GraphToolExecutor {
         }
 
         let ns = self.node_service()?;
-        let node_id = strip_node_uri(&params.id).to_string();
+        let node_id = node_id_arg(&params.id);
 
         // A play's content is its description, and its rules and switch are
         // changed through `update_play`. Replacing the text here would leave a
@@ -5277,15 +5366,34 @@ impl GraphToolExecutor {
         let ns = self.node_service()?;
 
         let input = rel_ops::CreateRelInput {
-            source_id: strip_node_uri(&params.from_id).to_string(),
+            source_id: node_id_arg(&params.from_id),
             relationship_name: params.relationship_type.clone(),
-            target_id: strip_node_uri(&params.to_id).to_string(),
+            target_id: node_id_arg(&params.to_id),
             edge_data: None,
         };
 
-        let output = rel_ops::create_relationship(&ns, input)
-            .await
-            .map_err(|e| ops_error_to_tool(e, "create_relationship"))?;
+        let output = match rel_ops::create_relationship(&ns, input).await {
+            Ok(output) => output,
+            Err(e) => {
+                let hint = reverse_name_hint(
+                    &ns,
+                    &node_id_arg(&params.from_id),
+                    &node_id_arg(&params.to_id),
+                    &params.relationship_type,
+                )
+                .await;
+                return Err(match hint {
+                    // The store's reason stays beside the hint: the hint is
+                    // about the name, and the write may have failed for another
+                    // reason too.
+                    Some(hint) => ToolError::InvalidArguments {
+                        tool: "create_relationship".to_string(),
+                        reason: format!("{hint} The store's answer was: {e}"),
+                    },
+                    None => ops_error_to_tool(e, "create_relationship"),
+                });
+            }
+        };
 
         // The edge as stored, in the same form as its `replaced` entries: a
         // write through an `in` declaration's name comes back on the forward
@@ -5359,7 +5467,7 @@ impl GraphToolExecutor {
         let mut all_nodes: Vec<Value> = Vec::new();
         for dir in &directions {
             let input = rel_ops::GetRelatedInput {
-                node_id: strip_node_uri(&params.id).to_string(),
+                node_id: node_id_arg(&params.id),
                 relationship_name: rel_type.clone(),
                 direction: dir.to_string(),
             };
@@ -5559,7 +5667,7 @@ impl GraphToolExecutor {
         }
 
         let input = node_ops::UpdateNodeInput {
-            node_id: strip_node_uri(&params.id).to_string(),
+            node_id: node_id_arg(&params.id),
             version: params.version,
             node_type: None,
             content: None,
@@ -5856,7 +5964,7 @@ impl GraphToolExecutor {
         let context = match node_context_ops::read_node_context(
             &ns,
             node_context_ops::NodeContextInput {
-                node_id: strip_node_uri(&params.id).to_string(),
+                node_id: node_id_arg(&params.id),
                 paths: params.paths,
             },
         )
@@ -11816,6 +11924,33 @@ mod tests {
     fn strip_node_uri_no_prefix() {
         let bare_id = "550e8400-e29b-41d4-a716-446655440000";
         assert_eq!(strip_node_uri(bare_id), bare_id);
+    }
+
+    #[test]
+    fn a_node_id_argument_is_read_through_the_prose_around_it() {
+        let id = "409f9787-9083-4c04-902a-becfbf1bd363";
+        assert_eq!(node_id_arg(id), id);
+        assert_eq!(node_id_arg(&format!("nodespace://{id}")), id);
+        assert_eq!(node_id_arg(&format!("  {id}  ")), id);
+        assert_eq!(node_id_arg(&format!("Plan the offsite task ID ({id})")), id);
+        assert_eq!(node_id_arg(&format!("the task, {id}, {id}")), id);
+    }
+
+    #[test]
+    fn a_node_id_argument_that_is_not_one_uuid_is_left_as_written() {
+        let a = "409f9787-9083-4c04-902a-becfbf1bd363";
+        let b = "2a300970-ee0a-4ed5-a653-b233597773c7";
+        // Two nodes named: either could be meant.
+        let two = format!("assign {a} to {b}");
+        assert_eq!(node_id_arg(&two), two);
+        // Ids that are no UUID, and text holding none.
+        for id in [
+            "2026-10-10",
+            "database-settings-singleton",
+            "the offsite task",
+        ] {
+            assert_eq!(node_id_arg(id), id);
+        }
     }
 
     // -- search_result_summary ------------------------------------------------

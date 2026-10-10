@@ -43,6 +43,15 @@ const PEOPLE: SeededPerson[] = [
   { first: "Ingrid", last: "Solberg" },
 ];
 
+/**
+ * The person the database belongs to, who "me" is: the owner every database is
+ * seeded with, given a name here. Holds one task of their own.
+ */
+const OWNER = { first: "Mara", last: "Quint", email: "mara.quint@example.com" };
+
+/** The id of the database settings node, which the owner holds a role on. */
+const DATABASE_SETTINGS_ID = "database-settings-singleton";
+
 const TASKS: SeededTask[] = [
   {
     title: "Draft the vendor contract",
@@ -57,6 +66,7 @@ const TASKS: SeededTask[] = [
     project: PROJECT_TITLE,
   },
   { title: "Plan the offsite", status: "open", assignee: null },
+  { title: "Book the venue", status: "open", assignee: OWNER.last },
 ];
 
 type Expected =
@@ -100,6 +110,12 @@ const FIXTURES: GroundingScenario[] = [
     scenario: "Status of the tasks assigned to a person",
     prompt: "Could you check the status of tasks assigned to Anoop",
     expected: { kind: "statuses", statuses: [/open/i, /in[ _-]?progress/i] },
+  },
+  {
+    id: "count-for-me",
+    scenario: "Count of the current user's own tasks, who is never named",
+    prompt: "How many tasks are assigned to me?",
+    expected: { kind: "count", count: 1 },
   },
   {
     id: "count-in-project",
@@ -178,6 +194,34 @@ function seedWorkspace(env: EvalEnv): void {
     if (!id) throw new Error(`seeding person '${full}' returned no id`);
     people.set(p.last, bareId(id));
   }
+
+  // The owner is the current user the prompt names. Every database is seeded
+  // with one, blank, holding the role on the settings node; a second person
+  // given the role would lose to it as the earlier of the two, so this one is
+  // named instead.
+  const held = runNs(env, [
+    "relationship",
+    "get",
+    DATABASE_SETTINGS_ID,
+    "--type",
+    "has_role",
+    "--direction",
+    "in",
+  ]) as { nodes?: ListedNode[] } | ListedNode[] | null;
+  const ownerId = (Array.isArray(held) ? held : (held?.nodes ?? []))[0]?.id;
+  if (!ownerId) throw new Error("the database has no owner to name");
+  runNs(env, [
+    "node",
+    "update",
+    bareId(ownerId),
+    "--properties",
+    JSON.stringify({
+      first_name: OWNER.first,
+      last_name: OWNER.last,
+      email: OWNER.email,
+    }),
+  ]);
+  people.set(OWNER.last, bareId(ownerId));
 
   const existingProjects = listType(env, PROJECT_TYPE);
   const projectId =
@@ -276,12 +320,15 @@ export function assertScenario(
   if (scenario.expected.kind === "assigned") {
     // Assigning is a write, and the right one is an edge to the person; the
     // stray `custom:assignee` property is refused by the tool, so the turn can
-    // only pass by making the edge call.
-    return turn.toolsCalled.includes("create_relationship")
+    // only pass by making the edge call, and the call has to have succeeded:
+    // a refused one leaves nothing assigned.
+    const calls = turn.toolCalls ?? [];
+    const made = calls.some((c) => c.name === "create_relationship" && !c.isError);
+    return made
       ? { passed: true }
       : {
           passed: false,
-          failure: `No create_relationship call; tools called: ${turn.toolsCalled.join(", ") || "none"}. Reply: ${turn.reply.slice(0, 200)}`,
+          failure: `No successful create_relationship call; tools called: ${calls.map((c) => `${c.name}${c.isError ? " (error)" : ""}`).join(", ") || "none"}. Reply: ${turn.reply.slice(0, 200)}`,
         };
   }
   // A lookup changes nothing; any tool named for a change fails the turn.
