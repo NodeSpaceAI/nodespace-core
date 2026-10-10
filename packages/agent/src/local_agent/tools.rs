@@ -813,6 +813,35 @@ fn strip_node_uri(id: &str) -> &str {
     id.strip_prefix("nodespace://").unwrap_or(id)
 }
 
+/// A node id as the model wrote it into an argument: the id itself, with a
+/// `nodespace://` prefix or prose around it removed (`"Plan the offsite task ID
+/// (409f9787-…)"`, which a small model writes when it copies a label and its
+/// id together from the entities it was shown).
+///
+/// The prose is dropped only when it holds exactly one UUID, so the id read is
+/// the one written. Anything else is returned as written: an id that is no
+/// UUID (a date's, the settings singleton's), and text naming two nodes, where
+/// either could be meant.
+fn node_id_arg(id: &str) -> String {
+    const UUID_LEN: usize = 36;
+    let id = strip_node_uri(id.trim());
+    if uuid::Uuid::parse_str(id).is_ok() {
+        return id.to_string();
+    }
+    let mut found: Vec<String> = id
+        .char_indices()
+        .map(|(start, _)| start)
+        .filter_map(|start| id.get(start..start + UUID_LEN))
+        .filter_map(|window| uuid::Uuid::parse_str(window).ok())
+        .map(|uuid| uuid.to_string())
+        .collect();
+    found.dedup();
+    match found.as_slice() {
+        [only] => only.clone(),
+        _ => id.to_string(),
+    }
+}
+
 /// The relationship of `node_type` that a property name written against a node
 /// of `target_type` stands for, when exactly one does.
 ///
@@ -4832,7 +4861,7 @@ impl GraphToolExecutor {
                 tool: "get_node".to_string(),
                 reason: e.to_string(),
             })?;
-        let id = strip_node_uri(&params.id).to_string();
+        let id = node_id_arg(&params.id);
         let format = params.format.unwrap_or_else(|| "json".to_string());
 
         let ns = self.node_service()?;
@@ -5128,7 +5157,7 @@ impl GraphToolExecutor {
         }
 
         let ns = self.node_service()?;
-        let node_id = strip_node_uri(&params.id).to_string();
+        let node_id = node_id_arg(&params.id);
 
         // A play's content is its description, and its rules and switch are
         // changed through `update_play`. Replacing the text here would leave a
@@ -5332,9 +5361,9 @@ impl GraphToolExecutor {
         let ns = self.node_service()?;
 
         let input = rel_ops::CreateRelInput {
-            source_id: strip_node_uri(&params.from_id).to_string(),
+            source_id: node_id_arg(&params.from_id),
             relationship_name: params.relationship_type.clone(),
-            target_id: strip_node_uri(&params.to_id).to_string(),
+            target_id: node_id_arg(&params.to_id),
             edge_data: None,
         };
 
@@ -5343,8 +5372,8 @@ impl GraphToolExecutor {
             Err(e) => {
                 let hint = reverse_name_hint(
                     &ns,
-                    strip_node_uri(&params.from_id),
-                    strip_node_uri(&params.to_id),
+                    &node_id_arg(&params.from_id),
+                    &node_id_arg(&params.to_id),
                     &params.relationship_type,
                 )
                 .await;
@@ -5633,7 +5662,7 @@ impl GraphToolExecutor {
         }
 
         let input = node_ops::UpdateNodeInput {
-            node_id: strip_node_uri(&params.id).to_string(),
+            node_id: node_id_arg(&params.id),
             version: params.version,
             node_type: None,
             content: None,
@@ -11890,6 +11919,33 @@ mod tests {
     fn strip_node_uri_no_prefix() {
         let bare_id = "550e8400-e29b-41d4-a716-446655440000";
         assert_eq!(strip_node_uri(bare_id), bare_id);
+    }
+
+    #[test]
+    fn a_node_id_argument_is_read_through_the_prose_around_it() {
+        let id = "409f9787-9083-4c04-902a-becfbf1bd363";
+        assert_eq!(node_id_arg(id), id);
+        assert_eq!(node_id_arg(&format!("nodespace://{id}")), id);
+        assert_eq!(node_id_arg(&format!("  {id}  ")), id);
+        assert_eq!(node_id_arg(&format!("Plan the offsite task ID ({id})")), id);
+        assert_eq!(node_id_arg(&format!("the task, {id}, {id}")), id);
+    }
+
+    #[test]
+    fn a_node_id_argument_that_is_not_one_uuid_is_left_as_written() {
+        let a = "409f9787-9083-4c04-902a-becfbf1bd363";
+        let b = "2a300970-ee0a-4ed5-a653-b233597773c7";
+        // Two nodes named: either could be meant.
+        let two = format!("assign {a} to {b}");
+        assert_eq!(node_id_arg(&two), two);
+        // Ids that are no UUID, and text holding none.
+        for id in [
+            "2026-10-10",
+            "database-settings-singleton",
+            "the offsite task",
+        ] {
+            assert_eq!(node_id_arg(id), id);
+        }
     }
 
     // -- search_result_summary ------------------------------------------------
