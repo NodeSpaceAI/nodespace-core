@@ -1090,10 +1090,19 @@ mod tests {
         assert_eq!(normalize_enumerate_query("\""), None);
         assert_eq!(normalize_enumerate_query(" `` "), None);
         assert_eq!(normalize_enumerate_query("\"*\""), None);
-        // A quoted term is still a term.
+        // A quoted term is still a term, and a term that begins or ends with a
+        // quote mark keeps it.
         assert_eq!(
             normalize_enumerate_query("\"invoice\""),
             Some("\"invoice\"".to_string())
+        );
+        assert_eq!(
+            normalize_enumerate_query("'quoted'"),
+            Some("'quoted'".to_string())
+        );
+        assert_eq!(
+            normalize_enumerate_query("Rock 'n' Roll'"),
+            Some("Rock 'n' Roll'".to_string())
         );
     }
 

@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
 
 import { providerOf } from "./eval/env.ts";
 
-const WORKTREE =resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const WORKTREE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const NS_BIN = process.env.NS_BIN ?? join(WORKTREE, "target/release/nodespace");
 const SOCKET =
   process.env.NODESPACED_SOCKET ?? "/tmp/nodespaced-test/daemon.sock";

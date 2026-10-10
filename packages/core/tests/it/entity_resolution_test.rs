@@ -459,6 +459,68 @@ mod entity_resolution_tests {
         Ok(())
     }
 
+    /// The owner goes first, and a full list stays at the cap: the weakest match
+    /// is cut and counted as not shown, so the list does not claim to be whole.
+    #[tokio::test]
+    async fn the_owner_joining_a_full_list_keeps_the_cap_and_counts_the_cut() -> Result<()> {
+        let (_store, service, _t) = create_test_store().await?;
+        for name in [
+            "Northwind Trading",
+            "Contoso Holdings",
+            "Fabrikam Industries",
+        ] {
+            seed_entity(&service, "text", name).await?;
+            seed_entity(&service, "task", name).await?;
+        }
+        let owner = service
+            .set_local_person_identity("Mara", "Quint", "")
+            .await?
+            .id;
+        let q = "link Northwind Trading, Contoso Holdings and Fabrikam Industries to me";
+
+        let ctx = build_workspace_context(&service, None, Some(q), Some(q)).await?;
+
+        let EntityResolution::Resolved {
+            entities,
+            not_shown,
+        } = &ctx.resolved_entities
+        else {
+            panic!("names exist: {:?}", ctx.resolved_entities);
+        };
+        assert_eq!(entities.len(), MAX_RESOLVED_ENTITIES, "{entities:?}");
+        assert_eq!(entities[0].id, owner, "{entities:?}");
+        assert_eq!(
+            *not_shown, 2,
+            "the sixth tie and the match the owner displaced"
+        );
+        Ok(())
+    }
+
+    /// A name that exists nowhere, beside "me": the list holds the owner alone.
+    /// The "none found" statement is not made for the other name; the guidance
+    /// to check each name in the message against the list covers a name that is
+    /// not in it, as it does when some other name matched.
+    #[tokio::test]
+    async fn a_missing_name_beside_me_leaves_the_owner_alone_in_the_list() -> Result<()> {
+        let (_store, service, _t) = create_test_store().await?;
+        let owner = service
+            .set_local_person_identity("Mara", "Quint", "")
+            .await?
+            .id;
+        let q = "assign the Zebulon Dynamics account to me";
+
+        let ctx = build_workspace_context(&service, None, Some(q), Some(q)).await?;
+
+        match &ctx.resolved_entities {
+            EntityResolution::Resolved { entities, .. } => {
+                let ids: Vec<&str> = entities.iter().map(|e| e.id.as_str()).collect();
+                assert_eq!(ids, [owner.as_str()], "{entities:?}");
+            }
+            other => panic!("expected the owner alone, got {other:?}"),
+        }
+        Ok(())
+    }
+
     /// A message naming a person gets, beside the person's id, how a task
     /// reaches a person. A task's `assignee` is the other end of the person's
     /// `tasks`, declared on neither schema the prompt shows, so the id alone

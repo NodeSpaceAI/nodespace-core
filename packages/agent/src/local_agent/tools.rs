@@ -3910,16 +3910,18 @@ async fn store_undeclared_keys(
 /// that declares it. A reverse name (a task's `assignee`) is not written from
 /// its own end: the declaring type (a person) writes it under the forward name
 /// (`tasks`), the node it is read from being the target.
-fn reverse_relationship_call(declaring: &str, read_from: &str, forward: &str) -> String {
+fn reverse_relationship_call(declaring: &str, target_type: &str, forward: &str) -> String {
     format!(
-        "from_id the '{declaring}' node's id, to_id the '{read_from}' node's id, \
+        "from_id the '{declaring}' node's id, to_id the '{target_type}' node's id, \
          relationship_type '{forward}'"
     )
 }
 
 /// Why `create_relationship` cannot write `name` between these two nodes, when
 /// the reason is that `name` is a reverse name read from one of them: the call
-/// that does write it. `None` when `name` is no such name, leaving the store's
+/// that does write it. `None` when `name` is no such name, or when the other
+/// node is not of the type that declares the relationship (a hint sending the
+/// caller to a node neither of these is would mislead), leaving the store's
 /// own error to stand.
 async fn reverse_name_hint(
     ns: &NodeService,
@@ -3927,7 +3929,7 @@ async fn reverse_name_hint(
     to_id: &str,
     name: &str,
 ) -> Option<String> {
-    for id in [from_id, to_id] {
+    for (id, other_id) in [(from_id, to_id), (to_id, from_id)] {
         let Ok(Some(node)) = ns.get_node(id).await else {
             continue;
         };
@@ -3937,16 +3939,26 @@ async fn reverse_name_hint(
         if query_ops::is_built_in_inbound(&hop) {
             continue;
         }
-        if let Some(declaring) = &hop.source_type {
-            let call =
-                reverse_relationship_call(declaring, &node.node_type, &hop.relationship_type);
-            return Some(format!(
-                "'{name}' is how a '{}' node reads a relationship that '{declaring}' declares, so \
-                 it cannot be created under that name from either end. Call create_relationship \
-                 with {call}.",
-                node.node_type
-            ));
+        let Some(declaring) = &hop.source_type else {
+            continue;
+        };
+        // The other node must be of the type that declares the relationship,
+        // or one that extends it. Another type may hold a relationship of the
+        // same forward name (a project's `tasks`), which is no reason to send
+        // the caller to it.
+        let Ok(Some(other)) = ns.get_node(other_id).await else {
+            continue;
+        };
+        if !query_ops::type_extends(ns, &other.node_type, declaring).await {
+            continue;
         }
+        let call = reverse_relationship_call(declaring, &node.node_type, &hop.relationship_type);
+        return Some(format!(
+            "'{name}' is how a '{}' node reads a relationship that '{declaring}' declares, so \
+             it cannot be created under that name from either end. Call create_relationship \
+             with {call}.",
+            node.node_type
+        ));
     }
     None
 }
@@ -5337,9 +5349,12 @@ impl GraphToolExecutor {
                 )
                 .await;
                 return Err(match hint {
-                    Some(reason) => ToolError::InvalidArguments {
+                    // The store's reason stays beside the hint: the hint is
+                    // about the name, and the write may have failed for another
+                    // reason too.
+                    Some(hint) => ToolError::InvalidArguments {
                         tool: "create_relationship".to_string(),
-                        reason,
+                        reason: format!("{hint} The store's answer was: {e}"),
                     },
                     None => ops_error_to_tool(e, "create_relationship"),
                 });

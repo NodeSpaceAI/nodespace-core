@@ -477,6 +477,20 @@ async fn a_reverse_name_given_to_create_relationship_is_answered_with_the_forwar
         );
     }
 
+    // The hint keeps the store's own answer beside it.
+    let hinted = executor
+        .execute(
+            "create_relationship",
+            json!({ "from_id": TASK_C, "to_id": NORBERT, "relationship_type": "assignee" }),
+        )
+        .await
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        hinted.contains("The store's answer was:") && hinted.contains("not defined in schema"),
+        "{hinted}"
+    );
+
     // A name that is no relationship of either node keeps the store's message.
     let unknown = executor
         .execute(
@@ -487,6 +501,43 @@ async fn a_reverse_name_given_to_create_relationship_is_answered_with_the_forwar
         .expect_err("an undeclared name is refused")
         .to_string();
     assert!(!unknown.contains("relationship_type 'tasks'"), "{unknown}");
+    assert!(unknown.contains("not defined in schema"), "{unknown}");
+}
+
+/// A reverse name is explained only between the types it relates. A project
+/// holds a `tasks` relationship of its own, but a task and a project are not
+/// a task and a person, so the caller is not sent to a node that is neither.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reverse_name_between_other_types_keeps_the_stores_message() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+    let created = executor
+        .execute(
+            "create_node",
+            json!({ "node_type": "project", "content": "Apollo launch" }),
+        )
+        .await
+        .expect("a project is created");
+    let project = created.result["id"]
+        .as_str()
+        .expect("the new node has an id")
+        .trim_start_matches("nodespace://")
+        .to_string();
+
+    for (from, to) in [
+        (TASK_C.to_string(), project.clone()),
+        (project, TASK_C.to_string()),
+    ] {
+        let refused = executor
+            .execute(
+                "create_relationship",
+                json!({ "from_id": from, "to_id": to, "relationship_type": "assignee" }),
+            )
+            .await
+            .expect_err("'assignee' relates a task to a person, not to a project")
+            .to_string();
+        assert!(!refused.contains("'person' node"), "{refused}");
+        assert!(refused.contains("not defined in schema"), "{refused}");
+    }
 }
 
 /// Quote marks alone are an empty query, not a search for quote marks: the

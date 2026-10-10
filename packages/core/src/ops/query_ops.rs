@@ -386,6 +386,16 @@ pub async fn relationship_named(
     })
 }
 
+/// Whether `node_type` is `base` or extends it, `base` being any type's id,
+/// not only a core one. A type whose chain cannot be read is not taken to.
+pub async fn type_extends(node_service: &NodeService, node_type: &str, base: &str) -> bool {
+    node_service
+        .store()
+        .type_chain(node_type)
+        .await
+        .is_ok_and(|chain| chain.iter().any(|t| t == base))
+}
+
 /// Whether `hop` is a built-in name read from the target end (`child_of`,
 /// `mentioned_by`): no schema declares it, so there is no declaring end to
 /// write it from.
