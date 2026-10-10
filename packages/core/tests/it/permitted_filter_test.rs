@@ -393,3 +393,31 @@ async fn a_candidate_whose_rules_cannot_be_resolved_is_excluded_and_counted() ->
     h.stop().await;
     Ok(())
 }
+
+/// The seeded "Ready tasks" queue follows the spec Play: a task with a
+/// checklist and nothing else is not ready until it links an approved spec or
+/// is marked as not needing one (ADR-097 §6).
+#[tokio::test]
+async fn the_seeded_ready_queue_leaves_out_a_task_the_spec_play_would_refuse() -> Result<()> {
+    use nodespace_core::services::query_service::core_queries::READY_TASKS_QUERY_ID;
+
+    let h = Harness::start().await?;
+    let gated = h.spec_gated_task().await?;
+    h.child(&gated, "checkbox", "- [ ] It works").await?;
+    let small = h.task().await?;
+    h.child(&small, "checkbox", "- [ ] It works").await?;
+    let specced = h.spec_gated_task().await?;
+    h.child(&specced, "checkbox", "- [ ] It works").await?;
+    let spec = h.approved_spec().await?;
+    h.link(&spec, "tasks", &specced).await?;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let ids = run_ids_in_order(&h, json!({ "query": READY_TASKS_QUERY_ID })).await?;
+    assert_eq!(sorted(ids), sorted([small.clone(), specced.clone()]));
+
+    h.set(&gated, json!({ "requires_spec": false })).await?;
+    let ids = run_ids_in_order(&h, json!({ "query": READY_TASKS_QUERY_ID })).await?;
+    assert_eq!(sorted(ids), sorted([gated, small, specced]));
+    h.stop().await;
+    Ok(())
+}

@@ -1341,6 +1341,9 @@ async fn started_at_is_stamped_on_the_first_start() -> Result<()> {
 
     // A task created already started is stamped as it is created, on the
     // single-node path and on the batch and hierarchy ones.
+    // Creation is not a move: the status rules, the spec rule among them,
+    // guard a change of status, so a task can be created already started
+    // with no spec. The gate's dry run still refuses it a repository write.
     let born_started = h.create("task", json!({ "status": "in_progress" })).await?;
     assert_eq!(started(&born_started).await?, Some(json!(today)));
 

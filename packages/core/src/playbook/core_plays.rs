@@ -41,7 +41,7 @@ pub const TASK_CRITERIA_PLAY_ID: &str = "95796b4d-f078-44f8-807b-8a2e92167a2d";
 /// Node id of the superseded lock Play.
 pub const SUPERSEDED_LOCK_PLAY_ID: &str = "54159daf-f37d-47f9-a337-bf644d1f0db2";
 
-/// Node id of the task spec Play (ADR-097 §2).
+/// Node id of the task spec Play (ADR-097 §2, §6).
 pub const TASK_SPEC_PLAY_ID: &str = "c4a8e1b6-2f73-4d95-a0b8-7e5d3c91f2a4";
 
 /// The id of every Play that ships with the product: the core play table, in
@@ -417,8 +417,9 @@ pub fn task_spec_rules() -> serde_json::Value {
          changed, so do not retry the same change. Follow the Writing a Spec skill: write the \
          spec as a draft and ask the user to approve it, then link it with `nodespace \
          relationship create --from <spec-id> --type tasks --to <task-id>` and start the task \
-         again. If this is a chore or a small fix that needs no spec, mark the task with \
-         `nodespace node update <task-id> --property requires_spec=false` instead.",
+         again. If the user confirms this is a chore or a small fix that needs no spec, mark \
+         the task with `nodespace node update <task-id> --property requires_spec=false` \
+         instead.",
     )])
 }
 
