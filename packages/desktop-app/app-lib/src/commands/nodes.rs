@@ -1248,6 +1248,7 @@ pub async fn update_task_node(
         completed_at: timestamp_clear(update.completed_at),
         pull_request: json_clear(update.pull_request, "pull_request")?,
         commits: json_clear(update.commits, "commits")?,
+        requires_spec: update.requires_spec,
     };
     let resp = c
         .update_task_node(Request::new(req))

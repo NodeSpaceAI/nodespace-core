@@ -41,6 +41,9 @@ pub const TASK_CRITERIA_PLAY_ID: &str = "95796b4d-f078-44f8-807b-8a2e92167a2d";
 /// Node id of the superseded lock Play.
 pub const SUPERSEDED_LOCK_PLAY_ID: &str = "54159daf-f37d-47f9-a337-bf644d1f0db2";
 
+/// Node id of the task spec Play (ADR-097 §2, §6).
+pub const TASK_SPEC_PLAY_ID: &str = "c4a8e1b6-2f73-4d95-a0b8-7e5d3c91f2a4";
+
 /// The id of every Play that ships with the product: the core play table, in
 /// the order the plays are seeded.
 pub const CORE_PLAY_IDS: &[&str] = &[
@@ -51,6 +54,7 @@ pub const CORE_PLAY_IDS: &[&str] = &[
     TASK_BLOCKERS_PLAY_ID,
     TASK_CRITERIA_PLAY_ID,
     SUPERSEDED_LOCK_PLAY_ID,
+    TASK_SPEC_PLAY_ID,
 ];
 
 /// When a task's parent is finished by its sub-tasks (ADR-079 §8). Two
@@ -368,6 +372,57 @@ pub fn task_lineage_rules() -> serde_json::Value {
     )])
 }
 
+/// Refuse to start a task that is not governed by an approved spec.
+///
+/// The lineage rule above only looks at a task that has a plan, so a task
+/// with a draft spec and no plan, or no spec at all, would start without
+/// objection. This rule closes that: moving to `in_progress` needs a linked
+/// spec whose `spec_status` is `approved`, unless the task is marked
+/// `requires_spec: false`, the light lane for chores and small fixes
+/// (ADR-097 §6).
+///
+/// Only `in_progress` is guarded. That is the move that claims the work, and
+/// the question the gate asks of a session's task through the dry run
+/// (ADR-097 §2); a task already started is not re-checked when it later moves
+/// to review or done. A task with no `requires_spec` value reads as requiring
+/// one, the schema default, so removing the value never opens the lane.
+///
+/// Both reads are `has()`-guarded: a spec that has no `spec_status` is not
+/// approved, and a missing key would otherwise fail the condition and allow.
+pub fn task_spec_rules() -> serde_json::Value {
+    json!([reject_change(
+        "reject-starting-a-task-without-an-approved-spec",
+        "Refuse to start a task that links no approved spec, unless it is marked as not \
+         needing one",
+        "task",
+        "status",
+        json!([
+            {
+                "expr": "node.status == 'in_progress'",
+                "description": "The task is being started",
+            },
+            {
+                "expr": "!has(node.requires_spec) || node.requires_spec == true",
+                "description": "The task is not marked as not needing a spec",
+            },
+            {
+                "expr":
+                    "!has(node.spec) \
+                     || !node.spec.exists(s, has(s.spec_status) && s.spec_status == 'approved')",
+                "description": "The task links no approved spec",
+            },
+        ]),
+        "Refuse the change and say the task needs an approved spec, or the light lane",
+        "This task was not started: it is not linked to an approved spec, and nothing was \
+         changed, so do not retry the same change. Follow the Writing a Spec skill: write the \
+         spec as a draft and ask the user to approve it, then link it with `nodespace \
+         relationship create --from <spec-id> --type tasks --to <task-id>` and start the task \
+         again. If the user confirms this is a chore or a small fix that needs no spec, mark \
+         the task with `nodespace node update <task-id> --property requires_spec=false` \
+         instead.",
+    )])
+}
+
 /// Refuse to start a task while something blocking it is unfinished.
 ///
 /// Applies to every task, with or without a plan or spec. Uses the
@@ -571,6 +626,14 @@ pub fn core_play_templates() -> Vec<NodeTemplate> {
              referenced the old one still reads what it was built against.",
             superseded_lock_rules(),
         ),
+        seeded_play(
+            TASK_SPEC_PLAY_ID,
+            "Require an approved spec before starting a task",
+            "Rejects moving a task to in_progress unless it is linked to an approved spec. A \
+             task marked as not requiring a spec (the light lane, for chores and small fixes) \
+             is never checked. Applies to every task, with or without a plan.",
+            task_spec_rules(),
+        ),
     ]
 }
 
@@ -611,6 +674,7 @@ mod tests {
             // Two fields and a status for a spec and for a plan, and a
             // status for a decision.
             (superseded_lock_rules(), 7),
+            (task_spec_rules(), 1),
         ] {
             let props = json!({ "play": { "rules": rules } });
             let rules = parse_rules_from_properties(&props).expect("shipped rules must parse");
@@ -724,6 +788,32 @@ mod tests {
         }
     }
 
+    /// The spec rule guards only the move that claims the work, reads the
+    /// light lane field, and tells the agent what to do next (ADR-097 §8).
+    #[test]
+    fn the_spec_rule_guards_starting_reads_the_lane_and_names_the_next_step() {
+        let rules = task_spec_rules();
+        let rule = &rules[0];
+        let conditions = rule["conditions"].as_array().unwrap();
+        let exprs: Vec<&str> = conditions
+            .iter()
+            .map(|c| c["expr"].as_str().unwrap())
+            .collect();
+        assert!(exprs[0].contains("'in_progress'"));
+        assert!(!exprs[0].contains("'in_review'"), "{}", exprs[0]);
+        assert!(exprs[1].contains("requires_spec"));
+        assert!(exprs[2].contains("'approved'"));
+
+        let message = rule["actions"][0]["params"]["message"].as_str().unwrap();
+        assert!(message.contains("Writing a Spec"), "names the skill");
+        assert!(message.contains("nodespace "), "names a nodespace command");
+        assert!(message.contains("do not retry"), "says not to retry");
+        assert!(
+            message.contains("requires_spec=false"),
+            "names the light lane"
+        );
+    }
+
     /// Every core play ships a description on each rule, condition and action
     /// (ADR-090 §1), in its live rules and in its reset target alike.
     #[test]
@@ -762,6 +852,7 @@ mod tests {
                 "d9ea23d8-9e20-4cfa-9abe-6c86f2164765",
                 "95796b4d-f078-44f8-807b-8a2e92167a2d",
                 "54159daf-f37d-47f9-a337-bf644d1f0db2",
+                "c4a8e1b6-2f73-4d95-a0b8-7e5d3c91f2a4",
             ]
         );
         let unique: std::collections::HashSet<_> = CORE_PLAY_IDS.iter().collect();

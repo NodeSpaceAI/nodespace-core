@@ -112,6 +112,10 @@ pub struct TaskNode {
     /// The commits that delivered the task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commits: Option<Vec<LinkValue>>,
+    /// Whether the task must link an approved spec before it is started.
+    /// `false` is the light lane for chores and small fixes (ADR-097 §6).
+    /// Absent reads as `true`, the schema default.
+    pub requires_spec: bool,
 }
 
 /// Partial update for a task's core fields, received from the frontend.
@@ -167,6 +171,8 @@ pub struct TaskNodeUpdate {
         deserialize_with = "deserialize_clearable"
     )]
     pub commits: Option<Option<Vec<LinkValue>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_spec: Option<bool>,
 }
 
 impl TaskNodeUpdate {
@@ -179,6 +185,7 @@ impl TaskNodeUpdate {
             && self.completed_at.is_none()
             && self.pull_request.is_none()
             && self.commits.is_none()
+            && self.requires_spec.is_none()
     }
 
     /// The flat, bare-key properties patch this update writes (`{"status":
@@ -206,6 +213,12 @@ impl TaskNodeUpdate {
         }
         if let Some(commits) = &self.commits {
             patch.insert("commits".to_string(), serde_json::json!(commits));
+        }
+        if let Some(requires_spec) = self.requires_spec {
+            patch.insert(
+                "requires_spec".to_string(),
+                serde_json::json!(requires_spec),
+            );
         }
         serde_json::Value::Object(patch)
     }
@@ -367,6 +380,20 @@ mod tests {
             r#"{"pullRequest": {"title": "PR", "url": "https://example.com", "state": "open"}}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn requires_spec_is_set_and_absent_leaves_it_unchanged() {
+        let update: TaskNodeUpdate = serde_json::from_str(r#"{"requiresSpec": false}"#).unwrap();
+        assert_eq!(update.requires_spec, Some(false));
+        assert!(!update.is_empty());
+        assert_eq!(
+            update.to_properties_patch(),
+            serde_json::json!({ "requires_spec": false })
+        );
+        let untouched: TaskNodeUpdate = serde_json::from_str(r#"{"status": "open"}"#).unwrap();
+        assert_eq!(untouched.requires_spec, None);
+        assert!(serde_json::from_str::<TaskNodeUpdate>(r#"{"requiresSpec": "no"}"#).is_err());
     }
 
     #[test]

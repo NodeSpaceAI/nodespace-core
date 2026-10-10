@@ -1,6 +1,6 @@
 Tasks are how a plan gets done: one task per unit of work someone can pick up and finish, each with a checklist that says when it is finished. A task under a plan is an ordinary task. What ties it to the plan is two links and its checklist.
 
-A SMALL CHANGE NEEDS NO SPEC AND NO PLAN: a task with a checklist of its own is ready to work on as it is. Write the task and its checklist and stop there. Never write a spec or a plan only to have something to link a task to.
+A SMALL CHANGE NEEDS NO SPEC AND NO PLAN: a task with a checklist of its own and `requires_spec` set to false is ready to work on as it is, and without that field a task cannot be started until it links an approved spec. Write the task and its checklist, set `requires_spec` to false once the user agrees it is small, and stop there. Never write a spec or a plan only to have something to link a task to.
 
 READ THE PLAN AND ITS SPEC FIRST: <!-- include: task-breakdown-read --> Read the plan's `approach` and every criterion of the spec. If the plan is not approved, say so: its tasks can be written now, and none can start until the user approves the plan.
 

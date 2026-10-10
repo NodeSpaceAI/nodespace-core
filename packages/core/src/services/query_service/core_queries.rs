@@ -116,8 +116,14 @@ fn by_priority_then_age() -> Value {
 /// checkbox child, no unfinished `blocked_by` task and no plan that is not
 /// approved.
 ///
-/// The query states the conditions the task Plays enforce, until a filter can
-/// ask whether a change would be allowed (ADR-094 §9). Each of the three
+/// A task the Plays would refuse to start is not ready: the last filter asks
+/// whether the change to `in_progress` would be allowed (ADR-094 §9), so a
+/// task with no approved spec that is not marked `requires_spec: false`
+/// (ADR-097 §6) is left out however its checklist looks. The conditions
+/// before it are statements, not a second rule: a checklist is not a Play's
+/// concern, and the blocker and plan conditions are kept as cheap
+/// prefilters that bound the dry runs, one per candidate. Switching off a
+/// gate Play therefore loosens the dry run and not these. Each of the three
 /// relationship conditions is a negation or an existence over the nodes a
 /// path reaches:
 ///
@@ -125,8 +131,7 @@ fn by_priority_then_age() -> Value {
 ///   child it reads as absent, so a child whose `checked` exists is a
 ///   checkbox, ticked or not. Only direct children count.
 /// - "No unfinished blocker" keeps a task with no blocker at all.
-/// - "No plan that is not approved" keeps a task with no plan, which is what
-///   lets a small change with a checklist of its own skip the spec and plan.
+/// - "No plan that is not approved" keeps a task with no plan.
 pub fn ready_tasks_filters() -> Value {
     json!([
         { "type": "property", "operator": "equals", "property": "status", "value": "open" },
@@ -147,7 +152,8 @@ pub fn ready_tasks_filters() -> Value {
                 "type": "property", "operator": "equals", "property": "plan_status",
                 "value": "approved", "negate": true
             }
-        }
+        },
+        { "type": "permitted", "operator": "equals", "property": "status", "value": "in_progress" }
     ])
 }
 

@@ -345,6 +345,7 @@ describe('storageNodeToApiFields', () => {
       priority: 'high',
       dueDate: '2024-12-31',
       startedAt: '2024-12-01',
+      requiresSpec: true,
       properties: { 'custom:store': 'Costco' }
     });
   });
@@ -366,10 +367,14 @@ describe('storageNodeToApiFields', () => {
     ).toMatchObject({ startDate: '2026-03-01T09:00:00' });
   });
 
-  it('defaults an unset task status to open, as task_node_to_value does', () => {
+  it('defaults an unset task status to open and requiresSpec to true, as task_node_to_value does', () => {
     expect(storageNodeToApiFields('task', { task: {} })).toEqual({
       status: 'open',
+      requiresSpec: true,
       properties: {}
+    });
+    expect(storageNodeToApiFields('task', { task: { requires_spec: false } })).toMatchObject({
+      requiresSpec: false
     });
   });
 

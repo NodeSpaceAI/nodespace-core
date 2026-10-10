@@ -121,7 +121,8 @@ describe('updateTaskNode success-path clobber — queued-write regression', () =
               priority: 'high',
               dueDate: undefined,
               startedAt: undefined,
-              completedAt: undefined
+              completedAt: undefined,
+              requiresSpec: true
             };
           }
           // Write B's own real (queued, promoted) persist attempt —
@@ -197,7 +198,8 @@ describe('updateTaskNode success-path clobber — queued-write regression', () =
               priority: 'high',
               dueDate: undefined,
               startedAt: undefined,
-              completedAt: undefined
+              completedAt: undefined,
+              requiresSpec: true
             };
           }
           // Write B's real persist, once promoted: succeeds normally,
@@ -216,7 +218,8 @@ describe('updateTaskNode success-path clobber — queued-write regression', () =
             priority: 'high',
             dueDate: undefined,
             startedAt: undefined,
-            completedAt: undefined
+            completedAt: undefined,
+            requiresSpec: true
           };
         }
       );

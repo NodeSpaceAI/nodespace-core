@@ -362,6 +362,34 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     "The commits that delivered the task, each a title and URL. Written as the \
                      whole list.",
                 ),
+                // The light lane (ADR-097 §6). The task-spec Play reads it, so
+                // it is a core field: removing it would leave the rule with
+                // nothing to ask.
+                SchemaField {
+                    name: "requires_spec".to_string(),
+                    friendly_name: "Requires spec".to_string(),
+                    field_type: crate::models::SchemaFieldType::Boolean,
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!(true)),
+                    description: Some(
+                        "Whether the task must link an approved spec before it can be started. \
+                         True by default. Set to false for work that needs no spec, such as a \
+                         chore or a small fix: the task can then be started with no spec \
+                         linked."
+                            .to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
             ],
             // A task's assignee is the derived inverse of person's `tasks`
             // relationship declaration below (mirrors project ↔ task), and its
@@ -2656,7 +2684,7 @@ mod tests {
         let schemas = get_core_schemas();
         let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
 
-        assert_eq!(task.fields.len(), 7);
+        assert_eq!(task.fields.len(), 8);
         assert!(task.get_field("status").is_some());
         assert!(task.get_field("priority").is_some());
         assert!(task.get_field("due_date").is_some());
@@ -2913,6 +2941,19 @@ mod tests {
         assert_eq!(count("spec"), 2);
         assert_eq!(count("plan"), 2);
         assert_eq!(count("decision"), 1);
+    }
+
+    /// ADR-097 §6: the light lane is a declared boolean whose schema default
+    /// is that a spec is required, so a task nobody marked is held to the rule.
+    #[test]
+    fn task_declares_the_light_lane_field() {
+        let schemas = get_core_schemas();
+        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
+        let field = task.get_field("requires_spec").expect("task declares it");
+        assert_eq!(field.field_type, SchemaFieldType::Boolean);
+        assert_eq!(field.default, Some(serde_json::json!(true)));
+        assert_eq!(field.required, Some(false));
+        assert_eq!(field.protection, SchemaProtectionLevel::Core);
     }
 
     /// ADR-092 §4: the three link fields, all optional.

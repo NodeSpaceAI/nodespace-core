@@ -333,6 +333,7 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::date("completed_at", "completedAt"),
                     F::new("pull_request", "pullRequest", Object),
                     F::new("commits", "commits", Array),
+                    F::new("requires_spec", "requiresSpec", Boolean),
                 ]
             }
         }
@@ -579,6 +580,12 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
                 .collect()
         });
 
+    // Absent reads as the schema default: a spec is required.
+    let requires_spec = props
+        .get("requires_spec")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
     let task = TaskNode {
         envelope: extension_envelope(node, CoreNodeType::Task),
         status,
@@ -588,6 +595,7 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         completed_at,
         pull_request,
         commits,
+        requires_spec,
     };
 
     serde_json::to_value(&task).map_err(|e| format!("Failed to serialize task node: {}", e))
@@ -883,6 +891,7 @@ mod wire_contract {
             serde_json::json!({
                 "status": "done",
                 "due_date": "2026-05-01",
+                "requires_spec": true,
                 "custom:store": "Costco"
             })
         );

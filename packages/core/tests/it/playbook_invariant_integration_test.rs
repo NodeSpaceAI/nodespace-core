@@ -2226,7 +2226,9 @@ fn new_task_node(content: &str) -> Node {
     Node::new(
         "task".to_string(),
         content.to_string(),
-        json!({ "status": "open" }),
+        // The light lane: these tests start the task, and what they test is
+        // the rule they install, not the seeded spec rule.
+        json!({ "status": "open", "requires_spec": false }),
     )
 }
 
@@ -2658,6 +2660,7 @@ async fn user_edit_to_a_node_stamped_at_max_depth_still_fires_the_reactive_rule(
         "Stamped by a play".to_string(),
         json!({
             "status": "open",
+            "requires_spec": false,
             (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH,
             (PLAYBOOK_WRITE_ID_PROPERTY): "earlier-play-write",
         }),

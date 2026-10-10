@@ -123,13 +123,18 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     // priority via buildTaskNodeUpdatePatch, not a hand-rolled equivalent.
     // The response is a typed TaskNode: core fields top-level, never in
     // `properties`.
+    // A task needs an approved spec to start unless it is marked as not
+    // needing one; the marker travels in the same write, and the typed
+    // boolean must survive the dev-proxy encoding.
     const updated = await h.adapter.updateTaskNode(id, created!.version, {
       priority: 'high',
       status: 'in_progress',
+      requiresSpec: false,
     });
 
     expect(updated.priority).toBe('high');
     expect(updated.status).toBe('in_progress');
+    expect(updated.requiresSpec).toBe(false);
     expect(updated.properties).toEqual({});
 
     // Clearing priority (null) must round-trip to "no priority", not the

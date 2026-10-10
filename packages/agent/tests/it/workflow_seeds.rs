@@ -372,7 +372,15 @@ async fn a_task_carries_the_procedure_of_the_stage_it_is_in() {
 async fn a_skill_attached_to_a_project_comes_with_each_of_its_tasks() {
     let h = start().await;
     let work = planned_task(&h).await;
-    let second = h.create("task", "Document the export", json!({})).await;
+    // A small change: ready with a checklist of its own once it is marked as
+    // not needing a spec.
+    let second = h
+        .create(
+            "task",
+            "Document the export",
+            json!({ "requires_spec": false }),
+        )
+        .await;
     h.child(&second, "checkbox", "- [ ] The guide covers it")
         .await;
     h.link(&work.project, "tasks", &second).await;
@@ -392,7 +400,9 @@ async fn a_skill_attached_to_a_project_comes_with_each_of_its_tasks() {
         assert_eq!(skill_names(&read), [IMPLEMENTING, "Apollo Naming"]);
     }
     // A task of no project does not.
-    let other = h.create("task", "Unrelated", json!({})).await;
+    let other = h
+        .create("task", "Unrelated", json!({ "requires_spec": false }))
+        .await;
     h.child(&other, "checkbox", "- [ ] Done").await;
     let read = h.ok("get_node_context", json!({ "id": uri(&other) })).await;
     assert_eq!(skill_names(&read), [IMPLEMENTING]);

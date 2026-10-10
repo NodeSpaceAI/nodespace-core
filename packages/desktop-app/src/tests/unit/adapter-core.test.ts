@@ -107,9 +107,15 @@ describe('adapter-core: buildTaskNodeUpdatePatch (tri-state clearable encoding)'
       'dueDate',
       'priority',
       'pullRequest',
+      'requiresSpec',
       'startedAt',
       'status'
     ]);
+  });
+
+  it('carries the light lane marker as a plain boolean, absent when unchanged', () => {
+    expect(buildTaskNodeUpdatePatch({ requiresSpec: false }).requiresSpec).toBe(false);
+    expect(buildTaskNodeUpdatePatch({ status: 'open' }).requiresSpec).toBeUndefined();
   });
 
   it('encodes the pull request and the commit list as JSON values, null as a clear', () => {

@@ -1319,6 +1319,8 @@ message UpdateTaskNodeRequest {
   optional OptionalJsonClear pull_request = 9;
   // A JSON-encoded list of links, replaced whole.
   optional OptionalJsonClear commits = 10;
+  // false marks the task as not needing a spec (the light lane).
+  optional bool requires_spec = 11;
 }
 
 // ---------------------------------------------------------------------------

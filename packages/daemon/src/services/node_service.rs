@@ -2019,6 +2019,7 @@ impl GrpcNodeService for NodeServiceImpl {
                 .map_err(Status::invalid_argument)?,
             commits: optional_json_clear(req.commits, "commits")
                 .map_err(Status::invalid_argument)?,
+            requires_spec: req.requires_spec,
         };
 
         match this
@@ -5933,6 +5934,7 @@ mod tests {
             completed_at: None,
             pull_request: None,
             commits: None,
+            requires_spec: None,
         });
 
         let err = svc
@@ -6016,6 +6018,7 @@ mod tests {
                 completed_at: None,
                 pull_request: None,
                 commits: None,
+                requires_spec: None,
             }))
             .await
             .expect("typed task update succeeds")
@@ -6030,7 +6033,12 @@ mod tests {
         assert_eq!(
             properties,
             serde_json::json!({
-                "task": { "status": "done", "priority": null, "custom:estimate": 3 }
+                "task": {
+                    "status": "done",
+                    "priority": null,
+                    "requires_spec": true,
+                    "custom:estimate": 3
+                }
             })
         );
 
@@ -6075,6 +6083,7 @@ mod tests {
             completed_at: None,
             pull_request: None,
             commits: None,
+            requires_spec: None,
         }))
         .await
         .expect("typed task update succeeds");
@@ -6375,6 +6384,7 @@ mod tests {
                     completed_at: None,
                     pull_request,
                     commits,
+                    requires_spec: None,
                 })
             };
         let project_request =
