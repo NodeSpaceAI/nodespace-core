@@ -825,7 +825,7 @@ fn strip_node_uri(id: &str) -> &str {
 fn node_id_arg(id: &str) -> String {
     const UUID_LEN: usize = 36;
     let id = strip_node_uri(id.trim());
-    if uuid::Uuid::parse_str(id).is_ok() {
+    if id.len() < UUID_LEN || uuid::Uuid::parse_str(id).is_ok() {
         return id.to_string();
     }
     let mut found: Vec<String> = id
@@ -837,7 +837,12 @@ fn node_id_arg(id: &str) -> String {
         .collect();
     found.dedup();
     match found.as_slice() {
-        [only] => only.clone(),
+        [only] => {
+            // A repaired argument is visible in the log: a model that
+            // decorates every id shows up here.
+            tracing::debug!(written = id, read_as = %only, "node id argument read through its prose");
+            only.clone()
+        }
         _ => id.to_string(),
     }
 }
@@ -5462,7 +5467,7 @@ impl GraphToolExecutor {
         let mut all_nodes: Vec<Value> = Vec::new();
         for dir in &directions {
             let input = rel_ops::GetRelatedInput {
-                node_id: strip_node_uri(&params.id).to_string(),
+                node_id: node_id_arg(&params.id),
                 relationship_name: rel_type.clone(),
                 direction: dir.to_string(),
             };
@@ -5959,7 +5964,7 @@ impl GraphToolExecutor {
         let context = match node_context_ops::read_node_context(
             &ns,
             node_context_ops::NodeContextInput {
-                node_id: strip_node_uri(&params.id).to_string(),
+                node_id: node_id_arg(&params.id),
                 paths: params.paths,
             },
         )

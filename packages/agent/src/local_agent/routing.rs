@@ -474,7 +474,8 @@ fn asks_for_a_write(words: &[&str]) -> bool {
 /// So the question is read off the message, as its shape already is
 /// ([`asks_about_the_message_first`]): a query for a message that
 /// [`asks_what_the_workspace_holds`] is a lookup, of the message itself. Every
-/// other decision stands, a clarification and a split included.
+/// other decision stands, a clarification and a split included. (A message
+/// settled this way is not put to Stage 1 at all: [`lookup_without_stage1`].)
 pub fn decision_on_the_message_alone(
     message: &str,
     decision: Option<RouteDecision>,
@@ -496,9 +497,16 @@ pub fn decision_on_the_message_alone(
 /// that [`asks_what_the_workspace_holds`] is read as a lookup of the message,
 /// whatever query Stage 1 wrote for it: [`decision_on_the_message_alone`]
 /// overrides that one answer. What it leaves alone is a clarification and a
-/// split, and those are for requests that ask for something to be done, which
-/// this one never is. So the generation is spent to learn what is already
-/// known, and it is the first of the turn's sequential requests.
+/// split, and those are for requests that ask for something to be done. A
+/// question that ends in a question mark can ask for one too ("What is the
+/// status of the task, and can you mark it done?"), so the skip also needs
+/// that no word of the message names a change, which the override does not.
+/// So the generation is spent to learn what is already known, and it is the
+/// first of the turn's sequential requests.
+///
+/// A follow-up that leans on its context ("how many of them are open?") is
+/// decided the same way Stage 1 decided it before: a lookup of the message,
+/// whose search Stage 2 makes with the conversation in view.
 ///
 /// `None` for every other message, which Stage 1 is asked about as before.
 pub fn lookup_without_stage1(
@@ -510,6 +518,14 @@ pub fn lookup_without_stage1(
         && (blended_query == message
             || asks_about_the_message_first(blended_query, message, answering_a_clarification));
     if !asked_alone {
+        return None;
+    }
+    let lowered = message.to_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    if asks_for_a_write(&words) {
         return None;
     }
     match decision_on_the_message_alone(message, Some(RouteDecision::Query(String::new()))) {
@@ -3434,6 +3450,26 @@ mod tests {
         .is_some());
     }
 
+    /// The lookups the grounding eval asks are all settled. "assigned" and
+    /// "launch" are not words that ask for a change.
+    #[test]
+    fn the_grounding_eval_lookups_are_settled_without_stage_one() {
+        for message in [
+            "How many tasks are assigned to Anoop?",
+            "Tell me how many tasks are assigned Anoop",
+            "How many tasks are assigne to Anoop Nair?",
+            "How many tasks are assigned to Norbert",
+            "Could you check the status of tasks assigned to Anoop",
+            "How many tasks are assigned to me?",
+            "How many tasks are in the Apollo launch project?",
+        ] {
+            assert!(
+                lookup_without_stage1(message, message, false).is_some(),
+                "{message}"
+            );
+        }
+    }
+
     #[test]
     fn a_message_stage_one_must_still_be_asked_about_is_left_to_it() {
         // The answer to a clarifying question is read in the light of what was
@@ -3452,6 +3488,20 @@ mod tests {
                 None,
                 "{message}"
             );
+        }
+        // A question that also asks for a change keeps its place with Stage 1,
+        // which may split it, though the override would still read a query for
+        // it as a lookup.
+        for message in [
+            "What is the status of the offsite task, and should we mark it done?",
+            "How many tasks are open, and who should close the old ones?",
+        ] {
+            assert_eq!(
+                lookup_without_stage1(message, message, false),
+                None,
+                "{message}"
+            );
+            assert!(asks_what_the_workspace_holds(message), "{message}");
         }
         // A suggestion, and a question about the assistant.
         for message in ["How about a task for that?", "Which skills do you have?"] {
