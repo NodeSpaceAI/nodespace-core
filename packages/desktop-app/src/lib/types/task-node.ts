@@ -148,8 +148,7 @@ export function nodeToTaskNode(node: Node): TaskNode {
     priority: task.priority,
     dueDate: task.dueDate,
     startedAt: task.startedAt,
-    completedAt: task.completedAt,
-    requiresSpec: task.requiresSpec ?? true
+    completedAt: task.completedAt
   };
 }
 
@@ -273,8 +272,7 @@ export const TaskNodeHelpers = {
       properties: {},
       status: options.status ?? 'open',
       priority: options.priority,
-      dueDate: options.dueDate,
-      requiresSpec: true
+      dueDate: options.dueDate
     };
   }
 };

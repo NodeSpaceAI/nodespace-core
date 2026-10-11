@@ -61,9 +61,7 @@ async fn task_node(service: &NodeService, status: &str) -> Result<String> {
     let node = Node::new(
         "task".to_string(),
         "a task".to_string(),
-        // The light lane: the test moves tasks to `in_progress`, and it is
-        // the roll-up it exercises, not the spec rule.
-        json!({ "status": status, "requires_spec": false }),
+        json!({ "status": status }),
     );
     Ok(service.create_node(node).await?)
 }

@@ -3257,6 +3257,7 @@ impl NodeService {
         }
         let (fields, owners, chain) = ownership;
         Self::reject_derived_attribute_keys(node, chain)?;
+        Self::reject_shadowed_extension_fields(node, owners, chain)?;
         // A type that declares no fields has nothing to validate against,
         // but a core one is still closed: its bucket takes no undeclared key.
         Self::reject_undeclared_core_keys(node, owners, chain)?;
@@ -3354,6 +3355,46 @@ impl NodeService {
                      written. Change the node's content to change it.",
                     attribute.name()
                 )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse an extension field named after a declared field, in a core
+    /// type's bucket (ADR-097 §6).
+    ///
+    /// A rule or a query reads an extension field by its bare name
+    /// (`custom:amount` as `amount`), and a declared field always wins that
+    /// name, anywhere in the node's chain. So `custom:status` on a task could
+    /// be stored and never read. `owners` maps each declared field to the
+    /// schema that declares it.
+    pub(crate) fn reject_shadowed_extension_fields(
+        node: &Node,
+        owners: &std::collections::HashMap<String, String>,
+        chain: &[String],
+    ) -> Result<(), NodeServiceError> {
+        let Some(buckets) = node.properties.as_object() else {
+            return Ok(());
+        };
+        for scope in chain {
+            if crate::models::CoreNodeType::from_id(scope).is_none() {
+                continue;
+            }
+            let Some(bucket) = buckets.get(scope.as_str()).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for key in bucket.keys() {
+                let Some(bare) = extension_field_bare_name(key) else {
+                    continue;
+                };
+                if let Some(owner) = owners.get(bare) {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "'{key}' cannot be set: '{bare}' is a declared field of the type \
+                         '{owner}', and a rule or query reads that name as the declared \
+                         field, so '{key}' could never be read. Set '{bare}', or give the \
+                         extension field another name."
+                    )));
+                }
             }
         }
         Ok(())

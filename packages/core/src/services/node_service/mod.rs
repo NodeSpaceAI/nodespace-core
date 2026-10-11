@@ -1035,10 +1035,18 @@ impl std::error::Error for NodeServiceTxError {}
 /// Whether a property key is a namespaced extension field: one added to a
 /// core type by someone other than core, under one of the ADR-063 prefixes.
 pub(crate) fn is_extension_field_name(key: &str) -> bool {
+    extension_field_bare_name(key).is_some()
+}
+
+/// The name a namespaced extension field is read by: the key with its
+/// ADR-063 prefix removed (`custom:amount` is `amount`). `None` for a key
+/// that is not an extension field.
+pub(crate) fn extension_field_bare_name(key: &str) -> Option<&str> {
     const EXTENSION_PREFIXES: [&str; 3] = ["custom:", "org:", "plugin:"];
     EXTENSION_PREFIXES
         .iter()
-        .any(|prefix| key.len() > prefix.len() && key.starts_with(prefix))
+        .find_map(|prefix| key.strip_prefix(prefix))
+        .filter(|bare| !bare.is_empty())
 }
 
 /// Whether a core type's closed bucket takes a key its schema does not

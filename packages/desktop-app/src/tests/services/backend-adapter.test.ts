@@ -433,8 +433,7 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-02T00:00:00Z',
         status: 'done',
-        priority: 'high',
-        requiresSpec: true
+        priority: 'high'
       };
 
       mockFetch.mockResolvedValueOnce({
@@ -1415,8 +1414,7 @@ describe('Backend Adapter - TauriAdapter (Tauri IPC Mode)', () => {
         createdAt: '2025-01-01T00:00:00Z',
         modifiedAt: '2025-01-02T00:00:00Z',
         status: 'done',
-        priority: 'high',
-        requiresSpec: true
+        priority: 'high'
       };
 
       mockInvoke.mockResolvedValueOnce(mockTaskNode);

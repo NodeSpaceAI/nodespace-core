@@ -23,5 +23,4 @@ export type TaskNodeUpdate = {
   completedAt?: string | null;
   pullRequest?: LinkValue | null;
   commits?: Array<LinkValue> | null;
-  requiresSpec?: boolean;
 };

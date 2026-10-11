@@ -372,28 +372,25 @@ pub fn task_lineage_rules() -> serde_json::Value {
     )])
 }
 
-/// Refuse to start a task that is not governed by an approved spec.
+/// Refuse to start a task whose spec is not approved.
 ///
 /// The lineage rule above only looks at a task that has a plan, so a task
-/// with a draft spec and no plan, or no spec at all, would start without
-/// objection. This rule closes that: moving to `in_progress` needs a linked
-/// spec whose `spec_status` is `approved`, unless the task is marked
-/// `requires_spec: false`, the light lane for chores and small fixes
+/// with a draft spec and no plan would start without objection. This rule
+/// closes that: a task that links at least one spec cannot move to
+/// `in_progress` until one of them has `spec_status` `approved` (ADR-097 §1).
+/// A task that links no spec is an ordinary to-do and is not touched
 /// (ADR-097 §6).
 ///
-/// Only `in_progress` is guarded. That is the move that claims the work, and
-/// the question the gate asks of a session's task through the dry run
+/// Only `in_progress` is guarded. That is the move that claims the work
 /// (ADR-097 §2); a task already started is not re-checked when it later moves
-/// to review or done. A task with no `requires_spec` value reads as requiring
-/// one, the schema default, so removing the value never opens the lane.
+/// to review or done.
 ///
-/// Both reads are `has()`-guarded: a spec that has no `spec_status` is not
+/// The `spec_status` read is `has()`-guarded: a spec that has none is not
 /// approved, and a missing key would otherwise fail the condition and allow.
 pub fn task_spec_rules() -> serde_json::Value {
     json!([reject_change(
-        "reject-starting-a-task-without-an-approved-spec",
-        "Refuse to start a task that links no approved spec, unless it is marked as not \
-         needing one",
+        "reject-starting-a-task-whose-spec-is-not-approved",
+        "Refuse to start a task that links a spec while none of its specs is approved",
         "task",
         "status",
         json!([
@@ -402,24 +399,20 @@ pub fn task_spec_rules() -> serde_json::Value {
                 "description": "The task is being started",
             },
             {
-                "expr": "!has(node.requires_spec) || node.requires_spec == true",
-                "description": "The task is not marked as not needing a spec",
+                "expr": "has(node.spec) && size(node.spec) > 0",
+                "description": "The task links at least one spec",
             },
             {
                 "expr":
-                    "!has(node.spec) \
-                     || !node.spec.exists(s, has(s.spec_status) && s.spec_status == 'approved')",
-                "description": "The task links no approved spec",
+                    "!node.spec.exists(s, has(s.spec_status) && s.spec_status == 'approved')",
+                "description": "None of the task's specs is approved",
             },
         ]),
-        "Refuse the change and say the task needs an approved spec, or the light lane",
-        "This task was not started: it is not linked to an approved spec, and nothing was \
-         changed, so do not retry the same change. Follow the Writing a Spec skill: write the \
-         spec as a draft and ask the user to approve it, then link it with `nodespace \
-         relationship create --from <spec-id> --type tasks --to <task-id>` and start the task \
-         again. If the user confirms this is a chore or a small fix that needs no spec, mark \
-         the task with `nodespace node update <task-id> --property requires_spec=false` \
-         instead.",
+        "Refuse the change and say the task's spec must be approved first",
+        "This task was not started: it links a spec, and none of its specs is approved. \
+         Nothing was changed, so do not retry the same change. Follow the Writing a Spec \
+         skill: read the spec with `nodespace node get <spec-id>`, ask the user to approve \
+         it, and start the task again once it is approved.",
     )])
 }
 
@@ -628,10 +621,10 @@ pub fn core_play_templates() -> Vec<NodeTemplate> {
         ),
         seeded_play(
             TASK_SPEC_PLAY_ID,
-            "Require an approved spec before starting a task",
-            "Rejects moving a task to in_progress unless it is linked to an approved spec. A \
-             task marked as not requiring a spec (the light lane, for chores and small fixes) \
-             is never checked. Applies to every task, with or without a plan.",
+            "Require a task's spec to be approved before starting it",
+            "Rejects moving a task to in_progress when it is linked to a spec and none of its \
+             specs is approved. A task linked to no spec is never checked. Applies with or \
+             without a plan.",
             task_spec_rules(),
         ),
     ]
@@ -788,10 +781,11 @@ mod tests {
         }
     }
 
-    /// The spec rule guards only the move that claims the work, reads the
-    /// light lane field, and tells the agent what to do next (ADR-097 §8).
+    /// The spec rule guards only the move that claims the work, applies only
+    /// to a task that links a spec, and tells the agent what to do next
+    /// (ADR-097 §1, §6, §8).
     #[test]
-    fn the_spec_rule_guards_starting_reads_the_lane_and_names_the_next_step() {
+    fn the_spec_rule_guards_starting_a_task_that_links_a_spec_and_names_the_next_step() {
         let rules = task_spec_rules();
         let rule = &rules[0];
         let conditions = rule["conditions"].as_array().unwrap();
@@ -799,18 +793,20 @@ mod tests {
             .iter()
             .map(|c| c["expr"].as_str().unwrap())
             .collect();
+        assert_eq!(exprs.len(), 3);
         assert!(exprs[0].contains("'in_progress'"));
         assert!(!exprs[0].contains("'in_review'"), "{}", exprs[0]);
-        assert!(exprs[1].contains("requires_spec"));
+        assert!(exprs[1].contains("has(node.spec)"), "{}", exprs[1]);
         assert!(exprs[2].contains("'approved'"));
 
         let message = rule["actions"][0]["params"]["message"].as_str().unwrap();
         assert!(message.contains("Writing a Spec"), "names the skill");
         assert!(message.contains("nodespace "), "names a nodespace command");
         assert!(message.contains("do not retry"), "says not to retry");
+        assert!(message.contains("ask the user to approve"), "{message}");
         assert!(
-            message.contains("requires_spec=false"),
-            "names the light lane"
+            !message.contains("--property"),
+            "names no marker: {message}"
         );
     }
 
