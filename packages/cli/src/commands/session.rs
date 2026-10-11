@@ -49,9 +49,10 @@ pub struct LaunchArgs {
     #[arg(long)]
     pub prompt: Option<String>,
 
-    /// Id of the project to launch the session for. The session runs in that
-    /// project's folder on this machine. Without it the session runs in a
-    /// private folder of its own.
+    /// Id of the software project to launch the session for. The session
+    /// runs in that project's folder on this machine. A plain project has no
+    /// folder and is refused. Without it the session runs in a private
+    /// folder of its own.
     #[arg(long)]
     pub project: Option<String>,
 

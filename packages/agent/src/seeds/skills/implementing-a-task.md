@@ -10,7 +10,7 @@ STEP 4, WORK TO THE CHECKLIST: the task's checklist is the checkboxes directly u
 
 STEP 5, TICK EACH ITEM AS IT IS MET, WITH EVIDENCE UNDER IT: tick an item when it is met and not before, and write what shows it directly beneath the item: the command that was run and what it printed, the test that now passes, the file and line. "Done" is not evidence. <!-- include: task-implement-tick --> Tick as you go and not all at the end, so a task that moved on under you is noticed at the next tick.
 
-STEP 6, RECORD THE PULL REQUEST AND THE COMMITS: when the work is a code change, record its pull request in `pull_request` and its commits in `commits`. <!-- include: task-implement-links --> Work that is not a code change has neither, and needs neither.
+STEP 6, RECORD THE PULL REQUEST AND THE COMMITS: when the task is an `issue`, the type for a code change, record its pull request in `pull_request` and its commits in `commits`. <!-- include: task-implement-links --> A plain `task` has neither field and needs neither: skip this step for one.
 
 STEP 7, MOVE IT TO REVIEW: when every item is ticked, move the task to `in_review`. <!-- include: task-implement-review --> Tell the user what was done, item by item, and where the pull request is.
 

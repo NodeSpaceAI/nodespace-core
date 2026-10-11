@@ -142,10 +142,13 @@ impl Harness {
         self.ok("get_node_context", json!({ "id": uri(id) })).await
     }
 
+    /// The stored status of a task or an issue. An issue keeps its status in
+    /// its own bucket, since it declares the field again to add statuses.
     async fn status(&self, task: &str) -> String {
         let node = self.ns.get_node(task).await.unwrap().unwrap();
-        node.properties["task"]["status"]
-            .as_str()
+        ["issue", "task"]
+            .iter()
+            .find_map(|bucket| node.properties[*bucket]["status"].as_str())
             .unwrap()
             .to_string()
     }
@@ -163,7 +166,16 @@ struct Work {
 /// A project's task under an approved spec and plan, with a decision linked
 /// from the task and another from its spec, and a two-item checklist.
 async fn planned_task(h: &Harness) -> Work {
-    let project = h.create("project", "Apollo", json!({})).await;
+    planned_work(h, "project", "task").await
+}
+
+/// [`planned_task`] for a code change: an issue of a software project.
+async fn planned_issue(h: &Harness) -> Work {
+    planned_work(h, "software-project", "issue").await
+}
+
+async fn planned_work(h: &Harness, project_type: &str, task_type: &str) -> Work {
+    let project = h.create(project_type, "Apollo", json!({})).await;
     let spec = h.create("spec", "Export", json!({})).await;
     h.child(&spec, "checkbox", "- [ ] Exports finish in a second")
         .await;
@@ -176,7 +188,7 @@ async fn planned_task(h: &Harness) -> Work {
     let spec_decision = h.create("decision", "CSV only", json!({})).await;
     h.link(&spec, "decisions", &spec_decision).await;
 
-    let task = h.create("task", "Stream the rows", json!({})).await;
+    let task = h.create(task_type, "Stream the rows", json!({})).await;
     h.child(&task, "checkbox", "- [ ] Rows are streamed").await;
     h.child(&task, "checkbox", "- [ ] A test covers 10,000 rows")
         .await;
@@ -401,10 +413,12 @@ async fn a_skill_attached_to_a_project_comes_with_each_of_its_tasks() {
 
 /// "Implementing a Task" and then "Reviewing a Task", each step made as its
 /// body says and with the versions the reads returned, under the live rules.
+/// The work is a code change, so the task is an issue: the procedures are
+/// written against `task` and reach it, and step 6 records where it landed.
 #[tokio::test]
 async fn the_two_procedures_can_be_followed_step_by_step_through_the_tools() {
     let h = start().await;
-    let work = planned_task(&h).await;
+    let work = planned_issue(&h).await;
     let task = uri(&work.task);
 
     // -- Implementing --
@@ -509,6 +523,52 @@ async fn the_two_procedures_can_be_followed_step_by_step_through_the_tools() {
     )
     .await;
     assert_eq!(h.status(&work.task).await, "done");
+}
+
+/// `update_task_status` holds a status to the node's own type: an issue takes
+/// the two statuses it adds to a task's, and a plain task refuses them, with
+/// the statuses a task has named.
+#[tokio::test]
+async fn update_task_status_takes_an_issues_own_statuses_on_an_issue_only() {
+    let h = start().await;
+    let issue = h.create("issue", "Stream the rows", json!({})).await;
+    let task = h.create("task", "Book the venue", json!({})).await;
+
+    for status in [
+        "in_review",
+        "changes_requested",
+        "in_review",
+        "ready_to_merge",
+    ] {
+        h.ok(
+            "update_task_status",
+            json!({ "id": uri(&issue), "status": status }),
+        )
+        .await;
+        assert_eq!(h.status(&issue).await, status);
+    }
+
+    for status in ["changes_requested", "ready_to_merge"] {
+        let refused = h
+            .refused(
+                "update_task_status",
+                json!({ "id": uri(&task), "status": status }),
+            )
+            .await;
+        assert!(
+            refused.contains("Must be one of: open, in_progress, in_review, done, cancelled"),
+            "{refused}"
+        );
+        assert_eq!(h.status(&task).await, "open");
+    }
+    // A value neither type has is refused on an issue with the issue's values.
+    let refused = h
+        .refused(
+            "update_task_status",
+            json!({ "id": uri(&issue), "status": "triage" }),
+        )
+        .await;
+    assert!(refused.contains("ready_to_merge"), "{refused}");
 }
 
 /// Writing a Spec, step by step through the tools: the spec is created without

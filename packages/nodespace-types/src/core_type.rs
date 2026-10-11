@@ -28,7 +28,9 @@ pub enum CoreNodeType {
     Date,
     AgentGuidance,
     Task,
+    Issue,
     Project,
+    SoftwareProject,
     Spec,
     Plan,
     Decision,
@@ -283,7 +285,7 @@ pub struct CoreTypeInfo {
 
 impl CoreNodeType {
     /// Every core type, in registry order.
-    pub const ALL: [CoreNodeType; 28] = [
+    pub const ALL: [CoreNodeType; 30] = [
         CoreNodeType::Text,
         CoreNodeType::Header,
         CoreNodeType::CodeBlock,
@@ -295,7 +297,9 @@ impl CoreNodeType {
         CoreNodeType::Date,
         CoreNodeType::AgentGuidance,
         CoreNodeType::Task,
+        CoreNodeType::Issue,
         CoreNodeType::Project,
+        CoreNodeType::SoftwareProject,
         CoreNodeType::Spec,
         CoreNodeType::Plan,
         CoreNodeType::Decision,
@@ -420,7 +424,18 @@ impl CoreNodeType {
                 always_titled: true,
                 ..entry("task", Flat, DescriptionLine, NOT_EMBEDDED, TYPED)
             },
+            // Development work (ADR-098): one change, delivered by one pull
+            // request. Every rule of a task reaches it through the chain.
+            Self::Issue => CoreTypeInfo {
+                parent: Some(Self::Task),
+                ..entry("issue", Flat, DescriptionLine, NOT_EMBEDDED, TYPED)
+            },
             Self::Project => entry("project", Flat, Name, NOT_EMBEDDED, TYPED),
+            // A project with source code (ADR-098).
+            Self::SoftwareProject => CoreTypeInfo {
+                parent: Some(Self::Project),
+                ..entry("software-project", Flat, Name, NOT_EMBEDDED, TYPED)
+            },
             // What is built and why, how, and what was decided (ADR-092). The
             // content is the title; a spec's criteria are its checkbox
             // children and a decision's body is its children.
@@ -785,7 +800,9 @@ mod tests {
                 | CoreNodeType::Date
                 | CoreNodeType::AgentGuidance
                 | CoreNodeType::Task
+                | CoreNodeType::Issue
                 | CoreNodeType::Project
+                | CoreNodeType::SoftwareProject
                 | CoreNodeType::Spec
                 | CoreNodeType::Plan
                 | CoreNodeType::Decision
@@ -822,14 +839,18 @@ mod tests {
             // The serde form is the stored id.
             assert_eq!(serde_json::to_value(t).unwrap(), serde_json::json!(id));
         }
-        assert_eq!(CoreNodeType::from_id("issue"), None);
+        assert_eq!(CoreNodeType::from_id("bug"), None);
     }
 
     #[test]
     fn nearest_resolves_a_subtype_to_its_core_ancestor() {
         assert_eq!(
-            CoreNodeType::nearest(&["issue", "task"]),
+            CoreNodeType::nearest(&["bug", "task"]),
             Some(CoreNodeType::Task)
+        );
+        assert_eq!(
+            CoreNodeType::nearest(&["bug", "issue", "task"]),
+            Some(CoreNodeType::Issue)
         );
         assert_eq!(CoreNodeType::nearest(&["task"]), Some(CoreNodeType::Task));
         assert_eq!(CoreNodeType::nearest(&["invoice"]), None);
@@ -992,8 +1013,39 @@ mod tests {
         );
         assert_eq!(
             CoreNodeType::always_titled_types(),
-            vec![CoreNodeType::Task, CoreNodeType::Collection]
+            vec![
+                CoreNodeType::Task,
+                CoreNodeType::Issue,
+                CoreNodeType::Collection
+            ]
         );
+    }
+
+    #[test]
+    fn issue_and_software_project_are_core_subtypes_that_inherit_every_rule() {
+        for (subtype, base) in [
+            (CoreNodeType::Issue, CoreNodeType::Task),
+            (CoreNodeType::SoftwareProject, CoreNodeType::Project),
+        ] {
+            assert_eq!(subtype.kind(), CoreTypeKind::CoreSubtype);
+            assert_eq!(subtype.parent(), Some(base));
+            assert!(subtype.is_a(base));
+            assert!(!base.is_a(subtype));
+            assert!(!subtype.is_abstract());
+            assert_eq!(base.kind(), CoreTypeKind::Concrete);
+            // Nothing is tightened: the subtype's rules are the base's.
+            assert_eq!(subtype.declared_structure(), StructuralRules::ANY);
+            assert_eq!(subtype.structure(), base.structure());
+            assert_eq!(subtype.participation(), base.participation());
+            assert_eq!(subtype.category(), base.category());
+            assert_eq!(subtype.content_role(), base.content_role());
+            assert_eq!(subtype.always_titled(), base.always_titled());
+            assert_eq!(subtype.title_template(), base.title_template());
+            assert_eq!(subtype.wire(), WireShape::Typed { update: true });
+        }
+        assert_eq!(CoreNodeType::Issue.as_str(), "issue");
+        assert_eq!(CoreNodeType::SoftwareProject.as_str(), "software-project");
+        assert!(!CoreNodeType::Issue.is_a(CoreNodeType::Project));
     }
 
     #[test]

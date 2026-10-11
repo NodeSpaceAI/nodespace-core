@@ -114,8 +114,28 @@ export const CORE_NODE_TYPES = [
     structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
   },
   {
+    id: 'issue',
+    parent: 'task',
+    abstract: false,
+    category: 'flat',
+    mentionable: true,
+    excludedFromDefaultQueries: false,
+    typedUpdate: true,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
     id: 'project',
     parent: null,
+    abstract: false,
+    category: 'flat',
+    mentionable: true,
+    excludedFromDefaultQueries: false,
+    typedUpdate: true,
+    structure: { children: { rule: 'any' }, parent: { rule: 'any' } }
+  },
+  {
+    id: 'software-project',
+    parent: 'project',
     abstract: false,
     category: 'flat',
     mentionable: true,

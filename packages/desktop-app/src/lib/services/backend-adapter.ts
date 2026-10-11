@@ -31,6 +31,8 @@ import type {
   DatabaseSettingsNodeUpdate,
   DecisionNode,
   DecisionNodeUpdate,
+  IssueNode,
+  IssueNodeUpdate,
   Node,
   NodeReference,
   NodeWithChildren,
@@ -46,6 +48,8 @@ import type {
   QueryNodeUpdate,
   SkillNode,
   SkillNodeUpdate,
+  SoftwareProjectNode,
+  SoftwareProjectNodeUpdate,
   SpecNode,
   SpecNodeUpdate,
   TaskNode,
@@ -139,6 +143,14 @@ class TauriAdapter implements BackendAdapter {
     );
   }
 
+  async updateIssueNode(id: string, version: number, update: IssueNodeUpdate): Promise<IssueNode> {
+    return withDiagnosticLogging(
+      'updateIssueNode',
+      () => invoke<IssueNode>('update_issue_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
   async updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode> {
     // Like updateTaskNode, the tri-state encoding happens in the Rust command.
     return withDiagnosticLogging(
@@ -156,6 +168,19 @@ class TauriAdapter implements BackendAdapter {
     return withDiagnosticLogging(
       'updateProjectNode',
       () => invoke<ProjectNode>('update_project_node', { id, version, update }),
+      [id, version, update]
+    );
+  }
+
+  async updateSoftwareProjectNode(
+    id: string,
+    version: number,
+    update: SoftwareProjectNodeUpdate
+  ): Promise<SoftwareProjectNode> {
+    return withDiagnosticLogging(
+      'updateSoftwareProjectNode',
+      () =>
+        invoke<SoftwareProjectNode>('update_software_project_node', { id, version, update }),
       [id, version, update]
     );
   }
@@ -558,6 +583,15 @@ export class HttpAdapter implements BackendAdapter {
     return await handleResponse<TaskNode>(response);
   }
 
+  async updateIssueNode(id: string, version: number, update: IssueNodeUpdate): Promise<IssueNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateIssueNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await handleResponse<IssueNode>(response);
+  }
+
   async updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updatePersonNode(id)}`, {
       method: 'PATCH',
@@ -578,6 +612,19 @@ export class HttpAdapter implements BackendAdapter {
       body: JSON.stringify({ ...update, version })
     });
     return await handleResponse<ProjectNode>(response);
+  }
+
+  async updateSoftwareProjectNode(
+    id: string,
+    version: number,
+    update: SoftwareProjectNodeUpdate
+  ): Promise<SoftwareProjectNode> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.updateSoftwareProjectNode(id)}`, {
+      method: 'PATCH',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ ...update, version })
+    });
+    return await handleResponse<SoftwareProjectNode>(response);
   }
 
   async updateQueryNode(id: string, version: number, update: QueryNodeUpdate): Promise<QueryNode> {
@@ -969,6 +1016,13 @@ class MockAdapter implements BackendAdapter {
   async updateTaskNode(_id: string, _version: number, _update: TaskNodeUpdate): Promise<TaskNode> {
     return {} as TaskNode;
   }
+  async updateIssueNode(
+    _id: string,
+    _version: number,
+    _update: IssueNodeUpdate
+  ): Promise<IssueNode> {
+    return {} as IssueNode;
+  }
   async updatePersonNode(
     _id: string,
     _version: number,
@@ -982,6 +1036,13 @@ class MockAdapter implements BackendAdapter {
     _update: ProjectNodeUpdate
   ): Promise<ProjectNode> {
     return {} as ProjectNode;
+  }
+  async updateSoftwareProjectNode(
+    _id: string,
+    _version: number,
+    _update: SoftwareProjectNodeUpdate
+  ): Promise<SoftwareProjectNode> {
+    return {} as SoftwareProjectNode;
   }
 
   async updateQueryNode(

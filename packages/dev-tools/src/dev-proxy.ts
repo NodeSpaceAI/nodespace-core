@@ -536,9 +536,7 @@ async function handleRequest(req: Request): Promise<Response> {
         priority: patch.priority ?? null,
         dueDate: patch.dueDate ?? null,
         startedAt: patch.startedAt ?? null,
-        completedAt: patch.completedAt ?? null,
-        pullRequest: patch.pullRequest ?? null,
-        commits: patch.commits ?? null
+        completedAt: patch.completedAt ?? null
       };
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateTaskNode,
@@ -593,9 +591,7 @@ async function handleRequest(req: Request): Promise<Response> {
         status: patch.status ?? null,
         priority: patch.priority ?? null,
         startDate: patch.startDate ?? null,
-        endDate: patch.endDate ?? null,
-        repository: patch.repository ?? null,
-        checkoutPath: patch.checkoutPath ?? null
+        endDate: patch.endDate ?? null
       };
       const res = await call<typeof request, { nodeData?: ProtoNodeData }>(
         (nodeClient as unknown as Record<string, Function>).updateProjectNode,
@@ -649,11 +645,14 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
-  // PATCH /api/collections/:id, /api/skills/:id, /api/specs/:id, /api/plans/:id,
-  // /api/decisions/:id, /api/database-settings/:id.
+  // PATCH /api/issues/:id, /api/software-projects/:id, /api/collections/:id,
+  // /api/skills/:id, /api/specs/:id, /api/plans/:id, /api/decisions/:id,
+  // /api/database-settings/:id.
   // Each travels as its JSON-encoded typed update, decoded by the daemon, as
   // for a query.
   for (const [pattern, rpc] of [
+    [HTTP_ROUTE_PATTERNS.updateIssueNode, 'updateIssueNode'],
+    [HTTP_ROUTE_PATTERNS.updateSoftwareProjectNode, 'updateSoftwareProjectNode'],
     [HTTP_ROUTE_PATTERNS.updateCollectionNode, 'updateCollectionNode'],
     [HTTP_ROUTE_PATTERNS.updateSkillNode, 'updateSkillNode'],
     [HTTP_ROUTE_PATTERNS.updateSpecNode, 'updateSpecNode'],
@@ -787,7 +786,10 @@ async function handleRequest(req: Request): Promise<Response> {
         titleContains: body.titleContains ?? null,
         nodeType: body.nodeType ?? null,
         limit: body.limit ?? 0,
-        offset: body.offset ?? 0
+        offset: body.offset ?? 0,
+        // The app keeps one copy of each node, so it takes every node at its
+        // own scope, as the Tauri command does.
+        ownScope: true
       };
       const res = await call<typeof request, { nodes: ProtoNodeData[] }>(
         (nodeClient as unknown as Record<string, Function>).queryNodesSimple,
@@ -809,7 +811,9 @@ async function handleRequest(req: Request): Promise<Response> {
         targetType: body.targetType,
         filtersJson: body.filtersJson ?? null,
         sortingJson: body.sortingJson ?? null,
-        limit: body.limit ?? 0
+        limit: body.limit ?? 0,
+        // As for /api/query: never a projection of a node.
+        ownScope: true
       };
       const res = await call<typeof request, { nodes: ProtoNodeData[] }>(
         (nodeClient as unknown as Record<string, Function>).executeQuery,

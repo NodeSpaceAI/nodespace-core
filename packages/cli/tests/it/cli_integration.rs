@@ -4086,6 +4086,7 @@ async fn update_and_set_status_write_only_at_the_version_named() {
         .expect_err("version 1 is stale");
     assert_refused(err, 1, 4);
     let collection_request = || nodespace_daemon::nodespace::QueryNodesSimpleRequest {
+        own_scope: false,
         include_archived: false,
         id: None,
         mentioned_by: None,
@@ -4611,6 +4612,7 @@ async fn database_routing_isolates_writes() {
     .expect("create in second");
 
     let query = QueryNodesSimpleRequest {
+        own_scope: false,
         include_archived: false,
         id: None,
         mentioned_by: None,
@@ -4672,6 +4674,7 @@ async fn query_nodes_simple_handles_response_over_the_default_grpc_limit() {
     // 90 × 60 KB ≈ 5.1 MB of content alone — past 4 MiB even before proto
     // framing and the rest of each record.
     let query = QueryNodesSimpleRequest {
+        own_scope: false,
         include_archived: false,
         id: None,
         mentioned_by: None,
@@ -6105,6 +6108,7 @@ async fn playbook_list_round_trip() {
     .expect("playbook disable");
 
     let list_plays = |include_archived: bool| QueryNodesSimpleRequest {
+        own_scope: false,
         include_archived,
         id: None,
         mentioned_by: None,
@@ -6360,6 +6364,7 @@ async fn play_rules_are_written_and_read_with_their_descriptions() {
 
     let listed = client
         .query_nodes_simple(QueryNodesSimpleRequest {
+            own_scope: false,
             include_archived: false,
             id: Some(play_id.clone()),
             mentioned_by: None,

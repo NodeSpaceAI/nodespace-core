@@ -1,5 +1,4 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
-import type { LinkValue } from './link-value';
 import type { Priority } from './priority';
 import type { TaskStatus } from './task-status';
 
@@ -9,7 +8,7 @@ import type { TaskStatus } from './task-status';
  * `status` has no clear path (the schema requires it); the other fields are
  * tri-state: absent leaves the field unchanged, `null` clears it, and a value
  * sets it. Dates accept `YYYY-MM-DD` or RFC 3339 and are stored as
- * `YYYY-MM-DD`. `commits` is replaced whole.
+ * `YYYY-MM-DD`.
  *
  * The update carries the task schema's fields and nothing else. `content` is
  * an envelope field and extension fields (`custom:…`) live in `properties`;
@@ -21,6 +20,4 @@ export type TaskNodeUpdate = {
   dueDate?: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
-  pullRequest?: LinkValue | null;
-  commits?: Array<LinkValue> | null;
 };

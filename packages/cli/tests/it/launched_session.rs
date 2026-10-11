@@ -280,7 +280,7 @@ async fn a_session_launched_for_a_project_runs_in_its_folder_against_its_databas
     let mut node = daemon.node().await;
     let mut session = daemon.session().await;
 
-    let project_id = create(&mut node, "project", "Widgets", "").await;
+    let project_id = create(&mut node, "software-project", "Widgets", "").await;
     let task_id = create(&mut node, "task", "Add the gauge", "").await;
     let chat_id = create(
         &mut node,
@@ -311,7 +311,9 @@ async fn a_session_launched_for_a_project_runs_in_its_folder_against_its_databas
         .await
         .expect_err("an unknown task is refused");
     assert_eq!(unknown_task.code(), Code::NotFound);
-    assert!(properties(&mut node, &project_id).await["project"]["checkout_path"].is_null());
+    assert!(
+        properties(&mut node, &project_id).await["software-project"]["checkout_path"].is_null()
+    );
 
     // A folder that does not exist is refused, and not remembered.
     let missing = session
@@ -322,7 +324,9 @@ async fn a_session_launched_for_a_project_runs_in_its_folder_against_its_databas
         .await
         .expect_err("a folder that does not exist is refused");
     assert_eq!(missing.code(), Code::InvalidArgument);
-    assert!(properties(&mut node, &project_id).await["project"]["checkout_path"].is_null());
+    assert!(
+        properties(&mut node, &project_id).await["software-project"]["checkout_path"].is_null()
+    );
 
     let launched = session
         .launch_session(LaunchSessionRequest {
@@ -361,7 +365,7 @@ async fn a_session_launched_for_a_project_runs_in_its_folder_against_its_databas
 
     // The folder is remembered on the project: the next launch names none.
     assert_eq!(
-        properties(&mut node, &project_id).await["project"]["checkout_path"],
+        properties(&mut node, &project_id).await["software-project"]["checkout_path"],
         checkout.display().to_string()
     );
     // The agent's PATH is the search path it was found on, so it can run what
@@ -394,6 +398,35 @@ async fn a_session_launched_for_a_project_runs_in_its_folder_against_its_databas
     );
 }
 
+/// Only a software project has a folder a session runs in (ADR-098): a launch
+/// for a plain project is refused, and stores nothing on it.
+#[tokio::test]
+async fn a_session_cannot_be_launched_for_a_plain_project() {
+    let daemon = spawn_daemon().await;
+    let mut node = daemon.node().await;
+    let mut session = daemon.session().await;
+    let project_id = create(&mut node, "project", "Campaign", "").await;
+    write_agent(&daemon.home.path().join("bin"), "unused");
+
+    for folder in [None, Some(daemon.checkout().display().to_string())] {
+        let refused = session
+            .launch_session(LaunchSessionRequest {
+                project_folder: folder,
+                ..launch_for(&project_id)
+            })
+            .await
+            .expect_err("a plain project hosts no session");
+        assert_eq!(refused.code(), Code::InvalidArgument);
+        assert!(
+            refused.message().contains("not a software project"),
+            "{refused}"
+        );
+    }
+    let stored = properties(&mut node, &project_id).await;
+    assert!(stored.get("software-project").is_none(), "{stored}");
+    assert!(stored["project"].get("checkout_path").is_none(), "{stored}");
+}
+
 /// Sessions in one project share a working directory, so the directory says
 /// nothing about which conversation is whose: each session's own report does.
 #[tokio::test]
@@ -402,7 +435,7 @@ async fn two_sessions_in_one_project_each_record_their_own_harness_session() {
     let mut node = daemon.node().await;
     let mut session = daemon.session().await;
 
-    let project_id = create(&mut node, "project", "Widgets", "").await;
+    let project_id = create(&mut node, "software-project", "Widgets", "").await;
     let task_id = create(&mut node, "task", "Add the gauge", "").await;
     write_agent(&daemon.home.path().join("bin"), &task_id);
     let checkout = daemon.checkout();
@@ -517,7 +550,7 @@ async fn a_stored_folder_that_is_not_absolute_refuses_the_launch() {
     let daemon = spawn_daemon().await;
     let mut node = daemon.node().await;
     let mut session = daemon.session().await;
-    let project_id = create(&mut node, "project", "Widgets", "").await;
+    let project_id = create(&mut node, "software-project", "Widgets", "").await;
     write_agent(&daemon.home.path().join("bin"), "unused");
 
     node.update_node(UpdateNodeRequest {

@@ -1,5 +1,4 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
-import type { LinkValue } from './link-value';
 import type { NodeReference } from './node-reference';
 import type { Priority } from './priority';
 import type { TaskStatus } from './task-status';
@@ -7,8 +6,9 @@ import type { TaskStatus } from './task-status';
 /**
  * Wire shape for task nodes sent to the frontend.
  *
- * Produced by `node_to_typed_value` for `node_type == "task"`. Fields map
- * directly to the TypeScript `TaskNode` interface.
+ * Produced by `node_to_typed_value` for a node whose type is exactly `task`.
+ * Fields map directly to the TypeScript `TaskNode` interface. A task carries
+ * no development state: that is an `issue`'s (ADR-098).
  */
 export type TaskNode = {
   status: TaskStatus;
@@ -16,14 +16,6 @@ export type TaskNode = {
   dueDate?: string;
   startedAt?: string;
   completedAt?: string;
-  /**
-   * The pull request that delivered the task.
-   */
-  pullRequest?: LinkValue;
-  /**
-   * The commits that delivered the task.
-   */
-  commits?: Array<LinkValue>;
   id: string;
   nodeType: string;
   content: string;

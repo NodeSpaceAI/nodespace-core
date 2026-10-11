@@ -9,7 +9,12 @@
 import { describe, it, expect } from 'vitest';
 import type { SchemaField } from '$lib/types/schema-node';
 import type { RawEdgeField } from '$lib/services/relationship-grouping';
-import { getEnumValues, formatEnumFallbackLabel, enumValueLabel } from '$lib/utils/schema-enum-values';
+import {
+  getEnumValues,
+  formatEnumFallbackLabel,
+  enumValueLabel,
+  enumValueAtScope
+} from '$lib/utils/schema-enum-values';
 
 function enumField(overrides: Partial<SchemaField> = {}): SchemaField {
   return {
@@ -151,5 +156,60 @@ describe('edge fields', () => {
 
   it('returns an empty list for an edge field with no declared values', () => {
     expect(getEnumValues({ name: 'role', type: 'enum' } as RawEdgeField)).toEqual([]);
+  });
+});
+
+describe('enumValueAtScope', () => {
+  // A task's status, and an issue's: the same field with two values added,
+  // each mapped to a task status.
+  const taskStatus = enumField({
+    coreValues: [
+      { value: 'open', label: 'Open' },
+      { value: 'in_progress', label: 'In Progress' },
+      { value: 'in_review', label: 'In Review' },
+      { value: 'done', label: 'Done' }
+    ],
+    userValues: [{ value: 'waiting', label: 'Waiting' }]
+  });
+  const issueStatus = enumField({
+    coreValues: [
+      ...(taskStatus.coreValues ?? []),
+      { value: 'changes_requested', label: 'Changes Requested', mapsTo: 'in_progress' },
+      { value: 'ready_to_merge', label: 'Ready to Merge', mapsTo: 'in_review' }
+    ],
+    userValues: [{ value: 'qa', label: 'QA', mapsTo: 'ready_to_merge' }]
+  });
+
+  it('returns a value the scope declares as it is, core or user', () => {
+    expect(enumValueAtScope(taskStatus, 'in_review', issueStatus)).toBe('in_review');
+    expect(enumValueAtScope(taskStatus, 'waiting', undefined)).toBe('waiting');
+  });
+
+  it('maps a value the subtype added to the one it names', () => {
+    expect(enumValueAtScope(taskStatus, 'changes_requested', issueStatus)).toBe('in_progress');
+    expect(enumValueAtScope(taskStatus, 'ready_to_merge', issueStatus)).toBe('in_review');
+  });
+
+  it('follows a chain of mappings until the scope declares the value', () => {
+    expect(enumValueAtScope(taskStatus, 'qa', issueStatus)).toBe('in_review');
+    // At the subtype's own scope nothing is mapped.
+    expect(enumValueAtScope(issueStatus, 'qa', issueStatus)).toBe('qa');
+  });
+
+  it('returns null for a value that maps to nothing the scope declares', () => {
+    expect(enumValueAtScope(taskStatus, 'changes_requested', undefined)).toBeNull();
+    expect(enumValueAtScope(taskStatus, 'unknown', issueStatus)).toBeNull();
+    const orphan = enumField({ coreValues: [{ value: 'triage', label: 'Triage' }] });
+    expect(enumValueAtScope(taskStatus, 'triage', orphan)).toBeNull();
+  });
+
+  it('ends on a mapping cycle instead of looping', () => {
+    const cyclic = enumField({
+      coreValues: [
+        { value: 'a', label: 'A', mapsTo: 'b' },
+        { value: 'b', label: 'B', mapsTo: 'a' }
+      ]
+    });
+    expect(enumValueAtScope(taskStatus, 'a', cyclic)).toBeNull();
   });
 });

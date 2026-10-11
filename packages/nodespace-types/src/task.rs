@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use crate::helpers::deserialize_clearable;
 use crate::node::NodeEnvelope;
 use crate::priority::Priority;
-use crate::schema::LinkValue;
 
 /// Where a task stands.
 ///
@@ -86,8 +85,9 @@ impl<'de> Deserialize<'de> for TaskStatus {
 
 /// Wire shape for task nodes sent to the frontend.
 ///
-/// Produced by `node_to_typed_value` for `node_type == "task"`. Fields map
-/// directly to the TypeScript `TaskNode` interface.
+/// Produced by `node_to_typed_value` for a node whose type is exactly `task`.
+/// Fields map directly to the TypeScript `TaskNode` interface. A task carries
+/// no development state: that is an `issue`'s (ADR-098).
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts", ts(optional_fields))]
@@ -106,12 +106,6 @@ pub struct TaskNode {
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
-    /// The pull request that delivered the task.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pull_request: Option<LinkValue>,
-    /// The commits that delivered the task.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub commits: Option<Vec<LinkValue>>,
 }
 
 /// Partial update for a task's core fields, received from the frontend.
@@ -119,7 +113,7 @@ pub struct TaskNode {
 /// `status` has no clear path (the schema requires it); the other fields are
 /// tri-state: absent leaves the field unchanged, `null` clears it, and a value
 /// sets it. Dates accept `YYYY-MM-DD` or RFC 3339 and are stored as
-/// `YYYY-MM-DD`. `commits` is replaced whole.
+/// `YYYY-MM-DD`.
 ///
 /// The update carries the task schema's fields and nothing else. `content` is
 /// an envelope field and extension fields (`custom:…`) live in `properties`;
@@ -155,18 +149,6 @@ pub struct TaskNodeUpdate {
         deserialize_with = "flexible_date::deserialize_with_null"
     )]
     pub completed_at: Option<Option<String>>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_clearable"
-    )]
-    pub pull_request: Option<Option<LinkValue>>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_clearable"
-    )]
-    pub commits: Option<Option<Vec<LinkValue>>>,
 }
 
 impl TaskNodeUpdate {
@@ -177,8 +159,6 @@ impl TaskNodeUpdate {
             && self.due_date.is_none()
             && self.started_at.is_none()
             && self.completed_at.is_none()
-            && self.pull_request.is_none()
-            && self.commits.is_none()
     }
 
     /// The flat, bare-key properties patch this update writes (`{"status":
@@ -200,12 +180,6 @@ impl TaskNodeUpdate {
             if let Some(value) = value {
                 patch.insert(key.to_string(), serde_json::json!(value));
             }
-        }
-        if let Some(pull_request) = &self.pull_request {
-            patch.insert("pull_request".to_string(), serde_json::json!(pull_request));
-        }
-        if let Some(commits) = &self.commits {
-            patch.insert("commits".to_string(), serde_json::json!(commits));
         }
         serde_json::Value::Object(patch)
     }
@@ -337,36 +311,19 @@ mod tests {
         }
     }
 
+    /// The development fields belong to `issue` (ADR-098): a task's update
+    /// names neither.
     #[test]
-    fn links_are_set_cleared_and_replaced_whole() {
-        let update: TaskNodeUpdate = serde_json::from_str(
-            r#"{"pullRequest": {"title": "PR 7", "url": "https://example.com/pull/7"},
-                "commits": [{"title": "abc123", "url": "https://example.com/commit/abc123"}]}"#,
-        )
-        .unwrap();
-        assert!(!update.is_empty());
-        assert_eq!(
-            update.to_properties_patch(),
-            serde_json::json!({
-                "pull_request": { "title": "PR 7", "url": "https://example.com/pull/7" },
-                "commits": [{ "title": "abc123", "url": "https://example.com/commit/abc123" }]
-            })
-        );
-
-        let cleared: TaskNodeUpdate =
-            serde_json::from_str(r#"{"pullRequest": null, "commits": null}"#).unwrap();
-        assert_eq!(cleared.pull_request, Some(None));
-        assert_eq!(cleared.commits, Some(None));
-        assert_eq!(
-            cleared.to_properties_patch(),
-            serde_json::json!({ "pull_request": null, "commits": null })
-        );
-
-        // A link is a closed shape: an extra key is refused, not dropped.
-        assert!(serde_json::from_str::<TaskNodeUpdate>(
-            r#"{"pullRequest": {"title": "PR", "url": "https://example.com", "state": "open"}}"#
-        )
-        .is_err());
+    fn task_node_update_rejects_the_issue_fields() {
+        for json in [
+            r#"{"pullRequest": {"title": "PR 7", "url": "https://example.com/pull/7"}}"#,
+            r#"{"commits": []}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<TaskNodeUpdate>(json).is_err(),
+                "{json} must not deserialize as a TaskNodeUpdate"
+            );
+        }
     }
 
     #[test]

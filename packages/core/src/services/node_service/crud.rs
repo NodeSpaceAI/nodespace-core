@@ -2745,9 +2745,15 @@ impl NodeService {
     /// `started_at`, or whose write sets one, keeps it. A node that is not a
     /// task is left alone.
     ///
-    /// The fields are read in the `task` bucket, the one storage shape a
-    /// task's fields have. A batch create handed properties outside it stores
-    /// them as given, and such a node has no status here to read.
+    /// A subtype of `task` is a task here. Each field is read in the bucket
+    /// of the schema that declares it for the node's type: a type that adds
+    /// statuses to the one it inherits (`issue`) declares `status` itself and
+    /// stores it in its own bucket. A status the subtype added counts as the
+    /// task status it maps to (ADR-078), so an issue moved to
+    /// `changes_requested` has started as one moved to `in_progress` has.
+    ///
+    /// A batch create handed properties outside their buckets stores them as
+    /// given, and such a node has no status here to read.
     pub(crate) async fn stamp_task_started(
         &self,
         existing: Option<&Node>,
@@ -2763,8 +2769,19 @@ impl NodeService {
         {
             return Ok(());
         }
-        let bucket = CoreNodeType::Task.as_str();
-        let stored = |node: &Node, field: &str| -> Option<serde_json::Value> {
+        let task = CoreNodeType::Task.as_str();
+        // A plain task keeps both fields in its own bucket, which is every
+        // task write but a subtype's: only a subtype's ownership is resolved.
+        let (fields, owners) = if CoreNodeType::Task.is_exactly(&updated.node_type) {
+            (Vec::new(), std::collections::HashMap::new())
+        } else {
+            let (fields, owners, _chain) = self.resolve_field_owners(&updated.node_type).await?;
+            (fields, owners)
+        };
+        let bucket_of = |field: &str| owners.get(field).map(String::as_str).unwrap_or(task);
+        let status_bucket = bucket_of(STATUS).to_string();
+        let started_bucket = bucket_of(STARTED_AT).to_string();
+        let stored = |node: &Node, bucket: &str, field: &str| -> Option<serde_json::Value> {
             node.properties
                 .get(bucket)
                 .and_then(|b| b.get(field))
@@ -2772,26 +2789,52 @@ impl NodeService {
                 .cloned()
         };
         let status_of = |node: &Node| {
-            stored(node, STATUS)
+            stored(node, &status_bucket, STATUS)
                 .as_ref()
                 .and_then(|v| v.as_str())
-                .map(TaskStatus::from_value)
+                .map(str::to_string)
         };
 
         let Some(status) = status_of(updated) else {
             return Ok(());
         };
         let moved = existing.and_then(status_of).as_ref() != Some(&status);
-        if !status.is_started() || !moved || stored(updated, STARTED_AT).is_some() {
+        if !moved || stored(updated, &started_bucket, STARTED_AT).is_some() {
             return Ok(());
         }
+        // What the status reads as on a task. Only a type that declares the
+        // field itself can hold a value a task does not.
+        let as_task_status = if status_bucket == task {
+            Some(status)
+        } else {
+            let (task_fields, _, _) = self.resolve_field_owners(task).await?;
+            crate::schema::extends_chain::resolve_value_at_scope(
+                STATUS,
+                &status,
+                &fields,
+                &task_fields,
+            )
+        };
+        if !as_task_status.is_some_and(|status| TaskStatus::from_value(&status).is_started()) {
+            return Ok(());
+        }
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
         if let Some(fields) = updated
             .properties
-            .get_mut(bucket)
+            .get_mut(&started_bucket)
             .and_then(|b| b.as_object_mut())
         {
-            let today = chrono::Local::now().date_naive().format("%Y-%m-%d");
-            fields.insert(STARTED_AT.to_string(), serde_json::json!(today.to_string()));
+            fields.insert(STARTED_AT.to_string(), serde_json::json!(today));
+        } else if let Some(properties) = updated.properties.as_object_mut() {
+            // The write named no field of the base type, so its bucket is
+            // not there yet.
+            properties.insert(
+                started_bucket.clone(),
+                serde_json::json!({ STARTED_AT: today }),
+            );
         }
         Ok(())
     }
@@ -3290,7 +3333,7 @@ impl NodeService {
                 self.apply_schema_defaults_with_fields(node, fields, Some(chain))?;
             }
             node.properties =
-                Self::bucket_properties_by_owner(&node.node_type, &node.properties, owners);
+                Self::bucket_properties_by_owner(&node.node_type, &node.properties, owners, chain);
         }
         self.behaviors.validate_node(node, chain)?;
         Ok(())
@@ -3591,8 +3634,9 @@ impl NodeService {
     ///
     /// Runs *after* [`Self::normalize_flat_properties_to_namespace`], which
     /// has already put every field under the node's own type. This moves each
-    /// inherited field into its declaring ancestor's bucket, so an issue node
-    /// ends up as `{"issue": {"severity": …}, "task": {"status": …}}`.
+    /// inherited field into its declaring ancestor's bucket, so a `bug` node,
+    /// where `bug` extends `task` and declares `severity`, ends up as
+    /// `{"bug": {"severity": …}, "task": {"status": …}}`.
     ///
     /// Splitting the two apart keeps the flat-input normalization schema-free
     /// (it decides field-vs-bookkeeping on the `_` prefix alone, with no read),
@@ -3602,10 +3646,19 @@ impl NodeService {
     /// `owners` maps field name → declaring schema id. A field with no entry
     /// stays in the node's own bucket: it is either undeclared (ad-hoc, no
     /// ancestor can claim it) or declared by the node's own type.
+    ///
+    /// A field can also sit in an ancestor's bucket while a nearer type in
+    /// `chain` declares it: a subtype that declares an inherited field again
+    /// to add values owns that field, and a node that held it before (it was
+    /// retyped into the subtype, or the subtype added the values afterwards)
+    /// still has it under the ancestor. Such a field is moved to its owner's
+    /// bucket here, unless the owner's bucket already holds one, which is the
+    /// newer value and is kept.
     pub(crate) fn bucket_properties_by_owner(
         node_type: &str,
         properties: &serde_json::Value,
         owners: &std::collections::HashMap<String, String>,
+        chain: &[String],
     ) -> serde_json::Value {
         let Some(props_obj) = properties.as_object() else {
             return properties.clone();
@@ -3657,6 +3710,28 @@ impl NodeService {
             node_type.to_string(),
             serde_json::Value::Object(own_remaining),
         );
+
+        // A field held under an ancestor that a nearer type now declares.
+        let mut misplaced: Vec<(String, String, String, serde_json::Value)> = Vec::new();
+        for scope in chain.iter().filter(|scope| scope.as_str() != node_type) {
+            let Some(bucket) = out.get(scope.as_str()).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (field, value) in bucket {
+                if let Some(owner) = owners.get(field).filter(|owner| *owner != scope) {
+                    misplaced.push((scope.clone(), owner.clone(), field.clone(), value.clone()));
+                }
+            }
+        }
+        for (scope, owner, field, value) in misplaced {
+            if let Some(bucket) = out.get_mut(&scope).and_then(|v| v.as_object_mut()) {
+                bucket.remove(&field);
+            }
+            let bucket = out.entry(owner).or_insert_with(|| serde_json::json!({}));
+            if let Some(bucket) = bucket.as_object_mut() {
+                bucket.entry(field).or_insert(value);
+            }
+        }
 
         serde_json::Value::Object(out)
     }

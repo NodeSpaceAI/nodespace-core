@@ -48,8 +48,10 @@ pub const KNOWLEDGE_CORE_TYPES: &[crate::models::CoreNodeType] = &[
     crate::models::CoreNodeType::Schema,
     crate::models::CoreNodeType::Table,
     crate::models::CoreNodeType::Task,
+    crate::models::CoreNodeType::Issue,
     crate::models::CoreNodeType::Date,
     crate::models::CoreNodeType::Project,
+    crate::models::CoreNodeType::SoftwareProject,
     crate::models::CoreNodeType::Person,
 ];
 

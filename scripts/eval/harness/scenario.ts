@@ -248,7 +248,7 @@ export function fixture(env: ScenarioEnv): Fixture {
   }
 
   const project = created(
-    env, "--type", "project", "--content", "Widget",
+    env, "--type", "software-project", "--content", "Widget",
     "--properties", JSON.stringify({ status: "active", repository: { title: "widget", url: REPOSITORY_URL } }),
   );
   const standard = created(
@@ -260,7 +260,7 @@ export function fixture(env: ScenarioEnv): Fixture {
   mustNs(env, "relationship", "create", "--from", standard, "--type", "attached_to", "--to", project);
 
   const otherProject = created(
-    env, "--type", "project", "--content", "Gadget",
+    env, "--type", "software-project", "--content", "Gadget",
     "--properties", JSON.stringify({ status: "active", repository: { title: "gadget", url: "https://github.com/nodespace-fixture/gadget" } }),
   );
   const made = { project, standard, standardBody, otherProject };

@@ -302,8 +302,12 @@ describe('updateNode routing for typed core types', () => {
         ({ ...makeNode(id, nodeType), version: version + 1 }) as never;
       const typedSpies = {
         task: vi.spyOn(backendAdapter, 'updateTaskNode').mockImplementation(respond),
+        issue: vi.spyOn(backendAdapter, 'updateIssueNode').mockImplementation(respond),
         person: vi.spyOn(backendAdapter, 'updatePersonNode').mockImplementation(respond),
         project: vi.spyOn(backendAdapter, 'updateProjectNode').mockImplementation(respond),
+        'software-project': vi
+          .spyOn(backendAdapter, 'updateSoftwareProjectNode')
+          .mockImplementation(respond),
         query: vi.spyOn(backendAdapter, 'updateQueryNode').mockImplementation(respond),
         play: vi.spyOn(backendAdapter, 'updatePlayNode').mockImplementation(respond),
         collection: vi.spyOn(backendAdapter, 'updateCollectionNode').mockImplementation(respond),

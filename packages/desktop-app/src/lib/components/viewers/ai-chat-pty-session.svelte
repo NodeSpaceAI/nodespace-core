@@ -23,7 +23,7 @@
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import type { AiChatPtyNode } from '$lib/types/ai-chat-node';
-  import { isProjectNode, type ProjectNode } from '$lib/types/project-node';
+  import type { SoftwareProjectNode } from '$lib/types/software-project-node';
   import {
     readDatabaseSettings,
     updateDatabaseSettings,
@@ -138,9 +138,10 @@
   let availability = $state<Record<string, AgentAvailabilityInfo>>({});
   let availabilityLoading = $state(true);
 
-  // The project the session is launched for; '' launches it for none, in a
-  // private session folder.
-  let projects = $state<ProjectNode[]>([]);
+  // The software project the session is launched for; '' launches it for
+  // none, in a private session folder. Only a software project has a folder
+  // on this machine, so a plain project is not offered.
+  let projects = $state<SoftwareProjectNode[]>([]);
   let selectedProjectId = $state('');
   // The project's folder on this machine, as the form shows it. It starts as
   // the folder the project already has, and is sent only when it differs.
@@ -165,8 +166,10 @@
 
   async function loadProjects(): Promise<void> {
     try {
-      const nodes = await backendAdapter.queryNodes({ nodeType: 'project' });
-      projects = Array.isArray(nodes) ? nodes.filter(isProjectNode) : [];
+      const nodes = await backendAdapter.queryNodes({ nodeType: 'software-project' });
+      // The daemon returns software projects and the types that extend
+      // them, each of which a launch accepts.
+      projects = Array.isArray(nodes) ? (nodes as unknown as SoftwareProjectNode[]) : [];
     } catch (e) {
       log.warn('Failed to load projects', e);
     }

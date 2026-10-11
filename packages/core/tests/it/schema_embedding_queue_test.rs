@@ -127,7 +127,7 @@ async fn no_schema_create_path_leaves_a_schema_unqueued() -> Result<()> {
     handle_create_schema(
         &service,
         json!({
-            "name": "Issue",
+            "name": "Ticket",
             "extends": "task",
             "fields": [{ "name": "estimate", "type": "number" }]
         }),
@@ -141,7 +141,7 @@ async fn no_schema_create_path_leaves_a_schema_unqueued() -> Result<()> {
         .into_iter()
         .map(|s| s.envelope.id)
         .collect();
-    for id in ["invoice", "issue", "spec", "plan", "decision"] {
+    for id in ["invoice", "ticket", "issue", "spec", "plan", "decision"] {
         assert!(installed.iter().any(|s| s == id), "`{id}` must exist");
     }
 

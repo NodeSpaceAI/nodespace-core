@@ -1894,15 +1894,26 @@ pub async fn handle_get_markdown_from_node_id(
     }))
 }
 
+/// Whether a node is rendered as a task: a task, or a core subtype of one.
+fn renders_as_task(node_type: &str) -> bool {
+    CoreNodeType::from_id(node_type).is_some_and(|core| core.is_a(CoreNodeType::Task))
+}
+
 /// Format task node checkbox based on task status
 ///
-/// Returns "- [x] " for a done task and "- [ ] " for every other status.
+/// Returns "- [x] " for a done task and "- [ ] " for every other status. The
+/// status is read from the nearest bucket in the type's chain that holds one:
+/// a subtype that adds statuses stores it in its own.
 fn format_task_checkbox(node: &Node) -> &'static str {
-    let status = node
-        .properties
-        .get(CoreNodeType::Task.as_str())
-        .and_then(|task| task.get("status"))
-        .and_then(|v| v.as_str());
+    let status = CoreNodeType::from_id(&node.node_type)
+        .into_iter()
+        .flat_map(CoreNodeType::chain)
+        .find_map(|core| {
+            node.properties
+                .get(core.as_str())
+                .and_then(|bucket| bucket.get("status"))
+                .and_then(|v| v.as_str())
+        });
     if status == Some(TaskStatus::Done.as_str()) {
         "- [x] "
     } else {
@@ -1957,7 +1968,7 @@ fn export_node_hierarchy(
     }
 
     // Handle task nodes specially - render with checkbox syntax
-    if crate::models::CoreNodeType::Task.is_exactly(&node.node_type) {
+    if renders_as_task(&node.node_type) {
         output.push_str(format_task_checkbox(node));
         output.push_str(&node.content);
         output.push_str("\n\n");
@@ -2072,7 +2083,7 @@ fn export_node_with_context(
     }
 
     // Handle task nodes specially - render with checkbox syntax
-    if crate::models::CoreNodeType::Task.is_exactly(&node.node_type) {
+    if renders_as_task(&node.node_type) {
         output.push_str(format_task_checkbox(node));
         output.push_str(&node.content);
         output.push_str("\n\n");

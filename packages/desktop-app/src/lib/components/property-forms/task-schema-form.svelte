@@ -1,15 +1,21 @@
 <!--
   TaskSchemaForm - Type-Safe Task Property Form
 
+  One form for a task and for an issue, the core subtype of task that is development
+  work. `nodeType` says which: an issue has a task's fields, its own status values, and
+  the two fields that say where the work landed (pullRequest, commits). A plain task has
+  neither field and shows neither. IssueSchemaForm renders this form for an issue.
+
   Hybrid approach:
-  - Core task properties (status, priority, dueDate, startedAt, completedAt, pullRequest,
-    commits) render
-    through the shared SchemaFieldLeaf, driven by the real task schema's coreValues/
+  - Core properties (status, priority, dueDate, startedAt, completedAt, and for an issue
+    pullRequest and commits) render
+    through the shared SchemaFieldLeaf, driven by the type's own schema's coreValues/
     userValues — no locally hardcoded enum options or date-picker markup. Their WRITES
-    still go through the type-safe sharedNodeStore.updateTaskNode() functions below,
-    unchanged: SchemaFieldLeaf is a controlled, presentational component (value + onChange)
-    that never touches the store itself, so swapping its markup in does not change how a
-    core field is persisted (same optimistic-write/OCC/field-sequencing path as before).
+    still go through the type-safe sharedNodeStore.updateTaskNode() / updateIssueNode()
+    functions below: SchemaFieldLeaf is a controlled, presentational component (value +
+    onChange) that never touches the store itself, so swapping its markup in does not
+    change how a core field is persisted (same optimistic-write/OCC/field-sequencing path
+    as before).
   - Dynamic rendering for user-defined schema extensions: leaf fields render through the
     shared SchemaFieldLeaf, object/array fields render a summary trigger that opens the
     shared NestedPropertyModal.
@@ -20,7 +26,8 @@
   properties[field.name], via getUserFieldValue/updateUserField.
 
   Props:
-  - nodeId: ID of the task node to display properties for
+  - nodeId: ID of the task or issue to display properties for
+  - nodeType: 'task' (the default) or 'issue'
 -->
 
 <script lang="ts">
@@ -30,7 +37,9 @@
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { type SchemaNode, type SchemaField, isSchemaNode } from '$lib/types/schema-node';
   import type { LinkValue } from '$lib/types/generated';
-  import type { TaskStatus } from '$lib/types/task-node';
+  import type { IssueNode, IssueNodeUpdate } from '$lib/types/issue-node';
+  import { nodeToIssueNode } from '$lib/types/issue-node';
+  import type { TaskNode, TaskNodeUpdate } from '$lib/types/task-node';
   import { nodeToTaskNode } from '$lib/types/task-node';
   import { createLogger } from '$lib/utils/logger';
   import { labelForField } from '$lib/utils/schema-field-label';
@@ -46,8 +55,13 @@
   // Logger instance for TaskSchemaForm component
   const log = createLogger('TaskSchemaForm');
 
-  // Props - only nodeId needed since we know it's a task
-  let { nodeId }: { nodeId: string } = $props();
+  // Props - the node, and which of the two types this form is registered for
+  let { nodeId, nodeType = 'task' }: { nodeId: string; nodeType?: 'task' | 'issue' } = $props();
+
+  // Exact: the typed node and the typed update are each type's own.
+  const isIssue = $derived(isExactly(nodeType, 'issue'));
+  // Stable per instance: the plugin registers the form for one type.
+  const viewerId = $derived(isIssue ? 'issue-schema-form' : 'task-schema-form');
 
   // State
   let schema = $state<SchemaNode | null>(null);
@@ -58,19 +72,26 @@
   // fallback in the template below.
   let schemaLoadFailed = $state(false);
 
-  // Reactive node data - direct read from the store's SvelteMap, converted to TaskNode
-  const node = $derived.by(() => {
+  // Reactive node data - direct read from the store's SvelteMap, converted to the typed
+  // node of this form's type. Exact: a task's form never renders an issue, nor the
+  // reverse, so each writes through its own type's update.
+  const node = $derived.by((): TaskNode | IssueNode | null => {
     if (!nodeId) return null;
     const rawNode = sharedNodeStore.getNode(nodeId);
-    return rawNode && isExactly(rawNode.nodeType, 'task') ? nodeToTaskNode(rawNode) : null;
+    if (!rawNode || !isExactly(rawNode.nodeType, nodeType)) return null;
+    return isIssue ? nodeToIssueNode(rawNode) : nodeToTaskNode(rawNode);
   });
+  // The issue's own fields, read only when this form is an issue's.
+  const issue = $derived(isIssue ? (node as IssueNode | null) : null);
 
-  // Load the task schema once on mount (constant type — never re-fetches). ADR-049:
-  // a mount-time load, not a reactive-state watch.
+  // Load the type's schema once on mount (constant type — never re-fetches). ADR-049:
+  // a mount-time load, not a reactive-state watch. A schema read returns the effective
+  // fields, so an issue's carries the fields it inherits from task and its own status.
   onMount(() => {
+    const schemaId = nodeType;
     async function loadSchema() {
       try {
-        const schemaNode = await backendAdapter.getSchema('task');
+        const schemaNode = await backendAdapter.getSchema(schemaId);
         if (isSchemaNode(schemaNode)) {
           schema = schemaNode;
         } else {
@@ -90,17 +111,13 @@
   // Options/labels come straight from the real task schema's coreValues/userValues
   // (SchemaFieldLeaf reads them the same way) — no locally hardcoded enum lists.
 
-  // The real task schema's own field names (core_schemas.rs) — always snake_case,
-  // matching what the backend actually returns from getSchema('task').
-  const CORE_FIELD_NAMES = [
-    'status',
-    'priority',
-    'due_date',
-    'started_at',
-    'completed_at',
-    'pull_request',
-    'commits'
-  ];
+  // The schema's own field names (core_schemas.rs) — always snake_case, matching what
+  // the backend returns from getSchema. An issue declares two more than a task.
+  const TASK_FIELD_NAMES = ['status', 'priority', 'due_date', 'started_at', 'completed_at'];
+  const ISSUE_FIELD_NAMES = ['pull_request', 'commits'];
+  const coreFieldNames = $derived(
+    isIssue ? [...TASK_FIELD_NAMES, ...ISSUE_FIELD_NAMES] : TASK_FIELD_NAMES
+  );
 
   // A schema field by name, or undefined while `schema` hasn't loaded yet (or, in the
   // unexpected case of a schema-fetch failure — see loadSchema's catch above — never).
@@ -119,15 +136,15 @@
   // ever see this?" for every surface that renders schema fields.
   const userDefinedFields = $derived.by(() => {
     if (!schema) return [];
-    return schema.fields.filter((f) => !CORE_FIELD_NAMES.includes(f.name) && isUserVisibleField(f));
+    return schema.fields.filter((f) => !coreFieldNames.includes(f.name) && isUserVisibleField(f));
   });
 
   // Calculate field completion stats
   const fieldStats = $derived.by(() => {
-    if (!node) return { filled: 0, total: CORE_FIELD_NAMES.length };
+    if (!node) return { filled: 0, total: coreFieldNames.length };
 
     let filled = 0;
-    let total = CORE_FIELD_NAMES.length;
+    let total = coreFieldNames.length;
 
     // Core fields
     if (node.status) filled++;
@@ -135,8 +152,8 @@
     if (node.dueDate) filled++;
     if (node.startedAt) filled++;
     if (node.completedAt) filled++;
-    if (node.pullRequest) filled++;
-    if (node.commits && node.commits.length > 0) filled++;
+    if (issue?.pullRequest) filled++;
+    if (issue?.commits && issue.commits.length > 0) filled++;
 
     // User-defined fields
     const userFields = userDefinedFields;
@@ -185,7 +202,7 @@
     if (!node) return;
     sharedNodeStore.updateNode(nodeId, buildFieldWrite(node, fieldName, value), {
       type: 'viewer',
-      viewerId: 'task-schema-form'
+      viewerId
     });
   }
 
@@ -194,63 +211,55 @@
     sharedNodeStore.updateNode(
       nodeId,
       { properties: { ...node.properties, [fieldName]: value } },
-      { type: 'viewer', viewerId: 'task-schema-form' }
+      { type: 'viewer', viewerId }
     );
   }
 
   // ============================================================================
   // Type-Safe Core Field Update Functions
   // ============================================================================
-  // Use sharedNodeStore.updateTaskNode for type-safe task property updates
+  // Each core field is written through its own type's typed update: a task's
+  // through updateTaskNode, an issue's through updateIssueNode.
 
-  function updateStatus(status: TaskStatus) {
+  /** Write the fields a task and an issue share. */
+  function updateShared(update: TaskNodeUpdate) {
     if (!node) return;
-    sharedNodeStore.updateTaskNode(nodeId, { status }, { type: 'viewer', viewerId: 'task-schema-form' });
+    const source = { type: 'viewer' as const, viewerId };
+    if (isIssue) {
+      sharedNodeStore.updateIssueNode(nodeId, update, source);
+    } else {
+      sharedNodeStore.updateTaskNode(nodeId, update, source);
+    }
+  }
+
+  /** Write a field only an issue has. */
+  function updateIssue(update: IssueNodeUpdate) {
+    if (!issue) return;
+    sharedNodeStore.updateIssueNode(nodeId, update, { type: 'viewer', viewerId });
+  }
+
+  function updateStatus(status: string) {
+    updateShared({ status });
   }
 
   function updatePriority(priority: string | undefined) {
-    if (!node) return;
-    sharedNodeStore.updateTaskNode(
-      nodeId,
-      { priority: priority ?? null },
-      { type: 'viewer', viewerId: 'task-schema-form' }
-    );
+    updateShared({ priority: priority ?? null });
   }
 
   function updateDueDate(dueDate: string | null) {
-    if (!node) return;
-    sharedNodeStore.updateTaskNode(
-      nodeId,
-      { dueDate },
-      { type: 'viewer', viewerId: 'task-schema-form' }
-    );
+    updateShared({ dueDate });
   }
 
   function updateStartedAt(startedAt: string | null) {
-    if (!node) return;
-    sharedNodeStore.updateTaskNode(
-      nodeId,
-      { startedAt },
-      { type: 'viewer', viewerId: 'task-schema-form' }
-    );
+    updateShared({ startedAt });
   }
 
   function updateCompletedAt(completedAt: string | null) {
-    if (!node) return;
-    sharedNodeStore.updateTaskNode(
-      nodeId,
-      { completedAt },
-      { type: 'viewer', viewerId: 'task-schema-form' }
-    );
+    updateShared({ completedAt });
   }
 
   function updatePullRequest(pullRequest: LinkValue | null) {
-    if (!node) return;
-    sharedNodeStore.updateTaskNode(
-      nodeId,
-      { pullRequest },
-      { type: 'viewer', viewerId: 'task-schema-form' }
-    );
+    updateIssue({ pullRequest });
   }
 </script>
 
@@ -310,7 +319,7 @@
                 // reachable today (bits-ui's Select toggle-to-empty needs
                 // allowDeselect, which this app's Select wrapper never sets), but
                 // cheap defense-in-depth to keep on a required field.
-                if (newValue) updateStatus(newValue as TaskStatus);
+                if (newValue) updateStatus(newValue as string);
               }}
             />
           {:else}
@@ -378,35 +387,38 @@
           {/if}
         </div>
 
-        <!-- Pull Request Field -->
-        <div class="space-y-2">
-          <label for="task-pull-request" class="text-sm font-medium">Pull Request</label>
-          {#if pullRequestField}
-            <SchemaFieldLeaf
-              field={pullRequestField}
-              fieldId="task-pull-request"
-              value={node.pullRequest ?? null}
-              onChange={(newValue) => updatePullRequest((newValue as LinkValue | null) ?? null)}
-            />
-          {:else}
-            {@render fieldUnavailable()}
-          {/if}
-        </div>
+        <!-- Where the work landed: an issue's fields, absent from a plain task -->
+        {#if issue}
+          <!-- Pull Request Field -->
+          <div class="space-y-2">
+            <label for="task-pull-request" class="text-sm font-medium">Pull Request</label>
+            {#if pullRequestField}
+              <SchemaFieldLeaf
+                field={pullRequestField}
+                fieldId="task-pull-request"
+                value={issue.pullRequest ?? null}
+                onChange={(newValue) => updatePullRequest((newValue as LinkValue | null) ?? null)}
+              />
+            {:else}
+              {@render fieldUnavailable()}
+            {/if}
+          </div>
 
-        <!-- Commits Field (a list of links, edited in the shared nested modal) -->
-        <div class="space-y-2">
-          <label for="task-commits" class="text-sm font-medium">Commits</label>
-          {#if commitsField}
-            <NestedFieldTrigger
-              field={commitsField}
-              fieldId="task-commits"
-              value={node.commits ?? null}
-              onopen={() => openNestedModal(commitsField)}
-            />
-          {:else}
-            {@render fieldUnavailable()}
-          {/if}
-        </div>
+          <!-- Commits Field (a list of links, edited in the shared nested modal) -->
+          <div class="space-y-2">
+            <label for="task-commits" class="text-sm font-medium">Commits</label>
+            {#if commitsField}
+              <NestedFieldTrigger
+                field={commitsField}
+                fieldId="task-commits"
+                value={issue.commits ?? null}
+                onopen={() => openNestedModal(commitsField)}
+              />
+            {:else}
+              {@render fieldUnavailable()}
+            {/if}
+          </div>
+        {/if}
 
         <!-- ============================================================ -->
         <!-- USER-DEFINED FIELDS (Dynamic from Schema) -->

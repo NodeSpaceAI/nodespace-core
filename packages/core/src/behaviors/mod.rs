@@ -621,6 +621,36 @@ impl NodeBehavior for TaskNodeBehavior {
     }
 }
 
+/// Behavior for `issue` nodes: a task that is development work (ADR-098).
+///
+/// It adds nothing to [`TaskNodeBehavior`]'s rules: an issue's own fields and
+/// statuses are the schema's to check.
+pub struct IssueNodeBehavior;
+
+impl NodeBehavior for IssueNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        CoreNodeType::Issue.as_str()
+    }
+
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        Ok(())
+    }
+
+    // `NodeBehaviorRegistry::resolve` answers these from the nearest
+    // behaviour in a node's chain, which for an issue is this one.
+    fn supports_markdown(&self) -> bool {
+        TaskNodeBehavior.supports_markdown()
+    }
+
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        TaskNodeBehavior.get_embeddable_content(node)
+    }
+
+    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+        TaskNodeBehavior.get_parent_contribution(node)
+    }
+}
+
 /// A spec, plan or decision is titled by its content, so it needs some.
 fn require_title(node: &Node, what: &str) -> Result<(), NodeValidationError> {
     if node.content.trim().is_empty() {
@@ -831,6 +861,37 @@ impl NodeBehavior for ProjectNodeBehavior {
     /// Projects don't contribute to a parent's embedding either.
     fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
         None
+    }
+}
+
+/// Behavior for `software-project` nodes: a project with source code
+/// (ADR-098).
+///
+/// It adds nothing to [`ProjectNodeBehavior`]'s rules: `repository` and
+/// `checkout_path` are the schema's to check.
+pub struct SoftwareProjectNodeBehavior;
+
+impl NodeBehavior for SoftwareProjectNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        CoreNodeType::SoftwareProject.as_str()
+    }
+
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        Ok(())
+    }
+
+    // `NodeBehaviorRegistry::resolve` answers these from the nearest
+    // behaviour in a node's chain, which for a software project is this one.
+    fn supports_markdown(&self) -> bool {
+        ProjectNodeBehavior.supports_markdown()
+    }
+
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        ProjectNodeBehavior.get_embeddable_content(node)
+    }
+
+    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+        ProjectNodeBehavior.get_parent_contribution(node)
     }
 }
 
@@ -2467,7 +2528,7 @@ impl NodeBehavior for DatabaseSettingsNodeBehavior {
 ///     "Hello".to_string(),
 ///     json!({}),
 /// );
-/// assert!(registry.validate_node(&node).is_ok());
+/// assert!(registry.validate_node(&node, &["text"]).is_ok());
 ///
 /// // Get all registered types
 /// let types = registry.get_all_types();
@@ -2481,7 +2542,7 @@ impl NodeBehavior for DatabaseSettingsNodeBehavior {
 ///     "Alice".to_string(),
 ///     json!({"person": {"first_name": "Alice", "last_name": "Example", "email": "alice@example.com"}}),
 /// );
-/// assert!(registry.validate_node(&person_node).is_ok());
+/// assert!(registry.validate_node(&person_node, &["person"]).is_ok());
 /// ```
 pub struct NodeBehaviorRegistry {
     behaviors: HashMap<String, Arc<dyn NodeBehavior>>,
@@ -2515,7 +2576,9 @@ impl NodeBehaviorRegistry {
         registry.register_core(Arc::new(TextNodeBehavior));
         registry.register_core(Arc::new(HeaderNodeBehavior));
         registry.register_core(Arc::new(TaskNodeBehavior));
+        registry.register_core(Arc::new(IssueNodeBehavior));
         registry.register_core(Arc::new(ProjectNodeBehavior));
+        registry.register_core(Arc::new(SoftwareProjectNodeBehavior));
         registry.register_core(Arc::new(SpecNodeBehavior));
         registry.register_core(Arc::new(PlanNodeBehavior));
         registry.register_core(Arc::new(DecisionNodeBehavior));
@@ -2649,8 +2712,10 @@ impl NodeBehaviorRegistry {
     /// use nodespace_core::behaviors::NodeBehaviorRegistry;
     ///
     /// let registry = NodeBehaviorRegistry::new();
-    /// // A user's `issue extends task` is a task.
-    /// assert_eq!(registry.resolve(&["issue", "task"]).type_name(), "task");
+    /// // A user's `chore extends task` is a task.
+    /// assert_eq!(registry.resolve(&["chore", "task"]).type_name(), "task");
+    /// // A core subtype has a behaviour of its own, which answers as its base.
+    /// assert_eq!(registry.resolve(&["issue", "task"]).type_name(), "issue");
     /// ```
     pub fn resolve<S: AsRef<str>>(&self, chain: &[S]) -> Arc<dyn NodeBehavior> {
         chain
@@ -3494,19 +3559,36 @@ mod tests {
             .is_err());
         assert!(registry.validate_node(&team, &["team"]).is_ok());
 
-        // `issue extends task` is not embedded, as a task is not.
-        let issue = Node::new("issue".to_string(), "Fix it".to_string(), json!({}));
+        // `chore extends task` is not embedded, as a task is not.
+        let chore = Node::new("chore".to_string(), "Fix it".to_string(), json!({}));
         assert!(registry
-            .resolve(&["issue", "task"])
-            .get_embeddable_content(&issue)
+            .resolve(&["chore", "task"])
+            .get_embeddable_content(&chore)
             .is_none());
+        assert_eq!(
+            registry
+                .for_chain(&["errand", "chore", "task"])
+                .iter()
+                .map(|b| b.type_name())
+                .collect::<Vec<_>>(),
+            vec!["task"]
+        );
+        // A core subtype's behaviour runs after its base's.
         assert_eq!(
             registry
                 .for_chain(&["bug", "issue", "task"])
                 .iter()
                 .map(|b| b.type_name())
                 .collect::<Vec<_>>(),
-            vec!["task"]
+            vec!["task", "issue"]
+        );
+        assert_eq!(
+            registry
+                .for_chain(&["software-project", "project"])
+                .iter()
+                .map(|b| b.type_name())
+                .collect::<Vec<_>>(),
+            vec!["project", "software-project"]
         );
     }
 

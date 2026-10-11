@@ -39,11 +39,13 @@
   import type { Node } from '$lib/types';
   import type { SchemaNode } from '$lib/types/schema-node';
   import { labelForField } from '$lib/utils/schema-field-label';
+  import { declaredField } from '$lib/types/core-node-types';
   import {
     UNASSIGNED,
     eligibleGroupByFields,
     enumColumns,
     readGroupValue,
+    readGroupValueAtScope,
     resolveFieldWrite,
     groupByColumn,
     resolveActiveGroupBy,
@@ -117,6 +119,21 @@
     activeField?.required ? columns : [...columns, { value: UNASSIGNED, label: 'Unassigned' }]
   );
 
+  /**
+   * The column value a node sits under on this board. The board also shows
+   * nodes of the types that extend its own, each held at its own scope: an
+   * issue on a board of tasks may hold a status a task does not have, and it
+   * sits under the task status that one maps to. The mapping is declared on
+   * the field as the node's own type declares it, read from the loaded schemas.
+   */
+  function groupValueOf(node: Node): string | null {
+    if (!activeField) return null;
+    // For a node of the board's own type this is the board's field, and a
+    // value the board declares is returned as it is.
+    const ownField = declaredField(node.nodeType, activeField.name);
+    return readGroupValueAtScope(node, activeField, ownField);
+  }
+
   // Bucket the (existing) result nodes by their group-by value. Reads each node
   // from the store, so a move — which rewrites the value — re-derives the board.
   const buckets = $derived.by(() => {
@@ -124,7 +141,7 @@
     const items = nodeIds
       .map((id) => {
         const n = sharedNodeStore.getNode(id);
-        return n ? { id, value: readGroupValue(n, activeGroupBy) } : null;
+        return n ? { id, value: groupValueOf(n) } : null;
       })
       .filter((it): it is { id: string; value: string | null } => it !== null);
     return groupByColumn(items, columns.map((c) => c.value));
@@ -212,7 +229,7 @@
 
   /** The column a node currently belongs to (the one its move menu leaves out). */
   function currentColumn(node: Node): string {
-    const v = activeGroupBy ? readGroupValue(node, activeGroupBy) : null;
+    const v = groupValueOf(node);
     return v !== null && columns.some((c) => c.value === v) ? v : UNASSIGNED;
   }
 
@@ -278,7 +295,12 @@
     // has no clear semantics on the backend, so writing `null` to it would
     // silently no-op rather than actually move the card anywhere.
     if (target === null && activeField?.required) return;
-    if (from === target) return; // dropping into its own column is a no-op — no write
+    // Dropping into its own column is a no-op — no write. The column a card is
+    // in is the one its value reads as on this board, so a card whose own
+    // value only maps to this column is left as it is, not rewritten to the
+    // column's value. `from` stays the stored value: it is what a failed move
+    // is reverted to.
+    if (from === target || groupValueOf(node) === target) return;
     const chainKey = `${id}:${field}`;
     if (!chainOrigin.has(chainKey)) chainOrigin.set(chainKey, from);
     const changes = resolveFieldWrite(node, field, target);

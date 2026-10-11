@@ -101,8 +101,10 @@ service NodeService {
   // daemon writes them through the generic update pipeline; the response
   // carries the stored node.
   rpc UpdateTaskNode(UpdateTaskNodeRequest) returns (NodeResponse);
+  rpc UpdateIssueNode(UpdateIssueNodeRequest) returns (NodeResponse);
   rpc UpdatePersonNode(UpdatePersonNodeRequest) returns (NodeResponse);
   rpc UpdateProjectNode(UpdateProjectNodeRequest) returns (NodeResponse);
+  rpc UpdateSoftwareProjectNode(UpdateSoftwareProjectNodeRequest) returns (NodeResponse);
   rpc UpdateSpecNode(UpdateSpecNodeRequest) returns (NodeResponse);
   rpc UpdatePlanNode(UpdatePlanNodeRequest) returns (NodeResponse);
   rpc UpdateDecisionNode(UpdateDecisionNodeRequest) returns (NodeResponse);
@@ -986,6 +988,13 @@ message QueryNodesSimpleRequest {
   // archived node participates in nothing. For a surface that must list
   // archived nodes, such as one that unarchives them.
   bool include_archived = 9;
+  // Return each node at its own type's scope: every field its own type has,
+  // and its values as stored. The default projects each to the queried type
+  // (a subtype's own fields left out, its added enum values read as the ones
+  // they map to), which is what a reader of one type wants. For a client
+  // that keeps one copy of a node whichever view loaded it, and so must
+  // never hold a projection of it. Ignored by CountNodes.
+  bool own_scope = 10;
 }
 
 message CountNodesResponse {
@@ -1012,6 +1021,11 @@ message ExecuteQueryRequest {
   optional string sorting_json = 3;
   // Max results to return. 0 = server default (50).
   uint32 limit = 4;
+  // Return each node at its own type's scope, not projected to the target
+  // type; see QueryNodesSimpleRequest.own_scope. The filters and the sorting
+  // are evaluated at the target type's scope either way. Ignored by
+  // CountQuery.
+  bool own_scope = 5;
 }
 
 message RunSavedQueryRequest {
@@ -1300,14 +1314,6 @@ message OptionalTimestampClear {
   string value = 2;
 }
 
-// A structured field value (a link, a list of links), JSON encoded.
-message OptionalJsonClear {
-  // true = clear the field (write None on the server)
-  bool clear = 1;
-  // The JSON-encoded value; used only when clear=false
-  string value_json = 2;
-}
-
 // The task schema's fields and nothing else: content and extension fields
 // (`custom:…`) are written through UpdateNode. status has no clear path (the
 // task schema requires it).
@@ -1319,10 +1325,16 @@ message UpdateTaskNodeRequest {
   optional OptionalTimestampClear due_date = 5;
   optional OptionalTimestampClear started_at = 7;
   optional OptionalTimestampClear completed_at = 8;
-  // A JSON-encoded link: {"title": "...", "url": "..."}.
-  optional OptionalJsonClear pull_request = 9;
-  // A JSON-encoded list of links, replaced whole.
-  optional OptionalJsonClear commits = 10;
+}
+
+// The JSON-encoded IssueNodeUpdate (camelCase keys), as for
+// UpdateSpecNodeRequest: a task's fields with the issue's status vocabulary,
+// `pullRequest` (a link) and `commits` (a list of links, replaced whole).
+// `status` can be set but not cleared.
+message UpdateIssueNodeRequest {
+  string node_id = 1;
+  int64 version = 2;
+  string update_json = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -1346,10 +1358,16 @@ message UpdateProjectNodeRequest {
   optional OptionalStringClear priority = 4;
   optional OptionalTimestampClear start_date = 5;
   optional OptionalTimestampClear end_date = 6;
-  // A JSON-encoded link: {"title": "...", "url": "..."}.
-  optional OptionalJsonClear repository = 7;
-  // The folder on this machine that holds the project's checkout.
-  optional OptionalStringClear checkout_path = 8;
+}
+
+// The JSON-encoded SoftwareProjectNodeUpdate (camelCase keys), as for
+// UpdateSpecNodeRequest: a project's fields, `repository` (a link) and
+// `checkoutPath` (the folder on this machine that holds the project's
+// checkout). `status` can be set but not cleared.
+message UpdateSoftwareProjectNodeRequest {
+  string node_id = 1;
+  int64 version = 2;
+  string update_json = 3;
 }
 
 // The JSON-encoded SpecNodeUpdate (camelCase keys), like

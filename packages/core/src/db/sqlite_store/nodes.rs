@@ -3508,9 +3508,9 @@ impl SqliteStore {
     /// would have no caller.
     ///
     /// Under ADR-078's per-owner property-bucket model, a subtype instance
-    /// (e.g. an `issue` node where `issue extends task`) stores its inherited
+    /// (e.g. a `bug` node where `bug extends task`) stores its inherited
     /// `task` fields under the `task` bucket key — the SAME key a `task`
-    /// instance uses — not under `issue`. Renaming a `task` field must
+    /// instance uses — not under `bug`. Renaming a `task` field must
     /// therefore rekey every descendant instance's `task` bucket too, not
     /// just rows whose own `node_type` literally equals `task`; the bucket
     /// key rewritten stays `type_id` regardless of which row is touched.

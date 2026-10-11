@@ -98,25 +98,31 @@ class IconRegistry {
       hasRingEffect: true
     });
 
-    // Task nodes - with state support (pending/inProgress/completed)
-    this.register('task', {
-      component: TaskIcon,
-      semanticClass: 'task-icon',
-      colorVar: 'hsl(var(--node-task))',
-      hasState: true,
-      hasRingEffect: true // Tasks show ring effects when they have children
-    });
+    // Task nodes - with state support (pending/inProgress/completed). An
+    // issue is a task that is development work and shows the same icon.
+    for (const taskType of ['task', 'issue']) {
+      this.register(taskType, {
+        component: TaskIcon,
+        semanticClass: 'task-icon',
+        colorVar: 'hsl(var(--node-task))',
+        hasState: true,
+        hasRingEffect: true // Tasks show ring effects when they have children
+      });
+    }
 
     // Project nodes - container that groups tasks/notes; a built-in entity type
     // like task/date. Reuses the shared circle glyph (as date/entity/user do)
     // with its own color var, and shows a ring when it has children.
-    this.register('project', {
-      component: CircleIcon,
-      semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-project))',
-      hasState: false,
-      hasRingEffect: true // Projects contain child tasks/notes
-    });
+    // A software project is a project with source code and shows the same icon.
+    for (const projectType of ['project', 'software-project']) {
+      this.register(projectType, {
+        component: CircleIcon,
+        semanticClass: 'node-icon',
+        colorVar: 'hsl(var(--node-project))',
+        hasState: false,
+        hasRingEffect: true // Projects contain child tasks/notes
+      });
+    }
 
     // AI Chat nodes (both subtypes; the `ai-chat` base is abstract) - square
     // design with "AI" text

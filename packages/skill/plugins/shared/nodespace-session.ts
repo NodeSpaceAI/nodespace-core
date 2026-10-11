@@ -693,7 +693,7 @@ export function createSession(
     const found = await nodespace([
       'query',
       '--type',
-      'project',
+      'software-project',
       '--filters',
       JSON.stringify(filters),
       '--limit',
