@@ -1,13 +1,15 @@
 #!/usr/bin/env bun
 /**
- * PreToolUse hook: warns when editing files on the main branch.
+ * PreToolUse hook: reminds the agent of the startup sequence when it edits
+ * files on the `main` branch.
  *
- * The startup sequence requires creating a feature branch before modifying
- * any files. Being on `main` is a reliable signal that the sequence was skipped.
+ * Issue work happens in an isolated worktree, whose branch is never `main`, so
+ * the hook is silent there. On `main` it prints the sequence, because being on
+ * `main` often means the sequence was skipped. Not every edit on `main` is issue
+ * work, so the reminder does not tell the agent to stop.
  *
- * Exits 0 in all cases (never blocks), but prints a warning to stderr when on
- * `main` so Claude Code surfaces it as a message to the agent — prompting
- * self-correction without hard-blocking legitimate operations.
+ * Exits 0 in all cases (never blocks). The reminder goes to stderr so Claude
+ * Code surfaces it as a message to the agent.
  */
 
 import { execSync } from 'child_process';
@@ -25,19 +27,22 @@ const branch = getCurrentBranch();
 
 if (branch === 'main') {
   process.stderr.write(`
-⚠️  WARNING: You are on the \`main\` branch.
+⚠️  REMINDER: You are editing on the \`main\` branch of the primary checkout.
 
-Have you completed the startup sequence before editing files?
+Work on an issue belongs in an isolated worktree. If this edit is issue work,
+complete the startup sequence first, then make the edit inside the worktree.
+If it is not issue work, ignore this reminder.
 
-  1. git fetch origin && git pull origin main
-  2. bun install
-  3. bun run test  (record baseline)
-  4. bun run gh:comment <N> "Frontend: X passed"
-  5. git checkout -b feature/issue-<N>-description
-  6. bun run gh:assign <N> "@me"
-  7. bun run gh:status <N> "In Progress"
+  1. git status  (commit any pending changes)
+  2. git fetch origin && git pull origin main
+  3. EnterWorktree({name: "issue-<N>-brief-desc"})
+  4. bun install
+  5. bun run test  (record baseline)
+  6. bun run gh:comment <N> "Frontend: X passed"
+  7. bun run gh:assign <N> "@me"
+  8. bun run gh:status <N> "In Progress"
 
-If not, STOP and complete the sequence first, then create a feature branch.
+Detail: AGENTS.md, "Mandatory Startup Sequence".
 `);
 }
 
