@@ -422,7 +422,7 @@ nodespace wait query "Awaiting review" --until gain              # until it has 
 nodespace wait query "Awaiting review" --item <task-id>          # until one named item is in it
 ```
 
-**A node wait** holds when the node matches every filter in `--until`, written in the shape `nodespace query --filters` takes: property, content, relationship and related filters, `negate` included. So "its status is no longer `in_review`" and "this field is set" are both conditions. `--unless` takes the same shape and names the state from which `--until` will not be reached; it is checked first.
+**A node wait** holds when the node matches every filter in `--until`, written in the shape `nodespace query --filters` takes: property, content, relationship and related filters, `negate` included. So "its status is no longer `in_review`" and "this field is set" are both conditions. `--unless` takes the same shape and names the state from which `--until` will not be reached; it is checked first. The filters are run as a query, so a node a query leaves out never matches: an archived node waits until the timeout.
 
 **A query wait** holds when the saved query's result:
 - `--until change` (the default) — gained or lost an item since the wait started;

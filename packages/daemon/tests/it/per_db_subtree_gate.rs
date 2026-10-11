@@ -64,6 +64,7 @@ fn gated_context() -> (SharedContext, Arc<Mutex<Vec<String>>>) {
         model,
         has_model: false,
         scheduler: Arc::new(EmbeddingScheduler::new()),
+        serving_ended: tokio_util::sync::CancellationToken::new(),
         subtree_gate_factory: Arc::new(factory),
         local_agent: nodespace_daemon::SharedLocalAgent::new(),
         extensions: nodespace_daemon::DaemonExtensions::none(),

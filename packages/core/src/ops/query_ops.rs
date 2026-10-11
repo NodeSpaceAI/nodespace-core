@@ -2520,6 +2520,20 @@ mod tests {
                 Some(done)
             );
             assert_eq!(matching(open).await.unwrap().count, 0);
+
+            // The same name sorts by the column, in SQL and in the re-sort.
+            let sorted: ExecuteQueryInput = serde_json::from_value(json!({
+                "target_type": "task",
+                "sorting": [{"field": "id", "direction": "desc"}]
+            }))
+            .unwrap();
+            let output = execute_query(&svc, sorted).await.unwrap();
+            let ids: Vec<_> = output
+                .nodes
+                .iter()
+                .filter_map(|node| node.get("id").and_then(|v| v.as_str()))
+                .collect();
+            assert_eq!(ids, vec![done, open]);
         }
 
         /// The forward name of an inbound relationship, walked backwards

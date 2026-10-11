@@ -473,6 +473,7 @@ impl QueryService {
         let field = sort.field.as_str();
         match field {
             // Metadata fields
+            "id" => a.id.cmp(&b.id),
             "created_at" => a.created_at.cmp(&b.created_at),
             "modified_at" => a.modified_at.cmp(&b.modified_at),
             "content" => a.content.cmp(&b.content),

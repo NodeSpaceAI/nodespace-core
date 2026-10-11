@@ -398,7 +398,7 @@ async fn a_deleted_or_missing_node_ends_the_wait_as_unreachable() {
     );
     waiting.line("waiting on").await;
     delete(&mut client, &id).await;
-    let gone = format!("node {id} no longer exists");
+    let gone = format!("node {id} does not exist");
     assert!(matches!(waiting.outcome().await, Outcome::Unreachable(reason) if reason == gone));
 
     // Already gone when the wait starts.
@@ -479,7 +479,7 @@ async fn a_daemon_that_goes_away_and_stays_away_ends_the_wait() {
     waiting.line("waiting on").await;
     daemon.stop();
 
-    waiting.line("lost the daemon").await;
+    waiting.line("the change stream ended").await;
     let outcome = waiting.outcome().await;
     assert!(
         matches!(outcome, Outcome::DaemonUnavailable(_)),
@@ -504,7 +504,7 @@ async fn a_wait_survives_a_daemon_restart_and_sees_what_changed_meanwhile() {
     );
     waiting.line("waiting on").await;
     daemon.stop();
-    waiting.line("lost the daemon").await;
+    waiting.line("the change stream ended").await;
 
     // The change is made while the wait is disconnected, so no event for it
     // ever reaches the wait: only the check after reconnecting can see it.
@@ -512,7 +512,6 @@ async fn a_wait_survives_a_daemon_restart_and_sees_what_changed_meanwhile() {
     let mut client = daemon.client().await;
     set_status(&mut client, &id, "done").await;
 
-    waiting.line("reconnected").await;
     assert_eq!(met_node_status(waiting.outcome().await), "done");
 }
 
@@ -609,7 +608,7 @@ async fn a_deleted_saved_query_or_item_ends_the_wait_as_unreachable() {
     );
     waiting.line("waiting on").await;
     delete(&mut client, &id).await;
-    let gone = format!("node {id} no longer exists");
+    let gone = format!("node {id} does not exist");
     assert!(matches!(waiting.outcome().await, Outcome::Unreachable(reason) if reason == gone));
 
     let mut waiting = Waiting::start(
@@ -623,7 +622,7 @@ async fn a_deleted_saved_query_or_item_ends_the_wait_as_unreachable() {
     let Outcome::Unreachable(reason) = outcome else {
         panic!("expected unreachable, got {outcome:?}");
     };
-    assert_eq!(reason, format!("saved query '{query}' no longer exists"));
+    assert_eq!(reason, format!("saved query '{query}' does not exist"));
 }
 
 #[test]

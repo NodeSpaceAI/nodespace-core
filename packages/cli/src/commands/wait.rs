@@ -224,7 +224,41 @@ pub enum Outcome {
 #[derive(Debug)]
 pub struct WaitEnded {
     pub code: i32,
+    /// `timeout`, `unreachable` or `daemon_unavailable`: the `outcome` of
+    /// the `--json` object.
+    pub outcome: &'static str,
     pub message: String,
+}
+
+impl WaitEnded {
+    /// The exit status and the words for a wait that ended as `outcome`,
+    /// which is never [`Outcome::Met`]: that one is a result, not an ending.
+    fn from_outcome(outcome: Outcome, timing: &Timing, what: &str) -> Self {
+        let (code, name, message) = match outcome {
+            Outcome::Unreachable(reason) => (EXIT_UNREACHABLE, "unreachable", reason),
+            Outcome::DaemonUnavailable(reason) => {
+                (EXIT_DAEMON_UNAVAILABLE, "daemon_unavailable", reason)
+            }
+            Outcome::TimedOut | Outcome::Met(_) => (
+                EXIT_TIMEOUT,
+                "timeout",
+                format!(
+                    "timed out after {} waiting on {what}",
+                    human(timing.timeout)
+                ),
+            ),
+        };
+        Self {
+            code,
+            outcome: name,
+            message,
+        }
+    }
+
+    /// What `--json` prints for it.
+    pub fn to_json(&self) -> Value {
+        json!({ "outcome": self.outcome, "reason": self.message })
+    }
 }
 
 impl std::fmt::Display for WaitEnded {
@@ -336,7 +370,7 @@ async fn check_node(
         Err(status) => return Err(status),
     };
     let Some(node) = node else {
-        return Ok(Check::Unreachable(format!("node {id} no longer exists")));
+        return Ok(Check::Unreachable(format!("node {id} does not exist")));
     };
 
     if let Some(unless) = unless {
@@ -359,7 +393,7 @@ async fn check_node(
         Ok(response) => Ok(Check::Met(Met::Node(Box::new(response.into_inner())))),
         // Deleted between the match and the read.
         Err(status) if status.code() == Code::NotFound => {
-            Ok(Check::Unreachable(format!("node {id} no longer exists")))
+            Ok(Check::Unreachable(format!("node {id} does not exist")))
         }
         Err(status) => Err(status),
     }
@@ -382,7 +416,7 @@ async fn check_query(
         {
             Ok(_) => {}
             Err(status) if status.code() == Code::NotFound => {
-                return Ok(Check::Unreachable(format!("node {item} no longer exists")));
+                return Ok(Check::Unreachable(format!("node {item} does not exist")));
             }
             Err(status) => return Err(status),
         }
@@ -400,7 +434,7 @@ async fn check_query(
         Ok(response) => response.into_inner(),
         Err(status) if status.code() == Code::NotFound => {
             return Ok(Check::Unreachable(format!(
-                "saved query '{query}' no longer exists"
+                "saved query '{query}' does not exist"
             )));
         }
         Err(status) => return Err(status),
@@ -500,17 +534,23 @@ async fn drain(stream: &mut Streaming<NodeEvent>) -> bool {
     }
 }
 
-/// Retry the daemon until it answers, `reconnect_for` has passed or the
-/// wait's own deadline has. `None` when it did not come back.
+/// Retry the daemon until it answers or `give_up` has passed. The first
+/// attempt of an outage is made at once, since a stream also ends when the
+/// daemon closes an idle database and it then answers straight away; later
+/// ones are `reconnect_every` apart. `None` when it did not come back.
 async fn reconnect(
     sock: &Path,
     interceptor: &DatabaseIdInterceptor,
     timing: &Timing,
-    deadline: Instant,
+    give_up: Instant,
+    at_once: bool,
 ) -> Option<NodeClient> {
-    let give_up = (Instant::now() + timing.reconnect_for).min(deadline);
+    let mut pause = !at_once;
     loop {
-        tokio::time::sleep(timing.reconnect_every).await;
+        if pause {
+            tokio::time::sleep(timing.reconnect_every).await;
+        }
+        pause = true;
         if let Ok(client) = connect(sock, interceptor.clone()).await {
             return Some(client);
         }
@@ -541,20 +581,33 @@ pub async fn watch(
         Ok(client) => client,
         Err(error) => return Ok(Outcome::DaemonUnavailable(error.to_string())),
     };
-    // A check that fails right after a connection was made is the daemon
-    // refusing the request, not the daemon going away.
-    let mut answered = false;
+    // Until the daemon has answered one check, a failure is the daemon
+    // refusing the request and fails the command. After that, a failure
+    // that looks like a dropped connection is an outage to reconnect from.
+    let mut ever_answered = false;
+    // When the current outage began: unset while the daemon is answering.
+    // An outage lasts until a check is answered again, however many times
+    // the daemon was reached in between, so one that flaps is still bounded
+    // by `reconnect_for`.
+    let mut lost_since: Option<Instant> = None;
 
     loop {
         // Subscribe before checking: a change between the two is then seen.
         let disconnected = match open_stream(&mut client).await {
             Ok(mut stream) => loop {
-                match target.check(&mut client).await {
-                    Ok(Check::Met(met)) => return Ok(Outcome::Met(met)),
-                    Ok(Check::Unreachable(reason)) => return Ok(Outcome::Unreachable(reason)),
-                    Ok(Check::Pending) => answered = true,
-                    Err(status) if answered && is_disconnect(&status) => break status,
-                    Err(status) => return Err(check_failed(status)),
+                let check = tokio::time::timeout_at(deadline, target.check(&mut client)).await;
+                match check {
+                    Err(_) => return Ok(Outcome::TimedOut),
+                    Ok(Ok(Check::Met(met))) => return Ok(Outcome::Met(met)),
+                    Ok(Ok(Check::Unreachable(reason))) => return Ok(Outcome::Unreachable(reason)),
+                    Ok(Ok(Check::Pending)) => {
+                        if lost_since.take().is_some() {
+                            writeln!(status, "reconnected; still waiting on {what}").ok();
+                        }
+                        ever_answered = true;
+                    }
+                    Ok(Err(status)) if ever_answered && is_disconnect(&status) => break status,
+                    Ok(Err(status)) => return Err(check_failed(status)),
                 }
                 let ended = loop {
                     tokio::select! {
@@ -573,18 +626,23 @@ pub async fn watch(
                     break Status::unavailable("the change stream ended");
                 }
             },
-            Err(status) if answered && is_disconnect(&status) => status,
+            Err(status) if ever_answered && is_disconnect(&status) => status,
             Err(status) => return Err(check_failed(status)),
         };
 
-        writeln!(
-            status,
-            "lost the daemon while waiting on {what} ({}); reconnecting for up to {}",
-            crate::status_text(&disconnected),
-            human(timing.reconnect_for)
-        )
-        .ok();
-        client = match reconnect(sock, interceptor, timing, deadline).await {
+        let at_once = lost_since.is_none();
+        let began = *lost_since.get_or_insert_with(Instant::now);
+        if at_once {
+            writeln!(
+                status,
+                "{} while waiting on {what}; reconnecting for up to {}",
+                crate::status_text(&disconnected),
+                human(timing.reconnect_for)
+            )
+            .ok();
+        }
+        let give_up = (began + timing.reconnect_for).min(deadline);
+        client = match reconnect(sock, interceptor, timing, give_up, at_once).await {
             Some(client) => client,
             None if Instant::now() >= deadline => return Ok(Outcome::TimedOut),
             None => {
@@ -594,8 +652,6 @@ pub async fn watch(
                 )))
             }
         };
-        answered = false;
-        writeln!(status, "reconnected; checking {what} again").ok();
     }
 }
 
@@ -650,29 +706,14 @@ pub async fn run(
         }
     };
 
-    let (code, outcome, reason) = match outcome {
+    let ended = match outcome {
         Outcome::Met(met) => return print_met(&met, json),
-        Outcome::TimedOut => (
-            EXIT_TIMEOUT,
-            "timeout",
-            format!(
-                "timed out after {} waiting on {}",
-                human(timing.timeout),
-                target.describe()
-            ),
-        ),
-        Outcome::Unreachable(reason) => (EXIT_UNREACHABLE, "unreachable", reason),
-        Outcome::DaemonUnavailable(reason) => {
-            (EXIT_DAEMON_UNAVAILABLE, "daemon_unavailable", reason)
-        }
+        other => WaitEnded::from_outcome(other, &timing, &target.describe()),
     };
     if json {
-        println!("{:#}", json!({ "outcome": outcome, "reason": reason }));
+        println!("{:#}", ended.to_json());
     }
-    Err(anyhow::Error::new(WaitEnded {
-        code,
-        message: reason,
-    }))
+    Err(anyhow::Error::new(ended))
 }
 
 #[cfg(test)]
@@ -699,6 +740,38 @@ mod tests {
                 Duration::from_secs(3 * 3600)
             ),
             "waiting on node abc: 60s elapsed, timeout in 179m"
+        );
+    }
+
+    #[test]
+    fn each_ending_has_its_own_exit_status_and_json_outcome() {
+        let timing = Timing {
+            timeout: Duration::from_secs(1800),
+            interval: Duration::from_secs(60),
+            reconnect_for: Duration::from_secs(120),
+            reconnect_every: Duration::from_secs(2),
+        };
+        let ended = |outcome| WaitEnded::from_outcome(outcome, &timing, "node abc");
+
+        let timeout = ended(Outcome::TimedOut);
+        assert_eq!(timeout.code, 3);
+        assert_eq!(
+            timeout.to_json(),
+            json!({"outcome": "timeout", "reason": "timed out after 30m waiting on node abc"})
+        );
+
+        let unreachable = ended(Outcome::Unreachable("node abc matches --unless".into()));
+        assert_eq!(unreachable.code, 4);
+        assert_eq!(
+            unreachable.to_json(),
+            json!({"outcome": "unreachable", "reason": "node abc matches --unless"})
+        );
+
+        let unavailable = ended(Outcome::DaemonUnavailable("no daemon".into()));
+        assert_eq!(unavailable.code, 5);
+        assert_eq!(
+            unavailable.to_json(),
+            json!({"outcome": "daemon_unavailable", "reason": "no daemon"})
         );
     }
 

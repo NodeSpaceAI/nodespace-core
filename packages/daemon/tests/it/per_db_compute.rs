@@ -38,6 +38,7 @@ fn test_context() -> (SharedContext, Arc<EmbeddingScheduler>) {
         model,
         has_model: false,
         scheduler: scheduler.clone(),
+        serving_ended: tokio_util::sync::CancellationToken::new(),
         subtree_gate_factory: Arc::new(std::sync::OnceLock::new()),
         local_agent: nodespace_daemon::SharedLocalAgent::new(),
         extensions: nodespace_daemon::DaemonExtensions::none(),
@@ -195,6 +196,53 @@ async fn shutdown_all_closes_every_open_database() {
     let snapshot = manager.list().await;
     assert_ne!(status_of(&snapshot, "Default"), DatabaseStatus::Open);
     assert_ne!(status_of(&snapshot, "Second"), DatabaseStatus::Open);
+}
+
+/// When the daemon stops serving, every open `WatchNodes` stream ends at
+/// once, on every database, while the databases themselves are still open.
+/// The server's drain waits for open streams and runs before the databases
+/// are closed, so a stream that only ended with its database would hold the
+/// drain until its watchdog.
+#[tokio::test]
+async fn every_watch_stream_ends_when_the_daemon_stops_serving() {
+    use nodespace_daemon::nodespace::WatchRequest;
+    use tokio_stream::StreamExt;
+
+    let dir = TempDir::new().unwrap();
+    let (context, _scheduler) = test_context();
+    let serving_ended = context.serving_ended.clone();
+    let manager = Arc::new(
+        DatabaseManager::load(dir.path().join("databases.toml"), context)
+            .await
+            .unwrap(),
+    );
+    manager
+        .ensure_default_registered("Default".into(), dir.path().join("default.db"))
+        .await
+        .unwrap();
+    let default_id = manager.list().await.default_database.unwrap();
+    let services = manager.get_or_open(&default_id).await.unwrap();
+
+    let mut stream = services
+        .node_service_grpc
+        .watch_nodes(Request::new(WatchRequest::default()))
+        .await
+        .unwrap()
+        .into_inner();
+    let parked = tokio::time::timeout(Duration::from_millis(200), stream.next()).await;
+    assert!(parked.is_err(), "an idle stream stays open");
+
+    serving_ended.cancel();
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), stream.next())
+        .await
+        .expect("the stream must end once the daemon stops serving");
+    assert!(ended.is_none(), "the stream ends; it does not yield an event");
+    assert_eq!(
+        status_of(&manager.list().await, "Default"),
+        DatabaseStatus::Open,
+        "ending the streams does not close the database"
+    );
 }
 
 /// Per-database routing isolates compute state: an ai-chat node created against
