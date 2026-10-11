@@ -97,6 +97,19 @@ impl Daemon {
     }
 }
 
+/// Fails every request while its flag is set.
+#[derive(Clone)]
+struct Refusing(Arc<AtomicBool>);
+
+impl tonic::service::Interceptor for Refusing {
+    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        match self.0.load(Ordering::SeqCst) {
+            true => Err(tonic::Status::internal("cannot open the database")),
+            false => Ok(request),
+        }
+    }
+}
+
 async fn serve(
     sock: &Path,
     node_service: Arc<CoreNodeService>,
@@ -118,10 +131,7 @@ async fn serve(
         Server::builder()
             .add_service(NodeServiceServer::with_interceptor(
                 service,
-                move |request: tonic::Request<()>| match refusing.load(Ordering::SeqCst) {
-                    true => Err(tonic::Status::internal("cannot open the database")),
-                    false => Ok(request),
-                },
+                Refusing(refusing),
             ))
             .serve_with_incoming(incoming)
             .await
