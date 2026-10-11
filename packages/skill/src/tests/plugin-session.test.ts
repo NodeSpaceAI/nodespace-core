@@ -234,6 +234,9 @@ describe('a session, whichever harness it runs in', () => {
         },
       ])
     );
+    // Only a software project has a repository: a plain project is never matched.
+    const query = w.calls.find(argv => argv[0] === 'nodespace' && argv.includes('query')) ?? [];
+    expect(query[query.indexOf('--type') + 1]).toBe('software-project');
   });
 
   it('puts the orientation, the confirmation rules and the marked skill list in the section', async () => {

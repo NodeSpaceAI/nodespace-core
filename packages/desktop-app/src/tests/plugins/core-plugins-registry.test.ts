@@ -17,6 +17,8 @@ import { CORE_NODE_TYPES, isCoreNodeType } from '$lib/types/core-node-types';
 const CORE_TYPES_WITHOUT_PLUGIN: Record<string, string> = {
   'agent-guidance': 'a named primitive the agent reads; shown as an entity row',
   project: 'a container set up deliberately, not typed in ad hoc; shown as an entity row',
+  'software-project':
+    'a project with source code, set up deliberately like any project; shown as an entity row',
   spec: 'a record set up deliberately, not typed in ad hoc; shown as an entity row',
   plan: 'a record set up deliberately, not typed in ad hoc; shown as an entity row',
   decision: 'a record set up deliberately, not typed in ad hoc; shown as an entity row',

@@ -46,6 +46,7 @@ vi.mock('$lib/services/relationship-viewer-service', () => ({
 }));
 
 import TaskSchemaForm from '$lib/components/property-forms/task-schema-form.svelte';
+import IssueSchemaForm from '$lib/components/property-forms/issue-schema-form.svelte';
 import {
   buildRelationshipsView,
   type RawRelationshipGroup
@@ -121,7 +122,33 @@ function realTaskSchema(): SchemaNode {
       ),
       dateField('due_date', 'Due date'),
       dateField('started_at', 'Started at'),
-      dateField('completed_at', 'Completed at'),
+      dateField('completed_at', 'Completed at')
+    ]
+  };
+}
+
+/**
+ * The `issue` schema as a schema read returns it: the effective fields, so
+ * the ones inherited from task, the issue's own status with its two added
+ * values, and the two delivery links.
+ */
+function realIssueSchema(): SchemaNode {
+  const task = realTaskSchema();
+  const status = task.fields.find((f) => f.name === 'status')!;
+  return {
+    ...task,
+    id: 'issue',
+    content: 'Issue',
+    extends: 'task',
+    fields: [
+      {
+        ...status,
+        coreValues: [
+          ...(status.coreValues ?? []),
+          { value: 'changes_requested', label: 'Changes Requested', mapsTo: 'in_progress' },
+          { value: 'ready_to_merge', label: 'Ready to Merge', mapsTo: 'in_review' }
+        ]
+      },
       linkField('pull_request', 'Pull request'),
       {
         name: 'commits',
@@ -131,9 +158,24 @@ function realTaskSchema(): SchemaNode {
         protection: 'user',
         indexed: false,
         required: false
-      }
+      },
+      ...task.fields.filter((f) => f.name !== 'status')
     ]
   };
+}
+
+function issueNode(overrides: Record<string, unknown> = {}): Node {
+  return {
+    id: 'issue-1',
+    nodeType: 'issue',
+    content: 'Ship the change',
+    createdAt: '2026-01-01T00:00:00Z',
+    modifiedAt: '2026-01-01T00:00:00Z',
+    version: 1,
+    properties: {},
+    status: 'open',
+    ...overrides
+  } as unknown as Node;
 }
 
 function taskNode(overrides: Record<string, unknown> = {}): Node {
@@ -292,10 +334,9 @@ describe('TaskSchemaForm — schema-fetch failure degrades gracefully (no blank 
     const { container } = render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
     await openForm(container);
 
-    // 7 core fields (status, priority, due date, started at, completed at, pull request,
-    // commits) each fall back
+    // 5 core fields (status, priority, due date, started at, completed at) each fall back
     // to the unavailable hint.
-    await waitFor(() => expect(screen.getAllByText('Unable to load')).toHaveLength(7));
+    await waitFor(() => expect(screen.getAllByText('Unable to load')).toHaveLength(5));
   });
 
   it('does not show "Unable to load" while the schema fetch is merely still in flight', async () => {
@@ -318,10 +359,43 @@ describe('TaskSchemaForm — schema-fetch failure degrades gracefully (no blank 
   });
 });
 
-describe('TaskSchemaForm — delivery links', () => {
-  it('shows the pull request and the commit count from the typed fields', async () => {
+describe('TaskSchemaForm — a plain task has no delivery links', () => {
+  it('renders no pull request or commits field', async () => {
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(taskNode());
+    const { container } = render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
+    await openForm(container);
+
+    await waitFor(() => expect(container.querySelector('#task-status')).toBeTruthy());
+    expect(container.querySelector('#task-pull-request')).toBeNull();
+    expect(container.querySelector('#task-commits')).toBeNull();
+    expect(screen.queryByText('Pull Request')).toBeNull();
+    expect(screen.queryByText('Commits')).toBeNull();
+  });
+
+  it('renders nothing for an issue: an issue has its own form', async () => {
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(issueNode());
+    const { container } = render(TaskSchemaForm, { props: { nodeId: 'issue-1' } });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container.querySelector('button')).toBeNull();
+  });
+});
+
+describe('IssueSchemaForm — the task form with the issue\'s own fields', () => {
+  let updateIssueNodeSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    updateIssueNodeSpy = vi.fn();
+    vi.spyOn(sharedNodeStore, 'updateIssueNode').mockImplementation(
+      updateIssueNodeSpy as unknown as typeof sharedNodeStore.updateIssueNode
+    );
+    loadNodeRelationshipsView.mockResolvedValue({ nodeType: 'issue', groups: [] });
+    vi.spyOn(backendAdapter, 'getSchema').mockResolvedValue(realIssueSchema() as never);
+  });
+
+  it('loads the issue schema, and shows the pull request and the commit count', async () => {
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      taskNode({
+      issueNode({
         pullRequest: { title: 'Add the review status', url: 'https://example.com/pr/7' },
         commits: [
           { title: 'abc123', url: 'https://example.com/c/abc123' },
@@ -329,24 +403,69 @@ describe('TaskSchemaForm — delivery links', () => {
         ]
       })
     );
-    const { container } = render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
+    const { container } = render(IssueSchemaForm, { props: { nodeId: 'issue-1' } });
     await openForm(container);
 
     await waitFor(() => expect(screen.getByText('Add the review status')).toBeTruthy());
     expect(screen.getByText('2 items')).toBeTruthy();
+    expect(backendAdapter.getSchema).toHaveBeenCalledWith('issue');
   });
 
-  it('counts the delivery links in the completion badge', async () => {
+  it('counts the delivery links in the completion badge, out of 7 core fields', async () => {
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
-      taskNode({
+      issueNode({
         status: 'open',
         pullRequest: { title: 'PR', url: 'https://example.com/pr/1' },
         commits: [{ title: 'abc', url: 'https://example.com/c/abc' }]
       })
     );
-    render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
+    render(IssueSchemaForm, { props: { nodeId: 'issue-1' } });
 
     await waitFor(() => expect(screen.getByText('3/7 fields')).toBeTruthy());
+  });
+
+  it('shows an issue status by the label the issue schema gives it', async () => {
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
+      issueNode({ status: 'changes_requested' })
+    );
+    render(IssueSchemaForm, { props: { nodeId: 'issue-1' } });
+
+    // In the collapsed header's badge, and in the status control once it renders.
+    await waitFor(() =>
+      expect(screen.getAllByText('Changes Requested').length).toBeGreaterThanOrEqual(1)
+    );
+    expect(screen.queryByText('changes_requested')).toBeNull();
+  });
+
+  it('writes an inherited field through updateIssueNode, never a task\'s update', async () => {
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(issueNode());
+    const { container } = render(IssueSchemaForm, { props: { nodeId: 'issue-1' } });
+    await openForm(container);
+
+    await waitFor(() => expect(screen.getByLabelText('Due Date')).toBeTruthy());
+    await fireEvent.click(screen.getByLabelText('Due Date'));
+    const day = await waitFor(() => {
+      const cell = document.querySelector('[data-bits-day]:not([data-outside-month])');
+      expect(cell).toBeTruthy();
+      return cell as Element;
+    });
+    await fireEvent.click(day);
+
+    await waitFor(() => expect(updateIssueNodeSpy).toHaveBeenCalled());
+    const [nodeId, update, source] = updateIssueNodeSpy.mock.calls[0];
+    expect(nodeId).toBe('issue-1');
+    expect(Object.keys(update)).toEqual(['dueDate']);
+    expect(source).toEqual({ type: 'viewer', viewerId: 'issue-schema-form' });
+    expect(updateTaskNodeSpy).not.toHaveBeenCalled();
+    expect(updateNodeSpy).not.toHaveBeenCalled();
+  });
+
+  it('renders nothing for a plain task', async () => {
+    vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(taskNode());
+    const { container } = render(IssueSchemaForm, { props: { nodeId: 'task-1' } });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container.querySelector('button')).toBeNull();
   });
 });
 
@@ -451,8 +570,8 @@ describe('TaskSchemaForm — single-valued relationships as fields', () => {
 
     render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
 
-    // taskNode() fills status only (1/7 core); +1 filled assignee of 2 promoted.
-    await waitFor(() => expect(screen.getByText('2/9 fields')).toBeTruthy());
+    // taskNode() fills status only (1/5 core); +1 filled assignee of 2 promoted.
+    await waitFor(() => expect(screen.getByText('2/7 fields')).toBeTruthy());
   });
 
   it('fails open (shows the trigger) when the relationship check errors', async () => {
@@ -466,14 +585,14 @@ describe('TaskSchemaForm — single-valued relationships as fields', () => {
 });
 
 describe('TaskSchemaForm — field completion badge', () => {
-  it('counts filled core fields out of 7', async () => {
+  it('counts filled core fields out of 5', async () => {
     loadNodeRelationshipsView.mockResolvedValue({ nodeType: 'task', groups: [] });
     vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(
       taskNode({ status: 'open', priority: 'high', dueDate: '2026-12-31' })
     );
     render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
 
-    await waitFor(() => expect(screen.getByText('3/7 fields')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('3/5 fields')).toBeTruthy());
   });
 
   it('includes user-defined schema fields in the total', async () => {
@@ -492,7 +611,7 @@ describe('TaskSchemaForm — field completion badge', () => {
 
     render(TaskSchemaForm, { props: { nodeId: 'task-1' } });
 
-    await waitFor(() => expect(screen.getByText('1/8 fields')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('1/6 fields')).toBeTruthy());
   });
 });
 

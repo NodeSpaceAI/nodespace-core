@@ -14,6 +14,8 @@
   import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
   import { resolveFieldValue } from '$lib/components/schema/schema-field-resolution';
   import { linkFieldText } from '$lib/utils/link-values';
+  import { enumValueLabel, getEnumValues } from '$lib/utils/schema-enum-values';
+  import { declaredField } from '$lib/types/core-node-types';
   import { TableRow as UiTableRow, TableCell } from '$lib/components/ui/table';
 
   let {
@@ -73,6 +75,14 @@
         const match = allValues.find((ev) => ev.value === strVal);
         if (match) {
           map.set(col.field, match.label);
+          continue;
+        }
+        // A row of a type that extends the table's may hold a value its own
+        // type added to the field (an issue's `changes_requested` in a table
+        // of tasks). It is shown by the label its own type gives it.
+        const ownField = declaredField(node.nodeType, col.field);
+        if (ownField && getEnumValues(ownField).some((ev) => ev.value === strVal)) {
+          map.set(col.field, enumValueLabel(ownField, strVal) ?? strVal);
           continue;
         }
       }

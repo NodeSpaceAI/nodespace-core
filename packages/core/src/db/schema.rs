@@ -87,6 +87,9 @@ CREATE INDEX IF NOT EXISTS idx_task_priority ON node (json_extract(properties, '
 -- for reads under SQLite's leftmost-prefix rule, but is kept: a single-column
 -- index is cheaper to maintain for the common status-only filter.
 CREATE INDEX IF NOT EXISTS idx_task_status_due_date ON node (json_extract(properties, '$.task.status'), json_extract(properties, '$.task.due_date')) WHERE json_extract(properties, '$.task.status') IS NOT NULL;
+-- An issue declares `status` again to add its own values (ADR-098), so an
+-- issue's status is stored under `issue`, not `task`.
+CREATE INDEX IF NOT EXISTS idx_issue_status ON node (json_extract(properties, '$.issue.status')) WHERE json_extract(properties, '$.issue.status') IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_project_status ON node (json_extract(properties, '$.project.status')) WHERE json_extract(properties, '$.project.status') IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_project_priority ON node (json_extract(properties, '$.project.priority')) WHERE json_extract(properties, '$.project.priority') IS NOT NULL;
 

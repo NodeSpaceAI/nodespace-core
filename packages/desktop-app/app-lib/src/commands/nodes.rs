@@ -6,9 +6,10 @@
 use crate::types::{
     node_to_typed_value as types_node_to_typed_value,
     nodes_to_typed_values as types_nodes_to_typed_values, CollectionNodeUpdate,
-    DatabaseSettingsNodeUpdate, DecisionNodeUpdate, DeleteResult, Node, NodeQuery, NodeReference,
-    NodeUpdate, PersonNodeUpdate, PlanNodeUpdate, PlayNodeUpdate, Priority, ProjectNodeUpdate,
-    QueryNodeUpdate, SkillNodeUpdate, SpecNodeUpdate, TaskNodeUpdate,
+    DatabaseSettingsNodeUpdate, DecisionNodeUpdate, DeleteResult, IssueNodeUpdate, Node, NodeQuery,
+    NodeReference, NodeUpdate, PersonNodeUpdate, PlanNodeUpdate, PlayNodeUpdate, Priority,
+    ProjectNodeUpdate, QueryNodeUpdate, SkillNodeUpdate, SoftwareProjectNodeUpdate, SpecNodeUpdate,
+    TaskNodeUpdate,
 };
 use chrono::{DateTime, Utc};
 use nodespace_proto::nodespace::{
@@ -17,12 +18,12 @@ use nodespace_proto::nodespace::{
     FindDuplicateRequest, GetChildrenRequest, GetChildrenTreeRequest, GetNodeRelationshipsRequest,
     GetNodeRequest, GetRelatedNodesRequest, GetSchemaDefinitionRequest, MentionAutocompleteRequest,
     MentionTargetRequest, MoveChildrenToParentRequest, MoveNodeRequest, NodeData, NodeResponse,
-    NodeSortOrder, OptionalJsonClear, OptionalStringClear, OptionalTimestampClear,
-    QueryNodesSimpleRequest, ReorderNodeRequest, UpdateCollectionNodeRequest,
-    UpdateDatabaseSettingsNodeRequest, UpdateDecisionNodeRequest, UpdateNodeRequest,
-    UpdatePersonNodeRequest, UpdatePlanNodeRequest, UpdatePlayNodeRequest,
-    UpdateProjectNodeRequest, UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
-    UpdateSkillNodeRequest, UpdateSpecNodeRequest, UpdateTaskNodeRequest,
+    NodeSortOrder, OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
+    ReorderNodeRequest, UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest,
+    UpdateDecisionNodeRequest, UpdateIssueNodeRequest, UpdateNodeRequest, UpdatePersonNodeRequest,
+    UpdatePlanNodeRequest, UpdatePlayNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
+    UpdateRelationshipPropertiesRequest, UpdateSkillNodeRequest, UpdateSoftwareProjectNodeRequest,
+    UpdateSpecNodeRequest, UpdateTaskNodeRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -945,6 +946,9 @@ pub async fn query_nodes_simple(
     let mut c = client.client().await;
     let resp = c
         .query_nodes_simple(Request::new(QueryNodesSimpleRequest {
+            // The app keeps one copy of each node in its store, whichever
+            // view loaded it, so it takes every node at its own scope.
+            own_scope: true,
             include_archived: false,
             id: query.id,
             mentioned_by: query.mentioned_by,
@@ -1007,6 +1011,9 @@ pub async fn execute_query(
             filters_json: request.filters_json,
             sorting_json: request.sorting_json,
             limit: request.limit,
+            // As for `query_nodes_simple`: the store's copy of a node is
+            // never a projection of it.
+            own_scope: true,
         }))
         .await
         .map_err(status_to_command_error)?;
@@ -1039,6 +1046,7 @@ pub async fn count_query(
             filters_json: request.filters_json,
             sorting_json: request.sorting_json,
             limit: request.limit,
+            own_scope: false,
         }))
         .await
         .map_err(status_to_command_error)?;
@@ -1196,26 +1204,6 @@ fn timestamp_clear(value: Option<Option<String>>) -> Option<OptionalTimestampCle
     })
 }
 
-/// [`string_clear`] for a structured field (a link, a list of links), which
-/// travels JSON encoded.
-fn json_clear<T: Serialize>(
-    value: Option<Option<T>>,
-    field: &str,
-) -> Result<Option<OptionalJsonClear>, CommandError> {
-    value
-        .map(|opt| match opt {
-            None => Ok(OptionalJsonClear {
-                clear: true,
-                value_json: String::new(),
-            }),
-            Some(value) => Ok(OptionalJsonClear {
-                clear: false,
-                value_json: typed_update_json(&value, field)?,
-            }),
-        })
-        .transpose()
-}
-
 /// Encode a typed update for a request that carries it as JSON; the daemon
 /// decodes the same struct.
 fn typed_update_json<T: Serialize>(update: &T, node_type: &str) -> Result<String, CommandError> {
@@ -1229,7 +1217,7 @@ fn typed_update_json<T: Serialize>(update: &T, node_type: &str) -> Result<String
 }
 
 /// Update a task node's core fields (status, priority, due/started/completed
-/// dates, pull request, commits).
+/// dates).
 #[tauri::command]
 pub async fn update_task_node(
     client: State<'_, GrpcClient>,
@@ -1246,11 +1234,33 @@ pub async fn update_task_node(
         due_date: timestamp_clear(update.due_date),
         started_at: timestamp_clear(update.started_at),
         completed_at: timestamp_clear(update.completed_at),
-        pull_request: json_clear(update.pull_request, "pull_request")?,
-        commits: json_clear(update.commits, "commits")?,
     };
     let resp = c
         .update_task_node(Request::new(req))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let node = proto_node_response_to_node(resp.into_inner())?;
+    node_to_typed_value(node)
+}
+
+/// Update an issue's core fields: a task's, with the issue's statuses, and
+/// its pull request and commits.
+#[tauri::command]
+pub async fn update_issue_node(
+    client: State<'_, GrpcClient>,
+    id: String,
+    version: i64,
+    update: IssueNodeUpdate,
+) -> Result<Value, CommandError> {
+    let mut c = client.echo_suppressed_client().await;
+    let req = UpdateIssueNodeRequest {
+        node_id: id,
+        version,
+        update_json: typed_update_json(&update, "issue")?,
+    };
+    let resp = c
+        .update_issue_node(Request::new(req))
         .await
         .map_err(status_to_command_error)?;
 
@@ -1283,8 +1293,7 @@ pub async fn update_person_node(
     node_to_typed_value(node)
 }
 
-/// Update a project node's core fields (status, priority, start/end dates,
-/// repository).
+/// Update a project node's core fields (status, priority, start/end dates).
 #[tauri::command]
 pub async fn update_project_node(
     client: State<'_, GrpcClient>,
@@ -1300,11 +1309,33 @@ pub async fn update_project_node(
         priority: priority_clear(update.priority),
         start_date: timestamp_clear(update.start_date),
         end_date: timestamp_clear(update.end_date),
-        repository: json_clear(update.repository, "repository")?,
-        checkout_path: string_clear(update.checkout_path),
     };
     let resp = c
         .update_project_node(Request::new(req))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let node = proto_node_response_to_node(resp.into_inner())?;
+    node_to_typed_value(node)
+}
+
+/// Update a software project's core fields: a project's, its repository and
+/// its checkout folder on this machine.
+#[tauri::command]
+pub async fn update_software_project_node(
+    client: State<'_, GrpcClient>,
+    id: String,
+    version: i64,
+    update: SoftwareProjectNodeUpdate,
+) -> Result<Value, CommandError> {
+    let mut c = client.echo_suppressed_client().await;
+    let req = UpdateSoftwareProjectNodeRequest {
+        node_id: id,
+        version,
+        update_json: typed_update_json(&update, "software-project")?,
+    };
+    let resp = c
+        .update_software_project_node(Request::new(req))
         .await
         .map_err(status_to_command_error)?;
 

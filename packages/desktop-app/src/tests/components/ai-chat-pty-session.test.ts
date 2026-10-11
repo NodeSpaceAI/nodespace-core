@@ -127,7 +127,7 @@ describe('AiChatPtySession', () => {
   describe('launching for a project', () => {
     const project = (fields: Record<string, unknown> = {}) => ({
       id: 'p1',
-      nodeType: 'project',
+      nodeType: 'software-project',
       content: 'Widgets',
       title: 'Widgets',
       version: 1,
@@ -152,7 +152,8 @@ describe('AiChatPtySession', () => {
       const view = render(AiChatPtySession, { props: { nodeId: 'chat-1' } });
       const select = (await view.findByLabelText('Project')) as HTMLSelectElement;
       await vi.waitFor(() => expect(select.options.length).toBe(projects.length + 1));
-      expect(mockQueryNodes).toHaveBeenCalledWith({ nodeType: 'project' });
+      // Only a software project has a folder a session runs in.
+      expect(mockQueryNodes).toHaveBeenCalledWith({ nodeType: 'software-project' });
       return { ...view, select };
     }
 

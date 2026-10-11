@@ -140,21 +140,46 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     expect(cleared.priority == null).toBe(true);
     expect(cleared.status).toBe('in_progress');
 
-    // The delivery links: a link and a list of links, each cleared by null.
+  });
+
+  it('create → typed issue update → read back carries the task fields and the issue\'s own', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({ id, nodeType: 'issue', content: 'Contract Issue' });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { status?: string }).status).toBe('open');
+
+    // An inherited field, one of the issue's own statuses, and the delivery
+    // links: a link and a list of links.
     const pullRequest = { title: 'Add review status', url: 'https://example.com/pr/1' };
     const commits = [{ title: 'abc123', url: 'https://example.com/c/abc123' }];
-    const delivered = await h.adapter.updateTaskNode(id, cleared.version, {
-      status: 'in_review',
+    const delivered = await h.adapter.updateIssueNode(id, created!.version, {
+      status: 'changes_requested',
+      priority: 'high',
       pullRequest,
       commits,
     });
-    expect(delivered.status).toBe('in_review');
+    expect(delivered.nodeType).toBe('issue');
+    expect(delivered.status).toBe('changes_requested');
+    expect(delivered.priority).toBe('high');
     expect(delivered.pullRequest).toEqual(pullRequest);
     expect(delivered.commits).toEqual(commits);
-    const undelivered = await h.adapter.updateTaskNode(id, delivered.version, {
+    expect(delivered.properties).toEqual({});
+
+    // A fresh read agrees: the write is durable.
+    const reread = (await h.adapter.getNode(id)) as unknown as {
+      status?: string;
+      pullRequest?: unknown;
+    };
+    expect(reread.status).toBe('changes_requested');
+    expect(reread.pullRequest).toEqual(pullRequest);
+
+    // null clears each link.
+    const undelivered = await h.adapter.updateIssueNode(id, delivered.version, {
+      status: 'ready_to_merge',
       pullRequest: null,
       commits: null,
     });
+    expect(undelivered.status).toBe('ready_to_merge');
     expect(undelivered.pullRequest == null).toBe(true);
     expect(undelivered.commits == null).toBe(true);
   });
@@ -207,12 +232,37 @@ describe('Adapter contract: live round-trip (HttpAdapter → dev-proxy → daemo
     expect(updated.startDate).toBe('2026-03-01');
     expect(updated.properties).toEqual({});
 
-    // A link field is set whole and null clears it.
+  });
+
+  it('create → typed software-project update → read back carries the project fields and its own', async () => {
+    const id = crypto.randomUUID();
+    await h.adapter.createNode({ id, nodeType: 'software-project', content: 'Launch' });
+    const created = await h.adapter.getNode(id);
+    expect((created as unknown as { status?: string }).status).toBe('planning');
+
+    // An inherited field, a link set whole, and the checkout folder.
     const repository = { title: 'nodespace-core', url: 'https://example.com/nodespace-core' };
-    const linked = await h.adapter.updateProjectNode(id, updated.version, { repository });
+    const linked = await h.adapter.updateSoftwareProjectNode(id, created!.version, {
+      status: 'active',
+      startDate: '2026-03-01T09:00:00Z',
+      repository,
+      checkoutPath: '/work/nodespace-core',
+    });
+    expect(linked.nodeType).toBe('software-project');
+    expect(linked.status).toBe('active');
+    expect(linked.startDate).toBe('2026-03-01');
     expect(linked.repository).toEqual(repository);
-    const unlinked = await h.adapter.updateProjectNode(id, linked.version, { repository: null });
+    expect(linked.checkoutPath).toBe('/work/nodespace-core');
+    expect(linked.properties).toEqual({});
+
+    // null clears each.
+    const unlinked = await h.adapter.updateSoftwareProjectNode(id, linked.version, {
+      repository: null,
+      checkoutPath: null,
+    });
     expect(unlinked.repository).toBeUndefined();
+    expect(unlinked.checkoutPath).toBeUndefined();
+    expect(unlinked.status).toBe('active');
   });
 
   it('create → typed spec update → read back carries typed fields', async () => {

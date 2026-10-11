@@ -398,7 +398,7 @@ mod tests {
         insert(&conn, &shipped("spec")).await;
 
         // A field whose type changed is a change too.
-        let mut project = shipped("project");
+        let mut project = shipped("software-project");
         let repository = project
             .fields
             .iter_mut()
@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(
             find_core_type_mismatches(&conn).await.unwrap(),
             [CoreTypeMismatch {
-                type_id: "project".to_string(),
+                type_id: "software-project".to_string(),
                 difference: CoreTypeDifference::Fields {
                     missing: vec![],
                     unexpected: vec![],
@@ -463,13 +463,12 @@ mod tests {
             "backlog".to_string(),
             "Backlog".to_string(),
         )]);
-        // `priority` and the links are the user's to remove.
+        // `priority` is the user's to remove.
         assert_eq!(
             shipped("task").get_field("priority").unwrap().protection,
             SchemaProtectionLevel::User
         );
-        task.fields
-            .retain(|f| !["priority", "pull_request", "commits"].contains(&f.name.as_str()));
+        task.fields.retain(|f| f.name != "priority");
         insert(&conn, &task).await;
 
         assert!(find_core_type_mismatches(&conn).await.unwrap().is_empty());

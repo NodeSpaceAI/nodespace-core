@@ -33,12 +33,14 @@ import type {
   CollectionNodeUpdate,
   DatabaseSettingsNodeUpdate,
   DecisionNodeUpdate,
+  IssueNodeUpdate,
   PersonNodeUpdate,
   PlanNodeUpdate,
   PlayNodeUpdate,
   ProjectNodeUpdate,
   QueryNodeUpdate,
   SkillNodeUpdate,
+  SoftwareProjectNodeUpdate,
   SpecNodeUpdate,
   TaskNodeUpdate
 } from '$lib/types';
@@ -815,8 +817,10 @@ interface Subscription {
 /** Core node types with typed fields and a typed backend update. */
 export type TypedNodeType =
   | 'task'
+  | 'issue'
   | 'person'
   | 'project'
+  | 'software-project'
   | 'collection'
   | 'spec'
   | 'plan'
@@ -855,10 +859,18 @@ const TYPED_UPDATERS: Record<
 > = {
   task: (nodeId, version, payload) =>
     backendAdapter.updateTaskNode(nodeId, version, payload as TaskNodeUpdate),
+  issue: (nodeId, version, payload) =>
+    backendAdapter.updateIssueNode(nodeId, version, payload as IssueNodeUpdate),
   person: (nodeId, version, payload) =>
     backendAdapter.updatePersonNode(nodeId, version, payload as PersonNodeUpdate),
   project: (nodeId, version, payload) =>
     backendAdapter.updateProjectNode(nodeId, version, payload as ProjectNodeUpdate),
+  'software-project': (nodeId, version, payload) =>
+    backendAdapter.updateSoftwareProjectNode(
+      nodeId,
+      version,
+      payload as SoftwareProjectNodeUpdate
+    ),
   collection: (nodeId, version, payload) =>
     backendAdapter.updateCollectionNode(nodeId, version, payload as CollectionNodeUpdate),
   spec: (nodeId, version, payload) =>
@@ -3656,6 +3668,18 @@ export class SharedNodeStore {
   }
 
   /**
+   * Update an issue's typed fields: a task's, with the issue's statuses, and
+   * its pullRequest and commits. See `updateTypedNode()` for the write path.
+   */
+  updateIssueNode(
+    nodeId: string,
+    update: import('$lib/types').IssueNodeUpdate,
+    source: UpdateSource
+  ): void {
+    this.updateTypedNode(nodeId, 'issue', { ...update }, source);
+  }
+
+  /**
    * Update a person node's typed fields (firstName, lastName, email).
    * See `updateTypedNode()` for the write path.
    */
@@ -3677,6 +3701,18 @@ export class SharedNodeStore {
     source: UpdateSource
   ): void {
     this.updateTypedNode(nodeId, 'project', { ...update }, source);
+  }
+
+  /**
+   * Update a software project's typed fields: a project's, its repository and
+   * its checkoutPath. See `updateTypedNode()` for the write path.
+   */
+  updateSoftwareProjectNode(
+    nodeId: string,
+    update: import('$lib/types').SoftwareProjectNodeUpdate,
+    source: UpdateSource
+  ): void {
+    this.updateTypedNode(nodeId, 'software-project', { ...update }, source);
   }
 
   /**

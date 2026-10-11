@@ -5684,7 +5684,16 @@ impl GraphToolExecutor {
         // exists to fail with an actionable message naming the legal values
         // instead of surfacing a generic update error, and to reject before
         // the node fetch below.
-        let valid_statuses = self.valid_task_statuses(&ns).await?;
+        let mut valid_statuses = self.valid_task_statuses(&ns).await?;
+        if !valid_statuses.iter().any(|v| v == &params.status) {
+            // A type that extends `task` can declare more statuses than a
+            // task has (an issue's `changes_requested`), so a value a task
+            // does not have is held to the node's own type before it is
+            // refused.
+            if let Some(own) = self.subtype_statuses(&ns, &node_id_arg(&params.id)).await? {
+                valid_statuses = own;
+            }
+        }
         if !valid_statuses.iter().any(|v| v == &params.status) {
             return Err(ToolError::InvalidArguments {
                 tool: "update_task_status".into(),
@@ -6467,6 +6476,49 @@ impl GraphToolExecutor {
         schema.get_enum_value_strings("status").ok_or_else(|| {
             ToolError::ExecutionFailed("Schema 'task' declares no enum field 'status'".to_string())
         })
+    }
+
+    /// The `status` vocabulary of the node `id`, when its type extends `task`
+    /// and so may declare statuses a task does not have. `None` for a plain
+    /// task, a node of another type, and a node that does not exist: the
+    /// write itself reports those.
+    async fn subtype_statuses(
+        &self,
+        ns: &NodeService,
+        id: &str,
+    ) -> Result<Option<Vec<String>>, ToolError> {
+        use nodespace_core::models::CoreNodeType;
+
+        let failed = |e: nodespace_core::services::NodeServiceError| {
+            ToolError::ExecutionFailed(format!("Failed to read the status values of {id}: {e}"))
+        };
+        let Some(node) = ns.get_node(id).await.map_err(failed)? else {
+            return Ok(None);
+        };
+        if CoreNodeType::Task.is_exactly(&node.node_type)
+            || !ns
+                .type_is_a(&node.node_type, CoreNodeType::Task)
+                .await
+                .map_err(failed)?
+        {
+            return Ok(None);
+        }
+        let (fields, _, _) = ns
+            .resolve_field_owners(&node.node_type)
+            .await
+            .map_err(failed)?;
+        Ok(fields
+            .iter()
+            .find(|field| field.name == "status")
+            .map(|field| {
+                field
+                    .core_values
+                    .iter()
+                    .flatten()
+                    .chain(field.user_values.iter().flatten())
+                    .map(|value| value.value.clone())
+                    .collect()
+            }))
     }
 
     /// Read the current embedding service from the shared handle.

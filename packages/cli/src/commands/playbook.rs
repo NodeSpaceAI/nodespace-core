@@ -145,6 +145,7 @@ fn play_line(play: &Value, lifecycle: &str) -> String {
 async fn list(client: &mut NodeClient, args: PlaybookListArgs, json: bool) -> Result<()> {
     let response = client
         .query_nodes_simple(QueryNodesSimpleRequest {
+            own_scope: false,
             include_archived: args.include_archived,
             id: None,
             mentioned_by: None,

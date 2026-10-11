@@ -36,6 +36,7 @@ mod database_settings;
 mod decision;
 mod helpers;
 mod incompatible_database;
+mod issue;
 mod node;
 mod person;
 mod plan;
@@ -47,6 +48,7 @@ mod relationship_path;
 mod schema;
 mod schema_ops;
 mod skill;
+mod software_project;
 mod spec;
 mod task;
 
@@ -74,6 +76,7 @@ pub use database_settings::{
 pub use decision::{DecisionNode, DecisionNodeUpdate, DecisionStatus};
 pub use helpers::{is_valid_lifecycle_status, LIFECYCLE_STATUSES};
 pub use incompatible_database::IncompatibleDatabase;
+pub use issue::{IssueNode, IssueNodeUpdate, IssueStatus};
 pub use node::{
     DeleteResult, Node, NodeEnvelope, NodeQuery, NodeReference, NodeUpdate, OrderBy,
     ValidationError,
@@ -111,5 +114,6 @@ pub use skill::{
     SkillFields, SkillNode, SkillNodeUpdate, SkillRole, DEFAULT_SKILL_MAX_ITERATIONS,
     SKILL_APPLIES_TO, SKILL_ATTACHED_SKILLS, SKILL_ATTACHED_TO, SKILL_NODE_TYPE,
 };
+pub use software_project::{SoftwareProjectNode, SoftwareProjectNodeUpdate};
 pub use spec::{SpecNode, SpecNodeUpdate, SpecStatus};
 pub use task::{TaskNode, TaskNodeUpdate, TaskStatus};

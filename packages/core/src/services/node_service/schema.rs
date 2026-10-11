@@ -151,6 +151,27 @@ impl NodeService {
             .await
     }
 
+    /// Update an issue's core fields with optimistic concurrency control: the
+    /// ones it inherits from `task`, its `status` (a task's statuses and the
+    /// issue's own), `pull_request` and `commits` (ADR-098). See
+    /// [`Self::update_person_node`] for why this delegates to the generic
+    /// pipeline, which stores each field in the bucket of the schema that
+    /// declares it.
+    pub async fn update_issue_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::IssueNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "IssueNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(id, "issue", expected_version, update.to_properties_patch())
+            .await
+    }
+
     /// Update a person node's core fields (`first_name`, `last_name`, `email`)
     /// with optimistic concurrency control.
     ///
@@ -175,7 +196,7 @@ impl NodeService {
     }
 
     /// Update a project node's core fields (`status`, `priority`,
-    /// `start_date`, `end_date`, `repository`) with optimistic concurrency control. See
+    /// `start_date`, `end_date`) with optimistic concurrency control. See
     /// [`Self::update_person_node`] for why this delegates to the generic
     /// pipeline; `status`/`priority` are validated there against the
     /// schema's declared vocabulary (core + user values).
@@ -193,6 +214,29 @@ impl NodeService {
         self.update_typed_fields(
             id,
             "project",
+            expected_version,
+            update.to_properties_patch(),
+        )
+        .await
+    }
+
+    /// Update a software project's core fields with optimistic concurrency
+    /// control: the ones it inherits from `project`, `repository` and
+    /// `checkout_path` (ADR-098). See [`Self::update_issue_node`].
+    pub async fn update_software_project_node(
+        &self,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::SoftwareProjectNodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "SoftwareProjectNodeUpdate contains no changes",
+            ));
+        }
+        self.update_typed_fields(
+            id,
+            "software-project",
             expected_version,
             update.to_properties_patch(),
         )

@@ -8,11 +8,24 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'priority', wire: 'priority' },
     { storage: 'due_date', wire: 'dueDate', date: true },
     { storage: 'started_at', wire: 'startedAt', date: true },
+    { storage: 'completed_at', wire: 'completedAt', date: true }
+  ],
+  issue: [
+    { storage: 'status', wire: 'status' },
+    { storage: 'priority', wire: 'priority' },
+    { storage: 'due_date', wire: 'dueDate', date: true },
+    { storage: 'started_at', wire: 'startedAt', date: true },
     { storage: 'completed_at', wire: 'completedAt', date: true },
     { storage: 'pull_request', wire: 'pullRequest', structured: 'object' },
     { storage: 'commits', wire: 'commits', structured: 'array' }
   ],
   project: [
+    { storage: 'status', wire: 'status' },
+    { storage: 'priority', wire: 'priority' },
+    { storage: 'start_date', wire: 'startDate', date: true },
+    { storage: 'end_date', wire: 'endDate', date: true }
+  ],
+  'software-project': [
     { storage: 'status', wire: 'status' },
     { storage: 'priority', wire: 'priority' },
     { storage: 'start_date', wire: 'startDate', date: true },
@@ -109,7 +122,9 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
  */
 export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
   task: { status: 'open' },
+  issue: { status: 'open' },
   project: { status: 'planning' },
+  'software-project': { status: 'planning' },
   spec: { specStatus: 'draft' },
   plan: { planStatus: 'draft' },
   decision: { decisionStatus: 'proposed' },

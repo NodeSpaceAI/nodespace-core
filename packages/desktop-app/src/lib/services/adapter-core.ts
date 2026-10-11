@@ -24,6 +24,8 @@ import type {
   DatabaseSettingsNodeUpdate,
   DecisionNode,
   DecisionNodeUpdate,
+  IssueNode,
+  IssueNodeUpdate,
   Node,
   NodeReference,
   NodeWithChildren,
@@ -39,6 +41,8 @@ import type {
   QueryNodeUpdate,
   SkillNode,
   SkillNodeUpdate,
+  SoftwareProjectNode,
+  SoftwareProjectNodeUpdate,
   SpecNode,
   SpecNodeUpdate,
   TaskNode,
@@ -156,8 +160,14 @@ export interface BackendAdapter {
   getNode(id: string): Promise<Node | null>;
   updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node>;
   updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode>;
+  updateIssueNode(id: string, version: number, update: IssueNodeUpdate): Promise<IssueNode>;
   updatePersonNode(id: string, version: number, update: PersonNodeUpdate): Promise<PersonNode>;
   updateProjectNode(id: string, version: number, update: ProjectNodeUpdate): Promise<ProjectNode>;
+  updateSoftwareProjectNode(
+    id: string,
+    version: number,
+    update: SoftwareProjectNodeUpdate
+  ): Promise<SoftwareProjectNode>;
   updateQueryNode(id: string, version: number, update: QueryNodeUpdate): Promise<QueryNode>;
   updatePlayNode(id: string, version: number, update: PlayNodeUpdate): Promise<PlayNode>;
   updateCollectionNode(
@@ -319,27 +329,12 @@ export interface TaskNodeUpdatePatch {
   dueDate: ClearableField<string>;
   startedAt: ClearableField<string>;
   completedAt: ClearableField<string>;
-  pullRequest: OptionalJsonClear | undefined;
-  commits: OptionalJsonClear | undefined;
 }
 
 function clearable(value: string | null | undefined): ClearableField<string> {
   if (value === undefined) return undefined;
   if (value === null) return { clear: true };
   return { clear: false, value };
-}
-
-/**
- * A structured value (a link, a list of links) as the daemon's JSON wrapper
- * (`OptionalJsonClear`): `clear` empties the field, otherwise `valueJson` is the
- * JSON-encoded value. Absent stays absent.
- */
-export type OptionalJsonClear = { clear: boolean; valueJson: string };
-
-function jsonClearable<T>(value: T | null | undefined): OptionalJsonClear | undefined {
-  if (value === undefined) return undefined;
-  if (value === null) return { clear: true, valueJson: '' };
-  return { clear: false, valueJson: JSON.stringify(value) };
 }
 
 /**
@@ -353,9 +348,7 @@ const TYPED_UPDATE_FIELDS = {
     priority: true,
     dueDate: true,
     startedAt: true,
-    completedAt: true,
-    pullRequest: true,
-    commits: true
+    completedAt: true
   } satisfies Record<keyof TaskNodeUpdate, true>,
   person: {
     firstName: true,
@@ -366,9 +359,7 @@ const TYPED_UPDATE_FIELDS = {
     status: true,
     priority: true,
     startDate: true,
-    endDate: true,
-    repository: true,
-    checkoutPath: true
+    endDate: true
   } satisfies Record<keyof ProjectNodeUpdate, true>
 } as const;
 
@@ -405,9 +396,7 @@ export function buildTaskNodeUpdatePatch(update: TaskNodeUpdate): TaskNodeUpdate
     priority: clearable(update.priority),
     dueDate: clearable(update.dueDate),
     startedAt: clearable(update.startedAt),
-    completedAt: clearable(update.completedAt),
-    pullRequest: jsonClearable(update.pullRequest),
-    commits: jsonClearable(update.commits)
+    completedAt: clearable(update.completedAt)
   };
 }
 
@@ -431,8 +420,6 @@ export interface ProjectNodeUpdatePatch {
   priority: ClearableField<string>;
   startDate: ClearableField<string>;
   endDate: ClearableField<string>;
-  repository: OptionalJsonClear | undefined;
-  checkoutPath: ClearableField<string>;
 }
 
 /** `ProjectNodeUpdate` → tri-state wire patch. See `buildTaskNodeUpdatePatch`. */
@@ -442,8 +429,6 @@ export function buildProjectNodeUpdatePatch(update: ProjectNodeUpdate): ProjectN
     priority: clearable(update.priority),
     startDate: clearable(update.startDate),
     endDate: clearable(update.endDate),
-    repository: jsonClearable(update.repository),
-    checkoutPath: clearable(update.checkoutPath),
   };
 }
 
@@ -550,8 +535,10 @@ export const HTTP_ROUTES = {
   updateNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}`,
   deleteNode: (id: string) => `/api/nodes/${encodeURIComponent(id)}`,
   updateTaskNode: (id: string) => `/api/tasks/${encodeURIComponent(id)}`,
+  updateIssueNode: (id: string) => `/api/issues/${encodeURIComponent(id)}`,
   updatePersonNode: (id: string) => `/api/persons/${encodeURIComponent(id)}`,
   updateProjectNode: (id: string) => `/api/projects/${encodeURIComponent(id)}`,
+  updateSoftwareProjectNode: (id: string) => `/api/software-projects/${encodeURIComponent(id)}`,
   updateQueryNode: (id: string) => `/api/queries/${encodeURIComponent(id)}`,
   updatePlayNode: (id: string) => `/api/plays/${encodeURIComponent(id)}`,
   updateCollectionNode: (id: string) => `/api/collections/${encodeURIComponent(id)}`,
@@ -597,8 +584,10 @@ export const HTTP_ROUTE_PATTERNS = {
   updateNode: /^\/api\/nodes\/([^/]+)$/,
   deleteNode: /^\/api\/nodes\/([^/]+)$/,
   updateTaskNode: /^\/api\/tasks\/([^/]+)$/,
+  updateIssueNode: /^\/api\/issues\/([^/]+)$/,
   updatePersonNode: /^\/api\/persons\/([^/]+)$/,
   updateProjectNode: /^\/api\/projects\/([^/]+)$/,
+  updateSoftwareProjectNode: /^\/api\/software-projects\/([^/]+)$/,
   updateQueryNode: /^\/api\/queries\/([^/]+)$/,
   updatePlayNode: /^\/api\/plays\/([^/]+)$/,
   updateCollectionNode: /^\/api\/collections\/([^/]+)$/,

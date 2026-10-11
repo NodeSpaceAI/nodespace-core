@@ -5,9 +5,10 @@
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::{
     node_to_typed_value, CollectionNodeUpdate, DatabaseSettingsNodeUpdate, DecisionNodeUpdate,
-    DecisionStatus, LinkValue, Node, NodeUpdate, PlanNodeUpdate, PlanStatus, Priority,
-    ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate, SkillFields, SkillNodeUpdate,
-    SpecNodeUpdate, SpecStatus, TaskNodeUpdate, TaskStatus,
+    DecisionStatus, IssueNodeUpdate, IssueStatus, LinkValue, Node, NodeUpdate, PlanNodeUpdate,
+    PlanStatus, Priority, ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate, SkillFields,
+    SkillNodeUpdate, SoftwareProjectNodeUpdate, SpecNodeUpdate, SpecStatus, TaskNodeUpdate,
+    TaskStatus,
 };
 use nodespace_core::services::{NodeService, NodeServiceError};
 use serde_json::json;
@@ -476,19 +477,19 @@ fn link(title: &str, url: &str) -> LinkValue {
     }
 }
 
-/// `checkout_path` is the project's folder on this machine: set, read back
+/// `checkout_path` is the software project's folder on this machine: set, read back
 /// typed, cleared, and declared machine-bound.
 #[tokio::test]
-async fn a_project_update_writes_and_clears_its_checkout_path() {
+async fn a_software_project_update_writes_and_clears_its_checkout_path() {
     let (svc, _tmp) = test_service().await;
-    let project = create(&svc, "project", "Apollo", json!({})).await;
+    let project = create(&svc, "software-project", "Apollo", json!({})).await;
     assert!(typed(&svc, &project.id).await.get("checkoutPath").is_none());
 
     let updated = svc
-        .update_project_node(
+        .update_software_project_node(
             &project.id,
             project.version,
-            ProjectNodeUpdate {
+            SoftwareProjectNodeUpdate {
                 checkout_path: Some(Some("/work/apollo".to_string())),
                 ..Default::default()
             },
@@ -496,7 +497,7 @@ async fn a_project_update_writes_and_clears_its_checkout_path() {
         .await
         .expect("setting the checkout path succeeds");
     assert_eq!(
-        updated.properties["project"]["checkout_path"],
+        updated.properties["software-project"]["checkout_path"],
         json!("/work/apollo")
     );
     let wire = typed(&svc, &project.id).await;
@@ -504,67 +505,67 @@ async fn a_project_update_writes_and_clears_its_checkout_path() {
     assert!(wire["properties"].get("checkout_path").is_none());
 
     let cleared = svc
-        .update_project_node(
+        .update_software_project_node(
             &project.id,
             updated.version,
-            ProjectNodeUpdate {
+            SoftwareProjectNodeUpdate {
                 checkout_path: Some(None),
                 ..Default::default()
             },
         )
         .await
         .expect("clearing the checkout path succeeds");
-    assert!(cleared.properties["project"]["checkout_path"].is_null());
+    assert!(cleared.properties["software-project"]["checkout_path"].is_null());
     assert!(typed(&svc, &project.id).await.get("checkoutPath").is_none());
 
     // An absolute path means nothing on another machine: the field stays here.
     let field = nodespace_core::models::core_schemas::get_core_schemas()
         .into_iter()
-        .find(|schema| schema.envelope.id == "project")
+        .find(|schema| schema.envelope.id == "software-project")
         .and_then(|schema| {
             schema
                 .fields
                 .into_iter()
                 .find(|field| field.name == "checkout_path")
         })
-        .expect("project declares checkout_path");
+        .expect("software-project declares checkout_path");
     assert!(field.local_only);
 }
 
 /// `repository` is a link: set, read back typed, and cleared.
 #[tokio::test]
-async fn a_project_update_writes_and_clears_its_repository() {
+async fn a_software_project_update_writes_and_clears_its_repository() {
     let (svc, _tmp) = test_service().await;
-    let project = create(&svc, "project", "Apollo", json!({})).await;
+    let project = create(&svc, "software-project", "Apollo", json!({})).await;
 
     let updated = svc
-        .update_project_node(
+        .update_software_project_node(
             &project.id,
             project.version,
-            ProjectNodeUpdate {
-                repository: Some(Some(link("core", "https://github.com/acme/core"))),
+            SoftwareProjectNodeUpdate {
+                repository: Some(Some(link("core", "https://example.com/acme/core"))),
                 ..Default::default()
             },
         )
         .await
         .expect("setting the repository succeeds");
     assert_eq!(
-        updated.properties["project"]["repository"],
-        json!({ "title": "core", "url": "https://github.com/acme/core" })
+        updated.properties["software-project"]["repository"],
+        json!({ "title": "core", "url": "https://example.com/acme/core" })
     );
     let wire = typed(&svc, &project.id).await;
     assert_eq!(
         wire["repository"],
-        json!({ "title": "core", "url": "https://github.com/acme/core" })
+        json!({ "title": "core", "url": "https://example.com/acme/core" })
     );
     assert!(wire["properties"].get("repository").is_none());
 
     // A value that is not an absolute URL is refused by the shared pipeline.
     let error = svc
-        .update_project_node(
+        .update_software_project_node(
             &project.id,
             updated.version,
-            ProjectNodeUpdate {
+            SoftwareProjectNodeUpdate {
                 repository: Some(Some(link("core", "acme/core"))),
                 ..Default::default()
             },
@@ -575,17 +576,17 @@ async fn a_project_update_writes_and_clears_its_repository() {
     assert!(error.contains("repository"), "{error}");
 
     let cleared = svc
-        .update_project_node(
+        .update_software_project_node(
             &project.id,
             updated.version,
-            ProjectNodeUpdate {
+            SoftwareProjectNodeUpdate {
                 repository: Some(None),
                 ..Default::default()
             },
         )
         .await
         .expect("clearing the repository succeeds");
-    assert!(cleared.properties["project"]["repository"].is_null());
+    assert!(cleared.properties["software-project"]["repository"].is_null());
     assert!(typed(&svc, &project.id).await.get("repository").is_none());
 }
 
@@ -593,19 +594,19 @@ async fn a_project_update_writes_and_clears_its_repository() {
 // task
 // ---------------------------------------------------------------------------
 
-/// A task records where its work landed: one pull request and a list of
+/// An issue records where its work landed: one pull request and a list of
 /// commits, written whole.
 #[tokio::test]
-async fn a_task_update_writes_and_clears_its_links() {
+async fn an_issue_update_writes_and_clears_its_links() {
     let (svc, _tmp) = test_service().await;
-    let task = create(&svc, "task", "Ship it", json!({ "status": "open" })).await;
+    let issue = create(&svc, "issue", "Ship it", json!({ "status": "open" })).await;
 
     let updated = svc
-        .update_task_node(
-            &task.id,
-            task.version,
-            TaskNodeUpdate {
-                status: Some(TaskStatus::InReview),
+        .update_issue_node(
+            &issue.id,
+            issue.version,
+            IssueNodeUpdate {
+                status: Some(IssueStatus::InReview),
                 pull_request: Some(Some(link("PR 7", "https://example.com/pull/7"))),
                 commits: Some(Some(vec![
                     link("abc123", "https://example.com/commit/abc123"),
@@ -616,7 +617,7 @@ async fn a_task_update_writes_and_clears_its_links() {
         )
         .await
         .expect("setting the links succeeds");
-    let wire = typed(&svc, &task.id).await;
+    let wire = typed(&svc, &issue.id).await;
     assert_eq!(wire["status"], "in_review");
     assert_eq!(
         wire["pullRequest"],
@@ -628,10 +629,10 @@ async fn a_task_update_writes_and_clears_its_links() {
 
     // The list is replaced whole, never appended to.
     let replaced = svc
-        .update_task_node(
-            &task.id,
+        .update_issue_node(
+            &issue.id,
             updated.version,
-            TaskNodeUpdate {
+            IssueNodeUpdate {
                 commits: Some(Some(vec![link(
                     "fff000",
                     "https://example.com/commit/fff000",
@@ -642,14 +643,14 @@ async fn a_task_update_writes_and_clears_its_links() {
         .await
         .expect("replacing the commits succeeds");
     assert_eq!(
-        replaced.properties["task"]["commits"],
+        replaced.properties["issue"]["commits"],
         json!([{ "title": "fff000", "url": "https://example.com/commit/fff000" }])
     );
 
     // An item that is not a link is refused, and nothing is written.
     let error = svc
         .update_node(
-            &task.id,
+            &issue.id,
             replaced.version,
             NodeUpdate::default().with_properties(json!({ "commits": ["fff000"] })),
         )
@@ -659,10 +660,10 @@ async fn a_task_update_writes_and_clears_its_links() {
     assert!(error.contains("commits"), "{error}");
 
     let cleared = svc
-        .update_task_node(
-            &task.id,
+        .update_issue_node(
+            &issue.id,
             replaced.version,
-            TaskNodeUpdate {
+            IssueNodeUpdate {
                 pull_request: Some(None),
                 commits: Some(None),
                 ..Default::default()
@@ -670,8 +671,8 @@ async fn a_task_update_writes_and_clears_its_links() {
         )
         .await
         .expect("clearing the links succeeds");
-    assert!(cleared.properties["task"]["pull_request"].is_null());
-    let wire = typed(&svc, &task.id).await;
+    assert!(cleared.properties["issue"]["pull_request"].is_null());
+    let wire = typed(&svc, &issue.id).await;
     assert!(wire.get("pullRequest").is_none());
     assert!(wire.get("commits").is_none());
 }

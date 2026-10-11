@@ -54,11 +54,17 @@ export {
   TaskNodeHelpers
 } from './task-node';
 
+export type { IssueNode, IssueNodeUpdate, IssueStatus } from './issue-node';
+export { isIssueNode, nodeToIssueNode } from './issue-node';
+
 export type { PersonNode, PersonNodeUpdate } from './person-node';
 export { isPersonNode, nodeToPersonNode } from './person-node';
 
 export type { ProjectNode, ProjectNodeUpdate, ProjectStatus } from './project-node';
 export { isProjectNode, nodeToProjectNode } from './project-node';
+
+export type { SoftwareProjectNode, SoftwareProjectNodeUpdate } from './software-project-node';
+export { isSoftwareProjectNode, nodeToSoftwareProjectNode } from './software-project-node';
 
 export type { SpecNode, SpecNodeUpdate, SpecStatus } from './spec-node';
 export { isSpecNode, nodeToSpecNode } from './spec-node';

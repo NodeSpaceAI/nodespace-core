@@ -343,6 +343,7 @@ async fn node_matches(
     narrowed.extend(filters.iter().cloned());
     let response = client
         .execute_query(ExecuteQueryRequest {
+            own_scope: false,
             target_type: node_type.to_string(),
             filters_json: Some(Value::Array(narrowed).to_string()),
             sorting_json: None,

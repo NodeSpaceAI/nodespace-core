@@ -79,3 +79,43 @@ export function enumValueLabel(
   if (!value) return undefined;
   return getEnumValues(field).find((ev) => ev.value === value)?.label || formatEnumFallbackLabel(value);
 }
+
+/**
+ * What a stored enum value reads as on `scopeField`, the field as a type the
+ * node's own type extends declares it.
+ *
+ * A subtype may add values to a field it inherits, each naming the existing
+ * value it maps to (`mapsTo`): an issue's `changes_requested` maps to a
+ * task's `in_progress`. A view of the base type (a board of tasks) shows the
+ * node under the value its own maps to. `ownField` is the field as the
+ * node's own type declares it, which is where the `mapsTo` declarations are.
+ *
+ * Returns the value itself when the scope declares it, the value it maps to
+ * otherwise, and `null` when it maps to nothing the scope declares.
+ *
+ * Mirrors `resolve_value_at_scope` in
+ * `packages/core/src/schema/extends_chain.rs`, which the backend's queries
+ * and rules read through; keep the two in step.
+ */
+export function enumValueAtScope(
+  scopeField: EnumFieldLike,
+  value: string,
+  ownField: EnumFieldLike | null | undefined
+): string | null {
+  const declared = new Set(getEnumValues(scopeField).map((ev) => ev.value));
+  if (declared.has(value)) return value;
+  if (!ownField) return null;
+
+  const own = new Map(getEnumValues(ownField).map((ev) => [ev.value, ev]));
+  const seen = new Set<string>([value]);
+  let current = value;
+  // Each hop reaches a value declared further up; a malformed `mapsTo` cycle
+  // ends on the visited set.
+  for (;;) {
+    const next = own.get(current)?.mapsTo;
+    if (!next || seen.has(next)) return null;
+    if (declared.has(next)) return next;
+    seen.add(next);
+    current = next;
+  }
+}

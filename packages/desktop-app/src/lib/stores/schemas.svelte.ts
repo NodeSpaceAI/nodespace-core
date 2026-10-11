@@ -24,7 +24,9 @@ const log = createLogger('SchemasStore');
 // they are node content primitives, not entity types users browse or filter.
 const SIDENAV_CORE_TYPES = new Set([
   'task',
+  'issue',
   'project',
+  'software-project',
   'spec',
   'plan',
   'decision',

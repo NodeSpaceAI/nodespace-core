@@ -1,7 +1,9 @@
 import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
+import { nodeToIssueNode } from '$lib/types/issue-node';
 import { nodeToPersonNode } from '$lib/types/person-node';
 import { nodeToProjectNode } from '$lib/types/project-node';
+import { nodeToSoftwareProjectNode } from '$lib/types/software-project-node';
 import { nodeToSpecNode } from '$lib/types/spec-node';
 import { nodeToPlanNode } from '$lib/types/plan-node';
 import { nodeToDecisionNode } from '$lib/types/decision-node';
@@ -22,8 +24,10 @@ import type { StructuredShape } from '$lib/types/generated';
 /** The typed wire shape each type with one is converted to, keyed by exact type. */
 const TYPED_WIRE_CONVERTERS: ReadonlyMap<string, (node: Node) => Node> = new Map([
   ['task', (node) => nodeToTaskNode(node) as unknown as Node],
+  ['issue', (node) => nodeToIssueNode(node) as unknown as Node],
   ['person', (node) => nodeToPersonNode(node) as unknown as Node],
   ['project', (node) => nodeToProjectNode(node) as unknown as Node],
+  ['software-project', (node) => nodeToSoftwareProjectNode(node) as unknown as Node],
   ['spec', (node) => nodeToSpecNode(node) as unknown as Node],
   ['plan', (node) => nodeToPlanNode(node) as unknown as Node],
   ['decision', (node) => nodeToDecisionNode(node) as unknown as Node],
@@ -42,7 +46,8 @@ const TYPED_WIRE_CONVERTERS: ReadonlyMap<string, (node: Node) => Node> = new Map
  */
 export function normalizeNodeData(nodeData: Node): Node {
   // Keyed by exact type: a wire shape is never borrowed by a subtype, so a
-  // user-defined `issue extends task` stays the generic node.
+  // user-defined `chore extends task` stays the generic node, and the core
+  // subtype `issue` has a converter of its own.
   const toTyped = TYPED_WIRE_CONVERTERS.get(nodeData.nodeType);
   return toTyped ? toTyped(nodeData) : nodeData;
 }

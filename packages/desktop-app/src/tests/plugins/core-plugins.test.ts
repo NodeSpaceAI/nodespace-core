@@ -13,6 +13,7 @@ import {
   textNodePlugin,
   headerNodePlugin,
   taskNodePlugin,
+  issueNodePlugin,
   dateNodePlugin,
   aiChatNativeNodePlugin,
   aiChatPtyNodePlugin,
@@ -22,6 +23,8 @@ import {
 } from '$lib/plugins/core-plugins';
 import type { NodeViewerComponent, NodeReferenceComponent } from '$lib/plugins/types';
 import { patternSplitter } from '$lib/patterns/splitter';
+import { setTypeResolver } from '$lib/types/core-node-types';
+import type { SchemaField } from '$lib/types/schema-node';
 
 describe('Core Plugins Integration', () => {
   let registry: PluginRegistry;
@@ -126,7 +129,7 @@ describe('Core Plugins Integration', () => {
 
   describe('Core Plugins Collection', () => {
     it('should export all core plugins in corePlugins array', () => {
-      expect(corePlugins).toHaveLength(16); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
+      expect(corePlugins).toHaveLength(17); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
       expect(corePlugins).toContain(textNodePlugin);
       expect(corePlugins).toContain(headerNodePlugin);
       expect(corePlugins).toContain(taskNodePlugin);
@@ -147,7 +150,7 @@ describe('Core Plugins Integration', () => {
     it('should register all core plugins successfully', () => {
       registerCorePlugins(registry);
 
-      expect(registry.getAllPlugins()).toHaveLength(16); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
+      expect(registry.getAllPlugins()).toHaveLength(17); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
 
       // Verify each core plugin is registered
       for (const plugin of corePlugins) {
@@ -162,10 +165,10 @@ describe('Core Plugins Integration', () => {
       // Verify registration statistics through the registry API
       // Note: Logger output is intentionally silenced during tests
       const stats = registry.getStats();
-      expect(stats.pluginsCount).toBe(16); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
+      expect(stats.pluginsCount).toBe(17); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
       expect(stats.slashCommandsCount).toBe(11); // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, horizontal-line: 1, table: 1, query: 0 (no slash command), collection: 0, date: 0, ai-chat-native: 0, ai-chat-pty: 0, person: 0 (entity types are not slash-creatable)
-      expect(stats.viewersCount).toBe(7); // date, task, collection, query, play, ai-chat-native, and ai-chat-pty have custom viewers
-      expect(stats.referencesCount).toBe(16); // all plugins have references
+      expect(stats.viewersCount).toBe(8); // date, task, issue, collection, query, play, ai-chat-native, and ai-chat-pty have custom viewers
+      expect(stats.referencesCount).toBe(17); // all plugins have references
     });
 
     it('should provide correct slash command count', () => {
@@ -400,7 +403,7 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should handle registry clearing', () => {
-      expect(registry.getAllPlugins()).toHaveLength(16); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
+      expect(registry.getAllPlugins()).toHaveLength(17); // text, header, task, issue, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, play, ai-chat-native, ai-chat-pty, person
 
       registry.clear();
 
@@ -410,6 +413,7 @@ describe('Core Plugins Integration', () => {
   });
 
   describe('Task Node extractMetadata', () => {
+    afterEach(() => setTypeResolver(() => undefined));
     it('should extract status from top-level field (TaskNode format)', () => {
       // TaskNode format: status is at top level (from typed APIs like updateTaskNode)
       const node = {
@@ -485,6 +489,77 @@ describe('Core Plugins Integration', () => {
         const metadata = taskNodePlugin.extractMetadata!(node);
         expect(metadata.taskState).toBe(expectedTaskState);
       }
+    });
+
+    it('shows each started issue status as in progress, and an issue is a task row otherwise', () => {
+      // The mapping is the schema's: the issue declares what each of its own
+      // statuses reads as on a task, and a status a user adds is covered too.
+      const status = (extra: Array<{ value: string; label: string; mapsTo: string }>) =>
+        [
+          {
+            name: 'status',
+            friendlyName: 'Status',
+            type: 'enum',
+            protection: 'core',
+            indexed: true,
+            coreValues: [
+              { value: 'open', label: 'Open' },
+              { value: 'in_progress', label: 'In Progress' },
+              { value: 'in_review', label: 'In Review' },
+              { value: 'done', label: 'Done' },
+              { value: 'cancelled', label: 'Cancelled' },
+              ...extra
+            ]
+          }
+        ] satisfies SchemaField[];
+      const declared: Record<string, { extends?: string; fields: SchemaField[] }> = {
+        task: { fields: status([]) },
+        issue: {
+          extends: 'task',
+          fields: status([
+            { value: 'changes_requested', label: 'Changes Requested', mapsTo: 'in_progress' },
+            { value: 'ready_to_merge', label: 'Ready to Merge', mapsTo: 'in_review' },
+            { value: 'qa', label: 'QA', mapsTo: 'ready_to_merge' },
+            { value: 'shelved', label: 'Shelved', mapsTo: 'cancelled' }
+          ])
+        }
+      };
+      setTypeResolver((id) => declared[id]);
+      const states = [
+        ['qa', 'inProgress'],
+        ['shelved', 'completed'],
+        ['open', 'pending'],
+        ['in_progress', 'inProgress'],
+        ['in_review', 'inProgress'],
+        ['changes_requested', 'inProgress'],
+        ['ready_to_merge', 'inProgress'],
+        ['done', 'completed'],
+        ['cancelled', 'completed']
+      ];
+      for (const [status, expected] of states) {
+        const metadata = issueNodePlugin.extractMetadata!({
+          nodeType: 'issue',
+          status,
+          properties: { 'custom:estimate': 3 }
+        });
+        expect(metadata.taskState, status).toBe(expected);
+        expect(metadata.status).toBe(status);
+        expect(metadata['custom:estimate']).toBe(3);
+      }
+      // A click on the icon writes the status a task's click writes.
+      for (const state of ['pending', 'inProgress', 'completed']) {
+        expect(issueNodePlugin.mapStateToSchema!(state, 'status')).toBe(
+          taskNodePlugin.mapStateToSchema!(state, 'status')
+        );
+      }
+      // A plain task has none of an issue's statuses: one it does not declare
+      // shows as not started.
+      expect(
+        taskNodePlugin.extractMetadata!({ nodeType: 'task', status: 'changes_requested' }).taskState
+      ).toBe('pending');
+      // Created from the type's view or by an agent, never typed mid-outline.
+      expect(issueNodePlugin.config.slashCommands).toHaveLength(0);
+      expect(issueNodePlugin.node && issueNodePlugin.viewer && issueNodePlugin.schemaForm).toBeTruthy();
     });
 
     it('should handle missing properties gracefully', () => {

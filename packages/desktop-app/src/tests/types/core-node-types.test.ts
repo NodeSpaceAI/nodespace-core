@@ -9,6 +9,7 @@ import {
   isExactly,
   isOwnedByParentViewer,
   nearestCoreType,
+  declaredField,
   setTypeResolver,
   structuralRules,
   typeChain,
@@ -26,10 +27,10 @@ describe('type helpers', () => {
   it('recognizes exactly the shipped types as core', () => {
     expect(isCoreNodeType('task')).toBe(true);
     expect(isCoreNodeType('ai-chat')).toBe(true);
-    expect(isCoreNodeType('issue')).toBe(false);
+    expect(isCoreNodeType('chore')).toBe(false);
     expect(isCoreNodeType(undefined)).toBe(false);
     expect(coreTypeEntry('collection')?.mentionable).toBe(false);
-    expect(coreTypeEntry('issue')).toBeUndefined();
+    expect(coreTypeEntry('chore')).toBeUndefined();
   });
 
   it('answers isA for a core type through the static registry', () => {
@@ -39,16 +40,71 @@ describe('type helpers', () => {
     expect(isA(null, 'task')).toBe(false);
   });
 
+  it('resolves the core subtypes of task and project with no schema loaded', () => {
+    expect(isCoreNodeType('issue')).toBe(true);
+    expect(isCoreNodeType('software-project')).toBe(true);
+    expect(typeChain('issue')).toEqual(['issue', 'task']);
+    expect(typeChain('software-project')).toEqual(['software-project', 'project']);
+    // A base type's rule reaches the subtype, and never the other way round.
+    expect(isA('issue', 'task')).toBe(true);
+    expect(isA('task', 'issue')).toBe(false);
+    expect(isA('software-project', 'project')).toBe(true);
+    expect(isA('project', 'software-project')).toBe(false);
+    expect(isA('issue', 'project')).toBe(false);
+    // A wire shape and a typed update are each type's own.
+    expect(isExactly('issue', 'task')).toBe(false);
+    expect(isExactly('issue', 'issue')).toBe(true);
+    for (const id of ['issue', 'software-project']) {
+      const entry = coreTypeEntry(id);
+      expect(entry?.abstract).toBe(false);
+      expect(entry?.typedUpdate).toBe(true);
+      expect(entry?.category).toBe('flat');
+    }
+    expect(coreTypeEntry('issue')?.parent).toBe('task');
+    expect(coreTypeEntry('software-project')?.parent).toBe('project');
+    // A user type that extends a core subtype resolves to it first.
+    setTypeResolver((id) => (id === 'bug' ? { extends: 'issue' } : undefined));
+    expect(typeChain('bug')).toEqual(['bug', 'issue', 'task']);
+    expect(nearestCoreType('bug')).toBe('issue');
+  });
+
   it('resolves a user-defined subtype through the loaded schemas', () => {
-    const parents: Record<string, string> = { issue: 'task', bug: 'issue' };
+    const parents: Record<string, string> = { chore: 'task', bug: 'chore' };
     setTypeResolver((id) => declared(parents[id]));
 
-    expect(typeChain('bug')).toEqual(['bug', 'issue', 'task']);
+    expect(typeChain('bug')).toEqual(['bug', 'chore', 'task']);
     expect(isA('bug', 'task')).toBe(true);
-    expect(isA('issue', 'task')).toBe(true);
-    expect(isA('issue', 'bug')).toBe(false);
-    expect(isA('issue', 'text')).toBe(false);
+    expect(isA('chore', 'task')).toBe(true);
+    expect(isA('chore', 'bug')).toBe(false);
+    expect(isA('chore', 'text')).toBe(false);
     expect(nearestCoreType('bug')).toBe('task');
+  });
+
+  it('finds a field in the nearest schema of the chain that declares it', () => {
+    const status = (label: string) => ({
+      name: 'status',
+      friendlyName: label,
+      type: 'enum' as const,
+      protection: 'core' as const,
+      indexed: true
+    });
+    const schemas: Record<string, TypeDeclaration> = {
+      task: { fields: [status('task')] },
+      issue: { extends: 'task', fields: [status('issue')] },
+      // Extends issue and declares nothing: it has the issue's declaration.
+      bug: { extends: 'issue', fields: [] },
+      chore: { extends: 'task' }
+    };
+    setTypeResolver((id) => schemas[id]);
+
+    expect(declaredField('issue', 'status')?.friendlyName).toBe('issue');
+    expect(declaredField('bug', 'status')?.friendlyName).toBe('issue');
+    expect(declaredField('chore', 'status')?.friendlyName).toBe('task');
+    expect(declaredField('task', 'status')?.friendlyName).toBe('task');
+    expect(declaredField('bug', 'severity')).toBeUndefined();
+    // Before the schemas load there is nothing to find.
+    setTypeResolver(() => undefined);
+    expect(declaredField('issue', 'status')).toBeUndefined();
   });
 
   it('does not loop on a cyclic extends chain', () => {
@@ -64,9 +120,9 @@ describe('type helpers', () => {
   });
 
   it('keeps isExactly strict for a subtype', () => {
-    setTypeResolver((id) => (id === 'issue' ? { extends: 'task' } : undefined));
+    setTypeResolver((id) => (id === 'chore' ? { extends: 'task' } : undefined));
     expect(isExactly('task', 'task')).toBe(true);
-    expect(isExactly('issue', 'task')).toBe(false);
+    expect(isExactly('chore', 'task')).toBe(false);
     expect(isExactly(undefined, 'task')).toBe(false);
   });
 });
@@ -144,7 +200,7 @@ describe('structural rules', () => {
         parent: { rule: 'must_have_parent_of', types: ['thread'] }
       },
       journal: { children: { rule: 'any_except', types: ['task'] } },
-      issue: { extends: 'task' }
+      chore: { extends: 'task' }
     };
     setTypeResolver((id) => schemas[id]);
 
@@ -157,7 +213,7 @@ describe('structural rules', () => {
 
     expect(canHaveChild('journal', 'text')).toBe(true);
     expect(canHaveChild('journal', 'task')).toBe(false);
-    expect(canHaveChild('journal', 'issue')).toBe(false);
+    expect(canHaveChild('journal', 'chore')).toBe(false);
   });
 
   it('composes a subtype rule on top of its base, tightening only', () => {

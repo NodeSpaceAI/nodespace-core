@@ -3198,8 +3198,8 @@ mod tests {
     /// Single-node creation and bulk hierarchy insert title a node identically,
     /// for every core type as a root and as a child — both go through
     /// `derive_title`, and this pins that no path grows a rule of its own.
-    /// Also pins the decided values: templated types interpolate, `task` and
-    /// `collection` are titled at any depth, every other type (`date`,
+    /// Also pins the decided values: templated types interpolate, `task`, its
+    /// subtype `issue` and `collection` are titled at any depth, every other type (`date`,
     /// `schema` and `checkbox` included) is titled by its content as a root
     /// and untitled as a child.
     #[tokio::test]
@@ -3246,7 +3246,7 @@ mod tests {
 
                 let expected = match node_type.as_str() {
                     "person" => Some("Ada Lovelace".to_string()),
-                    "task" | "collection" => Some("Some name".to_string()),
+                    "task" | "issue" | "collection" => Some("Some name".to_string()),
                     _ if is_root => Some("Some name".to_string()),
                     _ => None,
                 };

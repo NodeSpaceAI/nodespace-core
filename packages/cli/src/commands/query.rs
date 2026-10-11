@@ -111,6 +111,7 @@ pub async fn run(client: &mut NodeClient, args: QueryArgs, json: bool) -> Result
         }
         None => client
             .execute_query(ExecuteQueryRequest {
+                own_scope: false,
                 target_type: args
                     .target_type
                     .context("--type is required: the node type to query, or \"*\"")?,

@@ -5,6 +5,7 @@ use crate::collection::CollectionNode;
 use crate::core_type::CoreNodeType;
 use crate::database_settings::{DatabaseSettingsFields, DatabaseSettingsNode};
 use crate::decision::DecisionNode;
+use crate::issue::{IssueNode, IssueStatus};
 use crate::node::{Node, NodeEnvelope};
 use crate::person::PersonNode;
 use crate::plan::PlanNode;
@@ -14,6 +15,7 @@ use crate::project::{ProjectNode, ProjectStatus};
 use crate::query::{QueryFields, QueryNode};
 use crate::schema::LinkValue;
 use crate::skill::{SkillFields, SkillNode};
+use crate::software_project::SoftwareProjectNode;
 use crate::spec::SpecNode;
 use crate::task::{TaskNode, TaskStatus};
 
@@ -61,11 +63,13 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
     // shape it travels in.
     let mut value = match CoreNodeType::from_id(&node.node_type) {
         Some(CoreNodeType::Task) => task_node_to_value(node),
+        Some(CoreNodeType::Issue) => issue_node_to_value(node),
         Some(CoreNodeType::AiChatNative) => ai_chat_native_node_to_value(node),
         Some(CoreNodeType::AiChatPty) => ai_chat_pty_node_to_value(node),
         Some(CoreNodeType::AiChatMessage) => ai_chat_message_node_to_value(node),
         Some(CoreNodeType::Person) => person_node_to_value(node),
         Some(CoreNodeType::Project) => project_node_to_value(node),
+        Some(CoreNodeType::SoftwareProject) => software_project_node_to_value(node),
         Some(CoreNodeType::Spec) => spec_node_to_value(node),
         Some(CoreNodeType::Plan) => plan_node_to_value(node),
         Some(CoreNodeType::Decision) => decision_node_to_value(node),
@@ -331,6 +335,18 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
                     F::date("due_date", "dueDate"),
                     F::date("started_at", "startedAt"),
                     F::date("completed_at", "completedAt"),
+                ]
+            }
+        }
+        // A task's fields, then the issue's own (ADR-098).
+        CoreNodeType::Issue => {
+            const {
+                &[
+                    F::text("status", "status"),
+                    F::text("priority", "priority"),
+                    F::date("due_date", "dueDate"),
+                    F::date("started_at", "startedAt"),
+                    F::date("completed_at", "completedAt"),
                     F::new("pull_request", "pullRequest", Object),
                     F::new("commits", "commits", Array),
                 ]
@@ -346,6 +362,17 @@ pub fn core_promoted_fields(core: CoreNodeType) -> &'static [PromotedField] {
             }
         }
         CoreNodeType::Project => {
+            const {
+                &[
+                    F::text("status", "status"),
+                    F::text("priority", "priority"),
+                    F::date("start_date", "startDate"),
+                    F::date("end_date", "endDate"),
+                ]
+            }
+        }
+        // A project's fields, then the software project's own (ADR-098).
+        CoreNodeType::SoftwareProject => {
             const {
                 &[
                     F::text("status", "status"),
@@ -542,6 +569,29 @@ pub fn flat_properties_view(typed: &serde_json::Value) -> serde_json::Value {
     serde_json::Value::Object(props)
 }
 
+/// The date fields a task and its subtypes share, read from flat properties.
+struct TaskDates {
+    due_date: Option<String>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+}
+
+impl TaskDates {
+    fn from_properties(props: &serde_json::Value) -> Self {
+        let date = |key: &str| {
+            props
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(normalize_date_field)
+        };
+        Self {
+            due_date: date("due_date"),
+            started_at: date("started_at"),
+            completed_at: date("completed_at"),
+        }
+    }
+}
+
 fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     let props = &node.properties;
 
@@ -550,24 +600,31 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
         .and_then(|v| v.as_str())
         .map(TaskStatus::from_value)
         .unwrap_or_default();
-
     let priority = priority_prop(props);
+    let dates = TaskDates::from_properties(props);
 
-    let due_date = props
-        .get("due_date")
+    let task = TaskNode {
+        envelope: extension_envelope(node, CoreNodeType::Task),
+        status,
+        priority,
+        due_date: dates.due_date,
+        started_at: dates.started_at,
+        completed_at: dates.completed_at,
+    };
+
+    serde_json::to_value(&task).map_err(|e| format!("Failed to serialize task node: {}", e))
+}
+
+fn issue_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let props = &node.properties;
+
+    let status = props
+        .get("status")
         .and_then(|v| v.as_str())
-        .map(normalize_date_field);
-
-    let started_at = props
-        .get("started_at")
-        .and_then(|v| v.as_str())
-        .map(normalize_date_field);
-
-    let completed_at = props
-        .get("completed_at")
-        .and_then(|v| v.as_str())
-        .map(normalize_date_field);
-
+        .map(IssueStatus::from_value)
+        .unwrap_or_default();
+    let priority = priority_prop(props);
+    let dates = TaskDates::from_properties(props);
     let pull_request = link_prop(props, "pull_request");
     let commits = props
         .get("commits")
@@ -579,18 +636,18 @@ fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {
                 .collect()
         });
 
-    let task = TaskNode {
-        envelope: extension_envelope(node, CoreNodeType::Task),
+    let issue = IssueNode {
+        envelope: extension_envelope(node, CoreNodeType::Issue),
         status,
         priority,
-        due_date,
-        started_at,
-        completed_at,
+        due_date: dates.due_date,
+        started_at: dates.started_at,
+        completed_at: dates.completed_at,
         pull_request,
         commits,
     };
 
-    serde_json::to_value(&task).map_err(|e| format!("Failed to serialize task node: {}", e))
+    serde_json::to_value(&issue).map_err(|e| format!("Failed to serialize issue node: {}", e))
 }
 
 /// The envelope of a typed node: the node with its promoted core fields taken
@@ -683,40 +740,67 @@ fn person_node_to_value(node: Node) -> Result<serde_json::Value, String> {
     serde_json::to_value(&person).map_err(|e| format!("Failed to serialize person node: {}", e))
 }
 
-fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
-    let props = &node.properties;
-    let status = props
-        .get("status")
-        .and_then(|v| v.as_str())
-        .map(ProjectStatus::from_value)
-        .unwrap_or_default();
-    let priority = priority_prop(props);
-    let start_date = props
-        .get("start_date")
-        .and_then(|v| v.as_str())
-        .map(normalize_date_field);
-    let end_date = props
-        .get("end_date")
-        .and_then(|v| v.as_str())
-        .map(normalize_date_field);
+/// The fields a project and its subtypes share, read from flat properties.
+struct ProjectFields {
+    status: ProjectStatus,
+    priority: Option<crate::priority::Priority>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+}
 
-    let repository = link_prop(props, "repository");
-    let checkout_path = props
-        .get("checkout_path")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
+impl ProjectFields {
+    fn from_properties(props: &serde_json::Value) -> Self {
+        let date = |key: &str| {
+            props
+                .get(key)
+                .and_then(|v| v.as_str())
+                .map(normalize_date_field)
+        };
+        Self {
+            status: props
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(ProjectStatus::from_value)
+                .unwrap_or_default(),
+            priority: priority_prop(props),
+            start_date: date("start_date"),
+            end_date: date("end_date"),
+        }
+    }
+}
+
+fn project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let fields = ProjectFields::from_properties(&node.properties);
 
     let project = ProjectNode {
         envelope: extension_envelope(node, CoreNodeType::Project),
-        status,
-        priority,
-        start_date,
-        end_date,
+        status: fields.status,
+        priority: fields.priority,
+        start_date: fields.start_date,
+        end_date: fields.end_date,
+    };
+
+    serde_json::to_value(&project).map_err(|e| format!("Failed to serialize project node: {}", e))
+}
+
+fn software_project_node_to_value(node: Node) -> Result<serde_json::Value, String> {
+    let props = &node.properties;
+    let fields = ProjectFields::from_properties(props);
+    let repository = link_prop(props, "repository");
+    let checkout_path = string_prop(props, "checkout_path");
+
+    let project = SoftwareProjectNode {
+        envelope: extension_envelope(node, CoreNodeType::SoftwareProject),
+        status: fields.status,
+        priority: fields.priority,
+        start_date: fields.start_date,
+        end_date: fields.end_date,
         repository,
         checkout_path,
     };
 
-    serde_json::to_value(&project).map_err(|e| format!("Failed to serialize project node: {}", e))
+    serde_json::to_value(&project)
+        .map_err(|e| format!("Failed to serialize software-project node: {}", e))
 }
 
 fn collection_node_to_value(node: Node) -> Result<serde_json::Value, String> {

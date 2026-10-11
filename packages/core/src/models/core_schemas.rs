@@ -6,6 +6,9 @@
 //! ## Core Schemas
 //!
 //! - **task** - Task tracking with status, priority, dates
+//! - **issue** - A task that is development work: its pull request, commits and review statuses
+//! - **project** - A container for tasks
+//! - **software-project** - A project with source code: its repository and checkout folder
 //! - **spec** - What is being built and why; its criteria are checkbox children
 //! - **plan** - How one spec will be built
 //! - **decision** - What was decided; its body is its children
@@ -37,7 +40,7 @@ use crate::models::schema::{
 };
 use crate::models::{
     AiChatMessageRole, AiChatProvider, AiChatSessionStatus, AiChatTurnOutcome, AiChatTurnStatus,
-    CoreNodeType, DecisionStatus, NodeEnvelope, PlanStatus, SchemaNode, SpecStatus,
+    CoreNodeType, DecisionStatus, IssueStatus, NodeEnvelope, PlanStatus, SchemaNode, SpecStatus,
 };
 use chrono::Utc;
 use nodespace_types::{CaptureContent, RelationshipPath};
@@ -159,6 +162,86 @@ fn closed_status_field(
     }
 }
 
+/// A task's `status` field. An issue's is this field with two more values
+/// ([`issue_status_field`]).
+fn task_status_field() -> SchemaField {
+    SchemaField {
+        name: "status".to_string(),
+        friendly_name: "Status".to_string(),
+        field_type: crate::models::SchemaFieldType::Enum,
+        local_only: false,
+        protection: SchemaProtectionLevel::Core,
+        core_values: Some(vec![
+            EnumValue::new("open".to_string(), "Open".to_string()),
+            EnumValue::new("in_progress".to_string(), "In Progress".to_string()),
+            EnumValue::new("in_review".to_string(), "In Review".to_string()),
+            EnumValue::new("done".to_string(), "Done".to_string()),
+            EnumValue::new("cancelled".to_string(), "Cancelled".to_string()),
+        ]),
+        user_values: Some(vec![]),
+        indexed: true,
+        required: Some(true),
+        extensible: Some(true),
+        default: Some(serde_json::json!("open")),
+        description: Some(
+            "Current workflow state of the task: open (not started), in_progress \
+             (actively being worked), in_review (the work is finished and waiting \
+             on review, typically an open pull request), done (completed), or \
+             cancelled (abandoned, not completed). Drives board columns and \
+             completion rollups — a task counts toward \"done\" totals only when \
+             this equals done."
+                .to_string(),
+        ),
+        item_type: None,
+        fields: None,
+        item_fields: None,
+        unique: None,
+        unique_case_insensitive: None,
+    }
+}
+
+/// An issue's `status` field (ADR-098): the one it inherits from `task`,
+/// declared again with the issue's own statuses added. Each added value maps
+/// to the task status it reads as at `task` scope (ADR-078), so a rule or a
+/// query written against `task` sees a status it knows. The values, their
+/// labels and the mapping are [`IssueStatus`]'s.
+fn issue_status_field() -> SchemaField {
+    let mut field = task_status_field();
+    let task_values = field
+        .core_values
+        .take()
+        .expect("a task's status declares its core values");
+    // In workflow order, which is the order a board's columns and a status
+    // menu follow: the review statuses sit between review and done.
+    field.core_values = Some(
+        IssueStatus::CORE
+            .iter()
+            .map(|status| match status.own_label() {
+                Some(label) => EnumValue {
+                    value: status.as_str().to_string(),
+                    label: label.to_string(),
+                    maps_to: Some(status.task_status().as_str().to_string()),
+                },
+                None => task_values
+                    .iter()
+                    .find(|value| value.value == status.as_str())
+                    .expect("every other issue status is a task status")
+                    .clone(),
+            })
+            .collect(),
+    );
+    field.description = Some(
+        "Current workflow state of the issue. A task's statuses (open, in_progress, \
+         in_review, done, cancelled) and two of its own: changes_requested (reviewed, \
+         with findings to fix; reads as in_progress on a task) and ready_to_merge \
+         (passed review, waiting to land; reads as in_review on a task). The flow is \
+         open, in_progress, in_review, back to changes_requested or on to \
+         ready_to_merge, then done, which means the change landed."
+            .to_string(),
+    );
+    field
+}
+
 /// A many-to-many or one-to-many link another schema is reached through.
 fn relationship(
     name: &str,
@@ -209,39 +292,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             parent: Default::default(),
             schema_version: 1,
             fields: vec![
-                SchemaField {
-                    name: "status".to_string(),
-                    friendly_name: "Status".to_string(),
-                    field_type: crate::models::SchemaFieldType::Enum,
-                    local_only: false,
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: Some(vec![
-                        EnumValue::new("open".to_string(), "Open".to_string()),
-                        EnumValue::new("in_progress".to_string(), "In Progress".to_string()),
-                        EnumValue::new("in_review".to_string(), "In Review".to_string()),
-                        EnumValue::new("done".to_string(), "Done".to_string()),
-                        EnumValue::new("cancelled".to_string(), "Cancelled".to_string()),
-                    ]),
-                    user_values: Some(vec![]),
-                    indexed: true,
-                    required: Some(true),
-                    extensible: Some(true),
-                    default: Some(serde_json::json!("open")),
-                    description: Some(
-                        "Current workflow state of the task: open (not started), in_progress \
-                         (actively being worked), in_review (the work is finished and waiting \
-                         on review, typically an open pull request), done (completed), or \
-                         cancelled (abandoned, not completed). Drives board columns and \
-                         completion rollups — a task counts toward \"done\" totals only when \
-                         this equals done."
-                            .to_string(),
-                    ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
+                task_status_field(),
                 SchemaField {
                     name: "priority".to_string(),
                     friendly_name: "Priority".to_string(),
@@ -348,20 +399,6 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
-                // Where the work landed (ADR-092 §4). Optional: a task is not
-                // always a code change, and no rule requires either.
-                link_field(
-                    "pull_request",
-                    "Pull request",
-                    "The pull request that delivered the task: its title and URL. Absent for \
-                     work that is not a code change.",
-                ),
-                link_list_field(
-                    "commits",
-                    "Commits",
-                    "The commits that delivered the task, each a title and URL. Written as the \
-                     whole list.",
-                ),
             ],
             // A task's assignee is the derived inverse of person's `tasks`
             // relationship declaration below (mirrors project ↔ task), and its
@@ -579,7 +616,71 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     unique: None,
                     unique_case_insensitive: None,
                 },
-                // What binds a checkout to a project (ADR-092 §4): a client
+            ],
+            // A project has many tasks; the inverse (a task's single project) is
+            // derived from this declaration, so `task` needs no entry of its own.
+            // Seeding persists this as a relationship-table edge between the schema
+            // nodes (see NodeService seeding / set_schema_declarations).
+            relationships: vec![SchemaRelationship {
+                name: "tasks".to_string(),
+                target_type: Some("task".to_string()),
+                direction: RelationshipDirection::Out,
+                cardinality: RelationshipCardinality::Many,
+                required: None,
+                reverse_name: "project".to_string(),
+                reverse_cardinality: RelationshipCardinality::One,
+                edge_fields: None,
+                description: Some("Tasks belonging to this project".to_string()),
+            }],
+            title_template: None,
+            properties_header_summary_template: None,
+            context_paths: Vec::new(),
+        },
+        // Issue (ADR-098): a unit of development work, one change delivered by
+        // one pull request. Everything a task has reaches it through
+        // `extends`: its fields, relationships, context paths and rules. It
+        // declares where the work landed, and two statuses for review on the
+        // `status` it inherits.
+        SchemaNode {
+            envelope: envelope("issue", "Issue"),
+            extends: Some(CoreNodeType::Task.as_str().to_string()),
+            is_core: true,
+            is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
+            schema_version: 1,
+            fields: vec![
+                issue_status_field(),
+                link_field(
+                    "pull_request",
+                    "Pull request",
+                    "The pull request that delivers the issue: its title and URL.",
+                ),
+                link_list_field(
+                    "commits",
+                    "Commits",
+                    "The commits that deliver the issue, each a title and URL. Written as the \
+                     whole list.",
+                ),
+            ],
+            relationships: vec![],
+            title_template: None,
+            properties_header_summary_template: None,
+            context_paths: Vec::new(),
+        },
+        // Software project (ADR-098): a project with source code. Everything
+        // a project has reaches it through `extends`; it declares where the
+        // source is.
+        SchemaNode {
+            envelope: envelope("software-project", "Software Project"),
+            extends: Some(CoreNodeType::Project.as_str().to_string()),
+            is_core: true,
+            is_abstract: false,
+            children: Default::default(),
+            parent: Default::default(),
+            schema_version: 1,
+            fields: vec![
+                // What binds a checkout to a software project: a client
                 // compares the checkout's remote with this link's URL.
                 link_field(
                     "repository",
@@ -600,21 +701,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     )
                 },
             ],
-            // A project has many tasks; the inverse (a task's single project) is
-            // derived from this declaration, so `task` needs no entry of its own.
-            // Seeding persists this as a relationship-table edge between the schema
-            // nodes (see NodeService seeding / set_schema_declarations).
-            relationships: vec![SchemaRelationship {
-                name: "tasks".to_string(),
-                target_type: Some("task".to_string()),
-                direction: RelationshipDirection::Out,
-                cardinality: RelationshipCardinality::Many,
-                required: None,
-                reverse_name: "project".to_string(),
-                reverse_cardinality: RelationshipCardinality::One,
-                edge_fields: None,
-                description: Some("Tasks belonging to this project".to_string()),
-            }],
+            relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
             context_paths: Vec::new(),
@@ -2358,6 +2445,7 @@ mod tests {
                 "decision",
                 "header",
                 "horizontal-line",
+                "issue",
                 "ordered-list",
                 "person",
                 "plan",
@@ -2366,6 +2454,7 @@ mod tests {
                 "query",
                 "quote-block",
                 "skill",
+                "software-project",
                 "spec",
                 "table",
                 "task",
@@ -2386,13 +2475,17 @@ mod tests {
             .find(|s| s.envelope.id == core.as_str())
     }
 
-    /// The fields of a core type's whole `extends` chain, nearest first.
+    /// The effective fields of a core type's whole `extends` chain, nearest
+    /// first. A field a subtype declares again (an issue's `status`) is the
+    /// subtype's, as it is for a stored schema.
     fn chain_fields(core: CoreNodeType) -> Vec<SchemaField> {
-        core.chain()
-            .into_iter()
-            .filter_map(core_schema)
-            .flat_map(|schema| schema.fields)
-            .collect()
+        crate::schema::extends_chain::flatten_chain_fields(
+            core.chain()
+                .into_iter()
+                .filter_map(core_schema)
+                .map(|schema| schema.fields)
+                .collect(),
+        )
     }
 
     /// The seeded core schemas name exactly the registry's variants, except
@@ -2656,7 +2749,7 @@ mod tests {
         let schemas = get_core_schemas();
         let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
 
-        assert_eq!(task.fields.len(), 7);
+        assert_eq!(task.fields.len(), 5);
         assert!(task.get_field("status").is_some());
         assert!(task.get_field("priority").is_some());
         assert!(task.get_field("due_date").is_some());
@@ -2915,35 +3008,155 @@ mod tests {
         assert_eq!(count("decision"), 1);
     }
 
-    /// ADR-092 §4: the three link fields, all optional.
+    /// ADR-098: the development fields are the subtypes', all optional, and
+    /// the base types declare none of them.
     #[test]
-    fn project_and_task_declare_their_link_fields() {
+    fn issue_and_software_project_declare_the_development_fields() {
         let schemas = get_core_schemas();
-        let field = |schema: &str, name: &str| {
-            schemas
-                .iter()
-                .find(|s| s.envelope.id == schema)
-                .unwrap()
+        let schema = |id: &str| schemas.iter().find(|s| s.envelope.id == id).unwrap();
+        let field = |id: &str, name: &str| {
+            schema(id)
                 .get_field(name)
-                .unwrap_or_else(|| panic!("{schema} declares {name}"))
+                .unwrap_or_else(|| panic!("{id} declares {name}"))
                 .clone()
         };
-        let repository = field("project", "repository");
+        assert_eq!(schema("issue").extends.as_deref(), Some("task"));
+        assert_eq!(
+            schema("software-project").extends.as_deref(),
+            Some("project")
+        );
+
+        let repository = field("software-project", "repository");
         assert_eq!(repository.field_type, SchemaFieldType::Link);
         assert_eq!(repository.required, Some(false));
+        assert!(!repository.local_only);
 
-        let pull_request = field("task", "pull_request");
+        // An absolute path means nothing on another machine.
+        let checkout_path = field("software-project", "checkout_path");
+        assert_eq!(checkout_path.field_type, SchemaFieldType::Text);
+        assert!(checkout_path.local_only);
+
+        let pull_request = field("issue", "pull_request");
         assert_eq!(pull_request.field_type, SchemaFieldType::Link);
         assert_eq!(pull_request.required, Some(false));
 
-        let commits = field("task", "commits");
+        let commits = field("issue", "commits");
         assert_eq!(commits.field_type, SchemaFieldType::Array);
         assert_eq!(commits.item_type, Some(SchemaFieldType::Link));
         assert_eq!(commits.required, Some(false));
 
-        // No field of another build's or a removed bundle's rides on task.
-        let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
-        assert!(task.fields.iter().all(|f| !f.name.contains(':')));
+        let names =
+            |id: &str| -> Vec<&str> { schema(id).fields.iter().map(|f| f.name.as_str()).collect() };
+        assert_eq!(names("issue"), ["status", "pull_request", "commits"]);
+        assert_eq!(names("software-project"), ["repository", "checkout_path"]);
+        // A plain task and a plain project carry no development state.
+        assert_eq!(
+            names("task"),
+            [
+                "status",
+                "priority",
+                "due_date",
+                "started_at",
+                "completed_at"
+            ]
+        );
+        assert_eq!(
+            names("project"),
+            ["status", "priority", "start_date", "end_date"]
+        );
+        // Neither subtype declares a relationship or a context path of its
+        // own: a task's and a project's reach them through `extends`.
+        for id in ["issue", "software-project"] {
+            assert!(schema(id).relationships.is_empty(), "{id}");
+            assert!(schema(id).context_paths.is_empty(), "{id}");
+        }
+    }
+
+    /// ADR-098 §1: an issue's status is a task's with two values added, each
+    /// mapped to the task status it reads as. The values, the labels and the
+    /// mapping are `IssueStatus`'s, in both directions.
+    #[test]
+    fn issue_status_is_a_tasks_with_two_mapped_values() {
+        use crate::models::TaskStatus;
+
+        let schemas = get_core_schemas();
+        let status = |id: &str| {
+            schemas
+                .iter()
+                .find(|s| s.envelope.id == id)
+                .unwrap()
+                .get_field("status")
+                .unwrap()
+                .clone()
+        };
+        let task = status("task");
+        let issue = status("issue");
+        let task_values = task.core_values.clone().unwrap();
+        let issue_values = issue.core_values.clone().unwrap();
+
+        // Everything but the values and the description is the task's field.
+        assert_eq!(
+            serde_json::to_value(SchemaField {
+                core_values: task.core_values.clone(),
+                description: task.description.clone(),
+                ..issue.clone()
+            })
+            .unwrap(),
+            serde_json::to_value(&task).unwrap()
+        );
+        // The task's values are all there, unchanged and unmapped, in the
+        // task's order.
+        let inherited: Vec<EnumValue> = issue_values
+            .iter()
+            .filter(|v| v.maps_to.is_none())
+            .cloned()
+            .collect();
+        assert_eq!(inherited, task_values);
+        assert!(task_values.iter().all(|v| v.maps_to.is_none()));
+        // The whole list is in workflow order: review, then the review
+        // statuses, then done.
+        let order: Vec<&str> = issue_values.iter().map(|v| v.value.as_str()).collect();
+        let workflow: Vec<&str> = IssueStatus::CORE.iter().map(IssueStatus::as_str).collect();
+        assert_eq!(order, workflow);
+
+        let added: Vec<(&str, Option<&str>)> = issue_values
+            .iter()
+            .filter(|v| v.maps_to.is_some())
+            .map(|v| (v.value.as_str(), v.maps_to.as_deref()))
+            .collect();
+        assert_eq!(
+            added,
+            [
+                ("changes_requested", Some("in_progress")),
+                ("ready_to_merge", Some("in_review"))
+            ]
+        );
+
+        // Schema to enum: every declared value is a named variant with the
+        // declared mapping, and a mapped value reads as a core task status.
+        for value in &issue_values {
+            let variant = IssueStatus::from_value(&value.value);
+            assert!(variant.is_core(), "{} is not a named variant", value.value);
+            assert_eq!(variant.as_str(), value.value);
+            match &value.maps_to {
+                Some(target) => {
+                    assert_eq!(variant.task_status().as_str(), target);
+                    assert!(TaskStatus::from_value(target).is_core());
+                    assert_eq!(variant.own_label(), Some(value.label.as_str()));
+                }
+                None => assert_eq!(variant.task_status().as_str(), value.value),
+            }
+        }
+        // Enum to schema: every named variant is declared.
+        let mut declared: Vec<&str> = issue_values.iter().map(|v| v.value.as_str()).collect();
+        declared.sort_unstable();
+        let mut named: Vec<&str> = IssueStatus::CORE.iter().map(IssueStatus::as_str).collect();
+        named.sort_unstable();
+        assert_eq!(declared, named);
+        assert_eq!(
+            issue.default,
+            Some(serde_json::json!(IssueStatus::default().as_str()))
+        );
     }
 
     /// ADR-092 §5: the five core task statuses, in workflow order.

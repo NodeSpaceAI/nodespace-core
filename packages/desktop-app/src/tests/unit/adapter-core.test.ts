@@ -101,45 +101,20 @@ describe('adapter-core: buildTaskNodeUpdatePatch (tri-state clearable encoding)'
 
   it('carries the task schema fields only', () => {
     const patch = buildTaskNodeUpdatePatch({ status: 'done' });
+    // No development field: the pull request and the commits are an issue's.
     expect(Object.keys(patch).sort()).toEqual([
-      'commits',
       'completedAt',
       'dueDate',
       'priority',
-      'pullRequest',
       'startedAt',
       'status'
     ]);
   });
 
-  it('encodes the pull request and the commit list as JSON values, null as a clear', () => {
-    const link = { title: 'Add review status', url: 'https://example.com/pr/1' };
-    const commits = [{ title: 'abc', url: 'https://example.com/c/abc' }];
-
-    const set = buildTaskNodeUpdatePatch({ pullRequest: link, commits });
-    expect(set.pullRequest).toEqual({ clear: false, valueJson: JSON.stringify(link) });
-    expect(set.commits).toEqual({ clear: false, valueJson: JSON.stringify(commits) });
-
-    const cleared = buildTaskNodeUpdatePatch({ pullRequest: null, commits: null });
-    expect(cleared.pullRequest).toEqual({ clear: true, valueJson: '' });
-    expect(cleared.commits).toEqual({ clear: true, valueJson: '' });
-
-    const absent = buildTaskNodeUpdatePatch({ status: 'in_review' });
-    expect(absent.pullRequest).toBeUndefined();
-    expect(absent.commits).toBeUndefined();
-  });
-
-  it('encodes the project repository the same way', () => {
-    const link = { title: 'nodespace-core', url: 'https://example.com/repo' };
-    expect(buildProjectNodeUpdatePatch({ repository: link }).repository).toEqual({
-      clear: false,
-      valueJson: JSON.stringify(link)
-    });
-    expect(buildProjectNodeUpdatePatch({ repository: null }).repository).toEqual({
-      clear: true,
-      valueJson: ''
-    });
-    expect(buildProjectNodeUpdatePatch({ status: 'active' }).repository).toBeUndefined();
+  it('carries the project schema fields only', () => {
+    const patch = buildProjectNodeUpdatePatch({ status: 'active' });
+    // No source field: the repository and the checkout folder are a software project's.
+    expect(Object.keys(patch).sort()).toEqual(['endDate', 'priority', 'startDate', 'status']);
   });
 
   it('treats a null priority the same as any other clearable field', () => {

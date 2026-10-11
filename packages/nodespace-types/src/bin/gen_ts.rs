@@ -94,12 +94,17 @@ fn declarations(cfg: &Config) -> Vec<Declared> {
         Priority,
         TaskNode,
         TaskNodeUpdate,
+        IssueStatus,
+        IssueNode,
+        IssueNodeUpdate,
         // person, project
         PersonNode,
         PersonNodeUpdate,
         ProjectNode,
         ProjectNodeUpdate,
         ProjectStatus,
+        SoftwareProjectNode,
+        SoftwareProjectNodeUpdate,
         // spec, plan, decision
         SpecStatus,
         SpecNode,
@@ -405,7 +410,7 @@ fn index_file(declared: &[Declared]) -> File {
     }
 }
 
-/// `TaskStatus`, `ProjectStatus`, `Priority` and `SchemaFieldType` serialize by
+/// `TaskStatus`, `IssueStatus`, `ProjectStatus`, `Priority` and `SchemaFieldType` serialize by
 /// hand, while their TypeScript unions are derived from the variant names.
 /// This holds the two together: every value serde writes for a named variant
 /// must be a literal of the generated union.
@@ -426,6 +431,7 @@ fn check_hand_serialized_enums(cfg: &Config) -> Result<(), String> {
     }
 
     let mut problems = check(cfg, &TaskStatus::CORE);
+    problems.extend(check(cfg, &IssueStatus::CORE));
     problems.extend(check(cfg, &ProjectStatus::CORE));
     problems.extend(check(
         cfg,

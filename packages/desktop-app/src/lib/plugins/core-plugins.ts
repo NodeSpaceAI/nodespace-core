@@ -13,6 +13,8 @@
 import type { PluginDefinition, NodeReferenceComponent } from './types';
 import type { PatternTemplate } from '../patterns/types';
 import type { CoreTaskStatus } from '../types/task-node';
+import { declaredField } from '../types/core-node-types';
+import { enumValueAtScope } from '../utils/schema-enum-values';
 import { PatternRegistry } from '../patterns/registry';
 import BaseNodeReference from '../components/base-node-reference.svelte';
 import { parseDateString, formatDateTitle } from '$lib/utils/date-formatting';
@@ -105,6 +107,79 @@ export const headerNodePlugin: PluginDefinition = {
   }
 };
 
+/**
+ * A status of a task, or of a type that extends task, as the task status it
+ * reads as. A subtype may add statuses to the field, each mapped to an
+ * existing one (an issue's `changes_requested` reads as `in_progress`); the
+ * mapping is the schema's, read through the same resolution a board of tasks
+ * uses, so a status a user adds is covered too. Before the schemas load, and
+ * for a status that maps to nothing, the status is returned as it is.
+ */
+function statusAsTaskStatus(nodeType: string, status: string): string {
+  const taskField = declaredField('task', 'status');
+  if (!taskField) return status;
+  return enumValueAtScope(taskField, status, declaredField(nodeType, 'status')) ?? status;
+}
+
+/**
+ * The state a task row's icon shows: `completed` once the work is finished or
+ * abandoned, `inProgress` once it has started, else `pending`. Decided on the
+ * task status the node's own status reads as, so every started status of an
+ * issue shows as in progress.
+ */
+function taskStateOf(
+  nodeType: string,
+  status: string | undefined
+): 'pending' | 'inProgress' | 'completed' {
+  if (!status) return 'pending';
+  const lower = status.toLowerCase();
+  switch (statusAsTaskStatus(nodeType, lower)) {
+    case 'in_progress':
+    case 'in_review':
+      return 'inProgress';
+    case 'done':
+    case 'cancelled':
+      return 'completed';
+    default:
+      return 'pending';
+  }
+}
+
+/**
+ * Metadata extraction for a task and for an issue. Every transport delivers
+ * the typed node with its core fields (status, priority) at the top level;
+ * `properties` carries extension fields only.
+ */
+function extractTaskMetadata(node: {
+  nodeType: string;
+  status?: string;
+  priority?: string | number;
+  properties?: Record<string, unknown>;
+}) {
+  // Extension properties first, then the typed fields. The status itself is
+  // carried alongside the state the icon shows.
+  return {
+    ...(node.properties || {}),
+    taskState: taskStateOf(node.nodeType, node.status),
+    status: node.status,
+    priority: node.priority
+  };
+}
+
+/** The status a click on a task row's icon writes for the state it moves to. */
+function taskStateToStatus(state: string, _fieldName: string): CoreTaskStatus {
+  switch (state) {
+    case 'pending':
+      return 'open';
+    case 'inProgress':
+      return 'in_progress';
+    case 'completed':
+      return 'done';
+    default:
+      return 'open';
+  }
+}
+
 export const taskNodePlugin: PluginDefinition = {
   id: 'task',
   name: 'Task Node',
@@ -136,58 +211,48 @@ export const taskNodePlugin: PluginDefinition = {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
   },
-  // Type-specific metadata extraction. Every transport delivers a TaskNode with
-  // its core fields (status, priority) at the top level; `properties` carries
-  // extension fields only.
-  extractMetadata: (node: {
-    nodeType: string;
-    status?: string;
-    priority?: string | number;
-    properties?: Record<string, unknown>;
-  }) => {
-    const properties = node.properties || {};
-    const status = node.status;
-    const priority = node.priority;
-
-    // Map task status to NodeState expected by TaskNode component
-    let taskState: 'pending' | 'inProgress' | 'completed' = 'pending';
-    // A task in review has been started and is not yet finished, so it shows
-    // as in progress; the status itself is carried alongside.
-    if (
-      status === 'IN_PROGRESS' ||
-      status === 'in_progress' ||
-      status === 'IN_REVIEW' ||
-      status === 'in_review'
-    ) {
-      taskState = 'inProgress';
-    } else if (status === 'DONE' || status === 'done') {
-      taskState = 'completed';
-    } else if (status === 'OPEN' || status === 'open') {
-      taskState = 'pending';
-    } else if (status === 'CANCELLED' || status === 'cancelled') {
-      taskState = 'completed';
-    }
-
-    // Extension properties first, then the typed fields
-    return { ...properties, taskState, status, priority };
-  },
+  extractMetadata: extractTaskMetadata,
   // Type-specific state mapping
-  mapStateToSchema: (state: string, _fieldName: string): CoreTaskStatus => {
-    switch (state) {
-      case 'pending':
-        return 'open';
-      case 'inProgress':
-        return 'in_progress';
-      case 'completed':
-        return 'done';
-      default:
-        return 'open';
-    }
-  },
+  mapStateToSchema: taskStateToStatus,
 
   // Type-specific schema form for task node properties
   schemaForm: {
     lazyLoad: () => import('../components/property-forms/task-schema-form.svelte')
+  }
+};
+
+// Issue node - a task that is development work: one change, delivered by one
+// pull request. In the outline it is a task row; its form adds the review
+// statuses, the pull request and the commits.
+export const issueNodePlugin: PluginDefinition = {
+  id: 'issue',
+  name: 'Issue',
+  description: 'A unit of development work: one change, delivered by one pull request',
+  version: '1.0.0',
+  config: {
+    // No slash command. `/task` is the one work item typed mid-outline; an
+    // issue is created from the sidenav's type view (SIDENAV_CORE_TYPES) or by
+    // an agent splitting a spec.
+    slashCommands: []
+  },
+  // "Issue" is what a user calls the thing, and it is edited inline too.
+  entityNoun: true,
+  node: {
+    lazyLoad: () => import('../design/components/issue-node.svelte'),
+    priority: 1
+  },
+  viewer: {
+    lazyLoad: () => import('../components/viewers/issue-node-viewer.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  },
+  extractMetadata: extractTaskMetadata,
+  mapStateToSchema: taskStateToStatus,
+  schemaForm: {
+    lazyLoad: () => import('../components/property-forms/issue-schema-form.svelte')
   }
 };
 
@@ -652,9 +717,10 @@ export const personNodePlugin: PluginDefinition = {
  * `person` and every user-defined type through the sidenav's type view, the chat types through
  * their own dedicated sidebar section.
  *
- * `project`, `spec`, `plan` and `decision` therefore have no plugin here at all. If you are
- * here because `/project` or `/spec` seems to be "missing", it is absent by decision, not by
- * oversight. Each renders as a read-only entity row regardless — that follows from having no
+ * `project`, `software-project`, `spec`, `plan` and `decision` therefore have no plugin here
+ * at all. If you are here because `/project` or `/spec` seems to be "missing", it is absent by
+ * decision, not by oversight. `issue` has a plugin, for its inline row and its form, and no
+ * slash command. Each renders as a read-only entity row regardless — that follows from having no
  * inline node component (see `rendersAsEntityRow`), independent of registration — and opens
  * in the generic viewer with the schema-driven properties form.
  */
@@ -662,6 +728,7 @@ export const corePlugins = [
   textNodePlugin,
   headerNodePlugin,
   taskNodePlugin,
+  issueNodePlugin,
   checkboxNodePlugin,
   dateNodePlugin,
   codeBlockNodePlugin,

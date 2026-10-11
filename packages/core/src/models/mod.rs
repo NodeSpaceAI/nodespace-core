@@ -69,13 +69,14 @@ pub use nodespace_types::{
 // same struct the service consumes.
 pub use nodespace_types::{
     CaptureContent, CollectionNodeUpdate, DatabaseSettingsFields, DatabaseSettingsNodeUpdate,
-    DecisionNodeUpdate, PersonNodeUpdate, PlanNodeUpdate, ProjectNodeUpdate, ProviderConfig,
-    QueryNodeUpdate, SkillNodeUpdate, SpecNodeUpdate, TaskNodeUpdate,
+    DecisionNodeUpdate, IssueNodeUpdate, PersonNodeUpdate, PlanNodeUpdate, ProjectNodeUpdate,
+    ProviderConfig, QueryNodeUpdate, SkillNodeUpdate, SoftwareProjectNodeUpdate, SpecNodeUpdate,
+    TaskNodeUpdate,
 };
 
 // The vocabularies of the task and project fields: each type's own status,
-// and the priority scale the two share.
-pub use nodespace_types::{Priority, ProjectStatus, TaskStatus};
+// an issue's (a task's and two more), and the priority scale they share.
+pub use nodespace_types::{IssueStatus, Priority, ProjectStatus, TaskStatus};
 
 // The closed status vocabularies of the spec, plan and decision types.
 pub use nodespace_types::{DecisionStatus, PlanStatus, SpecStatus};

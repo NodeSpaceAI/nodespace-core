@@ -430,7 +430,7 @@ async function findProject(
   const found = await nodespace($, database, [
     'query',
     '--type',
-    'project',
+    'software-project',
     '--filters',
     JSON.stringify(filters),
     '--limit',

@@ -45,9 +45,10 @@ message LaunchSessionRequest {
   // before launch); other callers (e.g. the CLI) launch a session not bound to
   // a node and omit it, in which case nothing is written.
   optional string node_id = 5;
-  // ID of the project the session is launched for (ADR-093 §8). The session
-  // runs in that project's folder on this machine: its `checkout_path`.
-  // Omitted, the session runs in a private session folder.
+  // ID of the software project the session is launched for (ADR-093 §8,
+  // ADR-098). The session runs in that project's folder on this machine: its
+  // `checkout_path`. A plain project has none and is refused. Omitted, the
+  // session runs in a private session folder.
   optional string project_id = 6;
   // The project's folder on this machine, for a project that has none set
   // yet or whose folder is being changed. An absolute path to an existing

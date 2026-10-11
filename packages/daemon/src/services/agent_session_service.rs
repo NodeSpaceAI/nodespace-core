@@ -18,7 +18,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use nodespace_agent::agent_types::AgentType;
 use nodespace_agent::pty::{PtySession, PtySessionManager, SessionLaunch, LAUNCHED_FOR_ENV_VAR};
-use nodespace_core::models::{CoreNodeType, ProjectNodeUpdate};
+use nodespace_core::models::{CoreNodeType, NodeUpdate};
 use nodespace_core::services::NodeService as CoreNodeService;
 use tokio::sync::broadcast::error::RecvError;
 use tonic::{Request, Response, Status};
@@ -74,8 +74,9 @@ impl AgentSessionHandler {
         crate::db_routing::route_or_self(self, request, |s| &s.agent_session).await
     }
 
-    /// The folder a session launched for `project_id` runs in: the project's
-    /// `checkout_path`, its folder on this machine (ADR-093 §8).
+    /// The folder a session launched for `project_id` runs in: the software
+    /// project's `checkout_path`, its folder on this machine (ADR-093 §8).
+    /// Only a software project has one (ADR-098): a plain project is refused.
     ///
     /// `given` is the folder the launch names, for a project that has none
     /// yet or whose folder is being changed. It is checked and then stored on
@@ -91,21 +92,21 @@ impl AgentSessionHandler {
             .await
             .map_err(|e| Status::internal(format!("reading project {project_id} failed: {e}")))?
             .ok_or_else(|| Status::not_found(format!("project not found: {project_id}")))?;
-        let is_project = self
+        let is_software_project = self
             .node_service
-            .type_is_a(&project.node_type, CoreNodeType::Project)
+            .type_is_a(&project.node_type, CoreNodeType::SoftwareProject)
             .await
             .map_err(|e| Status::internal(format!("reading project {project_id} failed: {e}")))?;
-        if !is_project {
+        if !is_software_project {
             return Err(Status::invalid_argument(format!(
-                "{project_id} is a {}, not a project",
-                project.node_type
+                "{project_id} is {}, not a software project: only a software project has a folder a session runs in",
+                nodespace_core::utils::with_indefinite_article(&project.node_type)
             )));
         }
 
         let stored = project
             .properties
-            .get(CoreNodeType::Project.as_str())
+            .get(CoreNodeType::SoftwareProject.as_str())
             .and_then(|bucket| bucket.get("checkout_path"))
             .and_then(|value| value.as_str())
             .filter(|path| !path.is_empty());
@@ -129,14 +130,15 @@ impl AgentSessionHandler {
 
         let folder = checked_folder(given).map_err(Status::invalid_argument)?;
         if stored != Some(given) {
+            // The generic update, which stores the field in the bucket of
+            // the schema that declares it for any type that extends
+            // `software-project`.
             self.node_service
-                .update_project_node(
+                .update_node(
                     project_id,
                     project.version,
-                    ProjectNodeUpdate {
-                        checkout_path: Some(Some(given.to_string())),
-                        ..Default::default()
-                    },
+                    NodeUpdate::default()
+                        .with_properties(serde_json::json!({ "checkout_path": given })),
                 )
                 .await
                 .map_err(|e| match e {

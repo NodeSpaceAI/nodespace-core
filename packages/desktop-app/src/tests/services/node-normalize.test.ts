@@ -73,6 +73,33 @@ describe('normalizeNodeData', () => {
   });
 });
 
+describe('normalizeNodeData for the core subtypes of task and project', () => {
+  it('converts an issue to its own typed shape, never a task\'s', () => {
+    const node = makeNode({ nodeType: 'issue' }) as unknown as Record<string, unknown>;
+    node.status = 'ready_to_merge';
+    node.pullRequest = { title: 'PR 7', url: 'https://example.com/pr/7' };
+    const typed = normalizeNodeData(node as unknown as Node) as unknown as Record<string, unknown>;
+    expect(typed.nodeType).toBe('issue');
+    expect(typed.status).toBe('ready_to_merge');
+    expect(typed.pullRequest).toEqual({ title: 'PR 7', url: 'https://example.com/pr/7' });
+
+    const bare = normalizeNodeData(makeNode({ nodeType: 'issue' })) as unknown as Record<
+      string,
+      unknown
+    >;
+    expect(bare.status).toBe('open');
+  });
+
+  it('converts a software project to its own typed shape, defaulting the status', () => {
+    const node = makeNode({ nodeType: 'software-project' }) as unknown as Record<string, unknown>;
+    node.checkoutPath = '/work/core';
+    const typed = normalizeNodeData(node as unknown as Node) as unknown as Record<string, unknown>;
+    expect(typed.nodeType).toBe('software-project');
+    expect(typed.status).toBe('planning');
+    expect(typed.checkoutPath).toBe('/work/core');
+  });
+});
+
 describe('mergeProperties', () => {
   it('merges one level and keeps sibling keys', () => {
     const merged = mergeProperties({ 'custom:x': 'keep', provider: 'native' }, { model: 'm1' });
@@ -235,6 +262,65 @@ describe('storageNodeToApiFields', () => {
       status: 'planning',
       startDate: '2026-03-01',
       endDate: '2026-04-30',
+      properties: {}
+    });
+  });
+
+  it('merges an issue\'s own bucket with the task bucket it inherits from', () => {
+    // An issue declares `status` itself, so its status is in its own bucket;
+    // the fields it inherits are in the task bucket.
+    const fields = storageNodeToApiFields('issue', {
+      issue: {
+        status: 'changes_requested',
+        pull_request: { title: 'PR 7', url: 'https://example.com/pr/7' },
+        commits: [{ title: 'abc', url: 'https://example.com/c/abc' }],
+        'custom:estimate': 3
+      },
+      task: { priority: 'high', due_date: '2026-03-01T09:00:00Z' }
+    });
+    expect(fields).toEqual({
+      status: 'changes_requested',
+      priority: 'high',
+      dueDate: '2026-03-01',
+      pullRequest: { title: 'PR 7', url: 'https://example.com/pr/7' },
+      commits: [{ title: 'abc', url: 'https://example.com/c/abc' }],
+      properties: { 'custom:estimate': 3 }
+    });
+    // With nothing stored it defaults as a task does, and has no link.
+    expect(storageNodeToApiFields('issue', { issue: {} })).toEqual({
+      status: 'open',
+      properties: {}
+    });
+  });
+
+  it('keeps the development fields off a plain task and a plain project', () => {
+    // Neither base type promotes them: a stray key stays an extension field
+    // the backend would have refused, never a typed one.
+    const task = storageNodeToApiFields('task', { task: { status: 'done' } });
+    expect(task).toEqual({ status: 'done', properties: {} });
+    expect('pullRequest' in task || 'commits' in task).toBe(false);
+    const project = storageNodeToApiFields('project', { project: { status: 'active' } });
+    expect(project).toEqual({ status: 'active', properties: {} });
+    expect('repository' in project || 'checkoutPath' in project).toBe(false);
+  });
+
+  it('merges a software project\'s own bucket with the project bucket it inherits from', () => {
+    const fields = storageNodeToApiFields('software-project', {
+      'software-project': {
+        repository: { title: 'core', url: 'https://example.com/acme/core' },
+        checkout_path: '/work/core'
+      },
+      project: { status: 'active', end_date: '2026-04-30' }
+    });
+    expect(fields).toEqual({
+      status: 'active',
+      endDate: '2026-04-30',
+      repository: { title: 'core', url: 'https://example.com/acme/core' },
+      checkoutPath: '/work/core',
+      properties: {}
+    });
+    expect(storageNodeToApiFields('software-project', {})).toEqual({
+      status: 'planning',
       properties: {}
     });
   });

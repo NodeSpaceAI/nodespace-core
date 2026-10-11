@@ -12,6 +12,7 @@ import {
   eligibleGroupByFields,
   enumColumns,
   readGroupValue,
+  readGroupValueAtScope,
   resolveFieldWrite,
   groupByColumn,
   resolveActiveGroupBy,
@@ -115,6 +116,63 @@ describe('enumColumns', () => {
 
   it('keeps each column label', () => {
     expect(enumColumns(statusField, ['closed'])[0]).toEqual({ value: 'closed', label: 'Closed' });
+  });
+});
+
+describe('readGroupValueAtScope', () => {
+  const taskStatus = field('status', 'enum', {
+    required: true,
+    coreValues: [
+      { value: 'open', label: 'Open' },
+      { value: 'in_progress', label: 'In Progress' },
+      { value: 'in_review', label: 'In Review' },
+      { value: 'done', label: 'Done' }
+    ]
+  });
+  const issueStatus = field('status', 'enum', {
+    required: true,
+    coreValues: [
+      ...(taskStatus.coreValues ?? []),
+      { value: 'changes_requested', label: 'Changes Requested', mapsTo: 'in_progress' },
+      { value: 'ready_to_merge', label: 'Ready to Merge', mapsTo: 'in_review' }
+    ]
+  });
+
+  it('files an issue on a board of tasks under the status its own maps to', () => {
+    const issue = (status: string) => node('i1', { nodeType: 'issue', status });
+    expect(readGroupValueAtScope(issue('changes_requested'), taskStatus, issueStatus)).toBe(
+      'in_progress'
+    );
+    expect(readGroupValueAtScope(issue('ready_to_merge'), taskStatus, issueStatus)).toBe(
+      'in_review'
+    );
+    expect(readGroupValueAtScope(issue('done'), taskStatus, issueStatus)).toBe('done');
+
+    // Every issue lands in a column the board has: none is left unassigned.
+    const columns = enumColumns(taskStatus).map((c) => c.value);
+    const items = ['open', 'changes_requested', 'in_review', 'ready_to_merge'].map((status, i) => ({
+      id: `i${i}`,
+      value: readGroupValueAtScope(issue(status), taskStatus, issueStatus)
+    }));
+    const buckets = groupByColumn(items, columns);
+    expect(buckets.get('open')).toEqual(['i0']);
+    expect(buckets.get('in_progress')).toEqual(['i1']);
+    expect(buckets.get('in_review')).toEqual(['i2', 'i3']);
+    expect(buckets.get(UNASSIGNED)).toEqual([]);
+  });
+
+  it('reads the stored value on a board of the node\'s own type', () => {
+    const issue = node('i1', { nodeType: 'issue', status: 'changes_requested' });
+    expect(readGroupValueAtScope(issue, issueStatus, undefined)).toBe('changes_requested');
+    const task = node('t1', { nodeType: 'task', status: 'in_progress' });
+    expect(readGroupValueAtScope(task, taskStatus, undefined)).toBe('in_progress');
+  });
+
+  it('returns a value that maps to no column as stored, and an unset one as null', () => {
+    const stray = node('i1', { nodeType: 'issue', status: 'triage' });
+    expect(readGroupValueAtScope(stray, taskStatus, issueStatus)).toBe('triage');
+    const unset = node('i2', { nodeType: 'issue' });
+    expect(readGroupValueAtScope(unset, taskStatus, issueStatus)).toBeNull();
   });
 });
 

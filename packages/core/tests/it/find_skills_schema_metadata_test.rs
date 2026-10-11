@@ -500,7 +500,8 @@ async fn find_skills_carries_a_linked_core_type() -> Result<()> {
 
     let mut carried = carried_types(&output, &skill);
     carried.sort();
-    assert_eq!(carried, ["chore", "task"]);
+    // `issue` is a core subtype of `task`, so the link reaches it too.
+    assert_eq!(carried, ["chore", "issue", "task"]);
     Ok(())
 }
 

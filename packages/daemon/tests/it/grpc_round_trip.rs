@@ -1686,6 +1686,7 @@ async fn fetch_marked_page(
 
     client
         .query_nodes_simple(QueryNodesSimpleRequest {
+            own_scope: false,
             include_archived: false,
             id: None,
             mentioned_by: None,
@@ -1869,6 +1870,7 @@ async fn count_nodes_and_count_roots_report_totals_without_transferring_records(
 
     let count = client
         .count_nodes(QueryNodesSimpleRequest {
+            own_scope: false,
             include_archived: false,
             id: None,
             mentioned_by: None,
@@ -1942,6 +1944,7 @@ async fn count_query_reports_exact_total_ignoring_limit_and_sorting() {
     // count the daemon returns.
     let count = client
         .count_query(ExecuteQueryRequest {
+            own_scope: false,
             target_type: "text".to_string(),
             filters_json: Some(filters.clone()),
             sorting_json: Some(r#"[{"field":"created_at","direction":"desc"}]"#.to_string()),
@@ -1960,6 +1963,7 @@ async fn count_query_reports_exact_total_ignoring_limit_and_sorting() {
     // counted — the two verbs agreeing is what makes the count trustworthy.
     let rows = client
         .execute_query(ExecuteQueryRequest {
+            own_scope: false,
             target_type: "text".to_string(),
             filters_json: Some(filters),
             sorting_json: None,

@@ -26,6 +26,7 @@ import type {
   CoreNodeType,
   CoreTypeEntry,
   SchemaChildrenRule,
+  SchemaField,
   SchemaParentRule,
   StructuralRules
 } from './generated';
@@ -48,6 +49,8 @@ export interface TypeDeclaration {
   children?: SchemaChildrenRule;
   /** Its own `parent` rule; absent is `any`. */
   parent?: SchemaParentRule;
+  /** The fields its schema declares itself. */
+  fields?: readonly SchemaField[];
 }
 
 /** Look up a user-defined type's declaration, or `undefined` for a type with no schema. */
@@ -63,6 +66,21 @@ let resolveType: TypeResolver = () => undefined;
  */
 export function setTypeResolver(resolver: TypeResolver): void {
   resolveType = resolver;
+}
+
+/**
+ * The field called `name` as the nearest type in `nodeType`'s chain declares
+ * it, from the loaded schemas; `undefined` before they load. A subtype that
+ * adds values to an inherited enum declares the field again, and that
+ * declaration is where each added value's `mapsTo` is; a type that extends
+ * such a subtype has it through the chain.
+ */
+export function declaredField(nodeType: string, name: string): SchemaField | undefined {
+  for (const type of typeChain(nodeType)) {
+    const field = resolveType(type)?.fields?.find((candidate) => candidate.name === name);
+    if (field) return field;
+  }
+  return undefined;
 }
 
 /** Whether `id` is exactly a type NodeSpace itself ships. */

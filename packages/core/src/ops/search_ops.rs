@@ -167,7 +167,8 @@ fn build_markdown_recursive(
             output.push_str(&node.content);
             output.push_str("\n\n");
         }
-        Some(crate::models::CoreNodeType::Task) => {
+        // A task, or a core subtype of one.
+        Some(core) if core.is_a(crate::models::CoreNodeType::Task) => {
             let status = node
                 .properties
                 .get("status")

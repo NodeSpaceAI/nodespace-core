@@ -76,12 +76,12 @@ fn message(result: Result<impl std::fmt::Debug, NodeServiceError>) -> String {
 // Rules resolve through the `extends` chain
 // ---------------------------------------------------------------------------
 
-/// `issue extends task`, a user-defined subtype of a core type.
-async fn seed_issue(svc: &Arc<NodeService>) {
+/// `bug extends task`, a user-defined subtype of a core type.
+async fn seed_bug(svc: &Arc<NodeService>) {
     create_schema(
         svc,
         json!({
-            "name": "Issue",
+            "name": "Bug",
             "extends": "task",
             "fields": [{ "name": "severity", "type": "text" }]
         }),
@@ -92,25 +92,25 @@ async fn seed_issue(svc: &Arc<NodeService>) {
 #[tokio::test]
 async fn a_user_subtype_resolves_to_its_core_type() {
     let (svc, _tmp) = test_service().await;
-    seed_issue(&svc).await;
+    seed_bug(&svc).await;
 
     assert_eq!(
-        svc.store().type_chain("issue").await.unwrap(),
-        vec!["issue", "task"]
+        svc.store().type_chain("bug").await.unwrap(),
+        vec!["bug", "task"]
     );
     assert_eq!(
-        svc.core_type_of("issue").await.unwrap(),
+        svc.core_type_of("bug").await.unwrap(),
         Some(CoreNodeType::Task)
     );
-    assert!(svc.type_is_a("issue", CoreNodeType::Task).await.unwrap());
-    assert!(!svc.type_is_a("issue", CoreNodeType::Project).await.unwrap());
+    assert!(svc.type_is_a("bug", CoreNodeType::Task).await.unwrap());
+    assert!(!svc.type_is_a("bug", CoreNodeType::Project).await.unwrap());
     // The ancestry table agrees with the `extends` edges it is derived from.
     assert_eq!(
         svc.store()
             .get_extends_parent_map()
             .await
             .unwrap()
-            .get("issue"),
+            .get("bug"),
         Some(&"task".to_string())
     );
     // A type with no schema is its own chain, and no core type.
@@ -123,18 +123,18 @@ async fn a_user_subtype_resolves_to_its_core_type() {
 #[tokio::test]
 async fn a_subtype_of_task_is_validated_as_a_task() {
     let (svc, _tmp) = test_service().await;
-    seed_issue(&svc).await;
+    seed_bug(&svc).await;
 
-    let error = message(create(&svc, "issue", "Bad", json!({ "status": "nonsense" })).await);
+    let error = message(create(&svc, "bug", "Bad", json!({ "status": "nonsense" })).await);
     assert!(error.contains("status"), "{error}");
 
-    let id = create(&svc, "issue", "Good", json!({ "severity": "high" }))
+    let id = create(&svc, "bug", "Good", json!({ "severity": "high" }))
         .await
         .unwrap();
     let node = svc.get_node(&id).await.unwrap().unwrap();
-    assert_eq!(node.node_type, "issue");
+    assert_eq!(node.node_type, "bug");
     assert_eq!(node.properties["task"]["status"], "open");
-    assert_eq!(node.properties["issue"]["severity"], "high");
+    assert_eq!(node.properties["bug"]["severity"], "high");
 }
 
 /// A subtype of `task` is embedded as a task is — not at all — and is titled
@@ -142,13 +142,13 @@ async fn a_subtype_of_task_is_validated_as_a_task() {
 #[tokio::test]
 async fn a_subtype_of_task_is_embedded_and_titled_as_a_task() {
     let (svc, _tmp) = test_service().await;
-    seed_issue(&svc).await;
+    seed_bug(&svc).await;
 
     let page = create(&svc, "text", "A page", json!({})).await.unwrap();
-    let root_issue = create(&svc, "issue", "A root issue", json!({}))
+    let root_issue = create(&svc, "bug", "A root issue", json!({}))
         .await
         .unwrap();
-    let child_issue = create_under(&svc, &page, "issue", "A child issue")
+    let child_issue = create_under(&svc, &page, "bug", "A child issue")
         .await
         .unwrap();
     let child_text = create_under(&svc, &page, "text", "A child line")
@@ -649,14 +649,14 @@ async fn undeclared_core_keys_lists_exactly_the_keys_a_write_refuses() {
 #[tokio::test]
 async fn a_subtype_bucket_and_a_user_type_stay_open() {
     let (svc, _tmp) = test_service().await;
-    seed_issue(&svc).await;
+    seed_bug(&svc).await;
     create_schema(&svc, json!({ "name": "Invoice", "fields": [] })).await;
 
-    let issue = create(&svc, "issue", "An issue", json!({ "anything": 1 }))
+    let issue = create(&svc, "bug", "An issue", json!({ "anything": 1 }))
         .await
         .expect("the issue bucket is the user's");
     let node = svc.get_node(&issue).await.unwrap().unwrap();
-    assert_eq!(node.properties["issue"]["anything"], 1);
+    assert_eq!(node.properties["bug"]["anything"], 1);
     assert!(node.properties["task"].get("anything").is_none());
 
     create(&svc, "invoice", "An invoice", json!({ "anything": 1 }))
@@ -756,7 +756,7 @@ async fn nested_fields_and_item_fields_are_validated_recursively() {
 #[tokio::test]
 async fn a_typed_clients_generic_update_may_not_name_a_typed_core_field() {
     let (svc, _tmp) = test_service().await;
-    seed_issue(&svc).await;
+    seed_bug(&svc).await;
     let task = create(&svc, "task", "A task", json!({})).await.unwrap();
 
     for patch in [
@@ -787,7 +787,7 @@ async fn a_typed_clients_generic_update_may_not_name_a_typed_core_field() {
 
     // A subtype travels as a generic node: its inherited fields have no typed
     // update to prefer.
-    let issue = create(&svc, "issue", "An issue", json!({})).await.unwrap();
+    let issue = create(&svc, "bug", "An issue", json!({})).await.unwrap();
     svc.ensure_no_typed_core_fields(&issue, None, &json!({ "status": "done" }))
         .await
         .expect("a subtype is written through the generic update");

@@ -9,6 +9,7 @@
 
 import type { Node } from '$lib/types';
 import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
+import { enumValueAtScope } from '$lib/utils/schema-enum-values';
 import {
   buildFieldWrite,
   resolveFieldValue
@@ -94,6 +95,30 @@ export function readGroupValue(node: Node, field: string): string | null {
   const raw = resolveFieldValue(node, field);
   if (raw === null || raw === undefined || raw === '') return null;
   return String(raw);
+}
+
+/**
+ * The column value a node belongs under on a board grouped by `field`, a
+ * field of the board's type.
+ *
+ * A board of a type also shows the nodes of every type that extends it, and
+ * each of those is in the store at its own scope: an issue on a board of
+ * tasks holds `changes_requested`, a status a task does not have. Such a
+ * value reads as the one it maps to (`in_progress`), so the card sits in a
+ * column the board has. `ownField` is the same field as the node's own type
+ * declares it; a node of the board's own type needs none.
+ *
+ * A value that maps to nothing the board declares is returned as stored, and
+ * the caller files it under Unassigned as it does any value with no column.
+ */
+export function readGroupValueAtScope(
+  node: Node,
+  field: SchemaField,
+  ownField: SchemaField | null | undefined
+): string | null {
+  const stored = readGroupValue(node, field.name);
+  if (stored === null) return null;
+  return enumValueAtScope(field, stored, ownField) ?? stored;
 }
 
 /**

@@ -18,10 +18,10 @@ use nodespace_agent::local_agent::tools::Tool;
 use nodespace_core::db::events::DomainEvent;
 use nodespace_core::db::ChildPlacement;
 use nodespace_core::models::{
-    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, DecisionNodeUpdate, Node, NodeQuery,
-    NodeUpdate, OrderBy, PersonNodeUpdate, PlanNodeUpdate, PlayNodeUpdate, Priority,
-    ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate, SkillNodeUpdate, SpecNodeUpdate,
-    TaskNodeUpdate, TaskStatus,
+    CollectionNodeUpdate, DatabaseSettingsNodeUpdate, DecisionNodeUpdate, IssueNodeUpdate, Node,
+    NodeQuery, NodeUpdate, OrderBy, PersonNodeUpdate, PlanNodeUpdate, PlayNodeUpdate, Priority,
+    ProjectNodeUpdate, ProjectStatus, QueryNodeUpdate, SkillNodeUpdate, SoftwareProjectNodeUpdate,
+    SpecNodeUpdate, TaskNodeUpdate, TaskStatus,
 };
 use nodespace_core::ops::{
     collection_ops::{
@@ -69,23 +69,23 @@ use crate::nodespace::{
     MergeNodesRequest, MergeNodesResponse, MoveChildrenToParentRequest,
     MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
     NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
-    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalJsonClear,
-    OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear, PathNodes,
-    PendingSeedUpdate, PendingSeedUpdateDetail, PendingSeedUpdateListResponse,
-    PendingSeedUpdateRef, PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest,
-    RelationshipDeletedPayload, RelationshipEdge, RelationshipPayload,
-    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
-    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
-    ResolvePendingSeedUpdateRequest, ResolvePendingSeedUpdateResponse, RunSavedQueryRequest,
-    RunSavedQueryResponse, SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest,
-    SchemaResponse, SchemaResultResponse, SearchRequest, SeedUpdateChoice,
-    SetLocalPersonIdentityRequest, SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse,
-    ToolCommandEntry, UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest,
-    UpdateDecisionNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
-    UpdateNodesBatchResponse, UpdatePersonNodeRequest, UpdatePlanNodeRequest,
-    UpdatePlayNodeRequest, UpdateProjectNodeRequest, UpdateQueryNodeRequest,
-    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
-    UpdateSkillNodeRequest, UpdateSpecNodeRequest, UpdateTaskNodeRequest, WatchRequest,
+    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
+    OptionalStringClear, OptionalTimestampClear, PathNodes, PendingSeedUpdate,
+    PendingSeedUpdateDetail, PendingSeedUpdateListResponse, PendingSeedUpdateRef,
+    PreviewMergeRequest, PreviewMergeResponse, QueryNodesSimpleRequest, RelationshipDeletedPayload,
+    RelationshipEdge, RelationshipPayload, RemoveNodeFromCollectionRequest,
+    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
+    ResetSeedNodeResponse, ResolveConflictRequest, ResolvePendingSeedUpdateRequest,
+    ResolvePendingSeedUpdateResponse, RunSavedQueryRequest, RunSavedQueryResponse,
+    SchemaGuidanceEntry, SchemaListResponse, SchemaParamsRequest, SchemaResponse,
+    SchemaResultResponse, SearchRequest, SeedUpdateChoice, SetLocalPersonIdentityRequest,
+    SkillGuidanceEntry, SkillGuidanceRequest, SkillGuidanceResponse, ToolCommandEntry,
+    UpdateCollectionNodeRequest, UpdateDatabaseSettingsNodeRequest, UpdateDecisionNodeRequest,
+    UpdateIssueNodeRequest, UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
+    UpdatePersonNodeRequest, UpdatePlanNodeRequest, UpdatePlayNodeRequest,
+    UpdateProjectNodeRequest, UpdateQueryNodeRequest, UpdateRelationshipPropertiesRequest,
+    UpdateRelationshipPropertiesResponse, UpdateSkillNodeRequest, UpdateSoftwareProjectNodeRequest,
+    UpdateSpecNodeRequest, UpdateTaskNodeRequest, WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -1346,12 +1346,16 @@ impl GrpcNodeService for NodeServiceImpl {
         // returns rows carrying that type's fields and nothing else, whatever
         // their concrete type. Applied here rather than in the service, since
         // this is a boundary results leave by and cannot be written back
-        // through.
-        let nodes = this
-            .node_service
-            .project_nodes_to_scope(nodes, queried_type.as_deref())
-            .await
-            .map_err(service_error_to_status)?;
+        // through. A client that keeps one copy of each node asks for them at
+        // their own scope instead: a projection must never replace that copy.
+        let nodes = if req.own_scope {
+            nodes
+        } else {
+            this.node_service
+                .project_nodes_to_scope(nodes, queried_type.as_deref())
+                .await
+                .map_err(service_error_to_status)?
+        };
 
         let proto_nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, nodes).await?;
         let count = proto_nodes.len() as i32;
@@ -1425,6 +1429,7 @@ impl GrpcNodeService for NodeServiceImpl {
         // allowing large explicit pulls, without letting a client request an
         // unbounded scan.
         let target_type = req.target_type.clone();
+        let own_scope = req.own_scope;
         let input = query_ops::ExecuteQueryInput {
             target_type: req.target_type,
             filters,
@@ -1443,12 +1448,17 @@ impl GrpcNodeService for NodeServiceImpl {
         // Project to the queried type's scope (ADR-078), same as
         // `query_nodes_simple` — this is the RPC behind `nodespace query` and
         // the playbook query paths, so without it a base-scoped query returns
-        // subtype instances still carrying their own buckets.
-        let nodes = this
-            .node_service
-            .project_nodes_to_scope(nodes, Some(target_type.as_str()))
-            .await
-            .map_err(service_error_to_status)?;
+        // subtype instances still carrying their own buckets. The filters and
+        // the sorting were evaluated at the target type's scope whichever
+        // shape the rows leave in.
+        let nodes = if own_scope {
+            nodes
+        } else {
+            this.node_service
+                .project_nodes_to_scope(nodes, Some(target_type.as_str()))
+                .await
+                .map_err(service_error_to_status)?
+        };
 
         let proto_nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, nodes).await?;
         let count = proto_nodes.len() as i32;
@@ -2015,10 +2025,6 @@ impl GrpcNodeService for NodeServiceImpl {
                 .map_err(Status::invalid_argument)?,
             completed_at: parse_optional_timestamp(req.completed_at, "completed_at")
                 .map_err(Status::invalid_argument)?,
-            pull_request: optional_json_clear(req.pull_request, "pull_request")
-                .map_err(Status::invalid_argument)?,
-            commits: optional_json_clear(req.commits, "commits")
-                .map_err(Status::invalid_argument)?,
         };
 
         match this
@@ -2068,14 +2074,53 @@ impl GrpcNodeService for NodeServiceImpl {
                 .map_err(Status::invalid_argument)?,
             end_date: parse_optional_timestamp(req.end_date, "end_date")
                 .map_err(Status::invalid_argument)?,
-            repository: optional_json_clear(req.repository, "repository")
-                .map_err(Status::invalid_argument)?,
-            checkout_path: optional_string_clear(req.checkout_path),
         };
 
         match this
             .node_service
             .update_project_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_issue_node(
+        &self,
+        request: Request<UpdateIssueNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: IssueNodeUpdate = serde_json::from_str(&req.update_json)
+            .map_err(|e| Status::invalid_argument(format!("Invalid issue update: {e}")))?;
+
+        match this
+            .node_service
+            .update_issue_node(&req.node_id, req.version, update)
+            .await
+        {
+            Ok(node) => Ok(Response::new(node_response(node))),
+            Err(e) => Err(typed_update_error_to_status(&this.node_service, e).await),
+        }
+    }
+
+    async fn update_software_project_node(
+        &self,
+        request: Request<UpdateSoftwareProjectNodeRequest>,
+    ) -> Result<Response<NodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let update: SoftwareProjectNodeUpdate =
+            serde_json::from_str(&req.update_json).map_err(|e| {
+                Status::invalid_argument(format!("Invalid software-project update: {e}"))
+            })?;
+
+        match this
+            .node_service
+            .update_software_project_node(&req.node_id, req.version, update)
             .await
         {
             Ok(node) => Ok(Response::new(node_response(node))),
@@ -3952,23 +3997,6 @@ fn optional_string_clear(wrapper: Option<OptionalStringClear>) -> Option<Option<
     wrapper.map(|w| if w.clear { None } else { Some(w.value) })
 }
 
-/// A clearable structured field (a link, a list of links): unset is no
-/// change, `clear` clears it, and otherwise `value_json` decodes to the value.
-/// The shared update pipeline checks the value against the schema; this only
-/// refuses JSON that is not the field's shape at all.
-fn optional_json_clear<T: serde::de::DeserializeOwned>(
-    wrapper: Option<OptionalJsonClear>,
-    field_name: &str,
-) -> Result<Option<Option<T>>, String> {
-    match wrapper {
-        None => Ok(None),
-        Some(w) if w.clear => Ok(Some(None)),
-        Some(w) => serde_json::from_str(&w.value_json)
-            .map(|value| Some(Some(value)))
-            .map_err(|e| format!("Invalid value for {field_name}: {e}")),
-    }
-}
-
 /// [`optional_string_clear`] for a `priority` field on the shared scale.
 fn optional_priority_clear(wrapper: Option<OptionalStringClear>) -> Option<Option<Priority>> {
     optional_string_clear(wrapper).map(|value| value.as_deref().map(Priority::from_value))
@@ -4357,6 +4385,7 @@ mod tests {
 
         let request = || {
             Request::new(ExecuteQueryRequest {
+                own_scope: false,
                 target_type: "task".to_string(),
                 filters_json: Some(filters.to_string()),
                 sorting_json: None,
@@ -4368,6 +4397,82 @@ mod tests {
         assert_eq!(ids, [blocker.as_str()]);
         let counted = svc.count_query(request()).await.unwrap().into_inner();
         assert_eq!(counted.count, 1);
+    }
+
+    /// A query for `task` returns an issue too. By default each row is
+    /// projected to `task`: the issue's own status reads as the task status
+    /// it maps to, and its own fields are left out. With `own_scope` the row
+    /// is the node as it is, which is what a client that keeps one copy of a
+    /// node must be given. The filter is evaluated at `task` scope either way.
+    #[tokio::test]
+    async fn a_task_query_returns_an_issue_projected_or_at_its_own_scope() {
+        let (svc, _tmp) = make_service().await;
+        let issue_id = "b4b2c3d4-e5f6-7890-abcd-ef1234567890";
+        svc.create_node(create_typed_request(
+            issue_id,
+            "issue",
+            "Ship it",
+            r#"{"status":"changes_requested","priority":"high","pull_request":{"title":"PR 7","url":"https://example.com/pull/7"}}"#,
+        ))
+        .await
+        .unwrap();
+
+        // The row as the frontend receives it: the typed wire shape.
+        let typed = |node: &crate::nodespace::NodeData| {
+            let properties: serde_json::Value =
+                serde_json::from_str(&node.properties).expect("properties are JSON");
+            let node = nodespace_core::models::Node::new_with_id(
+                node.id.clone(),
+                node.node_type.clone(),
+                node.content.clone(),
+                properties,
+            );
+            nodespace_core::models::node_to_typed_value(node).unwrap()
+        };
+        let in_progress = r#"[{"type":"property","operator":"equals","property":"status","value":"in_progress"}]"#;
+
+        for own_scope in [false, true] {
+            let executed = svc
+                .execute_query(Request::new(ExecuteQueryRequest {
+                    own_scope,
+                    target_type: "task".to_string(),
+                    filters_json: Some(in_progress.to_string()),
+                    sorting_json: None,
+                    limit: 0,
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+            let listed = svc
+                .query_nodes_simple(Request::new(QueryNodesSimpleRequest {
+                    own_scope,
+                    node_type: Some("task".to_string()),
+                    ..Default::default()
+                }))
+                .await
+                .unwrap()
+                .into_inner();
+
+            for (rpc, nodes) in [
+                ("execute_query", executed.nodes),
+                ("query_nodes_simple", listed.nodes),
+            ] {
+                assert_eq!(nodes.len(), 1, "{rpc} (own_scope: {own_scope})");
+                let row = typed(&nodes[0]);
+                assert_eq!(row["nodeType"], "issue", "{rpc}");
+                assert_eq!(row["priority"], "high", "{rpc}");
+                if own_scope {
+                    assert_eq!(row["status"], "changes_requested", "{rpc}: {row}");
+                    assert_eq!(
+                        row["pullRequest"]["url"], "https://example.com/pull/7",
+                        "{rpc}: {row}"
+                    );
+                } else {
+                    assert_eq!(row["status"], "in_progress", "{rpc}: {row}");
+                    assert!(row.get("pullRequest").is_none(), "{rpc}: {row}");
+                }
+            }
+        }
     }
 
     /// The FindDuplicate RPC surfaces an existing node on a
@@ -5937,8 +6042,6 @@ mod tests {
             due_date: None,
             started_at: None,
             completed_at: None,
-            pull_request: None,
-            commits: None,
         });
 
         let err = svc
@@ -6020,8 +6123,6 @@ mod tests {
                 due_date: None,
                 started_at: None,
                 completed_at: None,
-                pull_request: None,
-                commits: None,
             }))
             .await
             .expect("typed task update succeeds")
@@ -6083,8 +6184,6 @@ mod tests {
             due_date: None,
             started_at: None,
             completed_at: None,
-            pull_request: None,
-            commits: None,
         }))
         .await
         .expect("typed task update succeeds");
@@ -6191,8 +6290,6 @@ mod tests {
                     value: "next tuesday".to_string(),
                 }),
                 end_date: None,
-                repository: None,
-                checkout_path: None,
             }))
             .await
             .expect_err("malformed date must be rejected");
@@ -6345,61 +6442,41 @@ mod tests {
         json["current_node"].clone()
     }
 
-    /// UpdateTaskNode and UpdateProjectNode carry the link fields: set from
-    /// their JSON, cleared, and refused when the JSON is not the field's
-    /// shape.
+    /// UpdateIssueNode and UpdateSoftwareProjectNode write the subtypes' own
+    /// fields beside the inherited ones, embed the typed current node in a
+    /// stale version's conflict header, and refuse an update that is not
+    /// theirs, a plain task or project among them.
     #[tokio::test]
-    async fn update_task_and_project_nodes_write_and_clear_their_links() {
+    async fn update_issue_and_software_project_nodes_write_and_conflict_with_the_typed_node() {
         let (svc, _tmp) = make_service().await;
-        let task_id = "a4b2c3d4-e5f6-7890-abcd-ef1234567890";
+        let issue_id = "a4b2c3d4-e5f6-7890-abcd-ef1234567890";
         let project_id = "a5b2c3d4-e5f6-7890-abcd-ef1234567890";
-        svc.create_node(create_typed_request(task_id, "task", "Ship it", "{}"))
-            .await
-            .unwrap();
-        svc.create_node(create_typed_request(project_id, "project", "Apollo", "{}"))
-            .await
-            .unwrap();
-        let json = |value: &str| {
-            Some(crate::nodespace::OptionalJsonClear {
-                clear: false,
-                value_json: value.to_string(),
+        let task_id = "a4b2c3d4-e5f6-7890-abcd-ef1234567891";
+        let plain_project_id = "a5b2c3d4-e5f6-7890-abcd-ef1234567891";
+        for (id, node_type, content) in [
+            (issue_id, "issue", "Ship it"),
+            (project_id, "software-project", "Apollo"),
+            (task_id, "task", "Hire"),
+            (plain_project_id, "project", "Campaign"),
+        ] {
+            svc.create_node(create_typed_request(id, node_type, content, "{}"))
+                .await
+                .unwrap();
+        }
+        let issue = |id: &str, version: i64, update: &str| {
+            Request::new(crate::nodespace::UpdateIssueNodeRequest {
+                node_id: id.to_string(),
+                version,
+                update_json: update.to_string(),
             })
         };
-        let clear = || {
-            Some(crate::nodespace::OptionalJsonClear {
-                clear: true,
-                value_json: String::new(),
+        let project = |id: &str, version: i64, update: &str| {
+            Request::new(crate::nodespace::UpdateSoftwareProjectNodeRequest {
+                node_id: id.to_string(),
+                version,
+                update_json: update.to_string(),
             })
         };
-        let task_request =
-            |version: i64,
-             pull_request: Option<crate::nodespace::OptionalJsonClear>,
-             commits: Option<crate::nodespace::OptionalJsonClear>| {
-                Request::new(crate::nodespace::UpdateTaskNodeRequest {
-                    node_id: task_id.to_string(),
-                    version,
-                    status: None,
-                    priority: None,
-                    due_date: None,
-                    started_at: None,
-                    completed_at: None,
-                    pull_request,
-                    commits,
-                })
-            };
-        let project_request =
-            |version: i64, repository: Option<crate::nodespace::OptionalJsonClear>| {
-                Request::new(crate::nodespace::UpdateProjectNodeRequest {
-                    node_id: project_id.to_string(),
-                    version,
-                    status: None,
-                    priority: None,
-                    start_date: None,
-                    end_date: None,
-                    repository,
-                    checkout_path: None,
-                })
-            };
         let typed = |id: &'static str| {
             let svc = svc.clone();
             async move {
@@ -6408,50 +6485,99 @@ mod tests {
             }
         };
 
-        svc.update_task_node(task_request(
+        svc.update_issue_node(issue(
+            issue_id,
             1,
-            json(r#"{"title":"PR 7","url":"https://example.com/pull/7"}"#),
-            json(r#"[{"title":"abc123","url":"https://example.com/commit/abc123"}]"#),
+            r#"{"status": "changes_requested", "priority": "high",
+                "pullRequest": {"title": "PR 7", "url": "https://example.com/pull/7"},
+                "commits": [{"title": "abc123", "url": "https://example.com/commit/abc123"}]}"#,
         ))
         .await
-        .expect("setting a task's links succeeds");
-        let task = typed(task_id).await;
-        assert_eq!(task["pullRequest"]["url"], "https://example.com/pull/7");
-        assert_eq!(task["commits"][0]["title"], "abc123");
+        .expect("setting an issue's fields succeeds");
+        let wire = typed(issue_id).await;
+        assert_eq!(wire["nodeType"], "issue");
+        assert_eq!(wire["status"], "changes_requested");
+        assert_eq!(wire["priority"], "high");
+        assert_eq!(wire["pullRequest"]["url"], "https://example.com/pull/7");
+        assert_eq!(wire["commits"][0]["title"], "abc123");
 
-        svc.update_task_node(task_request(2, clear(), clear()))
-            .await
-            .expect("clearing a task's links succeeds");
-        let task = typed(task_id).await;
-        assert!(task.get("pullRequest").is_none());
-        assert!(task.get("commits").is_none());
+        svc.update_issue_node(issue(
+            issue_id,
+            2,
+            r#"{"pullRequest": null, "commits": null}"#,
+        ))
+        .await
+        .expect("clearing an issue's links succeeds");
+        let wire = typed(issue_id).await;
+        assert!(wire.get("pullRequest").is_none());
+        assert!(wire.get("commits").is_none());
 
-        // JSON that is not a link never reaches the service.
+        // An update that is not an issue's never reaches the service.
         for bad in [
-            r#""https://example.com/pull/7""#,
-            r#"{"url":"x","state":1}"#,
+            r#"{"pullRequest": "https://example.com/pull/7"}"#,
+            r#"{"pullRequest": {"url": "x", "state": 1}}"#,
+            r#"{"repository": {"title": "core", "url": "https://example.com/a/core"}}"#,
+            r#"{"content": "Renamed"}"#,
         ] {
             let err = svc
-                .update_task_node(task_request(3, json(bad), None))
+                .update_issue_node(issue(issue_id, 3, bad))
                 .await
-                .expect_err("a value that is not a link must be rejected");
+                .expect_err("an update that is not an issue's must be rejected");
             assert_eq!(err.code(), tonic::Code::InvalidArgument, "{bad}");
         }
 
-        svc.update_project_node(project_request(
+        // A stale version embeds the typed current node.
+        let err = svc
+            .update_issue_node(issue(issue_id, 1, r#"{"status": "done"}"#))
+            .await
+            .expect_err("a stale version conflicts");
+        let current = conflict_current_node(&err);
+        assert_eq!(current["nodeType"], "issue");
+        assert_eq!(current["status"], "changes_requested");
+
+        svc.update_software_project_node(project(
+            project_id,
             1,
-            json(r#"{"title":"core","url":"https://github.com/acme/core"}"#),
+            r#"{"status": "active",
+                "repository": {"title": "core", "url": "https://example.com/acme/core"},
+                "checkoutPath": "/work/core"}"#,
         ))
         .await
-        .expect("setting a project's repository succeeds");
+        .expect("setting a software project's fields succeeds");
+        let wire = typed(project_id).await;
+        assert_eq!(wire["nodeType"], "software-project");
+        assert_eq!(wire["status"], "active");
         assert_eq!(
-            typed(project_id).await["repository"],
-            serde_json::json!({ "title": "core", "url": "https://github.com/acme/core" })
+            wire["repository"],
+            serde_json::json!({ "title": "core", "url": "https://example.com/acme/core" })
         );
-        svc.update_project_node(project_request(2, clear()))
+        assert_eq!(wire["checkoutPath"], "/work/core");
+        svc.update_software_project_node(project(
+            project_id,
+            2,
+            r#"{"repository": null, "checkoutPath": null}"#,
+        ))
+        .await
+        .expect("clearing a software project's source fields succeeds");
+        let wire = typed(project_id).await;
+        assert!(wire.get("repository").is_none());
+        assert!(wire.get("checkoutPath").is_none());
+
+        // A plain task and a plain project are not the subtypes.
+        let err = svc
+            .update_issue_node(issue(task_id, 1, r#"{"status": "done"}"#))
             .await
-            .expect("clearing a project's repository succeeds");
-        assert!(typed(project_id).await.get("repository").is_none());
+            .expect_err("a task is not an issue");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+        let err = svc
+            .update_software_project_node(project(
+                plain_project_id,
+                1,
+                r#"{"checkoutPath": "/work/core"}"#,
+            ))
+            .await
+            .expect_err("a project is not a software project");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     /// UpdateSpecNode, UpdatePlanNode and UpdateDecisionNode write the typed
@@ -6758,8 +6884,6 @@ mod tests {
                 priority: None,
                 start_date: None,
                 end_date: None,
-                repository: None,
-                checkout_path: None,
             }))
             .await
             .expect_err("stale version must conflict");

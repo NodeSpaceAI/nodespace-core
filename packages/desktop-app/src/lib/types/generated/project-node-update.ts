@@ -1,5 +1,4 @@
 // Generated from `packages/nodespace-types` by `bun run gen:types`. Do not edit.
-import type { LinkValue } from './link-value';
 import type { Priority } from './priority';
 import type { ProjectStatus } from './project-status';
 
@@ -16,6 +15,4 @@ export type ProjectNodeUpdate = {
   priority?: Priority | null;
   startDate?: string | null;
   endDate?: string | null;
-  repository?: LinkValue | null;
-  checkoutPath?: string | null;
 };
