@@ -18,7 +18,7 @@ use async_trait::async_trait;
 use nodespace_agent::agent_types::{
     AgentToolExecutor, ChatInferenceEngine, ChatMessage, ChatModelSpec, ClarifyPrompt,
     InferenceError, InferenceUsage, LocalAgentStatus, MentionedEntity, ModelManager, ModelStatus,
-    PriorTurn, PriorWrite, Role, StreamingChunk, ToolExecutionRecord,
+    PinnedSubject, PriorTurn, PriorWrite, Role, StreamingChunk, ToolExecutionRecord,
 };
 use nodespace_agent::local_agent::agent_loop::{
     canonical_args, canonical_args_identity, LocalAgentService,
@@ -810,6 +810,7 @@ impl LocalAgentServiceImpl {
 
         let prior_writes = prior_writes_from_history(&messages);
         let prior_turns = prior_turns_from_history(&messages);
+        let offered_options = options_last_offered(&messages);
         let history = node_history_from_messages(messages);
         if history.is_empty() {
             tracing::warn!(node_id, "ai-chat history empty — skipping turn");
@@ -896,10 +897,24 @@ impl LocalAgentServiceImpl {
         }
 
         // A pinned skill is a Stage-2 candidate on every routed turn of this
-        // chat, beside what retrieval finds (ADR-090 §5).
+        // chat, beside what retrieval finds, and Stage 1 is told what the
+        // chat pins (ADR-090 §5).
         if !pins.skills.is_empty() {
+            let subjects = pins
+                .nodes
+                .iter()
+                .map(|node| PinnedSubject {
+                    title: node.title.clone(),
+                    node_type: node.node_type.clone(),
+                })
+                .collect();
             service
-                .set_session_pinned_skills(&session_id, pins.skills)
+                .set_session_pins(&session_id, pins.skills, subjects)
+                .await;
+        }
+        if !offered_options.is_empty() {
+            service
+                .set_session_offered_options(&session_id, offered_options)
                 .await;
         }
 
@@ -2804,6 +2819,26 @@ fn prior_turns_from_history(messages: &[StoredMessage]) -> Vec<PriorTurn> {
             })
         })
         .collect()
+}
+
+/// The options the assistant's last message offered: those of the message
+/// just ahead of the user's latest, when that one is the assistant's.
+///
+/// The message a chat is opened with counts (ADR-090 §3), which
+/// [`prior_turns_from_history`] leaves out: it answered no request, but the
+/// user's first message can still be one of the choices it offered.
+fn options_last_offered(messages: &[StoredMessage]) -> Vec<String> {
+    let Some((latest, earlier)) = messages.split_last() else {
+        return Vec::new();
+    };
+    if latest.role != AiChatMessageRole::User {
+        return Vec::new();
+    }
+    earlier
+        .last()
+        .filter(|m| m.role == AiChatMessageRole::Assistant)
+        .map(|m| m.options.clone())
+        .unwrap_or_default()
 }
 
 /// Rebuild the duplicate-guard's view of earlier turns from persisted messages.
@@ -4728,8 +4763,17 @@ mod tests {
         let opened = load_chat_messages(&node_service, &chat_id).await;
         assert_eq!(opened[0].outcome, Some(AiChatTurnOutcome::Clarified));
         assert!(prior_turns_from_history(&opened).is_empty());
+        // No user message yet, so nothing is being answered.
+        assert!(options_last_offered(&opened).is_empty());
 
         send_user_message(&node_service, &chat_id, "Change a condition").await;
+        // The user's first message answers the opening message, whose
+        // options are the ones it may have picked.
+        let answered = load_chat_messages(&node_service, &chat_id).await;
+        assert_eq!(
+            options_last_offered(&answered),
+            play_edit_chat::EDIT_OPTIONS
+        );
         svc.maybe_handle_ai_chat_node(&chat_id).await;
 
         // One generation: the reply was not put back as a second question.
@@ -4742,6 +4786,10 @@ mod tests {
                 response: "Which rule?".to_string(),
             }]
         );
+        // The reply offered nothing, so the next message picks no option.
+        send_user_message(&node_service, &chat_id, "The first one").await;
+        let next = load_chat_messages(&node_service, &chat_id).await;
+        assert!(options_last_offered(&next).is_empty());
     }
 
     /// A chat's pinned skill reaches the turn: read from the chat's `pins`

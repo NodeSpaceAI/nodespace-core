@@ -88,6 +88,17 @@ pub const STAGE1_MAX_TOKENS: u32 = 256;
 /// names a type, and one measured request the line makes clarify ("open
 /// deals" with a Deal type). An empty list omits the line.
 pub fn stage1_system_prompt(skill_names: &[String], type_names: &[String]) -> String {
+    stage1_system_prompt_in_chat(skill_names, type_names, None)
+}
+
+/// [`stage1_system_prompt`] for a chat that pins a skill: the same prompt,
+/// with what the chat pins stated after the capabilities and types
+/// ([`stage1_pins_line`]). `None` is the prompt of a chat that pins nothing.
+pub fn stage1_system_prompt_in_chat(
+    skill_names: &[String],
+    type_names: &[String],
+    pins_line: Option<&str>,
+) -> String {
     let mut prompt = String::from("You are routing a user's request to the right capability.\n");
     if !skill_names.is_empty() {
         prompt.push_str(&format!(
@@ -101,6 +112,10 @@ pub fn stage1_system_prompt(skill_names: &[String], type_names: &[String]) -> St
             type_names.join(", ")
         ));
     }
+    if let Some(line) = pins_line {
+        prompt.push_str(line);
+        prompt.push('\n');
+    }
     prompt.push_str(
         "Call route_query with a short description of the capability the request needs.\n\
         Call route_multi ONLY if the request contains two or more distinct, unambiguous things to \
@@ -111,6 +126,60 @@ pub fn stage1_system_prompt(skill_names: &[String], type_names: &[String]) -> St
         Call exactly one tool. Do not answer the user.",
     );
     prompt
+}
+
+/// What a chat pins, as one line of the Stage-1 prompt (ADR-090 §5): the
+/// nodes the conversation is about, by title and type, and the pinned skills
+/// by name. `None` for a chat that pins no skill, whose prompt is unchanged.
+///
+/// Stage 1 otherwise sees the message and the tail of the turns ahead of it,
+/// and nothing that says the chat was opened for one node. Measured on the
+/// locked model in a play's edit chat: "Change when it runs", the first
+/// option the chat itself offers, came back as `route_clarify` asking whether
+/// a task's date or its place in a workflow was meant.
+///
+/// Titles are user text, so each goes through [`stage1_prompt_name`] like a
+/// skill title.
+pub fn stage1_pins_line(
+    pinned_skills: &[crate::agent_types::SkillCandidate],
+    subjects: &[crate::agent_types::PinnedSubject],
+) -> Option<String> {
+    let skills: Vec<String> = pinned_skills
+        .iter()
+        .map(|skill| stage1_prompt_name(&skill.name))
+        .filter(|name| !name.is_empty())
+        .collect();
+    if skills.is_empty() {
+        return None;
+    }
+    let subjects: Vec<String> = subjects
+        .iter()
+        .map(|subject| {
+            let node_type = stage1_prompt_name(&subject.node_type);
+            match subject.title.as_deref().map(stage1_prompt_name) {
+                Some(title) if !title.is_empty() => format!("\"{title}\" ({node_type})"),
+                _ => format!("a {node_type}"),
+            }
+        })
+        .collect();
+    let capability = if skills.len() == 1 {
+        "capability"
+    } else {
+        "capabilities"
+    };
+    let skills = skills.join(", ");
+    Some(if subjects.is_empty() {
+        format!(
+            "This conversation was opened for the {capability} {skills}. A request that does \
+             not say what it is about is for that."
+        )
+    } else {
+        format!(
+            "This conversation was opened about {} with the {capability} {skills}. A request \
+             that does not say what it is about is about that.",
+            subjects.join(", ")
+        )
+    })
 }
 
 /// Longest skill title or type name the Stage-1 prompt carries, in characters.
@@ -2101,7 +2170,18 @@ struct RoutingOutcome {
 /// golden-prompt test harness can build the exact same Stage-1 message from
 /// `prior_turns: &[&str]` without constructing an `AgentSession`.
 fn stage1_query(session: &AgentSession, user_message: &str) -> String {
-    stage1_query_from_turns(&turns_before_this_message(session), user_message)
+    let replies = answers_a_clarification(session)
+        || routing::is_offered_option(user_message, &session.offered_options)
+        || routing::leans_on_the_last_message(user_message);
+    stage1_query_framed(&turns_before_this_message(session), user_message, replies)
+}
+
+/// Whether the message this turn answers follows a composed clarification.
+fn answers_a_clarification(session: &AgentSession) -> bool {
+    session
+        .prior_turns
+        .last()
+        .is_some_and(|t| t.outcome == AiChatTurnOutcome::Clarified)
 }
 
 /// The conversation ahead of the message this turn is answering: every user
@@ -2151,7 +2231,31 @@ fn suppressed_clarify_retrieval_query(session: &AgentSession, user_message: &str
 /// content. The wrapper only changes what the Stage-1 *chat* message looks
 /// like; `build_retrieval_query`'s own output, used verbatim for schema
 /// retrieval, is untouched.
+///
+/// The frame is one of two ([`stage1_query_framed`]), chosen here from the
+/// message alone ([`routing::leans_on_the_last_message`]). The loop's own
+/// [`stage1_query`] also knows how the last turn ended and what it offered.
 pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> String {
+    stage1_query_framed(
+        prior_turns,
+        user_message,
+        routing::leans_on_the_last_message(user_message),
+    )
+}
+
+/// [`stage1_query_from_turns`] with the frame chosen by the caller.
+///
+/// A request that stands alone is framed as it always was: the turns ahead
+/// of it are background, and the request is routed on what it says.
+///
+/// A request that `replies` to the assistant's last message is framed as a
+/// reply. "Change when it runs", "the second one" and "yes, that" mean
+/// something only because of the message before them, and the first frame
+/// labels that message as no part of the request, so the model judged the
+/// reply nearly by itself: measured on the locked model, the first option a
+/// play's edit chat offers was answered with a question about scheduling a
+/// task.
+fn stage1_query_framed(prior_turns: &[&str], user_message: &str, replies: bool) -> String {
     if prior_turns.is_empty() {
         return user_message.trim().to_string();
     }
@@ -2170,6 +2274,8 @@ pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> Stri
 
     if prior_blended.is_empty() {
         current.to_string()
+    } else if replies {
+        format!("CONVERSATION SO FAR (the current request replies to its last message):\n{prior_blended}\n\nCURRENT REQUEST (route this, read as an answer to the last message above when it does not stand alone):\n{current}")
     } else {
         format!("PRIOR CONTEXT (for background only — do not treat as part of the current request):\n{prior_blended}\n\nCURRENT REQUEST (route this):\n{current}")
     }
@@ -2689,6 +2795,8 @@ impl AgentSession {
             mentioned_entities: Vec::new(),
             prior_turns: Vec::new(),
             pinned_skills: Vec::new(),
+            pinned_subjects: Vec::new(),
+            offered_options: Vec::new(),
         }
     }
 
@@ -3565,6 +3673,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // Whether the system has already run this turn's lookup for the model.
         // Once only: it is a backstop for a turn that made no call at all.
         let mut lookup_run = false;
+        // Whether a lookup that made no call is searched for by the system.
+        // Not in a chat that pins a skill: what the chat is about is already
+        // in front of the model (the pinned node, and the message the chat
+        // opened with), so a question about it answered with no call is an
+        // answer, and a search of the workspace for "when would this fire"
+        // would replace it with whatever shares those words.
+        let lookup_is_searched = routed.lookup_topic.is_some() && session.pinned_skills.is_empty();
         // Seeded with the Stage-1 routing turn's usage: it is part of what this
         // turn cost, and reporting only the Stage-2 tokens would hide the price
         // of the extra turn from everything that reads this figure.
@@ -3623,8 +3738,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             // is nearly always one that called a tool, which carries no answer
             // text. The exception is a surface with no search tool to run,
             // where the reply stands and arrives in one piece.
-            let hold_for_lookup =
-                routed.lookup_topic.is_some() && !lookup_run && !any_real_tool_calls;
+            let hold_for_lookup = lookup_is_searched && !lookup_run && !any_real_tool_calls;
             // The round after the clarification re-prompt is held for the same
             // reason: if it makes no call, the reply the user already has
             // stands, and this one must not be shown and then taken away.
@@ -3899,7 +4013,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             // Only when there is a search to put there: on a surface with no
             // search tool the call is left alone, or the round would be left
             // with nothing at all.
-            let system_lookup = if lookup_run || any_real_tool_calls {
+            let system_lookup = if lookup_run || any_real_tool_calls || !lookup_is_searched {
                 None
             } else {
                 routed
@@ -5482,7 +5596,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         outcome.skill_names = skill_names.clone();
         let type_names =
             stage1_type_names(self.tool_executor.user_type_names().await, user_message);
-        let system_prompt = stage1_system_prompt(&skill_names, &type_names);
+        // A chat that pins a skill says so to Stage 1 (ADR-090 §5). A chat
+        // that pins none has no line, and the prompt it always had.
+        let pinned_chat = !session.pinned_skills.is_empty();
+        let pins_line = stage1_pins_line(&session.pinned_skills, &session.pinned_subjects);
+        let system_prompt =
+            stage1_system_prompt_in_chat(&skill_names, &type_names, pins_line.as_deref());
 
         // Whether a message asks a question is read off the message itself,
         // before the turns ahead of it are blended in. Blended, a question
@@ -5518,19 +5637,23 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // poor query. Taking the topic from a second, blended pass would cost
         // every question in a chat a generation to improve that one fallback.
         let mut stage1 = None;
-        let answering_a_clarification = session
-            .prior_turns
-            .last()
-            .is_some_and(|t| t.outcome == AiChatTurnOutcome::Clarified);
+        let answering_a_clarification = answers_a_clarification(session);
         let message_alone = user_message.trim();
         let mut passes = 0usize;
         let mut stage1_skipped = false;
+        // In a chat that pins a skill, a reply that is one of the options the
+        // assistant's last message offered is not put to Stage 1 either
+        // (ADR-090 §5). The chat offered it, so it is never ambiguous there,
+        // and what it asks for is read off its own words.
+        let picked_option = (pinned_chat
+            && routing::is_offered_option(message_alone, &session.offered_options))
+        .then(|| routing::decision_for_an_offered_option(message_alone));
         // A message whose decision is already settled is not put to Stage 1 at
         // all: the generation is the first of the turn's sequential requests,
         // and its answer would be overridden. See `routing::lookup_without_stage1`.
-        if let Some(decision) =
+        if let Some(decision) = picked_option.or_else(|| {
             routing::lookup_without_stage1(&routing_query, message_alone, answering_a_clarification)
-        {
+        }) {
             stage1_skipped = true;
             span.set_attribute(KeyValue::new("routing.stage1_skipped", true));
             stage1 = Some(Stage1Decision {
@@ -5651,6 +5774,21 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     span.set_attribute(KeyValue::new("routing.decision", "clarify_suppressed"));
                     tracing::debug!(
                         "stage-1 asked to clarify twice in one intent; falling through to retrieval"
+                    );
+                    vec![suppressed_clarify_retrieval_query(session, user_message)]
+                } else if pinned_chat {
+                    // A chat that pins a skill already knows what it is for,
+                    // so Stage 1 does not get to stop it (ADR-090 §5). The
+                    // request goes on to Stage 2 with the pinned skill, which
+                    // has the pinned node in front of it and asks its own
+                    // question when one is needed. Retrieved like a
+                    // suppressed clarification, for the same reason: the
+                    // message does not say what it is about, and the
+                    // conversation does.
+                    routing_decision_tag = "clarify_pinned";
+                    span.set_attribute(KeyValue::new("routing.decision", "clarify_pinned"));
+                    tracing::debug!(
+                        "stage-1 asked to clarify in a chat that pins a skill; going on to Stage 2"
                     );
                     vec![suppressed_clarify_retrieval_query(session, user_message)]
                 } else {
@@ -6201,13 +6339,15 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         }
     }
 
-    /// Set the skills a session's chat pins (ADR-090 §5), so every routed
-    /// turn offers them to Stage 2. Each is marked `pinned` here, whatever
-    /// the caller passed.
-    pub async fn set_session_pinned_skills(
+    /// Set what a session's chat pins (ADR-090 §5): the skills every routed
+    /// turn offers to Stage 2, and the nodes the conversation is about, which
+    /// Stage 1 is told of beside them. Each skill is marked `pinned` here,
+    /// whatever the caller passed.
+    pub async fn set_session_pins(
         &self,
         session_id: &str,
         mut skills: Vec<crate::agent_types::SkillCandidate>,
+        subjects: Vec<crate::agent_types::PinnedSubject>,
     ) {
         for skill in &mut skills {
             skill.pinned = true;
@@ -6215,6 +6355,16 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             session.pinned_skills = skills;
+            session.pinned_subjects = subjects;
+        }
+    }
+
+    /// Set the options the assistant's last message offered, for a session
+    /// rebuilt from a chat whose last message offered any.
+    pub async fn set_session_offered_options(&self, session_id: &str, options: Vec<String>) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.offered_options = options;
         }
     }
 
@@ -15704,6 +15854,301 @@ mod tests {
         assert!(!tools.contains(&"update_play".to_string()), "{tools:?}");
     }
 
+    /// What one turn in a chat did: its result, the system prompt and tool
+    /// names of each generation, and the queries retrieval was asked for.
+    struct PinnedTurn {
+        result: AgentTurnResult,
+        prompts: Vec<String>,
+        tools: Vec<Vec<String>>,
+        retrieved: Vec<String>,
+    }
+
+    /// A chat the system opened about a play: its opening message, offering
+    /// `options`, and its pins when `pinned`.
+    fn play_edit_session(pinned: bool, options: &[&str]) -> AgentSession {
+        let mut session = new_session();
+        session.messages.push(ChatMessage::text(
+            Role::Assistant,
+            "Here is what [Close finished parents](nodespace://p1) does.\n\n\
+             What would you like to change?",
+        ));
+        session.offered_options = options.iter().map(|o| o.to_string()).collect();
+        if pinned {
+            let mut authoring = pinned_authoring();
+            authoring.tools = vec!["get_play".to_string(), "update_play".to_string()];
+            session.pinned_skills = vec![authoring];
+            session.pinned_subjects = vec![crate::agent_types::PinnedSubject {
+                title: Some("Close finished parents".to_string()),
+                node_type: "play".to_string(),
+            }];
+        }
+        session
+    }
+
+    /// Runs `message` as the next turn of `session`, with `rounds` as the
+    /// engine's generations. Retrieval finds a search skill.
+    async fn turn_in_a_play_edit_chat(
+        mut session: AgentSession,
+        message: &str,
+        rounds: Vec<Vec<StreamingChunk>>,
+    ) -> PinnedTurn {
+        let engine = RecordingEngine::new(MockEngine::new(rounds));
+        let prompts = engine.system_prompts_handle();
+        let tool_names = engine.tool_names_handle();
+        let registry = MockToolExecutor::new()
+            .with_tool("search_nodes", json!({}), json!({"nodes": []}))
+            .with_tool("get_play", json!({}), json!({}))
+            .with_tool("update_play", json!({}), json!({}));
+        let exec = RoutingToolExecutor::new(
+            registry,
+            vec![skill_candidate("research", 0.9, &["search_nodes"])],
+        );
+        let queries = exec.queries_handle();
+        let loop_ = LocalAgentLoop::new(Arc::new(engine), Arc::new(exec));
+
+        let result = loop_
+            .run_turn(
+                &mut session,
+                message,
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        let prompts = prompts.lock().unwrap().clone();
+        let tools = tool_names.lock().unwrap().clone();
+        let retrieved = queries.lock().unwrap().clone();
+        PinnedTurn {
+            result,
+            prompts,
+            tools,
+            retrieved,
+        }
+    }
+
+    fn stage1_asks_which_kind_of_change() -> Vec<StreamingChunk> {
+        tool_round(
+            "r1",
+            routing::ROUTE_CLARIFY_TOOL,
+            r#"{"question":"Change a date, or a dependency?","options":["A date","A dependency"]}"#,
+        )
+    }
+
+    /// In a chat that pins a skill, Stage 1 is told what the chat pins, and
+    /// its clarification does not end the turn: the request goes on to Stage
+    /// 2 with the pinned skill (ADR-090 §5).
+    #[tokio::test]
+    async fn a_stage1_clarify_does_not_end_a_turn_in_a_chat_that_pins_a_skill() {
+        let turn = turn_in_a_play_edit_chat(
+            play_edit_session(true, &[]),
+            "I want it to wait a day",
+            vec![
+                stage1_asks_which_kind_of_change(),
+                text_round("Which rule should wait?"),
+            ],
+        )
+        .await;
+
+        assert_eq!(turn.prompts.len(), 2, "Stage 1, then Stage 2");
+        assert!(
+            turn.prompts[0].contains(
+                "This conversation was opened about \"Close finished parents\" (play) with \
+                 the capability authoring. A request that does not say what it is about is \
+                 about that.\n"
+            ),
+            "{}",
+            turn.prompts[0]
+        );
+        assert!(
+            turn.prompts[1].contains("INSTRUCTIONS FOR authoring"),
+            "{}",
+            turn.prompts[1]
+        );
+        assert!(turn.tools[1].contains(&"update_play".to_string()));
+        assert_eq!(turn.result.response, "Which rule should wait?");
+        assert!(
+            turn.result.clarify.is_none(),
+            "Stage 1's question is not put to the user"
+        );
+        assert_eq!(turn.retrieved.len(), 1, "retrieval ran for Stage 2");
+    }
+
+    /// The same turn in a chat that pins nothing ends on Stage 1's
+    /// clarification, as it always did, and its Stage-1 prompt names no pin.
+    #[tokio::test]
+    async fn a_stage1_clarify_still_ends_a_turn_in_a_chat_that_pins_nothing() {
+        let turn = turn_in_a_play_edit_chat(
+            play_edit_session(false, &["Change when it runs"]),
+            "Change when it runs",
+            vec![stage1_asks_which_kind_of_change()],
+        )
+        .await;
+
+        assert_eq!(turn.prompts.len(), 1, "Stage 1 only");
+        assert_eq!(
+            turn.prompts[0],
+            stage1_system_prompt(&["research".to_string()], &[]),
+            "the prompt of a chat that never heard of pins"
+        );
+        let asked = turn
+            .result
+            .clarify
+            .expect("the clarification ends the turn");
+        assert_eq!(asked.question, "Change a date, or a dependency?");
+        assert!(
+            turn.retrieved.is_empty(),
+            "a clarification runs no retrieval"
+        );
+    }
+
+    /// A reply that is one of the options the chat's last message offered is
+    /// not put to Stage 1 in a chat that pins a skill: it is routed on its
+    /// own words, with the pinned skill.
+    #[tokio::test]
+    async fn an_offered_option_is_never_ambiguous_in_a_chat_that_pins_a_skill() {
+        let turn = turn_in_a_play_edit_chat(
+            play_edit_session(true, &["Explain this play", "Change when it runs"]),
+            "change when it runs.",
+            vec![text_round("Which rule?")],
+        )
+        .await;
+
+        assert_eq!(turn.prompts.len(), 1, "no Stage-1 generation");
+        assert!(
+            turn.prompts[0].contains("INSTRUCTIONS FOR authoring"),
+            "{}",
+            turn.prompts[0]
+        );
+        assert!(turn.tools[0].contains(&"update_play".to_string()));
+        assert_eq!(turn.retrieved, vec!["change when it runs.".to_string()]);
+        assert_eq!(turn.result.response, "Which rule?");
+    }
+
+    /// The option that asks about the play is a read. The pinned skill is
+    /// kept with its read tool, its write tool is off the surface, and the
+    /// answer given with no call stands: the system does not replace it with
+    /// a search of the workspace.
+    #[tokio::test]
+    async fn explaining_a_pinned_play_cannot_write() {
+        let turn = turn_in_a_play_edit_chat(
+            play_edit_session(true, &["Explain this play", "Change when it runs"]),
+            "Explain this play",
+            vec![text_round(
+                "It closes a parent once its sub-tasks are done.",
+            )],
+        )
+        .await;
+
+        assert_eq!(
+            turn.prompts.len(),
+            1,
+            "one generation: no Stage 1, no search put in"
+        );
+        assert!(
+            turn.prompts[0].contains("INSTRUCTIONS FOR authoring"),
+            "{}",
+            turn.prompts[0]
+        );
+        assert!(
+            turn.tools[0].contains(&"get_play".to_string()),
+            "{:?}",
+            turn.tools[0]
+        );
+        assert!(
+            !turn.tools[0].contains(&"update_play".to_string()),
+            "{:?}",
+            turn.tools[0]
+        );
+        assert_eq!(
+            turn.result.response,
+            "It closes a parent once its sub-tasks are done."
+        );
+        assert!(turn.result.tool_calls_made.is_empty());
+    }
+
+    #[test]
+    fn the_stage1_pins_line_names_the_skills_and_the_nodes() {
+        use crate::agent_types::PinnedSubject;
+        let play = PinnedSubject {
+            title: Some("Close\nfinished parents".to_string()),
+            node_type: "play".to_string(),
+        };
+        let untitled = PinnedSubject {
+            title: None,
+            node_type: "play".to_string(),
+        };
+        assert_eq!(stage1_pins_line(&[], std::slice::from_ref(&play)), None);
+        assert_eq!(
+            stage1_pins_line(&[pinned_authoring()], &[]).as_deref(),
+            Some(
+                "This conversation was opened for the capability authoring. A request that \
+                 does not say what it is about is for that."
+            )
+        );
+        assert_eq!(
+            stage1_pins_line(
+                &[pinned_authoring(), skill_candidate("research", 0.0, &[])],
+                &[play, untitled]
+            )
+            .as_deref(),
+            Some(
+                "This conversation was opened about \"Close finished parents\" (play), a play \
+                 with the capabilities authoring, research. A request that does not say what \
+                 it is about is about that."
+            )
+        );
+    }
+
+    /// A message that leans on the one before it is shown to Stage 1 as a
+    /// reply to it. One that stands alone is shown exactly as it always was.
+    #[test]
+    fn stage1_frames_a_reply_as_a_reply_and_a_request_as_a_request() {
+        let prior = ["Which venue?", "Client venues or vendor venues?"];
+        assert_eq!(
+            stage1_query_from_turns(&prior, "the second one"),
+            "CONVERSATION SO FAR (the current request replies to its last message):\n\
+             Which venue?\nClient venues or vendor venues?\n\n\
+             CURRENT REQUEST (route this, read as an answer to the last message above when \
+             it does not stand alone):\nthe second one"
+        );
+        assert_eq!(
+            stage1_query_from_turns(&prior, "add a task for the launch review"),
+            "PRIOR CONTEXT (for background only — do not treat as part of the current \
+             request):\nWhich venue?\nClient venues or vendor venues?\n\n\
+             CURRENT REQUEST (route this):\nadd a task for the launch review"
+        );
+        assert_eq!(
+            stage1_query_from_turns(&[], "the second one"),
+            "the second one"
+        );
+    }
+
+    /// The loop also knows what the last message offered and how the last
+    /// turn ended: a picked option and the answer to a clarification are
+    /// replies whatever their words.
+    #[test]
+    fn a_picked_option_and_an_answer_to_a_clarification_are_framed_as_replies() {
+        let opened = |options: &[&str]| {
+            let mut session = play_edit_session(false, options);
+            session
+                .messages
+                .push(ChatMessage::text(Role::User, "Add a new rule"));
+            session
+        };
+        assert!(stage1_query(&opened(&[]), "Add a new rule").starts_with("PRIOR CONTEXT"));
+        assert!(stage1_query(&opened(&["Add a new rule"]), "Add a new rule")
+            .starts_with("CONVERSATION SO FAR"));
+
+        let mut clarified = opened(&[]);
+        clarified.prior_turns.push(PriorTurn {
+            outcome: AiChatTurnOutcome::Clarified,
+            response: "Which play?".to_string(),
+        });
+        assert!(stage1_query(&clarified, "Add a new rule").starts_with("CONVERSATION SO FAR"));
+    }
+
     /// A question about the agent's own skills is answered from the registry,
     /// so Stage 2 is shown it: every skill by name, ahead of the candidates.
     /// Without it the model searched the user's knowledge for a skill, found
@@ -19221,7 +19666,7 @@ mod tests {
 
         assert_eq!(routed.asked[0], "could you mark it booked?");
         assert!(
-            routed.asked[1].starts_with("PRIOR CONTEXT")
+            routed.asked[1].starts_with("CONVERSATION SO FAR")
                 && routed.asked[1].contains("could you mark it booked?"),
             "the second pass is the blended view: {:?}",
             routed.asked[1]
@@ -19254,7 +19699,8 @@ mod tests {
         )
         .await;
 
-        assert!(routed.asked[0].starts_with("PRIOR CONTEXT"));
+        // "it" leans on the turn before, so the view is framed as a reply.
+        assert!(routed.asked[0].starts_with("CONVERSATION SO FAR"));
         assert_eq!(
             routed.retrieved,
             vec!["mark the event venue booked".to_string()]
@@ -19285,7 +19731,7 @@ mod tests {
         .await;
 
         assert!(
-            routed.asked[0].starts_with("PRIOR CONTEXT"),
+            routed.asked[0].starts_with("CONVERSATION SO FAR"),
             "the one Stage-1 pass is the blended view: {:?}",
             routed.asked[0]
         );
@@ -19887,8 +20333,8 @@ mod tests {
         // #1909: an unlabeled blend of prior turns + current message read to
         // the model like several things to do, and route_multi fired on
         // genuinely single-intent turns as a result. The current request
-        // must be clearly demarcated from background so the model routes
-        // only what the user is asking for *now*.
+        // must be clearly demarcated from the turns ahead of it so the model
+        // routes only what the user is asking for *now*.
         let mut session = new_session();
         session.messages.push(ChatMessage::text(
             Role::User,
@@ -19904,8 +20350,8 @@ mod tests {
 
         let q = stage1_query(&session, "mark it paid");
         assert!(
-            q.contains("PRIOR CONTEXT"),
-            "prior turns must be introduced as background, not left unlabeled: {q:?}"
+            q.contains("CONVERSATION SO FAR"),
+            "prior turns must be introduced as the conversation, not left unlabeled: {q:?}"
         );
         assert!(
             q.contains("CURRENT REQUEST"),

@@ -857,6 +857,53 @@ fn stage1_request_matches_golden() {
     golden::assert_matches("stage1_request", &rendered);
 }
 
+/// Site 4, in a chat that pins a skill (ADR-090 §5): the Stage-1 system
+/// prompt with what the chat pins, and the user message of a reply that
+/// leans on the assistant's last message, framed as `route` frames it.
+#[test]
+fn stage1_request_in_a_pinned_chat_matches_golden() {
+    use nodespace_agent::agent_types::PinnedSubject;
+    use nodespace_agent::local_agent::agent_loop::{
+        stage1_pins_line, stage1_query_from_turns, stage1_system_prompt_in_chat,
+    };
+
+    let authoring = seed_skill_nodes()
+        .into_iter()
+        .find(|t| t.title == "Play Authoring")
+        .expect("the play-authoring skill is seeded");
+    let pinned = [SkillCandidate {
+        id: authoring.id.clone(),
+        name: authoring.title.clone(),
+        use_for: String::new(),
+        score: 0.0,
+        tools: skill_whitelist(&authoring),
+        instructions: String::new(),
+        schema_metadata: serde_json::json!([]),
+        schemas_linked: true,
+        role: Default::default(),
+        pinned: true,
+    }];
+    let play = PinnedSubject {
+        title: Some("Complete a parent task when all its sub-tasks are done".to_string()),
+        node_type: "play".to_string(),
+    };
+    let pins_line = stage1_pins_line(&pinned, &[play]);
+
+    let mut rendered = String::new();
+    rendered.push_str("SYSTEM PROMPT:\n");
+    rendered.push_str(&stage1_system_prompt_in_chat(
+        &seeded_skill_names(),
+        &[],
+        pins_line.as_deref(),
+    ));
+    rendered.push_str("\n\nUSER MESSAGE:\n");
+    rendered.push_str(&stage1_query_from_turns(
+        &["Here is what the play does.\n\nWhat would you like to change?"],
+        "Change when it runs",
+    ));
+    golden::assert_matches("stage1_request_in_a_pinned_chat", &rendered);
+}
+
 /// Every seeded body — skills and resident agent guidance — must reach the
 /// model as the markdown its author wrote: same lines, same order, list
 /// markers and nesting intact. Blank lines are ignored in the comparison
