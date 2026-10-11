@@ -1490,6 +1490,11 @@ async fn validate_no_field_redeclaration(
 /// `parent` the type it would extend. The check cannot live in
 /// [`validate_no_field_redeclaration`], which runs only for a schema that has
 /// a parent: a type with none can still hold both `X` and `custom:X` itself.
+///
+/// It looks down the chain as well as up. A type that extends this one may
+/// already declare `custom:X`, and this edit can put `X` above it: by adding
+/// or renaming a field here, or by giving this schema a parent that declares
+/// one. That is refused too, naming the extending type.
 async fn validate_no_shadowed_extension_fields(
     node_service: &Arc<NodeService>,
     schema_id: &str,
@@ -1498,34 +1503,66 @@ async fn validate_no_shadowed_extension_fields(
 ) -> Result<(), MarkdownError> {
     use crate::services::node_service::extension_field_bare_name;
 
-    let prefixed: Vec<(&str, &str)> = fields
-        .iter()
-        .filter_map(|f| Some((f.name.as_str(), extension_field_bare_name(&f.name)?)))
-        // `org:custom:x` reads as `custom:x`, which no declared `custom:x`
-        // (read as `x`) shadows.
-        .filter(|(_, bare)| extension_field_bare_name(bare).is_none())
-        .collect();
-    if prefixed.is_empty() {
-        return Ok(());
+    /// The extension fields among `fields`, each with the name it is read
+    /// by. `org:custom:x` reads as `custom:x`, which no declared `custom:x`
+    /// (read as `x`) shadows, so it is left out.
+    fn read_names(fields: &[SchemaField]) -> impl Iterator<Item = (&str, &str)> {
+        fields
+            .iter()
+            .filter_map(|f| Some((f.name.as_str(), extension_field_bare_name(&f.name)?)))
+            .filter(|(_, bare)| extension_field_bare_name(bare).is_none())
     }
 
     let inherited_owners = match parent {
         Some(parent) => resolve_field_owners_or_error(node_service, parent).await?.1,
         None => std::collections::HashMap::new(),
     };
-    for (name, bare) in prefixed {
-        let owner = if fields.iter().any(|f| f.name == bare) {
-            schema_id
-        } else if let Some(owner) = inherited_owners.get(bare) {
-            owner.as_str()
+    // The type that would declare `bare` once the edit lands, here or above.
+    let owner_of = |bare: &str| {
+        if fields.iter().any(|f| f.name == bare) {
+            Some(schema_id)
         } else {
+            inherited_owners.get(bare).map(String::as_str)
+        }
+    };
+
+    for (name, bare) in read_names(fields) {
+        if let Some(owner) = owner_of(bare) {
+            return Err(MarkdownError::invalid_params(format!(
+                "'{name}' cannot be declared: '{bare}' is a declared field of the type \
+                 '{owner}', and a rule or query reads that name as the declared field, so \
+                 '{name}' could never be read. Use '{bare}', or give the extension field \
+                 another name."
+            )));
+        }
+    }
+
+    let subtypes = node_service
+        .store()
+        .get_subtype_closure(schema_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to resolve the types extending '{schema_id}': {e}"
+            ))
+        })?;
+    for subtype in subtypes.iter().filter(|id| id.as_str() != schema_id) {
+        let schema = node_service.get_schema_node(subtype).await.map_err(|e| {
+            MarkdownError::internal_error(format!("Failed to get schema '{subtype}': {e}"))
+        })?;
+        let Some(schema) = schema else {
             continue;
         };
-        return Err(MarkdownError::invalid_params(format!(
-            "'{name}' cannot be declared: '{bare}' is a declared field of the type '{owner}', \
-             and a rule or query reads that name as the declared field, so '{name}' could never \
-             be read. Use '{bare}', or give the extension field another name."
-        )));
+        for (name, bare) in read_names(&schema.fields) {
+            if let Some(owner) = owner_of(bare) {
+                return Err(MarkdownError::invalid_params(format!(
+                    "'{bare}' cannot be declared by the type '{owner}' above '{subtype}': \
+                     '{subtype}' declares the extension field '{name}', and a rule or query \
+                     reads that name as the declared field, so '{name}' could never be read. \
+                     Use another name, or rename '{name}' on '{subtype}' first."
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -2961,6 +2998,18 @@ pub async fn update_schema(
             fields_after.retain(|f| !remove_names.contains(&f.name));
         }
         fields_after.extend(params.add_fields.iter().flatten().cloned());
+        // Extending an inherited field's values declares the field on this
+        // schema, and it is read from the parent being left. Under a new
+        // parent the chain no longer accounts for the name, so it is counted
+        // here.
+        for addition in params.add_field_values.iter().flatten() {
+            if !fields_after.iter().any(|f| f.name == addition.field) {
+                fields_after.push(SchemaField {
+                    name: addition.field.clone(),
+                    ..Default::default()
+                });
+            }
+        }
 
         // A new parent is validated before its chain is read: one that does
         // not exist resolves to an empty chain, and the re-target block's

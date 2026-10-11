@@ -3413,7 +3413,7 @@ impl NodeService {
     ///
     /// `owners` maps each declared field to the schema that declares it. No
     /// schema can declare such a name either: a schema edit refuses it the
-    /// same way.
+    /// same way, whichever of the two names it would add.
     pub(crate) fn reject_shadowed_extension_fields(
         node: &Node,
         owners: &std::collections::HashMap<String, String>,

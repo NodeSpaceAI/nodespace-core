@@ -550,18 +550,19 @@ async fn assert_edit_refused(
     bare: &str,
     owner: &str,
 ) {
+    let expected =
+        format!("'{name}' cannot be declared: '{bare}' is a declared field of the type '{owner}'");
+    assert_edit_refused_with(svc, edit, &expected).await;
+}
+
+async fn assert_edit_refused_with(svc: &Arc<NodeService>, edit: serde_json::Value, expected: &str) {
     let schema_id = edit["schema_id"].as_str().unwrap().to_string();
     let before = declared(svc, &schema_id).await;
     let error = handle_update_schema(svc, edit.clone())
         .await
         .expect_err("the schema edit must be refused")
         .to_string();
-    assert!(
-        error.contains(&format!(
-            "'{name}' cannot be declared: '{bare}' is a declared field of the type '{owner}'"
-        )),
-        "{edit}: {error}"
-    );
+    assert!(error.contains(expected), "{edit}: {error}");
     assert_eq!(declared(svc, &schema_id).await, before, "{edit}");
 }
 
@@ -756,6 +757,109 @@ async fn a_new_parent_is_refused_when_it_declares_the_name_of_an_extension_field
     .await
     .expect("the new chain's 'size' is no longer shadowed");
     assert_eq!(declared(&svc, "gadget").await.1.as_deref(), Some("asset"));
+}
+
+/// The declared field can arrive above an extension field that is already
+/// there: a type that extends the edited one declares `custom:colour`, and
+/// the edit would put `colour` in its chain. Refused on the edited type, so
+/// the extending type's field, and its default, stay writable.
+#[tokio::test]
+async fn a_declared_field_is_refused_above_an_extension_field_of_the_same_name() {
+    let (svc, _tmp) = test_service().await;
+    create_schema(
+        &svc,
+        json!({ "name": "Asset", "fields": [{ "name": "colour", "type": "text" }] }),
+    )
+    .await;
+    create_schema(
+        &svc,
+        json!({ "name": "Gadget", "fields": [{ "name": "size", "type": "text" }] }),
+    )
+    .await;
+    create_schema(
+        &svc,
+        json!({
+            "name": "Widget",
+            "extends": "gadget",
+            "fields": [{ "name": "custom:colour", "type": "text", "default": "red" }]
+        }),
+    )
+    .await;
+
+    let on_gadget = "'colour' cannot be declared by the type 'gadget' above 'widget': \
+                     'widget' declares the extension field 'custom:colour'";
+    let added = json!({
+        "schema_id": "gadget",
+        "add_fields": [{ "name": "colour", "type": "text" }]
+    });
+    assert_edit_refused_with(&svc, added, on_gadget).await;
+    let renamed = json!({
+        "schema_id": "gadget",
+        "rename_fields": [{ "from": "size", "to": "colour" }]
+    });
+    assert_edit_refused_with(&svc, renamed, on_gadget).await;
+    // Through a new parent, the declaring type is the one named.
+    let reparented = json!({ "schema_id": "gadget", "extends": "asset" });
+    let on_asset = "'colour' cannot be declared by the type 'asset' above 'widget'";
+    assert_edit_refused_with(&svc, reparented, on_asset).await;
+
+    let id = create(&svc, "widget", "A widget", json!({})).await.unwrap();
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(node.properties["widget"]["custom:colour"], "red");
+
+    // A name no extending type reads is still added.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "gadget",
+            "add_fields": [{ "name": "weight", "type": "text" }]
+        }),
+    )
+    .await
+    .expect("no extension field is read as 'weight'");
+}
+
+/// Extending an inherited field's values declares that field on the schema
+/// itself. In a call that also leaves the parent it came from, the new chain
+/// does not account for the name, and an extension field added beside it in
+/// the same call is still refused.
+#[tokio::test]
+async fn a_field_declared_by_extending_its_values_counts_under_a_new_parent() {
+    let (svc, _tmp) = test_service().await;
+    create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [{
+                "name": "state",
+                "type": "enum",
+                "extensible": true,
+                "coreValues": [{ "value": "open", "label": "Open" }]
+            }]
+        }),
+    )
+    .await;
+    create_schema(
+        &svc,
+        json!({ "name": "Asset", "fields": [{ "name": "size", "type": "text" }] }),
+    )
+    .await;
+    create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await;
+
+    let edit = json!({
+        "schema_id": "bug",
+        "extends": "asset",
+        "add_fields": [{ "name": "custom:state", "type": "text" }],
+        "add_field_values": [{
+            "field": "state",
+            "values": [{ "value": "paused", "label": "Paused", "mapsTo": "open" }]
+        }]
+    });
+    assert_edit_refused(&svc, edit, "custom:state", "state", "bug").await;
 }
 
 /// `undeclared_core_keys` says ahead of a write which flat keys the closed
