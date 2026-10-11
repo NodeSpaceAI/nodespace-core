@@ -539,7 +539,7 @@ pub async fn watch(
 
     let mut client = match connect(sock, interceptor.clone()).await {
         Ok(client) => client,
-        Err(error) => return Ok(Outcome::DaemonUnavailable(format!("{error:#}"))),
+        Err(error) => return Ok(Outcome::DaemonUnavailable(error.to_string())),
     };
     // A check that fails right after a connection was made is the daemon
     // refusing the request, not the daemon going away.
@@ -636,7 +636,7 @@ pub async fn run(
     // A daemon that is not running is this command's own exit status, told
     // apart from a database selection that names nothing.
     let outcome = match connect_database(sock).await {
-        Err(error) => Outcome::DaemonUnavailable(format!("{error:#}")),
+        Err(error) => Outcome::DaemonUnavailable(error.to_string()),
         Ok(_) => {
             let (interceptor, _) = resolve_routing(sock, selection).await?;
             watch(
