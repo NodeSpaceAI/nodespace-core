@@ -3411,10 +3411,9 @@ impl NodeService {
     /// be stored and never read. The name is refused in every bucket of the
     /// chain, a user subtype's open one included: the read is the same there.
     ///
-    /// `owners` maps each declared field to the schema that declares it. A
-    /// key a schema declares under its prefixed name is not refused here:
-    /// which names a schema may declare is the schema edit's to decide, and a
-    /// declared field with a default must stay writable.
+    /// `owners` maps each declared field to the schema that declares it. No
+    /// schema can declare such a name either: a schema edit refuses it the
+    /// same way.
     pub(crate) fn reject_shadowed_extension_fields(
         node: &Node,
         owners: &std::collections::HashMap<String, String>,
@@ -3433,7 +3432,7 @@ impl NodeService {
                 };
                 // `org:custom:x` reads as `custom:x`, which no declared
                 // `custom:x` (read as `x`) shadows.
-                if owners.contains_key(key) || is_extension_field_name(bare) {
+                if is_extension_field_name(bare) {
                     continue;
                 }
                 if let Some(owner) = owners.get(bare) {

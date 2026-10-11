@@ -1174,7 +1174,7 @@ async fn test_rename_field_friendly_name_empty_string_disambiguates_against_a_si
             "name": "CollidingLabelTest",
             "fields": [
                 { "name": "due_date", "type": "date", "protection": "user", "indexed": false, "friendlyName": "Something Else" },
-                { "name": "custom:due_date", "type": "date", "protection": "user", "indexed": false, "friendlyName": "Due date" }
+                { "name": "dueDate", "type": "date", "protection": "user", "indexed": false, "friendlyName": "Due date" }
             ]
         }),
     )
@@ -3728,27 +3728,27 @@ async fn test_update_schema_add_fields_respects_explicit_friendly_name() {
     );
 }
 
-/// `custom:status` stripped and humanized for display derives the exact same
-/// text ("Status") as the core `task` schema's existing `status` field —
-/// different storage keys, same display label, reachable today via any
-/// namespaced field whose base name happens to match an existing field on
-/// the same schema. The write boundary must disambiguate the derived value
-/// rather than let it collide.
+/// `custom:storyPoints` stripped and humanized for display derives the exact
+/// same text ("Story points") as an existing `custom:story_points` field:
+/// different storage keys, same display label. The write boundary must
+/// disambiguate the derived value rather than let it collide.
 #[tokio::test]
 async fn test_update_schema_add_fields_disambiguates_friendly_name_colliding_with_existing_field() {
     let (svc, _tmp) = create_test_service().await;
 
-    handle_update_schema(
-        &svc,
-        json!({
-            "schema_id": "task",
-            "add_fields": [
-                { "name": "custom:status", "type": "text", "protection": "user", "indexed": false }
-            ]
-        }),
-    )
-    .await
-    .expect("update_schema add_fields should succeed");
+    for name in ["custom:story_points", "custom:storyPoints"] {
+        handle_update_schema(
+            &svc,
+            json!({
+                "schema_id": "task",
+                "add_fields": [
+                    { "name": name, "type": "text", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("update_schema add_fields should succeed");
+    }
 
     let schema = svc
         .get_schema_node("task")
@@ -3756,24 +3756,26 @@ async fn test_update_schema_add_fields_disambiguates_friendly_name_colliding_wit
         .expect("get_schema_node failed")
         .expect("task schema should exist");
 
-    let core_status = schema.get_field("status").expect("core status field");
-    let custom_status = schema
-        .get_field("custom:status")
-        .expect("custom:status field should have been added");
+    let existing = schema
+        .get_field("custom:story_points")
+        .expect("the first field");
+    let added = schema
+        .get_field("custom:storyPoints")
+        .expect("the second field should have been added");
 
-    assert_eq!(core_status.friendly_name, "Status");
+    assert_eq!(existing.friendly_name, "Story points");
     assert_ne!(
-        custom_status.friendly_name, core_status.friendly_name,
+        added.friendly_name, existing.friendly_name,
         "a derived friendly_name that collides with an existing field's must be disambiguated, \
          not silently duplicated: got {:?}",
-        custom_status.friendly_name
+        added.friendly_name
     );
     // The namespace is the disambiguator, so the collision is legible, not
     // just different.
     assert!(
-        custom_status.friendly_name.contains("custom"),
+        added.friendly_name.contains("custom"),
         "expected the namespace to disambiguate the label, got {:?}",
-        custom_status.friendly_name
+        added.friendly_name
     );
 }
 
@@ -3821,7 +3823,7 @@ async fn test_update_schema_add_fields_does_not_rewrite_an_explicit_colliding_fr
             "schema_id": "task",
             "add_fields": [
                 {
-                    "name": "custom:status",
+                    "name": "custom:state",
                     "friendlyName": "Status",
                     "type": "text",
                     "protection": "user",
@@ -3839,7 +3841,7 @@ async fn test_update_schema_add_fields_does_not_rewrite_an_explicit_colliding_fr
         .expect("get_schema_node failed")
         .expect("task schema should exist");
     assert_eq!(
-        schema.get_field("custom:status").unwrap().friendly_name,
+        schema.get_field("custom:state").unwrap().friendly_name,
         "Status",
         "an explicitly-supplied friendly_name must never be silently rewritten"
     );
@@ -7504,4 +7506,32 @@ async fn test_required_field_without_default_rejected_over_nodes_lacking_it() {
         .expect_err("the ticket node has no size")
         .to_string();
     assert!(msg.contains("required field 'size'"), "{msg}");
+}
+
+// ============================================================================
+// An extension field named after a declared field (ADR-097 §6)
+// ============================================================================
+
+/// `org:custom:x` reads as `custom:x`, and the declared `custom:x` reads as
+/// `x`, so neither shadows the other. Called directly: the field-name grammar
+/// refuses a second prefix before a schema edit reaches this check.
+#[tokio::test]
+async fn a_doubly_prefixed_field_is_not_shadowed_by_a_singly_prefixed_one() {
+    let (svc, _tmp) = create_test_service().await;
+    let field = |name: &str| SchemaField {
+        name: name.to_string(),
+        ..Default::default()
+    };
+
+    let fields = [field("custom:x"), field("org:custom:x")];
+    validate_no_shadowed_extension_fields(&svc, "gadget", None, &fields)
+        .await
+        .expect("neither name is read as the other");
+
+    let fields = [field("x"), field("custom:x")];
+    let error = validate_no_shadowed_extension_fields(&svc, "gadget", None, &fields)
+        .await
+        .expect_err("'custom:x' is read as the declared 'x'")
+        .to_string();
+    assert!(error.contains("'custom:x' cannot be declared"), "{error}");
 }

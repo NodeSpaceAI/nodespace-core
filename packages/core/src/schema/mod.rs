@@ -323,9 +323,9 @@ fn warn_reserved_property_names(fields: Vec<SchemaField>) -> (Vec<SchemaField>, 
 /// Collision disambiguation exists because stripping a namespace prefix for
 /// display (`derive_friendly_name`'s job) is a display-only operation, but it
 /// is reachable *today*, not just in some future release: adding
-/// `custom:status` next to an existing core `status` field derives "Status"
-/// for both, since `custom:` and bare `status` are different storage keys
-/// but the same stripped/humanized display text. Only a *derived* value is
+/// `custom:storyPoints` next to an existing `custom:story_points` derives
+/// "Story points" for both, since they are different storage keys but the
+/// same stripped/humanized display text. Only a *derived* value is
 /// ever adjusted — a friendly_name the caller explicitly supplied is never
 /// rewritten out from under them, even if it collides; that ambiguity is
 /// their call, not this function's to silently correct.
@@ -1478,6 +1478,58 @@ async fn validate_no_field_redeclaration(
     Ok(())
 }
 
+/// Refuse an extension field named after a declared field (ADR-097 §6).
+///
+/// A rule or a query reads an extension field by its bare name
+/// (`custom:amount` as `amount`), and a declared field always wins that name,
+/// anywhere in the type's chain. So a `custom:status` declared on `task`, or
+/// on a type extending it, could be stored and never read. The node write
+/// refuses the same name (`NodeService::reject_shadowed_extension_fields`).
+///
+/// `fields` is the schema's own field list as the edit would leave it, and
+/// `parent` the type it would extend. The check cannot live in
+/// [`validate_no_field_redeclaration`], which runs only for a schema that has
+/// a parent: a type with none can still hold both `X` and `custom:X` itself.
+async fn validate_no_shadowed_extension_fields(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+    parent: Option<&str>,
+    fields: &[SchemaField],
+) -> Result<(), MarkdownError> {
+    use crate::services::node_service::extension_field_bare_name;
+
+    let prefixed: Vec<(&str, &str)> = fields
+        .iter()
+        .filter_map(|f| Some((f.name.as_str(), extension_field_bare_name(&f.name)?)))
+        // `org:custom:x` reads as `custom:x`, which no declared `custom:x`
+        // (read as `x`) shadows.
+        .filter(|(_, bare)| extension_field_bare_name(bare).is_none())
+        .collect();
+    if prefixed.is_empty() {
+        return Ok(());
+    }
+
+    let inherited_owners = match parent {
+        Some(parent) => resolve_field_owners_or_error(node_service, parent).await?.1,
+        None => std::collections::HashMap::new(),
+    };
+    for (name, bare) in prefixed {
+        let owner = if fields.iter().any(|f| f.name == bare) {
+            schema_id
+        } else if let Some(owner) = inherited_owners.get(bare) {
+            owner.as_str()
+        } else {
+            continue;
+        };
+        return Err(MarkdownError::invalid_params(format!(
+            "'{name}' cannot be declared: '{bare}' is a declared field of the type '{owner}', \
+             and a rule or query reads that name as the declared field, so '{name}' could never \
+             be read. Use '{bare}', or give the extension field another name."
+        )));
+    }
+    Ok(())
+}
+
 /// Resolve a schema's effective field set: its own fields plus every
 /// ancestor's, nearest scope first.
 ///
@@ -2084,6 +2136,8 @@ pub async fn create_schema(
         validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
         validate_no_relationship_redeclaration(node_service, parent_id, &relationships).await?;
     }
+    validate_no_shadowed_extension_fields(node_service, &schema_id, extends_parent, &stored_fields)
+        .await?;
     validate_structural_rules(
         node_service,
         &schema_id,
@@ -2978,6 +3032,44 @@ pub async fn update_schema(
                 }
             }
         }
+    }
+
+    // --- Phase 0: Reject an extension field named after a declared field ---
+    //
+    // Checked over the field list this call would leave, against the parent
+    // it would leave, so one check covers `add_fields`, `rename_fields` and
+    // an `extends` re-target, and a call that also removes or renames the
+    // declared field away is legal. Ahead of Phase 1, which commits a rename
+    // as it runs.
+    {
+        let mut fields_after = schema_before.fields.clone();
+        for rename in params.rename_fields.iter().flatten() {
+            if let Some(field) = fields_after.iter_mut().find(|f| f.name == rename.from) {
+                field.name = rename.to.clone();
+            }
+        }
+        if let Some(ref remove_names) = params.remove_fields {
+            fields_after.retain(|f| !remove_names.contains(&f.name));
+        }
+        fields_after.extend(params.add_fields.iter().flatten().cloned());
+
+        // A new parent is validated before its chain is read: one that does
+        // not exist resolves to an empty chain, and the re-target block's
+        // own refusal would come only after Phase 1.
+        let parent_after = match params.extends.as_deref().map(str::trim) {
+            Some(new_parent) => {
+                validate_extends_target(node_service, &params.schema_id, new_parent).await?;
+                Some(new_parent)
+            }
+            None => schema_before.extends.as_deref(),
+        };
+        validate_no_shadowed_extension_fields(
+            node_service,
+            &params.schema_id,
+            parent_after,
+            &fields_after,
+        )
+        .await?;
     }
 
     // --- Phase 1: Process renames (identity renames migrate data; display-only renames do not) ---
