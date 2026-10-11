@@ -444,6 +444,118 @@ async fn a_namespaced_key_and_a_bookkeeping_key_are_accepted() {
     }
 }
 
+/// An extension field named after a field the type declares could never be
+/// read: a rule reads `custom:status` as `status`, and the declared field
+/// wins that name. The write is refused and names the declared field
+/// (ADR-097 §6). The same name on a type that declares no such field is an
+/// ordinary extension field.
+#[tokio::test]
+async fn an_extension_field_named_after_a_declared_field_is_rejected() {
+    let (svc, _tmp) = test_service().await;
+
+    for (key, bare) in [
+        ("custom:status", "status"),
+        ("org:priority", "priority"),
+        ("plugin:due_date", "due_date"),
+    ] {
+        let error = message(create(&svc, "task", "A task", json!({ key: "x" })).await);
+        assert!(
+            error.contains(&format!(
+                "'{key}' cannot be set: '{bare}' is a declared field of the type 'task'"
+            )),
+            "{error}"
+        );
+    }
+
+    // On an update as on a create.
+    let id = create(&svc, "task", "A task", json!({})).await.unwrap();
+    let version = svc.get_node(&id).await.unwrap().unwrap().version;
+    let error = message(
+        svc.update_node(
+            &id,
+            version,
+            NodeUpdate::new().with_properties(json!({ "custom:status": "blocked" })),
+        )
+        .await,
+    );
+    assert!(error.contains("'status' is a declared field"), "{error}");
+
+    // Written straight into the bucket, it is refused the same way.
+    let error = message(
+        create(
+            &svc,
+            "task",
+            "A task",
+            json!({ "task": { "status": "open", "custom:status": "x" } }),
+        )
+        .await,
+    );
+    assert!(error.contains("'status' is a declared field"), "{error}");
+
+    // `text` declares no `status`, so there the name shadows nothing.
+    let id = create(&svc, "text", "A line", json!({ "custom:status": "x" }))
+        .await
+        .expect("no declared field of that name");
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(node.properties["text"]["custom:status"], "x");
+}
+
+/// The refusal follows the read, which takes a declared name from anywhere
+/// in the chain: on a user subtype of a core type, an extension field named
+/// after an inherited field, or after one of the subtype's own, is refused in
+/// the subtype's open bucket too, and the message names the declaring type.
+#[tokio::test]
+async fn a_subtype_refuses_an_extension_field_named_after_any_field_in_its_chain() {
+    let (svc, _tmp) = test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Chore",
+            "extends": "task",
+            "fields": [{ "name": "room", "type": "text" }]
+        }),
+    )
+    .await
+    .expect("a user subtype of a core type");
+
+    for (key, owner) in [("custom:status", "task"), ("custom:room", "chore")] {
+        let error = message(create(&svc, "chore", "A chore", json!({ key: "x" })).await);
+        assert!(
+            error.contains(&format!("is a declared field of the type '{owner}'")),
+            "{key}: {error}"
+        );
+    }
+    create(&svc, "chore", "A chore", json!({ "custom:colour": "red" }))
+        .await
+        .expect("no declared field of that name");
+}
+
+/// A schema may still declare a field under a prefixed name that matches a
+/// declared one. A field the schema declares is written like any other, so
+/// its default does not turn every create into a refusal.
+#[tokio::test]
+async fn an_extension_field_the_schema_declares_is_still_written() {
+    let (svc, _tmp) = test_service().await;
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_fields": [{ "name": "custom:status", "type": "text", "default": "triage" }]
+        }),
+    )
+    .await
+    .expect("adding the field");
+
+    let id = create(&svc, "task", "A task", json!({}))
+        .await
+        .expect("the declared field's default is accepted");
+    let node = svc.get_node(&id).await.unwrap().unwrap();
+    assert_eq!(node.properties["task"]["custom:status"], "triage");
+    create(&svc, "task", "A task", json!({ "custom:status": "later" }))
+        .await
+        .expect("a declared field is written by its name");
+}
+
 /// `undeclared_core_keys` says ahead of a write which flat keys the closed
 /// bucket will refuse. The two must agree key for key, in both directions: a
 /// key it lists that is accepted would be renamed by a caller for nothing,

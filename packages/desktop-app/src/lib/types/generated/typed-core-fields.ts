@@ -10,8 +10,7 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
     { storage: 'started_at', wire: 'startedAt', date: true },
     { storage: 'completed_at', wire: 'completedAt', date: true },
     { storage: 'pull_request', wire: 'pullRequest', structured: 'object' },
-    { storage: 'commits', wire: 'commits', structured: 'array' },
-    { storage: 'requires_spec', wire: 'requiresSpec', structured: 'boolean' }
+    { storage: 'commits', wire: 'commits', structured: 'array' }
   ],
   project: [
     { storage: 'status', wire: 'status' },
@@ -109,7 +108,7 @@ export const TYPED_CORE_FIELDS: Readonly<Record<string, readonly TypedCoreField[
  * Consumers copy before use, since a default can be an array.
  */
 export const TYPED_CORE_DEFAULTS: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
-  task: { requiresSpec: true, status: 'open' },
+  task: { status: 'open' },
   project: { status: 'planning' },
   spec: { specStatus: 'draft' },
   plan: { planStatus: 'draft' },

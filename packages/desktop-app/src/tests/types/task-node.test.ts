@@ -30,7 +30,6 @@ describe('TaskNode Type Guard', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open'
     };
 
@@ -64,7 +63,6 @@ describe('getTaskStatus', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'in_progress'
     };
 
@@ -96,7 +94,6 @@ describe('setTaskStatus', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open'
     };
 
@@ -122,7 +119,6 @@ describe('getTaskPriority', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open',
       priority: 'high'
     };
@@ -140,7 +136,6 @@ describe('getTaskPriority', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open'
     };
 
@@ -157,7 +152,6 @@ describe('getTaskPriority', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open',
       priority: 'medium'
     };
@@ -177,7 +171,6 @@ describe('setTaskPriority', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open',
       priority: 'low'
     };
@@ -200,7 +193,6 @@ describe('getTaskDueDate', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open',
       dueDate: '2025-12-31'
     };
@@ -218,7 +210,6 @@ describe('getTaskDueDate', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open',
       dueDate: undefined
     };
@@ -238,7 +229,6 @@ describe('setTaskDueDate', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open'
     };
 
@@ -258,7 +248,6 @@ describe('setTaskDueDate', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open',
       dueDate: '2025-06-15'
     };
@@ -281,7 +270,6 @@ describe('TaskNodeHelpers', () => {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         version: 1,
-        requiresSpec: true,
         status: 'done'
       };
 
@@ -298,7 +286,6 @@ describe('TaskNodeHelpers', () => {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         version: 1,
-        requiresSpec: true,
         status: 'cancelled'
       };
 
@@ -315,7 +302,6 @@ describe('TaskNodeHelpers', () => {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         version: 1,
-        requiresSpec: true,
         status: 'open'
       };
 
@@ -334,7 +320,6 @@ describe('TaskNodeHelpers', () => {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         version: 1,
-        requiresSpec: true,
         status: 'in_progress'
       };
 
@@ -351,7 +336,6 @@ describe('TaskNodeHelpers', () => {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         version: 1,
-        requiresSpec: true,
         status: 'open'
       };
 
@@ -370,7 +354,6 @@ describe('TaskNodeHelpers', () => {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         version: 1,
-        requiresSpec: true,
         status: 'open'
       };
 
@@ -479,7 +462,6 @@ describe('Integration', () => {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       version: 1,
-      requiresSpec: true,
       status: 'open',
       priority: 'medium'
     };
@@ -518,7 +500,6 @@ describe('Integration', () => {
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),
         version: 1,
-        requiresSpec: true,
         status,
         priority
       };

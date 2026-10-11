@@ -30,7 +30,7 @@ const SPEC_NEEDS_CRITERIA: &str = "cannot be approved until it has success crite
 const PLAN_NEEDS_APPROVED_SPEC: &str = "cannot be approved until it is linked to an approved spec";
 const PLAN_CREATED_APPROVED: &str = "cannot be created already approved";
 const TASK_NEEDS_LINEAGE: &str = "until that plan is approved and the task is linked";
-const TASK_NEEDS_APPROVED_SPEC: &str = "it is not linked to an approved spec";
+const TASK_SPEC_NOT_APPROVED: &str = "none of its specs is approved";
 const TASK_IS_BLOCKED: &str = "blocked by a task that is not finished";
 const TASK_HAS_UNCHECKED_ITEM: &str = "its checklist has an unchecked item";
 const TASK_NEEDS_CRITERIA: &str = "cannot be marked done without acceptance criteria";
@@ -92,17 +92,8 @@ impl Harness {
             .await?)
     }
 
-    /// An open task in the light lane (`requires_spec: false`), so the tests
-    /// of every other rule can start it without first linking an approved
-    /// spec. The spec rule's own tests use [`Self::spec_gated_task`].
+    /// An open task as a user creates it: no spec, no plan, no checklist.
     pub(crate) async fn task(&self) -> Result<String> {
-        self.create("task", json!({ "status": "open", "requires_spec": false }))
-            .await
-    }
-
-    /// An open task as a user creates it: nothing marks it as not needing a
-    /// spec, so the schema default (a spec is required) applies.
-    pub(crate) async fn spec_gated_task(&self) -> Result<String> {
         self.create("task", json!({ "status": "open" })).await
     }
 
@@ -715,49 +706,40 @@ async fn a_blocked_task_can_be_cancelled() -> Result<()> {
 // Task spec (ADR-097)
 // ---------------------------------------------------------------------------
 
-/// A task nobody marked cannot start with no spec linked, and the refusal
-/// says what to do next. Cancelling is still allowed, and the task starts
-/// once an approved spec is linked.
+/// A task that links no spec is an ordinary to-do: it starts with nothing
+/// set on it (ADR-097 §6).
 #[tokio::test]
-async fn a_task_with_no_spec_cannot_start() -> Result<()> {
+async fn a_task_with_no_spec_starts_with_nothing_set() -> Result<()> {
     let h = Harness::start().await?;
-    let task = h.spec_gated_task().await?;
-    assert_rejected(
-        h.set_status(&task, "in_progress").await,
-        TASK_NEEDS_APPROVED_SPEC,
-        "no spec is linked",
-    );
-    let refused = h.set_status(&task, "in_progress").await;
-    let Err(NodeServiceError::PlayRuleRejected { message, .. }) = refused else {
-        panic!("expected a refusal, got {refused:?}");
-    };
-    assert!(message.contains("Writing a Spec"), "{message}");
-    assert!(message.contains("nodespace "), "{message}");
-    assert!(message.contains("do not retry"), "{message}");
-
-    h.set_status(&task, "cancelled").await?;
-
-    let other = h.spec_gated_task().await?;
-    let spec = h.approved_spec().await?;
-    h.link(&spec, "tasks", &other).await?;
-    h.set_status(&other, "in_progress").await?;
+    let task = h.task().await?;
+    h.set_status(&task, "in_progress").await?;
     h.stop().await;
     Ok(())
 }
 
-/// A linked spec that is still a draft does not count, whether or not the
-/// task has a plan. This is the case the lineage rule does not reach.
+/// A linked spec that is still a draft holds the task, whether or not the
+/// task has a plan: the case the lineage rule does not reach. The refusal
+/// says what to do next, cancelling is still allowed, and the task starts
+/// once the spec is approved.
 #[tokio::test]
 async fn a_task_with_a_draft_spec_and_no_plan_cannot_start() -> Result<()> {
     let h = Harness::start().await?;
-    let task = h.spec_gated_task().await?;
+    let task = h.task().await?;
     let spec = h.create("spec", json!({})).await?;
     h.link(&spec, "tasks", &task).await?;
-    assert_rejected(
-        h.set_status(&task, "in_progress").await,
-        TASK_NEEDS_APPROVED_SPEC,
-        "the spec is a draft",
-    );
+    let refused = h.set_status(&task, "in_progress").await;
+    let Err(NodeServiceError::PlayRuleRejected { message, .. }) = refused else {
+        panic!("expected a refusal, got {refused:?}");
+    };
+    assert!(message.contains(TASK_SPEC_NOT_APPROVED), "{message}");
+    assert!(message.contains("Writing a Spec"), "{message}");
+    assert!(message.contains("nodespace "), "{message}");
+    assert!(message.contains("do not retry"), "{message}");
+    assert!(message.contains("ask the user to approve"), "{message}");
+
+    let abandoned = h.task().await?;
+    h.link(&spec, "tasks", &abandoned).await?;
+    h.set_status(&abandoned, "cancelled").await?;
 
     h.child(&spec, "checkbox", "- [ ] It works").await?;
     h.set(&spec, json!({ "spec_status": "approved" })).await?;
@@ -766,24 +748,25 @@ async fn a_task_with_a_draft_spec_and_no_plan_cannot_start() -> Result<()> {
     Ok(())
 }
 
-/// The light lane: a task marked as not needing a spec starts with none
-/// linked, and one explicitly marked as needing one is held to the rule.
+/// A task that links several specs starts when any one of them is approved
+/// (ADR-097 §2), and not while all of them are drafts.
 #[tokio::test]
-async fn a_task_marked_as_not_needing_a_spec_can_start() -> Result<()> {
+async fn a_task_with_several_specs_starts_when_one_is_approved() -> Result<()> {
     let h = Harness::start().await?;
-    let chore = h.task().await?;
-    h.set_status(&chore, "in_progress").await?;
-
-    let task = h.spec_gated_task().await?;
-    h.set(&task, json!({ "requires_spec": false })).await?;
-    h.set_status(&task, "in_progress").await?;
-    h.set_status(&task, "open").await?;
-    h.set(&task, json!({ "requires_spec": true })).await?;
+    let task = h.task().await?;
+    let first = h.create("spec", json!({})).await?;
+    let second = h.create("spec", json!({})).await?;
+    h.link(&first, "tasks", &task).await?;
+    h.link(&second, "tasks", &task).await?;
     assert_rejected(
         h.set_status(&task, "in_progress").await,
-        TASK_NEEDS_APPROVED_SPEC,
-        "the task is marked as needing a spec",
+        TASK_SPEC_NOT_APPROVED,
+        "both specs are drafts",
     );
+
+    h.child(&second, "checkbox", "- [ ] It works").await?;
+    h.set(&second, json!({ "spec_status": "approved" })).await?;
+    h.set_status(&task, "in_progress").await?;
     h.stop().await;
     Ok(())
 }
@@ -793,10 +776,12 @@ async fn a_task_marked_as_not_needing_a_spec_can_start() -> Result<()> {
 #[tokio::test]
 async fn the_spec_play_switched_off_or_emptied_stops_rejecting() -> Result<()> {
     let h = Harness::start().await?;
-    let task = h.spec_gated_task().await?;
+    let task = h.task().await?;
+    let spec = h.create("spec", json!({})).await?;
+    h.link(&spec, "tasks", &task).await?;
     assert_rejected(
         h.set_status(&task, "in_progress").await,
-        TASK_NEEDS_APPROVED_SPEC,
+        TASK_SPEC_NOT_APPROVED,
         "the rule is on",
     );
 
@@ -1321,7 +1306,6 @@ async fn started_at_is_stamped_on_the_first_start() -> Result<()> {
             "task",
             json!({
                 "status": "open",
-                "requires_spec": false,
                 "started_at": "2026-01-02"
             }),
         )

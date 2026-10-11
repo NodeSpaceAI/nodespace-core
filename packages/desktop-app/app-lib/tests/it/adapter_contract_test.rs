@@ -63,9 +63,7 @@ async fn task_tri_state_update_clear_set_no_change_matches_the_http_adapter_cont
         .await
         .expect("create task failed");
 
-    // Set: priority -> "high", status -> in_progress. A task starts without
-    // an approved spec only when it is marked as not needing one, and the
-    // marker travels in the same write.
+    // Set: priority -> "high", status -> in_progress.
     let updated = update_task_node(
         state.clone(),
         id.clone(),
@@ -73,7 +71,6 @@ async fn task_tri_state_update_clear_set_no_change_matches_the_http_adapter_cont
         TaskNodeUpdate {
             priority: Some(Some(Priority::High)),
             status: Some(TaskStatus::InProgress),
-            requires_spec: Some(false),
             ..Default::default()
         },
     )
@@ -81,7 +78,6 @@ async fn task_tri_state_update_clear_set_no_change_matches_the_http_adapter_cont
     .expect("update_task_node (set) failed");
     assert_eq!(updated["priority"], json!("high"));
     assert_eq!(updated["status"], json!("in_progress"));
-    assert_eq!(updated["requiresSpec"], json!(false));
     let version_after_set = updated["version"]
         .as_i64()
         .expect("version must be a number");
