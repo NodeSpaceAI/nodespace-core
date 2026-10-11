@@ -2656,7 +2656,7 @@ mod tests {
         let schemas = get_core_schemas();
         let task = schemas.iter().find(|s| s.envelope.id == "task").unwrap();
 
-        assert_eq!(task.fields.len(), 8);
+        assert_eq!(task.fields.len(), 7);
         assert!(task.get_field("status").is_some());
         assert!(task.get_field("priority").is_some());
         assert!(task.get_field("due_date").is_some());
