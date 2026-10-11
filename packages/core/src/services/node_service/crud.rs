@@ -3360,14 +3360,18 @@ impl NodeService {
         Ok(())
     }
 
-    /// Refuse an extension field named after a declared field, in a core
-    /// type's bucket (ADR-097 §6).
+    /// Refuse an extension field named after a declared field (ADR-097 §6).
     ///
     /// A rule or a query reads an extension field by its bare name
     /// (`custom:amount` as `amount`), and a declared field always wins that
     /// name, anywhere in the node's chain. So `custom:status` on a task could
-    /// be stored and never read. `owners` maps each declared field to the
-    /// schema that declares it.
+    /// be stored and never read. The name is refused in every bucket of the
+    /// chain, a user subtype's open one included: the read is the same there.
+    ///
+    /// `owners` maps each declared field to the schema that declares it. A
+    /// key a schema declares under its prefixed name is not refused here:
+    /// which names a schema may declare is the schema edit's to decide, and a
+    /// declared field with a default must stay writable.
     pub(crate) fn reject_shadowed_extension_fields(
         node: &Node,
         owners: &std::collections::HashMap<String, String>,
@@ -3377,9 +3381,6 @@ impl NodeService {
             return Ok(());
         };
         for scope in chain {
-            if crate::models::CoreNodeType::from_id(scope).is_none() {
-                continue;
-            }
             let Some(bucket) = buckets.get(scope.as_str()).and_then(|v| v.as_object()) else {
                 continue;
             };
@@ -3387,6 +3388,11 @@ impl NodeService {
                 let Some(bare) = extension_field_bare_name(key) else {
                     continue;
                 };
+                // `org:custom:x` reads as `custom:x`, which no declared
+                // `custom:x` (read as `x`) shadows.
+                if owners.contains_key(key) || is_extension_field_name(bare) {
+                    continue;
+                }
                 if let Some(owner) = owners.get(bare) {
                     return Err(NodeServiceError::invalid_update(format!(
                         "'{key}' cannot be set: '{bare}' is a declared field of the type \

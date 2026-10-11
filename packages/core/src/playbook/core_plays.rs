@@ -387,6 +387,8 @@ pub fn task_lineage_rules() -> serde_json::Value {
 ///
 /// The `spec_status` read is `has()`-guarded: a spec that has none is not
 /// approved, and a missing key would otherwise fail the condition and allow.
+/// The last condition reads `node.spec` unguarded because conditions are
+/// checked in order, and the one before it has established the link.
 pub fn task_spec_rules() -> serde_json::Value {
     json!([reject_change(
         "reject-starting-a-task-whose-spec-is-not-approved",
@@ -805,7 +807,7 @@ mod tests {
         assert!(message.contains("do not retry"), "says not to retry");
         assert!(message.contains("ask the user to approve"), "{message}");
         assert!(
-            !message.contains("--property"),
+            !message.contains("node update"),
             "names no marker: {message}"
         );
     }
