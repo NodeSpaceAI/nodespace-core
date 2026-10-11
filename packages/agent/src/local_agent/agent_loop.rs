@@ -5642,7 +5642,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         let mut passes = 0usize;
         let mut stage1_skipped = false;
         // In a chat that pins a skill, a reply that is one of the options the
-        // assistant's last message offered is not put to Stage 1 either
+        // chat's opening message offered is not put to Stage 1 either
         // (ADR-090 §5). The chat offered it, so it is never ambiguous there,
         // and what it asks for is read off its own words.
         let picked_option = (pinned_chat
@@ -5808,7 +5808,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     // attribute) so an eval scraping the daemon's text log — which has
                     // no OTel exporter attached — can observe which of Stage 1's
                     // outcomes (query/lookup/multi/multi_rejected/clarify/
-                    // clarify_suppressed/none) fired, rather than inferring it
+                    // clarify_suppressed/clarify_pinned/none) fired, rather than inferring it
                     // from reply text or downstream tool effects.
                     tracing::info!(
                         routing_decision = "clarify",
@@ -5907,7 +5907,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         let elapsed_ms = started.elapsed().as_millis() as i64;
         span.set_attribute(KeyValue::new("routing.latency_ms", elapsed_ms));
         // `routing_decision` here covers the outcomes that reach this line
-        // (query/lookup/multi/multi_rejected/clarify_suppressed/none); the plain
+        // (query/lookup/multi/multi_rejected/clarify_suppressed/clarify_pinned/none); the plain
         // `clarify` outcome returns earlier and logs its own "stage-1 routing decision" line above. Both
         // carry the same field name so a log scraper (an eval, a dashboard) can
         // grep one key regardless of which path a turn took.
@@ -6367,8 +6367,8 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         }
     }
 
-    /// Set the options the assistant's last message offered, for a session
-    /// rebuilt from a chat whose last message offered any.
+    /// Set the options of the message a chat was opened with, for a session
+    /// whose turn answers that message.
     pub async fn set_session_offered_options(&self, session_id: &str, options: Vec<String>) {
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
@@ -16034,8 +16034,12 @@ mod tests {
         assert_eq!(turn.result.response, "Which rule?");
         // The pinned skill leads, though retrieval scored the search skill
         // and gave the pinned one no score at all.
-        let authoring = turn.prompts[0].find("INSTRUCTIONS FOR authoring");
-        let research = turn.prompts[0].find("INSTRUCTIONS FOR research");
+        let authoring = turn.prompts[0]
+            .find("INSTRUCTIONS FOR authoring")
+            .expect("the pinned skill is rendered");
+        let research = turn.prompts[0]
+            .find("INSTRUCTIONS FOR research")
+            .expect("the retrieved skill is rendered");
         assert!(authoring < research, "{}", turn.prompts[0]);
     }
 

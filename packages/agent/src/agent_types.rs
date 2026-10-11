@@ -511,10 +511,10 @@ pub struct AgentSession {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_subjects: Vec<PinnedSubject>,
 
-    /// The options the assistant's last message offered, when the message
-    /// this turn answers follows one that offered any. A reply that is one
-    /// of them in a chat that pins a skill is routed without asking Stage 1
-    /// (ADR-090 §5).
+    /// The options of the message the chat was opened with (ADR-090 §3),
+    /// when this turn answers that message. A reply that is one of them in a
+    /// chat that pins a skill is routed without asking Stage 1 (ADR-090 §5).
+    /// Empty on every later turn, and in a chat the user opened.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub offered_options: Vec<String>,
 

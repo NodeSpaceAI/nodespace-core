@@ -9,7 +9,7 @@
 use nodespace_agent::skill_pipeline::PLAY_AUTHORING_SKILL_ID;
 use nodespace_core::models::{
     AiChatMessageRole, AiChatTurnOutcome, CoreNodeType, Node, PlayFields, AI_CHAT_PINS,
-    NODESPACE_AGENT,
+    NODESPACE_AGENT, PLAY_RULES_FIELD,
 };
 use nodespace_core::playbook::types::{
     GraphEventType, RuleClass, RuleDefinition, Selector, Trigger,
@@ -207,13 +207,17 @@ fn opening_message(title: &str, play: &Node) -> String {
     };
     let mut message = format!("Here is what [{label}](nodespace://{}) does.", play.id);
 
-    // A play whose rules do not decode still has a description to show.
+    // A play with a field that does not decode still shows the ones that
+    // do. Its rules are unreadable only when rules are stored and none
+    // decoded: another field failing leaves them as readable as they were.
     let (fields, rules_readable) = match PlayFields::from_properties(&play.properties) {
         Ok(fields) => (fields, true),
-        Err(_) => (
-            PlayFields::readable_from_properties(&play.properties),
-            false,
-        ),
+        Err(_) => {
+            let fields = PlayFields::readable_from_properties(&play.properties);
+            let stored = PlayFields::stored_field(&play.properties, PLAY_RULES_FIELD).is_some();
+            let readable = !stored || !fields.rules.is_empty();
+            (fields, readable)
+        }
     };
     if let Some(description) = fields.description.as_deref().map(one_line) {
         if !description.is_empty() {
@@ -579,6 +583,18 @@ mod tests {
                  \n\
                  What would you like to change?"
             )
+        );
+
+        // Another field failing to decode does not make the rules unreadable.
+        let bad_switch = Node::new(
+            "play".to_string(),
+            "Half broken".to_string(),
+            json!({ "enabled": "yes", "rules": [close_parent_rule()] }),
+        );
+        let content = opening_message("Half broken", &bad_switch);
+        assert!(
+            content.contains("It has one rule.\n\n**close parent**"),
+            "{content}"
         );
 
         let unreadable = Node::new(

@@ -810,7 +810,7 @@ impl LocalAgentServiceImpl {
 
         let prior_writes = prior_writes_from_history(&messages);
         let prior_turns = prior_turns_from_history(&messages);
-        let offered_options = options_last_offered(&messages);
+        let offered_options = opening_options_answered(&messages);
         let history = node_history_from_messages(messages);
         if history.is_empty() {
             tracing::warn!(node_id, "ai-chat history empty — skipping turn");
@@ -2821,24 +2821,26 @@ fn prior_turns_from_history(messages: &[StoredMessage]) -> Vec<PriorTurn> {
         .collect()
 }
 
-/// The options the assistant's last message offered: those of the message
-/// just ahead of the user's latest, when that one is the assistant's.
+/// The options of the message a chat was opened with (ADR-090 §3), when the
+/// user's latest message is their first: the reply to it.
 ///
-/// The message a chat is opened with counts (ADR-090 §3), which
-/// [`prior_turns_from_history`] leaves out: it answered no request, but the
-/// user's first message can still be one of the choices it offered.
-fn options_last_offered(messages: &[StoredMessage]) -> Vec<String> {
-    let Some((latest, earlier)) = messages.split_last() else {
-        return Vec::new();
-    };
-    if latest.role != AiChatMessageRole::User {
-        return Vec::new();
+/// [`prior_turns_from_history`] leaves the opening message out, because it
+/// answered no request. The user's first message can still be one of the
+/// choices it offered, and those are the chat's own (ADR-090 §5).
+///
+/// Only the opening message's. The options of a later clarification belong
+/// to whichever skill asked, on whatever topic the chat had moved to, and a
+/// reply to one is routed as the answer to a clarification is.
+fn opening_options_answered(messages: &[StoredMessage]) -> Vec<String> {
+    match messages {
+        [opening, reply]
+            if opening.role == AiChatMessageRole::Assistant
+                && reply.role == AiChatMessageRole::User =>
+        {
+            opening.options.clone()
+        }
+        _ => Vec::new(),
     }
-    earlier
-        .last()
-        .filter(|m| m.role == AiChatMessageRole::Assistant)
-        .map(|m| m.options.clone())
-        .unwrap_or_default()
 }
 
 /// Rebuild the duplicate-guard's view of earlier turns from persisted messages.
@@ -4764,14 +4766,14 @@ mod tests {
         assert_eq!(opened[0].outcome, Some(AiChatTurnOutcome::Clarified));
         assert!(prior_turns_from_history(&opened).is_empty());
         // No user message yet, so nothing is being answered.
-        assert!(options_last_offered(&opened).is_empty());
+        assert!(opening_options_answered(&opened).is_empty());
 
         send_user_message(&node_service, &chat_id, "Change a condition").await;
         // The user's first message answers the opening message, whose
         // options are the ones it may have picked.
         let answered = load_chat_messages(&node_service, &chat_id).await;
         assert_eq!(
-            options_last_offered(&answered),
+            opening_options_answered(&answered),
             play_edit_chat::EDIT_OPTIONS
         );
         svc.maybe_handle_ai_chat_node(&chat_id).await;
@@ -4786,10 +4788,24 @@ mod tests {
                 response: "Which rule?".to_string(),
             }]
         );
-        // The reply offered nothing, so the next message picks no option.
-        send_user_message(&node_service, &chat_id, "The first one").await;
+        // Only the reply to the opening message can pick one of its
+        // options. A later clarification's options are its asker's: the
+        // answer to one is routed as the answer to a clarification.
+        let asked = ["Website".to_string(), "Mobile".to_string()];
+        chat_messages::append_message(
+            &node_service,
+            &chat_id,
+            NewMessage {
+                outcome: Some(AiChatTurnOutcome::Clarified),
+                options: &asked,
+                ..NewMessage::text(AiChatMessageRole::Assistant, "Which project?")
+            },
+        )
+        .await
+        .expect("append a clarification");
+        send_user_message(&node_service, &chat_id, "Website").await;
         let next = load_chat_messages(&node_service, &chat_id).await;
-        assert!(options_last_offered(&next).is_empty());
+        assert!(opening_options_answered(&next).is_empty());
     }
 
     /// A chat's pinned skill reaches the turn: read from the chat's `pins`

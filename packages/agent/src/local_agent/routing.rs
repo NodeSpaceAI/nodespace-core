@@ -547,7 +547,7 @@ pub fn is_offered_option(message: &str, options: &[String]) -> bool {
     !message.is_empty() && options.iter().any(|o| normalised(o) == message)
 }
 
-/// The decision for a reply that is one of the options the assistant's last
+/// The decision for a reply that is one of the options a chat's opening
 /// message offered, in a chat that pins a skill (ADR-090 §5).
 ///
 /// The chat offered it, so it is not ambiguous and is not put to Stage 1.
@@ -1286,7 +1286,7 @@ pub fn with_pinned_skills(
 
 /// `candidates` with the pinned skills first, each scored just above the best
 /// of the others: the candidates of a reply that picked one of the
-/// options a pinned chat's last message offered (ADR-090 §5).
+/// options a pinned chat's opening message offered (ADR-090 §5).
 ///
 /// Everywhere else a pinned skill leads only when retrieval scored it first,
 /// so a request on another topic is led by the skill found for it. An option
@@ -1305,12 +1305,15 @@ pub fn led_by_pinned_skills(candidates: Vec<SkillCandidate>) -> Vec<SkillCandida
         .iter()
         .map(|c| c.score)
         .fold(f32::NEG_INFINITY, f32::max);
-    for skill in &mut pinned {
-        // Strictly above, not level: a tie for the lead goes to the last
-        // candidate that holds it ([`leading_tool_bearing_candidate`]).
-        if skill.score <= top {
-            skill.score = top.next_up();
+    // Strictly above, not level: a tie for the lead goes to the last
+    // candidate that holds it ([`leading_tool_bearing_candidate`]). Stepped
+    // from the last pinned skill to the first, so the first one pinned leads.
+    let mut floor = top;
+    for skill in pinned.iter_mut().rev() {
+        if skill.score <= floor {
+            skill.score = floor.next_up();
         }
+        floor = skill.score;
     }
     pinned.extend(others);
     pinned
@@ -4687,6 +4690,21 @@ mod tests {
         assert_eq!(
             leading_tool_bearing_candidate(&led).map(|c| c.name.as_str()),
             Some("authoring")
+        );
+
+        // Of two pinned skills, the first one pinned leads.
+        let mut second = candidate("second", 0.5, &["get_play"]);
+        second.pinned = true;
+        let mut first = candidate("first", 0.1, &["get_play"]);
+        first.pinned = true;
+        let both = led_by_pinned_skills(vec![
+            first,
+            second,
+            candidate("editing", 0.94, &["update_node"]),
+        ]);
+        assert_eq!(
+            leading_tool_bearing_candidate(&both).map(|c| c.name.as_str()),
+            Some("first")
         );
 
         // A pinned skill that can remove user data does not lead on a pin.
