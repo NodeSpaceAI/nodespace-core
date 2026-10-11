@@ -1284,6 +1284,38 @@ pub fn with_pinned_skills(
     selected
 }
 
+/// `candidates` with the pinned skills first, each scored just above the best
+/// of the others: the candidates of a reply that picked one of the
+/// options a pinned chat's last message offered (ADR-090 §5).
+///
+/// Everywhere else a pinned skill leads only when retrieval scored it first,
+/// so a request on another topic is led by the skill found for it. An option
+/// the chat offered is not another topic: the chat was opened for the pinned
+/// skill and the option is its own. Its words are still all retrieval has,
+/// and they are generic. Measured on the locked embedding model, "Change a
+/// condition" in a play's edit chat ranked Graph Editing (0.938) ahead of
+/// Play Authoring (0.870), and the reply asked which play was meant.
+///
+/// A pinned skill that can remove user data is left where it was: it still
+/// has to clear its own bar ([`clears_score_gate`]).
+pub fn led_by_pinned_skills(candidates: Vec<SkillCandidate>) -> Vec<SkillCandidate> {
+    let leads = |c: &SkillCandidate| c.pinned && !skill_is_destructive(c);
+    let (mut pinned, others): (Vec<_>, Vec<_>) = candidates.into_iter().partition(leads);
+    let top = others
+        .iter()
+        .map(|c| c.score)
+        .fold(f32::NEG_INFINITY, f32::max);
+    for skill in &mut pinned {
+        // Strictly above, not level: a tie for the lead goes to the last
+        // candidate that holds it ([`leading_tool_bearing_candidate`]).
+        if skill.score <= top {
+            skill.score = top.next_up();
+        }
+    }
+    pinned.extend(others);
+    pinned
+}
+
 /// The highest score among gate-clearing candidates that whitelist at least
 /// one tool — "which *tool-bearing* candidate won retrieval". `NEG_INFINITY`
 /// when there are none, which every `score >= max` comparison admits, so a
@@ -4632,6 +4664,38 @@ mod tests {
                 "{change}"
             );
         }
+    }
+
+    /// A picked option is led by the pinned skill, whatever retrieval made of
+    /// its words; the other candidates keep their order and scores.
+    #[test]
+    fn a_picked_option_is_led_by_the_pinned_skill() {
+        let mut authoring = candidate("authoring", 0.87, &["get_play", "update_play"]);
+        authoring.pinned = true;
+        let led = led_by_pinned_skills(vec![
+            candidate("editing", 0.94, &["update_node"]),
+            authoring,
+            candidate("research", 0.8, &["search_nodes"]),
+        ]);
+
+        assert_eq!(names(&led), ["authoring", "editing", "research"]);
+        assert!(
+            led[0].score > 0.94 && led[0].score < 0.941,
+            "{}",
+            led[0].score
+        );
+        assert_eq!(
+            leading_tool_bearing_candidate(&led).map(|c| c.name.as_str()),
+            Some("authoring")
+        );
+
+        // A pinned skill that can remove user data does not lead on a pin.
+        let mut deleting = candidate("deleting", 0.2, &["delete_node"]);
+        deleting.pinned = true;
+        let kept =
+            led_by_pinned_skills(vec![candidate("editing", 0.94, &["update_node"]), deleting]);
+        assert_eq!(names(&kept), ["editing", "deleting"]);
+        assert_eq!(kept[1].score, 0.2);
     }
 
     /// On a lookup a pinned skill is kept with the tools that read. A skill
