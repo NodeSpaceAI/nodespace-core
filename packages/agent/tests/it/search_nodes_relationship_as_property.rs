@@ -454,3 +454,150 @@ async fn creating_a_node_refuses_a_relationship_key_and_a_built_in_inbound_name_
         );
     }
 }
+
+/// A task's `assignee` is read from the person's `tasks`. Written under its
+/// reverse name from either end it fails in the store with a message naming
+/// neither; the tool names the call that works.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reverse_name_given_to_create_relationship_is_answered_with_the_forward_call() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    for (from, to) in [(TASK_C, NORBERT), (NORBERT, TASK_C)] {
+        let refused = executor
+            .execute(
+                "create_relationship",
+                json!({ "from_id": from, "to_id": to, "relationship_type": "assignee" }),
+            )
+            .await
+            .expect_err("'assignee' is not created under its reverse name")
+            .to_string();
+        assert!(
+            refused.contains("from_id the 'person' node's id, to_id the 'task' node's id, relationship_type 'tasks'"),
+            "{from} -> {to}: {refused}"
+        );
+    }
+
+    // The hint keeps the store's own answer beside it.
+    let hinted = executor
+        .execute(
+            "create_relationship",
+            json!({ "from_id": TASK_C, "to_id": NORBERT, "relationship_type": "assignee" }),
+        )
+        .await
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        hinted.contains("The store's answer was:") && hinted.contains("not defined in schema"),
+        "{hinted}"
+    );
+
+    // A name that is no relationship of either node keeps the store's message.
+    let unknown = executor
+        .execute(
+            "create_relationship",
+            json!({ "from_id": NORBERT, "to_id": TASK_C, "relationship_type": "no_such_name" }),
+        )
+        .await
+        .expect_err("an undeclared name is refused")
+        .to_string();
+    assert!(!unknown.contains("relationship_type 'tasks'"), "{unknown}");
+    assert!(unknown.contains("not defined in schema"), "{unknown}");
+}
+
+/// A small model copies a label and an id together into the id argument. The
+/// node is found by the id written, so the refusal that names the working call
+/// is reached and the edge can be made.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_id_written_with_its_label_still_reaches_the_node() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    let refused = executor
+        .execute(
+            "update_node",
+            json!({
+                "id": format!("Plan the offsite task ID ({TASK_C})"),
+                "field_values": { "assignee": format!("Norbert Weber's id ({NORBERT})") }
+            }),
+        )
+        .await
+        .expect_err("a relationship is not a field")
+        .to_string();
+    assert!(
+        refused.contains("is a relationship of 'task'"),
+        "the node was found, so the refusal was reached: {refused}"
+    );
+
+    let created = executor
+        .execute(
+            "create_relationship",
+            json!({
+                "from_id": format!("person ID ({NORBERT})"),
+                "to_id": format!("task ID ({TASK_C})"),
+                "relationship_type": "tasks"
+            }),
+        )
+        .await
+        .expect("the ids are read through their labels");
+    assert_eq!(created.result["created"], true);
+}
+
+/// A reverse name is explained only between the types it relates. A project
+/// holds a `tasks` relationship of its own, but a task and a project are not
+/// a task and a person, so the caller is not sent to a node that is neither.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reverse_name_between_other_types_keeps_the_stores_message() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+    let created = executor
+        .execute(
+            "create_node",
+            json!({ "node_type": "project", "content": "Apollo launch" }),
+        )
+        .await
+        .expect("a project is created");
+    let project = created.result["id"]
+        .as_str()
+        .expect("the new node has an id")
+        .trim_start_matches("nodespace://")
+        .to_string();
+
+    for (from, to) in [
+        (TASK_C.to_string(), project.clone()),
+        (project, TASK_C.to_string()),
+    ] {
+        let refused = executor
+            .execute(
+                "create_relationship",
+                json!({ "from_id": from, "to_id": to, "relationship_type": "assignee" }),
+            )
+            .await
+            .expect_err("'assignee' relates a task to a person, not to a project")
+            .to_string();
+        assert!(!refused.contains("'person' node"), "{refused}");
+        assert!(refused.contains("not defined in schema"), "{refused}");
+    }
+}
+
+/// Quote marks alone are an empty query, not a search for quote marks: the
+/// filter decides what comes back.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_query_of_quote_marks_alone_does_not_hide_the_rows_a_filter_selects() {
+    let (executor, _tmp) = executor_with_assigned_tasks().await;
+
+    for query in ["", "*", "\"\"", "''"] {
+        let found = executor
+            .execute(
+                "search_nodes",
+                json!({
+                    "node_type": "task",
+                    "query": query,
+                    "filters": [{ "type": "relationship", "operator": "equals",
+                                  "path": ["assignee"], "node_id": ANOOP }]
+                }),
+            )
+            .await
+            .expect("search_nodes must run");
+        let mut got = ids(&found.result);
+        got.sort();
+        assert_eq!(got, [TASK_A, TASK_B], "query {query:?}");
+    }
+}

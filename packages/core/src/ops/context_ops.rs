@@ -715,6 +715,83 @@ async fn resolve_entities(
     }
 }
 
+/// The words by which a message refers to the person using the workspace.
+///
+/// English only, and matched wherever they stand, quoted or pasted text
+/// included ("a note titled \"Tell me more\""). A false match costs one entity
+/// line for the owner; a miss costs the grounding this adds, as before it.
+const FIRST_PERSON_WORDS: [&str; 4] = ["me", "my", "mine", "myself"];
+
+fn refers_to_current_user(query: &str) -> bool {
+    query.split(|c: char| !c.is_alphanumeric()).any(|word| {
+        FIRST_PERSON_WORDS
+            .iter()
+            .any(|w| word.eq_ignore_ascii_case(w))
+    })
+}
+
+/// Add the database's owner to the resolved entities when the message says
+/// "me", "my", "mine" or "myself".
+///
+/// Resolution reads names, and "me" is no name, so the person the message is
+/// about would otherwise get none of what a named person gets: no id to filter
+/// by and no links from the types that reach people. Searching for their name
+/// instead finds nothing, since a task's title does not hold its assignee's.
+///
+/// An empty resolution becomes one with the owner in it. That drops the "none
+/// found" statement for any other name in the same message ("assign Foo Corp to
+/// me"); the guidance to check each name against the list covers a name that is
+/// not in it, as it does when another name matched.
+///
+/// The owner goes first and the cap still holds: when the list is full the
+/// weakest match is cut and counted as not shown. The owner is a resolved
+/// entity like the others, so the duplicate-create guard sees it; one with no
+/// title is listed as "Current user".
+async fn include_current_user(
+    node_service: &Arc<NodeService>,
+    resolved: EntityResolution,
+    query: Option<&str>,
+) -> EntityResolution {
+    if !query.is_some_and(refers_to_current_user) {
+        return resolved;
+    }
+    let Ok(Some(person)) = node_service.get_local_person().await else {
+        return resolved;
+    };
+    let me = crate::db::ResolvedEntity {
+        id: person.id,
+        title: person
+            .title
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| "Current user".to_string()),
+        node_type: person.node_type,
+        score: 0.0,
+    };
+    match resolved {
+        EntityResolution::Resolved {
+            mut entities,
+            not_shown,
+        } => {
+            let mut not_shown = not_shown;
+            if !entities.iter().any(|e| e.id == me.id) {
+                entities.insert(0, me);
+                if entities.len() > MAX_RESOLVED_ENTITIES {
+                    entities.truncate(MAX_RESOLVED_ENTITIES);
+                    not_shown += 1;
+                }
+            }
+            EntityResolution::Resolved {
+                entities,
+                not_shown,
+            }
+        }
+        EntityResolution::NotRun | EntityResolution::NoMatch => EntityResolution::Resolved {
+            entities: vec![me],
+            not_shown: 0,
+        },
+    }
+}
+
 /// How other types' nodes reach each type among the resolved entities.
 ///
 /// Best effort. The source types listed are the ones the message names by
@@ -845,6 +922,8 @@ pub async fn build_workspace_context(
     // Unlike the schema tier this needs no embedding service: it is an index
     // lookup, so it still runs when embeddings are unavailable.
     let resolved_entities = resolve_entities(node_service, entity_query).await;
+    let resolved_entities =
+        include_current_user(node_service, resolved_entities, entity_query).await;
 
     // The schema corpus, fetched once per turn and shared by everything
     // below: semantic hits are resolved against it (a hit is a raw node row,
