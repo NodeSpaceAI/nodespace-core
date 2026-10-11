@@ -11,7 +11,8 @@
  */
 
 process.stderr.write(`
-⚠️  PLAN MODE REMINDER: Your plan MUST include the startup sequence as Step 0.
+⚠️  PLAN MODE REMINDER: Your plan MUST include the startup sequence as Step 0
+and the final steps at its end.
 
 Because context clears between planning and implementation, the implementing
 agent will ONLY see the plan, not this conversation.

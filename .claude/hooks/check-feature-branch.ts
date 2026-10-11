@@ -5,8 +5,8 @@
  *
  * Issue work happens in an isolated worktree, whose branch is never `main`, so
  * the hook is silent there. On `main` it prints the sequence, because being on
- * `main` often means the sequence was skipped. A docs-only or mechanical change
- * is committed straight to `main`, so the reminder does not tell the agent to stop.
+ * `main` often means the sequence was skipped. Not every edit on `main` is issue
+ * work, so the reminder does not tell the agent to stop.
  *
  * Exits 0 in all cases (never blocks). The reminder goes to stderr so Claude
  * Code surfaces it as a message to the agent.
@@ -29,10 +29,9 @@ if (branch === 'main') {
   process.stderr.write(`
 ⚠️  REMINDER: You are editing on the \`main\` branch of the primary checkout.
 
-A docs-only or mechanical change may be committed straight to \`main\`: carry on.
-
 Work on an issue belongs in an isolated worktree. If this edit is issue work,
-complete the startup sequence first, then make the edit inside the worktree:
+complete the startup sequence first, then make the edit inside the worktree.
+If it is not issue work, ignore this reminder.
 
   1. git status  (commit any pending changes)
   2. git fetch origin && git pull origin main
