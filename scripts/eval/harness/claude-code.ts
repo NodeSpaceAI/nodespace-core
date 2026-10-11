@@ -55,8 +55,22 @@ export async function claudeCode(
     ],
     { cwd, env: sessionEnv(env), stdin: "pipe", stdout: "pipe", stderr: "inherit" },
   );
-  /** What the prompt in flight is answered through. */
-  const pending: { answer: ((text: string) => void) | null } = { answer: null };
+  /** What the prompt in flight is answered through, or failed through. */
+  const pending: { answer: ((text: string) => void) | null; fail: ((err: Error) => void) | null } = {
+    answer: null,
+    fail: null,
+  };
+
+  // A session that ends (not signed in, a flag it does not know, a crash)
+  // will never answer the prompt in flight: say so now and not when that
+  // prompt's timer runs out.
+  void child.exited.then(code => {
+    const fail = pending.fail;
+
+    pending.answer = null;
+    pending.fail = null;
+    fail?.(new Error(`claude exited with ${code} before answering`));
+  });
 
   const reading = (async () => {
     const decoder = new TextDecoder();
@@ -83,6 +97,7 @@ export async function claudeCode(
             const done = pending.answer;
 
             pending.answer = null;
+            pending.fail = null;
             done(String(event.result ?? ""));
           }
         } catch {
@@ -102,15 +117,10 @@ export async function claudeCode(
         clearTimeout(timer);
         resolve(text);
       };
-      // A session that ends first (not signed in, a flag it does not know)
-      // will never answer: say so now and not when the timer runs out.
-      void child.exited.then(code => {
-        if (pending.answer) {
-          clearTimeout(timer);
-          pending.answer = null;
-          reject(new Error(`claude exited with ${code} before answering the ${name} prompt`));
-        }
-      });
+      pending.fail = err => {
+        clearTimeout(timer);
+        reject(err);
+      };
     });
 
     child.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: PROMPTS[name] } })}\n`);

@@ -83,17 +83,21 @@ fn parse_path(s: &str) -> Result<RelationshipPath, String> {
 
 /// Content may begin with a dash, so the word after `--content` is taken as
 /// its value even when it is another flag. A value that is nothing but a
-/// flag's name is therefore refused: it is a `--content` whose own value was
-/// left out, and taking it would write the flag's name as the content and drop
-/// the flag (`--content --dry-run` would write, not preview).
+/// flag is therefore refused, in either spelling (`--dry-run`,
+/// `--version=3`): it is a `--content` whose own value was left out, and
+/// taking it would write the flag as the content and drop what the flag asked
+/// for (`--content --dry-run` would write, not preview).
 fn parse_content(s: &str) -> Result<String, String> {
-    let is_flag_name = s.strip_prefix("--").is_some_and(|name| {
-        name.starts_with(|c: char| c.is_ascii_lowercase())
-            && name
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-    });
-    if is_flag_name {
+    let is_one_word = !s.contains(char::is_whitespace);
+    let is_flag = is_one_word
+        && s.strip_prefix("--").is_some_and(|rest| {
+            let name = rest.split('=').next().unwrap_or(rest);
+            name.starts_with(|c: char| c.is_ascii_lowercase())
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        });
+    if is_flag {
         return Err(format!(
             "`{s}` is a flag, not content: the value after --content is missing"
         ));
@@ -1080,7 +1084,13 @@ mod tests {
     // Taking the next flag as the content would turn a preview into a write.
     #[test]
     fn content_that_is_only_a_flag_name_is_refused() {
-        for flag in ["--dry-run", "--version", "--parent"] {
+        for flag in [
+            "--dry-run",
+            "--version",
+            "--parent",
+            "--version=3",
+            "--parent=p-1",
+        ] {
             let argv = ["nodespace", "node", "update", "c-1", "--content", flag];
             let err = crate::Cli::try_parse_from(argv).expect_err("refused");
             assert_eq!(
@@ -1090,7 +1100,13 @@ mod tests {
             );
         }
         // What a list or a rule line starts with is still content.
-        for content in ["---", "-5", "-- two dashes and a space", "--Not a flag"] {
+        for content in [
+            "---",
+            "-5",
+            "-- two dashes and a space",
+            "--Not a flag",
+            "--flag=value and more words",
+        ] {
             let args = create_args(&["--content", content]).expect("content parses");
             assert_eq!(args.content.as_deref(), Some(content));
         }
