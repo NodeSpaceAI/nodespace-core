@@ -922,9 +922,10 @@ fn force_exit_on_serve_drain_timeout() {
     tracing::error!(
         timeout_secs = SHUTDOWN_WATCHDOG_TIMEOUT.as_secs(),
         "serve_with_incoming_shutdown did not finish draining connections/streams in time -- \
-         forcing exit. If you see this, please report it: either a client connection (e.g. an \
-         open WatchNodes stream) is stalling tonic's own graceful shutdown, or a legitimately \
-         long-running request was still in flight when shutdown was signaled."
+         forcing exit. If you see this, please report it: either a client connection is stalling \
+         tonic's own graceful shutdown (open WatchNodes streams are ended when shutdown is \
+         signaled, so it is something else), or a legitimately long-running request was still \
+         in flight when shutdown was signaled."
     );
     std::process::exit(0);
 }

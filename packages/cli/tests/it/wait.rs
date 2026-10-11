@@ -8,6 +8,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -38,6 +39,9 @@ use tonic::transport::Server;
 struct Daemon {
     sock: PathBuf,
     node_service: Arc<CoreNodeService>,
+    /// While set, the daemon takes connections and fails every request on
+    /// them, as one that cannot open the database does.
+    refusing: Arc<AtomicBool>,
     server: Option<Runtime>,
     _tempdir: TempDir,
 }
@@ -62,10 +66,12 @@ impl Daemon {
                 .await
                 .expect("build NodeService"),
         );
-        let server = Some(serve(&sock, node_service.clone()).await);
+        let refusing = Arc::new(AtomicBool::new(false));
+        let server = Some(serve(&sock, node_service.clone(), refusing.clone()).await);
         Self {
             sock,
             node_service,
+            refusing,
             server,
             _tempdir: tempdir,
         }
@@ -80,7 +86,8 @@ impl Daemon {
     }
 
     async fn restart(&mut self) {
-        self.server = Some(serve(&self.sock, self.node_service.clone()).await);
+        let server = serve(&self.sock, self.node_service.clone(), self.refusing.clone()).await;
+        self.server = Some(server);
     }
 
     async fn client(&self) -> NodeClient {
@@ -90,7 +97,11 @@ impl Daemon {
     }
 }
 
-async fn serve(sock: &Path, node_service: Arc<CoreNodeService>) -> Runtime {
+async fn serve(
+    sock: &Path,
+    node_service: Arc<CoreNodeService>,
+    refusing: Arc<AtomicBool>,
+) -> Runtime {
     let service = NodeServiceImpl::new(
         node_service,
         Arc::new(tokio::sync::RwLock::new(None)),
@@ -105,7 +116,13 @@ async fn serve(sock: &Path, node_service: Arc<CoreNodeService>) -> Runtime {
     server.spawn(async move {
         let incoming = UnixListenerStream::new(UnixListener::bind(&path).expect("bind socket"));
         Server::builder()
-            .add_service(NodeServiceServer::new(service))
+            .add_service(NodeServiceServer::with_interceptor(
+                service,
+                move |request: tonic::Request<()>| match refusing.load(Ordering::SeqCst) {
+                    true => Err(tonic::Status::internal("cannot open the database")),
+                    false => Ok(request),
+                },
+            ))
             .serve_with_incoming(incoming)
             .await
             .expect("server crashed");
@@ -485,6 +502,35 @@ async fn a_daemon_that_goes_away_and_stays_away_ends_the_wait() {
         matches!(outcome, Outcome::DaemonUnavailable(_)),
         "{outcome:?}"
     );
+}
+
+/// A daemon that comes back taking connections but failing every request is
+/// not a daemon that came back: the outage still ends when its time is up,
+/// and the wait says what the daemon answered.
+#[tokio::test]
+async fn a_daemon_that_returns_but_fails_every_request_ends_the_wait() {
+    let mut daemon = Daemon::start().await;
+    let mut client = daemon.client().await;
+    let id = task(&mut client, "in_review").await;
+
+    let mut waiting = Waiting::start(
+        &daemon.sock,
+        node_target(&id, &left_review(), None),
+        Timing {
+            reconnect_for: Duration::from_millis(400),
+            ..patient()
+        },
+    );
+    waiting.line("waiting on").await;
+    daemon.stop();
+    daemon.refusing.store(true, Ordering::SeqCst);
+    daemon.restart().await;
+
+    let outcome = waiting.outcome().await;
+    let Outcome::DaemonUnavailable(reason) = outcome else {
+        panic!("expected an unavailable daemon, got {outcome:?}");
+    };
+    assert!(reason.contains("cannot open the database"), "{reason}");
 }
 
 #[tokio::test]

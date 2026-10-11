@@ -593,7 +593,12 @@ pub async fn watch(
 
     loop {
         // Subscribe before checking: a change between the two is then seen.
-        let disconnected = match open_stream(&mut client).await {
+        let opened = match tokio::time::timeout_at(deadline, open_stream(&mut client)).await {
+            Ok(opened) => opened,
+            Err(_) => return Ok(Outcome::TimedOut),
+        };
+        let subscribed = Instant::now();
+        let disconnected = match opened {
             Ok(mut stream) => loop {
                 let check = tokio::time::timeout_at(deadline, target.check(&mut client)).await;
                 match check {
@@ -630,9 +635,9 @@ pub async fn watch(
             Err(status) => return Err(check_failed(status)),
         };
 
-        let at_once = lost_since.is_none();
+        let first = lost_since.is_none();
         let began = *lost_since.get_or_insert_with(Instant::now);
-        if at_once {
+        if first {
             writeln!(
                 status,
                 "{} while waiting on {what}; reconnecting for up to {}",
@@ -641,14 +646,26 @@ pub async fn watch(
             )
             .ok();
         }
+        // The outage is over when its time is up, whether or not the daemon
+        // can be reached: one that takes connections and fails every request
+        // made on them is as unavailable as one that takes none.
         let give_up = (began + timing.reconnect_for).min(deadline);
-        client = match reconnect(sock, interceptor, timing, give_up, at_once).await {
+        let reconnected = if Instant::now() >= give_up {
+            None
+        } else {
+            // At once only after a stream that lasted: one that ended as
+            // soon as it opened is retried at the pace of any other attempt.
+            let at_once = first && subscribed.elapsed() >= timing.reconnect_every;
+            reconnect(sock, interceptor, timing, give_up, at_once).await
+        };
+        client = match reconnected {
             Some(client) => client,
             None if Instant::now() >= deadline => return Ok(Outcome::TimedOut),
             None => {
                 return Ok(Outcome::DaemonUnavailable(format!(
-                    "the daemon went away and did not come back within {}",
-                    human(timing.reconnect_for)
+                    "the daemon did not answer again within {}: {}",
+                    human(timing.reconnect_for),
+                    crate::status_text(&disconnected)
                 )))
             }
         };

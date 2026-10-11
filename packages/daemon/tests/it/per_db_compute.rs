@@ -237,7 +237,10 @@ async fn every_watch_stream_ends_when_the_daemon_stops_serving() {
     let ended = tokio::time::timeout(Duration::from_secs(5), stream.next())
         .await
         .expect("the stream must end once the daemon stops serving");
-    assert!(ended.is_none(), "the stream ends; it does not yield an event");
+    assert!(
+        ended.is_none(),
+        "the stream ends; it does not yield an event"
+    );
     assert_eq!(
         status_of(&manager.list().await, "Default"),
         DatabaseStatus::Open,
